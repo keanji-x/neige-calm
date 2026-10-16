@@ -615,6 +615,13 @@ export const askQuestionSchema = z.object({
   options: z.array(z.string()),
 });
 
+/** The kernel-owned effect of an ask, granted only by a click on its first option. */
+export const askActionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }),
+  z.object({ kind: z.literal('grant_admin') }),
+  z.object({ kind: z.literal('forge_action'), idempotency_key: z.string(), payload_hash: z.string() }),
+]);
+
 /** The Planner asked the user; the event id is the ask's id. `hold` answers go to a paused request. */
 export const askRequestedSchema = z.object({
   ev: z.literal('ask.requested'),
@@ -623,7 +630,7 @@ export const askRequestedSchema = z.object({
     questions: z.array(askQuestionSchema),
     delivery: z.enum(['wake', 'hold']),
     source_item_id: z.string().optional(),
-    action: z.union([z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }), z.object({ kind: z.literal('grant_admin') })]).optional(),
+    action: askActionSchema.optional(),
   }),
 });
 

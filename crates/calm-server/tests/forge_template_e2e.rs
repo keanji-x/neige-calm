@@ -7,6 +7,8 @@ mod issue_creation;
 
 #[path = "cases/forge_ci_evidence.rs"]
 mod ci_evidence;
+#[path = "cases/forge_ci_rerun.rs"]
+mod ci_rerun;
 #[path = "cases/forge_issue_comment_recovery.rs"]
 mod issue_comment_recovery;
 #[path = "cases/forge_pr_checks.rs"]

@@ -24,10 +24,12 @@ use crate::event::{FieldSource, ForgeEventSpec};
 use crate::mcp_server::registry::AppContext;
 use crate::mcp_server::transport::forge_action_payload;
 use crate::mcp_server::transport::{
-    ForgeActionSubmission, PluginForgePayload, submit_forge_action_with_key,
+    ForgeActionSubmission, ForgeSubmit, PluginForgePayload, submit_forge_action_with_key,
 };
 use crate::model::new_id;
-use crate::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionResultFile, ProbeSpec};
+use crate::operation::forge_action_adapter::{
+    FORGE_ACTION_KIND, ForgeActionResultFile, NOT_LANDED_ERROR_CLASSES, ProbeSpec,
+};
 use crate::operation::gate_ops::{AttemptGateOps, GateOp};
 use crate::operation::workspace_lease::facts::workspace_lease_by_id_tx;
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease, worker_branch_tx};
@@ -44,10 +46,6 @@ pub(crate) const FAILURE_EVIDENCE_MAX_LINES: usize = 8;
 /// 220–320 bytes; the cap must keep its `common_dir=` / `registered=` facts, which are what the
 /// 10 / 12 sentences point the reader at.
 pub(crate) const FAILURE_EVIDENCE_MAX_LINE_BYTES: usize = 1024;
-
-/// The `last_error_class` values of a forge action that ran (or was proven not to have landed):
-/// with no result file these are the only classes that mean "the script did not pin a ref".
-const COMMIT_FAILED_CLASSES: &[&str] = &["action-failed", "action-not-landed"];
 
 /// The delivery script's exit codes that are provenance mismatches (D2 code table).
 pub(crate) const PROVENANCE_MISMATCH_EXIT_CODES: &[i32] = &[10, 11, 12, 15];
@@ -400,9 +398,11 @@ pub(crate) async fn submit_delivery(
         return Ok(DeliverySubmission::AfterGateOp(op));
     }
     let payload = forge_payload_for(delivery, lease, branch)?;
+    // A delivery is never approval-gated: it has no approval asks to raise.
     submit_forge_action_with_key(
         runtime,
         gate_logs_dir,
+        None,
         GIT_FORGE_PLUGIN_ID,
         delivery.track_id.clone(),
         delivery.card_id.clone(),
@@ -412,6 +412,7 @@ pub(crate) async fn submit_delivery(
     )
     .await
     .map_err(|error| CalmError::Internal(format!("delivery {}: {error}", delivery.delivery_id)))?
+    .and_then(ForgeSubmit::submitted)
     .map_err(|error| CalmError::Internal(format!("delivery {}: {error}", delivery.delivery_id)))
     .map(DeliverySubmission::Submitted)
 }
@@ -734,11 +735,14 @@ pub(crate) fn classify_failure(
             failure_sentence("git", Some(file.exit_code)),
             true,
         ),
-        None if last_error_class.is_some_and(|class| COMMIT_FAILED_CLASSES.contains(&class)) => (
-            DeliveryFailureCode::CommitFailed,
-            failure_sentence("no_result", None),
-            true,
-        ),
+        // With no result file only a forge action that did not land means "the script did not pin a ref".
+        None if last_error_class.is_some_and(|class| NOT_LANDED_ERROR_CLASSES.contains(&class)) => {
+            (
+                DeliveryFailureCode::CommitFailed,
+                failure_sentence("no_result", None),
+                true,
+            )
+        }
         _ => (
             DeliveryFailureCode::Unresolved,
             failure_sentence("unresolved", None),

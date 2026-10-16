@@ -159,7 +159,7 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
             ask_id: ask.ask_id,
             questions: ask.questions.clone(),
             delivery: ask.delivery,
-            action: ask.action,
+            action: ask.action.clone(),
         });
     }
     if let Some(turn) = &rows.last_turn

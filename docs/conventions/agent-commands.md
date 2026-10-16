@@ -90,6 +90,7 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `accept` | LC | record that an attempt meets the task (Planner) | none (plain English) |
 | `reject` | LC | record that an attempt does not meet the task, with a `reason` | none (plain English) |
 | `regate` | LC | re-run an attempt's failed gate on the same candidate (Planner, #2405) | none (domain) |
+| `rerun` | LC | request a re-run of a CI run attempt's failed jobs, once the user approved that exact request (Planner, #2617) | `gh run rerun --failed` |
 | `gate` | LC | run the attempt's declared gate now, on the Worker's changes committed as the attempt's commit (Worker, #2464) | none (domain) |
 | `done` | LC | the Worker's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
 | `fail` | LC | the Worker's claim that its attempt cannot meet the task, with a `reason` (was `report_failure`) | none (plain English) |
@@ -119,8 +120,9 @@ Decisions, one line each:
 - **CRUD words retire:** `create`/`register` → `add`, `update` → `set`, `unregister` and
   cancel-by-flag → `rm`. `mv` is not used: no tool moves an entry between containers.
 - **Domain verbs with no Unix equivalent stay** (`capture`, `control`, `ask`, `accept`,
-  `reject`, `publish`, `regate`, `gate`), each with one meaning. `gate` is the Worker's run of
-  its attempt's gate before it reports; `regate` is the Planner's re-run of a failed one.
+  `reject`, `publish`, `regate`, `gate`, `rerun`), each with one meaning. `gate` is the Worker's
+  run of its attempt's gate before it reports; `regate` is the Planner's re-run of a failed one;
+  `rerun` asks the forge to re-run a CI run's failed jobs.
 - **`done` / `fail` replace the two Worker compounds** so every action is one word. The Worker
   claims (`task_done`, `task_fail`); the Planner decides (`task_accept`, `task_reject`).
 - **A view may stamp access metadata** (e.g. a last-seen time) and refresh derived projections onto

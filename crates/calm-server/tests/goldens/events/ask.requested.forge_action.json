@@ -1,0 +1,14 @@
+{
+  "description": "ask.requested the kernel raises for one approval-gated forge action: the kernel's Approve/Decline choices, bound to the operation's idempotency key and semantic payload hash",
+  "wire": {
+    "ev": "ask.requested",
+    "data": {
+      "track_id": "track-01",
+      "questions": [
+        { "title": "Re-run failed jobs of run 100 attempt 1, o/r PR #7 head abc? Reason: flaky", "options": ["Approve", "Decline"] }
+      ],
+      "delivery": "wake",
+      "action": { "kind": "forge_action", "idempotency_key": "gitforge:track-01:card-01:gh.run.rerun_failed:v1:[\"o/r\",100,1,\"r-1\"]", "payload_hash": "5d41402abc4b2a76b9719d911017c592" }
+    }
+  }
+}

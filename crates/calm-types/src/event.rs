@@ -310,12 +310,21 @@ pub enum AskAnswer {
 }
 
 /// An explicit user choice with a lifecycle effect; absent on ordinary/native asks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum AskAction {
-    ReopenTrack { closed_at: i64 },
+    ReopenTrack {
+        closed_at: i64,
+    },
     GrantAdmin,
+    /// The user's approval of one approval-gated forge action (#2617): the forge operation's
+    /// idempotency key and semantic payload hash. A click on the first option grants that exact
+    /// call; the answer itself has no other effect.
+    ForgeAction {
+        idempotency_key: String,
+        payload_hash: String,
+    },
 }
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every

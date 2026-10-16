@@ -30,6 +30,18 @@ pub struct PluginForgePayload {
     /// submitted it. Not part of the semantic hash.
     #[serde(default)]
     pub replay_any_version: bool,
+    /// The plugin gates this call on the user's recorded approval: the kernel runs it only after
+    /// the user clicked Approve on the ask it raises for this exact idempotency key and payload.
+    /// Part of the semantic hash when present.
+    #[serde(default)]
+    pub approval: Option<ForgeApprovalRequest>,
+}
+
+/// What the user is asked to approve, rendered by the plugin; the kernel supplies the choices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeApprovalRequest {
+    pub title: String,
 }
 
 /// Construct a forge action with event extraction and recovery probes.
@@ -48,6 +60,7 @@ pub fn forge_action_payload(
         probe: Some(probes),
         parked: false,
         replay_any_version: false,
+        approval: None,
     }
 }
 
@@ -58,6 +71,9 @@ struct SemanticForgePayload<'a> {
     subject: Option<&'a ForgeMergeSubject>,
     context: &'a serde_json::Map<String, Value>,
     probe: Option<&'a ProbeSpec>,
+    /// Absent unless set, so every hash of an ungated call is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval: Option<&'a ForgeApprovalRequest>,
 }
 
 pub fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, String> {
@@ -67,6 +83,7 @@ pub fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, Str
         subject: payload.subject.as_ref(),
         context: &payload.context,
         probe: payload.probe.as_ref(),
+        approval: payload.approval.as_ref(),
     };
     let bytes = serde_json::to_vec(&semantic)
         .map_err(|e| format!("forge-action hash serialization: {e}"))?;

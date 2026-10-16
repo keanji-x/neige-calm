@@ -233,6 +233,20 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(activity.progress).toBe(0);
   });
 
+  it('shows a forge approval ask with its action, and drops an ask whose action it cannot read', () => {
+    const action = { kind: 'forge_action', idempotency_key: 'gitforge:t1:p:gh.run.rerun_failed:v1:[]', payload_hash: 'h' };
+    const ask = { source: 'ask', key: 'ask:7', text: 'Re-run?', at_ms: 30, ask_id: 7,
+      questions: [{ title: 'Re-run?', options: ['Approve', 'Decline'] }], delivery: 'wake' };
+    const activity = trackActivityFrom('t1', [overlay({ ...payload, items: [
+      { ...ask, action },
+      { ...ask, key: 'ask:8', ask_id: 8, action: { kind: 'forge_action', idempotency_key: 'k' } },
+    ] })]);
+    expect(activity.attentionItems).toEqual([
+      { source: 'ask', key: 'ask:7', text: 'Re-run?', atMs: 30, askId: 7,
+        questions: [{ title: 'Re-run?', options: ['Approve', 'Decline'] }], delivery: 'wake', action },
+    ]);
+  });
+
   it('keeps the neutral values for a track the kernel has not written yet', () => {
     const activity = trackActivityFrom('t2', [overlay(payload)]);
     expect(activity).toEqual(NEUTRAL_ACTIVITY);

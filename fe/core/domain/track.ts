@@ -3,7 +3,7 @@
 
 import { z } from 'zod';
 
-import { agentProviderSchema, cardRuntimeViewSchema } from '../api/schemas.js';
+import { agentProviderSchema, askActionSchema, cardRuntimeViewSchema } from '../api/schemas.js';
 import type { AgentProvider } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
 import {
@@ -152,7 +152,7 @@ const activityItemWireSchema = z.discriminatedUnion('source', [
     ask_id: z.number(),
     questions: z.array(z.object({ title: z.string(), options: z.array(z.string()) })),
     delivery: z.enum(['wake', 'hold']),
-    action: z.union([z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }), z.object({ kind: z.literal('grant_admin') })]).optional(),
+    action: askActionSchema.optional(),
   }),
   z.object({
     source: z.literal('planner_down'),

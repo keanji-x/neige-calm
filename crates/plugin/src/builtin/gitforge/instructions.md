@@ -19,6 +19,11 @@ After any rerun of a workflow run, including one the user starts, wait for CI wi
 run's checks stay pending until it reports a later, completed attempt, so the old attempt's
 failure cannot end the wait; other runs' failures still do.
 
+Rerun the failed jobs of a run with `gh_run_rerun` (Planner only) when the evidence
+shows the failure is unrelated to the change. The kernel asks the user to approve that exact
+rerun and posts nothing before an Approve click; repeat the identical call once the answer
+wakes you. Its result names the `after_rerun` fence to wait with.
+
 The selected template determines when review and user ratification are required; read its working method and acceptance conditions.
 
 Read issue requirements with `gh_issue_view`, and read the discussion with

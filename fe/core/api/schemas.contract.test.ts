@@ -1199,3 +1199,14 @@ it('accepts admin state and grant_admin asks in the event contract', () => {
   } });
   expect(ask.ev).toBe('ask.requested');
 });
+
+it('accepts forge approval asks and refuses an incomplete or unknown ask action', () => {
+  const ask = { ev: 'ask.requested', data: {
+    track_id: 't', questions: [{ title: 'Re-run?', options: ['Approve', 'Decline'] }], delivery: 'wake',
+    action: { kind: 'forge_action', idempotency_key: 'gitforge:t:p:gh.run.rerun_failed:v1:[]', payload_hash: 'h' },
+  } };
+  expect(wireEventSchema.parse(ask)).toEqual(ask);
+  for (const action of [{ kind: 'forge_action', idempotency_key: 'k' }, { kind: 'unknown' }]) {
+    expect(wireEventSchema.safeParse({ ...ask, data: { ...ask.data, action } }).success).toBe(false);
+  }
+});

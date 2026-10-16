@@ -65,7 +65,7 @@ pub(super) async fn answer_events_tx(
     ask: &StoredAsk,
     answers: &[AskAnswer],
 ) -> Result<Vec<Event>> {
-    let Some(AskAction::ReopenTrack { closed_at }) = ask.action else {
+    let Some(AskAction::ReopenTrack { closed_at }) = ask.action.clone() else {
         return Ok(Vec::new());
     };
     if ask.delivery != AskDelivery::Wake

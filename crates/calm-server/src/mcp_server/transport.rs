@@ -4,6 +4,8 @@
 use sha2::{Digest, Sha256};
 
 mod call;
+mod forge_approval;
+pub(crate) use forge_approval::ApprovalAsks;
 mod forge_payload;
 pub(crate) use forge_payload::{PluginForgePayload, forge_action_payload, semantic_payload_hash};
 mod catalog;
@@ -788,6 +790,33 @@ pub(crate) struct ForgeActionSubmission {
     pub(crate) parked: bool,
 }
 
+/// What a forge submit did: submitted (or replayed) the operation, or held an approval-gated call
+/// at its user's answer, recorded in the ask `ask_id`.
+pub(crate) enum ForgeSubmit {
+    Submitted(ForgeActionSubmission),
+    /// The ask is open; the Planner repeats the identical call once the answer wakes it.
+    AwaitingApproval {
+        ask_id: i64,
+    },
+    /// The user declined; this call never runs. A new request needs a new idempotency key.
+    Declined {
+        ask_id: i64,
+    },
+}
+
+impl ForgeSubmit {
+    /// The submission of a payload that is not approval-gated; a held call is the caller's error.
+    pub(crate) fn submitted(self) -> std::result::Result<ForgeActionSubmission, String> {
+        match self {
+            Self::Submitted(submission) => Ok(submission),
+            Self::AwaitingApproval { ask_id } => Err(format!(
+                "the call awaits the user's approval (ask {ask_id})"
+            )),
+            Self::Declined { ask_id } => Err(format!("the user declined the call (ask {ask_id})")),
+        }
+    }
+}
+
 pub(crate) async fn submit_forge_action(
     ctx: &Arc<AppContext>,
     plugin_id: &str,
@@ -795,7 +824,7 @@ pub(crate) async fn submit_forge_action(
     card_id: String,
     cwd_lease: PathBuf,
     payload: PluginForgePayload,
-) -> Result<std::result::Result<ForgeActionSubmission, String>, RpcError> {
+) -> Result<std::result::Result<ForgeSubmit, String>, RpcError> {
     // A malformed payload is answered before the runtime is consulted (the pre-refactor order).
     validate_plugin_forge_payload(&payload)?;
 
@@ -805,6 +834,7 @@ pub(crate) async fn submit_forge_action(
     submit_forge_action_with_key(
         &runtime,
         &ctx.gate_logs_dir,
+        Some(&ApprovalAsks::of(ctx)),
         plugin_id,
         track_id,
         card_id,
@@ -827,17 +857,21 @@ pub(crate) fn forge_idempotency_key(
 }
 
 /// `submit_forge_action` with the caller's `operation_key`: a kernel delivery re-submits its persisted key.
+/// The one entry of every forge submit, so the approval gate holds for each of them: an
+/// approval-gated payload runs only after the user approved its exact key and payload, and only
+/// a submitter given `approval_asks` can submit one.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn submit_forge_action_with_key(
     runtime: &Arc<OperationRuntime>,
     gate_logs_dir: &Path,
+    approval_asks: Option<&ApprovalAsks<'_>>,
     plugin_id: &str,
     track_id: String,
     card_id: String,
     cwd_lease: PathBuf,
     payload: PluginForgePayload,
     operation_key: String,
-) -> Result<std::result::Result<ForgeActionSubmission, String>, RpcError> {
+) -> Result<std::result::Result<ForgeSubmit, String>, RpcError> {
     validate_plugin_forge_payload(&payload)?;
 
     let parked = payload.parked;
@@ -861,6 +895,19 @@ pub(crate) async fn submit_forge_action_with_key(
     {
         key.payload_hash = existing.payload_hash;
     }
+    if let Some(held) = forge_approval::hold(
+        runtime,
+        approval_asks,
+        &payload,
+        &track_id,
+        &card_id,
+        &idempotency_key,
+        &key.payload_hash,
+    )
+    .await?
+    {
+        return Ok(Ok(held));
+    }
     let forge_payload = ForgeActionPayload {
         track_id,
         card_id,
@@ -881,7 +928,10 @@ pub(crate) async fn submit_forge_action_with_key(
         .submit(FORGE_ACTION_KIND, key, operation_payload)
         .await
     {
-        Ok(op_id) => Ok(Ok(ForgeActionSubmission { op_id, parked })),
+        Ok(op_id) => Ok(Ok(ForgeSubmit::Submitted(ForgeActionSubmission {
+            op_id,
+            parked,
+        }))),
         Err(e) => Ok(Err(e.to_string())),
     }
 }
@@ -968,7 +1018,13 @@ async fn dispatch_forge_action_result(
     )
     .await?
     {
-        Ok(submitted) => submitted,
+        Ok(ForgeSubmit::Submitted(submitted)) => submitted,
+        Ok(ForgeSubmit::AwaitingApproval { ask_id }) => {
+            return Ok(json!(forge_receipt::awaiting_approval(ask_id)));
+        }
+        Ok(ForgeSubmit::Declined { ask_id }) => {
+            return Ok(json!(forge_receipt::declined(ask_id)));
+        }
         Err(e) => return Ok(json!(forge_receipt::error(e))),
     };
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
@@ -1005,6 +1061,19 @@ fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), Rpc
     }
     if payload.idem_key.trim().is_empty() {
         return Err(malformed_forge_payload());
+    }
+    if let Some(request) = payload.approval.as_ref() {
+        // Replay by key alone would let an approved call stand for another payload.
+        if payload.replay_any_version {
+            return Err(RpcError::invalid_params(
+                "an approval-gated forge action cannot replay across payloads",
+            ));
+        }
+        crate::ask::validate_questions(vec![crate::event::AskQuestion {
+            title: request.title.clone(),
+            options: Vec::new(),
+        }])
+        .map_err(|e| RpcError::invalid_params(format!("forge approval title: {e}")))?;
     }
     if let Some(event) = payload.event_spec.as_ref() {
         if !SUPPORTED_FORGE_EVENT_KINDS.contains(&event.event_kind.as_str()) {
@@ -1544,6 +1613,7 @@ mod tests {
                 probe: None,
                 parked: true,
                 replay_any_version: false,
+                approval: None,
             }
         }
 

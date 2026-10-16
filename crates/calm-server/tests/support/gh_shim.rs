@@ -255,6 +255,14 @@ case "$area:$verb" in
         case "$*" in *'Accept: application/vnd.github.diff'*) ;; *) exit 2 ;; esac
         exec git --git-dir "$repo" diff "${endpoint##*/compare/}"
         ;;
+      */actions/runs/*/rerun-failed-jobs)
+        # GitHub answers the rerun request 201 with no body. Every request is counted; a test may
+        # lose its result by killing the whole forge action once the request is counted.
+        case "$*" in *'-X POST'*) ;; *) exit 2 ;; esac
+        inc_counter "$state/rerun_failed_count"
+        if [ -f "$state/actions/rerun_kill" ]; then kill -KILL 0; fi
+        exit 0
+        ;;
     esac
     fixture=$(printf '%s' "$endpoint" | tr '/' '_')
     [ -f "$state/actions/$fixture" ] || exit 1

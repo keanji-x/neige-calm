@@ -1,7 +1,7 @@
 //! #2087 B5: an issue comment submitted before the built-in rename replays after it.
 use super::*;
 use crate::builtin_plugins::dev::git_actions::lower_for_caller;
-use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action_with_key};
+use crate::mcp_server::transport::{ForgeSubmit, PluginForgePayload, submit_forge_action_with_key};
 use crate::plugin_host::forge_caller::ForgeCallerScope;
 use sha2::{Digest, Sha256};
 
@@ -56,6 +56,7 @@ async fn submit(
     submit_forge_action_with_key(
         &fx.runtime,
         fx.results.path(),
+        None,
         plugin_id,
         fx.track_id.clone(),
         CARD.into(),
@@ -65,6 +66,7 @@ async fn submit(
     )
     .await
     .unwrap()
+    .and_then(ForgeSubmit::submitted)
     .map(|submitted| submitted.op_id)
 }
 

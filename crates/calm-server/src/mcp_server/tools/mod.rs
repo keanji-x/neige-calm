@@ -213,7 +213,10 @@ mod tests {
         // Area Admin S2 replaces shape-based add guidance with the grant requirement and
         // grant_admin recovery; its description is four bytes smaller, so lower the cap.
         // S3: optional close target, Admin refusal guidance and area-list provenance.
-        const SURFACE_MAX_BYTES: usize = 31_164;
+        // #2617 item E: `plugin_gitforge_gh_run_rerun` (description 800, schema 363) has no tool
+        // to replace; the user's approval is kernel-owned, so the Planner needs no separate ask.
+        // The cap is the measured 32,320.
+        const SURFACE_MAX_BYTES: usize = 32_320;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
@@ -586,7 +589,7 @@ mod tests {
             "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
             "commit", "tag", "rename", "add", "set", "rm", "capture", "ask", "send", "input",
             "control", "open", "close", "cancel", "publish", "accept", "reject", "regate", "gate",
-            "done", "fail", "report", "gc", "vacuum",
+            "rerun", "done", "fail", "report", "gc", "vacuum",
         ];
         let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
         let outside: Vec<String> = kernel_tool_names()

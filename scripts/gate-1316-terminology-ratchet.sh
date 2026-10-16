@@ -52,6 +52,9 @@
 # #2617 bounded exception: spec/crates 500 -> 501 comes solely from the CI evidence lowerer's
 # import of the existing `event_spec` payload builder, aliased `event_contract` as the issue
 # lowerer does; no new domain term.
+# #2617 bounded exception: spec/crates 501 -> 503 comes solely from two struct literals of the
+# existing `event_spec` payload field (the event-free rerun payload and the approval gate's test
+# payload); no new domain term.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

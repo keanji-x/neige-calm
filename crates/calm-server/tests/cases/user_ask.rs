@@ -660,3 +660,6 @@ mod reopen;
 
 #[path = "user_ask/admin.rs"]
 mod admin;
+
+#[path = "user_ask/forge_approval.rs"]
+mod forge_approval;

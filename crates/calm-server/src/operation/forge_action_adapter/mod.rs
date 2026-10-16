@@ -32,6 +32,10 @@ use super::{
 
 pub const FORGE_ACTION_KIND: &str = "forge-action";
 
+/// The `last_error_class` values of a forge action that ran and did not land: it exited non-zero,
+/// or its probe answered not landed. Any other failure leaves whether it landed unknown.
+pub(crate) const NOT_LANDED_ERROR_CLASSES: &[&str] = &["action-failed", "action-not-landed"];
+
 /// validate_payload rejects any other event_kind BEFORE the irreversible action can run, so a typo'd kind can never execute the side effect and then fail to record its event.
 pub use calm_types::forge_action::SUPPORTED_FORGE_EVENT_KINDS;
 

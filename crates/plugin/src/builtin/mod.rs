@@ -37,7 +37,10 @@ static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
             ),
             manifest: Manifest::parse(gitforge::MANIFEST).expect("compiled manifest"),
             optional: true,
-            tools: vec![gitforge::publish::descriptor()],
+            tools: vec![
+                gitforge::publish::descriptor(),
+                gitforge::rerun::descriptor(),
+            ],
         },
         Definition {
             binding: Binding::Calendar,

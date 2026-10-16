@@ -54,6 +54,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_track_rename",
     // Publishing the track's verified commit is a Planner action.
     "plugin_gitforge_publish",
+    // Rerunning failed CI jobs, once the user approves it, is a Planner action (#2617).
+    "plugin_gitforge_gh_run_rerun",
     // Closing the track is a Planner action; only the user reopens.
     "neige_track_close",
     // Opening a top-level Track from a recipe is a Planner action.
@@ -191,7 +193,7 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
         let error = resp
             .get("error")
             .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if *tool == "plugin_gitforge_publish" {
+        if tool.starts_with("plugin_gitforge_") {
             assert_eq!(
                 error["code"].as_i64(),
                 Some(-32601),

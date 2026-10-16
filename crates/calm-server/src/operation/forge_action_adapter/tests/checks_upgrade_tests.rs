@@ -1,6 +1,6 @@
 use super::*;
 use crate::builtin_plugins::dev::git_actions::lower;
-use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action_with_key};
+use crate::mcp_server::transport::{ForgeSubmit, PluginForgePayload, submit_forge_action_with_key};
 use calm_types::forge_action::semantic_payload_hash;
 
 /// Waits for `release`, then prints `output`: completion is deterministic without a network
@@ -91,6 +91,7 @@ async fn submit_as(
     submit_forge_action_with_key(
         &fx.runtime,
         fx.results.path(),
+        None,
         plugin,
         track.into(),
         card.into(),
@@ -100,6 +101,7 @@ async fn submit_as(
     )
     .await
     .unwrap()
+    .and_then(ForgeSubmit::submitted)
     .map(|submitted| submitted.op_id)
 }
 

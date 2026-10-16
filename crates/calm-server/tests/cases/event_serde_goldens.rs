@@ -11,7 +11,7 @@ use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::event::{AskAnswer, AskDelivery, AskQuestion, TaskContextRef};
+use calm_types::event::{AskAction, AskAnswer, AskDelivery, AskQuestion, TaskContextRef};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use calm_types::verify_target::{
@@ -938,6 +938,26 @@ golden_test!(
 );
 
 golden_test!(
+    ask_requested_forge_action,
+    "ask.requested.forge_action.json",
+    Event::AskRequested {
+        action: Some(AskAction::ForgeAction {
+            idempotency_key:
+                "gitforge:track-01:card-01:gh.run.rerun_failed:v1:[\"o/r\",100,1,\"r-1\"]".into(),
+            payload_hash: "5d41402abc4b2a76b9719d911017c592".into(),
+        }),
+        track_id: TrackId::from("track-01"),
+        questions: vec![AskQuestion {
+            title: "Re-run failed jobs of run 100 attempt 1, o/r PR #7 head abc? Reason: flaky"
+                .into(),
+            options: vec!["Approve".into(), "Decline".into()],
+        }],
+        delivery: AskDelivery::Wake,
+        source_item_id: None,
+    }
+);
+
+golden_test!(
     ask_answered,
     "ask.answered.json",
     Event::AskAnswered {
@@ -1468,7 +1488,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 91,
+        files, 92,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {

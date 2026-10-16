@@ -10,7 +10,7 @@ use crate::state::WriteContext;
 use crate::track_area_cache::TrackAreaCache;
 
 const ID: &str = "gitforge";
-const NATIVE: [&str; 1] = ["plugin_gitforge_publish"];
+const NATIVE: [&str; 2] = ["plugin_gitforge_gh_run_rerun", "plugin_gitforge_publish"];
 struct Fixture {
     repo: Arc<SqlxRepo>,
     host: Arc<PluginHost>,
@@ -422,6 +422,12 @@ const NATIVE_TOOLS: &[(&str, &str, &str, &[CardRole])] = &[
         "set",
         "plugin_calendar_set",
         PLANNER_AND_ASSISTANT,
+    ),
+    (
+        "gitforge",
+        plugin::builtin::gitforge::rerun::RERUN_FAILED,
+        "plugin_gitforge_gh_run_rerun",
+        &[CardRole::Planner],
     ),
     (
         "gitforge",

@@ -2260,6 +2260,60 @@
     ]
   },
   {
+    "name": "plugin_gitforge_gh_run_rerun",
+    "description_sha256": "de1d4c1bc7f217a8683ad8d2466c84d77f5236dcf2493cda4f48042eec117961",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "head_sha": {
+          "type": "string"
+        },
+        "idem": {
+          "type": "string"
+        },
+        "pr": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "run_attempt": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "run_id": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "repo",
+        "pr",
+        "head_sha",
+        "run_id",
+        "run_attempt",
+        "reason",
+        "idem"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "plugin_gitforge_publish",
     "description_sha256": "99ea201ee839d77c7f48bd349d6c1fa3449ef0881b5b4c91652131709e904dff",
     "input_schema": {

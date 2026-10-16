@@ -28,21 +28,50 @@ pub struct Candidate {
     pub status: String,
     pub done: bool,
 }
-pub enum PublishOutcome {
-    Succeeded { op_id: String, event: Value },
-    Failed { op_id: String, reason: String },
+/// What the kernel did with one native forge action.
+pub enum ExecuteOutcome {
+    Succeeded {
+        op_id: String,
+        event: Value,
+    },
+    /// The action ran and did not land: it exited non-zero (named in `reason`) or its probe
+    /// reports it did not land.
+    Failed {
+        op_id: String,
+        reason: String,
+    },
+    /// Whether the action took effect is unknown: its process died or its result was lost, and
+    /// no probe answered.
+    Unknown {
+        op_id: String,
+        reason: String,
+    },
+    /// The kernel refused the submit: the idempotency key already holds another payload.
+    KeyReused {
+        reason: String,
+    },
+    /// An approval-gated action waits for the user's answer to the ask `ask_id`; nothing ran.
+    AwaitingApproval {
+        ask_id: i64,
+    },
+    /// The user declined the approval-gated action in ask `ask_id`; it never runs.
+    Declined {
+        ask_id: i64,
+    },
 }
 #[async_trait]
 pub trait Services: Send + Sync {
     async fn destination(&self, card_id: &str) -> Result<(String, Destination), RpcError>;
     async fn candidates(&self, track_id: &str) -> Result<Vec<Candidate>, RpcError>;
+    /// The track of the Planner card `card_id` and its own working directory.
+    async fn planner_cwd(&self, card_id: &str) -> Result<(String, PathBuf), RpcError>;
     async fn execute(
         &self,
         track_id: &str,
         card_id: &str,
         worktree: PathBuf,
         payload: PluginForgePayload,
-    ) -> Result<PublishOutcome, RpcError>;
+    ) -> Result<ExecuteOutcome, RpcError>;
 }
 pub fn descriptor() -> NativeToolSpec {
     NativeToolSpec {
@@ -207,8 +236,21 @@ pub async fn call<S: Services>(
         )
         .await?;
     let (op_id, event) = match result {
-        PublishOutcome::Succeeded { op_id, event } => (op_id, event),
-        PublishOutcome::Failed { op_id, reason } => return Err(publish_failed(&op_id, &reason)),
+        ExecuteOutcome::Succeeded { op_id, event } => (op_id, event),
+        ExecuteOutcome::Failed { op_id, reason } | ExecuteOutcome::Unknown { op_id, reason } => {
+            return Err(publish_failed(&op_id, &reason));
+        }
+        ExecuteOutcome::KeyReused { reason } => {
+            return Err(refused(format!(
+                "publish-key-reused: {reason}; call again with a new idempotency_key"
+            )));
+        }
+        // A publish carries no approval request.
+        ExecuteOutcome::AwaitingApproval { ask_id } | ExecuteOutcome::Declined { ask_id } => {
+            return Err(RpcError::internal(format!(
+                "publish is not approval-gated, yet ask {ask_id} holds it"
+            )));
+        }
     };
     Ok(json!({
         "ok": true,

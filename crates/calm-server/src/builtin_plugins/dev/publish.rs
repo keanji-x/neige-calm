@@ -3,19 +3,19 @@ use super::PLUGIN_ID as GIT_FORGE_PLUGIN_ID;
 use crate::mcp_server::{
     framing::RpcError,
     registry::{AppContext, ToolDescriptor, ToolRegistry},
-    transport::{PluginForgePayload, submit_forge_action_with_key},
+    transport::{ApprovalAsks, ForgeSubmit, PluginForgePayload, submit_forge_action_with_key},
 };
 use crate::operation::workspace_lease::upstream::track_remote;
 use crate::{
     git_candidate::candidate::{TrackCandidate, track_candidates},
     model::{TaskStatus, Track, new_id},
-    operation::OperationOutcome,
+    operation::{OperationOutcome, forge_action_adapter::NOT_LANDED_ERROR_CLASSES},
     workspace_materialize::isolated_git_command,
 };
 use async_trait::async_trait;
 #[cfg(test)]
 pub(crate) use plugin::builtin::gitforge::publish::PUBLISH;
-use plugin::builtin::gitforge::publish::{self, Candidate, Destination, PublishOutcome, Services};
+use plugin::builtin::gitforge::publish::{self, Candidate, Destination, ExecuteOutcome, Services};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -55,21 +55,43 @@ impl Services for AppContext {
             })
             .collect())
     }
+    async fn planner_cwd(&self, card_id: &str) -> Result<(String, PathBuf), RpcError> {
+        let card = self
+            .repo
+            .card_get(card_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| internal(format!("bound card {card_id} not found")))?;
+        let track = self
+            .repo
+            .track_get(card.track_id.as_str())
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| internal(format!("track {} not found", card.track_id.as_str())))?;
+        let cwd = PathBuf::from(track.workspace.agent_cwd());
+        if !cwd.is_absolute() {
+            return Err(RpcError::invalid_params(
+                "forge action requires an absolute track cwd",
+            ));
+        }
+        Ok((track.id.to_string(), cwd))
+    }
     async fn execute(
         &self,
         track_id: &str,
         card_id: &str,
         worktree: PathBuf,
         payload: PluginForgePayload,
-    ) -> Result<PublishOutcome, RpcError> {
+    ) -> Result<ExecuteOutcome, RpcError> {
         let runtime = self
             .operation_runtime
             .get()
             .cloned()
             .ok_or_else(|| internal("operation runtime not bound"))?;
-        let submitted = submit_forge_action_with_key(
+        let submitted = match submit_forge_action_with_key(
             &runtime,
             &self.gate_logs_dir,
+            Some(&ApprovalAsks::of(self)),
             GIT_FORGE_PLUGIN_ID,
             track_id.to_string(),
             card_id.to_string(),
@@ -78,24 +100,41 @@ impl Services for AppContext {
             new_id(),
         )
         .await?
-        .map_err(|error| {
-            RpcError::conflict(format!(
-                "refused: publish-key-reused: {error}; call again with a new idempotency_key"
-            ))
-        })?;
+        {
+            Ok(ForgeSubmit::Submitted(submitted)) => submitted,
+            Ok(ForgeSubmit::AwaitingApproval { ask_id }) => {
+                return Ok(ExecuteOutcome::AwaitingApproval { ask_id });
+            }
+            Ok(ForgeSubmit::Declined { ask_id }) => return Ok(ExecuteOutcome::Declined { ask_id }),
+            Err(reason) => return Ok(ExecuteOutcome::KeyReused { reason }),
+        };
         let result = runtime.wait(&submitted.op_id).await.map_err(internal)?;
         let op_id = result.op_id;
         Ok(match result.outcome {
             OperationOutcome::Succeeded { result }
-            | OperationOutcome::SucceededViaCollision { result, .. } => PublishOutcome::Succeeded {
+            | OperationOutcome::SucceededViaCollision { result, .. } => ExecuteOutcome::Succeeded {
                 op_id,
                 event: result["event"].clone(),
             },
-            OperationOutcome::Failed { last_error, .. } => PublishOutcome::Failed {
+            // The action exited non-zero, or its probe answered that it did not land.
+            OperationOutcome::Failed {
+                last_error,
+                last_error_class,
+                ..
+            } if last_error_class
+                .as_deref()
+                .is_some_and(|class| NOT_LANDED_ERROR_CLASSES.contains(&class)) =>
+            {
+                ExecuteOutcome::Failed {
+                    op_id,
+                    reason: last_error,
+                }
+            }
+            OperationOutcome::Failed { last_error, .. } => ExecuteOutcome::Unknown {
                 op_id,
                 reason: last_error,
             },
-            OperationOutcome::Stuck { reason, .. } => PublishOutcome::Failed { op_id, reason },
+            OperationOutcome::Stuck { reason, .. } => ExecuteOutcome::Unknown { op_id, reason },
         })
     }
 }

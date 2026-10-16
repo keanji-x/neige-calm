@@ -421,7 +421,7 @@ fn event_spec<const N: usize>(
     }
 }
 
-fn required_string(args: &Value, key: &str) -> Result<String, String> {
+pub(super) fn required_string(args: &Value, key: &str) -> Result<String, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "tool arguments must be an object".to_string())?;
@@ -436,7 +436,7 @@ fn required_string(args: &Value, key: &str) -> Result<String, String> {
 }
 
 /// A full commit id (SHA-1 or SHA-256); the value is placed in an API path.
-fn required_commit_sha(args: &Value, key: &str) -> Result<String, String> {
+pub(super) fn required_commit_sha(args: &Value, key: &str) -> Result<String, String> {
     let value = required_string(args, key)?;
     if !matches!(value.len(), 40 | 64) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!("{key} must be a full commit SHA"));
@@ -444,7 +444,7 @@ fn required_commit_sha(args: &Value, key: &str) -> Result<String, String> {
     Ok(value)
 }
 
-fn required_u64(args: &Value, key: &str) -> Result<u64, String> {
+pub(super) fn required_u64(args: &Value, key: &str) -> Result<u64, String> {
     let object = args
         .as_object()
         .ok_or_else(|| "tool arguments must be an object".to_string())?;

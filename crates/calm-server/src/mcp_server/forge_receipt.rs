@@ -112,6 +112,29 @@ pub(crate) fn outcome(result: OperationResult) -> ToolResult {
     }
 }
 
+/// An approval-gated forge action held at the user's open ask `ask_id`: nothing ran. The answer
+/// wakes the Planner, which repeats the identical call.
+pub(crate) fn awaiting_approval(ask_id: i64) -> ToolResult {
+    ToolResult::structured(json!({
+        "status": "awaiting_approval",
+        "ask_id": ask_id,
+        "message": "Nothing ran: the user is asked to approve this exact call. When the answer \
+                    wakes you, repeat the identical call; do not ask separately.",
+    }))
+}
+
+/// An approval-gated forge action the user declined in ask `ask_id`: it never runs.
+pub(crate) fn declined(ask_id: i64) -> ToolResult {
+    let message = format!(
+        "the user declined this call in ask {ask_id}; nothing ran. A new request needs a new \
+         idempotency key and a new approval."
+    );
+    ToolResult::structured_error(
+        json!({ "error": message, "status": "declined", "ask_id": ask_id }),
+        message,
+    )
+}
+
 /// A forge action that never reached a recorded outcome, such as a refused submit.
 pub(crate) fn error(message: String) -> ToolResult {
     ToolResult::structured_error(json!({ "error": message }), message)
