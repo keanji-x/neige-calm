@@ -95,11 +95,11 @@
 
 ## 4. 可复核基线与测量口径
 
-本次执行的源码测量（UTF-8；字符为 Python Unicode code points，非字形数）：
+设计基准 `3866cff` 的历史源码测量（非修复后 head；UTF-8，字符为 Unicode code points）：
 
 | 源码片段 | 字节 | 字符 | SHA-256 前 12 位 |
 |---|---:|---:|---|
-| 当前 dev.md 全文 | 12986 | 11369 | a0d0d5ecf2ca |
+| 基准 dev.md 全文 | 12986 | 11369 | a0d0d5ecf2ca |
 | 其中 input-form 注释块 | 1169 | 1169 | — |
 | planner.md 原文 | 6591 | 6591 | b21d6bcfa8c1 |
 | tool-discovery.md | 576 | 576 | f4c8d27fd7be |
@@ -151,7 +151,7 @@ wire 对照附着 A/B/C 各自实际改变的生产入口，复用现有 fake pr
 
 ### A：在模板来源删重复教学，完整保留快照与表单
 
-**owner / 最小文件面。** 模板 owner 修改 `crates/calm-server/templates/builtin/dev.md`，从报告教学删长正反例，保留四节结构、状态改写、证据引用与篇幅规则；从技术工作流删已由 gitforge instructions 完整承载的 issue 工具参数/返回字段/刷新重试、CI evidence 与 after_rerun 操作教学。插件 owner 的 `crates/plugin/src/builtin/gitforge/instructions.md` 作为这些技术细节的唯一来源，本切片无需扩写它。模板仍保留工作方法、仓库核对、可选 issue/无 issue 边界、验证职责、审查及 merge_policy/按 head 审批的全部必要语义；不把方法策略移给插件。
+**owner / 最小文件面。** 模板 owner 修改 `crates/calm-server/templates/builtin/dev.md`，完整保留共享报告契约原文（含正反例、四节结构、状态改写、证据引用与篇幅规则）；只从其后的技术工作流删已由 gitforge instructions 完整承载的 issue 工具参数/返回字段/刷新重试、CI evidence 与 after_rerun 操作教学。插件 owner 的 `crates/plugin/src/builtin/gitforge/instructions.md` 作为这些技术细节的唯一来源，本切片无需扩写它。模板仍保留工作方法、仓库核对、可选 issue/无 issue 边界、验证职责、审查及 merge_policy/按 head 审批的全部必要语义；不把方法策略移给插件。
 
 **注入前提与负例。** `planner_instructions` 对 compiled builtin catalog 先按 `plugin_documents_track`（track.plugin_scope 匹配，或 template_id 属 manifest.templates）附说明，此分支不依赖 enabled；[dev component](../../crates/calm-server/src/builtin_plugins/dev/mod.rs) 指向同一 gitforge 文本。enabled/scope/report-ref 过滤和 4096 cap 属后续 stored-manifest 分支，不能用它证明必达，也不能仅凭模板标题推断绑定。开发模板绑定路径即使插件禁用仍有技术文档，**工具仍不可用，不能据说明执行**。无绑定/其他模板/自定义快照不做运行时替换；若某来源不能证明对应说明必达，则保留该来源技术文字，不增加 fallback 或授权。
 
@@ -179,7 +179,7 @@ wire 对照附着 A/B/C 各自实际改变的生产入口，复用现有 fake pr
 
 **owner / 最小文件面。** Planner/worker 提示 owner 最小修改 `crates/calm-server/prompts/planner.md` 与 `crates/calm-server/prompts/worker/head.md` 的交接规则；使用现有 Report 概要/决策、任务 context 落实 §3.1，不新增 schema、自动摘要选择、持久化账本、router 或发送缓存。既有 `worker-summary-v1`、contract conclusion 与 exact receipt 继续使用，不把它们当自动恢复器。
 
-摘要只保留当前目标及覆盖关系、约束/未决、下一步、产出/当前验证状态和精确证据引用；普通日志与长推理按需读。提示增加无条件规则：恢复或依赖摘要行动前检查来源与缺口、授权引用和当前 head，读不到标未知并停止依赖缺失事实的动作；不依赖模型收到 compact 通知。compact outcome 是 runtime fact，不必然是 transcript。compact 后内容保留仍未知，**不启用新的省略/只发一次**；现有 ACP 首提交策略也不证明保留，属于未解决限制。
+Planner 摘要保留当前目标及覆盖关系、约束/未决、下一步、产出/当前验证状态和精确证据引用；普通日志与长推理按需读。Planner 恢复或依赖摘要行动前检查来源与缺口、授权引用和当前 head，读不到标未知并停止依赖缺失事实的动作。Worker 只读取冻结任务，交接保留目标变化、约束、未决和证据引用，resume/rewind 后依赖前核查来源缺口；摘要不授权。完整审批适用范围和报告责任归 Planner，结果仍走原协议；不依赖模型收到 compact 通知。compact outcome 是 runtime fact，不必然是 transcript。compact 后内容保留仍未知，**不启用新的省略/只发一次**；现有 ACP 首提交策略也不证明保留，属于未解决限制。
 
 **聚焦测试与正负验收。** 在现有 prompt 测试观察规则实际进入 `planner_instructions`/worker `task_prompt`，在 receipt/result owner 测试观察 exact attempt/event/unavailable，而非只测模板源码。用户先 A 后收窄 A 并追加 B 的交接样本保留 B 及覆盖关系；head H 审批引用不授权 H2；旧 gate 不验新树；rewind 后 Report 中被移除 turn 的摘要需重验来源；未知提交不重发。已有入口为 `-p calm-types` 的 `observation::receipt::tests`、`-p calm-server` 的 `harness::run_loop::result_receipt_tests`、`harness::run_loop::compact_tests`，以及 `-p provider dispatched_prompt_disconnect_is_unknown_and_never_resent`，各自只证实其实际层次，不把 compact 测试当语义保留保证。
 
@@ -213,85 +213,146 @@ wire 对照附着 A/B/C 各自实际改变的生产入口，复用现有 fake pr
 交付预览：[docs/architecture/context-delivery.md](context-delivery.md)。未取得的其他会话历史、宿主目录来源及 provider 保留语义仍未知。
 
 
-## 7. A/B/C 最小实施记录
+## 7. PR2664 修复与实测
 
-基准 `3866cffafe8b328f14ba9b45ddb5585275070133`。A 只改新 dev 模板来源，
-保留方法、repo 核对、issue/无 issue 边界、验证与评审职责、rerun 工具逐次审批
-（不用 gh、不另 ask）、同参取 op 回执及按 head 的 merge 审批。gitforge 原说明不改；
-未由其完整承载的 PR diff 路径和每次 CI wait 刷新要求仍留模板。
-完整 input-form 与基准逐字节相等（1169 bytes）。B 只改有 grant 的每轮教学。
-C 合并替换现有状态/交接/证据句，使用 Report/task context；未新增自动摘要或省略。
+基准为 `3866cffafe8b328f14ba9b45ddb5585275070133`，修复起点为
+`da2af4b388d54cf43308e7189a991ef140333aef`。本节替代旧 head 的成本/验证记录；
+旧 `/tmp/context-after` 数字不是当前结果。整体仍为 L2：涉及提示中的审批与恢复契约，
+正式双路复审由 Planner 安排，worker 不安排评审。
 
-新增观测附着原 owner：legacy 测试用仅在自定义表单注释里的限制及字面占位符，
-解析实际 `Selected Template` JSON 后全量比较；既有 builtin dev 测试观察真实
-`planner_instructions` 的快照与 Bound Input。run-loop Fixture 在同一 native session
-驱动 start→complete，将 `managed_track_identities.report_read_scope` 从 workspace
-改成 area，再走真实下一轮，确认不再带肯定教学。handler 测试先成功 ls，再以原
-identity 调用四工具确认撤权拒绝；这是 fixture 更新，不是生产撤权 API。
-没有改权限或恢复机制，普通文本优化不做 mutation。
+修复恢复 Planner 的 fork 归属原句（existing report tasks 属于当前工作，保留身份和
+approvals）及字面结果/gate 路由。完整审批 ask_id/binding、action/head、撤销、
+resume/rewind 来源缺口、未知结果不重发、Report 及验收责任仍由 Planner 承担。
+删去非运行时契约备注 `No new omission/automatic summary.`；没有引入任何自动摘要
+或省略机制。workspace 恢复仅用户请求需要其他 Area 报告时使用工具的触发条件，
+仍逐轮 live grant，分页、水位、失败非无活动、来源引用及只读边界不变。
 
-C 的角色规则通过 `SeededCardRole::WorkerCodex/WorkerClaude` 的生产 renderer 观察，
-不是用 task_prompt 冒充 system prompt；真实 adapter 分别在
-`operation/codex_adapter/mod.rs` 的 thread/start 与
-`operation/claude_adapter/mod.rs` 的 `--append-system-prompt` 使用该角色提示。
-任务 context 仍由既有 task_prompt 冻结传递。人工核对的约束含义：A 被收窄并追加 B 时
-B 仍属 uncovered goal；H 的原审批引用不授权 H2；旧 gate 不验证新 head；rewind
-移除来源轮时即使 Report 留存也须核验；未知提交不据摘要重发。这是提示规则核对，
-不声称字符串或 fake provider 证明模型理解。
+第三个同类遗漏来自共享报告前缀。dev 现完整保留默认报告的共享维护契约原文，
+不改其他模板/默认报告；A 只删其后由必达 Development capability 承载的 issue/CI
+技术重复。表单与基准逐字节相等（1169 bytes）；旧/自定义快照全文及 Bound Input
+不变，不回填旧卡。新 dev 正文被用户复制进无模板绑定 recipe 时，不保证注入对应
+插件说明；这是既有设计排除的自定义来源，不新增 fallback。
 
-目录零增长的证据是 diff 范围及未改的共同路径，不是新 provider 矩阵平台：
-`mcp_server/tools/workspace_reports.rs` 的四份 description/schema/roles/listed_for，
-`prompts/tools/neige_workspace_*.md`、`mcp_server/transport/catalog.rs` 的 SessionCatalog
-及 `harness/backend_metadata.rs` 均与基准字节相同。Codex discovery/describe、Claude
-MCP 与 ACP session listing 消费这些共同来源；无 grant 的目录/description/schema
-增量为 0。`managed_track.rs`、`TemplateContext`、planner startup、两个 worker adapter、
-provider、retry/admission 源码也未改。无 grant Planner 仍有 C 的固定启动成本，
-不能把“目录零增长”写成所有无 grant 会话总成本零增长。
+Worker step 1 收窄为执行者交接：读冻结 goal/context/acceptance，保留目标变化、约束、
+未决和证据引用；依赖摘要前（含 resume/rewind）核查来源缺口，补读或停止依赖动作；
+摘要不授权。只合并冗余措辞，保留不提交/不切分支、Planner 安排评审、一次结果协议、
+commit_message 继承与 gate commit 区分、report_received 非交付/验收、正式消息权限
+及结束后停手等核心规则，不把 Planner 的完整审批/head/Report 清单复制给 Worker。
 
-验证职责不变：worker 跑聚焦测试、实际 golden 再生和格式；冻结 gate 跑文本、合同、
-Rust quick 及 lib/track_suite 聚焦重放；CI 拥有广泛 suite。新增用例只改原 owning module，
-没有永久大小 pin、测试名清单或 provider 捕获平台；原 CI job 每 workflow 一次，
-gate 各一次聚焦重放。临时捕获代码不交付。
+扫查沿提示的 include/renderer、TemplateRoster/shared report、实际 startup adapter、
+managed_track/run-loop、结果读取路由及既有断言/fixtures/goldens 展开。
+除两项原回归外，确认并修复 `templates.rs` 的共享前缀测试；另核对
+`planner_messages.rs` 的正式消息原句、`planner_card.rs` 的协议/角色拼接/预算断言。
+技术教学删除逐项对照 `crates/plugin/src/builtin/gitforge/instructions.md`；repo/issue
+边界、Unknown/同参回执、rerun 禁 gh/逐次批准、不另 ask、merge_policy/精确 head
+仍在原 owner。没有改 renderer、TemplateContext、task_prompt、adapter、授权、schema、
+catalog、provider 或恢复实现；没有新永久测试名清单、大小 pin 或缓存。
 
+### 本次入口成本
 
-实测使用原 builtin Fixture 的 `planner_instructions`（绑定 issue 输入、启用的 dev
-及 stored plugin 组装、完整 Selected Template pretty JSON），只把随机 track id
-等长规范化为 32 位；实际每轮取 run-loop Fixture 的 `started_turns`。worker 取两个
-SeededCardRole 的生产 renderer。baseline/after 临时捕获位于本次执行的 `/tmp`，
-测量写入已移除；成本数字不是永久断言。UTF-8/Unicode code point 如下：
+新捕获在 `/tmp/context-final/`；基准使用 `/tmp/context-before/` 的原 renderer 捕获。
+startup 来自 builtin Fixture 的真实 `planner_instructions`：启用 dev、绑定 issue 输入、
+stored plugin、完整 Selected Template pretty JSON；随机 track id 仅作等长规范化。
+有 grant 轮来自真实 run-loop Fixture 的 `started_turns`；Worker 来自两个生产角色
+renderer（golden 测试使用同一模板），track id 统一为生产形状 32 bytes。
+临时捕获写入代码已删除；source bytes 不等于组装后的 wire bytes。
 
-| Neige 组装边界 | before bytes / chars | after bytes / chars |
+| Neige 组装边界 | before bytes / chars | 本次 after bytes / chars |
 |---|---:|---:|
-| 新 dev 组合启动（含 C、插件与 JSON wrapper） | 25105 / 23488 | 22946 / 22082 |
-| WorkerCodex 角色提示 | 5301 / 5295 | 5779 / 5775 |
-| WorkerClaude 角色提示 | 4945 / 4939 | 5423 / 5419 |
-| 有 grant Planner 实际一轮（含预算与同一用户输入） | 1692 / 1692 | 1274 / 1274 |
-| 有 grant Assistant 实际一轮 | 1464 / 1464 | 1046 / 1046 |
+| 新 dev 组合启动（含 Planner、插件与 JSON wrapper） | 25105 / 23488 | 24406 / 22789 |
+| WorkerCodex 角色提示 | 5301 / 5295 | 5271 / 5269 |
+| WorkerClaude 角色提示 | 4945 / 4939 | 4915 / 4913 |
+| 有 grant Planner 实际一轮（同预算/用户输入） | 1692 / 1692 | 1344 / 1344 |
+| 有 grant Assistant 实际一轮 | 1464 / 1464 | 1116 / 1116 |
 
-源文 dev 12986→10866 bytes；workspace 1426→1008；Planner 6591→6582；worker
-head 3378→3856。C 的 worker 固定成本 +478 bytes / +480 chars 已计入，Planner
-则因合并重叠句净减 9 bytes。没有新读取需求。
+源码 dev 12986→12288、Planner 6591→6600、workspace 1426→1078、worker head
+3378→3348 bytes。Worker 两角色均较基准少 30 bytes；没有为凑长度删核心协议。
+startup 的 Selected Template body 实测 12593→11895 bytes，Bound Input 相等。
 
-同等读取样本计入四工具生产 `into_mcp_value` 的 JSON `tools` wrapper（1262），
-`neige_workspace_ls` 的空参数 request（44），真实 handler 的完整 `ToolResult`
-JSON（空列表，含 content/structuredContent/isError，204）；公共读取成本 1510 bytes/chars。
-这些工具源文/serializer/查询未改，响应内容取相同 fixture 状态；不是测 provider 的
-搜索排序或额外装载策略。以「新 dev 启动 + 一个 Codex worker + 一轮 Planner +
-该读取序列」为固定样本，T_before=33608 bytes/31985 chars，T_after=31509/30641，
-净减 2099 bytes/1344 chars。相同更多读取响应、RPC 外层、冻结任务 context 和未改宿主
-提示的公共量须同时加回两侧，不把它们算为 0；本样本差值不受该公共量影响。
-每增加同形有 grant 普通轮再少 418 bytes；这不是 provider 重计历史或计费公式。
-旧/自定义快照 body 保真，不能声称既有 dev 卡自动得到 A 的启动节省。
+相同读取序列重新捕获四工具生产 `into_mcp_value` 的 JSON tools wrapper（1262）、
+空参数 ls request（44）和真实 handler 的完整空列表 ToolResult（204），合计仍为
+1510 bytes/chars；工具列表顺序可变，各 descriptor 内容不变。没有新增读取需求。
+固定「新 dev 启动 + 一个 Codex worker + 一轮有 grant Planner + 上述读取」样本：
+33608/31985→32531/30912 bytes/chars，少 1077/1073。这个样本不是普通 dev track：
+**普通 dev 无 workspace grant**，不能获得每轮 −348。普通新 dev 加 N 个 Worker
+attempt 的差值为 −699−30N bytes；旧/自定义快照无 A 节省，Planner 固定 +9，
+相同 worker 的差值为 +9−30N（一个 attempt 少 21 bytes；无 worker 仍多 9）。Worker 按 attempt 累计，
+不按 track 只计一次。每增加同形有 grant 普通轮才另少 348 bytes。
 
-实际入口先以 `cargo metadata --locked --no-deps --format-version 1` 核对 target；
-用 `cargo nextest list` 和声明 gate 的 lib filter 确认选中 7 项；
-同包 `--test track_suite template_startup` 选中 5 项。基线同 filter 的
-`nextest run --no-tests=fail --test-threads 8` 全绿（lib 另含一次临时捕获，共 8 项）。
-golden 经真实 `REGEN_PROMPT_GOLDENS=1 REGEN_PLANNER_PROMPT_GOLDEN=1` 运行
-`the_worker_prompts_match_their_reviewed_goldens` 与
-`shipped_dev_rendered_prompt_matches_full_golden` 再生，按约定故意 panic，已审完整 diff；
-基础 dev golden 不作为快照证据。最终不带再生 flag 的 lib 聚焦 + 角色 golden/预算
-共 10 项全绿；track_suite template_startup 5 项全绿。冻结 gate 结果见本 attempt 的
-`runs/3f68c70ec41d4bdcb78a7889e556f60b:context-implement-v1.json` 与其 gate log。
-无浏览器行为修改，未运行浏览器、广泛 suite 或真实 provider。未配置 tokenizer，
-不报告 tokens、模型保留、provider 内最终请求或费用收益。
+这些是 Neige 组装入口与固定读取样本成本，未改 RPC 外层、冻结任务 context、宿主
+提示和相同更多响应须两侧同时加回。目录/schema/listing 源码未改，所以无 grant
+目录增长为 0；不代表所有无 grant 会话总成本都降低。未运行真实 provider，未配置
+tokenizer，不报告 tokens、费用、provider 最终请求、缓存或 compact 后模型保留收益。
+Codex 已启动 thread 不追溯替换；Claude 下次 open_session 重组；ACP 首提交后保留未知。
+
+### 回归命令与证据
+
+下列命令是本次执行证据，不是新增永久测试注册表。所有测试先 list 确认非空；
+不改变测试断言或布局，不跑广泛 suite，不对纯文案做 mutation。
+
+两个原回归与补充共享契约回归，在修复前逐项运行（均失败）：
+
+```bash
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test track_suite inv_1110_002_forked_track_requires_report_startup_read --test-threads 8 --no-tests=fail
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test mcp_integration_suite planner_advertised_result_route_reads_recorded_audit --no-tests=fail --test-threads 8
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --lib every_work_template_carries_the_contract_and_method_without_tasks --no-tests=fail --test-threads 8
+```
+
+原始输出在 `/tmp/context-v2-red-{fork,route,contract}.log`：分别在
+`track_report_fork.rs:1835` 缺当前工作归属原句、`planner_result_loop.rs:302` 缺字面
+日志路由、`templates.rs:548` 报 `dev: shared report contract`。没有把它们归因于环境。
+
+通过真实再生入口运行两项 golden，按既有入口约定生成三份文件后故意 panic；已审完整 golden diff。
+基础 dev golden 不含 Selected Template，不用它证明快照保真。
+临时捕获运行原 lib filter 加共享前缀回归共 8 项全绿。
+
+```bash
+env -u NEIGE_CODEX_BIN REGEN_PROMPT_GOLDENS=1 REGEN_PLANNER_PROMPT_GOLDEN=1 RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --lib -E 'test(/the_worker_prompts_match_their_reviewed_goldens|shipped_dev_rendered_prompt_matches_full_golden/)' --no-tests=fail --test-threads 8
+```
+
+最终无再生 flag 的原始聚焦命令（lib 先以相同 filter list）：
+
+```sh
+set -eu
+export RUSTC_WRAPPER=
+export CARGO_BUILD_JOBS=6
+unset NEIGE_CODEX_BIN
+cargo nextest run --locked -p calm-server --lib -E 'test(/workspace_report_tests/) | test(/builtin_issue_instructions_remain_documentation_when_dev_is_disabled|builtin_legacy_issue_documentation_preserves_snapshot_and_authority|context_delivery/) | test(/^mcp_server::tools::workspace_reports::tests::(ungranted_planner|ordinary_assistants_and_persisted_workers|workers_and_forged_role)/) | test(/the_worker_prompts_match_their_reviewed_goldens|shipped_dev_rendered_prompt_matches_full_golden|every_work_template_carries_the_contract_and_method_without_tasks|planner_prompt_fits_its_byte_budget|worker_prompts_share_one_head_and_tail/)' --no-tests=fail --test-threads 8
+cargo nextest list --locked -p calm-server --test track_suite -E 'test(/template_startup/) | test(/inv_1110_002_forked_track_requires_report_startup_read/)'
+cargo nextest run --locked -p calm-server --test track_suite -E 'test(/template_startup/) | test(/inv_1110_002_forked_track_requires_report_startup_read/)' --no-tests=fail --test-threads 8
+cargo nextest list --locked -p calm-server --test mcp_integration_suite -E 'test(/planner_advertised_result_route_reads_recorded_audit|worker_prompt_pins_planner_message_authority/)'
+cargo nextest run --locked -p calm-server --test mcp_integration_suite -E 'test(/planner_advertised_result_route_reads_recorded_audit|worker_prompt_pins_planner_message_authority/)' --no-tests=fail --test-threads 8
+```
+
+补充扫查时，恢复路由后的中间稿触发既有 `planner_prompt_fits_its_byte_budget`：
+7520 > 7500 bytes（`/tmp/context-v2-budget-red.log`）。保留原预算与全部契约，
+只去掉状态说明的重复 current、Report 的重复 Markdown 和 B 判断句中已由下文明确的
+on A，共 22 bytes；随后重生成 Planner golden 并重捕获实际 startup。前一中间稿的
+24428/32553 bytes 不作为最终成本。
+
+Worker 正式消息断言经 `terminal_ws_suite` 模块注册在 `api_suite`，上面 mcp filter
+只选中路由一项。初次把模块当 target 的 list/run 均报 no test target（无测试运行）；
+核对 Cargo.toml/api_suite.rs 后改用真实 target，先 list 非空再运行，不改测试布局：
+
+```bash
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest list --locked -p calm-server --test api_suite worker_prompt_pins_planner_message_authority
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test api_suite worker_prompt_pins_planner_message_authority --no-tests=fail --test-threads 8
+```
+
+字面断言补扫结果仅三个非依赖命中：cli_query 的 working directory 错误文案、
+worker_watch 自有消息的 tool search 反断言、Forge pending 回执的 any card of this Track。
+最后一项仍由 `prompts/forge-action/pending.md` 和 `prompts/tools/neige_op_show.md`
+完整承载；这些生产来源未改。临时扫查结果在 `/tmp/context-v2-literal-sweep.json`。
+
+最终树（无任何临时捕获代码、无 REGEN flag）结果：lib 12/12（含原 7 项、共享前缀、
+三项角色/golden 检查及既有 Planner 预算），track_suite 6/6（原 startup 5 + fork），
+mcp 路由 1/1，api_suite 正式消息权限 1/1 全绿。Planner 角色实测 7498 bytes，
+原 7500 预算未改。完整日志分别为 `/tmp/context-v2-green-{lib,track,mcp,authority}.log`。
+
+冻结 gate 负责文本/合同/Rust quick 和声明的原过滤器重放；实际结果见
+`runs/3f68c70ec41d4bdcb78a7889e556f60b:context-implement-v2.json` 及它命名的 gate log，
+本地聚焦通过不代替 gate 或 Planner acceptance。新增发现的共享前缀、预算/golden/
+角色拼接与 api 单项已单独运行，交 Planner 选择补充冻结重放；不改 gate 或测试布局。
+`git diff --check`、相对链接核对通过。未跑浏览器、广泛 suite、真实 provider 或 mutation。
+成本捕获和对应源文 SHA-256 留在 `/tmp/context-final/measurements.json` 与
+`source-manifest.json`，不增加永久测量脚本/断言。

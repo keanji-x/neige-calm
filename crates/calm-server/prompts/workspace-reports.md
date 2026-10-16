@@ -2,7 +2,8 @@
 
 Planner and Assistant have read-only report access across all user-visible Areas,
 including existing conversations regardless of template snapshot.
-Discover these tools if deferred: `neige_workspace_ls` lists reports/track_id;
+Use these tools directly when the user's request needs other Areas' reports.
+Discover them if deferred: `neige_workspace_ls` lists reports/track_id;
 `neige_workspace_cat` reads a selected track_id's summary, body and blocks;
 `neige_workspace_diff` lists changes for date (YYYY-MM-DD); `neige_workspace_log`
 reads a track_id's edits for date with the diff's through_event_id watermark.
