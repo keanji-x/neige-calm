@@ -26,9 +26,14 @@ The Store owns the persistence rule: `plan_run` snapshots endpoints atomically;
 `PLANNED_PAIRS` is shared by coverage, write eligibility, completeness and
 `ever_planned`. Capture schedules those pairs, and the plugin uses ReadOnlyStore
 and the same point-in-time query. There is no new policy in the kernel/adapters.
-The fixed legacy catalog is intentionally a released protocol, not an extensible
-list maintained in a generic layer. Existing test counts now derive from the
-catalog where appropriate. Ordinary additions change the catalog, its contract
+The released v1 seven-endpoint contract is frozen independently in the test-only
+`annual_catalog::V1_ENDPOINTS`, including method, path, ordered query, headers,
+data-center restriction and key kind. It does not derive from `compiled()` or
+inherit constructor defaults. Future catalog additions must explicitly assess
+upgrade policy; they must not regenerate this historical input. Production
+upgrade acceptance is unchanged. This fixture is intentionally a released
+protocol, not an extensible list maintained in a generic layer. Existing test
+counts now derive from the catalog where appropriate. Ordinary additions change the catalog, its contract
 golden and manifest; no new CI list or extra permanent check is added. New tests
 run once in the package replay; broader workspace coverage remains CI-owned.
 
@@ -50,7 +55,9 @@ Stage artifact hashes matched `DEPLOYMENT.json`:
 | manifest | `182083b0040ada9e7c8c3c9d235e08dc2fc652a250ee75bebb3f7ada5b1756e2` |
 
 Local evidence driver: `/tmp/research-archive-2659/compat.py`. These `/tmp`
-materials are temporary host evidence, not permanent reproducibility assets.
+materials are temporary host evidence, not permanent reproducibility assets or
+an immutable audit archive. In particular, the compatibility driver is a mutable
+temporary helper; its current contents alone do not establish past execution.
 The original invocation was from the checkout:
 `python3 /tmp/research-archive-2659/compat.py seed` on the pre-change build, then
 `python3 /tmp/research-archive-2659/compat.py verify` on the PR build. `seed`
@@ -104,7 +111,10 @@ as worker commands. `cargo fmt -p research-archive` and `git diff --check` ran.
 - `cargo nextest run --locked -p research-archive annual_reproduction
   --no-tests=fail --test-threads 8`: both tests red before production changes:
   `annual_endpoint_is_available`, `annual_new_archive_uses_v2` (found 1, expected
-  2). Log: `reproduction-red.log`.
+  2). Log: `reproduction-red.log`. These two temporary reproduction tests were
+  removed in the 2026-10-16 review cleanup: the existing catalog contract tests
+  and `open::new_file_gets_the_catalog_and_reopens_untouched` retain their
+  assertions without duplicate permanent CI executions.
 - `cargo nextest run --locked -p research-archive -E 'test(annual) |
   test(upgrade) | test(guards) | test(plugin_read_at) | test(reads::)'
   --no-tests=fail --test-threads 8`: 70/70 green, `focused-green.log`.
@@ -145,12 +155,14 @@ executable from `/tmp/research-archive-2659`, once per named test with
 SDK variables. The full kernel replay uses the safe cwd arrangement below;
 the dotenv fence remains unchanged.
 
-## Safe full-package verification (2026-10-16)
+## Historical full-package verification (2026-10-16)
 
 Candidate `2797ca8e51338fe23156b7c17bed104a02aa65db` passed all six kernel gate
 steps in `annual-v2-safe-gate-r3`, run 1: ratchet, contract, rust-quick,
 archive-safe-metadata, archive-package-replay and server-tool-names. The archive
-replay ran **312 tests: 312 passed, 0 skipped**; the tool-name filter ran
+replay at that candidate ran **312 tests: 312 passed, 0 skipped** (a historical
+result, not the test count or verification result for later heads); the tool-name
+filter ran
 **10 tests: 10 passed, 1588 skipped** (the latter are outside the selected
 tool-name scope). Full output is in
 `/home/kenji/.local/share/neige-next/data/gate-logs/1501af2fba10480089c64e6c059b2353:annual-v2-safe-gate-r3-r1.log`.
@@ -183,6 +195,44 @@ was needed. Snapshot, metadata and `/tmp/research-archive-2659` paths are
 temporary audit evidence; retain them externally if long-term access is needed.
 No production source or SDK-test protection was changed. Formal L2 review
 remains the Planner's responsibility.
+
+## Review cleanup evidence (2026-10-16)
+
+L2 remains in force for this persistence work; the Planner arranges both review
+channels. This cleanup changes tests and documentation only. Compared byte for
+byte with reviewed baseline `060e08aafd2537990d4daf7f42e43dde4e7c0908`, 38 of
+39 production Rust source files are identical. The sole exception, `src/lock.rs`,
+has comment changes only; removing comment lines makes its bytes identical too.
+The manifest is byte-identical. This includes unchanged catalog, released DDL,
+`MIGRATION_V2`, upgrade acceptance, request and read implementations. Therefore
+the original stage binary compatibility proof remains applicable.
+
+The three mutation source SHA256 values still equal both `original_sha256` and
+`restored_sha256` in `mutation-results.json`:
+
+| Source | SHA256 |
+|---|---|
+| `src/store/write.rs` | `48935079d1dbd4dbb450e0495a96af272522e657721a70295f2ab2cb94912242` |
+| `src/store/read.rs` | `741d8897a40a900f6bf36d10fff35200a1269a0397a5c44d3f0cc0016150969f` |
+| `src/store/schema.rs` | `0fdb6bd3f91bc7be667f1d843282c91bb7686666bba189ced3fa26a4d2a56fb3` |
+
+The prior complete mutation results were independently checked by both review
+channels. No production mutation rerun is needed for this cleanup. As disclosed
+above, discarded fail-fast initial runs preceded the complete no-fail-fast runs.
+The frozen v1 fixture adds no test execution or evolving maintenance list; it
+lives in the existing upgrade test module and must remain historical when new
+endpoints ship. Readable endpoint error expectations now derive from the
+catalog's security endpoints, including annual.
+
+Focused verification uses a fresh `/tmp` source snapshot with the changed files
+overlaid, builds nextest binary/dependency metadata from the checkout, then uses
+the same official reuse-build/workspace-remap method described above. Filter:
+`package(research-archive) & (test(annual_catalog) | test(catalog::) |
+test(open::) | test(plugin_read_at))`, with `--no-tests=fail --no-fail-fast
+--test-threads 8`. Result: **31 passed, 279 skipped** (outside the filter), log
+`/tmp/research-archive-2659/cleanup-focused.log`. `cargo fmt -p research-archive`
+and `git diff --check` also passed. The kernel owns the new full gate replay;
+the historical 312 result above does not stand in for that gate.
 
 ## Capacity and configuration decision
 

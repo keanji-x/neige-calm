@@ -358,10 +358,11 @@ if at all, on a copy.
 
 ## The binary
 
-`research-archive <command> --config <file>`. Every command that can build
-an SDK client (`capture` and the `auth` commands) first refuses a hostile
-environment, then reads the config, then sets the region, all before any
-thread starts. `notify` builds none and only reads the config.
+`research-archive <command> --config <file>`. `capture`, the `auth` commands
+and `upgrade-annual-catalog` first refuse a hostile environment, then read
+the config, then set the region, all before any thread starts. The upgrade
+builds no SDK client and needs no token or network, but uses the same guard.
+`notify` skips the guard and only reads the config.
 
 **Config.** A TOML file with every field required; unknown fields are
 refused. `research-archive.example.toml` documents each field:
@@ -391,9 +392,10 @@ compiled-in webpki roots, so no `SSL_CERT_FILE` or native-certificate
 override is in play.
 
 **Lock.** `<data_dir>/archive.lock`, a non-blocking exclusive `flock`.
-`auth import` and `auth login` take it; while another process holds it they
-do nothing and exit `LOCKED`. The capture (S1-2b) takes it first and exits
-`BUSY` (0) when it is held.
+`auth import`, `auth login` and `upgrade-annual-catalog` take it before
+opening auth/archive state; while another process holds it they exit `LOCKED`
+without opening that state. After the environment guard and config, capture
+(S1-2b) also takes it and exits `BUSY` (0) when it is held.
 
 **Token.** The archive's own token lives in
 `<data_dir>/oauth/<client_id>.json` (file 0600, written by temp file with
@@ -438,7 +440,8 @@ holds the lock at all.
 
 **Exit codes** (`src/exit.rs`). `OK`, `BUSY` and `NO_WINDOW` are 0;
 `PARTIAL` is 3, `LOCKED` 4, `DEGRADED` 5, `FATAL` 70 and `AUTH_UNAVAILABLE`
-75. The capture job's endings are listed under
+75. `upgrade-annual-catalog` exits `LOCKED` on lock contention. The capture
+job's endings are listed under
 [The capture job](#the-capture-job).
 
 **Logs** go to stderr, and only this crate's target is emitted. Every
@@ -994,7 +997,8 @@ Two integration binaries:
 | test module | covers |
 |---|---|
 | `guards` | I2, on every table, including the rowid collision |
-| `open` | the refusals, and that a refused file is untouched |
+| `open` | new archives use v2 and the compiled catalog; the refusals, and that a refused file is untouched |
+| `annual_catalog` | frozen released v1 input; explicit upgrade preserving historical bytes/plans, schema/catalog refusals without writes, CLI lock (`LOCKED`), token-free upgrade and idempotence |
 | `writes` | plan atomicity, the window bound and window order, `complete`, the attempt counter and the CHECKs |
 | `clock` | the monotonic run clock, blob + observation atomicity, error class per endpoint |
 | `freeze` | the derived freeze, Store-classified membership bodies, I5, atomicity, carry vs `read_at` |

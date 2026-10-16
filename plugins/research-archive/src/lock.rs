@@ -9,9 +9,10 @@
 //! process exits, however it exits. The file is never deleted: deleting a
 //! lock file lets two holders lock two different inodes.
 //!
-//! `capture` takes the lock before anything else; `auth import` and
-//! `auth login` take it and exit `LOCKED` while it is held; `capture` exits
-//! `BUSY` (0).
+//! After the environment guard and config, `capture`, `auth import`,
+//! `auth login` and `upgrade-annual-catalog` take the lock before opening
+//! archive/auth state. While it is held, the operator commands exit `LOCKED`;
+//! `capture` exits `BUSY` (0).
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},

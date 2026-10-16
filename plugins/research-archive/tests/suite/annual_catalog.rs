@@ -1,17 +1,85 @@
 use crate::support::{at, dump, endpoint, key, observe_and_freeze, ok, plan_request, raw};
-use research_archive::catalog::{Catalog, Endpoint, KeyKind, QueryValue};
+use research_archive::catalog::{Catalog, Endpoint, KeyKind, Method, QueryValue};
 use research_archive::{OpenError, Store};
 
+// Released v1 contract from the deployed annual patch baseline (060e08a).
+// Keep every field independent of compiled() and Endpoint::new's defaults.
+// Future catalog changes must explicitly assess this v1 upgrade policy, not
+// regenerate this historical fixture. This is test input, not upgrade policy.
+const V1_KEY: &[(&str, QueryValue)] = &[("symbol", QueryValue::Key)];
+const V1_ENDPOINTS: &[Endpoint] = &[
+    v1_endpoint(
+        "consensus",
+        "/v1/quote/financial-consensus-detail",
+        V1_KEY,
+        KeyKind::Security,
+    ),
+    v1_endpoint(
+        "forecast_eps",
+        "/v1/quote/forecast-eps",
+        V1_KEY,
+        KeyKind::Security,
+    ),
+    v1_endpoint(
+        "rating_latest",
+        "/v1/quote/institution-rating-latest",
+        V1_KEY,
+        KeyKind::Security,
+    ),
+    v1_endpoint(
+        "ratings",
+        "/v1/quote/institution-ratings",
+        V1_KEY,
+        KeyKind::Security,
+    ),
+    v1_endpoint(
+        "rating_detail",
+        "/v1/quote/institution-ratings/detail",
+        V1_KEY,
+        KeyKind::Security,
+    ),
+    v1_endpoint(
+        "valuation",
+        "/v1/quote/valuation",
+        &[
+            ("symbol", QueryValue::Key),
+            ("indicator", QueryValue::Fixed("pe")),
+            ("range", QueryValue::Fixed("1")),
+        ],
+        KeyKind::Security,
+    ),
+    v1_endpoint(
+        "index_constituents",
+        "/v1/quote/index-constituents",
+        &[
+            ("symbol", QueryValue::Key),
+            ("offset", QueryValue::Fixed("0")),
+            ("limit", QueryValue::Fixed("1000")),
+        ],
+        KeyKind::Index,
+    ),
+];
+
+const fn v1_endpoint(
+    id: &'static str,
+    path: &'static str,
+    query: &'static [(&'static str, QueryValue)],
+    key_kind: KeyKind,
+) -> Endpoint {
+    Endpoint {
+        method: Method::Get,
+        headers: &[("Accept-Language", "en")],
+        dc_restrict: None,
+        path,
+        query,
+        key_kind,
+        // EndpointId's constructor is private; use new only to obtain the id.
+        ..Endpoint::new(id, path, query, key_kind)
+    }
+}
+
 fn legacy() -> Catalog {
-    Catalog::new(
-        Catalog::compiled()
-            .endpoints()
-            .iter()
-            .copied()
-            .filter(|e| e.id.as_str() != "consensus_annual")
-            .collect(),
-    )
-    .unwrap()
+    Catalog::new(V1_ENDPOINTS.to_vec()).unwrap()
 }
 
 #[tokio::test]
@@ -47,7 +115,9 @@ async fn explicit_upgrade_only_appends_and_preserves_historical_bytes() {
         .unwrap();
     drop(conn);
     assert!(Store::open(&path).await.is_err());
-    let upgraded = Store::upgrade_annual_catalog(&path).await.unwrap();
+    let upgraded = Store::upgrade_annual_catalog(&path)
+        .await
+        .expect("released v1 must upgrade; explicitly assess policy when compiled catalog changes");
     assert_eq!(
         before_coverage,
         upgraded.coverage(plan.run_id).await.unwrap()

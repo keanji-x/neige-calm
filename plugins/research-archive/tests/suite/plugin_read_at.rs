@@ -343,8 +343,14 @@ async fn bad_arguments_are_refused_before_any_read() {
     let empty = tempfile::tempdir().unwrap();
     let mut kernel = Kernel::spawn(config(empty.path()));
     let good = || read("NVDA.US", "consensus", "");
-    let readable_ids =
-        "one of: consensus, forecast_eps, rating_latest, ratings, rating_detail, valuation";
+    let catalog = Catalog::compiled();
+    let readable_ids = format!(
+        "one of: {}",
+        readable(&catalog)
+            .map(EndpointId::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     for (arguments, reason) in [
         (
             json!({ "at": "2026-10-13T16:00:00", "reads": [good()] }),
@@ -365,11 +371,11 @@ async fn bad_arguments_are_refused_before_any_read() {
         ),
         (
             json!({ "at": "2026-10-13T16:00:00Z", "reads": [read("NVDA.US", "index_constituents", "")] }),
-            readable_ids,
+            readable_ids.as_str(),
         ),
         (
             json!({ "at": "2026-10-13T16:00:00Z", "reads": [read("NVDA.US", "eps", "")] }),
-            readable_ids,
+            readable_ids.as_str(),
         ),
         (
             json!({ "at": "2026-10-13T16:00:00Z", "reads": [{ "symbol": "NVDA.US", "endpoint": "consensus" }] }),
