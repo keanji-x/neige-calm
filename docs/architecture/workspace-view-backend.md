@@ -73,7 +73,8 @@ not a passing skipped mechanism test.
 authorization, lifecycle, source-HEAD confirmation and effect plans. Truth owns
 their durable intents and CAS. The S2a executor owns actual execution receipts,
 fork/revoke linearization, descendants and controls. S3 owns Revision,
-normalization/classification, durable content and all installation policy.
+normalization/classification, the RuleView contract in section 5, durable
+content and all installation policy.
 There is no backend scheduler, lock-by-path, source ledger, reaper, provider
 session manager or alternate shell execution service.
 
@@ -134,119 +135,265 @@ credential root or host namespace/control FD reaches user code. An independent
 PID namespace prevents host `/proc` from recovering those backing paths. A
 provider may further restrict the plan, never widen it; S4 owns qualification.
 
-## 4. Live reads and private mutations
+## 4. Stable VFS inodes, private copy-up and bounded live visibility
 
-There is no kernel overlay mount in this route. The mediator resolves the union
-itself against a read-only source capability plus owned installed and private
-state. The real source is neither writable backing nor a mount exposed to
-children. All mutations resolve both ends, including rename-exchange, link,
-metadata operations, ioctl/copy offload, mmap and delayed writeback.
-Unsupported mutating operations fail explicitly; a generic passthrough may not
-hand out a writable source FD or recreate a host pathname from a request.
+### Actual FUSE boundary
 
-Live observation has an explicit close-to-open, open-scoped contract, not full
-POSIX cache equivalence or a simultaneous tree snapshot. A fresh pathname
-resolution/open captures the source file's observed bytes and metadata into an
-independent immutable read object. Subsequent reads and source mappings through
-that handle use that object until release. New opens after an external change
-capture a new observation; old FDs and mappings may retain the old observation
-after both atomic replacement and in-place writes. There is no promise that an
-existing mmap synchronously reflects host writes. Source mutation during the
-capture may affect its ordinary read or return Busy; this acquisition is not
-a claimed atomic whole-source state and is not a Revision.
+There is no kernel overlay mount. LOOKUP selects a stable virtual inode for a
+verified object/alias group. OPEN receives that inode and returns a handle and
+flags; it cannot replace the inode selected by LOOKUP. This follows the
+[low-level API](https://libfuse.github.io/doxygen/structfuse__lowlevel__ops.html)
+and Linux's [open reply](https://github.com/torvalds/linux/blob/v6.12/include/uapi/linux/fuse.h#L752).
+Cached pages belong to the VFS inode, not a private image per fh. There is no
+immutable-per-open or OPEN-time inode-swap promise.
 
-The implementation must negotiate and qualify its FUSE I/O mode explicitly.
-[Kernel FUSE I/O modes](https://docs.kernel.org/filesystems/fuse/fuse-io.html)
-make this material: direct I/O avoids the page cache but shared mmap is
-disabled unless its negotiated capability permits it; writeback caching
-assumes changes go through FUSE. The
-[libfuse cache configuration](https://libfuse.github.io/doxygen/fuse_8h_source.html)
-also distinguishes data retention from open-time invalidation. Neither
-`auto_cache` nor notification alone proves external mutation visibility.
-Direct I/O for all FUSE opens is rejected as an easy answer: it must not make
-ordinary mmap/exec/build behavior disappear from the supported product.
+An inode record has a stable mount-local ID/generation, verified source object
+identity or owned object ID, alias/path provenance, backing state and reference
+counts. It never reuses an ID while any kernel lookup, handle, callback or
+manifest reference remains. Source objects use retained descriptor identities;
+a reused pathname or numeric inode alone cannot resurrect a forgotten object.
+Aliases of the same source inode join one group. Every fh refers to that group
+and its access rights, not a permanent read FD bypass to the old source.
+A source-to-private transition changes the group's backing, not its VFS inode.
 
-Use immutable source-observation objects with ordinary cached read/mmap support;
-the FUSE page cache then refers to bytes with no external writable alias. Each
-observed content/metadata version has its own virtual inode/observation ID.
-Fresh namespace resolution revalidates source by descriptor and actual capture,
-with zero negative/entry/attribute retention and explicit namespace invalidation;
-TTL, stat equality and inotify do not authorize reusing mutable source bytes.
-An acquisition/open race binds the already captured observation or returns
-Busy/stale and retries; it cannot rewrite the old observation's backing image.
-An older open remains attached to its old virtual inode when a fresh lookup
-finds a changed version. The extra inode/cache semantics are intentional and
-must be visible in the backend's support contract.
+Creation allocates a private group before CREATE returns. Hardlink creates
+another name for that group. In-root source hardlinks share one group even if
+one name is discovered later: after a write via a, a read via b must use the
+same private content, never an independent source FD. Path ownership/provenance
+is separate from object ownership; a newly observed external name alone does
+not become delivery W. Snapshot uses D's complete tracked names and owned path
+effects to represent affected aliases. Unknown attribution remains overlap.
+Rename/unlink changes names; open FDs retain their group and cannot address a
+replacement inode installed at that path. Atomic external replacement creates
+a new source identity for fresh lookup, while an owned name remains private.
 
-Read-only shared and private source mmap and executable mappings operate on
-that immutable image. MAP_PRIVATE writes affect only memory. A writable open
-or mutating metadata operation first creates independently owned mutable W;
-a later shared writable mmap uses W, never the original source or its immutable
-observation. The descriptor/inode transition and cache invalidation are
-serialized before the writable handle is exposed. Owned mutable W/cache files
-use the negotiated write-through/mmap mode, with no external backing writer.
-Every delayed callback retains its original handle/object identity through
-path replacement, unlink and ownership changes. Old read-only handles never
-gain write permission through the transition.
+### Visibility and cache contract
 
-This requires actual capture of opened source files, without eagerly copying
-the whole checkout. It adds read amplification, immutable observation storage,
-copy-before-write and cache-invalidation cost; safe reflink is an optional
-optimization, not assumed on ext4. Observation objects are mechanism storage
-references until all FDs/mappings release, not delivery pins or W ownership.
-Preserve source metadata needed by hot builds; repeat-build acceptance measures
-the cost and verifies ignored cache reuse at its original logical location.
-Kernel/FUSE mmap/copy-up/invalidation tests must pass before selection. Refusing
-an entire ordinary compile path merely because the implementation chose
-FOPEN_DIRECT_IO does not satisfy this design. Optimizations need separate
-qualification and cannot silently change the visibility contract.
+Source-backed ordinary READ requests use the verified read-only source FD;
+metadata lookup/stat/readdir never copy file payloads. Kernel page-cache misses
+may observe host changes. Atomic replacement/new names are revalidated through
+fresh namespace lookup with zero entry/negative retention. For in-place host
+writes to the same inode, existing cached pages, fresh opens and mappings may
+still show older bytes until an idle sync. No per-open immutable image or
+strict close-to-open byte guarantee is claimed. TTL, mtime, polling or inotify
+are hints only; source observations can mix concurrent states and are never
+Revision, a whole-tree snapshot or gate evidence.
 
-First source mutation never modifies a source inode. Under the mediator's
-per-entry serialization, resolve the current source object, copy its bytes,
-mode/link value and provenance into owned staging, fsync as required, then
-atomically install an owned W entry before acknowledging the mutation. Safe
-reflink is optional; hardlinking source into private mutable state is forbidden.
-Concurrent source replacement or an unprovable copy records conservative
-overlap or refuses the operation, never grants source write authority. A
-later snapshot reads only the completed owned W object, not a mutable source
-alias. Source read uncertainty cannot be promoted to a clean provenance proof.
+Use cached read/write-through mode, ordinary executable/private/shared mmap,
+no DAX/passthrough and no FUSE writeback-cache mode for the initial profile.
+[The FUSE I/O contract](https://docs.kernel.org/filesystems/fuse/fuse-io.html)
+distinguishes these modes. New opens do not request KEEP_CACHE, so the kernel
+attempts data invalidation; this is a refresh attempt, not positive evidence
+that every mapped/pinned page was evicted. Linux's
+[open implementation](https://github.com/torvalds/linux/blob/v6.12/fs/fuse/file.c#L217)
+keeps the same inode throughout. Source mmap is a cached live observation.
+MAP_PRIVATE writes affect process memory only; writable shared mappings require
+an authorized writable open that has already made the group private.
+FOPEN_DIRECT_IO is not a substitute that disables ordinary mmap/exec/builds.
 
-Persist entry ownership before exposing a writable handle. The owned manifest
-binds stable object IDs, expected prior version and staging/result identities;
-it contains union state, not execution/delivery authority. File/directory
-creation, rename, masks and removal have inspectable before/after identities.
-Use same-filesystem atomic publication and fsync the ownership metadata and
-parents before its receipt. A crash between data publication and manifest
-settlement preserves both and enters inspect/recovery; it never discards an
-unrecognized object or falls back to source. Snapshot needs a mediator write
-barrier and positive accounting for writable mappings and delayed writeback;
-uncontrolled outstanding mappings return Busy rather than an unsafe seal.
-Flush/fsync completed owned content and seal one manifest version before S3
-capture. Ordinary later file writes obey that storage's
-documented fsync durability, not an invented per-write exactly-once operation.
+After copy-up, old read-only FDs and read-only shared mappings are allowed to
+observe subsequent writes to that same private inode. They are not promised
+the old source image; they gain no write rights. Already faulted pages can
+remain cached during a concurrent transition, as can ordinary mapped data
+during concurrent writes/truncation. All subsequent daemon READ/WRITE/metadata
+callbacks route through the group's current private backing. Page cache is
+shared by all its aliases. Do not pin an old source backing per fh or use a
+new fh to pretend it is a separate cached inode. Private writes, append and
+truncate follow the qualified kernel's inode/page-cache ordering; truncate
+occurs only after copy-up, including SETATTR-before-OPEN and O_TRUNC paths.
+Concurrent ownership transitions serialize on the group, not a path string.
 
-Open handles retain owned object identity through rename/unlink/path reuse.
-A delayed writeback cannot re-resolve a reused path into source or another
-entry. Directory enumeration resolves a bounded merged namespace; per-handle
-enumeration may be a snapshot, while fresh enumeration revalidates source.
-Source directory movement cannot redirect an already verified descriptor into
-an unrelated root. Source-root identity replacement closes new admission and
-requires recovery; display-path equality does not authorize adoption.
+An idle sync uses the existing full-scope drain, finishes pending FUSE work,
+flushes private data, releases old content handles and rebuilds the mount through
+the existing executor/holder transition. This removes old source cache/lookup
+state without an unprovable notification ACK. Resume uses the new generation;
+W and private Git remain owned and durable. A busy mapping/descendant keeps
+sync Busy. No lazy unmount/storage reuse. Opening/read caching during activity
+need not wait for that full refresh, but in-place changes have no stronger
+visibility promise. This is an explicit product exception to immediate live
+visibility, not a claim of full POSIX cache equivalence.
 
-Use descriptor-relative containment and explicit no-magic-link/no-cross-mount
-rules from [openat2](https://man7.org/linux/man-pages/man2/openat2.2.html).
-Normal in-root symlink values remain content; following them must stay within
-the granted view capability. Absolute/out-of-root aliases cannot reveal source
-backing, another workspace or private storage. Initial support rejects nested
-mounts, special files, Gitlinks and hardlink aliases outside the supported
-capability. A runtime type/alias change refuses the affected operation and
-source evidence rather than silently selecting another backend.
+### Copy-up, lifetime and cost
 
-## 5. Installed D, private W and delivery
+Only the first writable intent or mutating metadata operation for a source group
+copies its file bytes to independent owned staging. Serialize against group
+callbacks, bind the exact source identity and current RuleView, reserve typed
+storage budget, copy bytes/mode with conservative overlap attribution, fsync
+ownership/data/parents and publish one Owned backing before granting mutation.
+No source FD is ever writable, inherited by user code or exposed as backing.
+Concurrent source edits during that copy are ordinary external-read uncertainty,
+not a claim of a coherent source snapshot. Uncertain capture is marked overlap
+or refused; later strong snapshot reads only the completed owned backing.
+An O_TRUNC target need not copy discarded payload, but still records ownership,
+before identity and overlap before truncate is acknowledged.
+
+Old cached source pages can differ from the concurrently copied backing. Cache
+invalidation is requested without holding a lock needed by related requests;
+it does not prove that all pinned pages disappeared. Live readers have the
+weaker semantics above. Before a strong snapshot, S3's stability permit seals
+mutations, settles kernel writes/mappings through the existing execution facts,
+flushes private backing and freezes its manifest. An unaccounted writer or
+unreconciled cache-dependent source effect is Busy, never proof. In particular,
+SameSourceProjection cannot be signed from cached live reads or a notify return
+code. Full drain/install is available when the effect owner cannot prove its
+unchanged-source contract; it is not an exemption for an awaiting provider.
+
+The owned union manifest records before/after object IDs and staging identities;
+it is storage state, not another execution/delivery ledger. A crash between
+publication and settlement preserves both objects for inspect/recovery. Never
+discard an unknown private object or fall back to source. Ordinary later writes
+obey storage fsync semantics, not an invented per-write exactly-once promise.
+
+Account separately for LOOKUP reply nlookup/FORGET, open/RELEASE (including
+mappings), pending callbacks, namespace names and persistent manifest references.
+FORGET is independent of close; neither alone authorizes reclaim. After unlink
+or rename, referenced inodes still answer requests. Clean unmount implicitly
+forgets lookup references, but lost replies/unknown mount access remain recovery.
+Whole-resource destruction still uses the single S3 lifecycle.
+
+For N metadata lookups or read-only opens of a file of size B, this mechanism
+performs no N*B payload capture and allocates no immutable read-image tree.
+Reads allocate normal bounded kernel page cache; repeated opens can reread
+pages but do not duplicate full files on disk. First private ownership costs at
+most one copy of the group's current payload plus bounded staging, until a
+real source installation creates a new group. Hardlinks share that one copy.
+The typed resource budget bounds private W/cache bytes, staging bytes, inode/
+handle entries and concurrent copy reservations; existing S3 pins keep their
+separate accounting. Reserve before copy or file growth. Exhaustion returns
+ENOSPC/typed capacity refusal without partial ownership or source fallback;
+recoverable staging is charged until reconciled. READ data need not be copied
+into private storage merely because the private-write quota is full. Metadata
+scans remain proportional to entries, not total payload bytes. Hot builds reuse
+visible source/owned ignored caches at their logical location; benchmark their
+actual FUSE/page-cache and first-write cost without claiming zero-copy ext4.
+
+Use descriptor-relative containment from
+[openat2](https://man7.org/linux/man-pages/man2/openat2.2.html). Normal in-root
+symlinks remain content; neither end of rename/link/copy can escape the granted
+root or reach administration/backing paths. The supported type contract covers
+regular files, directories, in-root symlinks and accounted in-root hardlink
+groups. Nested mounts, special files and Gitlinks remain the existing explicit
+unsupported type boundary. A type/identity race enters Busy/recovery rather
+than redirecting the operation or choosing another backend.
+
+## 5. One RuleView for visible rules, Git and evidence
+
+S3's existing normalization/effect owner must provide a required versioned
+RuleView; this is its missing S2b consumer contract, not a second rule engine.
+The required receipt binds rule sequence, installed/source version, exact
+working-byte rules plus authoritative absences, effective config/excludes/
+attributes, tracked membership/index semantic version, classifier and native
+Git projection identities. Snapshot, D/W classification, private Git and every
+verification preparation consume the same receipt. A digest alone is not it.
+The existing S3 content owner retains those rule bytes/absences, config and
+index/classifier inputs as part of the required source/environment closure;
+reopen/gate preparation never reconstructs them from deleted private Git or
+today's source rules. RuleView has no independent artifact TTL or content store.
+
+The Git owner registers input roles by Git's official
+[ignore](https://git-scm.com/docs/gitignore) and
+[attribute](https://git-scm.com/docs/gitattributes) contracts, including scoped
+inputs at every relevant directory and inputs absent in the selected version.
+It owns the protocol identifiers and config/index precedence. Generic FUSE
+asks that role resolver; kernel/adapters do not know filenames or maintain an
+inventory of current rule files. Newly created contextual rule inputs are
+recognized too. Registered RuleInput paths resolve only to RuleView's owned
+bytes/absence, never live source. The private Git's global/system/config paths
+are frozen scoped projections with no host HOME/config fallback.
+The role applies to both destinations and object/FD aliases: link, rename,
+open-by-FD or a lockfile publication cannot bypass it through another name.
+Source hardlinks do not make a controlled rule projection an alias of live
+source. Rule-change activation drains old handles and replaces the whole
+projection; there is no old rule FD sharing an inode with a new active version.
+
+This is an intentional live-source exception: external edits/additions/deletions
+of registered rules are pending rule drift, even while ordinary source/ignored
+files remain observable. Native Git cannot read new live rules behind the
+classifier. Initial RuleView uses D's in-tree rules, the approved frozen external
+rule inputs and the owned index contract. Dirty source rule bytes are retained
+as a proposed change with provenance/overlap and visible pending status; they
+are not silently used, discarded or inserted into C. Adoption requires the
+controlled operation below. Source HEAD/rule observation can request that
+operation at idle sync; it cannot publish a version by sampling alone.
+
+Direct filesystem edits of registered rule inputs and classification-changing
+Git metadata are not an alternative publisher. Such mutation returns a precise
+controlled-rule error before any visible bytes change. Ordinary reads/status
+remain native. Authorized callers use one typed RuleChange operation through
+kernel Services, reusing S3 SourceInstallPlan and the existing operation driver.
+This product limitation also covers shell attempts to force-add an ignored
+cache path or alter rule config. No caller/plugin-name interception is used.
+The agreement concerns the registered workspace repository and its canonical
+configuration. An arbitrary program or an explicit ad-hoc Git command-line
+override can interpret files differently; its output has no RuleView/evidence
+authority and cannot change the canonical projection. Do not turn this into a
+launcher filename/argv denylist or infer authority from a native Git success.
+
+Private Git index/blob/stat-cache writes stage privately. The Git owner validates
+their actual publication at the registered metadata role; generic FUSE does
+not parse Git's binary index or grant a raw replacement. Ordinary index updates
+and add/remove of already nonignored source paths may advance the RuleView's
+index/metadata sequence through sealed SameSourceProjection when the owner
+proves visible rule bytes, fallback behavior and every effective source/cache
+classification plus normalization unchanged. This preserves ordinary native
+add/commit without requiring a drain for a pure metadata update. Such proof
+does not use equality of normalized trees alone or an adapter classification
+flag. Native-visible index and its owner receipt publish under the prepared
+projection permit; partial receipt/FS effects close snapshot/publication until
+that same metadata intent reconciles.
+
+An effective semantic change, such as force-tracking an ignored cache path,
+requires RuleChange. Failure leaves the old projection intact and the native
+command receives an explicit controlled-rule error. Private commits on an
+accepted index remain nonauthoritative history. No caller gets an exception
+from proof or a raw-index escape hatch. Adding an ordinary nonignored source
+file does not itself create a new product refusal.
+
+RuleChange is a frozen proposed RuleView plus owned raw rule bytes, explicit
+tracked-membership changes, affected content roots and per-path dispositions.
+A source-dirty in-tree rule adopted for delivery becomes owned W with overlap
+confirmation and an explicit tracked entry; it is not implicitly omitted by
+its own ignore patterns. Preview returns exact pending scope and cost. Apply
+uses the existing Accepted/old-call-ended/full-drain/install continuation,
+including provider/native Git processes and rule/index FDs. No synchronous
+request waits for itself to drain and no current owner is exempt.
+
+The S3 owner computes the complete source/cache transition with Git's matcher:
+
+| Existing content | Required disposition before the new version can activate |
+| --- | --- |
+| Owned cache becomes nonignored/source | Explicit promotion pins its raw bytes/provenance as W and requires overlap approval as appropriate; or an explicitly authorized discard removes that exact owned cache object. Never silently add all historical build output to C. |
+| Owned W/source would become ignored | Preserve it as source through explicit tracked membership in the new private index/RuleView, or complete an authorized delivery/discard first. Never silently exclude owned source/archive bytes. |
+| Still ignored cache | Retain its owned group only under the new classifier version; aliases/mappings have already drained. |
+| Unowned live source context | No automatic W ownership or delivery. It uses the new classifier on subsequent observations; dirty rule bytes still need explicit adoption. |
+
+The plan protects both old/new content roots, records expected RuleView and
+manifest/index versions and stages all new projections while admission is
+sealed. After drain, install rule bytes/authoritative absences, private Git
+index/config, D/W/cache dispositions and classifier under one recoverable
+operation. They need not be one FS syscall: until all component receipts match,
+no reader, launch, Git command, snapshot or gate is admitted. The final Ready
+CAS publishes one RuleView and source epoch. Crash replays that frozen plan or
+remains sealed in recovery; it never resumes with mixed versions. Budget or
+confirmation failure occurs before activation and retains the old version.
+This is SourceInstallPlan, not SameSourceProjection, whenever effective rule/
+classification/source facts change. An index update with proven identical
+effective semantics keeps the existing metadata-only owner contract.
+
+Snapshot seals the RuleView/version together with the owned manifest. Native
+Git's visible rule bytes and index semantics, the classifier and gate's rule
+projection therefore agree for that version. Verification prepares C with its
+exact RuleView and working-byte closure, without live rule passthrough. If a
+proposed rule change would enable a forbidden conversion such as a custom
+filter, the existing view type/normalization boundary refuses the entire plan,
+not one consumer's interpretation. Adding an ordinary file/test needs no rule
+registration edit; changing Git's external contract belongs to its owner.
+
+## 6. Installed D, private W and delivery
 
 The backend owns a versioned union manifest, not an extra delivery ledger.
-Its effects and roots belong to the existing operation intent/receipt. It
-does not infer W by scanning an overlay upper or interpreting private Git
+Its effects and roots bind one RuleView and belong to the existing operation
+intent/receipt. It does not infer W by scanning an overlay upper or interpreting private Git
 commits. Logical D starts from B and later names the installed delivery/catch-up
 source supplied by S3. Unmodified live source dirt is observational context,
 not an automatic contribution to Revision. W records source changes owned by
@@ -272,13 +419,13 @@ Tracked paths override ignore; untracked paths use the frozen effective Git
 rules through that owner. S2b does not implement ignore patterns or add familiar
 cache directory names. Before snapshot, use S3's owner/stability permit and the
 mediator write barrier, settle pending writes/copies and complete/flush the
-owned manifest. Unaccounted writable mappings or effects refuse Busy. Capture
+owned manifest. Outstanding writable handles (and therefore possible mappings)
+or effects refuse Busy; FUSE cannot infer that an open writable FD has no mmap. Capture
 one manifest version and refuse on concurrent changes or unresolved source-copy
 ownership. A waiting provider may remain live for the already specified
 same-source metadata path; snapshot does not require that call to drain itself.
 Real SourceInstallPlan and destructive lifecycle still require full S3 scope
-drain. S3 then pins the
-normalized tree and exact raw-byte closure. Backend `.git` status is not this
+drain. S3 then pins the normalized tree and exact raw-byte closure. Backend `.git` status is not this
 evidence, and source changes cannot alter a captured W object after that point.
 
 Overlap includes copied source dirty bytes relative to the expected installed
@@ -298,7 +445,7 @@ Use the full SourceInstallPlan, Accepted/drain continuation and new epoch;
 never clear W merely because normalized trees match. Ignored cache survives
 only where the same plan proves its retained capability and classification.
 
-## 6. Git metadata and source HEAD
+## 7. Git metadata and source HEAD
 
 Initial support requires a local supported Git checkout with real internal
 `.git` directory, no external gitdir/common directory, external alternates or
@@ -321,8 +468,10 @@ already imported private or durable objects.
 
 Private config/index/HEAD are execution projections. HEAD is detached; kernel
 projection writes use S3's no-deref rule. Initialize frozen normalization,
-effective ignore/exclude rules and approved configuration from S3. Repository
-code/hooks run only in the authorized execution sandbox, never SourceGitAdmin
+effective ignore/exclude/attribute rules, tracked membership and approved
+configuration from the same RuleView. Its controlled publication boundary in
+section 5 also applies to native Git, index fallback and config changes.
+Repository code/hooks run only in the authorized execution sandbox, never SourceGitAdmin
 or the trusted object writer. Reject initial view repositories with custom
 clean/smudge/LFS, working-tree-encoding or eol/autocrlf transformations, and
 recheck at snapshot/prepare/recovery. Private Git edits do not redefine B,
@@ -337,14 +486,16 @@ never pick a new HEAD under an old key. Source identity and owned runtime Git
 identity remain distinct in every receipt.
 
 At every full quiescent sync, unconditionally resample source identity/HEAD and
-revalidate the mediator's source observations. No inotify fingerprint decides
+refresh the mount only after full drain as described in section 4. Rule drift
+remains pending for RuleChange and cannot bypass the selected RuleView. No
+inotify fingerprint decides
 whether sync runs. A changed source HEAD pauses new launches and emits a typed
 confirmation requirement. Confirmation binds old/new observed HEAD plus source
 and binding versions; it updates observed HEAD only. B, D and delivery tip do
 not change. Rebuild is archive plus a new track, not reset of the user's tree.
 An already live interactive PTY is not promised command-by-command interception.
 
-## 7. Creation, close, delete and recovery ship together
+## 8. Creation, close, delete and recovery ship together
 
 View selection is explicit and freezes with the existing selection/frozen_at
 writer. The creating transaction persists the backend/version, source,
@@ -396,7 +547,7 @@ again; archive restoration cannot silently adopt a replacement source root.
 Area rollback restores bindings/references and the existing restoration gate;
 stale cleanup cannot delete a restored resource.
 
-## 8. Public capability and real entry points
+## 9. Public capability and real entry points
 
 S2b supplies the explicit view selection API, wire/OpenAPI/generated artifacts,
 capability/refusal projection and content ports. A successful capability badge
@@ -435,7 +586,7 @@ write another resource store. Native Git shell cannot update user common-dir
 refs through a hidden alias. A forge path that still requires host cwd is
 Unsupported for a view until migrated, not sent to the source checkout.
 
-## 9. Implementation sequence and qualification
+## 10. Implementation sequence and qualification
 
 The atomic release surface is one selectable backend with create, usable
 no-provider entry points, close/delete/recover and complete content/evidence
@@ -446,12 +597,12 @@ owners are available; these names are contract responsibilities, not unused
 public scaffolding to add early.
 
 1. Review section 1's selected mechanism/visibility amendment and section 4's
-   open-scoped I/O mode through both full L2 channels. If the mode cannot support
-   ordinary builds/mmap safely, narrow the declared platform profile before
+   stable-inode/cache contract and section 5's RuleView through both full L2
+   channels. If the mode cannot support ordinary builds/mmap safely, narrow the declared platform profile before
    implementation; successful unrelated probes are not qualification.
 2. Implement the shared path-mediator mechanism and owned manifest algebra
-   behind S3/S2b owners, with one Git classifier interface. Keep filesystem
-   request handling separate from resource policy and private Git plumbing.
+   behind S3/S2b owners, with the required RuleView/classifier interface. Keep
+   filesystem request handling separate from resource policy and private Git plumbing.
 3. Add the controlled executor namespace capability/bootstrap extension to the
    existing protocol and journal, then creation/recovery/extents validation.
    Do not merge a direct raw-spawn path while waiting for S2a.
@@ -467,6 +618,9 @@ test names or applications:
 | --- | --- |
 | Source separation | Two resources at the same logical path see private writes independently. External in-place/atomic writes, create/delete/rename, branch checkout and source gc obey the selected documented visibility model; no operation writes source. |
 | Manifest/source evidence | D/W independence, source dirty exclusion, copy-up overlap, delete/reappearance, opaque subtree/rename, ignored/tracked transitions, modes/symlinks, open-unlink-reuse and delayed mmap/writeback preserve exact owned object identity. |
+| VFS inode/lifetime | Exercise LOOKUP then writable OPEN and SETATTR/O_TRUNC without an inode swap; hold old RO FD/MAP_SHARED, copy up through alias a and read/write through hardlink b, reopen by FD, concurrently open/link/rename/unlink, and prove every daemon callback uses the same private group. Old RO readers may see private changes but cannot write source. Cache tests separately cover atomic replacement, stale in-place pages and full-drain remount. FORGET-before/after-RELEASE and unlink with nlookup retain the correct object. |
+| RuleView | Start with rules ignoring out, externally remove that rule, and reverse the directions; native canonical Git, owned file classification, Revision and gate keep the old version until explicit RuleChange. Also test view-side rule edits, new nested/previously absent rule inputs, attributes/index fallback/config, force-add and alias attempts. Promotion/retain/discard handles every affected owned cache/source; crash between each projection receipt never opens mixed versions or silently loses source. |
+| Cost/capacity | Scan metadata and repeatedly open/read a large source cache with reflink disabled; assert no full-file capture/staging is created. First private write copies once per inode group, aliases reuse it, truncate avoids discarded bytes, and reservations cover concurrent copies/growth. Exhaust byte/inode/staging quota, restart and recover: no source write, uncharged orphan, fallback or loss of completed W. |
 | Gate | Frozen C remains unchanged during every external source mutation; arbitrary Git ignore/negation/new cache paths and tracked-in-ignored work. Actual source writes cannot occur; mediator loss or unknown descendant cannot seal. |
 | Process | Exact uid/gid, PTY and pipe, fork/revoke/namespace swap races, setsid/double-fork descendants, holder/mediator death, old ticket/control after recovery and multiple alias contenders use S2a receipts without host execution. |
 | Lifecycle | Create immediately followed by close/delete, crash at every staging/pin/Ready/mount/manifest/archive/recycle receipt, day-eight whole-private-tree deletion/reopen and day-ninety expiry preserve durable raw source and never select source in DestroyPlan. |
@@ -491,7 +645,7 @@ Worker runs focused tests/formatter; PM gate runs text, contract, quick Rust
 preflight and one nonempty focused replay. CI owns broad suites. Visible API/UI
 integration also needs real browser preview and relevant browser tests.
 
-## 10. Architecture and permanence cost
+## 11. Architecture and permanence cost
 
 The shared mediator owns containment/FD identity and union operations; S3 owns
 Git classification and source evidence; kernel owns authorization/lifecycle;
