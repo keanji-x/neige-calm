@@ -3,7 +3,8 @@ use std::{os::unix::fs::symlink, path::Path, process::Command};
 use crate::{
     db::sqlite::{
         CheckoutOccupancy, SqlxRepo, TrackWorkspacePlan, area_create_tx, checkout_occupancy,
-        track_create_tx, track_workspace_write_tx, workspace_adopt_tx, workspace_adoption_snapshot,
+        track_create_tx, track_workspace_write_tx, workspace_observation_snapshot,
+        workspace_observe_tx,
     },
     model::{NewArea, NewTrack, RequestTheme, Track, TrackWorkspace, TrackWorkspaceKind},
 };
@@ -83,9 +84,9 @@ pub(super) async fn task(repo: &SqlxRepo, track: &Track) {
     ).bind(track.id.as_str()).execute(repo.pool()).await.unwrap();
 }
 
-pub(super) async fn canonical_root(repo: &SqlxRepo, track: &Track) -> Option<String> {
+pub(super) async fn observed_root(repo: &SqlxRepo, track: &Track) -> Option<String> {
     sqlx::query_scalar(
-        "SELECT r.canonical_root FROM workspace_resources r JOIN track_workspace_bindings b \
+        "SELECT r.observed_root FROM workspace_resources r JOIN track_workspace_bindings b \
          ON b.workspace_id=r.id WHERE b.track_id=?1",
     )
     .bind(track.id.as_str())
@@ -95,7 +96,7 @@ pub(super) async fn canonical_root(repo: &SqlxRepo, track: &Track) -> Option<Str
 }
 
 #[tokio::test]
-async fn workspace_identity_adopts_symlink_and_subdir_into_one_canonical_identity() {
+async fn workspace_identity_observes_aliases_without_claiming_shared_object_identity() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("repo");
     init(&source);
@@ -111,21 +112,21 @@ async fn workspace_identity_adopts_symlink_and_subdir_into_one_canonical_identit
     )
     .await;
     task(&repo, &first).await;
-    // Each owner registers its own selection; canonical identity alone does not change admission.
-    super::adopt_for_task(repo.pool(), first.id.as_str())
+    // Each selection owns its observation; shared physical authority is not enabled.
+    super::observe_for_task(repo.pool(), first.id.as_str())
         .await
         .unwrap();
-    super::adopt_for_task(repo.pool(), second.id.as_str())
+    super::observe_for_task(repo.pool(), second.id.as_str())
         .await
         .unwrap();
     let refs: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT b.track_id,b.workspace_id,b.cwd FROM track_workspace_bindings b \
+        "SELECT b.track_id,b.workspace_id,r.observed_cwd FROM track_workspace_bindings b \
          JOIN workspace_resources r ON r.id=b.workspace_id ORDER BY b.track_id",
     )
     .fetch_all(repo.pool())
     .await
     .unwrap();
-    assert_eq!(refs[0].1, refs[1].1);
+    assert_ne!(refs[0].1, refs[1].1);
     let second_cwd = refs.iter().find(|row| row.0 == second.id.as_str()).unwrap();
     assert_eq!(second_cwd.2, "subdir");
     assert_eq!(
@@ -164,15 +165,18 @@ async fn workspace_identity_distinct_owned_worktrees_share_git_metadata_only() {
     super::super::track_worktree::ensure_track_worktree(&second)
         .await
         .unwrap();
-    super::adopt_for_task(repo.pool(), first.id.as_str())
+    super::observe_for_task(repo.pool(), first.id.as_str())
         .await
         .unwrap();
-    super::adopt_for_task(repo.pool(), second.id.as_str())
+    super::observe_for_task(repo.pool(), second.id.as_str())
         .await
         .unwrap();
     let roots: Vec<(String, String)> = sqlx::query_as(
-        "SELECT adopted_workspace_id,git_common_dir FROM workspace_resources WHERE canonical_root IS NOT NULL",
-    ).fetch_all(repo.pool()).await.unwrap();
+        "SELECT id,git_common_dir FROM workspace_resources WHERE observed_root IS NOT NULL",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
     assert_eq!(roots.len(), 2);
     assert_ne!(roots[0].0, roots[1].0);
     assert_eq!(roots[0].1, roots[1].1);
@@ -203,11 +207,13 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
         TrackWorkspacePlan::ManagedUnder(tmp.path().into()),
     )
     .await;
-    assert!(canonical_root(&repo, &track).await.is_none());
-    let snapshot =
-        workspace_adoption_snapshot(&mut repo.pool().acquire().await.unwrap(), track.id.as_str())
-            .await
-            .unwrap();
+    assert!(observed_root(&repo, &track).await.is_none());
+    let snapshot = workspace_observation_snapshot(
+        &mut repo.pool().acquire().await.unwrap(),
+        track.id.as_str(),
+    )
+    .await
+    .unwrap();
     super::super::workspace_materialize::materialize_workspace(
         &track.workspace,
         tmp.path(),
@@ -235,16 +241,16 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
     tx.commit().await.unwrap();
     let mut tx = repo.pool().begin().await.unwrap();
     assert!(
-        workspace_adopt_tx(&mut tx, &snapshot, &identity)
+        workspace_observe_tx(&mut tx, &snapshot, &identity)
             .await
             .is_err()
     );
     tx.rollback().await.unwrap();
-    super::adopt_for_task(repo.pool(), track.id.as_str())
+    super::observe_for_task(repo.pool(), track.id.as_str())
         .await
         .unwrap();
     let root: String = sqlx::query_scalar(
-        "SELECT canonical_root FROM workspace_resources WHERE canonical_root IS NOT NULL",
+        "SELECT observed_root FROM workspace_resources WHERE observed_root IS NOT NULL",
     )
     .fetch_one(repo.pool())
     .await
@@ -253,21 +259,52 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
 }
 
 #[tokio::test]
-async fn workspace_identity_replaced_root_is_recovery_instead_of_silent_rebind() {
+async fn workspace_identity_observation_refresh_is_not_cross_lifetime_replacement_proof() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("repo");
     init(&source);
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let track = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::adopt_for_task(repo.pool(), track.id.as_str())
+    let current = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
+    super::observe_for_task(repo.pool(), current.id.as_str())
         .await
         .unwrap();
+    let before = workspace_observation_snapshot(
+        &mut repo.pool().acquire().await.unwrap(),
+        current.id.as_str(),
+    )
+    .await
+    .unwrap();
     std::fs::rename(&source, tmp.path().join("previous")).unwrap();
     init(&source);
-    let error = super::adopt_for_task(repo.pool(), track.id.as_str())
+    super::observe_for_task(repo.pool(), current.id.as_str())
         .await
-        .unwrap_err();
-    assert!(error.to_string().contains("WorkspaceRecoveryRequired"));
+        .unwrap();
+    let after = workspace_observation_snapshot(
+        &mut repo.pool().acquire().await.unwrap(),
+        current.id.as_str(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        before.workspace_id, after.workspace_id,
+        "the ID names a logical selection, not a directory incarnation"
+    );
+    let crate::db::sqlite::DirectoryObservation::Observed(before) = before.state else {
+        panic!("observed before replacement");
+    };
+    let crate::db::sqlite::DirectoryObservation::Observed(after) = after.state else {
+        panic!("observed after replacement");
+    };
+    assert!(after.version > before.version);
+    assert_ne!(
+        before.inode, after.inode,
+        "renamed old directory remains allocated"
+    );
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        after.inode,
+        i64::try_from(std::fs::metadata(&source).unwrap().ino()).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -294,7 +331,7 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
          VALUES ('legacy','card',?1,?2,'held','legacy-owner',1,1,?3,'commit',?4,?5,'kernel','read_write')",
     ).bind(old.id.as_str()).bind(alias.to_str().unwrap()).bind(&sha)
         .bind(source.to_str().unwrap()).bind(common.to_str().unwrap()).execute(repo.pool()).await.unwrap();
-    super::adopt_for_task(repo.pool(), new.id.as_str())
+    super::observe_for_task(repo.pool(), new.id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -360,7 +397,7 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
 }
 
 #[tokio::test]
-async fn workspace_identity_borrowed_alias_cannot_own_the_physical_release_descriptor() {
+async fn workspace_identity_borrowed_observation_grants_no_physical_owner() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let owner = track(
@@ -381,20 +418,21 @@ async fn workspace_identity_borrowed_alias_cannot_own_the_physical_release_descr
         TrackWorkspacePlan::AttachedFromCwd,
     )
     .await;
-    super::adopt_for_task(repo.pool(), borrowed.id.as_str())
+    super::observe_for_task(repo.pool(), borrowed.id.as_str())
         .await
         .unwrap();
     let before: Option<String> = sqlx::query_scalar(
-        "SELECT physical_owner_track_id FROM workspace_resources WHERE canonical_root IS NOT NULL",
+        "SELECT physical_owner_track_id FROM workspace_resources WHERE source_track_id=?1 AND observed_root IS NOT NULL",
     )
+    .bind(borrowed.id.as_str())
     .fetch_one(repo.pool())
     .await
     .unwrap();
     assert_eq!(
         before, None,
-        "borrowed registration supplies no destruction ownership"
+        "borrowed observation supplies no destruction ownership"
     );
-    super::adopt_for_task(repo.pool(), owner.id.as_str())
+    super::observe_for_task(repo.pool(), owner.id.as_str())
         .await
         .unwrap();
     let rows: Vec<(String, String)> =
@@ -402,13 +440,14 @@ async fn workspace_identity_borrowed_alias_cannot_own_the_physical_release_descr
             .fetch_all(repo.pool())
             .await
             .unwrap();
-    assert_eq!(
+    assert_ne!(
         rows[0].0, rows[1].0,
-        "one canonical lifecycle and future delivered-tip owner"
+        "independent logical selections grant no shared lifecycle authority"
     );
     let physical_owner: String = sqlx::query_scalar(
-        "SELECT physical_owner_track_id FROM workspace_resources WHERE canonical_root IS NOT NULL",
+        "SELECT physical_owner_track_id FROM workspace_resources WHERE source_track_id=?1 AND observed_root IS NOT NULL",
     )
+    .bind(owner.id.as_str())
     .fetch_one(repo.pool())
     .await
     .unwrap();
@@ -419,14 +458,15 @@ async fn workspace_identity_borrowed_alias_cannot_own_the_physical_release_descr
         .await
         .unwrap();
     let retained_owner: String = sqlx::query_scalar(
-        "SELECT physical_owner_track_id FROM workspace_resources WHERE canonical_root IS NOT NULL",
+        "SELECT physical_owner_track_id FROM workspace_resources WHERE source_track_id=?1 AND observed_root IS NOT NULL",
     )
+    .bind(owner.id.as_str())
     .fetch_one(repo.pool())
     .await
     .unwrap();
     assert_eq!(
         retained_owner, physical_owner,
-        "the release descriptor is independent of domain deletion"
+        "owner observation audit is retained independently of domain deletion"
     );
 }
 
@@ -442,11 +482,11 @@ async fn workspace_identity_unrelated_legacy_terminal_directory_does_not_block_c
     let old = track(&repo, &external, TrackWorkspacePlan::AttachedFromCwd).await;
     task(&repo, &old).await;
     let incoming = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::adopt_for_task(repo.pool(), incoming.id.as_str())
+    super::observe_for_task(repo.pool(), incoming.id.as_str())
         .await
         .expect("a legitimate non-Git terminal in another track is not checkout occupancy");
     assert_eq!(
-        canonical_root(&repo, &incoming).await.as_deref(),
+        observed_root(&repo, &incoming).await.as_deref(),
         source.to_str()
     );
     assert_eq!(

@@ -75,7 +75,7 @@ async fn running(repo: &SqlxRepo, track: &Track, access: &str) -> String {
 }
 
 #[tokio::test]
-async fn workspace_resource_shared_identity_preserves_existing_track_admission() {
+async fn workspace_resource_independent_selections_preserve_existing_track_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let first = create(
         &repo,
@@ -89,7 +89,7 @@ async fn workspace_resource_shared_identity_preserves_existing_track_admission()
         TrackWorkspacePlan::AttachedFromCwd,
     )
     .await;
-    assert_eq!(
+    assert_ne!(
         resource(&repo, &first).await,
         resource(&repo, &second).await
     );
@@ -192,7 +192,7 @@ async fn workspace_resource_writer_repoints_atomically_and_freezes_both_projecti
     );
     tx.commit().await.unwrap();
     let (version, frozen): (i64, Option<i64>) = sqlx::query_as(
-        "SELECT admission_version,frozen_at_ms FROM track_workspace_bindings WHERE track_id=?1",
+        "SELECT selection_version,frozen_at_ms FROM track_workspace_bindings WHERE track_id=?1",
     )
     .bind(track.id.as_str())
     .fetch_one(repo.pool())
@@ -244,7 +244,7 @@ async fn workspace_resource_identity_survives_area_deletion_and_missing_binding_
         .await
         .unwrap();
     assert_eq!(count, 1);
-    let refusal = super::workspace_adoption_snapshot(
+    let refusal = super::workspace_observation_snapshot(
         &mut repo.pool().acquire().await.unwrap(),
         track.id.as_str(),
     )
@@ -271,19 +271,14 @@ async fn workspace_resource_migration_preserves_original_selection_and_payload_b
         ..sqlx::migrate::Migrator::DEFAULT
     };
     before_workspace.run(&pool).await.unwrap();
-    sqlx::query(
-        "INSERT INTO coves(id,name,color,sort,created_at,updated_at) VALUES ('a','a','#000',0,1,1)",
+    super::track_workspace_migration_tests::seed_pre_workspace_area(&pool).await;
+    super::track_workspace_migration_tests::seed_pre_workspace_track(
+        &pool,
+        "legacy",
+        "/original/checkout",
+        7,
     )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO waves(id,cove_id,title,sort,cwd,created_at,updated_at) \
-         VALUES ('legacy','a','legacy',0,'/original/checkout',7,7)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    .await;
     let previous = sqlx::migrate::Migrator {
         migrations: Cow::Owned(
             crate::MIGRATOR
@@ -302,8 +297,8 @@ async fn workspace_resource_migration_preserves_original_selection_and_payload_b
          VALUES ('op','test:legacy:key','test','key',?1,'original-hash','track','{\"track_id\":\"legacy\"}','pending',1,1)",
     ).bind(payload).execute(&pool).await.unwrap();
     crate::MIGRATOR.run(&pool).await.unwrap();
-    let (path, frozen, state): (String, Option<i64>, String) = sqlx::query_as(
-        "SELECT r.root_path,b.frozen_at_ms,r.materialization_state FROM workspace_resources r \
+    let (path, frozen, state): (String, Option<i64>, i64) = sqlx::query_as(
+        "SELECT r.root_path,b.frozen_at_ms,r.observation_version FROM workspace_resources r \
          JOIN track_workspace_bindings b ON b.workspace_id=r.id WHERE b.track_id='legacy'",
     )
     .fetch_one(&pool)
@@ -311,11 +306,7 @@ async fn workspace_resource_migration_preserves_original_selection_and_payload_b
     .unwrap();
     assert_eq!(
         (path, frozen, state),
-        (
-            "/original/checkout".into(),
-            Some(7),
-            "legacy_worktree".into()
-        )
+        ("/original/checkout".into(), Some(7), 0)
     );
     let original: (String, String) =
         sqlx::query_as("SELECT payload_json,payload_hash FROM operations WHERE id='op'")
@@ -323,4 +314,30 @@ async fn workspace_resource_migration_preserves_original_selection_and_payload_b
             .await
             .unwrap();
     assert_eq!(original, (payload.into(), "original-hash".into()));
+}
+
+#[tokio::test]
+async fn workspace_resource_ddl_accepts_only_complete_observation_shapes() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    for owned in [false, true] {
+        for version in [0_i64, 1] {
+            for mask in 0..64 {
+                let id = format!("{:032x}", 1 + i64::from(owned) * 128 + version * 64 + mask);
+                let owner = (mask & 32 != 0).then_some("source");
+                let result = sqlx::query("INSERT INTO workspace_resources(id,source_track_id,root_path,ownership,observation_version,created_at_ms,observed_root,observed_cwd,directory_device,directory_inode,git_common_dir,physical_owner_track_id) VALUES (?1,'source','/row',?2,?3,1,?4,?5,?6,?7,?8,?9)")
+                    .bind(&id).bind(if owned {"owned"} else {"borrowed"}).bind(version)
+                    .bind((mask & 1 != 0).then_some("/row")).bind((mask & 2 != 0).then_some("."))
+                    .bind((mask & 4 != 0).then_some(1_i64)).bind((mask & 8 != 0).then_some(1_i64))
+                    .bind((mask & 16 != 0).then_some("/row/.git")).bind(owner)
+                    .execute(repo.pool()).await;
+                let allowed = (version == 0 && mask == 0)
+                    || (version == 1 && mask == if owned { 63 } else { 31 });
+                assert_eq!(
+                    result.is_ok(),
+                    allowed,
+                    "observation shape owned={owned} version={version} mask={mask:06b}: {result:?}"
+                );
+            }
+        }
+    }
 }

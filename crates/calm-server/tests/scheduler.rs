@@ -8042,9 +8042,9 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
     assert_eq!(before_track.workspace.path, attached_path);
     assert!(before_track.workspace.frozen_at.is_some());
     let binding = |pool: sqlx::SqlitePool, id: String| async move {
-        sqlx::query_as::<_, (String, i64, String, String, String, Option<i64>)>(
-            "SELECT workspace_id,admission_version,selected_path,ownership,cwd,frozen_at_ms \
-             FROM track_workspace_bindings WHERE track_id=?1",
+        sqlx::query_as::<_, (String, i64, String, String, Option<String>, Option<i64>)>(
+            "SELECT b.workspace_id,b.selection_version,b.selected_path,b.ownership,r.observed_cwd,b.frozen_at_ms \
+             FROM track_workspace_bindings b JOIN workspace_resources r ON r.id=b.workspace_id WHERE b.track_id=?1",
         )
         .bind(id)
         .fetch_one(&pool)

@@ -14,9 +14,9 @@ use crate::{
     terminal_renderer::TerminalRendererRegistry,
 };
 
-use super::tests::{canonical_root, init, task, track};
+use super::tests::{init, observed_root, task, track};
 
-fn context(repo: Arc<SqlxRepo>, operations: Arc<SqlxOperationRepo>) -> SpawnCtx {
+pub(super) fn context(repo: Arc<SqlxRepo>, operations: Arc<SqlxOperationRepo>) -> SpawnCtx {
     SpawnCtx::new(
         repo.clone(),
         operations,
@@ -79,7 +79,7 @@ async fn workspace_identity_managed_preflight_does_not_create_or_repair() {
                 "registration must not repair an unborn managed repository"
             );
         }
-        assert!(canonical_root(&repo, &current).await.is_none());
+        assert!(observed_root(&repo, &current).await.is_none());
         let mut tx = repo.pool().begin().await.unwrap();
         let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
             &mut tx,
@@ -121,7 +121,7 @@ async fn workspace_identity_legacy_non_git_terminal_owner_prepares_without_git_a
     .unwrap();
     adapter.prepare_external(&payload, &ctx).await.unwrap();
     assert!(
-        canonical_root(&repo, &plain).await.is_none(),
+        observed_root(&repo, &plain).await.is_none(),
         "a legacy directory execution supplies no Git workspace identity"
     );
     assert_eq!(
@@ -287,11 +287,11 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
         &[old_cwd.to_str().unwrap().to_owned()]
     );
     assert!(
-        canonical_root(&repo, &current).await.is_none(),
+        observed_root(&repo, &current).await.is_none(),
         "replaying an old external source cannot acquire the current track's identity"
     );
     adapter.prepare_external(&payload, &ctx).await.unwrap();
-    assert!(canonical_root(&repo, &current).await.is_none());
+    assert!(observed_root(&repo, &current).await.is_none());
     let proof: (String, String, String) = sqlx::query_as(
         "SELECT path,base_sha,git_common_dir FROM workspace_leases WHERE lease_id='historical'",
     )

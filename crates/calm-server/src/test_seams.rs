@@ -146,7 +146,7 @@ pub async fn ensure_track_worktree_for_test(
         crate::error::CalmError::BadRequest("track creation did not declare a worktree".into())
     })?;
     crate::workspace_service::track_worktree::ensure_track_worktree(&track).await?;
-    crate::workspace_service::identity::adopt_for_task(pool, track_id).await?;
+    crate::workspace_service::identity::observe_for_task(pool, track_id).await?;
     Ok(path.into())
 }
 

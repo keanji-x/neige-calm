@@ -26,21 +26,40 @@ authorization. An absolute display path cannot authorize a launch. Existing
 worktree behavior, wire events, operation payload hashes, upstream selection
 timing and cleanup policy remain unchanged. No view backend is selectable.
 
-The first implementation outcome is a registration foundation: validated identity,
-physical directory/owner facts, and atomic track bindings. Registration is neither
-runtime authorization nor historical source conversion. Checkout admission keeps
-its existing track scope until legacy operation/source bindings and lease migration
-are complete; canonical IDs alone do not enable shared-resource admission.
-Registration only observes already materialized directories. Missing selections
-and managed directories awaiting their original repair remain Pending; directory
-creation and repair retain their existing worker prepare call time. A missing previously registered directory requires
-recovery, rather than creating a new directory through the registration hook.
+The first implementation outcome is a logical selection and observation foundation.
+Each new track or actual re-selection gets its own persistent logical `WorkspaceId`;
+writing the same selection preserves its ID and observation. Bindings and the freeze
+latch are atomic. A new binding starts `Pending`, with no inherited cwd or physical
+facts. The kernel observes the selected directory outside SQL, then CAS commits that
+selection's `Observed` tuple and observation version. Concurrent/repeated probes of
+identical facts converge without version churn; old different facts cannot overwrite a
+newer observation. Registration of another selection
+cannot complete this binding. These observations are neither historical source proof
+nor launch, admission or destruction authority.
 
-V1 terminal cwd is decoded by its terminal owner. Explicit directories and legacy
-attached directories retain their original cwd and executor refusal/receipt behavior,
-without acquiring a workspace identity from the track's current selection. The
-foundation exports no `WorkspaceRef`, resolve, launch handle or claim capability;
-those contracts below are delivered with their real launch/file consumers.
+Directory device/inode facts validate the retained descriptor during a probe and are
+stored for audit. They do not identify an object across deletion, recreation or restart.
+There is no global inode uniqueness, path/selection-key resurrection or persistent alias
+redirect. Old audit rows survive domain deletion; a new track never adopts them. Physical
+alias unification, cross-lifetime replacement detection, resource admission and strong
+claim/resolve require a later production vertical with real object incarnation proof,
+owned materialization/cancellation/retirement and a valid borrowed-object protocol.
+
+A repeated observation whose resolved root, relative cwd or Git common-dir path changed
+requires explicit recovery and retains the previous tuple. This is a deliberate v1
+refusal for a changed observed target: restore the recorded target, or make a new
+explicit selection through the existing writer when its latch permits it. Same-path device/inode changes
+refresh current audit facts; this does not certify that the object is the same incarnation.
+The hook only observes existing directories. Missing selections and managed directories
+awaiting their original repair remain `Pending`; creation/repair keep the existing prepare
+call time. A missing previously observed directory requires recovery. Checkout admission
+keeps its existing track scope.
+
+V1 terminal cwd remains decoded by its terminal owner. Explicit and legacy attached
+directories retain their original cwd and executor refusal/receipt behavior, without
+acquiring identity from the track's current selection. The foundation exports no
+`WorkspaceRef`, SourceProof, resolve, launch handle, generation stamp or claim capability.
+The full S2a contracts below are delivered with their real launch/file consumers.
 
 ## Ownership and types
 

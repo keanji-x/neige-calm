@@ -58,7 +58,7 @@ pub(super) async fn prepare(
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     match decode(track_id, &track.workspace, explicit)? {
         LegacyTerminalTarget::WorkspaceDefault { .. } => {
-            crate::workspace_service::identity::adopt_for_task(
+            crate::workspace_service::identity::observe_for_task(
                 &ctx.operation_repo.sqlite_pool(),
                 track_id,
             )

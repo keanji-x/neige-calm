@@ -19,6 +19,35 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
     }
 }
 
+/// Shared real pre-workspace storage fixture, using the released historical schema.
+pub(super) async fn seed_pre_workspace_area(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
+         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
+    )
+    .execute(pool)
+    .await
+    .expect("seed area");
+}
+
+pub(super) async fn seed_pre_workspace_track(
+    pool: &sqlx::SqlitePool,
+    id: &str,
+    cwd: &str,
+    created_at: i64,
+) {
+    sqlx::query(
+        "INSERT INTO waves (id, cove_id, title, sort, lifecycle, cwd, created_at, updated_at)
+             VALUES (?1, 'area-1', 't', 0, 'draft', ?2, ?3, ?3)",
+    )
+    .bind(id)
+    .bind(cwd)
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .unwrap_or_else(|error| panic!("seed track {id}: {error}"));
+}
+
 /// Every pre-migration track becomes `attached`, pointing at its own `cwd`,
 /// frozen at `created_at` — including the `cwd = ''` rows migration 0018 produced.
 #[tokio::test]
@@ -33,13 +62,7 @@ async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
         .await
         .expect("apply migrations through 0076");
 
-    sqlx::query(
-        "INSERT INTO coves (id, name, color, sort, created_at, updated_at)
-         VALUES ('area-1', 'c', '#000', 0, 1, 1)",
-    )
-    .execute(&pool)
-    .await
-    .expect("seed area");
+    seed_pre_workspace_area(&pool).await;
     sqlx::query(
         "INSERT INTO coves (id, name, color, sort, kind, created_at, updated_at)
          VALUES ('area-system', 'system', '#000', -1, 'system', 1, 1)",
@@ -63,16 +86,7 @@ async fn migration_0077_backfills_existing_tracks_as_frozen_attached() {
         ("w-empty", "", 5000),
     ];
     for (id, cwd, created_at) in seeds {
-        sqlx::query(
-            "INSERT INTO waves (id, cove_id, title, sort, lifecycle, cwd, created_at, updated_at)
-             VALUES (?1, 'area-1', 't', 0, 'draft', ?2, ?3, ?3)",
-        )
-        .bind(id)
-        .bind(cwd)
-        .bind(created_at)
-        .execute(&pool)
-        .await
-        .unwrap_or_else(|error| panic!("seed track {id}: {error}"));
+        seed_pre_workspace_track(&pool, id, cwd, created_at).await;
     }
 
     migrator_through(77)

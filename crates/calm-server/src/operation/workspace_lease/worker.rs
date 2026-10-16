@@ -136,7 +136,7 @@ fn worker_checkout<'a>(
     }
 }
 
-pub(crate) async fn register_worker_checkout(
+pub(crate) async fn observe_worker_checkout(
     ctx: &crate::operation::SpawnCtx,
     track_id: &str,
 ) -> Result<()> {
