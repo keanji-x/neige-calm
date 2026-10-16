@@ -7,6 +7,9 @@ edition = "2024"
 # `calm-server`: systemd supervises `neige-app`, and `neige-app` supervises the
 # current calm-server release. M1 only implements the system service mode.
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "neige-app"
 path = "src/main.rs"
