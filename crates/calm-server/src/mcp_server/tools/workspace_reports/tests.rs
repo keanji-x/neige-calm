@@ -244,6 +244,16 @@ async fn ungranted_planner_cannot_read_workspace_reports() {
         .await
         .unwrap();
     let id = identity(&route, &track).await;
+    // A previously usable tool and identity must lose access with the live grant.
+    let registry = crate::mcp_server::build_default_registry();
+    let listed = registry.lookup("neige_workspace_ls").unwrap()(
+        route.mcp_context.clone(),
+        id.clone(),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert!(listed.into_structured()["reports"].is_array());
     sqlx::query("UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1")
         .bind(track.id.as_str())
         .execute(repo.pool())

@@ -49,6 +49,62 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
             expected,
             "workspace capability instructions stay outside input segments; only Planner adds budget context"
         );
+        // Same native session: revoke the fixture's live grant after a real granted turn.
+        let turn_id = inner.last_turn_id.lock().await.clone().unwrap();
+        let live = inner.live_claim.writer();
+        on_notification(
+            inner,
+            &live,
+            PlannerEvent {
+                thread_id: inner.thread_id.read().await.clone(),
+                kind: PlannerEventKind::TurnStarted {
+                    turn_id: turn_id.clone(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fx.harness.snapshot().await.phase,
+            HarnessPhaseTag::TurnRunning
+        );
+        on_notification(
+            inner,
+            &live,
+            PlannerEvent {
+                thread_id: inner.thread_id.read().await.clone(),
+                kind: PlannerEventKind::TurnCompleted {
+                    turn: serde_json::json!({"id": turn_id, "status": "completed"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fx.harness.snapshot().await.phase,
+            HarnessPhaseTag::TurnCompleted
+        );
+        sqlx::query(
+            "UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1",
+        )
+        .bind(inner.track_id.as_str())
+        .execute(fx.repo.pool())
+        .await
+        .unwrap();
+        fx.enqueue(vec![QueueEntry::user_message(
+            "Continue after revocation".into(),
+            None,
+            vec![],
+        )])
+        .await;
+        fx.issue().await;
+        let sent = fx.daemon.started_turns_for_test();
+        assert_eq!(sent.len(), 2);
+        let InputItem::Text { text } = &sent[1].1[0] else {
+            panic!("expected text")
+        };
+        assert!(text.contains("Continue after revocation"));
+        assert!(!text.contains("neige_workspace_ls"));
     }
 }
 

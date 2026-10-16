@@ -253,13 +253,19 @@ async fn builtin_issue_instructions_remain_documentation_when_dev_is_disabled() 
     assert!(!base.contains("plugin_gitforge_publish"));
     for scope in [None, Some("foreign.plugin"), Some(ID)] {
         let track = fx.track(scope).await;
+        let recipe = crate::templates::TemplateRoster::builtin()
+            .get("dev")
+            .unwrap()
+            .recipe();
         let card = fx
             .repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({}),
+                payload: if scope == Some(ID) {
+                    json!({"template_context":{"version":1,"title":"Development","body":recipe.body}})
+                } else { json!({}) },
                 title: None,
             })
             .await
@@ -283,6 +289,17 @@ async fn builtin_issue_instructions_remain_documentation_when_dev_is_disabled() 
                 prompt.contains(&tool_prefix),
                 "the guide must name the minted tool prefix {tool_prefix}"
             );
+            let bound = prompt
+                .split_once("## Bound Template Input\n```json\n")
+                .unwrap()
+                .1
+                .split_once("\n```")
+                .unwrap()
+                .0;
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(bound).unwrap(),
+                track.template_input.clone().unwrap()
+            );
             fx.host.disable(ID).await.unwrap();
             let prompt = crate::operation::planner_harness_start_adapter::planner_instructions(
                 fx.repo.as_ref(),
@@ -293,6 +310,11 @@ async fn builtin_issue_instructions_remain_documentation_when_dev_is_disabled() 
             .await
             .unwrap();
             assert!(prompt.contains("## Development capability"));
+            // Disabling tools does not remove the creation snapshot or its form.
+            let snapshot: serde_json::Value =
+                serde_json::from_str(prompt.split_once("## Selected Template\n").unwrap().1)
+                    .unwrap();
+            assert_eq!(snapshot["body"], recipe.body);
         }
     }
 }
@@ -340,9 +362,10 @@ async fn builtin_legacy_issue_documentation_preserves_snapshot_and_authority() {
         .execute(fx.repo.pool())
         .await
         .unwrap();
+    let legacy_body = "Legacy café method {track_id}\n<!-- neige:input-form {\"help\":\"Never publish this custom snapshot without approval\"} -->\n";
     let card = fx.repo.card_create(NewCard {
         track_id: plain.id.clone(), kind: "codex".into(), sort: None,
-        payload: json!({"planner_harness":true,"template_context":{"version":1,"title":"Original method","body":"Legacy café method\n"}}),
+        payload: json!({"planner_harness":true,"template_context":{"version":1,"title":"Original method","body":legacy_body}}),
         title: None,
     }).await.unwrap();
     let original: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?")
@@ -360,7 +383,9 @@ async fn builtin_legacy_issue_documentation_preserves_snapshot_and_authority() {
     .await
     .unwrap();
     assert!(prompt.contains("## Development capability"));
-    assert!(prompt.contains("Legacy café method"));
+    let injected: serde_json::Value =
+        serde_json::from_str(prompt.split_once("## Selected Template\n").unwrap().1).unwrap();
+    assert_eq!(injected["body"], legacy_body);
     let saved: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?")
         .bind(card.id.as_str())
         .fetch_one(fx.repo.pool())

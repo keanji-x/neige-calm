@@ -1,6 +1,6 @@
 # 上下文交付：减负而不丢契约
 
-状态：待实施设计；本次仅修订本文。整体 **L2**：后续涉及授权、恢复与持久化语义，交付后由 Planner 安排双独立评审。本次不改生产代码、配置或其他会话，不安排评审、不手动提交。
+状态：A/B/C 最小文本切片已实施，实际结果见 §7；§1–6 保留设计阶段的核对与限制。整体 **L2** 不降级，实施后的双独立评审由 Planner 安排；不改变权限、恢复或持久化机制，不修改其他会话。
 
 ## 1. 目标与边界
 
@@ -211,3 +211,87 @@ wire 对照附着 A/B/C 各自实际改变的生产入口，复用现有 fake pr
 本次读根 AGENTS.md/CONTRIBUTING.md、原设计、两路完整结果和相关生产/测试调用路径；docs 下未发现更具体 AGENTS。初始 worktree 干净，核对 HEAD `99f42b2afc8dc0fcaea0c55ec072994d93305abc`；重跑 §4 只读基线、相对链接存在性、`git diff --check` 及 diff/status。文本门禁由 kernel 执行 `scripts/local-ratchet-gates.sh`，verdict 以实际 gate 记录为准，不预填通过。未跑 Rust/浏览器/真实 provider/模型保留测试，不声称已实现收益。不改代码/配置，不自行提交或安排评审。
 
 交付预览：[docs/architecture/context-delivery.md](context-delivery.md)。未取得的其他会话历史、宿主目录来源及 provider 保留语义仍未知。
+
+
+## 7. A/B/C 最小实施记录
+
+基准 `3866cffafe8b328f14ba9b45ddb5585275070133`。A 只改新 dev 模板来源，
+保留方法、repo 核对、issue/无 issue 边界、验证与评审职责、rerun 工具逐次审批
+（不用 gh、不另 ask）、同参取 op 回执及按 head 的 merge 审批。gitforge 原说明不改；
+未由其完整承载的 PR diff 路径和每次 CI wait 刷新要求仍留模板。
+完整 input-form 与基准逐字节相等（1169 bytes）。B 只改有 grant 的每轮教学。
+C 合并替换现有状态/交接/证据句，使用 Report/task context；未新增自动摘要或省略。
+
+新增观测附着原 owner：legacy 测试用仅在自定义表单注释里的限制及字面占位符，
+解析实际 `Selected Template` JSON 后全量比较；既有 builtin dev 测试观察真实
+`planner_instructions` 的快照与 Bound Input。run-loop Fixture 在同一 native session
+驱动 start→complete，将 `managed_track_identities.report_read_scope` 从 workspace
+改成 area，再走真实下一轮，确认不再带肯定教学。handler 测试先成功 ls，再以原
+identity 调用四工具确认撤权拒绝；这是 fixture 更新，不是生产撤权 API。
+没有改权限或恢复机制，普通文本优化不做 mutation。
+
+C 的角色规则通过 `SeededCardRole::WorkerCodex/WorkerClaude` 的生产 renderer 观察，
+不是用 task_prompt 冒充 system prompt；真实 adapter 分别在
+`operation/codex_adapter/mod.rs` 的 thread/start 与
+`operation/claude_adapter/mod.rs` 的 `--append-system-prompt` 使用该角色提示。
+任务 context 仍由既有 task_prompt 冻结传递。人工核对的约束含义：A 被收窄并追加 B 时
+B 仍属 uncovered goal；H 的原审批引用不授权 H2；旧 gate 不验证新 head；rewind
+移除来源轮时即使 Report 留存也须核验；未知提交不据摘要重发。这是提示规则核对，
+不声称字符串或 fake provider 证明模型理解。
+
+目录零增长的证据是 diff 范围及未改的共同路径，不是新 provider 矩阵平台：
+`mcp_server/tools/workspace_reports.rs` 的四份 description/schema/roles/listed_for，
+`prompts/tools/neige_workspace_*.md`、`mcp_server/transport/catalog.rs` 的 SessionCatalog
+及 `harness/backend_metadata.rs` 均与基准字节相同。Codex discovery/describe、Claude
+MCP 与 ACP session listing 消费这些共同来源；无 grant 的目录/description/schema
+增量为 0。`managed_track.rs`、`TemplateContext`、planner startup、两个 worker adapter、
+provider、retry/admission 源码也未改。无 grant Planner 仍有 C 的固定启动成本，
+不能把“目录零增长”写成所有无 grant 会话总成本零增长。
+
+验证职责不变：worker 跑聚焦测试、实际 golden 再生和格式；冻结 gate 跑文本、合同、
+Rust quick 及 lib/track_suite 聚焦重放；CI 拥有广泛 suite。新增用例只改原 owning module，
+没有永久大小 pin、测试名清单或 provider 捕获平台；原 CI job 每 workflow 一次，
+gate 各一次聚焦重放。临时捕获代码不交付。
+
+
+实测使用原 builtin Fixture 的 `planner_instructions`（绑定 issue 输入、启用的 dev
+及 stored plugin 组装、完整 Selected Template pretty JSON），只把随机 track id
+等长规范化为 32 位；实际每轮取 run-loop Fixture 的 `started_turns`。worker 取两个
+SeededCardRole 的生产 renderer。baseline/after 临时捕获位于本次执行的 `/tmp`，
+测量写入已移除；成本数字不是永久断言。UTF-8/Unicode code point 如下：
+
+| Neige 组装边界 | before bytes / chars | after bytes / chars |
+|---|---:|---:|
+| 新 dev 组合启动（含 C、插件与 JSON wrapper） | 25105 / 23488 | 22946 / 22082 |
+| WorkerCodex 角色提示 | 5301 / 5295 | 5779 / 5775 |
+| WorkerClaude 角色提示 | 4945 / 4939 | 5423 / 5419 |
+| 有 grant Planner 实际一轮（含预算与同一用户输入） | 1692 / 1692 | 1274 / 1274 |
+| 有 grant Assistant 实际一轮 | 1464 / 1464 | 1046 / 1046 |
+
+源文 dev 12986→10866 bytes；workspace 1426→1008；Planner 6591→6582；worker
+head 3378→3856。C 的 worker 固定成本 +478 bytes / +480 chars 已计入，Planner
+则因合并重叠句净减 9 bytes。没有新读取需求。
+
+同等读取样本计入四工具生产 `into_mcp_value` 的 JSON `tools` wrapper（1262），
+`neige_workspace_ls` 的空参数 request（44），真实 handler 的完整 `ToolResult`
+JSON（空列表，含 content/structuredContent/isError，204）；公共读取成本 1510 bytes/chars。
+这些工具源文/serializer/查询未改，响应内容取相同 fixture 状态；不是测 provider 的
+搜索排序或额外装载策略。以「新 dev 启动 + 一个 Codex worker + 一轮 Planner +
+该读取序列」为固定样本，T_before=33608 bytes/31985 chars，T_after=31509/30641，
+净减 2099 bytes/1344 chars。相同更多读取响应、RPC 外层、冻结任务 context 和未改宿主
+提示的公共量须同时加回两侧，不把它们算为 0；本样本差值不受该公共量影响。
+每增加同形有 grant 普通轮再少 418 bytes；这不是 provider 重计历史或计费公式。
+旧/自定义快照 body 保真，不能声称既有 dev 卡自动得到 A 的启动节省。
+
+实际入口先以 `cargo metadata --locked --no-deps --format-version 1` 核对 target；
+用 `cargo nextest list` 和声明 gate 的 lib filter 确认选中 7 项；
+同包 `--test track_suite template_startup` 选中 5 项。基线同 filter 的
+`nextest run --no-tests=fail --test-threads 8` 全绿（lib 另含一次临时捕获，共 8 项）。
+golden 经真实 `REGEN_PROMPT_GOLDENS=1 REGEN_PLANNER_PROMPT_GOLDEN=1` 运行
+`the_worker_prompts_match_their_reviewed_goldens` 与
+`shipped_dev_rendered_prompt_matches_full_golden` 再生，按约定故意 panic，已审完整 diff；
+基础 dev golden 不作为快照证据。最终不带再生 flag 的 lib 聚焦 + 角色 golden/预算
+共 10 项全绿；track_suite template_startup 5 项全绿。冻结 gate 结果见本 attempt 的
+`runs/3f68c70ec41d4bdcb78a7889e556f60b:context-implement-v1.json` 与其 gate log。
+无浏览器行为修改，未运行浏览器、广泛 suite 或真实 provider。未配置 tokenizer，
+不报告 tokens、模型保留、provider 内最终请求或费用收益。
