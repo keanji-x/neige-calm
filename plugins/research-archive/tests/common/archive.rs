@@ -178,3 +178,10 @@ pub fn members(symbols: &[&str]) -> String {
         stocks.join(",")
     )
 }
+
+/// Expected security pairs derive from the declared catalog, not a frozen count.
+pub fn security_count() -> usize {
+    research_archive::Catalog::compiled()
+        .for_kind(research_archive::KeyKind::Security)
+        .count()
+}

@@ -260,7 +260,10 @@ async fn status_answers_with_the_health() {
     let result = kernel.call_tool("capture_status", json!({}), None);
     assert_eq!(result.get("isError"), None, "{result}");
     assert_eq!(result["structuredContent"]["health"], "ok");
-    assert_eq!(result["structuredContent"]["runs"][0]["pairs_ok"], 13);
+    assert_eq!(
+        result["structuredContent"]["runs"][0]["pairs_ok"],
+        2 * crate::archive::security_count() + 1
+    );
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(
         text.starts_with("Healthy · last capture start: complete at "),
@@ -334,7 +337,10 @@ async fn a_watching_track_gets_the_live_table_until_it_stops() {
     kernel.until_overlay(TRACK, |t| caption(t).starts_with("Healthy"));
     let table = kernel.overlays[&(TRACK.to_owned(), OVERLAY.to_owned())].clone();
     assert_eq!(table["rows"][0]["as_of"], "2026-01-02");
-    assert_eq!(table["rows"][0]["ok"], 13);
+    assert_eq!(
+        table["rows"][0]["ok"],
+        2 * crate::archive::security_count() + 1
+    );
     assert_eq!(table["rows"][0]["membership"], ".SPX.US observed");
 
     // A changed status reaches the Track on the poll.

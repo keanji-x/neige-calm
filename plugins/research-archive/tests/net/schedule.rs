@@ -3,6 +3,7 @@
 //! for an `ok` or the carry deadline (scenarios A, B and C), and no request
 //! starts after the deadline even when the rate-limit slot comes late.
 
+use crate::archive::security_count;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,7 +62,7 @@ fn a_short_outage_loses_no_pair() {
         let outcome = capture(&a, &clock).await;
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
         let coverage = a.store().await.coverage(RunId(1)).await.unwrap();
-        assert_eq!(coverage.len(), 13);
+        assert_eq!(coverage.len(), 2 * security_count() + 1);
         assert!(coverage.iter().all(|p| p.has_ok));
     })
 }
@@ -330,8 +331,8 @@ fn a_resume_after_the_carry_deadline_freezes_at_once_despite_a_hanging_attempt()
             .unwrap();
         store.close().await;
         let (outcome, ()) = tokio::join!(capture(&a, &clock), async {
-            // The six security pairs land while the constituents hang.
-            wait_for_rows(&a, 6).await;
+            // The security pairs land while the constituents hang.
+            wait_for_rows(&a, security_count() as i64).await;
             gate.add_permits(1);
         });
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
@@ -340,10 +341,10 @@ fn a_resume_after_the_carry_deadline_freezes_at_once_despite_a_hanging_attempt()
             (frozen[0].1.as_str(), frozen[0].2),
             ("none", tue_start().0 + 65 * 60_000)
         );
-        // The six security rows were recorded before the constituents
+        // The security rows were recorded before the constituents
         // answered (the barrier above); then the constituents row.
         let recorded = rows(&a).await;
-        assert_eq!(recorded.len(), 7);
+        assert_eq!(recorded.len(), security_count() + 1);
         let constituents: Vec<_> = recorded
             .iter()
             .filter(|r| r.1 == "index_constituents")
@@ -421,6 +422,11 @@ fn a_throttle_wait_survives_a_restart() {
         let th = throttled.clone();
         let server = TimedServer::start(clock.clone(), move |s, _| {
             if s.path == "/v1/quote/financial-consensus-detail"
+                && !s
+                    .query
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("period_type=af")
                 && th.swap(false, std::sync::atomic::Ordering::SeqCst)
             {
                 Reply::new(
@@ -444,7 +450,14 @@ fn a_throttle_wait_survives_a_restart() {
         let consensus: Vec<_> = server
             .arrivals()
             .into_iter()
-            .filter(|r| r.path == "/v1/quote/financial-consensus-detail")
+            .filter(|r| {
+                r.path == "/v1/quote/financial-consensus-detail"
+                    && !r
+                        .query
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("period_type=af")
+            })
             .map(|r| r.at.0 - start.0)
             .collect();
         assert_eq!(consensus.len(), 2);

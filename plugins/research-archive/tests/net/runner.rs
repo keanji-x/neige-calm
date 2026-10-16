@@ -5,6 +5,7 @@
 //! the order of membership and fetch, resumption, missed days, and the
 //! serialized recorder.
 
+use crate::archive::security_count;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -105,11 +106,11 @@ fn a_full_run_freezes_first_then_completes_every_pair() {
 
         let arrivals = server.arrivals();
         // AAPL.US (config and member), MSFT.US: 6 each; .SPX.US: 1.
-        assert_eq!(arrivals.len(), 13);
+        assert_eq!(arrivals.len(), 2 * security_count() + 1);
         assert_eq!(arrivals[0].path, "/v1/quote/index-constituents");
         let store = a.store().await;
         let coverage = store.coverage(RunId(1)).await.unwrap();
-        assert_eq!(coverage.len(), 13);
+        assert_eq!(coverage.len(), 2 * security_count() + 1);
         assert!(coverage.iter().all(|p| p.has_ok && p.attempts == 1));
         // I4: the universe was persisted before any per-key fetch.
         let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
@@ -126,7 +127,7 @@ fn a_full_run_freezes_first_then_completes_every_pair() {
         // Another start in the same window finds the run ended.
         let again = capture(&a, &clock).await;
         assert_eq!(again.kind, ExitKind::AlreadyEnded);
-        assert_eq!(server.arrivals().len(), 13);
+        assert_eq!(server.arrivals().len(), 2 * security_count() + 1);
     })
 }
 
@@ -142,7 +143,7 @@ fn i7_retries_record_every_attempt_and_throttles_do_not_count() {
         let forecast = Arc::new(AtomicUsize::new(0));
         let (c, f) = (consensus.clone(), forecast.clone());
         let server = TimedServer::start(clock.clone(), move |s, _| match s.path.as_str() {
-        "/v1/quote/financial-consensus-detail" => match c.fetch_add(1, Ordering::SeqCst) {
+        "/v1/quote/financial-consensus-detail" if !s.query.as_deref().unwrap_or_default().contains("period_type=af") => match c.fetch_add(1, Ordering::SeqCst) {
             0 => Reply::new(503, "<html>busy</html>"),
             _ => Reply::data(r#"{"eps":"1.25"}"#),
         },
@@ -288,7 +289,14 @@ fn i1_the_window_closing_ends_the_run_partial_and_nothing_is_fetched_after() {
         let arrivals = server.arrivals();
         let consensus = arrivals
             .iter()
-            .filter(|r| r.path == "/v1/quote/financial-consensus-detail")
+            .filter(|r| {
+                r.path == "/v1/quote/financial-consensus-detail"
+                    && !r
+                        .query
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("period_type=af")
+            })
             .count();
         // At -90 s and, after the 1 min backoff, at -30 s; the next retry (4
         // min later) would start after the window end.
@@ -376,7 +384,7 @@ fn a_hanging_request_is_dropped_at_the_deadline() {
         );
         assert_eq!(outcome.kind, ExitKind::Partial, "{outcome:?}");
         let recorded = rows(&a).await;
-        assert_eq!(recorded.len(), 6, "{recorded:?}");
+        assert_eq!(recorded.len(), security_count(), "{recorded:?}");
         let forecast: Vec<_> = recorded.iter().filter(|r| r.1 == "forecast_eps").collect();
         assert_eq!(forecast.len(), 1);
         assert_eq!(forecast[0].4, "transient");
@@ -469,7 +477,7 @@ fn the_attempt_timeout_leaves_the_run_open_for_the_next_start() {
         assert_eq!(attempts.len(), 3);
         // Only valuation was requested again, once its stored backoff had
         // passed.
-        assert_eq!(server.arrivals().len(), 6 + 1 + 1);
+        assert_eq!(server.arrivals().len(), security_count() + 1 + 1);
     })
 }
 
@@ -529,9 +537,12 @@ fn membership_waits_for_the_carry_deadline_then_carries() {
             .iter()
             .filter(|r| r.path != "/v1/quote/index-constituents")
             .count();
-        assert_eq!(securities, 12);
+        assert_eq!(securities, 2 * security_count());
         let coverage = a.store().await.coverage(RunId(2)).await.unwrap();
-        assert_eq!(coverage.iter().filter(|p| p.has_ok).count(), 12);
+        assert_eq!(
+            coverage.iter().filter(|p| p.has_ok).count(),
+            2 * security_count()
+        );
         let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
         let (mode, source): (String, Option<i64>) =
             sqlx::query_as("SELECT mode, source_run_id FROM run_membership WHERE run_id = 2")
@@ -634,7 +645,7 @@ fn concurrent_responses_are_recorded_in_time_order() {
         });
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
         let recorded = rows(&a).await;
-        assert_eq!(recorded.len(), 12);
+        assert_eq!(recorded.len(), 2 * security_count());
         // The slow first request was stamped when it was recorded, after later
         // requests had arrived, not when it was sent.
         let arrivals = server.arrivals();
@@ -642,7 +653,15 @@ fn concurrent_responses_are_recorded_in_time_order() {
         let endpoint_id = research_archive::Catalog::compiled()
             .endpoints()
             .iter()
-            .find(|e| e.path == first.path)
+            .find(|e| {
+                e.path == first.path
+                    && (e.id.as_str() == "consensus_annual")
+                        == first
+                            .query
+                            .as_deref()
+                            .unwrap_or_default()
+                            .contains("period_type=af")
+            })
             .unwrap()
             .id;
         let stamped = recorded
@@ -692,10 +711,11 @@ fn a_dangling_run_is_ended_partial_and_alerts() {
 
 /// A run that ends `complete` with fewer than half of its planned pairs
 /// having an `ok` (here, a token the server rejects inside the envelope on
-/// four of six endpoints) exits `DEGRADED`, naming the dominant failure.
-/// Exactly half is ordinary loss: `complete_with_failures`, exit 0.
+/// several endpoint paths) exits `DEGRADED`, naming the dominant failure.
+/// More than half ok is ordinary loss here; the exact-half predicate is
+/// pinned separately by the types unit tests.
 #[test]
-fn fewer_than_half_ok_is_degraded_and_half_is_not() {
+fn fewer_than_half_ok_is_degraded_and_more_than_half_is_not() {
     hermetic::run(async {
         for (failing, kind, code, failure) in [
             (
@@ -713,7 +733,6 @@ fn fewer_than_half_ok_is_degraded_and_half_is_not() {
                 &[
                     "/v1/quote/financial-consensus-detail",
                     "/v1/quote/forecast-eps",
-                    "/v1/quote/institution-rating-latest",
                 ][..],
                 ExitKind::CompleteWithFailures,
                 0,

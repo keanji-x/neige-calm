@@ -15,10 +15,11 @@ use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, Row, SqliteConnection};
 
 pub const DAY: i64 = 86_400_000;
-pub const TABLES: [&str; 7] = [
+pub const TABLES: [&str; 8] = [
     "endpoint",
     "blob",
     "run",
+    "run_endpoint",
     "run_key",
     "run_membership",
     "observation",

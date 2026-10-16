@@ -147,11 +147,25 @@ impl Store {
         path: &Path,
         catalog: &Catalog,
     ) -> std::result::Result<Store, OpenError> {
+        Self::open_catalog(path, catalog, false).await
+    }
+
+    /// Explicit, append-only upgrade from the released seven-entry catalog.
+    /// The CLI must hold the data-dir lock. Ordinary open/read never upgrades.
+    pub async fn upgrade_annual_catalog(path: &Path) -> std::result::Result<Store, OpenError> {
+        Self::open_catalog(path, &Catalog::compiled(), true).await
+    }
+
+    async fn open_catalog(
+        path: &Path,
+        catalog: &Catalog,
+        allow_annual_upgrade: bool,
+    ) -> std::result::Result<Store, OpenError> {
         // No `journal_mode` here: setting it would rewrite a file we may
         // refuse. `foreign_keys` and `synchronous` are per connection.
         let options = SqliteConnectOptions::new()
             .filename(path)
-            .create_if_missing(true)
+            .create_if_missing(!allow_annual_upgrade)
             .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true)
             .busy_timeout(Duration::from_secs(5));
@@ -165,7 +179,7 @@ impl Store {
             pool,
             catalog: catalog.clone(),
         };
-        match store.check_or_create().await {
+        match store.check_or_create(allow_annual_upgrade).await {
             Ok(()) => Ok(store),
             Err(e) => {
                 store.pool.close().await;
@@ -183,26 +197,60 @@ impl Store {
         &self.catalog
     }
 
-    async fn check_or_create(&self) -> std::result::Result<(), OpenError> {
-        let (expected_schema, expected_version) = schema::reference().await?;
+    async fn check_or_create(
+        &self,
+        allow_annual_upgrade: bool,
+    ) -> std::result::Result<(), OpenError> {
+        let expected = schema::reference().await?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let found_version = schema::user_version(&mut tx).await?;
         let found_schema = schema::read_schema(&mut tx).await?;
         if found_version == 0 && found_schema.is_empty() {
+            if allow_annual_upgrade {
+                return Err(OpenError::UserVersion {
+                    found: 0,
+                    expected: expected.1,
+                });
+            }
             sqlx::Executor::execute(&mut *tx, schema::DDL).await?;
+            sqlx::Executor::execute(&mut *tx, schema::MIGRATION_V2).await?;
             for e in self.catalog.endpoints() {
                 insert_endpoint(&mut tx, e).await?;
             }
-            tx.commit().await?;
-            return self.enable_wal().await;
+        } else if allow_annual_upgrade && found_version == 1 {
+            let legacy = schema::reference_v1().await?;
+            match self
+                .check_matches(&mut tx, legacy, found_version, found_schema)
+                .await
+            {
+                Err(OpenError::Catalog(drift))
+                    if drift.missing == ["consensus_annual"]
+                        && drift.extra.is_empty()
+                        && drift.changed.is_empty() => {}
+                Err(error) => return Err(error),
+                Ok(()) => {
+                    return Err(OpenError::UserVersion {
+                        found: 1,
+                        expected: expected.1,
+                    });
+                }
+            }
+            // Backfill every old run from the old catalog in the SAME transaction,
+            // before the new endpoint exists. Never grow a historical run's plan.
+            sqlx::Executor::execute(&mut *tx, schema::MIGRATION_V2).await?;
+            let annual = self
+                .catalog
+                .get("consensus_annual")
+                .expect("compiled annual endpoint");
+            insert_endpoint(&mut tx, annual).await?;
+        } else {
+            self.check_matches(&mut tx, expected.clone(), found_version, found_schema)
+                .await?;
         }
-        self.check_matches(
-            &mut tx,
-            (expected_schema, expected_version),
-            found_version,
-            found_schema,
-        )
-        .await?;
+        let version = schema::user_version(&mut tx).await?;
+        let found = schema::read_schema(&mut tx).await?;
+        self.check_matches(&mut tx, expected, version, found)
+            .await?;
         tx.commit().await?;
         self.enable_wal().await
     }

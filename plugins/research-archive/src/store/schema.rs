@@ -195,6 +195,27 @@ BEGIN SELECT RAISE(ABORT, 'run_end row exists'); END;
 PRAGMA user_version = 1;
 "#;
 
+/// Version 2 adds a per-run endpoint snapshot. The released v1 DDL above
+/// remains byte-frozen. On upgrade, snapshot the old catalog BEFORE adding
+/// any new endpoint, so historical coverage and ever_planned stay truthful.
+pub const MIGRATION_V2: &str = r#"
+CREATE TABLE run_endpoint (
+    run_id INTEGER NOT NULL REFERENCES run (run_id),
+    endpoint_id TEXT NOT NULL REFERENCES endpoint (endpoint_id),
+    PRIMARY KEY (run_id, endpoint_id)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER run_endpoint_no_update BEFORE UPDATE ON run_endpoint
+BEGIN SELECT RAISE(ABORT, 'run_endpoint is append-only'); END;
+CREATE TRIGGER run_endpoint_no_delete BEFORE DELETE ON run_endpoint
+BEGIN SELECT RAISE(ABORT, 'run_endpoint is append-only'); END;
+CREATE TRIGGER run_endpoint_no_duplicate BEFORE INSERT ON run_endpoint
+WHEN EXISTS (SELECT 1 FROM run_endpoint WHERE run_id = NEW.run_id AND endpoint_id = NEW.endpoint_id)
+BEGIN SELECT RAISE(ABORT, 'run_endpoint row exists'); END;
+INSERT INTO run_endpoint (run_id, endpoint_id)
+SELECT r.run_id, e.endpoint_id FROM run r CROSS JOIN endpoint e;
+PRAGMA user_version = 2;
+"#;
+
 /// One schema object: `(type, name)` → `(tbl_name, sql)` from `sqlite_schema`.
 pub(crate) type Schema = BTreeMap<(String, String), (String, Option<String>)>;
 
@@ -224,8 +245,19 @@ pub(crate) async fn user_version(conn: &mut SqliteConnection) -> Result<i64, sql
 /// in-memory database. Comparing against this, rather than a second copy of
 /// the statements, keeps `DDL` the only definition.
 pub(crate) async fn reference() -> Result<(Schema, i64), sqlx::Error> {
+    reference_version(true).await
+}
+
+pub(crate) async fn reference_v1() -> Result<(Schema, i64), sqlx::Error> {
+    reference_version(false).await
+}
+
+async fn reference_version(v2: bool) -> Result<(Schema, i64), sqlx::Error> {
     let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
     sqlx::Executor::execute(&mut conn, DDL).await?;
+    if v2 {
+        sqlx::Executor::execute(&mut conn, MIGRATION_V2).await?;
+    }
     let schema = read_schema(&mut conn).await?;
     let version = user_version(&mut conn).await?;
     conn.close().await?;

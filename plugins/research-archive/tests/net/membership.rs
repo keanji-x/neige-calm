@@ -3,6 +3,7 @@
 //! the freeze never waits for an attempt in flight, and that only failures
 //! after the freeze count toward the constituents pair's cap.
 
+use crate::archive::security_count;
 use std::sync::Arc;
 
 use research_archive::clock::Clock;
@@ -111,7 +112,7 @@ fn the_freeze_never_waits_for_an_attempt_in_flight() {
         let a = archive(&server.server.url, &index_knobs(6), clock.now());
         let (outcome, ()) = tokio::join!(capture(&a, &clock), async {
             // The failed constituents row and the six security rows.
-            wait_for_rows(&a, 7).await;
+            wait_for_rows(&a, security_count() as i64 + 1).await;
             gate.add_permits(1);
         });
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");

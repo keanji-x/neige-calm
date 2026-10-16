@@ -22,7 +22,9 @@ The package has two layers:
 
 ## Schema
 
-The DDL is the const `store::schema::DDL`, and `PRAGMA user_version = 1`.
+The current schema is the frozen v1 `store::schema::DDL` followed by
+`MIGRATION_V2`, with `PRAGMA user_version = 2`. Released migration text is
+never rewritten.
 Every table is `STRICT`, so readers need SQLite 3.37 or later. Required
 columns are `NOT NULL`. `run` and `run_end` key on `INTEGER PRIMARY KEY`
 (the rowid itself); every other table is `WITHOUT ROWID` (see
@@ -33,6 +35,7 @@ columns are `NOT NULL`. `run` and `run_end` key on `INTEGER PRIMARY KEY`
 | `endpoint` | `endpoint_id` PK, `method`, `path`, `query_json`, `headers_json`, `dc_restrict` NULL, `key_kind` | The frozen catalog. `key_kind` ∈ `index`, `security`. |
 | `blob` | `sha256` PK, `body` | Holds the exact envelope `data` bytes. `sha256` is the lowercase hex digest of `body`. |
 | `run` | `run_id` PK, `source`, `as_of`, `window_start`, `window_end`, `started_at`; UNIQUE (`source`, `as_of`) | Holds one run per source and trading day. |
+| `run_endpoint` | (`run_id`, `endpoint_id`) PK | Immutable endpoint set saved with each run plan; old sets are backfilled from the legacy catalog during explicit v1 upgrade. |
 | `run_key` | (`run_id`, `key`, `origin`) PK | `origin` is `config`, `index-symbol` or `index:<sym>`. |
 | `run_membership` | (`run_id`, `index_sym`) PK, `mode`, `source_run_id` NULL, `frozen_at` | `mode` ∈ `observed`, `carried`, `none`. `source_run_id` is set if and only if `mode = carried`. |
 | `observation` | (`run_id`, `key`, `endpoint_id`, `attempt`) PK, `fetched_at`, `status`, `sha256` NULL, `error_class` NULL, `error_code` NULL | Every attempt is a row. `attempt` starts at 1. `error_class` and `error_code` are both NULL on `ok` rows and both set on failure rows. |
@@ -62,11 +65,12 @@ status = 'ok'` serves the point-in-time read.
 - **A changed field needs a new id.** A change to any field of an endpoint
   ships under a new `endpoint_id`.
 
-The compiled catalog has six security endpoints and one index endpoint:
+The compiled catalog has seven security endpoints and one index endpoint:
 
 - **Security endpoints:** `consensus`, `forecast_eps`, `rating_latest`,
-  `ratings`, `rating_detail` and `valuation`. They take the query `symbol`,
-  except `valuation`, which takes `symbol, indicator=pe, range=1`.
+  `ratings`, `rating_detail`, `valuation` and `consensus_annual`. They take
+  the query `symbol`, except `valuation` (`symbol, indicator=pe, range=1`)
+  and `consensus_annual` (`symbol, period_type=af`).
 - **Index endpoint:** `index_constituents`, with the query `symbol, offset=0,
   limit=1000`.
 
@@ -162,7 +166,13 @@ and that is the membership endpoint.
   never skipped in favour of an earlier body. This holds for both zero bytes
   and an empty-shaped JSON body.
 - **Later rows are invisible.** A row with `fetched_at > t` does not exist at
-  `t`.
+  `t`. Quarterly `consensus` and `consensus_annual` are independent series;
+  neither falls back to the other. Annual values begin at their actual fetch
+  time, never at a fiscal period date embedded in the response.
+- **Planning is historical.** `ever_planned` and coverage use each run's saved
+  endpoint set. Upgrading a v1 run does not plan annual data retroactively.
+  Once a later run plans annual data, an earlier `at` without an annual fetch
+  answers `no_value`; before any annual plan it answers `not_archived`.
 
 ## Universe and coverage
 
@@ -189,8 +199,9 @@ The membership facts work like this:
 - **Each key counts once.** `Universe::keys()` returns each distinct key
   once.
 
-**Coverage of a run.** Coverage is each distinct key in its `run_key` rows ×
-the endpoints of the key's kind, where each pair counts once:
+**Coverage of a run.** Coverage joins each distinct key in `run_key` to the
+same run's saved `run_endpoint` set and then filters by endpoint kind. Each
+pair counts once. It never crosses historical keys with today's whole catalog:
 
 - An `index-symbol` key takes the index endpoints.
 - `config` and `index:<sym>` keys take the security endpoints.
@@ -298,11 +309,15 @@ written while a guard or check was off.
 - **An existing file** is refused on any of these mismatches:
   - **`user_version`** differs from this build's.
   - **Schema drift.** Any table, index or trigger is missing, extra, or
-    differs in its stored SQL text from what `DDL` produces.
+    differs in its stored SQL text from what `DDL` plus `MIGRATION_V2` produce.
   - **Catalog drift.** A stored `endpoint` row is missing, extra or changed
     compared with the compiled catalog.
 - **A refused file is left as it was.** The WAL journal mode is set only
   after the check (or the creation) succeeds.
+
+Ordinary capture and plugin opens require v2 and never upgrade v1. Use the
+explicit [annual upgrade](#annual-consensus-and-schema-version-2) on a writable
+v1 copy; refused versions remain untouched.
 
 ## Importing read-only
 
@@ -329,7 +344,8 @@ Take a snapshot copy, then open the copy:
    a read-only directory and creates no files. `?mode=ro` on a copy without
    `-wal`/`-shm` files works only in a writable directory, where it creates
    them.
-3. Check `PRAGMA user_version` = 1 before reading.
+3. Check `PRAGMA user_version` = 2 before reading current archives; v1 copies
+   require a v1-aware reader or an explicit upgrade of a writable copy.
 
 Verified with the system `sqlite3` 3.40.1 against a Store-created file:
 `?mode=ro` on a copy without sidecars in a mode-555 directory fails; `.backup` (also with a writer
@@ -879,7 +895,7 @@ about 45.
 
 - `read_at {at, reads}` (#2597) answers what the archive held at `at`, an
   RFC 3339 time with an offset. Each of 1 to 12 reads names a `symbol`, one
-  of the catalog's six security `endpoint`s (the manifest's enum is pinned to
+  of the catalog's seven security `endpoint`s (the manifest's enum is pinned to
   the catalog by a test; `index_constituents` is not readable here) and an
   RFC 6901 `pointer` into the body (`""` is the whole body). Each read is
   [`read_at`](#read-contract) through `ReadOnlyStore`, the same query, and
@@ -1005,3 +1021,48 @@ Two integration binaries:
 | `status` | the health rules over a real archive and `last_exit.json` |
 | `plugin` | the plugin binary against a fake kernel: `capture_status`, `capture_watch` and its overlay pushes (only on change), the config, re-`initialize`, the lock held during reads, and the source scan of what it reaches |
 | `plugin_read_at` | `read_at` through the plugin binary over a real archive: the row visible at a time, the four results, pointers, the size cap, the argument checks, and the manifest schema against the catalog |
+
+## Annual consensus and schema version 2
+
+`consensus` keeps its released default-view request. `consensus_annual` is a
+separate security endpoint on the same path with `period_type=af`; the parameter
+was checked against a live response. `period=af` and `report=af` do not select the
+annual view. The read-only plugin exposes both through `read_at`.
+
+New archives use schema v2. Its append-only `run_endpoint` table freezes the
+endpoint set in the same transaction as each run's plan. Coverage, completeness,
+write eligibility and `ever_planned` use that stored set: adding an endpoint must
+not turn an old completed run into a newly incomplete run.
+
+A released v1 archive is upgraded explicitly by the operator, under the existing
+data-directory lock:
+
+```sh
+research-archive upgrade-annual-catalog --config /path/to/research-archive.toml
+```
+
+The command needs no token and sends no network request. It verifies the frozen
+v1 schema and the exact legacy catalog, backfills old run endpoint sets before
+adding the annual endpoint, and commits the schema version and catalog together.
+Missing files and schema/catalog drift are refused. Ordinary opens and the
+read-only plugin never migrate a file. Repeating the explicit upgrade is a no-op.
+
+Before upgrading, pause captures and take a consistent SQLite backup with
+`sqlite3 archive.sqlite3 ".backup pre-v2.sqlite3"`; verify that it opens and
+record its checksum. Do not copy only the main file while WAL commits may exist.
+Coordinate the capture binary and plugin rollout, and reload the matching
+plugin before resuming. The old binary cannot
+read v2, so rollback needs a v2-capable build rather than copying the old binary
+back. The first annual capture has its real fetch time; past annual history is
+not reconstructed from today's response.
+
+The upgrade command remains a supported, permanent v1-to-v2 entry point for
+offline copies and installations that have not upgraded. It is not removed
+after the deployed archive has migrated. Its accepted legacy contract stays
+frozen; it does not become a general catalog repair command.
+
+The v1-to-v2 command deliberately recognizes only the released legacy catalog
+and this annual addition. A future catalog change must update the explicit
+upgrade policy and its compatibility tests; do not silently generalize the
+accepted drift set. The migration does not infer missing historical endpoint
+sets from observations.

@@ -41,7 +41,8 @@ const INCOMPLETE_MEMBERSHIP: &str = "incomplete_membership";
 /// keys take the security endpoints. The one definition of that rule.
 pub(super) const PLANNED_PAIRS: &str = "
     SELECT DISTINCT rk.run_id AS run_id, rk.key AS key, e.endpoint_id AS endpoint_id
-    FROM run_key rk JOIN endpoint e ON e.key_kind =
+    FROM run_key rk JOIN run_endpoint re ON re.run_id = rk.run_id
+    JOIN endpoint e ON e.endpoint_id = re.endpoint_id AND e.key_kind =
         CASE rk.origin WHEN 'index-symbol' THEN 'index' ELSE 'security' END";
 
 /// What `plan_run` writes.
@@ -378,6 +379,12 @@ async fn insert_run(
     .bind(window.start().0)
     .bind(window.end().0)
     .bind(started_at.0)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO run_endpoint (run_id, endpoint_id) SELECT ?, endpoint_id FROM endpoint",
+    )
+    .bind(id)
     .execute(conn)
     .await?;
     Ok(RunId(id))

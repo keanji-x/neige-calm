@@ -49,7 +49,7 @@ async fn reading_leaves_the_archive_as_it_was() {
 async fn refuses_what_the_capture_refuses() {
     let (_dir, path) = populated().await;
     let mut conn = raw(&path, false).await;
-    sqlx::query("PRAGMA user_version = 2")
+    sqlx::query("PRAGMA user_version = 99")
         .execute(&mut conn)
         .await
         .unwrap();
@@ -59,8 +59,8 @@ async fn refuses_what_the_capture_refuses() {
         matches!(
             err,
             OpenError::UserVersion {
-                found: 2,
-                expected: 1
+                found: 99,
+                expected: 2
             }
         ),
         "{err:?}"

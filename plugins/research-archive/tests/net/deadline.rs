@@ -2,6 +2,7 @@
 //! the recorder stamps under its turn, all through the production
 //! `capture::run`.
 
+use crate::archive::security_count;
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
@@ -149,7 +150,7 @@ fn stamps_are_taken_under_the_turn_with_parallel_workers() {
                 };
                 let a = archive(&server.url, &knobs, start);
                 let config = a.config();
-                let pairs = 18;
+                let pairs = 3 * security_count();
                 let (outcome, ()) = tokio::join!(capture::run(&config, clock, None), async {
                     // Release the replies in batches of the requests in
                     // flight, all of a batch at once.
@@ -170,7 +171,7 @@ fn stamps_are_taken_under_the_turn_with_parallel_workers() {
                     ExitKind::Complete,
                     "round {round}: {outcome:?}"
                 );
-                assert_eq!(rows(&a).await.len(), 18);
+                assert_eq!(rows(&a).await.len(), pairs);
             }
         });
 }

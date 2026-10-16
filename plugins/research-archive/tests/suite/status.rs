@@ -77,7 +77,7 @@ async fn a_healthy_archive_is_ok() {
             run.pairs_failed,
             run.pairs_untried
         ),
-        (13, 13, 0, 0)
+        (15, 15, 0, 0)
     );
     assert_eq!(run.frozen.len(), 1);
     assert_eq!(
@@ -205,9 +205,9 @@ const LOST: &str = ". Data of that day is lost for good; check `journalctl --use
 #[tokio::test]
 async fn a_degraded_day_fails_until_a_later_day_completes() {
     let dir = healthy_dir().await;
-    // 4 of 13 pairs ok: below half.
+    // 4 of 15 pairs ok: below half.
     end_day(dir.path(), 2, 3, Finish::Complete).await;
-    let degraded = "2026-01-03 ended degraded: only 4 of 13 pairs have an ok";
+    let degraded = "2026-01-03 ended degraded: only 4 of 15 pairs have an ok";
     // The capture's own exit, then later starts that overwrite it.
     for kind in [
         ExitKind::Degraded,
@@ -235,7 +235,7 @@ async fn a_partial_latest_day_fails_until_a_later_day_completes() {
     let dir = healthy_dir().await;
     end_day(dir.path(), 2, 2, Finish::Partial).await;
     exit(ExitKind::NoWindow, NOW.0 - MINUTE).write(dir.path());
-    let partial = "2026-01-03 ended partial: 10 of 13 pairs have no ok";
+    let partial = "2026-01-03 ended partial: 12 of 15 pairs have no ok";
     assert_eq!(
         texts(&read(dir.path()).await),
         [(Health::Failing, format!("{partial}{LOST}").as_str())]
@@ -271,7 +271,7 @@ async fn an_outage_fails_until_a_later_day_completes() {
         .await
         .unwrap();
     store.close().await;
-    let partial = "2026-01-03 ended partial: 7 of 7 pairs have no ok";
+    let partial = "2026-01-03 ended partial: 8 of 8 pairs have no ok";
     let missed = "2026-01-04 was missed: no capture ran during its window";
 
     let mut first = exit(ExitKind::Partial, NOW.0 - 2 * MINUTE);
@@ -305,7 +305,7 @@ async fn an_outage_fails_until_a_later_day_completes() {
 #[tokio::test]
 async fn complete_with_failures_needs_attention_from_the_rows() {
     let dir = healthy_dir().await;
-    end_day(dir.path(), 2, 11, Finish::Complete).await;
+    end_day(dir.path(), 2, 13, Finish::Complete).await;
     // The exit says nothing of it: the rows do.
     exit(ExitKind::Complete, NOW.0 - MINUTE).write(dir.path());
     let status = read(dir.path()).await;
@@ -313,13 +313,13 @@ async fn complete_with_failures_needs_attention_from_the_rows() {
         texts(&status),
         [(
             Health::Attention,
-            "2026-01-03 ended complete with failures: 1 of 13 pairs used up their attempts \
+            "2026-01-03 ended complete with failures: 1 of 15 pairs used up their attempts \
              with no ok"
         )]
     );
     assert_eq!(
         (status.runs[0].pairs_ok, status.runs[0].pairs_failed),
-        (12, 1)
+        (14, 1)
     );
 }
 
@@ -421,14 +421,14 @@ async fn a_missed_day_does_not_demote_a_partial_one() {
             day2.pairs_failed,
             day2.pairs_untried
         ),
-        (7, 1, 0, 6)
+        (8, 1, 0, 7)
     );
     assert_eq!(
         texts(&status),
         [
             (
                 Health::Failing,
-                format!("2026-01-03 ended partial: 6 of 7 pairs have no ok{LOST}").as_str()
+                format!("2026-01-03 ended partial: 7 of 8 pairs have no ok{LOST}").as_str()
             ),
             (
                 Health::Attention,
@@ -469,7 +469,7 @@ async fn an_unreadable_archive_is_failing() {
     let (dir, path) = populated().await;
     exit(ExitKind::Complete, NOW.0 - MINUTE).write(dir.path());
     let mut conn = raw(&path, false).await;
-    sqlx::query("PRAGMA user_version = 2")
+    sqlx::query("PRAGMA user_version = 99")
         .execute(&mut conn)
         .await
         .unwrap();
@@ -479,7 +479,7 @@ async fn an_unreadable_archive_is_failing() {
     assert!(
         status.findings[0]
             .text
-            .starts_with("the archive cannot be read: archive user_version is 2"),
+            .starts_with("the archive cannot be read: archive user_version is 99"),
         "{:?}",
         status.findings
     );

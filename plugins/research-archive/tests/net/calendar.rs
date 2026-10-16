@@ -2,6 +2,7 @@
 //! `auth`, and only a variant name is kept), the back-fill of a long gap,
 //! and the fallback to a cache that still covers now.
 
+use crate::archive::security_count;
 use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
@@ -307,7 +308,7 @@ fn a_start_in_a_window_never_waits_on_the_history() {
             .coverage(research_archive::types::RunId(2))
             .await
             .unwrap();
-        assert_eq!(coverage.len(), 6);
+        assert_eq!(coverage.len(), security_count());
         assert!(coverage.iter().all(|p| p.has_ok));
     })
 }

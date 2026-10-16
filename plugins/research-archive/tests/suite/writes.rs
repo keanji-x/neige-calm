@@ -430,9 +430,9 @@ async fn complete_needs_a_frozen_universe_and_a_row_per_pair() {
         complete().await,
         Err(StoreError::NotComplete {
             frozen: false,
-            pairs_without_rows: 7,
+            pairs_without_rows,
             ..
-        })
+        }) if pairs_without_rows == crate::archive::security_count() + 1
     ));
     observe_and_freeze(&f.store, &plan, at(1, 10), &[(".SPX.US", &["MSFT.US"])]).await;
     // AAPL.US and MSFT.US × 6 security endpoints are still empty.
@@ -440,9 +440,9 @@ async fn complete_needs_a_frozen_universe_and_a_row_per_pair() {
         complete().await,
         Err(StoreError::NotComplete {
             frozen: true,
-            pairs_without_rows: 12,
+            pairs_without_rows,
             ..
-        })
+        }) if pairs_without_rows == 2 * crate::archive::security_count()
     ));
     let catalog = research_archive::Catalog::compiled();
     for e in catalog.for_kind(research_archive::KeyKind::Security) {

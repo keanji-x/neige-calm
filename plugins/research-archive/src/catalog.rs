@@ -211,6 +211,15 @@ const COMPILED: &[Endpoint] = &[
         ],
         KeyKind::Index,
     ),
+    Endpoint::new(
+        "consensus_annual",
+        "/v1/quote/financial-consensus-detail",
+        &[
+            (KEY_PARAM, QueryValue::Key),
+            ("period_type", QueryValue::Fixed("af")),
+        ],
+        KeyKind::Security,
+    ),
 ];
 
 /// A set of endpoints with unique ids, in a fixed order, with exactly one
@@ -285,6 +294,23 @@ mod tests {
 
     /// The issue's table, row by row, in the stored (canonical) form.
     #[test]
+    fn annual_consensus_endpoint_uses_verified_period_type() {
+        let catalog = Catalog::compiled();
+        let annual = catalog
+            .get("consensus_annual")
+            .expect("annual endpoint is captured");
+        assert_eq!(annual.path, "/v1/quote/financial-consensus-detail");
+        assert_eq!(
+            annual.query_json(),
+            r#"[["symbol",null],["period_type","af"]]"#
+        );
+        assert_eq!(
+            catalog.get("consensus").unwrap().query_json(),
+            r#"[["symbol",null]]"#
+        );
+    }
+
+    #[test]
     fn compiled_catalog_matches_the_issue_table_golden() {
         let rows: Vec<_> = Catalog::compiled()
             .endpoints()
@@ -330,6 +356,15 @@ mod tests {
                     None,
                     "index",
                 ),
+                (
+                    "consensus_annual",
+                    "GET",
+                    "/v1/quote/financial-consensus-detail",
+                    r#"[["symbol",null],["period_type","af"]]"#.to_owned(),
+                    en.clone(),
+                    None,
+                    "security",
+                ),
             ]
         );
     }
@@ -355,7 +390,7 @@ mod tests {
         for e in catalog.endpoints() {
             assert_eq!(catalog.get(e.id.as_str()), Some(e));
         }
-        assert_eq!(catalog.for_kind(KeyKind::Security).count(), 6);
+        assert_eq!(catalog.for_kind(KeyKind::Security).count(), 7);
         assert_eq!(catalog.for_kind(KeyKind::Index).count(), 1);
         assert!(catalog.get("missing").is_none());
         assert_eq!(catalog.membership().as_str(), "index_constituents");

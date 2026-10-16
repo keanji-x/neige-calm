@@ -3,6 +3,7 @@
 //! itself as a subprocess. Tests that build an SDK client, or the archive's
 //! source, in process live in the `net` binary instead.
 
+mod annual_catalog;
 #[path = "../common/archive.rs"]
 #[allow(dead_code)]
 mod archive;
@@ -28,3 +29,5 @@ mod status;
 mod support;
 mod units;
 mod writes;
+
+mod annual_reproduction;

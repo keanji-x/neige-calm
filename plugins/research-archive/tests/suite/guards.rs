@@ -182,6 +182,7 @@ async fn i2_new_rows_are_still_accepted() {
         "INSERT INTO endpoint VALUES ('new', 'GET', '/n', '[]', '[]', NULL, 'index')",
         "INSERT INTO blob VALUES (printf('%064d', 7), X'')",
         "INSERT INTO run VALUES (2, 'longbridge', '2026-01-03', 0, 1, 0)",
+        "INSERT INTO run_endpoint VALUES (2, 'consensus')",
         "INSERT INTO run_key VALUES (2, 'NEW.US', 'config')",
         "INSERT INTO run_membership VALUES (2, '.SPX.US', 'none', NULL, 0)",
         "INSERT INTO observation VALUES (2, 'NEW.US', 'consensus', 1, 0, 'permanent', NULL, 'http_status', '404')",
@@ -190,4 +191,20 @@ async fn i2_new_rows_are_still_accepted() {
         let done = sqlx::query(sql).execute(&mut conn).await.unwrap();
         assert_eq!(done.rows_affected(), 1, "{sql}");
     }
+}
+
+guarded! {
+    i2_run_endpoint_update: "UPDATE run_endpoint SET endpoint_id = endpoint_id"
+        => Expect::Abort("run_endpoint is append-only");
+    i2_run_endpoint_delete: "DELETE FROM run_endpoint"
+        => Expect::Abort("run_endpoint is append-only");
+    i2_run_endpoint_insert_or_replace: "INSERT OR REPLACE INTO run_endpoint VALUES (1, 'consensus')"
+        => Expect::Abort("run_endpoint row exists");
+    i2_run_endpoint_on_conflict_do_update: "INSERT INTO run_endpoint VALUES (1, 'consensus') ON CONFLICT (run_id, endpoint_id) DO UPDATE SET endpoint_id = excluded.endpoint_id"
+        => Expect::Abort("run_endpoint row exists");
+}
+
+guarded! {
+    i2_run_endpoint_rowid_collision: "INSERT OR REPLACE INTO run_endpoint (rowid, run_id, endpoint_id) VALUES (1, 1, 'consensus')"
+        => Expect::Abort("has no column named rowid");
 }

@@ -45,6 +45,7 @@ impl Clock for FakeClock {
 /// A request the timed server saw, with the fake time it arrived.
 #[derive(Clone, Debug)]
 pub struct Arrival {
+    pub query: Option<String>,
     pub at: UnixMs,
     pub path: String,
     pub symbol: String,
@@ -65,6 +66,7 @@ impl TimedServer {
         let log = arrivals.clone();
         let server = FakeServer::start(move |seen| {
             log.lock().unwrap().push(Arrival {
+                query: seen.query.clone(),
                 at: clock.now(),
                 path: seen.path.clone(),
                 symbol: symbol_of(seen),

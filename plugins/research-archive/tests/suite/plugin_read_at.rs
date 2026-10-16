@@ -2,6 +2,7 @@
 //! the read contract's point-in-time value, the four results, the size cap
 //! and the argument checks.
 
+use crate::archive::security_count;
 use std::path::Path;
 
 use chrono::{DateTime, FixedOffset, SecondsFormat, Utc};
@@ -430,7 +431,7 @@ fn the_manifest_schema_matches_the_catalog() {
     let item = &reads["items"];
     let catalog = Catalog::compiled();
     let ids: Vec<&str> = readable(&catalog).map(EndpointId::as_str).collect();
-    assert_eq!(ids.len(), 6);
+    assert_eq!(ids.len(), security_count());
     assert_eq!(item["properties"]["endpoint"]["enum"], json!(ids));
     assert_eq!(
         (&reads["minItems"], &reads["maxItems"]),
@@ -449,4 +450,50 @@ fn the_manifest_schema_matches_the_catalog() {
         assert_eq!(keys, want.iter().collect::<Vec<_>>());
     }
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
+}
+
+#[tokio::test]
+async fn annual_and_quarterly_bodies_are_independent_point_in_time_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&Store::path(dir.path())).await.unwrap();
+    let run = store
+        .plan_run(&plan_request(1, &["NVDA.US"], &[]))
+        .await
+        .unwrap();
+    record(
+        &store,
+        run.run_id,
+        "NVDA.US",
+        "consensus",
+        at(1, 100),
+        ok(br#"{"current_period":"qf","eps":2}"#),
+    )
+    .await;
+    record(
+        &store,
+        run.run_id,
+        "NVDA.US",
+        "consensus_annual",
+        at(1, 150),
+        ok(br#"{"current_period":"af","eps":10}"#),
+    )
+    .await;
+    store.close().await;
+    let mut kernel = Kernel::spawn(config(dir.path()));
+    let prior = call(
+        &mut kernel,
+        &rfc3339(at(1, 149)),
+        vec![read("NVDA.US", "consensus_annual", "")],
+    );
+    assert_eq!(prior["reads"][0]["result"], "no_value");
+    let result = call(
+        &mut kernel,
+        &rfc3339(at(1, 150)),
+        vec![
+            read("NVDA.US", "consensus", "/eps"),
+            read("NVDA.US", "consensus_annual", "/eps"),
+        ],
+    );
+    assert_eq!(result["reads"][0]["value"], 2);
+    assert_eq!(result["reads"][1]["value"], 10);
 }

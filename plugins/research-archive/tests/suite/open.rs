@@ -20,7 +20,7 @@ async fn new_file_gets_the_catalog_and_reopens_untouched() {
         .fetch_one(&mut conn)
         .await
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
         .fetch_one(&mut conn)
         .await
@@ -35,6 +35,7 @@ async fn new_file_gets_the_catalog_and_reopens_untouched() {
         ids,
         [
             "consensus",
+            "consensus_annual",
             "forecast_eps",
             "index_constituents",
             "rating_detail",
@@ -54,15 +55,15 @@ async fn new_file_gets_the_catalog_and_reopens_untouched() {
 async fn refuses_a_wrong_user_version() {
     let (_dir, path) = populated().await;
     let mut conn = raw(&path, false).await;
-    sqlx::query("PRAGMA user_version = 2")
+    sqlx::query("PRAGMA user_version = 99")
         .execute(&mut conn)
         .await
         .unwrap();
     drop(conn);
     match reopen(&path).await {
         Err(OpenError::UserVersion {
-            found: 2,
-            expected: 1,
+            found: 99,
+            expected: 2,
         }) => {}
         other => panic!("{other:?}"),
     }
@@ -86,7 +87,7 @@ async fn refuses_a_foreign_database_without_touching_it() {
         reopen(&path).await,
         Err(OpenError::UserVersion {
             found: 0,
-            expected: 1
+            expected: 2
         })
     ));
     assert_eq!(std::fs::read(&path).unwrap(), before);

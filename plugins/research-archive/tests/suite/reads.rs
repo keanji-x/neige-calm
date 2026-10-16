@@ -1,6 +1,7 @@
 //! The read contract: the point-in-time value (I6), overlapping origins
 //! (I5), the universe at a time, and coverage.
 
+use crate::archive::security_count;
 use research_archive::types::{FailureClass, Finish, Origin, Response, UnixMs};
 
 use crate::support::{
@@ -198,9 +199,9 @@ async fn i5_overlapping_origins_are_kept() {
     assert_eq!(u.keys().len(), 6);
     let coverage = f.store.coverage(plan.run_id).await.unwrap();
     // 4 securities × 6 endpoints + 2 indexes × 1.
-    assert_eq!(coverage.len(), 4 * 6 + 2);
+    assert_eq!(coverage.len(), 4 * security_count() + 2);
     let aapl = coverage.iter().filter(|c| c.key == key("AAPL.US")).count();
-    assert_eq!(aapl, 6);
+    assert_eq!(aapl, security_count());
 }
 
 #[tokio::test]
@@ -305,7 +306,7 @@ async fn coverage_counts_rows_per_planned_pair() {
         .await
         .unwrap();
     let before = f.store.coverage(plan.run_id).await.unwrap();
-    assert_eq!(before.len(), 6 + 1);
+    assert_eq!(before.len(), security_count() + 1);
     assert!(before.iter().all(|c| c.attempts == 0 && !c.has_ok));
     f.store
         .record_observation(
@@ -321,7 +322,7 @@ async fn coverage_counts_rows_per_planned_pair() {
     let after = f.store.coverage(plan.run_id).await.unwrap();
     assert_eq!(
         after.len(),
-        2 * 6 + 1,
+        2 * security_count() + 1,
         "members join the coverage at the freeze"
     );
     let get = |k: &str, e: &str| {

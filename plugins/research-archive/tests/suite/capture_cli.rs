@@ -106,7 +106,7 @@ async fn i4_a_kill_during_fetch_leaves_a_whole_freeze_and_a_rerun_completes() {
     let (_, _, end) = universe(&p).await;
     assert_eq!(end.as_deref(), Some("complete"));
     let coverage = p.archive.store().await.coverage(RunId(1)).await.unwrap();
-    assert_eq!(coverage.len(), 7);
+    assert_eq!(coverage.len(), crate::archive::security_count() + 1);
     assert!(coverage.iter().all(|c| c.has_ok));
 }
 
@@ -296,4 +296,49 @@ async fn a_failed_calendar_refresh_is_fatal_without_a_catalog_request() {
         server.seen()
     );
     assert_eq!(p.archive.last_exit()["kind"], "fatal");
+}
+
+/// The production CLI must actually send both views, not just list a new id.
+#[tokio::test]
+async fn annual_capture_cli_plans_and_fetches_both_consensus_views() {
+    let server = FakeServer::start(|s: &Seen| {
+        if s.query
+            .as_deref()
+            .unwrap_or_default()
+            .contains("period_type=af")
+        {
+            Reply::data(r#"{"current_period":"af","eps":10}"#)
+        } else {
+            Reply::data(r#"{"current_period":"qf","eps":2}"#)
+        }
+    })
+    .await;
+    let p = Proc::new(&server.url, Knobs::default());
+    p.archive.token(TOKEN, None, FAR);
+    let result = p.capture().await;
+    assert_eq!(code(&result), 0, "{}", text(&result.stderr));
+    let store = p.archive.store().await;
+    let coverage = store.coverage(RunId(1)).await.unwrap();
+    assert!(
+        coverage
+            .iter()
+            .any(|pair| pair.endpoint.as_str() == "consensus_annual"
+                && pair.attempts == 1
+                && pair.has_ok)
+    );
+    let catalog = research_archive::Catalog::compiled();
+    for (id, period) in [("consensus", "qf"), ("consensus_annual", "af")] {
+        let row = store
+            .read_at(
+                &crate::support::key("AAPL.US"),
+                catalog.get(id).unwrap().id,
+                research_archive::clock::Clock::now(&research_archive::clock::SystemClock),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&row.body).unwrap();
+        assert_eq!(body["current_period"], period);
+    }
+    store.close().await;
 }

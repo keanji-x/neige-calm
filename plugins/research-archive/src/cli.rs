@@ -55,6 +55,11 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Explicitly append the annual consensus endpoint to a released archive.
+    UpgradeAnnualCatalog {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Alert the owner that a unit failed (`OnFailure=`).
     Notify {
         #[arg(long)]
@@ -69,7 +74,9 @@ impl Command {
     fn config(&self) -> &Path {
         match self {
             Command::Auth(auth) => auth.config(),
-            Command::Capture { config } | Command::Notify { config, .. } => config,
+            Command::Capture { config }
+            | Command::UpgradeAnnualCatalog { config }
+            | Command::Notify { config, .. } => config,
         }
     }
 }
@@ -164,6 +171,7 @@ pub fn run() -> i32 {
         Command::Auth(AuthCommand::Login { .. }) => login(&config),
         Command::Auth(AuthCommand::Status { .. }) => status(&config),
         Command::Capture { .. } => capture(&config),
+        Command::UpgradeAnnualCatalog { .. } => upgrade_annual_catalog(&config),
         Command::Notify { .. } => unreachable!("notify returned above"),
     }
 }
@@ -177,6 +185,34 @@ fn runtime() -> Result<tokio::runtime::Runtime, i32> {
             tracing::error!(error = %err, "cannot start the async runtime");
             exit::FATAL
         })
+}
+
+fn upgrade_annual_catalog(config: &Config) -> i32 {
+    let _lock = match lock(config) {
+        Ok(lock) => lock,
+        Err(code) => return code,
+    };
+    let runtime = match runtime() {
+        Ok(runtime) => runtime,
+        Err(code) => return code,
+    };
+    runtime.block_on(async {
+        match crate::store::Store::upgrade_annual_catalog(&crate::store::Store::path(
+            &config.data_dir,
+        ))
+        .await
+        {
+            Ok(store) => {
+                store.close().await;
+                println!("annual catalog ready");
+                exit::OK
+            }
+            Err(error) => {
+                tracing::error!("{error}");
+                exit::FATAL
+            }
+        }
+    })
 }
 
 fn capture(config: &Config) -> i32 {
