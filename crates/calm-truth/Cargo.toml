@@ -45,6 +45,8 @@ append-seam-escape-probe-ungated-append = []
 [dependencies]
 workspace = { path = "../workspace" }
 calm-types = { path = "../calm-types" }
+# Report-owned CRDT codec for atomic startup data migrations; no transport dependency.
+calm-report = { path = "../calm-report" }
 calm-exec = { path = "../calm-exec" }
 
 async-trait = "0.1"

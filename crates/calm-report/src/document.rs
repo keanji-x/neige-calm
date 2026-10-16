@@ -7,7 +7,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_block;
+use calm_types::report_blocks::tasks::normalize_legacy_task_block;
 use calm_types::report_blocks::{
     KIND_PROSE, flat_text, mint_id, parse_fence, reassign_ids, render_fence, split_body,
 };
@@ -131,9 +131,24 @@ impl ReportDoc {
         format!("ah1:{:x}", hasher.finalize())
     }
 
-    /// Lazily migrate a legacy doc to the v2 block layout and rename legacy terminal-task `goal` to `command`
+    /// Lazily migrate a legacy doc to the v2 block layout and upgrade released terminal-command and child-route fields
     /// without bumping block revs; returns whether anything changed.
     pub fn ensure_blocks_layout(&mut self, hint_blocks: Option<&[ReportBlock]>) -> Result<bool> {
+        let layout_changed = self.ensure_block_objects(hint_blocks)?;
+        let fields_changed = self.normalize_task_fields(normalize_legacy_task_block)?;
+        Ok(layout_changed || fields_changed)
+    }
+
+    /// Preserve the effective historical context projection: V1 readers already migrate
+    /// terminal fields in memory; V2 readers use stored blocks verbatim.
+    pub fn migrate_subtrack_route(&mut self, hint_blocks: Option<&[ReportBlock]>) -> Result<bool> {
+        if !self.has_blocks_layout()? {
+            return self.ensure_blocks_layout(hint_blocks);
+        }
+        self.normalize_task_fields(calm_types::subtrack_route::migrate_legacy_block)
+    }
+
+    fn ensure_block_objects(&mut self, hint_blocks: Option<&[ReportBlock]>) -> Result<bool> {
         let layout_changed = if self.blocks_map().context("probe blocks map")?.is_some() {
             false
         } else {
@@ -150,17 +165,19 @@ impl ReportDoc {
                 .context("delete legacy body")?;
             true
         };
-        let command_changed = self.normalize_legacy_terminal_commands()?;
-        Ok(layout_changed || command_changed)
+        Ok(layout_changed)
     }
 
-    fn normalize_legacy_terminal_commands(&mut self) -> Result<bool> {
+    fn normalize_task_fields(
+        &mut self,
+        normalize: fn(&ReportBlock) -> ReportBlock,
+    ) -> Result<bool> {
         let blocks_id = self
             .blocks_map()?
             .context("doc invariant: blocks map must exist after layout migration")?;
         let mut changed = false;
         for block in self.blocks_snapshot()? {
-            let normalized = normalize_legacy_terminal_task_block(&block);
+            let normalized = normalize(&block);
             if normalized == block {
                 continue;
             }

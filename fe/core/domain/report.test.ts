@@ -4,7 +4,7 @@ import type { CardWire } from './track.js';
 import {
   backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, groupBacklinks, hasLiveTaskRun,
   parseReportLink, readTrackReport, TASK_STATUS_DETAIL_LIMIT, TRACK_REPORT_CARD_KIND, trackPreviewsOperation,
-  trackTaskVerdictsOperation,
+  trackTaskVerdictsOperation, taskBlockPayloadSchema,
   type TaskVerdict, type TrackBacklink,
 } from './report.js';
 
@@ -1035,5 +1035,17 @@ describe('parseReportLink', () => {
     ['a javascript url', 'javascript:alert(1)'],
   ])('reads null for %s, which the renderer then shows as plain text', (_label, url) => {
     expect(parseReportLink(url)).toBeNull();
+  });
+});
+
+
+describe('subtrack route vocabulary', () => {
+  it('reads released event declarations as sub-track without changing user context', () => {
+    const legacyRoute = 'sub-wave';
+    const payload = { key: 'child', kind: 'codex', goal: legacyRoute, ready: true,
+      declared_by: 'user', spawn: legacyRoute, context: { spawn: legacyRoute } };
+    const parsed = taskBlockPayloadSchema.parse(payload);
+    expect(parsed).toMatchObject({ spawn: 'sub-track', goal: legacyRoute, context: { spawn: legacyRoute } });
+    expect(payload.spawn).toBe(legacyRoute);
   });
 });

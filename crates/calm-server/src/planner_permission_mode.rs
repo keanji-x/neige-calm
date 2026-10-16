@@ -134,7 +134,7 @@ mod tests {
         use crate::session_projection_repo::AgentProvider;
         for provider in [AgentProvider::Codex, AgentProvider::Claude] {
             let payload =
-                crate::routes::tracks::planner_harness_card_payload(Some("goal".into()), provider);
+                crate::track_creation::planner_harness_card_payload(Some("goal".into()), provider);
             assert_eq!(payload["permission_mode"], json!("never"), "{payload}");
         }
     }

@@ -45,7 +45,7 @@ export function renderAssistantProviderFixture(options: {
     let body: unknown = [];
     let status = 200;
     if (request.path === '/api/version') body = { assistantProviders: options.assistantProviders ?? true,
-      conversationCreateModel: true, conversationSide: true, webCompatVersion: options.webCompatVersion ?? 53, minWebCompatVersion: options.webCompatVersion ?? 53,
+      conversationCreateModel: true, conversationSide: true, webCompatVersion: options.webCompatVersion ?? 54, minWebCompatVersion: options.webCompatVersion ?? 54,
       syncEventVersion: 20, dbInstanceId: 'provider-browser' };
     if (request.path.startsWith('/api/agent-providers/managed')) body = options.answers;
     if (request.path.startsWith('/api/models?')) body = options.catalogUnavailable ? { ...catalog, models: [], source: 'unavailable' } : catalog;

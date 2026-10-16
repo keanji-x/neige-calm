@@ -441,7 +441,7 @@ fn acceptance_23_sub_track_rejects_claude_and_terminal_at_common_write_validatio
     for kind in ["claude", "terminal"] {
         let mut payload = valid_task();
         payload["kind"] = json!(kind);
-        payload["spawn"] = json!("sub-wave");
+        payload["spawn"] = json!("sub-track");
         let error = validate_payload(KIND_TASK, &payload).unwrap_err();
         assert!(error.contains("requires kind \"codex\""), "{kind}: {error}");
     }
@@ -848,4 +848,13 @@ fn inline_table_still_rejects_an_unknown_field() {
     )
     .unwrap_err();
     assert!(err.contains("srcs: unknown field"), "{err}");
+}
+
+#[test]
+fn subtrack_route_accepts_canonical_and_refuses_released_write_spelling() {
+    let mut payload = serde_json::json!({"key":"child","kind":"codex","goal":"delegate",
+        "ready":true,"declared_by":crate::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"spawn":"sub-track"});
+    assert!(super::validate_payload("task", &payload).is_ok());
+    payload["spawn"] = serde_json::json!("sub-wave");
+    assert!(super::validate_payload("task", &payload).is_err());
 }

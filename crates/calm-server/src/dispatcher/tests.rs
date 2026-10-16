@@ -4243,7 +4243,7 @@ async fn track_updated_with_closed_at_reconciles_the_child() {
     sqlx::query(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,\
          child_track_id,created_at_ms,updated_at_ms) \
-         VALUES(?1,?2,'spawn-child','codex','g','{}','running','spec','sub-wave',?3,1,1)",
+         VALUES(?1,?2,'spawn-child','codex','g','{}','running','spec','sub-track',?3,1,1)",
     )
     .bind(&task_id)
     .bind(parent.id.as_str())

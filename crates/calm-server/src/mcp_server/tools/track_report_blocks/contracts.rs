@@ -393,7 +393,7 @@ fn task_kind() -> Value {
                 "ready": { "type": "boolean" },
                 "declared_by": { "type": "string", "enum": ["spec", "user"] },
                 "released_by_user": { "type": "boolean", "default": false },
-                "spawn": { "type": "string", "enum": ["in-wave", "sub-wave"], "default": "in-wave" },
+                "spawn": { "type": "string", "enum": ["in-wave", "sub-track"], "default": "in-wave" },
                 "access": {
                     "type": "string",
                     "enum": ["read_only", "read_write"],

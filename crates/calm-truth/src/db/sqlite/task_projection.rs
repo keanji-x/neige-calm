@@ -2069,7 +2069,7 @@ mod tests {
     async fn acceptance_14b_and_22_read_dto_marks_deleted_child_and_never_exposes_spawn() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "child-link", "running").await;
-        sqlx::query("UPDATE tasks SET spawn='sub-wave',child_track_id='gone-child' WHERE track_id=?1 AND key='child-link'")
+        sqlx::query("UPDATE tasks SET spawn='sub-track',child_track_id='gone-child' WHERE track_id=?1 AND key='child-link'")
             .bind(&track).execute(&repo.pool).await.unwrap();
         let mut conn = repo.pool.acquire().await.unwrap();
         let verdicts = evaluate_schedulability(

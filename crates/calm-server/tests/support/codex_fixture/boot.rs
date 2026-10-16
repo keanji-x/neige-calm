@@ -171,7 +171,7 @@ pub async fn boot_forge_e2e_fixture(
         (PlanSource::Injected, _) => ("planner".to_string(), Value::Null),
         (PlanSource::RealPlannerTurn, None) => (
             "codex".to_string(),
-            calm_server::routes::tracks::planner_harness_card_payload(
+            calm_server::track_creation::planner_harness_card_payload(
                 fixture.goal.clone(),
                 AgentProvider::Codex,
             ),

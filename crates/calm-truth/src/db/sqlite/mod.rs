@@ -1,6 +1,8 @@
 //! SQLite-backed `Repo` implementation. Every entity write is a `_tx` free
 //! function so it can compose inside `write_with_event`'s transaction.
 
+mod subtrack_route_migration;
+
 use sqlx::ConnectOptions;
 use sqlx::Connection;
 use sqlx::Executor;
@@ -291,6 +293,7 @@ impl SqlxRepo {
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
 
+        subtrack_route_migration::migrate(&pool).await?;
         track_vcs::backfill_existing_tracks(&pool).await?;
 
         let card_role_cache = CardRoleCache::new();

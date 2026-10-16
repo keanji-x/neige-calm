@@ -163,7 +163,7 @@ async fn acceptance_17_track_writer_refuses_reopen_of_referenced_child() {
         .unwrap();
     sqlx::query(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,child_track_id,created_at_ms,updated_at_ms) \
-         VALUES('parent:t',?1,'t','codex','g','{}','running','spec','sub-wave',?2,1,1)",
+         VALUES('parent:t',?1,'t','codex','g','{}','running','spec','sub-track',?2,1,1)",
     )
     .bind(&parent).bind(&child).execute(repo.pool()).await.unwrap();
     let mut tx = repo.pool().begin().await.unwrap();

@@ -617,6 +617,7 @@ pub mod test_seams;
 pub mod thread_seals;
 pub mod track_activity;
 pub mod track_area_cache;
+pub mod track_creation;
 pub mod validation;
 pub mod worker_quiet;
 pub mod worker_watch;

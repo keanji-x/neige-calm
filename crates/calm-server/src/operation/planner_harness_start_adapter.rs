@@ -2761,7 +2761,7 @@ mod tests {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: crate::routes::tracks::planner_harness_card_payload(
+                payload: crate::track_creation::planner_harness_card_payload(
                     None,
                     AgentProvider::Claude,
                 ),

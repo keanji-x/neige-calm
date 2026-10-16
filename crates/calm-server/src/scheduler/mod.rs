@@ -221,7 +221,8 @@ fn task_kind_str(kind: TaskKind) -> &'static str {
 }
 
 pub(crate) fn task_has_running_liveness_deadline(task: &Task) -> bool {
-    task.spawn != "sub-wave" && matches!(task.kind, TaskKind::Codex | TaskKind::Claude)
+    task.spawn != calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE
+        && matches!(task.kind, TaskKind::Codex | TaskKind::Claude)
 }
 
 fn duration_ms_i64(duration: Duration) -> i64 {
@@ -1570,7 +1571,8 @@ impl Scheduler {
                 // Must precede both terminal reconciliation and kind-based
                 // timeout arms. Sub-track parents have their own child-state
                 // reconciler and never receive a worker deadline.
-                TaskStatus::Running if task.spawn == "sub-wave" => {}
+                TaskStatus::Running
+                    if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE => {}
                 TaskStatus::Running if task.kind == TaskKind::Terminal => {
                     self.reconcile_running_terminal(task).await;
                 }

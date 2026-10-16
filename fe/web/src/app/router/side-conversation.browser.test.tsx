@@ -28,7 +28,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     requests.push(request);
     let body: unknown = [];
     let status = 200;
-    if (request.path === '/api/version') body = { assistantProviders: true, conversationSide: true, webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 1, dbInstanceId: 'browser-side' };
+    if (request.path === '/api/version') body = { assistantProviders: true, conversationSide: true, webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 1, dbInstanceId: 'browser-side' };
     if (request.path.startsWith('/api/agent-providers/managed')) body = [{
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
       capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },

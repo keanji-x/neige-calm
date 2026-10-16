@@ -4,10 +4,13 @@ use crate::model::TaskAccess;
 
 #[test]
 fn acceptance_11_sub_track_sweep_arm_precedes_terminal_and_timeout_arms() {
-    let source = include_str!("mod.rs");
+    let source = include_str!("mod.rs")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let sub_track = source
-        .find("TaskStatus::Running if task.spawn == \"sub-wave\"")
-        .expect("sub-wave running arm");
+        .find("TaskStatus::Running if task.spawn == calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE")
+        .expect("sub-track running arm");
     let terminal = source
         .find("TaskStatus::Running if task.kind == TaskKind::Terminal")
         .expect("terminal running arm");
@@ -108,7 +111,7 @@ fn in_tree_tasks_are_ready_only_while_the_track_is_idle() {
     let mut terminal = task("c-terminal", TaskStatus::Pending, &[], 0);
     terminal.kind = TaskKind::Terminal;
     let mut child = task("e-child", TaskStatus::Pending, &[], 0);
-    child.spawn = "sub-wave".into();
+    child.spawn = "sub-track".into();
     let mut claude = task("b-claude", TaskStatus::Pending, &[], 0);
     claude.kind = TaskKind::Claude;
     let tasks = vec![

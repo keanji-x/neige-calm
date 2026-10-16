@@ -65,7 +65,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution, textC
         <span className={styles.key}>{live.key === '' ? blockId : live.key}</span>
         <span className={styles.spacer} />
         <span className={styles.kind}>
-          {live.kind}{live.spawn === 'sub-wave' ? ' · sub-track' : ''}
+          {live.kind}{live.spawn === 'sub-track' ? ' · sub-track' : ''}
         </span>
         <span className={styles.state} title={explanation || undefined}>
           {task?.execution?.label ?? status ?? (live.ready ? 'Declaration ready' : 'Declaration not ready')}

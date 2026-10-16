@@ -18,7 +18,7 @@ use crate::model::{Card, CardPatch, Track};
 use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::state::WriteContext;
 use crate::track_report_doc::ReportDoc;
-use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
+use calm_types::report_blocks::tasks::normalize_legacy_task_blocks;
 
 const REPORT_SNAPSHOT_ROW_SQL: &str = "SELECT json(payload),body_crdt IS NOT NULL FROM cards \
      WHERE track_id=?1 AND kind='track-report'";
@@ -71,10 +71,7 @@ fn report_blocks_snapshot_from_row(
                 "track_report: track {track_id} report CRDT has no stored block projection"
             ))
         })?;
-        return Ok((
-            payload.summary,
-            normalize_legacy_terminal_task_blocks(&blocks),
-        ));
+        return Ok((payload.summary, normalize_legacy_task_blocks(&blocks)));
     }
     let mut doc = ReportDoc::from_payload(&payload);
     doc.ensure_blocks_layout(payload.blocks.as_deref())

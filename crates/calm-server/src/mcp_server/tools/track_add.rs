@@ -204,7 +204,7 @@ async fn track_add(
         .as_ref()
         .ok_or_else(|| internal("track add needs sqlite"))?;
     let planner_provider =
-        crate::operation::child_track_adapter::track_planner_provider(pool, creator.id.as_str())
+        crate::harness::profile::track_planner_provider(pool, creator.id.as_str())
             .await
             .map_err(internal)?;
     let request = TrackAddRequest {

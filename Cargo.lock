@@ -643,6 +643,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "calm-exec",
+ "calm-report",
  "calm-types",
  "dashmap",
  "futures",

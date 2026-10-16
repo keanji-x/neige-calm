@@ -5,6 +5,9 @@ use super::tests::{
 };
 use super::*;
 use crate::db::sqlite::SqlxRepo;
+use crate::db::sqlite::card_create_with_id_tx;
+use crate::model::{CardRole, NewCard};
+use crate::track_creation::planner_harness_card_payload;
 
 /// Every production track has a Planner card, and a child inherits its `planner_provider`.
 pub(super) async fn ensure_planner_card(repo: &SqlxRepo, track_id: &str) {

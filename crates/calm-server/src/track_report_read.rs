@@ -1,7 +1,7 @@
 use crate::db::RouteRepo;
 use crate::error::CalmError;
 use crate::track_report::TrackReportPayload;
-use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
+use calm_types::report_blocks::tasks::normalize_legacy_task_blocks;
 use calm_types::track_report::ReportBlock;
 
 /// One self-consistent `neige_report_read` snapshot derived from a single row read, so a concurrent
@@ -125,7 +125,7 @@ pub(crate) async fn load_report_doc_snapshot_with_track(
 /// assigns (`reassign_ids` over the same body with the same hints; any stored `blocks` are ignored),
 /// legacy terminal tasks normalized. Shared by [`report_doc_snapshot`] and the `@` mention outline.
 pub(crate) fn legacy_row_blocks(body: &str) -> Vec<ReportBlock> {
-    normalize_legacy_terminal_task_blocks(&calm_types::report_blocks::reassign_ids(
+    normalize_legacy_task_blocks(&calm_types::report_blocks::reassign_ids(
         &[],
         &calm_types::report_blocks::split_body(body),
     ))
@@ -168,7 +168,7 @@ pub(crate) fn report_doc_snapshot(
     // Cache may provide the projection, but revision always comes from
     // the CRDT root rather than the JSON mirror.
     if let Some(blocks) = payload.blocks {
-        let blocks = normalize_legacy_terminal_task_blocks(&blocks);
+        let blocks = normalize_legacy_task_blocks(&blocks);
         let body = flat_blocks_text(&blocks);
         return Ok(ReportDocSnapshot {
             updated_at,

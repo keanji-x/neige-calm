@@ -104,6 +104,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0164_task_planner_messages.sql",
     "0165_track_area_admin.sql",
     "0167_area_ownership.sql",
+    "0168_subtrack_route.sql",
 ];
 
 #[test]

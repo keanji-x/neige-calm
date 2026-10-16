@@ -232,12 +232,13 @@ pub fn normalize_legacy_terminal_command(payload: &Value) -> Value {
 }
 
 /// Read-side/persist-migrator wrapper that preserves block identity and revision while updating
-/// only the terminal instruction field name.
-pub fn normalize_legacy_terminal_task_block(block: &ReportBlock) -> ReportBlock {
+/// released terminal command and child-route spellings.
+pub fn normalize_legacy_task_block(block: &ReportBlock) -> ReportBlock {
     if block.kind != super::KIND_TASK {
         return block.clone();
     }
     let payload = normalize_legacy_terminal_command(&block.payload);
+    let payload = crate::subtrack_route::migrate_legacy_payload(&payload);
     if payload == block.payload {
         return block.clone();
     }
@@ -247,11 +248,8 @@ pub fn normalize_legacy_terminal_task_block(block: &ReportBlock) -> ReportBlock 
     }
 }
 
-pub fn normalize_legacy_terminal_task_blocks(blocks: &[ReportBlock]) -> Vec<ReportBlock> {
-    blocks
-        .iter()
-        .map(normalize_legacy_terminal_task_block)
-        .collect()
+pub fn normalize_legacy_task_blocks(blocks: &[ReportBlock]) -> Vec<ReportBlock> {
+    blocks.iter().map(normalize_legacy_task_block).collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]

@@ -8,10 +8,9 @@ use crate::db::sqlite::track_get_tx;
 use crate::db::sqlite::{
     MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TrackRecipeOrigin,
     TrackTreeTerm, TrackWorkspacePlan, area_folder_create_tx, area_folders_list_all_tx,
-    begin_immediate_tx, card_create_with_id_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_track_tx, overlay_upsert_tx, terminal_delete_tx,
-    track_create_idempotency_claim_tx, track_create_tx, track_delete_tx, track_recipe_get_tx,
-    track_tree_term, track_update_tx,
+    begin_immediate_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,
+    terminal_delete_tx, track_create_idempotency_claim_tx, track_create_tx, track_delete_tx,
+    track_recipe_get_tx, track_tree_term, track_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -19,9 +18,8 @@ use crate::event::{Event, EventScope};
 use crate::extract::{Json, JsonBody, Path, Query};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
-    AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewTrack,
-    RequestTheme, Track, TrackDetail, TrackPatch, TrackWorkspace, TrackWorkspaceKind,
-    TrackWorkspacePatch, new_id,
+    AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewTrack, RequestTheme, Track,
+    TrackDetail, TrackPatch, TrackWorkspace, TrackWorkspaceKind, TrackWorkspacePatch, new_id,
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::planner_start_fence::CardStartFence;
@@ -40,6 +38,9 @@ use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::templates::{Template, TemplateRoster};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
+use crate::track_creation::{
+    TrackInitialization, initialize_track_tx, planner_harness_card_payload,
+};
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_report::{
     self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
@@ -48,7 +49,6 @@ use crate::track_report::{
 };
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_read::load_report_read_snapshot;
-use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use crate::workspace_service::workspace_recycle;
 use axum::{
@@ -1558,42 +1558,11 @@ async fn create_track_structure(
                         reasoning_effort.as_deref(),
                     );
                 }
-                let planner_card = card_create_with_id_tx(
+                let mut structure = initialize_track_tx(
                     tx,
-                    planner_card_id_for_tx.clone(),
-                    NewCard {
-                        title: None,
-                        track_id: track_id.clone(),
-                        kind: "codex".into(),
-                        sort: None,
-                        // Create seeds no `prompt` here; the parameter stays because child tracks pass the
-                        // task goal their parent planner declared.
-                        payload: planner_payload,
-                    },
-                    CardRole::Planner,
-                    false,
-                    write_for_tx.role_cache(),
-                )
-                .await?;
-
-                let report_payload =
-                    serde_json::to_value(TrackReportPayload::initial()).map_err(|e| {
-                        CalmError::Internal(format!(
-                            "track_create: serialize track-report payload: {e}"
-                        ))
-                    })?;
-                let mut report_card = card_create_with_id_tx(
-                    tx,
-                    report_card_id_for_tx.clone(),
-                    NewCard {
-                        title: None,
-                        track_id: track_id.clone(),
-                        kind: "track-report".into(),
-                        sort: Some(-1.0),
-                        payload: report_payload,
-                    },
-                    CardRole::ReportCard,
-                    false,
+                    &track,
+                    (&planner_card_id_for_tx, &report_card_id_for_tx),
+                    TrackInitialization::Independent { planner_payload },
                     write_for_tx.role_cache(),
                 )
                 .await?;
@@ -1613,7 +1582,7 @@ async fn create_track_structure(
                         crate::track_report::write::structural_init_report_tx(
                             tx,
                             crate::track_report::write::InitialReportTarget {
-                                report_card_id: report_card.id.as_str(),
+                                report_card_id: structure.report.id.as_str(),
                                 track_id: track_id.as_str(),
                                 payload: &payload,
                                 doc: &mut doc,
@@ -1622,63 +1591,11 @@ async fn create_track_structure(
                             },
                         )
                         .await?;
-                    report_card = persisted_report;
+                    structure.report = persisted_report;
                     init_projection = Some(projection);
                 }
 
-                let track_scope = EventScope::Track {
-                    track: track_id.clone(),
-                    area: area_id.clone(),
-                };
-                let planner_card_scope = EventScope::Card {
-                    card: planner_card.id.clone(),
-                    track: track_id.clone(),
-                    area: area_id.clone(),
-                };
-                let report_card_scope = EventScope::Card {
-                    card: report_card.id.clone(),
-                    track: track_id.clone(),
-                    area: area_id.clone(),
-                };
-                let layout_overlay = overlay_upsert_tx(
-                    tx,
-                    NewOverlay {
-                        plugin_id: "kernel".into(),
-                        entity_kind: "view".into(),
-                        entity_id: track_id.as_str().to_string(),
-                        kind: "layout".into(),
-                        payload: planner_harness_layout_payload(
-                            planner_card.id.as_str(),
-                            report_card.id.as_str(),
-                        ),
-                    },
-                )
-                .await?;
-                let mut events = vec![
-                    (
-                        actor_id_for_tx.clone(),
-                        track_scope.clone(),
-                        Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
-                            track.clone(),
-                            creation_message,
-                        )),
-                    ),
-                    (
-                        actor_id_for_tx.clone(),
-                        planner_card_scope,
-                        Event::CardAdded(planner_card),
-                    ),
-                    (
-                        actor_id_for_tx.clone(),
-                        report_card_scope,
-                        Event::CardAdded(report_card),
-                    ),
-                    (
-                        actor_id_for_tx.clone(),
-                        track_scope,
-                        Event::OverlaySet(layout_overlay),
-                    ),
-                ];
+                let mut events = structure.creation_events(&track, &actor_id_for_tx, creation_message);
                 if let Some(projection) = init_projection {
                     if !projection.changed_keys.is_empty() {
                         events.push((
@@ -2069,33 +1986,6 @@ fn prepare_fork_report(
     })
 }
 
-/// The payload production writes on a planner-harness card. `pub` so integration
-/// fixtures can mint the production shape instead of a partial literal.
-pub fn planner_harness_card_payload(
-    goal: Option<String>,
-    provider: AgentProvider,
-) -> serde_json::Value {
-    let mut card_payload = serde_json::Map::new();
-    card_payload.insert(
-        "schemaVersion".into(),
-        serde_json::Value::from(CODEX_PAYLOAD_SCHEMA_VERSION),
-    );
-    card_payload.insert(
-        "codex_source".into(),
-        serde_json::Value::String("shared".into()),
-    );
-    card_payload.insert("planner_harness".into(), serde_json::Value::Bool(true));
-    card_payload.insert(
-        crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY.into(),
-        serde_json::json!(provider),
-    );
-    if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
-    }
-    crate::planner_permission_mode::mint_at_creation(&mut card_payload);
-    serde_json::Value::Object(card_payload)
-}
-
 /// The Planner card payload a create mints: [`planner_harness_card_payload`] plus the compiled
 /// template's creation-time `template_context`, when the create instantiates one.
 fn planner_card_payload(
@@ -2122,23 +2012,6 @@ pub fn template_planner_card_payload_for_test(
 ) -> Result<serde_json::Value> {
     let snapshot = prepare_template_report(TemplateRoster::builtin(), template_id)?;
     planner_card_payload(goal, provider, Some(&snapshot))
-}
-
-pub(crate) fn planner_harness_layout_payload(
-    planner_card_id: &str,
-    report_card_id: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "schemaVersion": 1,
-        "positions": {
-            planner_card_id: {
-                "x": 0, "y": 0, "w": 6, "h": 12
-            },
-            report_card_id: {
-                "x": 6, "y": 0, "w": 6, "h": 12
-            }
-        }
-    })
 }
 
 /// Test seam for the one timing predicate: fires after the fence transaction has
@@ -3638,10 +3511,7 @@ pub(crate) async fn update_track_report(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        planner_harness_layout_payload, prepare_fork_report, prepare_initial_report_payload,
-        prepare_template_report,
-    };
+    use super::{prepare_fork_report, prepare_initial_report_payload, prepare_template_report};
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewCard, NewTrack};
@@ -3976,6 +3846,7 @@ mod tests {
     /// complete positions map.
     #[test]
     fn planner_harness_layout_payload_is_a_full_positions_write() {
+        use crate::track_creation::planner_harness_layout_payload;
         let payload = planner_harness_layout_payload("planner-1", "report-1");
         let positions = payload
             .get("positions")

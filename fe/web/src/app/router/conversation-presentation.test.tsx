@@ -13,7 +13,7 @@ it('offers the side menu only after the source mounts, while keeping the trigger
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true,
     reply: request => {
       if (request.path === '/api/version') return { status: 200, statusText: 'OK', body: {
-        assistantProviders: true, conversationSide: true, webCompatVersion: 53, minWebCompatVersion: 53,
+        assistantProviders: true, conversationSide: true, webCompatVersion: 54, minWebCompatVersion: 54,
         syncEventVersion: 29, dbInstanceId: 'presentation-menu',
       } };
       if (request.path.includes('/second-planner/harness/items')) return { status: 200, statusText: 'OK', body: [{

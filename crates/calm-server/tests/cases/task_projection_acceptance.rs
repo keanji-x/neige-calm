@@ -1410,7 +1410,7 @@ async fn acceptance_1_report_spawn_only_edit_emits_plan_updated_and_changes_froz
     ));
 
     let mut sub_track = task("events");
-    sub_track["spawn"] = json!("sub-wave");
+    sub_track["spawn"] = json!("sub-track");
     upsert(&boot, Some(&id), sub_track).await;
     let events = [
         rx.recv().await.unwrap(),
@@ -1429,7 +1429,7 @@ async fn acceptance_1_report_spawn_only_edit_emits_plan_updated_and_changes_froz
             .fetch_one(&boot.repo.sqlite_pool().unwrap())
             .await
             .unwrap();
-    assert_eq!(spawn, "sub-wave");
+    assert_eq!(spawn, "sub-track");
 }
 
 #[tokio::test]

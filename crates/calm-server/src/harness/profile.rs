@@ -179,6 +179,33 @@ pub(crate) async fn validate_live_assistant(
         .is_some_and(|binding| binding.profile == HarnessProfile::Assistant))
 }
 
+/// The backend of a Track's Planner. A child track's Planner, and a Track another Planner adds
+/// with `neige_track_add`, runs on its creator's backend; a Planner card that is not a harness card
+/// (`PlannerBinding` is the one decoder) refuses the create rather than guessing.
+pub(crate) async fn track_planner_provider<'e, E: sqlx::SqliteExecutor<'e>>(
+    executor: E,
+    track_id: &str,
+) -> crate::error::Result<AgentProvider> {
+    let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
+        "SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at \
+           FROM cards WHERE track_id=?1 AND role='planner'",
+    )
+    .bind(track_id)
+    .fetch_optional(executor)
+    .await?
+    .map(crate::model::Card::from);
+    card.as_ref()
+        .and_then(|card| {
+            crate::harness::profile::PlannerBinding::from_card(card, CardRole::Planner)
+        })
+        .map(|binding| binding.provider)
+        .ok_or_else(|| {
+            crate::error::CalmError::Conflict(format!(
+                "track {track_id} has no Planner card naming its planner_provider"
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

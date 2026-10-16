@@ -131,7 +131,7 @@ async fn boot() -> Boot {
             kind: "codex".into(),
             sort: None,
             // The production Planner card shape: a child track inherits its backend.
-            payload: calm_server::routes::tracks::planner_harness_card_payload(
+            payload: calm_server::track_creation::planner_harness_card_payload(
                 None,
                 calm_server::session_projection_repo::AgentProvider::Codex,
             ),
@@ -2676,7 +2676,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
     ));
     let mut child_task = plan_task(&boot.track_id, "meta-child", TaskKind::Codex, &[]);
     child_task.status = TaskStatus::Dispatched;
-    child_task.spawn = "sub-wave".into();
+    child_task.spawn = "sub-track".into();
     let child_task_id = child_task.id.clone();
     let child_payload = build_child_track_payload(&child_task).unwrap();
     seed_task(&boot, child_task).await;
@@ -3515,7 +3515,7 @@ async fn assert_claim_fence_race_lost(cross_track: bool) {
     let (block_path, replacement) = if cross_track {
         ("$.blocks[0].payload.markdown", "edited after resolve")
     } else {
-        ("$.blocks[0].payload.spawn", "sub-wave")
+        ("$.blocks[0].payload.spawn", "sub-track")
     };
     sqlx::query(&format!(
         "UPDATE cards SET payload = json_set(payload, '$.docRev', json_extract(payload, '$.docRev') + 1, '{block_path}', ?2) WHERE id = ?1"
@@ -7542,7 +7542,7 @@ async fn seed_child_parent(
         .await
         .unwrap();
     let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
-    task.spawn = "sub-wave".into();
+    task.spawn = "sub-track".into();
     task.status = TaskStatus::Running;
     task.gate_json = gate_json;
     let task_id = task.id.clone();
@@ -7590,7 +7590,7 @@ async fn acceptance_11_sub_track_parent_survives_two_timeout_sweeps_without_dead
 async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
     let boot = boot().await;
     let mut task = plan_task(&boot.track_id, "stamp-child", TaskKind::Codex, &[]);
-    task.spawn = "sub-wave".into();
+    task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -7616,7 +7616,7 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
         (
             "stamp-failed",
             TaskStatus::Failed,
-            "sub-wave",
+            "sub-track",
             Some("child-failed"),
             "status='dispatched'",
         ),
@@ -7625,12 +7625,12 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
             TaskStatus::Dispatched,
             "in-wave",
             Some("child-in-track"),
-            "spawn='sub-wave'",
+            "spawn='sub-track'",
         ),
         (
             "stamp-no-child",
             TaskStatus::Dispatched,
-            "sub-wave",
+            "sub-track",
             None,
             "child_track_id IS NOT NULL",
         ),
@@ -8025,7 +8025,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     let boot = boot().await;
     let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
     let mut task = plan_task(&boot.track_id, "repaired-bootstrap", TaskKind::Codex, &[]);
-    task.spawn = "sub-wave".into();
+    task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -8131,7 +8131,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let boot = boot().await;
     let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
     let mut task = plan_task(&boot.track_id, "bootstrap", TaskKind::Codex, &[]);
-    task.spawn = "sub-wave".into();
+    task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     let child_payload = build_child_track_payload(&task).unwrap();
@@ -8257,7 +8257,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         TaskKind::Codex,
         &[],
     );
-    crash_task.spawn = "sub-wave".into();
+    crash_task.spawn = "sub-track".into();
     crash_task.status = TaskStatus::Dispatched;
     let crash_task_id = crash_task.id.clone();
     seed_task(&crash_boot, crash_task).await;
@@ -8377,7 +8377,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             TaskKind::Codex,
             &[],
         );
-        task.spawn = "sub-wave".into();
+        task.spawn = "sub-track".into();
         if stage == "create" {
             task.status = TaskStatus::Dispatched;
         }
@@ -8493,7 +8493,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
 async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread() {
     let boot = boot().await;
     let mut task = plan_task(&boot.track_id, "frozen-route", TaskKind::Codex, &[]);
-    task.spawn = "sub-wave".into();
+    task.spawn = "sub-track".into();
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
     let minted = Arc::new(AtomicUsize::new(0));
@@ -8560,7 +8560,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
             rev: 1,
             payload: json!({
                 "key":"frozen-live", "kind":"codex", "goal":"delegate",
-                "ready":true, "declared_by":"spec", "spawn":"sub-wave"
+                "ready":true, "declared_by":"spec", "spawn":"sub-track"
             }),
         }]),
     };
@@ -8571,7 +8571,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
     )
     .await;
     let mut task = plan_task(&boot.track_id, "frozen-live", TaskKind::Codex, &[]);
-    task.spawn = "sub-wave".into();
+    task.spawn = "sub-track".into();
     seed_task(&boot, task).await;
     let adapters = vec![
         Arc::new(ChildTrackAdapter::new(
@@ -8632,7 +8632,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
         async move { scheduler.schedule_track(track).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    sqlx::query("UPDATE tasks SET spawn='sub-wave' WHERE id=?1 AND status='pending'")
+    sqlx::query("UPDATE tasks SET spawn='sub-track' WHERE id=?1 AND status='pending'")
         .bind(&task_id)
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -8654,7 +8654,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     .await;
     let original = json!({
         "key":"stale-child", "kind":"codex", "goal":"frozen child contract",
-        "spawn":"sub-wave", "ready":true, "declared_by":"spec"
+        "spawn":"sub-track", "ready":true, "declared_by":"spec"
     });
     edit_report_blocks(&boot, &[("b_stale_child", "task", original.clone())]).await;
     let task_id = format!("{}:stale-child", boot.track_id);
@@ -8673,7 +8673,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
 
     let edited = json!({
         "key":"stale-child", "kind":"codex", "goal":"materially edited child contract",
-        "spawn":"sub-wave", "ready":true, "declared_by":"spec"
+        "spawn":"sub-track", "ready":true, "declared_by":"spec"
     });
     edit_report_blocks(&boot, &[("b_stale_child", "task", edited)]).await;
     let monitor =
@@ -8761,7 +8761,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
 async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() {
     let boot = boot().await;
     let mut task = plan_task(&boot.track_id, "depth-fail", TaskKind::Codex, &[]);
-    task.spawn = "sub-wave".into();
+    task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     let payload = build_child_track_payload(&task).unwrap();

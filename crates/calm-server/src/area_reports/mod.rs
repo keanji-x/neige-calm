@@ -13,7 +13,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-use calm_types::report_blocks::tasks::normalize_legacy_terminal_task_blocks;
+use calm_types::report_blocks::tasks::normalize_legacy_task_blocks;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
@@ -151,7 +151,7 @@ pub async fn outlines(
                 })?;
             let blocks = match (projection.has_crdt, payload.blocks) {
                 (false, _) => legacy_row_blocks(&payload.body),
-                (true, Some(blocks)) => normalize_legacy_terminal_task_blocks(&blocks),
+                (true, Some(blocks)) => normalize_legacy_task_blocks(&blocks),
                 (true, None) => Vec::new(),
             };
             Ok(ReportOutline {

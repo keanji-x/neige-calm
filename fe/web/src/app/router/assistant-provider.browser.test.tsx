@@ -82,7 +82,7 @@ it.each(['unsupported', 'unavailable', 'missing-version', 'old-version'] as cons
     : condition === 'unavailable'
       ? { ...CLAUDE, availability: { ...CLAUDE.availability, status: 'unavailable', reason: 'Authenticate on this server' } }
       : CLAUDE;
-  const fixture = renderAssistantProviderFixture({ answers: [answer], assistantProviders: condition !== 'missing-version', webCompatVersion: condition === 'old-version' ? 50 : 53 });
+  const fixture = renderAssistantProviderFixture({ answers: [answer], assistantProviders: condition !== 'missing-version', webCompatVersion: condition === 'old-version' ? 50 : 54 });
   await page.getByRole('button', { name: 'New conversation', exact: true }).click();
   if (condition !== 'missing-version' && condition !== 'old-version') {
     await page.getByRole('button', { name: /^Model:/ }).click();

@@ -134,7 +134,7 @@ function liveTaskSharedShape() {
     ready: z.boolean(),
     declared_by: z.enum(['spec', 'user']),
     released_by_user: z.boolean().nullish(),
-    spawn: z.enum(['in-wave', 'sub-wave']).nullish(),
+    spawn: z.enum(['in-wave', 'sub-track']).nullish(),
     tombstone: z.null().nullish(),
   };
 }
@@ -183,10 +183,16 @@ const tombstoneTaskBlockPayloadSchema = z.strictObject({
   tombstoned_by: z.enum(['spec', 'user']),
 });
 
-export const taskBlockPayloadSchema = z.union([
+export const taskBlockPayloadSchema = z.preprocess((value: unknown) => {
+  // Read historical report/event payloads; new wire declarations use sub-track.
+  if (typeof value === 'object' && value !== null && 'spawn' in value && value.spawn === 'sub-wave') {
+    return { ...value, spawn: 'sub-track' };
+  }
+  return value;
+}, z.union([
   liveTaskBlockPayloadSchema,
   tombstoneTaskBlockPayloadSchema,
-]);
+]));
 
 export type ProseBlockPayload = z.infer<typeof proseBlockPayloadSchema>;
 export type ChartCandlesPayload = z.infer<typeof chartCandlesPayloadSchema>;

@@ -328,14 +328,14 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
     }
     if let Some(value) = map.get("spawn")
         && !value.is_null()
-        && !matches!(value.as_str(), Some("in-wave" | "sub-wave"))
+        && !matches!(value.as_str(), Some("in-wave" | "sub-track"))
     {
-        errors.push("spawn: must be one of \"in-wave\" | \"sub-wave\"".into());
+        errors.push("spawn: must be one of \"in-wave\" | \"sub-track\"".into());
     }
-    if matches!(map.get("spawn").and_then(Value::as_str), Some("sub-wave"))
+    if matches!(map.get("spawn").and_then(Value::as_str), Some("sub-track"))
         && !matches!(map.get("kind").and_then(Value::as_str), Some("codex"))
     {
-        errors.push("spawn: \"sub-wave\" requires kind \"codex\"".into());
+        errors.push("spawn: \"sub-track\" requires kind \"codex\"".into());
     }
     crate::task_execution::validate_task_access(map, errors);
     crate::task_execution::validate_reader_commits(map, errors);

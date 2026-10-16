@@ -27,3 +27,12 @@ it('expands without marker travel under reduced motion', async () => {
   expect(getComputedStyle(marker).transitionProperty).toBe('none');
   expect(marker.getAnimations()).toHaveLength(0);
 });
+
+it('renders and expands a canonical subtrack declaration in the browser', async () => {
+  render(<ReportTaskBlock blockId="child-task" payload={{ key: 'Delegated work', kind: 'codex',
+    declared_by: 'user', ready: true, goal: 'Run a child planner.', spawn: 'sub-track' }} />);
+  const summary = document.querySelector<HTMLElement>('[data-nc-task-state] > summary')!;
+  expect(summary.textContent).toContain('codex · sub-track');
+  await userEvent.click(summary);
+  expect(summary.closest('details')!.open).toBe(true);
+});

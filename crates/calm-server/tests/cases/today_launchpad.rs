@@ -819,7 +819,7 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,acceptance_criteria,\
          depends_on_json,priority,status,declared_by,spawn,created_at_ms,updated_at_ms) \
          VALUES(?1,?2,'child','codex','child goal','{}','done','[]',0,'dispatched',\
-         'spec','sub-wave',?3,?3)",
+         'spec','sub-track',?3,?3)",
     )
     .bind(&task_id)
     .bind(parent_track_id)

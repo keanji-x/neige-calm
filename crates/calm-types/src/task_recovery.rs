@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
-/// Persisted route values; names describe their meaning without changing bytes.
+/// Live execution routes. Released child-route evidence is decoded by `subtrack_route`.
 pub const TASK_IN_TRACK_ROUTE: &str = "in-wave";
-pub const TASK_CHILD_TRACK_ROUTE: &str = "sub-wave";
+pub const TASK_CHILD_TRACK_ROUTE: &str = "sub-track";
 
 /// Released task-root hash field partition; changing this would reinterpret historical evidence.
 pub const TASK_ROOT_HASH_FIELDS: &[&str] = &[

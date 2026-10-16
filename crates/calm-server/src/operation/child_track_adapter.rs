@@ -3,18 +3,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::sqlite::{
-    AttachedInheritedPath, TrackWorkspacePlan, append_decision_event_in_tx, card_create_with_id_tx,
-    overlay_upsert_tx, track_create_tx,
+    AttachedInheritedPath, TrackWorkspacePlan, append_decision_event_in_tx, track_create_tx,
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
+use crate::harness::profile::track_planner_provider;
 use crate::ids::{ActorId, CardId};
-use crate::model::{
-    CardRole, NewCard, NewOverlay, NewTrack, RequestTheme, TrackWorkspace, TrackWorkspaceKind,
-    new_id, now_ms,
-};
-use crate::routes::tracks::{planner_harness_card_payload, planner_harness_layout_payload};
-use crate::track_report::{TrackReportPayload, tasks_rebuild_tree_tx};
+use crate::model::{NewTrack, RequestTheme, TrackWorkspace, TrackWorkspaceKind, new_id, now_ms};
+use crate::track_creation::{TrackInitialization, initialize_track_tx};
+use crate::track_report::tasks_rebuild_tree_tx;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, PhaseTag, ProviderAdapter,
@@ -22,33 +19,6 @@ use super::{
 };
 
 pub const CHILD_TRACK_KIND: &str = "child-track";
-
-/// The backend of a Track's Planner. A child track's Planner, and a Track another Planner adds
-/// with `neige_track_add`, runs on its creator's backend; a Planner card that is not a harness card
-/// (`PlannerBinding` is the one decoder) refuses the create rather than guessing.
-pub(crate) async fn track_planner_provider<'e, E: sqlx::SqliteExecutor<'e>>(
-    executor: E,
-    track_id: &str,
-) -> Result<crate::session_projection_repo::AgentProvider> {
-    let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        "SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at \
-           FROM cards WHERE track_id=?1 AND role='planner'",
-    )
-    .bind(track_id)
-    .fetch_optional(executor)
-    .await?
-    .map(crate::model::Card::from);
-    card.as_ref()
-        .and_then(|card| {
-            crate::harness::profile::PlannerBinding::from_card(card, CardRole::Planner)
-        })
-        .map(|binding| binding.provider)
-        .ok_or_else(|| {
-            CalmError::Conflict(format!(
-                "track {track_id} has no Planner card naming its planner_provider"
-            ))
-        })
-}
 
 /// Re-exported because the tree depth bound is part of this adapter's public contract.
 pub use calm_truth::db::sqlite::{MAX_TRACK_TREE_DEPTH, TRACK_ROOT_DEPTH_SQL};
@@ -277,45 +247,15 @@ impl ProviderAdapter for ChildTrackAdapter {
 
         let planner_card_id = new_id();
         let report_card_id = new_id();
-        let planner_card = card_create_with_id_tx(
+        let structure = initialize_track_tx(
             tx,
-            planner_card_id.clone(),
-            NewCard {
-                title: None,
-                track_id: child.id.clone(),
-                kind: "codex".into(),
-                sort: None,
-                payload: planner_harness_card_payload(Some(seed.clone()), planner_provider),
+            &child,
+            (&planner_card_id, &report_card_id),
+            TrackInitialization::Subtrack {
+                seed: seed.clone(),
+                provider: planner_provider,
             },
-            CardRole::Planner,
-            false,
             &self.card_role_cache,
-        )
-        .await?;
-        let report_card = card_create_with_id_tx(
-            tx,
-            report_card_id.clone(),
-            NewCard {
-                title: None,
-                track_id: child.id.clone(),
-                kind: "track-report".into(),
-                sort: Some(-1.0),
-                payload: serde_json::to_value(TrackReportPayload::initial())?,
-            },
-            CardRole::ReportCard,
-            false,
-            &self.card_role_cache,
-        )
-        .await?;
-        let layout = overlay_upsert_tx(
-            tx,
-            NewOverlay {
-                plugin_id: "kernel".into(),
-                entity_kind: "view".into(),
-                entity_id: child.id.to_string(),
-                kind: "layout".into(),
-                payload: planner_harness_layout_payload(&planner_card_id, &report_card_id),
-            },
         )
         .await?;
 
@@ -340,36 +280,7 @@ impl ProviderAdapter for ChildTrackAdapter {
         let projections = tasks_rebuild_tree_tx(tx, &root_id).await?;
 
         let actor = ActorId::KernelDispatcher;
-        let track_scope = EventScope::Track {
-            track: child.id.clone(),
-            area: child.area_id.clone(),
-        };
-        let mut entries = vec![
-            (
-                actor.clone(),
-                track_scope.clone(),
-                Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(child.clone(), None)),
-            ),
-            (
-                actor.clone(),
-                EventScope::Card {
-                    card: planner_card.id.clone(),
-                    track: child.id.clone(),
-                    area: child.area_id.clone(),
-                },
-                Event::CardAdded(planner_card),
-            ),
-            (
-                actor.clone(),
-                EventScope::Card {
-                    card: report_card.id.clone(),
-                    track: child.id.clone(),
-                    area: child.area_id.clone(),
-                },
-                Event::CardAdded(report_card),
-            ),
-            (actor.clone(), track_scope, Event::OverlaySet(layout)),
-        ];
+        let mut entries = structure.creation_events(&child, &actor, None);
         for (projected_track, projection) in projections {
             if !projection.changed_keys.is_empty() {
                 entries.push((
@@ -466,6 +377,7 @@ mod tests {
     use super::*;
     use crate::card_role_cache::CardRoleCache;
     use crate::db::RepoOutOfDomain;
+    use crate::db::sqlite::card_create_with_id_tx;
     use crate::db::sqlite::{
         SqlxRepo, area_create_tx, area_delete_tx, task_claim_pending_tx, track_update_tx,
     };
@@ -473,12 +385,14 @@ mod tests {
     use crate::forge_trust::trusted_forge_plugin;
     use crate::mcp_server::registry::AppContext;
     use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
+    use crate::model::{CardRole, NewCard};
     use crate::model::{NewArea, Task, TaskKind, TaskStatus, TrackPatch};
     use crate::operation::Phase;
     use crate::operation::child_track_adapter::provider_tests;
     use crate::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
     use crate::state::WriteContext;
     use crate::track_area_cache::TrackAreaCache;
+    use crate::track_report::TrackReportPayload;
     use crate::track_report::tasks_rebuild_tx;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -598,7 +512,7 @@ mod tests {
             running_deadline_ms: None,
             context_stale_at_ms: stale.then_some(now),
             declared_by: "spec".into(),
-            spawn: "sub-wave".into(),
+            spawn: "sub-track".into(),
             access: crate::model::TaskAccess::ReadWrite,
             start: crate::model::TaskStart::Checkout,
             result_contract: None,
@@ -1163,7 +1077,7 @@ mod tests {
                 kind: "task".into(),
                 rev: 4,
                 payload: json!({
-                    "key":"child", "kind":"codex", "spawn":"sub-wave",
+                    "key":"child", "kind":"codex", "spawn":"sub-track",
                     "goal":"current-goal", "acceptance":"current-acceptance",
                     "context":{"current":"context"}, "cwd":"/current-cwd"
                 }),

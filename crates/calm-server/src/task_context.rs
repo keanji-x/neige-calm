@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
-use calm_types::report_blocks::{flat_text, scannable_text_fields};
+use calm_types::report_blocks::scannable_text_fields;
 use calm_types::report_links::{parse_destination, scan_links};
 use calm_types::track_report::ReportBlock;
 use dashmap::DashMap;
@@ -1165,7 +1165,7 @@ pub(crate) fn context_ref(track_id: &str, block: &ReportBlock, is_root: bool) ->
     let content = if is_root {
         task_root_projection(&block.payload)
     } else {
-        flat_text(block)
+        calm_types::subtrack_route::context_hash_preimage(block)
     };
     TaskContextRef {
         track_id: TrackId::from(track_id),
@@ -1216,7 +1216,7 @@ pub async fn sweep_with_timeout(monitor: &TaskContextMonitor, timeout: Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::report_blocks::TASK_FIELDS;
+    use calm_types::report_blocks::{TASK_FIELDS, flat_text};
 
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
     use crate::db::{Repo, ServerRepoSyncDomainRawExt};
@@ -1327,6 +1327,118 @@ mod tests {
         .await
         .unwrap();
         (repo, track.id.to_string(), task_id)
+    }
+
+    #[tokio::test]
+    async fn subtrack_vocabulary_migration_keeps_frozen_nonroot_context_fresh() {
+        let (repo, track_id, task_id) = seed_restore_transaction_fixture("running", None).await;
+        let old = ReportBlock {
+            id: "b_child".into(),
+            kind: "task".into(),
+            rev: 7,
+            payload: serde_json::json!({"key":"child","kind":"codex","goal":"delegated",
+                "ready":true,"declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,"spawn":"sub-wave"}),
+        };
+        // Released evidence is computed from the old fence, independent of the compatibility codec.
+        let frozen = TaskContextRef {
+            track_id: track_id.as_str().into(),
+            block_id: old.id.clone(),
+            rev: i64::from(old.rev),
+            hash: format!("{:x}", Sha256::digest(flat_text(&old).as_bytes())),
+            is_root: false,
+        };
+        let migrated = calm_types::report_blocks::tasks::normalize_legacy_task_block(&old);
+        let mut doc =
+            crate::track_report_doc::ReportDoc::from_blocks_exact("", &[migrated]).unwrap();
+        let (summary, body) = doc.project().unwrap();
+        let mut payload = TrackReportPayload::new(summary, body);
+        payload.blocks = Some(doc.blocks_snapshot().unwrap());
+        let pool = repo.sqlite_pool().unwrap();
+        sqlx::query(
+            "UPDATE cards SET payload=?1,body_crdt=?2 WHERE track_id=?3 AND kind='track-report'",
+        )
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(doc.to_bytes())
+        .bind(&track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE tasks SET claim_context_json=?1 WHERE id=?2")
+            .bind(serde_json::to_string(&vec![frozen]).unwrap())
+            .bind(&task_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Exercise the production boot/event context sweep over the persisted running task.
+        let write = WriteContext::new(
+            repo.card_role_cache().clone(),
+            repo.track_area_cache().clone(),
+        );
+        let monitor = TaskContextMonitor::new(std::sync::Arc::new(repo), Default::default(), write);
+        monitor.sweep().await.unwrap();
+        assert_eq!(
+            monitor.metrics().snapshot().sweep_verified_tuples,
+            1,
+            "the running reference was checked"
+        );
+        let stale: Option<i64> =
+            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            stale, None,
+            "a vocabulary-only upgrade must not invalidate running context"
+        );
+    }
+
+    #[test]
+    fn subtrack_v1_migration_preserves_production_nonroot_terminal_projection() {
+        use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
+        let child = ReportBlock {
+            id: "b_1111".into(),
+            kind: "task".into(),
+            rev: 7,
+            payload: serde_json::json!({"kind":"codex","spawn":calm_types::subtrack_route::LEGACY_CHILD_ROUTE}),
+        };
+        let terminal = ReportBlock {
+            id: "b_2222".into(),
+            kind: "task".into(),
+            rev: 9,
+            payload: serde_json::json!({"kind":"terminal","goal":"echo unchanged"}),
+        };
+        let hints = vec![child, terminal];
+        let body = hints.iter().map(flat_text).collect::<String>();
+        let mut raw = AutoCommit::new();
+        let summary = raw.put_object(ROOT, "summary", ObjType::Text).unwrap();
+        raw.update_text(&summary, "").unwrap();
+        let text = raw.put_object(ROOT, "body", ObjType::Text).unwrap();
+        raw.update_text(&text, &body).unwrap();
+        let bytes = raw.save();
+        let payload = serde_json::json!({"blocks":hints});
+        // Freeze via the real read path that legacy V1 context resolution uses.
+        let before = context_snapshot_values("track", &payload, Some(&bytes)).unwrap();
+        let frozen: Vec<_> = before
+            .iter()
+            .map(|value| {
+                let block: ReportBlock = serde_json::from_value(value.clone()).unwrap();
+                context_ref("track", &block, false)
+            })
+            .collect();
+        assert_eq!(before[1]["payload"]["command"], "echo unchanged");
+        let mut doc = crate::track_report_doc::ReportDoc::from_bytes(&bytes).unwrap();
+        doc.migrate_subtrack_route(Some(&hints)).unwrap();
+        let after = context_snapshot_values("track", &payload, Some(&doc.to_bytes())).unwrap();
+        for (value, frozen) in after.iter().zip(frozen) {
+            let block: ReportBlock = serde_json::from_value(value.clone()).unwrap();
+            let current = context_ref("track", &block, false);
+            assert_eq!(
+                (current.block_id, current.rev, current.hash),
+                (frozen.block_id, frozen.rev, frozen.hash)
+            );
+        }
+        assert_eq!(after[0]["payload"]["spawn"], "sub-track");
     }
 
     #[test]

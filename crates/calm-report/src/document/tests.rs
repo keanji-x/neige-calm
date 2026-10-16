@@ -541,3 +541,49 @@ fn replace_section_members_keeps_task_blocks_byte_identical() {
         format!("# A\n\nalpha2\n\n## A2\n\ny\n{task}# B\n\nb\n")
     );
 }
+
+#[test]
+fn subtrack_migration_preserves_sibling_terminal_fields_and_block_revisions() {
+    let child = ReportBlock {
+        id: "b_1111".into(),
+        kind: "task".into(),
+        rev: 7,
+        payload: json!({"kind":"codex","spawn":"sub-wave"}),
+    };
+    let terminal = ReportBlock {
+        id: "b_2222".into(),
+        kind: "task".into(),
+        rev: 9,
+        payload: json!({"kind":"terminal","goal":"echo unchanged"}),
+    };
+    let mut doc =
+        ReportDoc::from_blocks_exact("summary", &[child.clone(), terminal.clone()]).unwrap();
+    assert!(doc.migrate_subtrack_route(None).unwrap());
+    let after = doc.blocks_snapshot().unwrap();
+    assert_eq!(after[0].payload["spawn"], "sub-track");
+    assert_eq!(after[0].rev, child.rev);
+    assert_eq!(
+        after[1], terminal,
+        "the route upgrade must not migrate sibling terminal commands"
+    );
+    let bytes = doc.to_bytes();
+    assert!(!doc.migrate_subtrack_route(None).unwrap());
+    assert_eq!(doc.to_bytes(), bytes);
+}
+
+#[test]
+fn subtrack_migration_upgrades_legacy_crdt_body_and_preserves_hint_identity() {
+    let block = ReportBlock {
+        id: "b_3333".into(),
+        kind: "task".into(),
+        rev: 6,
+        payload: json!({"kind":"codex","spawn":calm_types::subtrack_route::LEGACY_CHILD_ROUTE}),
+    };
+    let body = flat_text(&block);
+    let mut doc = ReportDoc::from_bytes(&legacy_doc_bytes("summary", &body)).unwrap();
+    assert!(doc.migrate_subtrack_route(Some(&[block])).unwrap());
+    let blocks = doc.blocks_snapshot().unwrap();
+    assert_eq!((blocks[0].id.as_str(), blocks[0].rev), ("b_3333", 6));
+    assert_eq!(blocks[0].payload["spawn"], "sub-track");
+    assert_eq!(doc.project().unwrap().0, "summary");
+}
