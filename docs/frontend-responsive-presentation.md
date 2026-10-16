@@ -198,8 +198,9 @@ characters respectively. This preserves ordinary Find/selection availability;
 it does not promise Find navigation will be held through unrelated future stream
 growth when the browser exposes no selection/input intent.
 
-The reproducible one-off production probe, per-run values and evidence are linked
-from #2665. The committed router performance/switch tests above remain the
-maintained regression entry points. Review convergence and correctness gates are
+The one-off production probe and raw reports accompany the task as the local
+`neige-responsive-presentation-evidence.tar.gz` artifact. #2665 records the concise
+rollout outcome. The committed router performance/switch tests above remain the
+maintained, repository-visible regression entry points. Review convergence and correctness gates are
 recorded on the implementation PRs; unrelated intermittent local checks remain
 visible in [#2682](https://github.com/keanji-x/neige-calm/issues/2682).
