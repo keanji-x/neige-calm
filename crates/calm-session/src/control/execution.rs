@@ -10,8 +10,10 @@ use super::{IoMode, ProcSignal};
 
 pub mod attachment;
 mod attachment_client;
+mod directory_relation;
 pub mod rights;
 pub use attachment::*;
+pub use directory_relation::*;
 
 pub const EXECUTION_ENVELOPE_VERSION: u32 = 3;
 
@@ -108,6 +110,7 @@ pub enum ExecutionRequest {
     Launch(ConsumeExecution),
     Revoke(ConsumeExecution),
     Control(ExecutionControl),
+    ObserveDirectories(DirectoryRelationRequest),
 }
 
 /// All process actions, including future variants, must first resolve this exact capability.
@@ -191,6 +194,7 @@ pub enum ExecutionReply {
     Refused {
         reason: String,
     },
+    DirectoryRelation(DirectoryRelationReport),
 }
 
 /// Explicit worktree compatibility, qualified by the released v2 Probe contract or v3 handshake.

@@ -1,16 +1,16 @@
 //! Positive current-directory evidence only. Failed lookup never proves disjointness.
-use super::{HeldRootKey, HeldSourceObjects, ObjectRole, fact, namespace};
+use super::{
+    DirectoryPairFailure, HeldRootKey, HeldSourceObjects, ObjectRole, current_directory_pair, fact,
+};
+use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     io,
     marker::PhantomData,
-    os::{
-        fd::FromRawFd,
-        unix::{ffi::OsStrExt, fs::MetadataExt},
-    },
+    os::{fd::FromRawFd, unix::ffi::OsStrExt},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContainmentKind {
     SameDirectory,
     StrictDescendant,
@@ -65,45 +65,23 @@ impl HeldSourceObjects {
         if !cfg!(target_os = "linux") {
             return DirectoryContainment::Unsupported(ContainmentUnsupported::Platform);
         }
-        let current_namespace = match namespace() {
-            Ok(namespace) => namespace,
-            Err(error) => {
-                return DirectoryContainment::Unknown(ContainmentUnknown::ObjectMetadata(error));
+        let pair = match current_directory_pair(self.root(), subject.root()) {
+            Ok(pair) => pair,
+            Err(DirectoryPairFailure::Unknown(reason)) => {
+                return DirectoryContainment::Unknown(reason);
+            }
+            Err(DirectoryPairFailure::Unsupported(reason)) => {
+                return DirectoryContainment::Unsupported(reason);
             }
         };
+        let current_namespace = pair.mount_namespace;
         if current_namespace != self.shape.mount_namespace
             || current_namespace != subject.shape.mount_namespace
         {
             return DirectoryContainment::Unknown(ContainmentUnknown::NamespaceChanged);
         }
-        let ancestor_fact = match fact(self.root(), ObjectRole::Root) {
-            Ok(fact) => fact,
-            Err(error) => {
-                return DirectoryContainment::Unknown(ContainmentUnknown::ObjectMetadata(error));
-            }
-        };
-        let subject_fact = match fact(subject.root(), ObjectRole::Root) {
-            Ok(fact) => fact,
-            Err(error) => {
-                return DirectoryContainment::Unknown(ContainmentUnknown::ObjectMetadata(error));
-            }
-        };
-        for root in [self.root(), subject.root()] {
-            match root.metadata() {
-                Ok(metadata) if metadata.nlink() > 0 && metadata.is_dir() => {}
-                Ok(_) => {
-                    return DirectoryContainment::Unknown(ContainmentUnknown::DetachedDirectory);
-                }
-                Err(error) => {
-                    return DirectoryContainment::Unknown(ContainmentUnknown::ObjectMetadata(
-                        error,
-                    ));
-                }
-            }
-        }
-        if ancestor_fact.mount != subject_fact.mount {
-            return DirectoryContainment::Unsupported(ContainmentUnsupported::DifferentMount);
-        }
+        let ancestor_fact = pair.ancestor;
+        let subject_fact = pair.subject;
         let kind = if ancestor_fact == subject_fact {
             ContainmentKind::SameDirectory
         } else {

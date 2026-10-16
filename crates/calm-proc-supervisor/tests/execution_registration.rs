@@ -3,6 +3,8 @@ use workspace::execution::objects::{ContainmentKind, DirectoryContainment, HeldS
 #[path = "execution_contract/support.rs"]
 mod support;
 use support::*;
+#[path = "execution_registration/directory_relation.rs"]
+mod directory_relation;
 
 struct Pair {
     harness: Harness,
@@ -428,6 +430,10 @@ fn execution_bind_mount_alias_cannot_allocate_another_physical_root_bucket() {
     assert_eq!(
         observed["comparison"], "MountAliasUnsupported",
         "different mount views were silently joined: {observed}"
+    );
+    assert_eq!(
+        observed["cross_mount_rpc"], "Unsupported(DifferentMount)",
+        "the actual relation RPC guessed across different mount views: {observed}"
     );
     use std::os::unix::fs::MetadataExt;
     let original = std::fs::metadata(&root).unwrap();

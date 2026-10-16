@@ -1,8 +1,13 @@
 //! Live object leases. Serialized facts are validation inputs, never reopened leases.
 mod containment;
+mod relation;
 pub use containment::{
     ContainmentKind, ContainmentUnknown, ContainmentUnsupported, DirectoryContainment,
     PositiveContainment,
+};
+pub use relation::{
+    DirectoryObservationStage, DirectoryPairFacts, DirectoryPairFailure, DirectoryRelationOutcome,
+    DirectoryRelationUnknown, DirectoryRelationUnsupported, current_directory_pair,
 };
 
 use serde::{Deserialize, Serialize};

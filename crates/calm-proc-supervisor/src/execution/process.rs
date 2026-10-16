@@ -120,7 +120,7 @@ pub(super) fn spawn(
     let (configuration, config_writer) = pipe()?;
     let (reports, report_writer) = pipe()?;
     let nonce = context.nonce.clone();
-    let encoded = serde_json::to_vec(&HelperPlan {
+    let encoded = serde_json::to_vec(&HelperPlan::Execution {
         context,
         specification: specification.clone(),
     })?;
@@ -128,14 +128,7 @@ pub(super) fn spawn(
         encoded.len() <= 1024 * 1024,
         "execution specification too large"
     );
-    let mut command = Command::new(format!("/proc/self/fd/{}", helper.as_raw_fd()));
-    command
-        .args([
-            "--execution-helper",
-            &configuration.as_raw_fd().to_string(),
-            &report_writer.as_raw_fd().to_string(),
-        ])
-        .env_clear();
+    let mut command = helper_command(helper, &configuration, &report_writer, &[]);
     let (input, output, pty) = match specification.io_mode {
         IoMode::Pipe => {
             let (input_read, input_write) = pipe()?;
@@ -185,8 +178,6 @@ pub(super) fn spawn(
         }
     };
     let directory_fd = cwd.as_raw_fd();
-    let config_fd = configuration.as_raw_fd();
-    let report_fd = report_writer.as_raw_fd();
     let is_pty = matches!(specification.io_mode, IoMode::Pty { .. });
     // SAFETY: pre_exec uses only async-signal-safe libc operations on owned descriptors.
     unsafe {
@@ -199,13 +190,6 @@ pub(super) fn spawn(
             }
             if is_pty && libc::ioctl(0, libc::TIOCSCTTY, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
-            }
-            mark_child_descriptors_cloexec()?;
-            for fd in [config_fd, report_fd] {
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
             }
             Ok(())
         });
@@ -284,6 +268,42 @@ pub(super) fn spawn(
     Ok((process, identity, reports))
 }
 
+/// The one registered helper image/bootstrap path; roles declare their exact inherited FD set.
+pub(super) fn helper_command(
+    helper: &File,
+    configuration: &File,
+    reports: &File,
+    inherited: &[RawFd],
+) -> Command {
+    let mut command = Command::new(format!("/proc/self/fd/{}", helper.as_raw_fd()));
+    command
+        .args([
+            "--execution-helper",
+            &configuration.as_raw_fd().to_string(),
+            &reports.as_raw_fd().to_string(),
+        ])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut allowed = vec![configuration.as_raw_fd(), reports.as_raw_fd()];
+    allowed.extend_from_slice(inherited);
+    // SAFETY: executed after fork, only fcntl/close_range on the exact owned bootstrap FDs.
+    unsafe {
+        command.pre_exec(move || {
+            mark_child_descriptors_cloexec()?;
+            for fd in &allowed {
+                let flags = libc::fcntl(*fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
 /// Child-only allowlist: stdio and explicitly reopened helper channels are the only exec survivors.
 pub(super) fn mark_child_descriptors_cloexec() -> std::io::Result<()> {
     // SAFETY: called only after fork in the child; no host descriptor flags are changed.
@@ -335,7 +355,7 @@ pub(super) fn cloexec(fd: RawFd, enabled: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-fn nonblocking(fd: RawFd) -> std::io::Result<()> {
+pub(super) fn nonblocking(fd: RawFd) -> std::io::Result<()> {
     // SAFETY: both calls operate on an owned process input descriptor.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {

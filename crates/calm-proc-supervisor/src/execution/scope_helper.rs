@@ -14,9 +14,12 @@ pub(super) struct HelperContext {
     pub mechanism: ScopeMechanismIdentity,
 }
 #[derive(Serialize, Deserialize)]
-pub(super) struct HelperPlan {
-    pub context: HelperContext,
-    pub specification: ExecutionSpecification,
+pub(super) enum HelperPlan {
+    Execution {
+        context: HelperContext,
+        specification: ExecutionSpecification,
+    },
+    ObserveDirectories(super::directory_probe::ProbePlan),
 }
 #[derive(Serialize, Deserialize)]
 pub(super) struct HelperReport {
@@ -88,14 +91,25 @@ pub fn run(config_fd: RawFd, report_fd: RawFd) -> anyhow::Result<()> {
     }
     let plan: HelperPlan = serde_json::from_reader(config)?;
     let image = std::fs::metadata("/proc/self/exe")?;
+    let mechanism = match &plan {
+        HelperPlan::Execution { context, .. } => &context.mechanism,
+        HelperPlan::ObserveDirectories(plan) => &plan.context.mechanism,
+    };
     anyhow::ensure!(
-        plan.context.mechanism.executable_device == image.dev()
-            && plan.context.mechanism.executable_inode == image.ino()
-            && plan.context.mechanism.protocol_version == 1,
+        mechanism.executable_device == image.dev()
+            && mechanism.executable_inode == image.ino()
+            && mechanism.protocol_version == 1,
         "unregistered helper image/protocol"
     );
-    let specification = plan.specification;
-    let context = plan.context;
+    let (context, specification) = match plan {
+        HelperPlan::Execution {
+            context,
+            specification,
+        } => (context, specification),
+        HelperPlan::ObserveDirectories(plan) => {
+            return super::directory_probe::run(plan, report, [config_fd, report_fd]);
+        }
+    };
     let mut command = Command::new(&specification.program);
     command
         .args(&specification.args)

@@ -2,6 +2,8 @@
 
 mod attachment;
 mod directory;
+mod directory_probe;
+mod directory_relation;
 mod journal;
 mod preparation;
 mod process;
@@ -241,6 +243,9 @@ impl Executor {
             ExecutionRequest::Launch(request) => self.launch(request).await,
             ExecutionRequest::Revoke(request) => self.revoke(request).await,
             ExecutionRequest::Control(control) => self.control(control).await,
+            ExecutionRequest::ObserveDirectories(request) => {
+                self.observe_directories(request).await
+            }
         }
     }
 

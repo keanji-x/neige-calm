@@ -11,6 +11,19 @@ fn main() {
         let arguments = std::env::args_os().collect::<Vec<_>>();
         if arguments
             .get(1)
+            .is_some_and(|argument| argument == "--execution-helper")
+        {
+            // Fault image for the read-only observer's actual timeout/reap path. No fork, protocol
+            // implementation, environment switch, or report is provided by this fixture role.
+            assert_eq!(arguments.len(), 4);
+            loop {
+                unsafe {
+                    libc::pause();
+                }
+            }
+        }
+        if arguments
+            .get(1)
             .is_some_and(|argument| argument == "--probe-bind-alias")
         {
             assert_eq!(
