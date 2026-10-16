@@ -24,7 +24,10 @@ arrival rules and navigation targets stay in the feature.
   including selection at the tail. Growth and initial attachment sample it before
   scrolling; queued `selectionchange` delivery cannot lose a race with layout.
   Each pane compares only its intersecting extent, clipped at its content edges.
-  Range order and direction alone do not change that extent.
+  Range order and direction alone do not change that extent. Internal boundary
+  points retain their copied offsets when children are appended; external points
+  cover the current content edge. Moving between those representations compares
+  against the current DOM boundary and always refreshes the observation.
 - Explicit return and a downward input return acknowledge the current selection;
   an unchanged held selection cannot cancel them. Only an observed clear/extent
   change rearms selection intent. Same-task clear/reselect may coalesce and is

@@ -58,9 +58,9 @@ export function createScrollFollower(options: Readonly<{
   const reconcileSelection = () => {
     if (attachedContent === null || restoring !== 0) return;
     const selection = readContentSelection(attachedContent);
-    if (sameContentSelection(selection, observedSelection)) return;
+    const unchanged = sameContentSelection(attachedContent, selection, observedSelection);
     observedSelection = selection;
-    if (selection.length > 0) { gesture = null; following = false; }
+    if (!unchanged && selection.length > 0) { gesture = null; following = false; }
   };
   const resumeFollowing = () => { acknowledgeSelection(); following = true; };
   const followGrowth = () => {

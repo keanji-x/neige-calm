@@ -24,17 +24,21 @@ export function readContentSelection(content: HTMLElement): ContentSelection {
   return ranges;
 }
 
-function sameEdge(left: Edge, right: Edge): boolean {
-  if (typeof left === 'string' || typeof right === 'string') return left === right;
-  return left.node === right.node && left.offset === right.offset;
+function sameEdge(content: HTMLElement, left: Edge, right: Edge): boolean {
+  if (typeof left === 'string' && typeof right === 'string') return left === right;
+  const point = (edge: Edge) => typeof edge === 'string'
+    ? { node: content, offset: edge === 'start' ? 0 : content.childNodes.length }
+    : edge;
+  const a = point(left); const b = point(right);
+  return a.node === b.node && a.offset === b.offset;
 }
 
 /** Range order and selection direction do not change the selected extent. */
-export function sameContentSelection(left: ContentSelection, right: ContentSelection): boolean {
+export function sameContentSelection(content: HTMLElement, left: ContentSelection, right: ContentSelection): boolean {
   if (left.length !== right.length) return false;
   const unmatched = [...right];
   for (const range of left) {
-    const index = unmatched.findIndex(candidate => sameEdge(range.start, candidate.start) && sameEdge(range.end, candidate.end));
+    const index = unmatched.findIndex(candidate => sameEdge(content, range.start, candidate.start) && sameEdge(content, range.end, candidate.end));
     if (index === -1) return false;
     unmatched.splice(index, 1);
   }

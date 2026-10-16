@@ -142,3 +142,70 @@ it('resumes after a native downward return while the old selection remains held'
   view.rerender(<Pane growth={400} />); await frames();
   expect(remaining()).toBeLessThanOrEqual(1);
 });
+
+it.each(['start', 'end'] as const)('keeps return acknowledged when an outside %s moves to the exact content edge', async edge => {
+  const view = render(<><Pane name="a" /><Pane name="b" /></>); await frames();
+  const selection = window.getSelection()!;
+  selection.setBaseAndExtent(link('a').firstChild!, 0, link('b').firstChild!, 8); await frames();
+  const name = edge === 'start' ? 'b' : 'a';
+  const content = pane(name).firstElementChild!;
+  end(name); await frames();
+  const range = selection.getRangeAt(0).cloneRange();
+  if (edge === 'start') range.setStart(content, 0);
+  else range.setEnd(content, content.childNodes.length);
+  selection.removeAllRanges(); selection.addRange(range); await frames();
+  view.rerender(<><Pane name="a" growth={400} /><Pane name="b" growth={400} /></>); await frames();
+  expect(remaining(name)).toBeLessThanOrEqual(1);
+  // Retain the newly observed internal point when children are appended later.
+  const addition = document.createElement('div'); addition.style.height = '400px';
+  content.append(addition); await frames();
+  expect(remaining(name)).toBeLessThanOrEqual(1);
+});
+
+it('retains an acknowledged internal endpoint when its old content edge becomes interior', async () => {
+  render(<Pane />); await frames();
+  const content = pane().firstElementChild!;
+  const range = document.createRange(); range.setStart(link().firstChild!, 0); range.setEnd(content, content.childNodes.length);
+  const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); await frames();
+  end(); await frames();
+  const addition = document.createElement('div'); addition.style.height = '400px';
+  content.append(addition); await frames();
+  expect(remaining()).toBeLessThanOrEqual(1);
+});
+
+it('pauses again when the acknowledged local endpoint actually moves inside the pane', async () => {
+  const view = render(<><Pane name="a" /><Pane name="b" /></>); await frames();
+  const selection = window.getSelection()!;
+  selection.setBaseAndExtent(link('a').firstChild!, 0, link('b').firstChild!, 8); await frames();
+  end('a'); await frames();
+  const top = pane('a').scrollTop;
+  selection.setBaseAndExtent(link('a').firstChild!, 0, link('a').firstChild!, 8);
+  view.rerender(<><Pane name="a" growth={400} /><Pane name="b" /></>); await frames();
+  expect(pane('a').scrollTop).toBe(top);
+  expect(remaining('a')).toBeGreaterThan(300);
+});
+
+it('pauses when an internal endpoint expands outside after same-task child insertion', async () => {
+  const view = render(<><Pane name="a" /><Pane name="b" /></>); await frames();
+  const content = pane('a').firstElementChild!;
+  const range = document.createRange(); range.setStart(link('a').firstChild!, 0); range.setEnd(content, content.childNodes.length);
+  const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); await frames();
+  end('a'); await frames();
+  const top = pane('a').scrollTop;
+  const addition = document.createElement('div'); addition.style.height = '400px';
+  content.append(addition);
+  selection.setBaseAndExtent(link('a').firstChild!, 0, link('b').firstChild!, 8);
+  view.rerender(<><Pane name="a" growth={400} /><Pane name="b" /></>); await frames();
+  expect(pane('a').scrollTop).toBe(top);
+  expect(remaining('a')).toBeGreaterThan(700);
+});
+
+it('retains an acknowledged external endpoint as the content grows', async () => {
+  render(<><Pane name="a" /><Pane name="b" /></>); await frames();
+  const selection = window.getSelection()!;
+  selection.setBaseAndExtent(link('a').firstChild!, 0, link('b').firstChild!, 8); await frames();
+  end('a'); await frames();
+  const addition = document.createElement('div'); addition.style.height = '400px';
+  pane('a').firstElementChild!.append(addition); await frames();
+  expect(remaining('a')).toBeLessThanOrEqual(1);
+});
