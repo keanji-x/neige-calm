@@ -11,7 +11,7 @@ import {
 } from '../../../../core/domain/track.ts';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
-import { Icon, type IconName } from '../../ui/icon/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { Menu } from '../../ui/menu/public.tsx';
 import { ConnectionIndicator } from './connection-indicator.tsx';
 import {
@@ -92,11 +92,11 @@ export function Sidebar({
   const isUnread = (track: Track) => receipts.isUnread('track', track.id, track.activityAt);
   const memberships = sidebarTrackGroups(userTracks, isUnread);
   const waiting = memberships.waiting;
-  const groups: ReadonlyArray<{ id: SidebarSectionId; title: string; icon: IconName; tracks: readonly Track[] }> = [
-    { id: 'waiting', title: 'Waiting on you', icon: 'notification', tracks: waiting },
-    { id: 'pinned', title: 'Pinned', icon: 'pin', tracks: memberships.pinned },
-    { id: 'unread', title: 'Unread', icon: 'notification', tracks: memberships.unread },
-    { id: 'running', title: 'Running', icon: 'status-running', tracks: memberships.running },
+  const groups: ReadonlyArray<{ id: SidebarSectionId; title: string; tracks: readonly Track[] }> = [
+    { id: 'waiting', title: 'Waiting on you', tracks: waiting },
+    { id: 'pinned', title: 'Pinned', tracks: memberships.pinned },
+    { id: 'unread', title: 'Unread', tracks: memberships.unread },
+    { id: 'running', title: 'Running', tracks: memberships.running },
   ];
 
   const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);

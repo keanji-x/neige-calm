@@ -1,3 +1,4 @@
+import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 /*
  * The mobile presentation, rendered on the real `AppShell` over a memory history;
  * this is the file that measures painted boxes.
@@ -213,7 +214,9 @@ describe('Track mobile presentation', () => {
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
     expect(page.getByRole('heading', { name: 'Tools' })).toBeTruthy();
     const cardsHeader = await page.getByRole('heading', { name: 'Tools', exact: true }).findElement();
-    expect(getComputedStyle(cardsHeader).fontSize).toBe('16px');
+    withFontRoleProbe('--type-page-title', cardsHeader.closest('header')!, expected => {
+      expect(getComputedStyle(cardsHeader)).toMatchObject(expected);
+    });
     expect(getComputedStyle(cardsHeader.closest('header')!).backdropFilter).toBe('none');
     expect(getComputedStyle(cardsHeader.closest('header')!).borderRadius).toBe('0px');
     expect((await page.getByRole('button', { name: 'Back to Report' }).findElement()).getBoundingClientRect().height)

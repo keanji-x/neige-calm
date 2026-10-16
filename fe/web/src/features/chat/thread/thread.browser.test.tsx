@@ -1,3 +1,4 @@
+import { withFontRoleProbe } from '../../../../../tools/styles/font-role-fixture.ts';
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
@@ -1836,7 +1837,9 @@ describe('Mobile conversation contours', () => {
     expect(getComputedStyle(composer).backgroundColor).not.toBe(getComputedStyle(drawer).backgroundColor);
     expect(getComputedStyle(drawer).getPropertyValue('--radius-chat').trim()).toBe('16px');
     const heading = await page.getByRole('heading', { name: /^A very long conversation/ }).findElement();
-    expect(getComputedStyle(heading).fontSize).toBe('16px');
+    withFontRoleProbe('--type-page-title', heading.closest('header')!, expected => {
+      expect(getComputedStyle(heading)).toMatchObject(expected);
+    });
     expect(heading.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(drawer.getBoundingClientRect().height).toBe(window.innerHeight);
   });

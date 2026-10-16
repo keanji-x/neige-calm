@@ -1,3 +1,4 @@
+import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
@@ -310,9 +311,12 @@ it.each([1024, 1440])('aligns reading and chat dividers with the first sidebar c
   expect(Math.abs(center(today) - center(readingHeader))).toBeLessThanOrEqual(1);
   expect(Math.abs(center(readingTitle) - center(readingHeader))).toBeLessThanOrEqual(1);
   await expect.poll(() => Math.abs(center(chatTitle) - center(chatHeader))).toBeLessThanOrEqual(1);
-  expect(getComputedStyle(readingTitle).fontWeight).toBe('600');
-  expect(getComputedStyle(chatTitle).fontSize).toBe('16px');
-  expect(getComputedStyle(chatTitle).fontWeight).toBe('400');
+  withFontRoleProbe('--type-heading', readingHeader as HTMLElement, expected => {
+    expect(getComputedStyle(readingTitle)).toMatchObject(expected);
+  });
+  withFontRoleProbe('--type-reading', chatHeader as HTMLElement, expected => {
+    expect(getComputedStyle(chatTitle)).toMatchObject(expected);
+  });
   await expect.poll(() => {
     const box = drawer.element().getBoundingClientRect();
     return Math.abs(box.top - (window.innerHeight - box.bottom));

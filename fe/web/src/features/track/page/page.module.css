@@ -1247,7 +1247,7 @@
   @media (width >= 60rem) {
     .page:has(> .workHeader) {
       --header-band: 0px;
-      --header-h: var(--workspace-header-bottom, calc(var(--space-10) + var(--control-h) + var(--space-7) * 2));
+      --header-h: var(--workspace-header-bottom, var(--navigation-header-height));
     }
 
     .workHeader {

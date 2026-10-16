@@ -506,3 +506,24 @@ for (const width of [1200, 390]) {
     await browserPage.screenshot({ path: `../../../../../test-results/timeout-${width}-${matchMedia('(pointer: coarse)').matches ? 'coarse' : 'desktop'}.png` });
   });
 }
+
+it('uses the generic navigation header contract without an app host', async () => {
+  await browserPage.viewport(1200, 800);
+  renderPage();
+  const trackPage = document.querySelector<HTMLElement>('[data-nc-track-page]')!;
+  const header = trackPage.querySelector<HTMLElement>(':scope > header')!;
+  const reference = document.createElement('div');
+  reference.style.position = 'absolute';
+  reference.style.height = 'var(--navigation-header-height)';
+  trackPage.append(reference);
+  try {
+    for (const height of ['52px', '64px']) {
+      trackPage.style.setProperty('--navigation-header-height', height);
+      expect(header.getBoundingClientRect().height).toBe(reference.getBoundingClientRect().height);
+      expect(header.getBoundingClientRect().height).toBeGreaterThan(0);
+    }
+  } finally {
+    reference.remove();
+    trackPage.style.removeProperty('--navigation-header-height');
+  }
+});
