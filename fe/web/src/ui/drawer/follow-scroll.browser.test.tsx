@@ -4,15 +4,19 @@ import { page } from 'vitest/browser';
 import { useLayoutEffect, useRef } from 'react';
 import { useState } from '../state/public.ts';
 import { createScrollFollower } from './follow-scroll.ts';
+import { restoreDrawerFocus } from './restore-focus.ts';
 
-function Pane({ growth = 0 }: { growth?: number }) {
+function Pane({ growth = 0, restoreFocus = false }: { growth?: number; restoreFocus?: boolean }) {
   const pane = useRef<HTMLDivElement | null>(null);
   const content = useRef<HTMLDivElement | null>(null);
   const [follower] = useState(() => createScrollFollower({ bottomSlack: 64, onAwayChange: () => {} }));
   useLayoutEffect(() => follower.attach(pane.current!, content.current!), [follower]);
+  useLayoutEffect(() => {
+    if (restoreFocus) restoreDrawerFocus(content.current!.querySelector<HTMLAnchorElement>('a')!);
+  }, [growth, restoreFocus]);
   return <>
     <button onClick={() => follower.followToEnd()}>Return to latest</button>
-    <div ref={pane} data-testid="pane" style={{ height: 300, width: 400, overflow: 'auto' }}>
+    <div ref={pane} data-testid="pane" data-nc-drawer-scroll="" style={{ height: 300, width: 400, overflow: 'auto' }}>
       <div ref={content}>
         <p><a href="#history">A unique historical search target</a></p>
         {Array.from({ length: 60 }, (_, index) => <p key={index}>Paragraph {index}. {'A long passage of text. '.repeat(12)}</p>)}
@@ -34,7 +38,7 @@ async function frames() {
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
   });
 }
-afterEach(() => { cleanup(); window.getSelection()?.removeAllRanges(); });
+afterEach(cleanup);
 
 it('keeps a natively focused history link visible when content grows', async () => {
   const view = render(<Pane />);
@@ -52,28 +56,22 @@ it('keeps a natively focused history link visible when content grows', async () 
   expect(remaining()).toBeLessThanOrEqual(1);
 });
 
-it('keeps a selected history range in view when content grows', async () => {
+it('keeps following when the owner explicitly restores focus', async () => {
   const view = render(<Pane />);
   await frames();
-  expect((window as unknown as Window & { find: (text: string) => boolean }).find('A unique historical search target')).toBe(true);
-  // window.find selects in Chromium; revealing that range is a separate native
-  // operation. This exercises selection navigation, not browser-chrome UI.
-  oldLink().scrollIntoView({ block: 'center' });
-  await frames();
-  expect(visible(oldLink())).toBe(true);
-  view.rerender(<Pane growth={400} />);
-  await frames();
-  expect(window.getSelection()!.toString()).toBe('A unique historical search target');
-  expect(visible(oldLink())).toBe(true);
-});
-
-it('keeps following when focus restoration explicitly prevents scrolling', async () => {
-  const view = render(<Pane />);
-  await frames();
-  oldLink().focus({ preventScroll: true });
+  restoreDrawerFocus(oldLink());
   expect(remaining()).toBeLessThanOrEqual(1);
   view.rerender(<Pane growth={400} />);
   await frames();
+  expect(remaining()).toBeLessThanOrEqual(1);
+});
+
+it('keeps following when content grows before layout-effect focus restoration', async () => {
+  const view = render(<Pane />);
+  await frames();
+  view.rerender(<Pane growth={400} restoreFocus />);
+  await frames();
+  expect(document.activeElement).toBe(oldLink());
   expect(remaining()).toBeLessThanOrEqual(1);
 });
 

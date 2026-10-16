@@ -12,11 +12,14 @@ arrival rules and navigation targets stay in the feature.
   intent. Nested scrollports retain their input while they can consume it or
   forbid chaining. Editing keys, cancelled defaults and zoom do not release
   following. A downward return resumes following after the input settles.
-- Native focus or non-collapsed selection within this content can also navigate
-  away from the tail. Once away, layout growth preserves that reading intent.
-  Tail controls, `preventScroll` restoration at the tail, outside composers and
-  another pane's selection retain following. The explicit return command resumes
-  it. Focus/selection during bracketed restoration does not establish new intent.
+- Unbracketed focus in this content is a reading request when the target is
+  outside the visible pane or the reader has left the tail. Tail controls and
+  outside composers retain following; the explicit return command resumes it.
+- Automatic focus restoration uses `restoreDrawerFocus(element)`, which brackets
+  native `focus({preventScroll:true})` with the existing restoration fence. The
+  caller knows it is restoring; the follower does not infer focus options from
+  geometry. Use this entry after DOM replacement, including growth in the same
+  commit. Outside a drawer it preserves the same native focus behavior.
 - Scroll and resize report geometry. They cannot release or resume following by
   themselves. A feature calls `followGrowth()` when its tail changes; content
   resize also covers late image loading, wrapping and disclosure expansion.

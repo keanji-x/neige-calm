@@ -4,6 +4,7 @@ import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import type { ConversationMetaClock } from '../../../../../core/domain/conversation-meta.ts';
 import { useState } from '../../../ui/state/public.ts';
+import { restoreDrawerFocus } from '../../../ui/drawer/restore-focus.ts';
 import styles from './meta.module.css';
 
 export type CopyResponseAction = Readonly<{ id: string; text: string; run: () => Promise<void> }>;
@@ -74,7 +75,8 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
   useLayoutEffect(() => {
     const previous = lastFocused.current;
     if (previous !== null && !previous.isConnected && document.activeElement === document.body) {
-      stateRef.current?.focus({ preventScroll: true });
+      const target = stateRef.current;
+      if (target !== null) restoreDrawerFocus(target);
     }
   }, [hasDetails]);
   const [hovered, setHovered] = useState(false);

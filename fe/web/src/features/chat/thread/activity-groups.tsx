@@ -6,6 +6,7 @@ import { ChatToolCalls, type ChatToolCallItem } from '@astryxdesign/core/Chat';
 import { createPortal } from 'react-dom';
 
 import { useState } from '../../../ui/state/public.ts';
+import { restoreDrawerFocus } from '../../../ui/drawer/restore-focus.ts';
 import { NeigeMotion } from '../../../ui/brand/motion.tsx';
 
 import styles from './activity-groups.module.css';
@@ -243,7 +244,7 @@ export function useToolCallFocus(
       target.setAttribute('data-nc-landing', '');
       lent.current = target;
     }
-    target.focus({ preventScroll: true });
+    restoreDrawerFocus(target);
   });
   /* With the transcript goes its last landing: the lent element is being
      removed, and focus with it, blur or no blur. */

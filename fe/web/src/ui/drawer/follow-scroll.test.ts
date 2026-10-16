@@ -20,51 +20,22 @@ function mounted() {
   return { pane, content, follower, away, detach, grow: () => { height += 100; } };
 }
 
-afterEach(() => { document.body.replaceChildren(); window.getSelection()?.removeAllRanges(); vi.useRealTimers(); });
+afterEach(() => { document.body.replaceChildren(); vi.useRealTimers(); });
 
 describe('drawer scroll intent', () => {
-  it('keeps selected-range navigation scoped to its own content and ignores collapsed carets', () => {
+  it('does not treat focused content inside restoration as new reader intent', () => {
     const x = mounted();
-    const sibling = document.createElement('p');
-    sibling.textContent = 'Another pane';
-    document.body.append(sibling);
-    const range = document.createRange();
-    range.selectNodeContents(sibling);
-    window.getSelection()!.addRange(range);
-    x.pane.scrollTop = 100;
-    fireEvent(document, new Event('selectionchange'));
-    x.grow(); x.follower.followGrowth();
-    expect(x.pane.scrollTop).toBe(700);
-    x.content.textContent = 'This pane';
-    range.selectNodeContents(x.content); range.collapse(true);
-    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
-    x.pane.scrollTop = 100;
-    fireEvent(document, new Event('selectionchange'));
-    x.grow(); x.follower.followGrowth();
-    expect(x.pane.scrollTop).toBe(800);
-    x.detach();
-  });
-
-  it.each(['focus', 'selection'])('does not treat %s inside bracketed restoration as new reader intent', mode => {
-    const x = mounted();
-    x.content.textContent = 'Restored history';
     withScrollRestoration([x.pane], () => {
       x.pane.scrollTop = 100;
-      if (mode === 'focus') fireEvent.focusIn(x.content);
-      else {
-        const range = document.createRange(); range.selectNodeContents(x.content);
-        window.getSelection()!.addRange(range);
-        fireEvent(document, new Event('selectionchange'));
-      }
+      fireEvent.focusIn(x.content);
     });
     x.grow(); x.follower.followGrowth();
     expect(x.pane.scrollTop).toBe(700);
     x.detach();
   });
 
-  it.each(['focus', 'selection'])('removes old %s navigation listeners when attached to a new pane', mode => {
+  it('removes old focus listeners when attached to a new pane', () => {
     const x = mounted();
-    x.content.textContent = 'Old content';
     x.detach();
     const nextPane = document.createElement('div');
     const nextContent = document.createElement('div'); nextPane.append(nextContent); document.body.append(nextPane);
@@ -73,11 +44,7 @@ describe('drawer scroll intent', () => {
       scrollTop: { get: () => top, set: (value: number) => { top = Math.max(0, Math.min(value, 600)); } } });
     const detach = x.follower.attach(nextPane, nextContent);
     top = 100;
-    if (mode === 'focus') fireEvent.focusIn(x.content);
-    else {
-      const range = document.createRange(); range.selectNodeContents(x.content);
-      window.getSelection()!.addRange(range); fireEvent(document, new Event('selectionchange'));
-    }
+    fireEvent.focusIn(x.content);
     x.follower.followGrowth();
     expect(top).toBe(600);
     detach();

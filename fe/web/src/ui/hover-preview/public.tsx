@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode 
 import { createPortal } from 'react-dom';
 
 import { useState } from '../state/public.ts';
+import { restoreDrawerFocus } from '../drawer/restore-focus.ts';
 import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_MIN_HEIGHT, type Placement } from './placement.ts';
 import styles from './preview.module.css';
 
@@ -45,7 +46,8 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   }, []);
   const focusTrigger = useCallback(() => {
     skipFocus.current = true;
-    anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]')?.focus({ preventScroll: true });
+    const target = anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]');
+    if (target != null) restoreDrawerFocus(target);
     skipFocus.current = false;
   }, []);
   const close = useCallback(() => {
