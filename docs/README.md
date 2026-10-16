@@ -24,6 +24,7 @@ diagnoses, proposed changes, or explicitly deferred work.
 | --- | --- |
 | Contribution and verification rules | [Contributing](../CONTRIBUTING.md), [repository agent guidance](../AGENTS.md) |
 | Frontend setup and architecture | [Frontend README](../fe/README.md), [frontend guidance](../fe/AGENTS.md) |
+| Responsive presentation and feature extension | [Presentation boundaries](frontend-responsive-presentation.md) |
 | Stack E2E tiers | [E2E README](../e2e/README.md) |
 | Executable UI contracts | [Oracle schema and conventions](oracle/SCHEMA.md) |
 | Kernel and app responsibilities | [Kernel/app boundary](architecture/955-kernel-app-boundary.md) |
