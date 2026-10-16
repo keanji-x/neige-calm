@@ -321,57 +321,121 @@ async fn shares_over_a_real_tree_sum_to_the_budget() {
     assert_eq!(total, 8);
 }
 
-/// Insertion order is deliberately the reverse of `created_at`.
+/// The earliest member is neither the first inserted/root nor the smallest id.
 #[tokio::test]
 async fn quota_remainder_follows_created_at_not_insertion_order() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = seed_area(&repo).await;
     let root = seed_track(&repo, &area, "root-first").await;
-    let child = seed_track(&repo, &area, "child-second").await;
-    // Fix ids opposite to created_at order so the oracle does not depend on
-    // today's query plan or random UUIDs.
-    sqlx::query("UPDATE tracks SET id='z-root' WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
-        .await
+    let first_child = seed_track(&repo, &area, "child-second").await;
+    let second_child = seed_track(&repo, &area, "child-third").await;
+    link(&repo, &first_child, &root).await;
+    link(&repo, &second_child, &root).await;
+    let lowest_id = [&root, &first_child, &second_child]
+        .into_iter()
+        .min()
         .unwrap();
-    sqlx::query("UPDATE tracks SET id='a-child' WHERE id=?1")
-        .bind(&child)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    link(&repo, "a-child", "z-root").await;
-    stamp_created_at(&repo, "z-root", 1_000).await;
-    stamp_created_at(&repo, "a-child", 2_000).await;
-    set_tree_budget(&repo, "z-root", 1).await;
+    let (earliest, latest) = if &first_child == lowest_id {
+        (&second_child, &first_child)
+    } else {
+        (&first_child, &second_child)
+    };
+    assert_ne!(
+        earliest, lowest_id,
+        "id order must disagree with chronology"
+    );
+    stamp_created_at(&repo, earliest, 1_000).await;
+    stamp_created_at(&repo, &root, 2_000).await;
+    stamp_created_at(&repo, latest, 3_000).await;
+    set_tree_budget(&repo, &root, 1).await;
 
-    assert_eq!(share_of(&repo, "z-root").await.share, 1);
-    assert_eq!(share_of(&repo, "a-child").await.share, 0);
+    assert_eq!(share_of(&repo, earliest).await.share, 1);
+    assert_eq!(share_of(&repo, &root).await.share, 0);
+    assert_eq!(share_of(&repo, latest).await.share, 0);
 }
 
 #[tokio::test]
 async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = seed_area(&repo).await;
-    let root = seed_track(&repo, &area, "root-first").await;
-    let child = seed_track(&repo, &area, "child-second").await;
-    sqlx::query("UPDATE tracks SET id='z-root' WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tracks SET id='a-child' WHERE id=?1")
-        .bind(&child)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    link(&repo, "a-child", "z-root").await;
-    stamp_created_at(&repo, "z-root", 1_000).await;
-    stamp_created_at(&repo, "a-child", 1_000).await;
-    set_tree_budget(&repo, "z-root", 1).await;
+    let mut tracks = [
+        seed_track(&repo, &area, "first-created").await,
+        seed_track(&repo, &area, "second-created").await,
+        seed_track(&repo, &area, "third-created").await,
+    ];
+    tracks.sort();
+    let [first, second, root] = tracks;
+    // Assign roles after creation: ids stay immutable, and root-first traversal
+    // must disagree with the ascending id order even when timestamps all tie.
+    link(&repo, &first, &root).await;
+    link(&repo, &second, &root).await;
+    for track in [&first, &second, &root] {
+        stamp_created_at(&repo, track, 1_000).await;
+    }
+    set_tree_budget(&repo, &root, 4).await;
 
-    assert_eq!(share_of(&repo, "a-child").await.share, 1);
-    assert_eq!(share_of(&repo, "z-root").await.share, 0);
+    let bindings_before: Vec<(String, String)> = sqlx::query_as(
+        "SELECT track_id, workspace_id FROM track_workspace_bindings ORDER BY track_id",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let rowids: Vec<i64> =
+        sqlx::query_scalar("SELECT rowid FROM tracks WHERE id IN (?1,?2,?3) ORDER BY rowid")
+            .bind(&first)
+            .bind(&second)
+            .bind(&root)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    let [low, middle, high]: [i64; 3] = rowids.try_into().unwrap();
+    let temporary_start: i64 = sqlx::query_scalar("SELECT max(rowid)+1 FROM tracks")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    // Reorder only SQLite storage slots; the production-minted TEXT ids and
+    // their workspace bindings stay intact. Temporary slots avoid collisions.
+    for (offset, track) in [&first, &second, &root].into_iter().enumerate() {
+        sqlx::query("UPDATE tracks SET rowid=?1 WHERE id=?2")
+            .bind(temporary_start + offset as i64)
+            .bind(track)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    for (track, rowid) in [(&first, high), (&second, middle), (&root, low)] {
+        sqlx::query("UPDATE tracks SET rowid=?1 WHERE id=?2")
+            .bind(rowid)
+            .bind(track)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let stored_order: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM tracks WHERE id IN (?1,?2,?3) ORDER BY rowid")
+            .bind(&first)
+            .bind(&second)
+            .bind(&root)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored_order, [root.clone(), second.clone(), first.clone()]);
+    let bindings_after: Vec<(String, String)> = sqlx::query_as(
+        "SELECT track_id, workspace_id FROM track_workspace_bindings ORDER BY track_id",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(bindings_after, bindings_before);
+
+    // 4 = 3*1 + 1: the smallest id gets the one remainder slot.
+    for (track, index, expected_share) in [(&first, 0, 2), (&second, 1, 1), (&root, 2, 1)] {
+        let share = share_of(&repo, track).await;
+        assert_eq!(share.member_index, index);
+        assert_eq!(share.share, expected_share);
+    }
 }
 
 #[tokio::test]
