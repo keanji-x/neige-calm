@@ -56,9 +56,9 @@ impl RegisteredExecutorConnection {
         self.begin()?;
         rights::send(
             &self.stream,
-            &super::super::ControlMsg::Execution(ExecutionRequest::ObserveDirectories(
-                request.clone(),
-            )),
+            &super::super::ControlMsg::Execution(Box::new(ExecutionRequest::ObserveDirectories(
+                Box::new(request.clone()),
+            ))),
             &[],
         )
         .await?;
@@ -69,14 +69,17 @@ impl RegisteredExecutorConnection {
                 "directory observation returned unexpected rights",
             ));
         }
-        match reply {
-            super::super::ControlReply::Execution(ExecutionReply::DirectoryRelation(report))
-                if report.request == request =>
-            {
+        let super::super::ControlReply::Execution(reply) = reply else {
+            return Err(std::io::Error::other(
+                "directory observation provenance mismatch",
+            ));
+        };
+        match *reply {
+            ExecutionReply::DirectoryRelation(report) if report.request == request => {
                 self.in_flight = false;
-                Ok(ObservedDirectoryRelation(report))
+                Ok(ObservedDirectoryRelation(*report))
             }
-            super::super::ControlReply::Execution(ExecutionReply::Refused { reason }) => {
+            ExecutionReply::Refused { reason } => {
                 self.in_flight = false;
                 Err(std::io::Error::other(reason))
             }

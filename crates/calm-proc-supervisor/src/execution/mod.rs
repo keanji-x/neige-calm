@@ -244,7 +244,7 @@ impl Executor {
             ExecutionRequest::Revoke(request) => self.revoke(request).await,
             ExecutionRequest::Control(control) => self.control(control).await,
             ExecutionRequest::ObserveDirectories(request) => {
-                self.observe_directories(request).await
+                self.observe_directories(*request).await
             }
         }
     }
@@ -626,14 +626,14 @@ impl Executor {
                     )
                     .await;
             }
-            if let Ok(processes) = executor.processes.lock() {
-                if let Some(process) = processes.get(&id).cloned() {
-                    std::thread::spawn(move || {
-                        if let Ok(mut child) = process.child.lock() {
-                            let _ = child.wait();
-                        }
-                    });
-                }
+            if let Ok(processes) = executor.processes.lock()
+                && let Some(process) = processes.get(&id).cloned()
+            {
+                std::thread::spawn(move || {
+                    if let Ok(mut child) = process.child.lock() {
+                        let _ = child.wait();
+                    }
+                });
             }
             Ok::<(), anyhow::Error>(())
         });

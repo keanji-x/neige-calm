@@ -1,12 +1,11 @@
+use super::execution_support as support;
 use calm_session::{
     control::{ControlMsg, ControlReply, IoMode, execution::*},
     read_frame, write_frame,
 };
 use std::{os::fd::AsFd, path::Path};
-use workspace::execution::objects::{HeldObjectComparison, HeldSourceObjects, ObjectRole};
-#[path = "execution_contract/support.rs"]
-mod support;
 use support::*;
+use workspace::execution::objects::{HeldObjectComparison, HeldSourceObjects, ObjectRole};
 
 fn transfer(
     client: &RegisteredExecutorConnection,
@@ -36,17 +35,17 @@ async fn raw(harness: &Harness) -> tokio::net::UnixStream {
         .unwrap();
     write_frame(
         &mut socket,
-        &ControlMsg::Execution(ExecutionRequest::Handshake(ExecutionHandshake {
+        &ControlMsg::Execution(Box::new(ExecutionRequest::Handshake(ExecutionHandshake {
             required_contract: EXECUTION_ENVELOPE_VERSION,
             client_secret: harness.secret.clone(),
             mode: ExecutionProtocolMode::RegisteredV3,
-        })),
+        }))),
     )
     .await
     .unwrap();
     assert!(matches!(
         read_frame::<ControlReply, _>(&mut socket).await.unwrap(),
-        ControlReply::Execution(ExecutionReply::Handshake {
+        ControlReply::Execution(reply) if matches!(reply.as_ref(), ExecutionReply::Handshake {
             envelope_version: EXECUTION_ENVELOPE_VERSION,
             ..
         })
@@ -235,7 +234,7 @@ async fn execution_attachment_rejects_missing_extra_wrong_kind_role_boot_and_non
         }
         rights::send(
             &socket,
-            &ControlMsg::Execution(ExecutionRequest::Attach(value)),
+            &ControlMsg::Execution(Box::new(ExecutionRequest::Attach(value))),
             &files,
         )
         .await
@@ -245,7 +244,7 @@ async fn execution_attachment_rejects_missing_extra_wrong_kind_role_boot_and_non
         assert!(
             matches!(
                 reply,
-                ControlReply::Execution(ExecutionReply::Refused { .. })
+                ControlReply::Execution(ref reply) if matches!(reply.as_ref(), ExecutionReply::Refused { .. })
             ),
             "accepted invalid attachment {case}: {reply:?}"
         );
@@ -258,14 +257,14 @@ async fn execution_attachment_rejects_missing_extra_wrong_kind_role_boot_and_non
     different_nonce.nonce = TransferNonce::fresh().unwrap();
     rights::send(
         &socket,
-        &ControlMsg::Execution(ExecutionRequest::Attach(different_nonce)),
+        &ControlMsg::Execution(Box::new(ExecutionRequest::Attach(different_nonce))),
         &held.descriptors(),
     )
     .await
     .unwrap();
     assert!(matches!(
         rights::receive::<ControlReply>(&socket).await.unwrap().0,
-        ControlReply::Execution(ExecutionReply::Refused { .. })
+        ControlReply::Execution(ref reply) if matches!(reply.as_ref(), ExecutionReply::Refused { .. })
     ));
     let socket = raw(&harness).await;
     let mut conflicting = good;
@@ -273,14 +272,14 @@ async fn execution_attachment_rejects_missing_extra_wrong_kind_role_boot_and_non
         SourceObjectIncarnation::ExternalDir(ExternalDirectoryIncarnationId::fresh().unwrap());
     rights::send(
         &socket,
-        &ControlMsg::Execution(ExecutionRequest::Attach(conflicting)),
+        &ControlMsg::Execution(Box::new(ExecutionRequest::Attach(conflicting))),
         &held.descriptors(),
     )
     .await
     .unwrap();
     assert!(matches!(
         rights::receive::<ControlReply>(&socket).await.unwrap().0,
-        ControlReply::Execution(ExecutionReply::Refused { .. })
+        ControlReply::Execution(ref reply) if matches!(reply.as_ref(), ExecutionReply::Refused { .. })
     ));
 }
 
@@ -466,7 +465,7 @@ async fn execution_attachment_lost_ack_recovers_by_frozen_registration_id() {
     let socket = raw(&harness).await;
     rights::send(
         &socket,
-        &ControlMsg::Execution(ExecutionRequest::Attach(frozen.clone())),
+        &ControlMsg::Execution(Box::new(ExecutionRequest::Attach(frozen.clone()))),
         &held.descriptors(),
     )
     .await

@@ -57,8 +57,8 @@ pub(super) fn run(root: &Path, alias: &Path) -> anyhow::Result<()> {
         "bind owned directory: {}",
         std::io::Error::last_os_error()
     );
-    let held = HeldSourceObjects::open(&root, false)?;
-    let aliased = HeldSourceObjects::open(&alias, false)?;
+    let held = HeldSourceObjects::open(root, false)?;
+    let aliased = HeldSourceObjects::open(alias, false)?;
     let left_stat = held.root().metadata()?;
     let right_stat = aliased.root().metadata()?;
     let left = held.live_identity()?;

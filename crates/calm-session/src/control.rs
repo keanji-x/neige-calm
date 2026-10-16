@@ -12,7 +12,7 @@ pub enum ControlMsg {
     Signal(SignalRequest),
     Cleanup(CleanupRequest),
     Probe(ProbeRequest),
-    Execution(execution::ExecutionRequest),
+    Execution(Box<execution::ExecutionRequest>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,7 +158,7 @@ pub enum ControlReply {
         signalled: bool,
         cursor: u64,
     },
-    Execution(execution::ExecutionReply),
+    Execution(Box<execution::ExecutionReply>),
 }
 
 #[cfg(test)]

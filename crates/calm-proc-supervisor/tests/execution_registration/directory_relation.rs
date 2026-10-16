@@ -135,7 +135,7 @@ async fn execution_directory_relation_rejects_unwitnessed_boot_role_and_immutabl
     for request in invalid {
         assert!(matches!(
             client
-                .request(ExecutionRequest::ObserveDirectories(request))
+                .request(ExecutionRequest::ObserveDirectories(Box::new(request)))
                 .await
                 .unwrap(),
             ExecutionReply::Refused { .. }
@@ -151,7 +151,7 @@ async fn execution_directory_relation_rejects_unwitnessed_boot_role_and_immutabl
     assert!(
         matches!(
             restarted
-                .request(ExecutionRequest::ObserveDirectories(history))
+                .request(ExecutionRequest::ObserveDirectories(Box::new(history)))
                 .await
                 .unwrap(),
             ExecutionReply::Refused { .. }
@@ -215,21 +215,23 @@ async fn execution_directory_relation_lost_reply_does_not_create_an_execution_or
         .unwrap();
     write_frame(
         &mut stream,
-        &ControlMsg::Execution(ExecutionRequest::Handshake(ExecutionHandshake {
+        &ControlMsg::Execution(Box::new(ExecutionRequest::Handshake(ExecutionHandshake {
             required_contract: EXECUTION_ENVELOPE_VERSION,
             client_secret: harness.secret.clone(),
             mode: ExecutionProtocolMode::RegisteredV3,
-        })),
+        }))),
     )
     .await
     .unwrap();
     assert!(matches!(
         read_frame::<ControlReply, _>(&mut stream).await.unwrap(),
-        ControlReply::Execution(ExecutionReply::Handshake { .. })
+        ControlReply::Execution(reply) if matches!(reply.as_ref(), ExecutionReply::Handshake { .. })
     ));
     rights::send(
         &stream,
-        &ControlMsg::Execution(ExecutionRequest::ObserveDirectories(original.clone())),
+        &ControlMsg::Execution(Box::new(ExecutionRequest::ObserveDirectories(Box::new(
+            original.clone(),
+        )))),
         &[],
     )
     .await

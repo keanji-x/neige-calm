@@ -42,10 +42,9 @@ impl Executor {
             Ok(Err(_)) => DirectoryRelationOutcome::Unknown(DirectoryRelationUnknown::HelperExited),
             Err(_) => DirectoryRelationOutcome::Unknown(DirectoryRelationUnknown::Timeout),
         };
-        Ok(ExecutionReply::DirectoryRelation(DirectoryRelationReport {
-            request,
-            outcome,
-        }))
+        Ok(ExecutionReply::DirectoryRelation(Box::new(
+            DirectoryRelationReport { request, outcome },
+        )))
     }
 
     fn observe_held_pair(

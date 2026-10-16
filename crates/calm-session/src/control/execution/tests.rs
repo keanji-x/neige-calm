@@ -87,7 +87,7 @@ async fn registered_negotiation_cannot_downgrade_to_released_legacy() {
         let (mut stream, _) = listener.accept().await.unwrap();
         assert!(matches!(
             read_frame::<ControlMsg, _>(&mut stream).await.unwrap(),
-            ControlMsg::Execution(ExecutionRequest::Handshake(ExecutionHandshake {
+            ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::Handshake(ExecutionHandshake {
                 mode: ExecutionProtocolMode::RegisteredV3,
                 ..
             }))

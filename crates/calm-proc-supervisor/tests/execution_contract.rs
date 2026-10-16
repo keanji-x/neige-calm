@@ -1,6 +1,5 @@
+use super::execution_support as support;
 use calm_session::control::{IoMode, ProcSignal, execution::*};
-#[path = "execution_contract/support.rs"]
-mod support;
 use support::*;
 
 #[tokio::test]

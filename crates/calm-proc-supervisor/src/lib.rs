@@ -566,7 +566,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         };
         anyhow::ensure!(
             descriptors.is_empty()
-                || matches!(&msg, ControlMsg::Execution(ExecutionRequest::Attach(_))),
+                || matches!(&msg, ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::Attach(_))),
             "unexpected ancillary rights"
         );
         if matches!(&msg, ControlMsg::Probe(request) if request.proc_id.is_empty()) {
@@ -581,7 +581,9 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
             .await?;
             continue;
         }
-        if let ControlMsg::Execution(ExecutionRequest::Handshake(hello)) = &msg {
+        if let ControlMsg::Execution(request) = &msg
+            && let ExecutionRequest::Handshake(hello) = request.as_ref()
+        {
             let reply = match &registry.executor {
                 Some(executor)
                     if hello.mode == ExecutionProtocolMode::RegisteredV3
@@ -613,7 +615,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     reason: "unregistered client or unavailable execution protocol".into(),
                 },
             };
-            write_frame(&mut stream, &ControlReply::Execution(reply)).await?;
+            write_frame(&mut stream, &ControlReply::Execution(Box::new(reply))).await?;
             continue;
         }
         let typed = matches!(&msg, ControlMsg::Execution(_));
@@ -662,18 +664,18 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
             ControlMsg::EnsureProc(request) => {
                 let gate = registry.legacy_gate(&request.proc_id)?;
                 let _guard = gate.lock().await;
-                if let Some(executor) = &registry.executor {
-                    if let Err(error) = executor.reserve_legacy(&request.proc_id) {
-                        write_frame(
-                            &mut stream,
-                            &ControlReply::Error {
-                                kind: ControlErrorKind::BadRequest,
-                                message: error.to_string(),
-                            },
-                        )
-                        .await?;
-                        continue;
-                    }
+                if let Some(executor) = &registry.executor
+                    && let Err(error) = executor.reserve_legacy(&request.proc_id)
+                {
+                    write_frame(
+                        &mut stream,
+                        &ControlReply::Error {
+                            kind: ControlErrorKind::BadRequest,
+                            message: error.to_string(),
+                        },
+                    )
+                    .await?;
+                    continue;
                 }
                 // Idempotent fast path: a live proc with this id is already
                 // past readiness, so emit Spawned+Ready immediately.
@@ -743,7 +745,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("handshake missing"))?;
                 executor
-                    .serve_registered(&stream, secret, request, descriptors)
+                    .serve_registered(&stream, secret, *request, descriptors)
                     .await?;
             }
         }

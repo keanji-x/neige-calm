@@ -332,7 +332,7 @@ impl HeldSourceObjects {
         }
         Ok(())
     }
-    fn entries(&self) -> io::Result<Vec<(ObjectRole, PathBuf, Option<Vec<u8>>)>> {
+    fn entries(&self) -> io::Result<Vec<NamedObjectEntry>> {
         let mut entries = vec![(ObjectRole::Root, self.shape.root.clone(), None)];
         if let ObjectLayout::Worktree {
             git_directory,
@@ -375,6 +375,8 @@ impl HeldSourceObjects {
         Ok(entries)
     }
 }
+type NamedObjectEntry = (ObjectRole, PathBuf, Option<Vec<u8>>);
+
 fn ensure(ok: bool, message: &str) -> io::Result<()> {
     if ok {
         Ok(())

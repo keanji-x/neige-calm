@@ -53,21 +53,21 @@ fn audit_waitid(stream: TokenStream, permitted_all: bool, file: &str, hits: &mut
     let mut index = 0;
     while index < tokens.len() {
         if matches!(&tokens[index], TokenTree::Ident(name) if name == "waitid") {
-            if let Some(TokenTree::Group(arguments)) = tokens.get(index + 1) {
-                if arguments.delimiter() == Delimiter::Parenthesis {
-                    let args = call_arguments(arguments.stream());
-                    let selector = args.first().map(compact).unwrap_or_default();
-                    let concrete = matches!(selector.as_str(), "libc::P_PID" | "libc::P_PIDFD");
-                    let nonconsuming = args.get(3).is_some_and(guarantees_wnowait);
-                    if !concrete && !nonconsuming {
-                        hits.push(format!(
-                            "{file}: non-specific consuming waitid({arguments})"
-                        ));
-                    }
-                    audit_waitid(arguments.stream(), nonconsuming, file, hits);
-                    index += 2;
-                    continue;
+            if let Some(TokenTree::Group(arguments)) = tokens.get(index + 1)
+                && arguments.delimiter() == Delimiter::Parenthesis
+            {
+                let args = call_arguments(arguments.stream());
+                let selector = args.first().map(compact).unwrap_or_default();
+                let concrete = matches!(selector.as_str(), "libc::P_PID" | "libc::P_PIDFD");
+                let nonconsuming = args.get(3).is_some_and(guarantees_wnowait);
+                if !concrete && !nonconsuming {
+                    hits.push(format!(
+                        "{file}: non-specific consuming waitid({arguments})"
+                    ));
                 }
+                audit_waitid(arguments.stream(), nonconsuming, file, hits);
+                index += 2;
+                continue;
             }
             // An import, alias, cast or function value would bypass direct-call argument proof.
             hits.push(format!(
@@ -134,11 +134,10 @@ fn compact(stream: &TokenStream) -> String {
 /// A mandatory OR operand cannot have WNOWAIT cleared by another operand or parenthesized mask.
 fn guarantees_wnowait(stream: &TokenStream) -> bool {
     let tokens = stream.clone().into_iter().collect::<Vec<_>>();
-    if tokens.len() == 1 {
-        if let TokenTree::Group(group) = &tokens[0] {
-            return group.delimiter() == Delimiter::Parenthesis
-                && guarantees_wnowait(&group.stream());
-        }
+    if tokens.len() == 1
+        && let TokenTree::Group(group) = &tokens[0]
+    {
+        return group.delimiter() == Delimiter::Parenthesis && guarantees_wnowait(&group.stream());
     }
     let mut term = TokenStream::new();
     for token in tokens {

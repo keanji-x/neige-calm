@@ -146,12 +146,10 @@ pub fn run(config_fd: RawFd, report_fd: RawFd) -> anyhow::Result<()> {
     let mut status = None;
     let mut root_exited = false;
     loop {
-        if !root_exited {
-            if let Some(exit) = child.try_wait()? {
-                status = exit.code();
-                root_exited = true;
-                send(&mut report, &context, &HelperEvent::LeaderExited { status });
-            }
+        if !root_exited && let Some(exit) = child.try_wait()? {
+            status = exit.code();
+            root_exited = true;
+            send(&mut report, &context, &HelperEvent::LeaderExited { status });
         }
         // This kernel-reported list belongs to this dedicated single owner, not the host.
         let children = immediate_children()?;

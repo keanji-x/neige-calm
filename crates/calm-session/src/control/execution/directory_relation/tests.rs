@@ -57,15 +57,15 @@ fn request(boot: ExecutorBootId, root: &std::path::Path) -> DirectoryRelationReq
 async fn negotiate(stream: &mut tokio::net::UnixStream, boot: ExecutorBootId) {
     assert!(matches!(
         read_frame::<ControlMsg, _>(stream).await.unwrap(),
-        ControlMsg::Execution(ExecutionRequest::Handshake(_))
+        ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::Handshake(_))
     ));
     write_frame(
         stream,
-        &ControlReply::Execution(ExecutionReply::Handshake {
+        &ControlReply::Execution(Box::new(ExecutionReply::Handshake {
             envelope_version: EXECUTION_ENVELOPE_VERSION,
             executor_boot: boot,
             mode: ExecutionProtocolMode::RegisteredV3,
-        }),
+        })),
     )
     .await
     .unwrap();
@@ -84,8 +84,10 @@ async fn execution_directory_observation_wrong_provenance_poisoned_connection_ha
             negotiate(&mut stream, boot).await;
             let (message, rights) = rights::receive::<ControlMsg>(&stream).await.unwrap();
             assert!(rights.is_empty());
-            let ControlMsg::Execution(ExecutionRequest::ObserveDirectories(mut query)) = message
-            else {
+            let ControlMsg::Execution(message) = message else {
+                panic!("not an execution request");
+            };
+            let ExecutionRequest::ObserveDirectories(mut query) = *message else {
                 panic!("not a directory observation");
             };
             match fault {
@@ -97,12 +99,12 @@ async fn execution_directory_observation_wrong_provenance_poisoned_connection_ha
             }
             rights::send(
                 &stream,
-                &ControlReply::Execution(ExecutionReply::DirectoryRelation(
+                &ControlReply::Execution(Box::new(ExecutionReply::DirectoryRelation(Box::new(
                     DirectoryRelationReport {
-                        request: query,
+                        request: *query,
                         outcome: DirectoryRelationOutcome::Contains(ContainmentKind::SameDirectory),
                     },
-                )),
+                )))),
                 &[],
             )
             .await
@@ -135,15 +137,18 @@ async fn execution_directory_observation_rejects_reply_rights_truncation_and_los
             negotiate(&mut stream, boot).await;
             let (message, descriptors) = rights::receive::<ControlMsg>(&stream).await.unwrap();
             assert!(descriptors.is_empty());
-            let ControlMsg::Execution(ExecutionRequest::ObserveDirectories(query)) = message else {
+            let ControlMsg::Execution(message) = message else {
+                panic!("not an execution request");
+            };
+            let ExecutionRequest::ObserveDirectories(query) = *message else {
                 panic!("not an observation");
             };
-            let reply = ControlReply::Execution(ExecutionReply::DirectoryRelation(
-                DirectoryRelationReport {
-                    request: query,
+            let reply = ControlReply::Execution(Box::new(ExecutionReply::DirectoryRelation(
+                Box::new(DirectoryRelationReport {
+                    request: *query,
                     outcome: DirectoryRelationOutcome::Disjoint,
-                },
-            ));
+                }),
+            )));
             match fault {
                 0 => rights::send(&stream, &reply, &[file.as_fd()])
                     .await

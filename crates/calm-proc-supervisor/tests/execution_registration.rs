@@ -1,8 +1,7 @@
+use super::execution_support as support;
 use calm_session::control::{IoMode, ProcSignal, execution::*};
-use workspace::execution::objects::{ContainmentKind, DirectoryContainment, HeldSourceObjects};
-#[path = "execution_contract/support.rs"]
-mod support;
 use support::*;
+use workspace::execution::objects::{ContainmentKind, DirectoryContainment, HeldSourceObjects};
 #[path = "execution_registration/directory_relation.rs"]
 mod directory_relation;
 #[path = "execution_registration/qualification.rs"]

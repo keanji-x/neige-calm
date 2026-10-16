@@ -16,7 +16,9 @@ impl RegisteredExecutorConnection {
         self.begin()?;
         rights::send(
             &self.stream,
-            &super::super::ControlMsg::Execution(ExecutionRequest::Attach(transfer.clone())),
+            &super::super::ControlMsg::Execution(Box::new(ExecutionRequest::Attach(
+                transfer.clone(),
+            ))),
             &held.descriptors(),
         )
         .await?;
@@ -26,8 +28,11 @@ impl RegisteredExecutorConnection {
                 "unexpected attachment acknowledgement descriptors",
             ));
         }
-        match reply {
-            super::super::ControlReply::Execution(ExecutionReply::Registered(receipt))
+        let super::super::ControlReply::Execution(reply) = reply else {
+            return Err(io::Error::other("attachment acknowledgement mismatched"));
+        };
+        match *reply {
+            ExecutionReply::Registered(receipt)
                 if receipt.contract == EXECUTION_ENVELOPE_VERSION
                     && receipt.id == transfer.registration_id
                     && receipt.transfer == transfer =>
@@ -36,7 +41,7 @@ impl RegisteredExecutorConnection {
                 self.registrations.push(receipt.clone());
                 Ok(receipt)
             }
-            super::super::ControlReply::Execution(ExecutionReply::Refused { reason }) => {
+            ExecutionReply::Refused { reason } => {
                 self.in_flight = false;
                 Err(io::Error::other(reason))
             }
@@ -54,13 +59,18 @@ impl RegisteredExecutorConnection {
         self.begin()?;
         rights::send(
             &self.stream,
-            &super::super::ControlMsg::Execution(ExecutionRequest::Export(request.clone())),
+            &super::super::ControlMsg::Execution(Box::new(ExecutionRequest::Export(
+                request.clone(),
+            ))),
             &[],
         )
         .await?;
         let (reply, files) = rights::receive::<super::super::ControlReply>(&self.stream).await?;
-        let receipt = match reply {
-            super::super::ControlReply::Execution(ExecutionReply::Exported { receipt, nonce })
+        let super::super::ControlReply::Execution(reply) = reply else {
+            return Err(io::Error::other("export receipt/nonce mismatch"));
+        };
+        let receipt = match *reply {
+            ExecutionReply::Exported { receipt, nonce }
                 if receipt.contract == EXECUTION_ENVELOPE_VERSION
                     && nonce == request.nonce
                     && receipt.id == request.registration
@@ -74,13 +84,13 @@ impl RegisteredExecutorConnection {
         let held = HeldSourceObjects::receive(receipt.transfer.shape.clone(), files)?;
         rights::send(
             &self.stream,
-            &super::super::ControlMsg::Execution(ExecutionRequest::ExportAck(
+            &super::super::ControlMsg::Execution(Box::new(ExecutionRequest::ExportAck(
                 ExportAcknowledgement {
                     executor_boot: self.executor_boot.clone(),
                     registration: receipt.id.clone(),
                     nonce: request.nonce,
                 },
-            )),
+            ))),
             &[],
         )
         .await?;
@@ -88,7 +98,7 @@ impl RegisteredExecutorConnection {
         if !files.is_empty()
             || !matches!(
                 ack,
-                super::super::ControlReply::Execution(ExecutionReply::ExportAcknowledged)
+                super::super::ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::ExportAcknowledged)
             )
         {
             return Err(io::Error::other("export acknowledgement refused"));

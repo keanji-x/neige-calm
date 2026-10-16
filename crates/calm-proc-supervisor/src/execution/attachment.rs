@@ -143,7 +143,7 @@ impl Executor {
                 Ok(reply) => reply,
                 Err(error) => refused(&error.to_string()),
             };
-            rights::send(stream, &ControlReply::Execution(reply), &[]).await?;
+            rights::send(stream, &ControlReply::Execution(Box::new(reply)), &[]).await?;
             return Ok(());
         }
         anyhow::ensure!(
@@ -167,10 +167,10 @@ impl Executor {
             root.validate()?;
             rights::send(
                 stream,
-                &ControlReply::Execution(ExecutionReply::Exported {
+                &ControlReply::Execution(Box::new(ExecutionReply::Exported {
                     receipt: root.receipt.clone(),
                     nonce: export.nonce.clone(),
-                }),
+                })),
                 &root.objects.descriptors(),
             )
             .await?;
@@ -178,14 +178,13 @@ impl Executor {
             let (ack, received) = rights::receive::<ControlMsg>(stream).await?;
             anyhow::ensure!(received.is_empty(), "unexpected rights on export ACK");
             anyhow::ensure!(
-                matches!(ack,ControlMsg::Execution(ExecutionRequest::ExportAck(ExportAcknowledgement {
-                executor_boot,registration,nonce,
-            })) if executor_boot == self.boot && registration == root.receipt.id && nonce == export.nonce),
+                matches!(ack,ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::ExportAck(ack)
+                    if ack.executor_boot == self.boot && ack.registration == root.receipt.id && ack.nonce == export.nonce)),
                 "export ACK provenance mismatch"
             );
             rights::send(
                 stream,
-                &ControlReply::Execution(ExecutionReply::ExportAcknowledged),
+                &ControlReply::Execution(Box::new(ExecutionReply::ExportAcknowledged)),
                 &[],
             )
             .await?;
@@ -193,7 +192,7 @@ impl Executor {
             return Ok(());
         }
         let answer = self.dispatch(secret, request).await;
-        rights::send(stream, &ControlReply::Execution(answer), &[]).await?;
+        rights::send(stream, &ControlReply::Execution(Box::new(answer)), &[]).await?;
         Ok(())
     }
 }
