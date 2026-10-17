@@ -36,7 +36,7 @@ async fn initial_input_receipt_lookup_is_scoped_and_shutdown_is_not_absence() {
     let (status, observed) = b.request("GET", &uri, Some("original"), None).await;
     assert_eq!(status, StatusCode::OK, "{observed}");
     assert!(
-        matches!(observed["kind"].as_str(), Some("queued" | "projected")),
+        matches!(observed["kind"].as_str(), Some("queued" | "unavailable")),
         "{observed}"
     );
     assert_eq!(observed["receipt"], created["initialInput"]["receipt"]);
@@ -158,8 +158,40 @@ async fn initial_input_receipt_observation_waits_for_the_entire_issuance_command
         .await
         .unwrap();
     assert_eq!(status, StatusCode::OK, "{observed}");
-    assert_eq!(observed["kind"], "projected", "{observed}");
+    assert_eq!(observed["kind"], "unavailable", "{observed}");
+    assert_eq!(observed["reason"], "runtime-unavailable", "{observed}");
     assert_eq!(observed["receipt"], created["initialInput"]["receipt"]);
+    // The pre-start row is readable, but only the real provider completion binds
+    // its exact segments to an accepted turn and makes this receipt certifiable.
+    let harness = b
+        .state
+        .harness
+        .get(
+            created["initialInput"]["receipt"]["initialRuntimeId"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    let snapshot = harness.snapshot().await;
+    worker.shared_codex_appserver.emit_notification_for_test(calm_server::codex_appserver::Notification::Item {
+        method: "item/completed".into(),
+        params: json!({"threadId": snapshot.last_thread_id.unwrap(), "turn":{"id":snapshot.last_turn_id.unwrap()},
+            "item":{"id":"provider-confirmed-first","clientId":created["initialInput"]["receipt"]["entryId"],"type":"userMessage",
+            "content":[{"type":"text","text":"held inside real turn start"}]}}),
+    });
+    let confirmed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (status, observed) = b.request("GET", &uri, Some("held-issue"), None).await;
+            assert_eq!(status, StatusCode::OK, "{observed}");
+            if observed["kind"] == "projected" {
+                break observed;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("provider completion certifies the exact original receipt");
+    assert_eq!(confirmed["receipt"], created["initialInput"]["receipt"]);
     let (_, replay) = b
         .create_conversation(&track, "held-issue", "held inside real turn start")
         .await;

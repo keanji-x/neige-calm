@@ -57,7 +57,8 @@ pub enum InitialInputUnavailableReason {
     Integrity,
 }
 
-/// A read of the current carrier, never inferred from two unrelated empty reads.
+/// Exact current queue ownership or provider-confirmed projection; no absence
+/// conclusion is available from an empty queue and incomplete retained history.
 /// Outbound only; the client decoder enforces reason/receipt correlation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, ToSchema, TS)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -82,11 +83,6 @@ pub enum ConversationInitialInputObservation {
         item_id: i64,
         #[serde(rename = "segmentIndex")]
         segment_index: u32,
-    },
-    Absent {
-        receipt: ConversationInitialInputReceipt,
-        #[serde(rename = "runtimeId")]
-        runtime_id: String,
     },
     Unavailable {
         reason: InitialInputUnavailableReason,
@@ -124,10 +120,6 @@ mod tests {
                 runtime_id: "current-runtime".into(),
                 item_id: 42,
                 segment_index: 1,
-            },
-            ConversationInitialInputObservation::Absent {
-                receipt: receipt.clone(),
-                runtime_id: "current-runtime".into(),
             },
             ConversationInitialInputObservation::Unavailable {
                 reason: InitialInputUnavailableReason::RuntimeUnavailable,

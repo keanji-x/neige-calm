@@ -1,6 +1,7 @@
 //! Exact identity survives batching; queue ownership, rather than equal text, decides presence.
 use super::completed_commit_tests::Fixture;
 use super::input_inspection::InputInspection;
+use super::input_inspection_recovery_tests::confirm_projection;
 use super::*;
 use calm_types::conversation_receipt::InitialInputUnavailableReason as Reason;
 
@@ -22,6 +23,7 @@ async fn initial_input_inspection_names_each_equal_text_entry_in_one_batch() {
     fx.enqueue(vec![system.clone(), first, system, second])
         .await;
     fx.issue().await;
+    confirm_projection(&fx.harness, &fx.daemon, &first_id).await;
     let first = fx.harness.inspect_input(first_id).await.unwrap();
     let second = fx.harness.inspect_input(second_id).await.unwrap();
     let InputInspection::Projected {
@@ -45,7 +47,7 @@ async fn initial_input_inspection_names_each_equal_text_entry_in_one_batch() {
             .inspect_input(QueueEntryId::from_wire("not-the-equal-text-entry".into()))
             .await
             .unwrap(),
-        InputInspection::Absent
+        InputInspection::Unavailable(Reason::RuntimeUnavailable)
     );
 }
 
@@ -96,7 +98,7 @@ async fn initial_input_inspection_reports_current_edit_then_real_deletion() {
         .unwrap();
     assert_eq!(
         fx.harness.inspect_input(id).await.unwrap(),
-        InputInspection::Absent
+        InputInspection::Unavailable(Reason::RuntimeUnavailable)
     );
 }
 
@@ -107,6 +109,7 @@ async fn initial_input_inspection_prefers_rebuffered_queue_to_stale_projection()
     let id = entry.id().unwrap().clone();
     fx.enqueue(vec![entry.clone()]).await;
     fx.issue().await;
+    confirm_projection(&fx.harness, &fx.daemon, &id).await;
     assert!(matches!(
         fx.harness.inspect_input(id.clone()).await.unwrap(),
         InputInspection::Projected { .. }
@@ -155,6 +158,7 @@ async fn initial_input_inspection_searches_beyond_the_loaded_transcript_page() {
     let id = entry.id().unwrap().clone();
     fx.enqueue(vec![entry]).await;
     fx.issue().await;
+    confirm_projection(&fx.harness, &fx.daemon, &id).await;
     let original = fx.harness.inspect_input(id.clone()).await.unwrap();
     assert!(matches!(original, InputInspection::Projected { .. }));
     let system = HarnessInputSegment {
@@ -213,6 +217,7 @@ async fn initial_input_inspection_preserves_the_shared_id_of_folded_sends() {
         "the real enqueue owner folded both accepted sends"
     );
     fx.issue().await;
+    confirm_projection(&fx.harness, &fx.daemon, &first).await;
     let observed = fx.harness.inspect_input(first).await.unwrap();
     assert!(matches!(observed, InputInspection::Projected { .. }));
     assert_eq!(fx.harness.inspect_input(second).await.unwrap(), observed);
@@ -367,6 +372,6 @@ async fn initial_input_inspection_does_not_lose_a_steer_whose_projection_failed(
             .inspect_input(QueueEntryId::from_wire("unrelated-entry".into()))
             .await
             .unwrap(),
-        InputInspection::Absent
+        InputInspection::Unavailable(Reason::RuntimeUnavailable)
     );
 }

@@ -21,7 +21,6 @@ pub(crate) enum InputInspection {
         item_id: i64,
         segment_index: u32,
     },
-    Absent,
     Unavailable(InitialInputUnavailableReason),
 }
 
@@ -95,23 +94,6 @@ pub(super) async fn inspect(
         .any(|entry| matches!(entry, QueueEntry::LegacyUser { .. }));
     drop(queue);
 
-    // A failed issuance can leave a stale projection after its input was rebuffered and
-    // subsequently deleted. No canonical row proves a settled outcome while this owner is
-    // uncertain. A steered input whose row failed is likewise still owned by the running turn.
-    if inner.projection_client_id.lock().await.is_some()
-        || inner.legacy_issued_input_segments.lock().await.is_some()
-        || inner
-            .steered_into_running_turn
-            .lock()
-            .await
-            .iter()
-            .any(|steered| steered.entry.id() == Some(entry_id) && steered.row_id.is_none())
-    {
-        return Ok(InputInspection::Unavailable(
-            InitialInputUnavailableReason::RuntimeUnavailable,
-        ));
-    }
-
     let mut before = 0;
     loop {
         let page = inner
@@ -149,10 +131,16 @@ pub(super) async fn inspect(
                     .and_then(|origin| origin.queue_entry_id.as_deref())
                 {
                     Some(id) if id == entry_id.as_str() => {
-                        return Ok(InputInspection::Projected {
-                            item_id: item.id,
-                            segment_index: index as u32,
-                        });
+                        // The drain writes before turn/start, with no turn binding. Cleanup
+                        // can fail, and recovery can discard the old owner's uncertainty.
+                        // Only the provider's completed user-message upgrade binds this row
+                        // to a real turn while preserving these exact entry segments.
+                        if item.turn_id.is_some() {
+                            return Ok(InputInspection::Projected {
+                                item_id: item.id,
+                                segment_index: index as u32,
+                            });
+                        }
                     }
                     Some(_) => {}
                     None => legacy = true,
@@ -163,6 +151,8 @@ pub(super) async fn inspect(
     Ok(if legacy {
         InputInspection::Unavailable(InitialInputUnavailableReason::LegacyProjection)
     } else {
-        InputInspection::Absent
+        // An accepted steer may have no row, and its live-only evidence does not
+        // survive hydration. Empty queue and history cannot certify cancellation.
+        InputInspection::Unavailable(InitialInputUnavailableReason::RuntimeUnavailable)
     })
 }

@@ -4695,6 +4695,8 @@ mod held;
 mod hibernation;
 pub(crate) mod input_inspection;
 #[cfg(test)]
+mod input_inspection_recovery_tests;
+#[cfg(test)]
 mod input_inspection_tests;
 mod live_reply;
 mod native_ask;

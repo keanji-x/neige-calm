@@ -191,10 +191,6 @@ pub(crate) async fn get_conversation_initial_input(
             item_id,
             segment_index,
         },
-        InputInspection::Absent => Observation::Absent {
-            receipt,
-            runtime_id: runtime.id,
-        },
         InputInspection::Unavailable(reason) => {
             let receipt = match reason {
                 Reason::RuntimeUnavailable

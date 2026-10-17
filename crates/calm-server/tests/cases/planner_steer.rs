@@ -309,7 +309,7 @@ async fn a_queued_entry_is_steered_into_the_running_turn_and_its_row_is_upgraded
     );
     assert_eq!(
         projection["input_segments"][0]["origin"],
-        json!({"observation": "user_message", "event_id": null}),
+        json!({"observation": "user_message", "event_id": null, "queue_entry_id": entry_id}),
         "#2206: the steered segment names the entry it came from"
     );
     let projection_db_id = projection["id"].as_i64().unwrap();

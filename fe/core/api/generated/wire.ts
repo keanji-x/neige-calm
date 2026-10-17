@@ -133,10 +133,11 @@ claude_version?: string, };
 export type ClaudeInstalledVersion = { version: string | null, };
 
 /**
- * A read of the current carrier, never inferred from two unrelated empty reads.
+ * Exact current queue ownership or provider-confirmed projection; no absence
+ * conclusion is available from an empty queue and incomplete retained history.
  * Outbound only; the client decoder enforces reason/receipt correlation.
  */
-export type ConversationInitialInputObservation = { "kind": "queued", receipt: ConversationInitialInputReceipt, runtimeId: string, entryId: string, rev: number, text: string, textSha256: string, } | { "kind": "projected", receipt: ConversationInitialInputReceipt, runtimeId: string, itemId: number, segmentIndex: number, } | { "kind": "absent", receipt: ConversationInitialInputReceipt, runtimeId: string, } | { "kind": "unavailable", reason: InitialInputUnavailableReason, 
+export type ConversationInitialInputObservation = { "kind": "queued", receipt: ConversationInitialInputReceipt, runtimeId: string, entryId: string, rev: number, text: string, textSha256: string, } | { "kind": "projected", receipt: ConversationInitialInputReceipt, runtimeId: string, itemId: number, segmentIndex: number, } | { "kind": "unavailable", reason: InitialInputUnavailableReason, 
 /**
  * Required nullable evidence: unknown presence does not erase proven acceptance.
  */
