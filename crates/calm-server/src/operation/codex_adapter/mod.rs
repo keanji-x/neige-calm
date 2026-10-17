@@ -1778,6 +1778,10 @@ async fn checkpoint_prompt_turn_started(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit prior and proposed outputs preserve checkpoint ownership"
+)]
 async fn persist_pending_thread_status(
     ctx: &SpawnCtx,
     card_role_cache: &CardRoleCache,
