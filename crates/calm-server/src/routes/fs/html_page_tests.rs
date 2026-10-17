@@ -157,6 +157,7 @@ async fn global_raw_route_still_refuses_html() {
     let (state, _, _) = route_state_with_workspace_tracks(workspace.path(), workspace.path()).await;
     let error = readfile_raw(
         State(state),
+        host_access_tests::owner_principal().await,
         Query(PathQuery {
             path: page.to_string_lossy().into_owned(),
         }),

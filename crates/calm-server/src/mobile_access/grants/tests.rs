@@ -17,6 +17,65 @@ fn open(path: &Path) -> GrantStore {
 }
 const ORIGIN: &str = "https://phone.example.ts.net";
 
+#[tokio::test]
+async fn paired_owner_keeps_host_file_reads_and_revocation() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let (_private, path) = private_state();
+    let store = std::sync::Arc::new(open(&path));
+    let token = store
+        .mint(ORIGIN, "Phone".into(), DeviceGrant::Scan)
+        .unwrap();
+    let auth = crate::auth::AuthState::new(crate::auth::AuthConfig {
+        username: Some("owner".into()),
+        password: Some("fixture-password".into()),
+        dev_autologin: false,
+        display_name: "Owner".into(),
+    });
+    auth.sessions.set_backend(store.clone());
+    let (_state_files, app) = crate::routes::fs::host_access_tests::app(auth).await;
+    let file = path.with_extension("png");
+    std::fs::write(&file, b"paired owner image").unwrap();
+    let request = || {
+        Request::get(format!("/api/fs/readfile-raw?path={}", file.display()))
+            .header(
+                header::COOKIE,
+                format!("{}={token}", crate::auth::SESSION_COOKIE),
+            )
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = app.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        response.headers()[header::CONTENT_SECURITY_POLICY],
+        "sandbox"
+    );
+    assert_eq!(
+        response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+        "nosniff"
+    );
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        b"paired owner image"
+    );
+    store.revoke(&store.list()[0].id).unwrap();
+    assert_eq!(
+        app.oneshot(request()).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 #[test]
 fn mobile_grants_restore_only_hashes_at_verified_origin_and_keep_authority() {
     let (_temp, path) = private_state();

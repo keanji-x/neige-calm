@@ -1,5 +1,6 @@
 //! `/api/fs/listdir` — read-only directory listing for the DirectoryPicker.
 
+use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path as RoutePath, Query};
 use crate::state::{AppState, RouteState};
@@ -19,6 +20,8 @@ use std::process::Stdio;
 use tokio::process::Command;
 use utoipa::ToSchema;
 
+#[cfg(test)]
+pub(crate) mod host_access_tests;
 mod html_page;
 mod track_workspace;
 use track_workspace::open_track_workspace_file;
@@ -139,8 +142,10 @@ pub struct GitDiffResponse {
 )]
 pub(crate) async fn listdir(
     State(_s): State<RouteState>,
+    principal: Principal,
     Query(q): Query<ListdirQuery>,
 ) -> Result<Json<ListdirResponse>> {
+    crate::organization_access::require_deployment_owner(&principal)?;
     let raw = match q.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(path) => request_path(path)?,
         None => default_start(),
@@ -242,8 +247,10 @@ fn directory_entry_visible(name: &str) -> bool {
 )]
 pub(crate) async fn readfile(
     State(_s): State<RouteState>,
+    principal: Principal,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<ReadFileResponse>> {
+    crate::organization_access::require_deployment_owner(&principal)?;
     let raw = request_path(&q.path)?;
     Ok(Json(read_file_response(&raw).await?))
 }
@@ -263,8 +270,10 @@ pub(crate) async fn readfile(
 )]
 pub(crate) async fn readfile_raw(
     State(_s): State<RouteState>,
+    principal: Principal,
     Query(q): Query<PathQuery>,
 ) -> Result<Response> {
+    crate::organization_access::require_deployment_owner(&principal)?;
     let raw = request_path(&q.path)?;
     read_file_raw_response(&raw).await
 }
@@ -344,8 +353,10 @@ pub(crate) async fn read_track_workspace_file_raw(
 )]
 pub(crate) async fn gitstatus(
     State(_s): State<RouteState>,
+    principal: Principal,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<GitStatusResponse>> {
+    crate::organization_access::require_deployment_owner(&principal)?;
     let raw = request_path(&q.path)?;
     Ok(Json(git_status_response(&raw).await?))
 }
@@ -368,8 +379,10 @@ pub(crate) async fn gitstatus(
 )]
 pub(crate) async fn gitdiff(
     State(_s): State<RouteState>,
+    principal: Principal,
     Query(q): Query<GitDiffQuery>,
 ) -> Result<Json<GitDiffResponse>> {
+    crate::organization_access::require_deployment_owner(&principal)?;
     let raw = request_path(&q.path)?;
     if let Some(old_path) = q.old_path.as_deref() {
         request_path(old_path)?;
@@ -1361,6 +1374,7 @@ mod tests {
                 let mut answers = Vec::new();
                 let Err(e) = listdir(
                     State(state.clone()),
+                    host_access_tests::owner_principal().await,
                     Query(ListdirQuery {
                         path: Some(absolute.clone()),
                     }),
@@ -1370,13 +1384,23 @@ mod tests {
                     panic!("listdir {name:?} answered")
                 };
                 answers.push(("listdir", answered(e).await));
-                let Err(e) = readfile(State(state.clone()), path()).await else {
+                let Err(e) = readfile(
+                    State(state.clone()),
+                    host_access_tests::owner_principal().await,
+                    path(),
+                )
+                .await
+                else {
                     panic!("readfile {name:?} answered")
                 };
                 answers.push(("readfile", answered(e).await));
-                let e = readfile_raw(State(state.clone()), path())
-                    .await
-                    .unwrap_err();
+                let e = readfile_raw(
+                    State(state.clone()),
+                    host_access_tests::owner_principal().await,
+                    path(),
+                )
+                .await
+                .unwrap_err();
                 answers.push(("readfile-raw", answered(e).await));
                 let Err(e) = read_track_workspace_file(
                     State(state.clone()),
@@ -1407,6 +1431,7 @@ mod tests {
             /* The git routes, for the path and for the old path of a rename. */
             let Err(e) = gitstatus(
                 State(state.clone()),
+                host_access_tests::owner_principal().await,
                 Query(PathQuery {
                     path: root.join(&name).to_string_lossy().into_owned(),
                 }),
@@ -1423,6 +1448,7 @@ mod tests {
             for (path, old_path) in [(root.join(&name), None)].into_iter().chain(renamed) {
                 let Err(e) = gitdiff(
                     State(state.clone()),
+                    host_access_tests::owner_principal().await,
                     Query(GitDiffQuery {
                         path: path.to_string_lossy().into_owned(),
                         old_path,
@@ -1763,16 +1789,27 @@ mod tests {
                 path: absolute.join("notes.txt").to_string_lossy().into_owned(),
             })
         };
-        let Err(text) = readfile(State(state.clone()), query()).await else {
+        let Err(text) = readfile(
+            State(state.clone()),
+            host_access_tests::owner_principal().await,
+            query(),
+        )
+        .await
+        else {
             panic!("a missing file was read");
         };
         assert_eq!(answered(text).await, path_not_found);
-        let raw = readfile_raw(State(state.clone()), query())
-            .await
-            .unwrap_err();
+        let raw = readfile_raw(
+            State(state.clone()),
+            host_access_tests::owner_principal().await,
+            query(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(answered(raw).await, path_not_found);
         let Err(listing) = listdir(
             State(state),
+            host_access_tests::owner_principal().await,
             Query(ListdirQuery {
                 path: Some(absolute.to_string_lossy().into_owned()),
             }),
