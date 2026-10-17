@@ -34,6 +34,7 @@ pub mod area_membership;
 mod area_ownership_tests;
 mod card;
 mod card_composite;
+mod conversation_title;
 mod database_identity;
 mod events;
 mod infra;

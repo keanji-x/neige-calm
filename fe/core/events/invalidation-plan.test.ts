@@ -4,9 +4,9 @@ import { wireEventSchema, type WireEvent } from '../api/schemas.js';
 import { invalidationPlanFor } from './invalidation-plan.js';
 
 /* Hand-maintained on purpose, never derived from the policies. `harness.item.added` is deliberately
- * out: it is the highest-frequency event and is emitted before `persist_snapshot` commits. */
+ * out of the unconditional set: only its persisted userMessage branch changes input metadata. */
 const CONVERSATION_LIST_KINDS = [
-  'card.added', 'card.updated', 'harness.transcript.rewound',
+  'card.added', 'card.updated', 'harness.transcript.rewound', 'harness.transcript.cleared',
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'harness.phase.changed', 'harness.user_message.enqueued', 'harness.queue.changed',
 ] as const;
@@ -188,31 +188,55 @@ describe('invalidation plan behavior', () => {
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
     // The phase event delivers the turn outcome row, which emits no `harness.item.added` of its own.
     expect(planned('harness.phase.changed')).toEqual([
-      ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
-      ['track', 'track-1'],
+      ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track', 'track-1'],
+      ['track-conversations', 'track-1'],
     ]);
     expect(invalidationPlanFor(event({ ev: 'harness.phase.changed', data: { card_id: 'card-1', track_id: 'track-1', new_phase: 'turn_completed' } })).invalidate)
       .toContainEqual(['model-catalog', { kind: 'card', cardId: 'card-1' }]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
+      ['track', 'track-1'], ['track-conversations', 'track-1'],
     ]);
     expect(planned('harness.user_message.enqueued')).toEqual([
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
-      ['track-conversations', 'track-1'],
+      ['track', 'track-1'], ['track-conversations', 'track-1'],
     ]);
     // `harness-items` is for `steered` (adds a transcript row) and `restored` (its sweep deletes it again).
     expect(planned('harness.queue.changed')).toEqual([
       ['planner-run', 'card-1'], ['harness-items', 'card-1'],
-      ['track-conversations', 'track-1'],
+      ['track', 'track-1'], ['track-conversations', 'track-1'],
     ]);
   });
 
-  it('refetches the track conversation list from exactly the nine session-writing kinds', () => {
+  it('refetches the track conversation list from exactly the unconditional session/input-writing kinds', () => {
     const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)
       .invalidate.some((key) => key[0] === 'track-conversations'));
     expect(new Set(actual)).toEqual(new Set(CONVERSATION_LIST_KINDS));
     expect(actual).toHaveLength(CONVERSATION_LIST_KINDS.length);
+  });
+
+  it.each(['harness.queue.changed', 'harness.user_message.enqueued', 'harness.transcript.cleared',
+    'harness.transcript.rewound', 'harness.phase.changed'] as const)(
+    'refreshes only the owning input metadata for %s', ev => {
+      const keys = invalidationPlanFor(event({ ev, data: { card_id: 'card-1', track_id: 'track-1' } })).invalidate;
+      expect(keys.filter(key => key[0] === 'track' || key[0] === 'track-conversations'))
+        .toEqual([['track', 'track-1'], ['track-conversations', 'track-1']]);
+    },
+  );
+
+  it('refreshes metadata for persisted user input but not agent/tool/turn items', () => {
+    expect(invalidationPlanFor(event({ ev: 'harness.item.added', data: {
+      card_id: 'card-1', track_id: 'track-1', item_type: 'userMessage', method: 'item/started',
+    } })).invalidate).toEqual([['harness-items', 'card-1']]);
+    for (const item_type of ['userMessage', 'user_message', 'agentMessage', 'commandExecution', null]) {
+      const keys = invalidationPlanFor(event({ ev: 'harness.item.added', data: {
+        card_id: 'card-1', track_id: 'track-1', item_type, method: 'item/completed',
+      } })).invalidate;
+      expect(keys).toEqual(item_type === 'userMessage' || item_type === 'user_message'
+        ? [['harness-items', 'card-1'], ['track', 'track-1'], ['track-conversations', 'track-1']]
+        : [['harness-items', 'card-1']]);
+    }
   });
 
   it('refreshes template prerequisites when plugin state changes', () => {

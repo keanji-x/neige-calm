@@ -451,6 +451,51 @@ describe('track conversations', () => {
     expect(screen.queryByRole('region', { name: 'Notifications' })).toBeNull();
   });
 
+  it('refreshes first pending metadata locally at the same phase without WS', async () => {
+    let pending = [{ entry_id: 'first', text: 'Original', rev: 0, queued_at_ms: 1 }];
+    const { client, requests } = setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({
+        track: TRACK, can_reopen: false, can_admin: false, can_close: true,
+        cards: [{ ...PLANNER_CARD, title: pending[0]?.text ?? null }, ASSISTANT_CARD], overlays: [],
+      });
+      if (request.path.endsWith('/planner/run')) return ok({ ...runIdle().body as object,
+        card_id: pathCardId(request.path), pending, pending_overflow: 0 });
+      if (request.method === 'PATCH') {
+        pending = [{ ...pending[0], text: 'Edited', rev: 1 }];
+        return ok({ ...pending[0], card_id: PLANNER_CARD.id });
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Original' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit queued message' }));
+    await typeInto(messageField(), 'Edited');
+    fireEvent.click(screen.getByRole('button', { name: 'Save queued message' }));
+    await waitFor(() => expect(client.getQueryData(['planner-run', PLANNER_CARD.id])).toMatchObject({ phase: 'idle', pending: [{ text: 'Edited' }] }));
+    await screen.findByRole('complementary', { name: 'Edited' });
+    expect(requests.filter(request => request.path.includes(HISTORY_PATH)).every(request => request.path.includes(PLANNER_CARD.id))).toBe(true);
+  });
+
+  it('uses fresh server metadata for both unopened conversations without eager history', async () => {
+    const { requests } = setup((request) => {
+      if (request.path === '/api/tracks/w1') return ok({
+        track: TRACK, can_reopen: false, can_admin: false, can_close: true,
+        cards: [{ ...PLANNER_CARD, title: 'Original planner input' }, ASSISTANT_CARD], overlays: [],
+      });
+      if (request.path === CONVERSATIONS) return ok([assistantRow({ title: 'Original assistant input' })]);
+      if (request.path.includes(HISTORY_PATH)) return ok([harnessMessage(900, 'userMessage', { content: [{ text: 'Latest page input' }] })]);
+      return undefined;
+    });
+    await screen.findByRole('button', { name: 'Conversation Original planner input' });
+    const assistant = await screen.findByRole('button', { name: 'Conversation Original assistant input' });
+    expect(requests.filter(request => request.path.includes(HISTORY_PATH))).toHaveLength(0);
+    fireEvent.click(assistant);
+    await screen.findByRole('complementary', { name: 'Original assistant input' });
+    await screen.findByText('Latest page input');
+    expect(requests.filter(request => request.path.includes(HISTORY_PATH))[0]?.path).toContain('direction=desc');
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    await screen.findByRole('button', { name: 'Conversation Original assistant input' });
+  });
+
   it('keeps the name derived from confirmed turns after the drawer closes', async () => {
     let historyAvailable = true;
     const { client } = setup((request) => request.path.includes(HISTORY_PATH)

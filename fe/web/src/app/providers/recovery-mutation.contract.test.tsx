@@ -42,7 +42,7 @@ it('queued production model selections retain their original permit across recov
   let finish!: (reply: ApiTransportResponse) => void;
   const send = vi.fn(() => new Promise<ApiTransportResponse>(resolve => { finish = resolve; }));
   const transport = createRecoveryTransports({ send }, access).business; const client = new QueryClient();
-  const { result } = renderHook(() => usePlannerMutations(transport, 'card-a', createUnauthorizedChannel({ enqueue: task => task() })), {
+  const { result } = renderHook(() => usePlannerMutations(transport, 'card-a', 'track-a', createUnauthorizedChannel({ enqueue: task => task() })), {
     wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
   });
   const first = result.current.setModel({ model: 'first', reasoning_effort: null }).catch(error => error as unknown);
@@ -133,7 +133,7 @@ it.each([1, 2])('does not upload %i old picked files after their asynchronous re
   const transport = createRecoveryTransports({ send }, access).business; const client = new QueryClient();
   const channel = createUnauthorizedChannel({ enqueue: task => task() });
   const { result } = renderHook(() => {
-    const mutations = usePlannerMutations(transport, 'card-a', channel);
+    const mutations = usePlannerMutations(transport, 'card-a', 'track-a', channel);
     const images = useCardImages('card-a');
     return usePlannerAttachments(mutations.uploadAttachment, 'card-a', images);
   }, { wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });

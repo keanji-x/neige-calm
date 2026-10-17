@@ -16,7 +16,7 @@ import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import {
   areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
-  trackOverlaysQueryOptions,
+  trackOverlaysQueryOptions, trackDetailQueryOptions, trackConversationsQueryOptions,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
   useTodayLaunchpadEnsureMutation, useTodayReportResetMutation, useTrackConversationMutations, useTrackRecipeMutations,
   seriesRefetchInterval, trackReportSeriesQueryOptions, trackSourceQueryOptions, type SeriesRead,
@@ -575,7 +575,7 @@ describe('delete mutation wiring', () => {
     const transport: ApiTransportPort = {
       send: () => Promise.resolve(ok({ card_id: 'card-1', worker_session_id: 'runtime-1' })),
     };
-    const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', unauthorized), {
+    const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', null, unauthorized), {
       wrapper: mutationWrapper(client),
     });
 
@@ -913,4 +913,64 @@ describe('track source query', () => {
     await expect(trackSourceQueryOptions(malformed.transport, 'w1', 'src_2c9e0a1b', unauthorized).queryFn({ signal }))
       .rejects.toBeInstanceOf(ApiError);
   });
+});
+
+
+describe('input metadata mutation reconciliation', () => {
+  it.each(['edit', 'delete', 'steer', 'send'] as const)(
+    'refreshes owned metadata after %s success, refusal, and unknown outcome without opening history', async action => {
+      for (const outcome of ['success', 'stale', 'gone', 'unknown'] as const) {
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+        let title = 'Original';
+        const paths: string[] = [];
+        const transport: ApiTransportPort = { send: async request => {
+          await Promise.resolve();
+          paths.push(request.path);
+          if (request.path === '/api/tracks/w1') return ok({ track: baseTrackWire,
+            can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [{
+              id: 'card-1', track_id: 'w1', kind: 'codex', title, sort: 0, payload: { planner_harness: true },
+              deletable: true, created_at: 1, updated_at: 2,
+            }] });
+          if (request.path === '/api/tracks/w1/conversations') return ok([{
+            id: 'assistant', trackId: 'w1', title, kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null,
+          }]);
+          title = 'Edited';
+          if (outcome === 'unknown') throw new Error('connection lost after write');
+          if (outcome !== 'success') return { status: outcome === 'gone' ? 404 : 409, statusText: 'Refused',
+            body: { code: 'planner_input_stale', error: 'Changed', text: title, rev: 1, entry_id: 'entry' } };
+          return ok({ card_id: 'card-1', worker_session_id: 'runtime', entry_id: 'entry', text: title, rev: 1, steered: true });
+        } };
+        const detailOptions = trackDetailQueryOptions(transport, 'w1', unauthorized);
+        const listOptions = trackConversationsQueryOptions(transport, 'w1', unauthorized);
+        await client.fetchQuery(detailOptions); await client.fetchQuery(listOptions);
+        const detail = new QueryObserver(client, detailOptions);
+        const list = new QueryObserver(client, listOptions);
+        const releaseDetail = detail.subscribe(() => undefined);
+        const releaseList = list.subscribe(() => undefined);
+        for (const key of [queryKeys.trackDetail('foreign'), queryKeys.trackConversations('foreign')]) client.setQueryData(key, 'untouched');
+        const clear = vi.spyOn(client, 'clear');
+        const { result, unmount } = renderHook(() => usePlannerMutations(transport, 'card-1', 'w1', unauthorized), {
+          wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children),
+        });
+        const entry = { entry_id: 'entry', text: 'Original', rev: 0, queued_at_ms: 1 };
+        await act(async () => {
+          try {
+            if (action === 'edit') await result.current.editQueued(entry, 'Edited');
+            if (action === 'delete') await result.current.deleteQueued('entry', 0);
+            if (action === 'steer') await result.current.steerQueued('entry', 0);
+            if (action === 'send') await result.current.send('Edited', [], 'key', null, transport, () => undefined);
+          } catch { /* Sends reject on refusal/unknown; reconciliation is still required. */ }
+        });
+        await waitFor(() => expect(detail.getCurrentResult().data?.cards[0]?.title).toBe('Edited'));
+        await waitFor(() => expect(list.getCurrentResult().data?.[0]?.title).toBe('Edited'));
+        for (const key of [queryKeys.trackDetail('foreign'), queryKeys.trackConversations('foreign')]) {
+          expect(client.getQueryData(key)).toBe('untouched');
+          expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+        }
+        expect(paths.some(path => path.includes('/harness/items'))).toBe(false);
+        expect(clear).not.toHaveBeenCalled();
+        releaseDetail(); releaseList(); unmount(); client.clear();
+      }
+    },
+  );
 });

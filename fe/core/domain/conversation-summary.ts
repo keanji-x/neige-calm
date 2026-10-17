@@ -47,20 +47,20 @@ export function withRememberedConversation(
   row: Conversation, remembered: Conversation | undefined,
 ): Conversation {
   return {
-    ...row,
+    ...withRememberedTitle(row, remembered),
     ...(remembered?.turns === undefined ? {} : { turns: remembered.turns }),
-    ...(row.title === null && remembered?.title != null ? { title: remembered.title } : {}),
     updatedAt: Math.max(row.updatedAt, remembered?.updatedAt ?? 0),
   };
 }
 
-/** A derived first-message title is stable and may be shown after close; counts and activity time are snapshots only the open row may claim. */
+/** Only confirmed input can supply a remembered fallback. A metadata-only pending title is
+ * revocable: deleting the last pending input makes the server title null again. */
 export function withRememberedTitle(
   row: Conversation, remembered: Conversation | undefined,
 ): Conversation {
   return {
     ...row,
-    ...(row.title === null && remembered?.title != null ? { title: remembered.title } : {}),
+    ...(row.title === null && remembered?.title != null && (remembered.turns ?? 0) > 0 ? { title: remembered.title } : {}),
   };
 }
 

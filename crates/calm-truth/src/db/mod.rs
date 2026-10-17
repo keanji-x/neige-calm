@@ -261,6 +261,12 @@ pub trait RepoRead: Send + Sync + 'static {
         track_id: &str,
         blocks: &[calm_types::track_report::ReportBlock],
     ) -> Result<Vec<crate::db::sqlite::BlockVerdict>>;
+    /// Batched first-input sources for conversation metadata, without reading history pages.
+    async fn conversation_title_sources(
+        &self,
+        card_ids: &[String],
+    ) -> Result<Vec<crate::conversation_title::ConversationTitleSource>>;
+
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
     /// Page **every** `harness_items` row for a card, whatever its `method`. The transcript feed must NOT use it.
     async fn harness_item_list_by_card(

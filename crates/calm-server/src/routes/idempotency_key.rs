@@ -150,7 +150,9 @@ pub(crate) fn keyed_create_result(outcome: OperationOutcome) -> Result<Value> {
 
 /// A keyed card create's answer: the stored card with its runtime projected, 201, or the stored
 /// failure as [`keyed_create_result`] reads it.
-pub(crate) async fn keyed_card_answer<R: WorkerSessionProjectionRepo + ?Sized>(
+pub(crate) async fn keyed_card_answer<
+    R: crate::db::RepoRead + WorkerSessionProjectionRepo + ?Sized,
+>(
     repo: &R,
     outcome: OperationOutcome,
 ) -> Result<(StatusCode, Json<Card>)> {

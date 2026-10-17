@@ -128,7 +128,8 @@ export function checkDuplicationManifest(root) {
   const importFenceEntries = duplicationManifest.filter((entry) => entry.type === 'import-fence');
   for (const file of [...filesUnder(resolve(root, 'core')), ...filesUnder(resolve(root, 'web/src'))]) {
     const path = relative(root, file).replaceAll('\\', '/');
-    const ast = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    // Both walks descend through children; getText receives ast explicitly, so parent links are unused.
+    const ast = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, false);
     for (const statement of ast.statements) {
       for (const name of exportedNames(statement)) {
         const entry = entriesBySymbol.get(name);

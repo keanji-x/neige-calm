@@ -114,7 +114,7 @@ export function useConversationStore(
   const pendingQueueIds = useMemo(
     () => new Set(pendingQueue.map((entry) => entry.entry_id)), [pendingQueue],
   );
-  const mutations = usePlannerMutations(transport, cardId, unauthorized);
+  const mutations = usePlannerMutations(transport, cardId, scope === null ? null : scope.id, unauthorized);
   /** What went wrong with an action of the card it names; another card's is never this one's. */
   const [compactPending, setCompactPending] = useState<ReadonlySet<string>>(() => new Set());
   const compactLeases = useRef(new Set<string>());
@@ -223,7 +223,7 @@ export function useConversationStore(
       /* The open row belongs to the effect above; writing the plain row over it here
                would undo it on every render. */
       if (row.id === conversation?.id || ownedCardIds?.includes(row.id)) continue;
-      /* A row arrives with `turns` absent and `title` null on the wire; carrying the
+      /* A row arrives with `turns` absent and a nullable `title` on the wire; carrying the
                remembered values keeps a confirmed count and derived name from being
                forgotten on refresh. A title the server does send wins. */
       /* `updatedAt` never goes backwards: the listed row's time does not move when a

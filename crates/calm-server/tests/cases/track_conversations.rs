@@ -83,7 +83,7 @@ async fn boot() -> Boot {
     ));
     let app = routes::router()
         .layer(Extension(Principal {
-            user_id: "owner".into(),
+            user_id: LEGACY_OWNER_USER_ID.into(),
             display_name: "owner".into(),
             role: "owner".into(),
             session_id: "test".into(),
@@ -323,7 +323,7 @@ async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_t
     let card_id = body["id"].as_str().unwrap().to_string();
     assert_eq!(body["kind"], "track-assistant");
     assert_eq!(body["trackId"], track_id);
-    assert_eq!(body["title"], Value::Null);
+    assert_eq!(body["title"], "hello assistant");
 
     assert_eq!(
         b.card_role(&card_id).await,
@@ -1248,3 +1248,6 @@ mod keyed;
 mod assistant_provider_contract;
 #[path = "assistant_provider_create.rs"]
 mod assistant_provider_create;
+
+#[path = "track_conversation_titles.rs"]
+mod titles;
