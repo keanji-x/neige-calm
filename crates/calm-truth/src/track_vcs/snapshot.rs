@@ -361,14 +361,23 @@ pub(super) async fn hook_events_for_card_tx(
     hook_events_from_rows(hook_rows_for_card(&mut **tx, track_id, card_id).await?).await
 }
 
-// Both the complete source query and its cheap publication witness share the cap/order predicate.
-fn hook_rows_query(columns: &str) -> String {
-    format!(
-        "SELECT {columns} FROM (SELECT {columns} FROM events \
-             WHERE scope_track = ?1 AND scope_card = ?2 \
-             AND kind IN ('codex.hook', 'claude.hook') \
-             ORDER BY id DESC LIMIT ?3) ORDER BY id ASC"
-    )
+// The identity intersection is covering on both existing event relations. In particular,
+// checking the track through its covering index avoids loading records whose payload precedes
+// scope_card on disk. If that index is intentionally renamed/removed, update this owner query.
+fn hook_ids_query() -> &'static str {
+    r#"SELECT id FROM (
+           SELECT e.id
+           FROM events AS e
+           WHERE e.scope_card = ?2
+             AND e.kind IN ('codex.hook', 'claude.hook')
+             AND EXISTS (
+                 SELECT 1
+                 FROM events AS t INDEXED BY idx_events_scope_track
+                 WHERE t.scope_track = ?1 AND t.id = e.id
+             )
+           ORDER BY e.id DESC
+           LIMIT ?3
+       ) ORDER BY id ASC"#
 }
 
 pub(super) async fn hook_rows_for_card<'e>(
@@ -376,8 +385,10 @@ pub(super) async fn hook_rows_for_card<'e>(
     track_id: &TrackId,
     card_id: &CardId,
 ) -> Result<Vec<EventRow>> {
-    Ok(sqlx::query_as(&hook_rows_query(
-        "id, kind, payload, actor, at, scope_kind, scope_area, scope_track, scope_card",
+    Ok(sqlx::query_as(&format!(
+        "SELECT id, kind, payload, actor, at, scope_kind, scope_area, scope_track, scope_card \
+         FROM events WHERE id IN ({}) ORDER BY id ASC",
+        hook_ids_query(),
     ))
     .bind(track_id.as_str())
     .bind(card_id.as_str())
@@ -391,7 +402,7 @@ pub(super) async fn hook_ids_for_card_tx(
     track_id: &TrackId,
     card_id: &CardId,
 ) -> Result<Vec<i64>> {
-    Ok(sqlx::query_scalar(&hook_rows_query("id"))
+    Ok(sqlx::query_scalar(hook_ids_query())
         .bind(track_id.as_str())
         .bind(card_id.as_str())
         .bind(track_fs_view::HOOK_EVENT_TRANSCRIPT_CAP as i64)
@@ -544,3 +555,7 @@ fn blob_from_fs_content(content: track_fs_view::TrackFsContent) -> BlobContent {
 pub(crate) fn run_blob_bytes(run: &RunProjection) -> Result<Vec<u8>> {
     Ok(run_json(run)?.bytes)
 }
+
+#[cfg(test)]
+#[path = "snapshot/hook_query_tests.rs"]
+mod hook_query_tests;
