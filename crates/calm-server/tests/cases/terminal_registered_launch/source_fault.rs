@@ -217,3 +217,77 @@ async fn terminal_original_request_before_prepare_recovers_same_ticket_after_ker
 -> anyhow::Result<()> {
     run(CrashWindow::RequestReserved).await
 }
+
+#[tokio::test]
+async fn terminal_second_launch_interruption_has_no_unrecorded_live_registration()
+-> anyhow::Result<()> {
+    use calm_session::control::execution::{
+        AttachRegistration, ExportRegistration, ObjectRegistrationReceipt, RegistrationExport,
+        TransferNonce,
+    };
+    let mut fixture = Fixture::start_in(Storage::Disk).await?;
+    let result = async {
+        fixture.post_terminal(Some("first-source-anchor")).await?;
+        let mut interrupted = kernel(&fixture, KernelBoot::Crash(CrashWindow::SourceAttached)).await?;
+        let cookie = login(&interrupted).await?;
+        let response = post_at(
+            ([127, 0, 0, 1], interrupted.port).into(),
+            format!("/api/tracks/{}/terminal-cards", fixture.track),
+            cookie,
+            fixture.request_body(),
+            Some(KEY.into()),
+        ).await;
+        let status = kernel_proc::wait_exit_with_timeout(&mut interrupted, Duration::from_secs(10));
+        ensure!(status.signal() == Some(libc::SIGABRT) && response.is_err(),
+            "second launch did not stop at the actual source-attachment boundary: {status:?}");
+        let anchor: String = sqlx::query_scalar("SELECT registration_intent_json FROM workspace_execution_sources")
+            .fetch_one(fixture.sql.pool()).await?;
+        let anchor: AttachRegistration = serde_json::from_str(&anchor)?;
+        let requests: Vec<String> = sqlx::query_scalar("SELECT execution_request_json FROM operations WHERE execution_request_json IS NOT NULL")
+            .fetch_all(fixture.sql.pool()).await?;
+        let mut owned = vec![anchor.registration_id];
+        for request in requests {
+            let request: Value = serde_json::from_str(&request)?;
+            let transfer: AttachRegistration = serde_json::from_value(request["registration"].clone())?;
+            owned.push(transfer.registration_id);
+        }
+        // Audit receipts survive release. Only a successful exact Export proves
+        // that the still-running executor actually retains a native lease.
+        let secret = serde_json::from_slice(&std::fs::read(fixture._root.path().join("kernel-key.json"))?)?;
+        let mut observer = RegisteredExecutorConnection::connect_with_query(
+            fixture._sockets.path().join("control.sock"), secret).await?;
+        let mut unowned = Vec::new();
+        for entry in std::fs::read_dir(&fixture.journal)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|extension| extension != "registration") { continue; }
+            let receipt: ObjectRegistrationReceipt = serde_json::from_slice(&std::fs::read(path)?)?;
+            if matches!(observer.export(ExportRegistration {
+                executor_boot: observer.executor_boot().clone(),
+                registration: receipt.id.clone(), nonce: TransferNonce::fresh()?,
+            }).await?, RegistrationExport::Held { .. }) && !owned.contains(&receipt.id) {
+                unowned.push(receipt.id);
+            }
+        }
+        ensure!(unowned.is_empty(), "second launch installed unrecorded live registrations: {unowned:?}");
+        let mut resumed = kernel(&fixture, KernelBoot::Normal).await?;
+        let resumed_result = async {
+            let cookie = login(&resumed).await?;
+            let (status, _, card) = post_at(
+                ([127, 0, 0, 1], resumed.port).into(),
+                format!("/api/tracks/{}/terminal-cards", fixture.track), cookie,
+                fixture.request_body(), Some(KEY.into()),
+            ).await?;
+            ensure!(status == 201, "second original launch did not resume: {status} {card}");
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while std::fs::read_to_string(&fixture.count).ok().as_deref() != Some("executed\nexecuted\n") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.context("resumed second launch did not execute exactly once")?;
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        resumed.sigkill_and_reap();
+        resumed_result
+    }.await;
+    fixture.stop().await;
+    result
+}
