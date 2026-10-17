@@ -10,16 +10,16 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest},
 };
 
-type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+pub(super) type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-struct HttpServer {
-    address: std::net::SocketAddr,
+pub(super) struct HttpServer {
+    pub(super) address: std::net::SocketAddr,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
 impl HttpServer {
-    async fn start(app: axum::Router) -> anyhow::Result<Self> {
+    pub(super) async fn start(app: axum::Router) -> anyhow::Result<Self> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
@@ -40,41 +40,20 @@ impl HttpServer {
         })
     }
 
-    async fn post(
+    pub(super) async fn post(
         &self,
         path: String,
         cookie: String,
         body: Value,
     ) -> anyhow::Result<(u16, Option<String>, Value)> {
-        let url = format!("http://{}{}", self.address, path);
-        // The HTTP client alone blocks in this test capsule. Production async
-        // authorization, preparation and the executor are exercised unchanged.
-        tokio::task::spawn_blocking(move || {
-            let agent = ureq::AgentBuilder::new()
-                .timeout(Duration::from_secs(8))
-                .build();
-            let mut request = agent.post(&url).set("content-type", "application/json");
-            if !cookie.is_empty() {
-                request = request.set("cookie", &cookie);
-            }
-            let response = match request.send_string(&body.to_string()) {
-                Ok(response) | Err(ureq::Error::Status(_, response)) => response,
-                Err(error) => return Err(anyhow::Error::new(error)),
-            };
-            let status = response.status();
-            let cookie = response
-                .header("set-cookie")
-                .map(|value| value.split(';').next().unwrap().to_owned());
-            let body = serde_json::from_str(&response.into_string()?)?;
-            Ok((status, cookie, body))
-        })
-        .await?
+        post_at(self.address, path, cookie, body, None).await
     }
 
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
+    pub(super) async fn stop(&mut self) -> anyhow::Result<()> {
+        let Some(shutdown) = self.shutdown.take() else {
+            return Ok(());
+        };
+        let _ = shutdown.send(());
         match tokio::time::timeout(Duration::from_secs(5), &mut self.task).await {
             Ok(result) => {
                 result??;
@@ -94,14 +73,61 @@ impl Drop for HttpServer {
     }
 }
 
-async fn send(socket: &mut Socket, message: ClientMsg) -> anyhow::Result<()> {
+pub(super) async fn post_at(
+    address: std::net::SocketAddr,
+    path: String,
+    cookie: String,
+    body: Value,
+    key: Option<String>,
+) -> anyhow::Result<(u16, Option<String>, Value)> {
+    let url = format!("http://{address}{path}");
+    // The HTTP client alone blocks in this test capsule. Production async
+    // authorization, preparation and the executor are exercised unchanged.
+    tokio::task::spawn_blocking(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(8))
+            .build();
+        let mut request = agent.post(&url).set("content-type", "application/json");
+        if !cookie.is_empty() {
+            request = request.set("cookie", &cookie);
+        }
+        if let Some(key) = key {
+            request = request.set("Idempotency-Key", &key);
+        }
+        let response = match request.send_string(&body.to_string()) {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => response,
+            Err(error) => return Err(anyhow::Error::new(error)),
+        };
+        let status = response.status();
+        let cookie = response
+            .header("set-cookie")
+            .map(|value| value.split(';').next().unwrap().to_owned());
+        let body = serde_json::from_str(&response.into_string()?)?;
+        Ok((status, cookie, body))
+    })
+    .await?
+}
+
+pub(super) async fn login(server: &HttpServer) -> anyhow::Result<String> {
+    let (status, cookie, _) = server
+        .post(
+            "/api/auth/login".into(),
+            String::new(),
+            json!({"username":"owner","password":"terminal-password"}),
+        )
+        .await?;
+    ensure!(status == 200, "real HTTP login failed: {status}");
+    cookie.context("real HTTP login supplied no cookie")
+}
+
+pub(super) async fn send(socket: &mut Socket, message: ClientMsg) -> anyhow::Result<()> {
     socket
         .send(Message::Text(serde_json::to_string(&message)?))
         .await?;
     Ok(())
 }
 
-async fn until(
+pub(super) async fn until(
     socket: &mut Socket,
     mut matches: impl FnMut(&DaemonMsg) -> bool,
 ) -> anyhow::Result<()> {
@@ -130,7 +156,34 @@ async fn until(
     .await?
 }
 
-async fn input(
+pub(super) async fn disconnect(
+    mut socket: Socket,
+    entry: Arc<calm_server::terminal_renderer::RendererEntry>,
+) -> anyhow::Result<()> {
+    socket.close(None).await?;
+    drop(socket);
+    // Wait for the real product connection guard to release this owner lease;
+    // no synthetic release frame or fixture-side ownership mutation is used.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if entry
+                .handle
+                .owner_registry
+                .lock()
+                .unwrap()
+                .current_owner()
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn input(
     socket: &mut Socket,
     sequence: u64,
     text: &str,
@@ -161,7 +214,7 @@ async fn input(
     .await
 }
 
-async fn exercise(fixture: &mut Fixture, server: &HttpServer) -> anyhow::Result<()> {
+pub(super) fn install_interactive_program(fixture: &Fixture) -> anyhow::Result<()> {
     std::fs::write(
         &fixture.program,
         r#"#!/bin/sh
@@ -172,6 +225,61 @@ while IFS= read -r line; do
 done
 "#,
     )?;
+    Ok(())
+}
+
+pub(super) async fn open(
+    server: &HttpServer,
+    cookie: &str,
+    terminal: &str,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<Socket> {
+    let mut request =
+        format!("ws://{}/api/terminals/{}", server.address, terminal).into_client_request()?;
+    request.headers_mut().insert("cookie", cookie.parse()?);
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+    send(
+        &mut socket,
+        ClientMsg::ClientHello {
+            protocol_version: PROTOCOL_VERSION,
+            terminal_id: terminal.to_owned(),
+            client_id: uuid::Uuid::new_v4(),
+            desired_size: PtySize {
+                cols,
+                rows,
+                pixel_width: None,
+                pixel_height: None,
+            },
+            cell_size: None,
+            initial_scrollback: InitialScrollback::None,
+            resume_from: None,
+            role_hint: Some(Role::Owner),
+            capabilities: ClientCapabilities {
+                render_encodings: vec![RenderEncoding::Vt],
+                supports_scrollback: true,
+                supports_sixel: false,
+                supports_images: false,
+                kernel_originated_input: false,
+            },
+        },
+    )
+    .await?;
+    until(&mut socket, |message| {
+        matches!(
+            message,
+            DaemonMsg::ServerHello {
+                client_role: Role::Owner,
+                ..
+            }
+        )
+    })
+    .await?;
+    Ok(socket)
+}
+
+async fn exercise(fixture: &mut Fixture, server: &HttpServer) -> anyhow::Result<()> {
+    install_interactive_program(fixture)?;
     let (status, cookie, _) = server
         .post(
             "/api/auth/login".into(),
@@ -201,46 +309,7 @@ done
         .terminal_get_by_card(card["id"].as_str().context("missing card id")?)
         .await?
         .context("missing real Terminal")?;
-    let mut request =
-        format!("ws://{}/api/terminals/{}", server.address, terminal.id).into_client_request()?;
-    request.headers_mut().insert("cookie", cookie.parse()?);
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
-    send(
-        &mut socket,
-        ClientMsg::ClientHello {
-            protocol_version: PROTOCOL_VERSION,
-            terminal_id: terminal.id.clone(),
-            client_id: uuid::Uuid::new_v4(),
-            desired_size: PtySize {
-                cols: 80,
-                rows: 24,
-                pixel_width: None,
-                pixel_height: None,
-            },
-            cell_size: None,
-            initial_scrollback: InitialScrollback::None,
-            resume_from: None,
-            role_hint: Some(Role::Owner),
-            capabilities: ClientCapabilities {
-                render_encodings: vec![RenderEncoding::Vt],
-                supports_scrollback: true,
-                supports_sixel: false,
-                supports_images: false,
-                kernel_originated_input: false,
-            },
-        },
-    )
-    .await?;
-    until(&mut socket, |message| {
-        matches!(
-            message,
-            DaemonMsg::ServerHello {
-                client_role: Role::Owner,
-                ..
-            }
-        )
-    })
-    .await?;
+    let mut socket = open(server, &cookie, &terminal.id, 80, 24).await?;
     send(&mut socket, ClientMsg::OwnerClaim).await?;
     send(
         &mut socket,

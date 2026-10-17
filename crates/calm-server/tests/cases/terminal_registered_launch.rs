@@ -35,6 +35,47 @@ struct Supervisor {
 }
 
 impl Supervisor {
+    fn launch(socket: &Path, journal: &Path, key: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            child: Command::new(env!("CARGO_BIN_EXE_terminal-vertical-supervisor-fixture"))
+                .arg("--control-sock")
+                .arg(socket)
+                .arg("--execution-state-dir")
+                .arg(journal)
+                .arg("--kernel-client-key-file")
+                .arg(key)
+                .env("TOKIO_WORKER_THREADS", "2")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()?,
+        })
+    }
+
+    async fn connect(
+        &mut self,
+        socket: &Path,
+        secret: CapabilityToken,
+    ) -> anyhow::Result<RegisteredExecutorConnection> {
+        // A real authenticated RegisteredV3 handshake proves fixture setup is
+        // usable. The fixture does NOT attach or prepare an execution for HTTP.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(client) =
+                    RegisteredExecutorConnection::connect(socket, secret.clone()).await
+                {
+                    break Ok::<_, anyhow::Error>(client);
+                }
+                ensure!(
+                    self.child.try_wait()?.is_none(),
+                    "supervisor exited during setup"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?
+    }
+
     async fn stop(&mut self) {
         // The concrete child is still owned/unreaped: this cannot signal a
         // replacement PID. Let the production shutdown path stop its children.
@@ -75,10 +116,16 @@ impl Drop for Supervisor {
     }
 }
 
+enum Storage {
+    Memory,
+    Disk,
+}
+
 struct Fixture {
     app: axum::Router,
     state: AppState,
     sql: Arc<SqlxRepo>,
+    database_url: String,
     track: String,
     cwd: PathBuf,
     journal: PathBuf,
@@ -94,6 +141,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start() -> anyhow::Result<Self> {
+        Self::start_in(Storage::Memory).await
+    }
+
+    async fn start_in(storage: Storage) -> anyhow::Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir()?;
         let sockets = calm_test_sockets::try_socket_dir("terminal-vertical")?;
@@ -103,37 +154,8 @@ impl Fixture {
         let key = root.path().join("kernel-key.json");
         std::fs::write(&key, serde_json::to_vec(&secret)?)?;
         std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
-        let mut supervisor = Supervisor {
-            child: Command::new(env!("CARGO_BIN_EXE_terminal-vertical-supervisor-fixture"))
-                .arg("--control-sock")
-                .arg(&socket)
-                .arg("--execution-state-dir")
-                .arg(&journal)
-                .arg("--kernel-client-key-file")
-                .arg(&key)
-                .env("TOKIO_WORKER_THREADS", "2")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()?,
-        };
-        // A real authenticated RegisteredV3 handshake proves fixture setup is
-        // usable. The fixture does NOT attach or prepare an execution for HTTP.
-        let client = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Ok(client) =
-                    RegisteredExecutorConnection::connect(&socket, secret.clone()).await
-                {
-                    break Ok::<_, anyhow::Error>(client);
-                }
-                ensure!(
-                    supervisor.child.try_wait()?.is_none(),
-                    "supervisor exited during setup"
-                );
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await??;
+        let mut supervisor = Supervisor::launch(&socket, &journal, &key)?;
+        let client = supervisor.connect(&socket, secret).await?;
         let canonical = root.path().join("canonical");
         std::fs::create_dir(&canonical)?;
         git(&canonical, &["init", "-q"])?;
@@ -151,7 +173,14 @@ impl Fixture {
                 "base",
             ],
         )?;
-        let sql = Arc::new(SqlxRepo::open("sqlite::memory:").await?);
+        let database_url = match storage {
+            Storage::Memory => "sqlite::memory:".to_owned(),
+            Storage::Disk => format!(
+                "sqlite://{}?mode=rwc",
+                root.path().join("server.sqlite").display()
+            ),
+        };
+        let sql = Arc::new(SqlxRepo::open(&database_url).await?);
         let area = sql
             .area_create(
                 LEGACY_OWNER_USER_ID,
@@ -187,7 +216,6 @@ impl Fixture {
             cwd.is_dir(),
             "workspace owner did not prepare its declared worktree"
         );
-        let events = EventBus::new();
         let daemon_config = calm_server::config::Config::try_parse_from([
             std::ffi::OsString::from("terminal-vertical"),
             "--data-dir".into(),
@@ -199,34 +227,13 @@ impl Fixture {
             "--terminal-executor-key-file".into(),
             key.as_os_str().to_owned(),
         ])?;
-        let route_repo: Arc<dyn Repo> = sql.clone();
-        let state = AppState::from_parts(
-            route_repo.clone(),
-            events.clone(),
+        let state = Self::build_state(
+            sql.clone(),
             Arc::new(DaemonClient::new(&daemon_config)?),
-            Arc::new(PluginHost::new_full(
-                Arc::new(PluginRegistry::empty()),
-                route_repo.clone(),
-                PathBuf::new(),
-                root.path().join("plugins"),
-                Vec::new(),
-                events,
-                WriteContext::new(
-                    calm_server::card_role_cache::CardRoleCache::new(),
-                    areas.clone(),
-                ),
-            )),
-            Arc::new(CodexClient::new_stub()),
-            None,
-            Some(areas),
+            root.path(),
+            areas,
         );
-        let auth_state = AuthState::new(AuthConfig {
-            username: Some("owner".into()),
-            password: Some("terminal-password".into()),
-            dev_autologin: false,
-            display_name: "Owner".into(),
-        });
-        let app = calm_server::routes::application_router(state.clone(), auth_state);
+        let app = Self::application(state.clone());
         let login = app
             .clone()
             .oneshot(
@@ -269,6 +276,7 @@ impl Fixture {
             app,
             state,
             sql,
+            database_url,
             track: track.id.to_string(),
             cwd,
             journal,
@@ -283,6 +291,95 @@ impl Fixture {
         })
     }
 
+    fn build_state(
+        sql: Arc<SqlxRepo>,
+        daemon: Arc<DaemonClient>,
+        root: &Path,
+        areas: calm_server::track_area_cache::TrackAreaCache,
+    ) -> AppState {
+        let events = EventBus::new();
+        let route_repo: Arc<dyn Repo> = sql.clone();
+        AppState::from_parts(
+            route_repo.clone(),
+            events.clone(),
+            daemon,
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                route_repo.clone(),
+                PathBuf::new(),
+                root.join("plugins"),
+                Vec::new(),
+                events,
+                WriteContext::new(
+                    calm_server::card_role_cache::CardRoleCache::new(),
+                    areas.clone(),
+                ),
+            )),
+            Arc::new(CodexClient::new_stub()),
+            None,
+            Some(areas),
+        )
+    }
+
+    fn application(state: AppState) -> axum::Router {
+        calm_server::routes::application_router(
+            state,
+            AuthState::new(AuthConfig {
+                username: Some("owner".into()),
+                password: Some("terminal-password".into()),
+                dev_autologin: false,
+                display_name: "Owner".into(),
+            }),
+        )
+    }
+
+    async fn rebuild_from_disk(&mut self) -> anyhow::Result<()> {
+        ensure!(
+            self.database_url != "sqlite::memory:",
+            "cold recovery requires a real disk database"
+        );
+        let repo = Arc::new(SqlxRepo::open(&self.database_url).await?);
+        // Disconnect the old observation stream as a lost kernel connection
+        // does. This seam does not signal, stop, register or relaunch the child.
+        for terminal in sqlx::query_scalar::<_, String>("SELECT id FROM terminals")
+            .fetch_all(self.sql.pool())
+            .await?
+        {
+            if let Some(entry) = self.state.terminal_renderer.get(&terminal) {
+                entry.disconnect_output_source_for_test();
+            }
+        }
+        let state = Self::build_state(
+            repo.clone(),
+            self.state.daemon.clone(),
+            self._root.path(),
+            calm_server::track_area_cache::TrackAreaCache::new(),
+        );
+        self.app = Self::application(state.clone());
+        self.state = state;
+        self.sql = repo;
+        Ok(())
+    }
+
+    async fn restart_executor(&mut self) -> anyhow::Result<()> {
+        self.supervisor.child.kill()?;
+        self.supervisor.child.wait()?;
+        let socket = self._sockets.path().join("control.sock");
+        let key = self._root.path().join("kernel-key.json");
+        let secret = serde_json::from_slice(&std::fs::read(&key)?)?;
+        self.supervisor = Supervisor::launch(&socket, &self.journal, &key)?;
+        self.client = self.supervisor.connect(&socket, secret).await?;
+        Ok(())
+    }
+
+    fn request_body(&self) -> Value {
+        json!({
+            "program": format!("'{}'", self.program.to_str().unwrap().replace('\'', "'\\''")),
+            "env":{"NEIGE_TERMINAL_VERTICAL_OUTPUT":self.output,"NEIGE_TERMINAL_VERTICAL_COUNT":self.count},
+            "theme":calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+    }
+
     async fn post_terminal(&self, key: Option<&str>) -> anyhow::Result<(Value, Terminal)> {
         let mut request = Request::builder()
             .method("POST")
@@ -292,11 +389,11 @@ impl Fixture {
         if let Some(key) = key {
             request = request.header("Idempotency-Key", key);
         }
-        let response = self.app.clone().oneshot(request.body(Body::from(json!({
-            "program": format!("'{}'", self.program.to_str().unwrap().replace('\'', "'\\''")),
-            "env":{"NEIGE_TERMINAL_VERTICAL_OUTPUT":self.output,"NEIGE_TERMINAL_VERTICAL_COUNT":self.count},
-            "theme":calm_server::routes::theme::RequestTheme::default_dark(),
-        }).to_string()))?).await?;
+        let response = self
+            .app
+            .clone()
+            .oneshot(request.body(Body::from(self.request_body().to_string()))?)
+            .await?;
         let status = response.status();
         let body: Value =
             serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
@@ -572,3 +669,12 @@ async fn terminal_http_source_survives_keyless_operation_cleanup() -> anyhow::Re
 
 #[path = "terminal_registered_launch/ws.rs"]
 mod ws;
+
+#[path = "terminal_registered_launch/cold.rs"]
+mod cold;
+
+#[path = "terminal_registered_launch/source_fault.rs"]
+mod source_fault;
+
+#[path = "terminal_registered_launch/unknown.rs"]
+mod unknown;

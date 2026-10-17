@@ -224,6 +224,8 @@ pub(crate) async fn prepare_registered_source(
             ));
         }
         tx.commit().await?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::crash_point("workspace-source-intent-committed");
         return Ok(PreparedSource {
             scope: scope_of(&registration.registration),
             held,
@@ -251,6 +253,8 @@ pub(crate) async fn prepare_registered_source(
         ));
     }
     tx.commit().await?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::crash_point("workspace-source-intent-committed");
     Ok(PreparedSource {
         scope: scope_of(&registration.registration),
         held,

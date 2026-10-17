@@ -92,6 +92,19 @@ pub fn spawn_kernel_to(
     extra_env: &[(&str, OsString)],
     log: Option<&Path>,
 ) -> Child {
+    spawn_kernel_to_with_args(tmp, db_path, port, extra_env, log, &[])
+}
+
+/// The same shipped-kernel bootstrap with explicit typed CLI configuration.
+/// Registered tests pass the actual endpoint/key pair here, never a hidden env.
+pub fn spawn_kernel_to_with_args(
+    tmp: &Path,
+    db_path: &Path,
+    port: u16,
+    extra_env: &[(&str, OsString)],
+    log: Option<&Path>,
+    extra_args: &[OsString],
+) -> Child {
     let (stdout, stderr) = match log {
         Some(log) => (log_stdio(log), log_stdio(log)),
         None => (Stdio::inherit(), Stdio::inherit()),
@@ -100,7 +113,8 @@ pub fn spawn_kernel_to(
     let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
 
     let mut cmd = Command::new(CALM_SERVER_BIN);
-    cmd.env_clear()
+    cmd.args(extra_args)
+        .env_clear()
         .env("PATH", path)
         .env("HOME", tmp)
         .env("TMPDIR", tmp)
