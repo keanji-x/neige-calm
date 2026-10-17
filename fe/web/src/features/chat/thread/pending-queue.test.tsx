@@ -8,7 +8,7 @@ import type {
 } from '../../../../../core/domain/conversation.ts';
 import { PendingQueue, type PendingQueueProps } from './pending-queue.tsx';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const done: Promise<PlannerQueueWriteOutcome> = Promise.resolve({ kind: 'done' });
 
@@ -240,4 +240,22 @@ it('reuses outgoing bubbles and exposes only icons without a queue header', () =
     expect(action.querySelector('svg')).not.toBeNull();
     expect(action.textContent).toBe('');
   }
+});
+
+it.each([false, true])('follows authoritative queue order when a steered entry returns to the head (exit completed: %s)', async exited => {
+  if (exited) vi.spyOn(window, 'matchMedia').mockImplementation(query => ({
+    media: query, matches: query === '(prefers-reduced-motion: reduce)', onchange: null,
+    addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: () => true,
+  }));
+  const first = entry({ entry_id: 'a', text: 'A waiting' });
+  const middle = entry({ entry_id: 'b', text: 'B waiting' });
+  const last = entry({ entry_id: 'c', text: 'C waiting' });
+  const props = { entries: [first, middle, last], overflow: 0, busy: false, onDelete: () => done,
+    onEdit: () => undefined, canEdit: true, editingEntryId: null, savedEntry: null, onFocusComposer: () => undefined };
+  const view = render(<PendingQueue {...props} />);
+  view.rerender(<PendingQueue {...props} entries={[first, last]} />);
+  if (exited) await waitFor(() => expect(screen.queryByText('B waiting')).toBeNull(), { timeout: 4000 });
+  const returned = { ...middle, text: 'B returned to the head', rev: 1 };
+  view.rerender(<PendingQueue {...props} entries={[returned, first, last]} />);
+  expect(rows().map(row => row.dataset.ncPendingEntry)).toEqual(['b', 'a', 'c']);
 });

@@ -82,14 +82,19 @@ export function PendingQueue({ entries, sending = NO_SENDS, overflow, busy, onDe
   }
   const [snapshot, setSnapshot] = useState(() => ({ source: entries, saved, rows: entries }));
   if (snapshot.source !== entries || snapshot.saved !== saved) {
-    const incoming = new Map(entries.map(entry => [entry.entry_id, entry]));
+    const activeIds = new Set(entries.map(entry => entry.entry_id));
     const effective = (entry: PendingQueueEntry) => {
       const accepted = saved.get(entry.entry_id);
       return accepted !== undefined && accepted.rev >= entry.rev ? accepted : entry;
     };
-    const rows = snapshot.rows.map(row => effective(incoming.get(row.entry_id) ?? row));
-    const known = new Set(rows.map(row => row.entry_id));
-    rows.push(...entries.filter(entry => !known.has(entry.entry_id)).map(effective));
+    // Active rows follow server order. Only departing ghosts retain their old neighbor.
+    const rows = entries.map(effective);
+    snapshot.rows.forEach((row, index) => {
+      if (activeIds.has(row.entry_id)) return;
+      const next = snapshot.rows.slice(index + 1).find(candidate => activeIds.has(candidate.entry_id));
+      const position = next === undefined ? rows.length : rows.findIndex(candidate => candidate.entry_id === next.entry_id);
+      rows.splice(position, 0, effective(row));
+    });
     setSnapshot({ source: entries, saved, rows });
   }
   const root = useRef<HTMLElement>(null);
