@@ -68,6 +68,5 @@ History derivation and confirmed-memory effects depend on the registry's stable
 history/remember operations and relevant rows, rather than its whole context
 value. Typing still updates the one retained composer; it does not invalidate
 unchanged history. Outbox operations remain authoritative for dispatch, keyed
-retry, queue visibility, refusal/unknown restoration and attachments. The store
-exposes a pending local message id only as a presentation input. The app keeps
-local Sending feedback separate from run/activity evidence of execution.
+retry, queue visibility, refusal/unknown restoration and attachments. The app
+keeps local Sending feedback separate from run/activity evidence of execution.

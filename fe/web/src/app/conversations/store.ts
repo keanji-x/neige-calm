@@ -268,7 +268,6 @@ export function useConversationStore(
     stopping,
     stopFeedback,
     sending: view.sending,
-    sendingMessageId: outbox.sendingMessageId,
     sendBlocked: view.blocked,
     pendingQueue,
     pendingQueueOverflow,

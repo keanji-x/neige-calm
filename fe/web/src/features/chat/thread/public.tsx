@@ -41,7 +41,6 @@ import {
 import { QuietSyncFold } from './quiet-sync.tsx';
 import type { ReplyImageFiles } from './reply.tsx';
 import { MessageEntry } from './message-entry.tsx';
-import { useSendMotion } from './send-motion.ts';
 import styles from './thread.module.css';
 import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
@@ -64,8 +63,6 @@ export type ChatThreadProps = Readonly<{
   turns: readonly TranscriptEntry[];
   /** Current work confirmed by the run query while the activity overlay catches up. */
   pending?: boolean;
-  /** The outbox's local message currently being sent; independent of model execution. */
-  sendingMessageId?: string | null;
   /** Local dispatch is pending, independently of model execution and the displayed message. */
   sending?: boolean;
   /** The kernel's per-card verdicts for this conversation's track; a caller with no overlay passes `{}`. */
@@ -95,8 +92,7 @@ export type ChatThreadProps = Readonly<{
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pending = false, sendingMessageId = null, sending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
-  const sendingRef = useSendMotion();
+export const ChatThread = memo(function ChatThread({ conversation, turns, pending = false, sending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -314,7 +310,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
         attachments={turn.attachments} opens={opensExchange(turns, index)}
         gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(gapClock, turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}
-        working={showLive && last} motionRef={turn.id === sendingMessageId ? sendingRef : undefined} imageFiles={imageFiles} />
+        working={showLive && last} imageFiles={imageFiles} />
     );
   };
 

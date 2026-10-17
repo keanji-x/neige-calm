@@ -1,7 +1,6 @@
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
-import { DraftMessage } from '../../features/chat/thread/message-entry.tsx';
 import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
 import { useConversationStore } from '../conversations/store.ts';
@@ -789,7 +788,7 @@ function useConversationPane(
         {draftOpen && (draft?.text == null
           ? <p>Nothing said yet. What you write starts the conversation.</p>
           : <>
-            <DraftMessage key={draft.key} text={draft.text} sending={creating} />
+            <p data-nc-turn="you">{draft.text}</p>
             {creating && <p role="status">Sending…</p>}
           </>)}
         {open !== null && (
@@ -815,7 +814,6 @@ function useConversationPane(
                 conversation={open}
                 imageFiles={imageFiles}
                 turns={store.turnsOf(open.id)} editing={edit.marked}
-                sendingMessageId={store.sendingMessageId}
                 sending={store.sending}
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.working}

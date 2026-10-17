@@ -1,6 +1,5 @@
 import mobileStyles from './mobile-composer.module.css';
-import { memo, type Ref } from 'react';
-import { useSendMotion } from './send-motion.ts';
+import { memo } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import type { ConversationTurn } from '../../../../../core/domain/conversation.ts';
 import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
@@ -27,17 +26,14 @@ type MessageEntryProps = Readonly<{
   edited: boolean;
   replacement: boolean;
   working: boolean;
-  /** Only the explicitly declared outgoing row supplies a motion surface. */
-  motionRef?: Ref<HTMLDivElement>;
   imageFiles: ReplyImageFiles | null;
 }>;
 
 export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, text, attachments,
-  opens, gapLabel, queued, edited, replacement, working, motionRef, imageFiles, mobile, atMs, timestampFormatter,
+  opens, gapLabel, queued, edited, replacement, working, imageFiles, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   return (
     <div
-      ref={motionRef}
       className={[opens ? styles.exchange : '', mobile && author === 'you' ? mobileStyles.userTurn : ''].filter(Boolean).join(' ') || undefined}
       data-nc-entry={entryKey}
       {...(opens ? { 'data-nc-exchange': id } : {})}
@@ -89,9 +85,3 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
     </div>
   );
 });
-
-/** The first message has a draft identity until the server creates its conversation. */
-export function DraftMessage({ text, sending }: Readonly<{ text: string; sending: boolean }>) {
-  const ref = useSendMotion();
-  return <p ref={sending ? ref : undefined} data-nc-turn="you">{text}</p>;
-}

@@ -179,9 +179,6 @@ export function useConversationOutbox({
 
   return {
     view,
-    // Presentation identity comes from the held operation, never from an echo id format.
-    // A replacement keeps the original turn visible until the server answers it.
-    sendingMessageId: ops.find(op => op.phase === 'sending' && op.replaces === null)?.echo.id ?? null,
     /**
      * A press: a new op under a new key, settled when it is answered; `null` when the conversation cannot take it now
      * and nothing was sent, so its words stay where they were typed. `attachments` are ids already uploaded; naming one
