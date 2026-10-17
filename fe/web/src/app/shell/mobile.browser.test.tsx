@@ -570,9 +570,9 @@ describe('Track mobile presentation', () => {
     expect(getComputedStyle(menu).borderRadius).toBe('16px');
     expect(getComputedStyle(menu).paddingTop).toBe('4px');
     expect(getComputedStyle(menu).boxShadow).not.toBe('none');
-    expect(getComputedStyle(selected).borderRadius).toBe('12px');
+    expect(getComputedStyle(selected).borderRadius).toBe('8px');
     await page.getByRole('menuitem', { name: 'Product', exact: true }).hover();
-    expect(getComputedStyle(selected).borderRadius).toBe('12px');
+    expect(getComputedStyle(selected).borderRadius).toBe('8px');
     await userEvent.keyboard('{Escape}');
     await userEvent.keyboard('{Escape}');
     await router.navigate({ to: '/track/w1' });
