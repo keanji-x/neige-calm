@@ -8,7 +8,7 @@ import { createAppRouter, APP_BASEPATH } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { cleanup, render } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { queryKeys } from '../providers/queries.ts';
@@ -18,8 +18,8 @@ import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
-async function setup({ streaming = false, historySuffix = '' } = {}) {
-  await page.viewport(1440, 900);
+async function setup({ streaming = false, historySuffix = '', narrow = false, fileText = '# Chat file contents' } = {}) {
+  await page.viewport(narrow ? 390 : 1440, narrow ? 844 : 900);
   const requests: ApiRequest[] = [];
   const evidence = createEvidencePreviewTransport();
   const track = { id: 'link-preview', area_id: 'examples', title: 'Chat preview', sort: 1,
@@ -48,7 +48,7 @@ async function setup({ streaming = false, historySuffix = '' } = {}) {
       manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
     if (request.path.includes('/harness/items')) body = history(request.path.includes('/chat-b/') ? 'chat-b' : card.id);
     if (request.path.endsWith('/harness/live')) body = { turn_id: 'live-turn', items: [{ item_id: 'live-reply', text: live.text }] };
-    if (request.path.includes('/workspace/readfile')) body = { path: new URL(request.path, 'http://fixture').searchParams.get('path'), text: '# Chat file contents', size: 20, truncated: false };
+    if (request.path.includes('/workspace/readfile')) body = { path: new URL(request.path, 'http://fixture').searchParams.get('path'), text: fileText, size: fileText.length, truncated: false };
     return { status: 200, statusText: 'OK', body };
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -174,4 +174,32 @@ it('clears source selection synchronously across same-Track A to B to A', async 
   await expect.poll(() => document.getElementById('conversation-chat-card')?.querySelector('[data-nc-thread]') ?? null).not.toBeNull();
   expect(page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true }).query()).toBeNull();
   expect(stale).toEqual([]);
+});
+
+it.each(['native initial', 'desktop to narrow'])('keeps file body above the native chat sheet: %s', async mode => {
+  const { requests } = await setup({ narrow: mode === 'native initial',
+    fileText: '# Chat file contents\n\n[Read nested](./nested.md)\n\n' + Array.from({ length: 50 }, (_, i) => `Reading paragraph ${i}`).join('\n\n') });
+  if (mode === 'desktop to narrow') await page.viewport(390, 844);
+  await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(true);
+  const trigger = page.getByRole('button', { name: 'Chat file', exact: true });
+  await expect.element(trigger).toBeVisible();
+  await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+  trigger.element().focus();
+  await userEvent.keyboard('{ArrowDown}');
+  const content = page.getByRole('region', { name: 'Preview content: Chat file' });
+  await expect.element(content.getByRole('heading', { name: 'Chat file contents' })).toBeVisible();
+  const body = content.element() as HTMLElement;
+  await expect.poll(() => {
+    const rect = body.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.bottom - 4);
+    return body.contains(hit) ? true : { bottom: rect.bottom, hit: hit?.tagName, previewOnTop: false };
+  }).toBe(true);
+  expect(body.textContent).toContain('Reading paragraph 0');
+  await content.getByText('Reading paragraph 0', { exact: true }).wheel({ delta: { y: 120 } });
+  await expect.poll(() => body.scrollTop).toBeGreaterThan(0);
+  await content.wheel({ delta: { y: -240 } });
+  await expect.poll(() => body.scrollTop).toBe(0);
+  await content.getByRole('button', { name: 'Read nested', exact: true }).click();
+  await expect.poll(() => requests.some(request => request.path.includes('/workspace/readfile?path=nested.md'))).toBe(true);
+  await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(true);
 });

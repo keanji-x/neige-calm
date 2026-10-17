@@ -1,11 +1,12 @@
 import { cleanup, render } from '@testing-library/react';
-import { page, userEvent } from 'vitest/browser';
+import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
+import { BottomSheet } from '@astryxdesign/core/BottomSheet';
 import { HoverPreview } from './public.tsx';
 
-afterEach(cleanup);
+afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 function mount(onRead = () => {}) {
   return render(<div style={{ padding: 80 }}>
     <HoverPreview title="Long notes" trigger={(activate) => <button onClick={activate}>Long notes</button>}>
@@ -17,6 +18,56 @@ function mount(onRead = () => {}) {
 }
 
 describe('preview in a real browser', () => {
+  it.each([false, true])('uses the native Layer host inside BottomSheet (scrim=%s)', async hasScrim => {
+    await commands.emulateReducedMotion(hasScrim);
+    await page.viewport(390, 844);
+    const onClose = vi.fn();
+    const onRead = vi.fn();
+    render(<BottomSheet isOpen onOpenChange={onClose} hasScrim={hasScrim} label="Reading host" height="650px">
+      <p><HoverPreview title="Hosted notes" trigger={activate => <button onClick={activate}>Hosted notes</button>}>
+        <HoverPreview title="Nested notes" trigger={activate => <button onClick={activate}>Nested notes</button>}>
+          <button onClick={onRead}>Read nested body</button>
+        </HoverPreview>
+        {Array.from({ length: 50 }, (_, i) => <p key={i}>Hosted paragraph {i}</p>)}
+      </HoverPreview></p>
+    </BottomSheet>);
+    const trigger = page.getByRole('button', { name: 'Hosted notes', exact: true });
+    await expect.element(trigger).toBeVisible();
+    await expect.poll(() => trigger.element().closest('dialog')?.open).toBe(true);
+    await expect.poll(() => trigger.element().closest('dialog')?.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+    trigger.element().focus();
+    await userEvent.keyboard('{ArrowDown}');
+    const parent = page.getByRole('dialog', { name: 'Preview: Hosted notes' });
+    await expect.element(parent).toBeVisible();
+    const body = parent.getByRole('region', { name: 'Preview content: Hosted notes' }).element() as HTMLElement;
+    await expect.poll(() => document.activeElement).toBe(body);
+    expect(body.closest('[popover]')?.matches(':popover-open')).toBe(true);
+    expect(body.closest('dialog')?.open).toBe(true);
+    const rect = body.getBoundingClientRect();
+    expect(body.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.bottom - 4))).toBe(true);
+    if (hasScrim) expect(getComputedStyle(parent.element()).animationName).toBe('none');
+    const nested = parent.getByRole('button', { name: 'Nested notes', exact: true });
+    await nested.click();
+    await expect.element(page.getByRole('dialog', { name: 'Preview: Nested notes' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    expect(page.getByRole('dialog', { name: 'Preview: Nested notes' }).query()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await nested.click();
+    const read = page.getByRole('button', { name: 'Read nested body' });
+    await read.click();
+    expect(onRead).toHaveBeenCalledOnce();
+    await userEvent.keyboard('{Escape}');
+    expect(page.getByRole('dialog', { name: 'Preview: Nested notes' }).query()).toBeNull();
+    expect(parent.query()).not.toBeNull();
+    expect(document.activeElement).toBe(parent.getByRole('button', { name: 'Nested notes', exact: true }).element());
+    await parent.getByText('Hosted paragraph 0', { exact: true }).wheel({ delta: { y: 240 } });
+    await expect.poll(() => body.scrollTop).toBeGreaterThan(0);
+    body.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(parent.query()).toBeNull();
+    expect(document.activeElement).toBe(trigger.element());
+    expect(onClose).not.toHaveBeenCalled();
+  });
   it('keeps the link-to-card edge open during slow transfer, supports interaction, then dismisses', async () => {
     await page.viewport(1200, 900);
     const onRead = vi.fn(); mount(onRead);
