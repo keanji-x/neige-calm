@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
-import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
-import { buildTranscript, harnessItemToTurns } from '../../../../core/domain/conversation.ts';
+import type { HarnessItem as TranscriptRow } from '../../../../core/api/generated/wire.ts';
+import { buildTranscript, harnessItemToTurns as toTranscriptTurns } from '../../../../core/domain/conversation.ts';
 import { groupTranscriptActivities } from '../../../../core/domain/conversation-groups.ts';
 import { currentResponseMessage } from '../../../../core/domain/conversation-actions.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -74,19 +74,19 @@ it('keeps unchanged stored history derivation and grouping out of composer updat
     await openExisting();
     // The first nonempty character legitimately withdraws Edit's empty-composer affordance.
     await type('A');
-    vi.mocked(buildTranscript).mockClear(); vi.mocked(harnessItemToTurns).mockClear(); vi.mocked(groupTranscriptActivities).mockClear();
+    vi.mocked(buildTranscript).mockClear(); vi.mocked(toTranscriptTurns).mockClear(); vi.mocked(groupTranscriptActivities).mockClear();
     vi.mocked(currentResponseMessage).mockClear();
     const stored = document.querySelector('[data-nc-turn="agent"]');
     await type('A draft'); await type('A draft with more words');
     expect(field().textContent).toBe('A draft with more words');
     expect(document.querySelector('[data-nc-turn="agent"]')).toBe(stored);
     expect(buildTranscript).not.toHaveBeenCalled();
-    expect(harnessItemToTurns).not.toHaveBeenCalled();
+    expect(toTranscriptTurns).not.toHaveBeenCalled();
     expect(groupTranscriptActivities).not.toHaveBeenCalled();
     expect(currentResponseMessage).not.toHaveBeenCalled();
     // Real new server content still invalidates the projection without touching the draft.
     await act(async () => {
-      view.client.setQueryData<{ pages: HarnessItem[][] }>(['harness-items', 'second-planner'], previous => previous === undefined ? previous : ({
+      view.client.setQueryData<{ pages: TranscriptRow[][] }>(['harness-items', 'second-planner'], previous => previous === undefined ? previous : ({
         ...previous, pages: previous.pages.map(page => page.map(row => row.id === 120
           ? { ...row, params: JSON.stringify({ item: { text: 'The server updated the last reply.' } }) } : row)),
       }));
@@ -104,13 +104,13 @@ it.each(['idle', 'turn_running'])('shows the local sending state before a held %
   const view = mount({ phase, input: response.promise });
   try {
     await openExisting(); await type('Send without waiting for the server');
-    vi.mocked(buildTranscript).mockClear(); vi.mocked(harnessItemToTurns).mockClear();
+    vi.mocked(buildTranscript).mockClear(); vi.mocked(toTranscriptTurns).mockClear();
     fireEvent.keyDown(field(), { key: 'Enter' });
     await waitFor(() => expect(view.requests.filter(request => request.path.endsWith('/planner/input'))).toHaveLength(1));
     expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toBe('Send without waiting for the server');
     expect(screen.getByText('Sending…')).toBeDefined();
     expect(buildTranscript).not.toHaveBeenCalled();
-    expect(harnessItemToTurns).not.toHaveBeenCalled();
+    expect(toTranscriptTurns).not.toHaveBeenCalled();
     // Local dispatch is not a confirmed queued entry; Stop remains available for an existing run.
     expect(screen.queryByText('Queued · sends when this turn ends')).toBeNull();
     if (phase === 'turn_running') expect(screen.getByRole('button', { name: 'Stop' })).toBeDefined();

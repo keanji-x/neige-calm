@@ -50,6 +50,10 @@
 # #2665 bounded exception: harness_item/fe 97 -> 99 comes solely from the cached-switch
 # regression's existing wire row import (aliased TranscriptRow) and existing query-key
 # producer. No new domain identifier, schema, or scan rule is introduced.
+# #2718 bounded exception: harness_item/fe 99 -> 103 comes solely from the existing
+# wire row type import and the canonical derivation export's import, mock key and
+# actual access in a transparent production-function spy. Local names use TranscriptRow
+# and toTranscriptTurns; no new domain identifier, schema, or scan rule is introduced.
 # #2129 upgrade compatibility: one existing event_spec protocol field reference in the
 # frozen pre-2129 descriptor, kept as replay test data; no new domain term.
 # #2617 bounded exception: spec/crates 500 -> 501 comes solely from the CI evidence lowerer's
