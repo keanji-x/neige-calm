@@ -102,6 +102,8 @@ mod today_summary;
 mod track_activity_fixture;
 #[path = "cases/track_activity_projection.rs"]
 mod track_activity_projection;
+#[path = "cases/track_access.rs"]
+mod track_access;
 #[path = "cases/track_conversations.rs"]
 mod track_conversations;
 #[path = "cases/track_delete_thread_cache.rs"]
