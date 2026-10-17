@@ -12,7 +12,8 @@ import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
-import { RecipeBodyEditor, type RecipeEditorTheme } from './body-editor.tsx';
+import type { RecipeEditorTheme } from './body-editor.tsx';
+import { RecipeBodyLoading } from './body-loading.tsx';
 import { ProseBlock } from '../document/public.tsx';
 import styles from './recipe.module.css';
 
@@ -264,7 +265,7 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
               <pre className={styles.example}>{'# Work instructions\nRead the relevant code and cite file paths. Separate facts from open questions.\n\n# Report format\n## Findings\n## Evidence\n## Next steps'}</pre>
             </details>
             <div className={styles.code} data-nc-recipe-body="">
-              <RecipeBodyEditor
+              <RecipeBodyLoading
                 id={`${fieldId}-body`}
                 value={body}
                 theme={theme}

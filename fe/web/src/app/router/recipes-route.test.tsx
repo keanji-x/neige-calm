@@ -8,12 +8,12 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../features/report/recipe/body-editor.tsx', () => ({
-  RecipeBodyEditor: ({ value, label, readOnly, onChange }: {
+vi.mock('../../features/report/recipe/load-body-editor.ts', () => ({
+  loadRecipeBodyEditor: () => Promise.resolve({ RecipeBodyEditor: ({ value, label, readOnly, onChange }: {
     value: string; label: string; readOnly?: boolean; onChange: (next: string) => void;
   }) => (
     <textarea aria-label={label} value={value} readOnly={readOnly} onChange={(event) => onChange(event.target.value)} />
-  ),
+  ) }),
 }));
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -151,7 +151,7 @@ function atNewTrack(options: Options = {}) {
 async function openForEditing(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'Ship checklist' }));
   await user.click(await screen.findByRole('button', { name: 'Edit' }));
-  return screen.getByRole('textbox', { name: BODY_FIELD });
+  return screen.findByRole('textbox', { name: BODY_FIELD });
 }
 
 function lastPut(sent: readonly ApiRequest[]): ApiRequest | undefined {
