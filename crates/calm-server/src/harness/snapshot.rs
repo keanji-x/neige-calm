@@ -20,7 +20,7 @@ pub use calm_types::harness::{HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION};
 mod canonical;
 mod runtime_header;
 pub(crate) use canonical::CanonicalHarnessSnapshot;
-use runtime_header::HarnessRuntimeHeader;
+use runtime_header::{HarnessRuntimeHeader, HarnessRuntimeHeaderExt};
 
 /// The segments of the turn an older binary had in flight when it stopped. Read on load and
 /// never written (the type cannot be serialized): that turn has no projection row, so without
@@ -161,14 +161,34 @@ pub struct HarnessSnapshot {
     pub last_turn_base: Option<TurnBase>,
 }
 
-/// See [`HarnessSnapshot::last_turn_base`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TurnBase {
-    pub turn_id: String,
-    pub seen_head: Option<String>,
-}
+pub use calm_types::harness::snapshot::TurnBase;
 
 impl HarnessSnapshot {
+    /// Pure extraction of the existing V1 runtime metadata, without its body queue.
+    pub(crate) fn runtime_header(&self) -> HarnessRuntimeHeader {
+        HarnessRuntimeHeader {
+            phase: self.phase,
+            turn_budget: self.turn_budget.clone(),
+            push_watermark: self.push_watermark,
+            last_thread_id: self.last_thread_id.clone(),
+            last_turn_id: self.last_turn_id.clone(),
+            last_report_body_sha256: self.last_report_body_sha256.clone(),
+            last_seen_head: self.last_seen_head.clone(),
+            issued_turn_head: self.issued_turn_head.clone(),
+            wedged_reason: self.wedged_reason.clone(),
+            interruption_intent: self.interruption_intent.clone(),
+            token_usage: self.token_usage.clone(),
+            compact_outcome: self.compact_outcome.clone(),
+            context_usage_invalidated: self.context_usage_invalidated,
+            context_usage_invalidated_turn: self.context_usage_invalidated_turn.clone(),
+            pending_rewind: self
+                .pending_rewind
+                .as_ref()
+                .map(|value| value.persisted().clone()),
+            last_turn_base: self.last_turn_base.clone(),
+        }
+    }
+
     /// Loading cannot confirm a maintenance operation whose provider completion was not observed.
     pub fn restore_context_feedback(&mut self) {
         if let Some(outcome) = self.compact_outcome.as_mut()
@@ -258,7 +278,7 @@ impl HarnessSnapshot {
             compact_outcome,
             context_usage_invalidated,
             context_usage_invalidated_turn,
-            pending_rewind,
+            pending_rewind: pending_rewind.map(BackendRewind::from_persisted),
             last_turn_base,
         };
         snapshot.set_pending_entries(entries);

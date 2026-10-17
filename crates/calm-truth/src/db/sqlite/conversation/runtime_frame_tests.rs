@@ -82,7 +82,10 @@ async fn runtime_frame_cas_does_not_restore_a_same_phase_once_only_budget_marker
         .await
         .unwrap();
     assert_eq!(current.snapshot()["turn_budget"]["warning_attempted"], true);
-    assert!(current.snapshot().get("push_watermark").is_none());
+    assert_eq!(
+        current.snapshot()["push_watermark"],
+        stale.header()["push_watermark"]
+    );
     tx.commit().await.unwrap();
 }
 
@@ -167,5 +170,50 @@ async fn runtime_frame_rejects_a_copied_input_checkpoint_as_runtime_authority() 
             .await
             .is_err()
     );
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn runtime_frame_writer_rejects_missing_required_turn_budget() {
+    let (repo, _, card) = fixture().await;
+    let worker = runtime(&repo, &card).await;
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
+        .await
+        .unwrap();
+    let before = carrier.snapshot().clone();
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    let mut missing = fence.header().clone();
+    missing.as_object_mut().unwrap().remove("turn_budget");
+    let result = persist_runtime_frame_tx(&mut tx, &card, &worker, &fence, missing).await;
+    assert!(
+        result.is_err(),
+        "V2 writes must require their frozen budget"
+    );
+    let retained = current_input_carrier_tx(&mut tx, &card, &worker)
+        .await
+        .unwrap();
+    assert_eq!(retained.snapshot(), &before);
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn runtime_frame_writer_rejects_unknown_runtime_field() {
+    let (repo, _, card) = fixture().await;
+    let worker = runtime(&repo, &card).await;
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
+        .await
+        .unwrap();
+    let before = carrier.snapshot().clone();
+    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+    let mut unknown = fence.header().clone();
+    unknown["unrecognized_runtime_authority"] = json!(true);
+    let result = persist_runtime_frame_tx(&mut tx, &card, &worker, &fence, unknown).await;
+    assert!(result.is_err(), "V2 writes must reject undeclared fields");
+    let retained = current_input_carrier_tx(&mut tx, &card, &worker)
+        .await
+        .unwrap();
+    assert_eq!(retained.snapshot(), &before);
     tx.commit().await.unwrap();
 }

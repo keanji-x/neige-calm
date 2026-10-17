@@ -1,6 +1,7 @@
 use super::*;
 use crate::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use crate::claude_planner::session::ClaudePlannerSessionParams;
+use uuid::Uuid;
 
 async fn fixture(
     scenario: &str,

@@ -4,6 +4,7 @@ use crate::harness::profile::{HarnessProfile, HarnessProfileExt};
 use crate::harness::state::HarnessState;
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 pub use crate::planner_turn_budget::FrozenBudget;
+use crate::planner_turn_budget::PlannerTurnBudgetExt;
 use crate::planner_turn_budget::{LoadError, PlannerTurnBudget};
 use std::sync::Arc;
 use std::time::Duration;

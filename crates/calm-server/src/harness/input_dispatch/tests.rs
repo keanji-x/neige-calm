@@ -100,11 +100,13 @@ impl Fixture {
                 AgentProvider::Codex,
                 WorkerSessionState::Idle,
                 Some("thread".into()),
-                serde_json::json!({
-                    "schema_version":2,"mode":"harness","phase":"idle",
-                    "last_thread_id":"thread","last_turn_id":null,
-                    "canonical_inputs":ConversationInputCheckpoint::empty(),
-                }),
+                serde_json::to_value({
+                    let mut frame =
+                        calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+                    frame.header.last_thread_id = Some("thread".into());
+                    frame
+                })
+                .unwrap(),
                 0,
             ),
         )

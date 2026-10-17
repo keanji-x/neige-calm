@@ -1,4 +1,7 @@
-//! Harness vocabulary shared across crates: the phase tag and persisted header constants.
+pub mod budget;
+pub mod snapshot;
+
+// Harness vocabulary shared across crates: phase tags and persisted header constants.
 
 /// Persisted harness header and failure vocabulary used by the codec and transactional recovery guards.
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;

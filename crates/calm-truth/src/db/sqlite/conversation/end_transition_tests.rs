@@ -212,7 +212,17 @@ async fn original_end_keeps_independent_runtime_transitions_for_their_own_owners
             "pending_rewind",
             json!({"provider":"codex_v2","thread_id":"thread","before_turn_id":"prior","reverted":false}),
         ),
-        ("interruption_intent", json!({"turn_id":"native-original"})),
+        (
+            "interruption_intent",
+            serde_json::to_value(
+                calm_types::harness::HarnessInterruptionIntent::from_request(
+                    "native-original",
+                    "max_turn_duration",
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        ),
         (
             "wedged_reason",
             json!("other owning transition remains unresolved"),

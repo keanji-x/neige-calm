@@ -29,6 +29,8 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 # Pure forge-action semantic identity (already locked in the workspace).
 sha2 = "0.10"
 
+uuid = { version = "1", features = ["serde"] }
+
 # Errors
 thiserror = "1"
 

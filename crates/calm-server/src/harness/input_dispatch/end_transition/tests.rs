@@ -153,7 +153,15 @@ async fn real_end_whole_header_cas_cannot_rollback_same_phase_budget_warning() {
         .unwrap();
     let expected = RuntimeExecutionFence::from_carrier(&carrier);
     let mut header = expected.header().clone();
-    header["turn_budget"] = json!({"warning_attempted":false,"start_attempt":"budget-owner"});
+    header["turn_budget"] =
+        serde_json::to_value(calm_types::harness::budget::FrozenBudget::Planner {
+            budget: calm_types::harness::budget::PlannerTurnBudget::try_from(10).unwrap(),
+            start_attempt: calm_types::harness::snapshot::QueueEntryId::from_wire(
+                "budget-owner".into(),
+            ),
+            warning_attempted: false,
+        })
+        .unwrap();
     persist_runtime_frame_tx(&mut tx, &fx.card, &fx.runtime, &expected, header)
         .await
         .unwrap();

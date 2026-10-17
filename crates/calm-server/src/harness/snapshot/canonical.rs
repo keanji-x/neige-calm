@@ -1,72 +1,11 @@
-//! The sole V2 frame representation: runtime metadata and canonical references.
-//! It cannot contain a second pending/body array or an issued prompt envelope.
-use super::runtime_header::HarnessRuntimeHeader;
-use super::*;
-use calm_types::conversation::ConversationInputCheckpoint;
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "CanonicalFrameWire")]
-pub(crate) struct CanonicalHarnessSnapshot {
-    schema_version: u32,
-    mode: String,
-    #[serde(flatten)]
-    pub header: HarnessRuntimeHeader,
-    pub canonical_inputs: ConversationInputCheckpoint,
-}
-
-#[derive(Deserialize)]
-struct CanonicalFrameWire {
-    schema_version: u32,
-    mode: String,
-    canonical_inputs: ConversationInputCheckpoint,
-    // The typed header rejects every unrecognized field. This avoids a second,
-    // manually maintained inventory of runtime keys or retired body fields.
-    #[serde(flatten)]
-    header: serde_json::Map<String, Value>,
-}
-
-impl TryFrom<CanonicalFrameWire> for CanonicalHarnessSnapshot {
-    type Error = String;
-
-    fn try_from(wire: CanonicalFrameWire) -> Result<Self, Self::Error> {
-        if wire.schema_version != 2 || wire.mode != HARNESS_MODE {
-            return Err("canonical frame requires its declared V2 harness format".into());
-        }
-        wire.canonical_inputs.validate()?;
-        let header = serde_json::from_value(Value::Object(wire.header))
-            .map_err(|error| error.to_string())?;
-        Ok(Self {
-            schema_version: wire.schema_version,
-            mode: wire.mode,
-            header,
-            canonical_inputs: wire.canonical_inputs,
-        })
-    }
-}
-
-impl CanonicalHarnessSnapshot {
-    /// Accepted input has no native execution yet. No configuration, filesystem,
-    /// environment or provider readiness is consulted by this pure constructor.
-    pub(crate) fn dormant(push_watermark: i64) -> Self {
-        Self {
-            schema_version: 2,
-            mode: HARNESS_MODE.into(),
-            header: HarnessRuntimeHeader::from_state(
-                &HarnessState::Idle,
-                FrozenBudget::Legacy,
-                push_watermark,
-                None,
-                None,
-                None,
-            ),
-            canonical_inputs: ConversationInputCheckpoint::empty(),
-        }
-    }
-}
+//! Server compatibility reexport; the sole codec is shared with Truth.
+pub(crate) use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::snapshot::HarnessSnapshot;
+    use calm_types::conversation::ConversationInputCheckpoint;
     use serde_json::json;
 
     #[test]
@@ -127,5 +66,50 @@ mod tests {
             serde_json::to_string(&HarnessSnapshot::initial(7, vec![])).unwrap(),
             expected
         );
+    }
+    #[test]
+    fn v1_header_adapter_preserves_native_metadata_and_wire() {
+        use calm_types::harness::budget::{FrozenBudget, PlannerTurnBudget};
+        use calm_types::harness::snapshot::{
+            CompactOutcome, CompactStatus, QueueEntryId, TokenUsage, TurnBase,
+        };
+        let mut original = HarnessSnapshot::initial(7, vec![]);
+        original.turn_budget = FrozenBudget::Planner {
+            budget: PlannerTurnBudget::try_from(15).unwrap(),
+            start_attempt: QueueEntryId::from_wire("original-budget-attempt".into()),
+            warning_attempted: true,
+        };
+        original.token_usage = Some(TokenUsage {
+            used_tokens: 123,
+            total_tokens: 456,
+            context_window: Some(789),
+            at_ms: 10,
+        });
+        original.compact_outcome = Some(CompactOutcome {
+            operation_id: "compact".into(),
+            thread_id: "thread".into(),
+            turn_id: None,
+            status: CompactStatus::Unconfirmed,
+        });
+        original.pending_rewind = Some(serde_json::from_value(json!({
+            "provider":"codex_v2", "thread_id":"thread", "before_turn_id":"turn", "reverted":true
+        })).unwrap());
+        original.last_turn_base = Some(TurnBase {
+            turn_id: "turn".into(),
+            seen_head: Some("head".into()),
+        });
+        original.interruption_intent = calm_types::harness::HarnessInterruptionIntent::from_request(
+            "turn",
+            "max_turn_duration",
+        );
+        let before = serde_json::to_string(&original).unwrap();
+        let header = original.runtime_header();
+        let mut canonical = CanonicalHarnessSnapshot::dormant(0);
+        canonical.header = header.clone();
+        let restored: CanonicalHarnessSnapshot =
+            serde_json::from_value(serde_json::to_value(canonical).unwrap()).unwrap();
+        assert_eq!(restored.header, header);
+        let rebuilt = HarnessSnapshot::from_runtime_header(restored.header, vec![]);
+        assert_eq!(serde_json::to_string(&rebuilt).unwrap(), before);
     }
 }

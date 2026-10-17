@@ -1,4 +1,6 @@
 //! Shared fixture creates real typed owner rows; adapters remain the behavior under test.
+use uuid::Uuid;
+
 use super::*;
 use crate::db::prelude::*;
 use crate::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};

@@ -3,7 +3,8 @@
 //! transaction, then publishes only the committed snapshot to runtime caches.
 use crate::error::{CalmError, Result};
 use calm_types::conversation::{CONVERSATION_INPUT_CHECKPOINT_KEY, ConversationInputCheckpoint};
-use calm_types::harness::{HARNESS_MODE, HarnessPhaseTag};
+use calm_types::harness::HarnessPhaseTag;
+use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 use serde_json::Value;
 use sqlx::{Sqlite, Transaction};
 
@@ -63,13 +64,8 @@ pub async fn current_input_carrier_tx(
         CalmError::Conflict("conversation input carrier changed or has no checkpoint")
     })?;
     let snapshot: Value = serde_json::from_str(&original_snapshot)?;
-    validate_v2_frame(&snapshot)?;
-    let checkpoint = serde_json::from_value(
-        snapshot
-            .get(CONVERSATION_INPUT_CHECKPOINT_KEY)
-            .ok_or_else(|| CalmError::Conflict("canonical input checkpoint is missing"))?
-            .clone(),
-    )?;
+    let frame: CanonicalHarnessSnapshot = serde_json::from_value(snapshot.clone())?;
+    let checkpoint = frame.canonical_inputs;
     let carrier = CurrentInputCarrier {
         card_id: card_id.into(),
         worker_session_id: worker_session_id.into(),
@@ -92,7 +88,7 @@ pub(super) async fn save_input_carrier_tx(
     carrier.checkpoint.validate().map_err(CalmError::Conflict)?;
     carrier.snapshot[CONVERSATION_INPUT_CHECKPOINT_KEY] =
         serde_json::to_value(&carrier.checkpoint)?;
-    validate_v2_frame(&carrier.snapshot)?;
+    let _: CanonicalHarnessSnapshot = serde_json::from_value(carrier.snapshot.clone())?;
     let current: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id
           WHERE c.id=?1 AND ws.id=?2 AND ws.card_id=c.id AND ws.track_id=c.track_id
@@ -112,30 +108,5 @@ pub(super) async fn save_input_carrier_tx(
         return Err(CalmError::Conflict("canonical input carrier retired"));
     }
     carrier.original_snapshot = serde_json::to_string(&carrier.snapshot)?;
-    Ok(())
-}
-
-fn validate_v2_frame(snapshot: &Value) -> Result<()> {
-    if snapshot.get("schema_version").and_then(Value::as_u64) != Some(2)
-        || snapshot.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE)
-    {
-        return Err(CalmError::Conflict(
-            "conversation requires reconciled V2 input storage",
-        ));
-    }
-    for retired in [
-        "pending_queue",
-        "pending_envelope_ids",
-        "pending_entry_meta",
-        "pending_message_ids",
-        "issued_input_segments",
-        "projection_client_id",
-    ] {
-        if snapshot.get(retired).is_some() {
-            return Err(CalmError::Conflict(
-                "V2 input checkpoint contains a retired body or batch authority",
-            ));
-        }
-    }
     Ok(())
 }

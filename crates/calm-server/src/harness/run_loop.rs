@@ -1,3 +1,4 @@
+use crate::planner_turn_budget::PlannerTurnBudgetExt;
 use std::collections::{HashSet, VecDeque};
 #[cfg(feature = "fixtures")]
 use std::sync::atomic::AtomicU64;
@@ -35,7 +36,7 @@ use crate::harness::queue::{
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments, TurnBase};
 use crate::harness::state::{HarnessState, IssuingKind, RunningTurn, run_status_for};
-use crate::harness::token_usage::TokenUsage;
+use crate::harness::token_usage::{TokenUsage, TokenUsageExt};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::planner_attachments::bind::BoundAttachment;
@@ -3454,7 +3455,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let key = slot
             .clone()
             .or(from_queue)
-            .unwrap_or_else(QueueEntryId::mint);
+            .unwrap_or_else(crate::harness::queue::mint_entry_id);
         *slot = Some(key.clone());
         key
     };

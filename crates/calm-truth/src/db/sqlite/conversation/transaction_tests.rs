@@ -14,11 +14,23 @@ use serde_json::json;
 
 pub(super) async fn runtime(repo: &SqlxRepo, card: &str) -> String {
     let id = crate::model::new_id();
+    let mut frame = calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+    frame.header.last_thread_id = Some("thread".into());
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    session_start_runtime_tx(&mut tx,crate::session_projection_repo::WorkerSessionInit::shared_planner(
-        id.clone(),card.into(),AgentProvider::Codex,WorkerSessionState::Idle,Some("thread".into()),
-        json!({"schema_version":2,"mode":"harness","phase":"idle","last_thread_id":"thread","last_turn_id":null,"canonical_inputs":ConversationInputCheckpoint::empty()}),0,
-    )).await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        crate::session_projection_repo::WorkerSessionInit::shared_planner(
+            id.clone(),
+            card.into(),
+            AgentProvider::Codex,
+            WorkerSessionState::Idle,
+            Some("thread".into()),
+            serde_json::to_value(frame).unwrap(),
+            0,
+        ),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     id
 }

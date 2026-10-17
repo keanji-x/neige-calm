@@ -12,7 +12,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::sync::broadcast::{self, error::RecvError};
-use uuid::Uuid;
 
 use crate::claude_planner::session::ClaudePlannerSession;
 use crate::claude_planner::spawn::ResumeTruncation;
@@ -90,27 +89,17 @@ pub enum CompactStartFailure {
 #[serde(transparent)]
 pub struct BackendRewind(RewindArm);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "provider", rename_all = "snake_case")]
-enum RewindArm {
-    /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`, unless `reverted`
-    /// records that it already went through (#2512). Additive and defaulted, written only when
-    /// set, so a rolled-back binary still reads the snapshot: it ignores the key and reverts again.
-    Codex {
-        before_turn_id: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        reverted: bool,
-    },
-    /// C3 binds every positive rewind receipt to its native thread. The V1 arm above
-    /// remains byte-compatible, but cannot authorize a V2 dispatch.
-    CodexV2 {
-        thread_id: String,
-        before_turn_id: String,
-        reverted: bool,
-    },
-    /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
-    Claude { resume_at: Uuid, drops_turn: Uuid },
+impl BackendRewind {
+    pub(crate) fn from_persisted(value: RewindArm) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn persisted(&self) -> &RewindArm {
+        &self.0
+    }
 }
+
+use calm_types::harness::snapshot::PersistedRewind as RewindArm;
 
 /// What a provider is told about the turn a rewind removes.
 pub struct RewindTarget<'a> {
@@ -733,6 +722,7 @@ pub(crate) async fn interrupt_codex_thread(
 mod tests {
     use super::*;
     use serde_json::json;
+    use uuid::Uuid;
 
     /// `RewindArm` as the binary before #2512 reads it, kept as that release's shape.
     #[derive(Debug, PartialEq, Deserialize)]
