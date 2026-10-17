@@ -4,7 +4,9 @@ import {
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
 import { withoutEditedTurn } from './conversation-composer.js';
-import { initialInputEcho, initialInputRetirement, initialInputDisplaced, initialInputSourcesFresh, type AcceptedInitialInput, type ObservedInitialInput } from './conversation-initial-input.js';
+import type { ConversationInitialInputReceipt, ConversationInitialInputObservation } from '../api/generated/wire.js';
+import type { SubmittedConversationInput } from './conversation-initial-input.js';
+import { sha256Hex } from './sha256.js';
 
 /** The latest turn an Edit's send replaces (#2043): the turn id the server removes, and its outcome row here. */
 export type ReplacedTurn = Readonly<{ turnId: string; outcomeId: string }>;
@@ -37,6 +39,17 @@ export type SendOp = Readonly<{
   /** The turn this send replaces (an Edit), or `null` for a message added to the conversation. */
   replaces: ReplacedTurn | null;
 }> & SendOpPhase;
+
+/** A creation owns only its immutable original acceptance. It has no ordinary-input retry/edit/dismiss. */
+export type AcceptedInitialInput = Readonly<{
+  phase: 'initial-accepted'; key: string; trackId: string; submitted: SubmittedConversationInput;
+  receipt: ConversationInitialInputReceipt;
+}>;
+export type ObservedInitialInput = Readonly<{ observation: ConversationInitialInputObservation; afterRead: number }>;
+
+export function initialInputEcho(op: AcceptedInitialInput): ConversationTurn {
+  return { id: `initial-${op.key}`, author: 'you', text: op.submitted.text, atMs: op.submitted.atMs };
+}
 
 export type ConversationOutboxOp = SendOp | AcceptedInitialInput;
 
@@ -135,6 +148,48 @@ export function markedReplace(ops: readonly ConversationOutboxOp[]): ReplacedTur
 
 /** The read numbers of the data now held: which transcript and run reads it came from. */
 export type LandedReads = Readonly<{ transcript: number; run: number }>;
+
+/** Coherent queued state outranks stale projections left after rebuffer. Empty GET pairs cannot retire words. */
+export function initialInputDisplaced(op: AcceptedInitialInput, observed: ObservedInitialInput | undefined): boolean {
+  const observation = observed?.observation;
+  return observation?.kind === 'absent' || (observation?.kind === 'queued' && observation.textSha256 !== op.receipt.textSha256);
+}
+
+/** A coherent observation fences old caches; later actual source reads may report a changed or restored input. */
+export function initialInputSourcesFresh(observed: ObservedInitialInput, landed: LandedReads): boolean {
+  return landed.transcript > observed.afterRead && landed.run > observed.afterRead;
+}
+
+/** Hide only stale cached queue ownership; a later actual run read is allowed to report a restored entry. */
+export function initialInputQueueView(entries: readonly PendingQueueEntry[], op: AcceptedInitialInput | undefined,
+  observed: ObservedInitialInput | undefined, runRead: number): Readonly<{ entries: readonly PendingQueueEntry[]; hiddenIds: ReadonlySet<string> }> {
+  const hiddenIds = new Set<string>();
+  const observation = observed?.observation;
+  if (op === undefined || observed === undefined || observation === undefined || observation.kind === 'unavailable' || runRead > observed.afterRead) {
+    return { entries, hiddenIds };
+  }
+  const shown = entries.filter((entry) => {
+    if (entry.entry_id !== op.receipt.entryId) return true;
+    const hide = observation.kind !== 'queued' || entry.rev < observation.rev || sha256Hex(entry.text) !== observation.textSha256;
+    if (hide) hiddenIds.add(entry.entry_id);
+    return !hide;
+  });
+  return { entries: hiddenIds.size === 0 ? entries : shown, hiddenIds };
+}
+
+export function initialInputRetirement(op: AcceptedInitialInput, observed: ObservedInitialInput | undefined,
+  carrier: ConversationTurn | undefined, landed: LandedReads, hiddenQueue: boolean): { row: string | null } | null {
+  if (observed === undefined) return null;
+  const { observation } = observed;
+  const freshSources = initialInputSourcesFresh(observed, landed);
+  if (initialInputDisplaced(op, observed)) return freshSources ? { row: null } : null;
+  if (observation.kind === 'projected') {
+    // The caller resolves this carrier through the inspector's exact source pair.
+    if (!hiddenQueue && carrier !== undefined) return { row: carrier.id };
+    if (freshSources) return { row: null };
+  }
+  return null;
+}
 
 /** An op server state now carries, and the row that retired it, which then stands for no other op; `null` for none. */
 export type RetiredSend = Readonly<{ key: string; row: string | null }>;

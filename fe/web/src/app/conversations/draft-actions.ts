@@ -2,8 +2,8 @@ import type { ManagedProviderAvailability } from '../../../../core/domain/agent-
 import { managedProviderProblem } from '../../../../core/domain/agent-providers.ts';
 import { onlineManager } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
-import { CONVERSATION_CREATE_TEXT, conversationCreateFailure, conversationCreateUnknownText, CONVERSATION_TEXT_MAX, FOLLOW_INSTALLATION_DEFAULT, type Conversation } from '../../../../core/domain/conversation.ts';
-import type { CreatedConversation, SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
+import { CONVERSATION_CREATE_TEXT, conversationCreateFailure, conversationCreateUnknownText, CONVERSATION_TEXT_MAX, FOLLOW_INSTALLATION_DEFAULT, type Conversation, type CreatedConversation } from '../../../../core/domain/conversation.ts';
+import type { SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';

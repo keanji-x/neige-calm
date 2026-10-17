@@ -9,9 +9,8 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp,
+  outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp, type ObservedInitialInput,
 } from '../../../../core/domain/conversation-outbox.ts';
-import type { ObservedInitialInput } from '../../../../core/domain/conversation-initial-input.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import { queryKeys } from '../providers/queries.ts';

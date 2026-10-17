@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { agentProviderSchema } from '../api/schemas.js';
 
 import type {
-  AgentProvider, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
+  AgentProvider, ConversationInitialInputReceiptResult, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
   HarnessInterruptionReason, HarnessTimeoutEvidence,
   PlannerAttachment, PlannerPermissionMode, TrackConversationSummary, UploadAttachmentResponse,
 } from '../api/generated/wire.js';
@@ -15,7 +15,7 @@ import {
 import { classifyFailure, failureReason, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
 import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { sha256Hex } from './sha256.js';
-import { initialInputReceiptResultSchema, type CreatedConversation } from './conversation-initial-input.js';
+import { initialInputReceiptResultSchema } from './conversation-initial-input.js';
 
 /** A frozen discussion source; does not name a provider session. */
 export type SideConversation = Readonly<{ source_card_id: string; context: string }>;
@@ -56,6 +56,8 @@ export type Conversation = Readonly<{
   /** Turn count, or absent when the surface that produced the row cannot count. */
   turns?: number;
 }>;
+
+export type CreatedConversation = Readonly<{ conversation: Conversation; initialInput: ConversationInitialInputReceiptResult }>;
 
 /** What a session is called when it has no name of its own. */
 export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>> = Object.freeze({

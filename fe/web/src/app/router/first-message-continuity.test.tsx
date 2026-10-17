@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-continuity-fixture.tsx';
-import type { ObservedInitialInput } from '../../../../core/domain/conversation-initial-input.ts';
+import type { ObservedInitialInput } from '../../../../core/domain/conversation-outbox.ts';
 import { queryKeys } from '../providers/queries.ts';
 import { focusManager } from '@tanstack/react-query';
 

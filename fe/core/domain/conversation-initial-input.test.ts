@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationInitialInputObservation } from '../api/generated/wire.js';
-import { initialInputObservationOperation, receiptMatchesSubmission, initialInputQueueView, type AcceptedInitialInput, type ObservedInitialInput } from './conversation-initial-input.js';
-import { outboxView } from './conversation-outbox.js';
+import { initialInputObservationOperation, receiptMatchesSubmission } from './conversation-initial-input.js';
+import { outboxView, initialInputQueueView, type AcceptedInitialInput, type ObservedInitialInput } from './conversation-outbox.js';
 import { sha256Hex } from './sha256.js';
 
 const receipt = Object.freeze({ version: 'initial-input-v1' as const, entryId: 'first-entry', queuedAtMs: 100,

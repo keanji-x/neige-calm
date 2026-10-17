@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { initialInputObservationOperation, observationMatchesReceipt, type AcceptedInitialInput, type ObservedInitialInput } from '../../../../core/domain/conversation-initial-input.ts';
+import { initialInputObservationOperation, observationMatchesReceipt } from '../../../../core/domain/conversation-initial-input.ts';
+import type { AcceptedInitialInput, ObservedInitialInput } from '../../../../core/domain/conversation-outbox.ts';
 import { runOperation, queryKeys } from '../providers/queries.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 

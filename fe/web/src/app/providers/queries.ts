@@ -335,9 +335,9 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   };
 }
 
-import { initialInputObservationOperation, type CreatedConversation } from '../../../../core/domain/conversation-initial-input.ts';
+import { initialInputObservationOperation } from '../../../../core/domain/conversation-initial-input.ts';
 import type { ConversationInitialInputObservation } from '../../../../core/api/generated/wire.ts';
-import type { SideConversation } from '../../../../core/domain/conversation.ts';
+import type { SideConversation, CreatedConversation } from '../../../../core/domain/conversation.ts';
 
 export type ConversationMutations = Readonly<{
   /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */

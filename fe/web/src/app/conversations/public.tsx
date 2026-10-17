@@ -5,9 +5,9 @@ import {
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { SideConversation, PendingQueueEntry, PlannerQueueEditOutcome } from '../../../../core/domain/conversation.ts';
 import {
-  isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type TranscriptEntry,
+  isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type CreatedConversation, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
-import { receiptMatchesSubmission, type CreatedConversation, type SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
+import { receiptMatchesSubmission, type SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
 import { beginSendOp, withConfirmedSends, type RetiredSend, type SendOp, type ConversationOutboxOp } from '../../../../core/domain/conversation-outbox.ts';
 import {
   EMPTY_COMPOSER, isSameComposer, tookEveryImage, withRefill, type ComposerContent,
