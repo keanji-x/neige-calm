@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ComponentType, type Ref } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Ref } from 'react';
 import {
   GridLayout,
   useContainerWidth,
@@ -9,11 +9,10 @@ import {
 
 import { transformStrategy } from 'react-grid-layout/core';
 import { MotionCell, motionPositionStyle, type Manipulation } from './motion-cell.tsx';
-import type { CardActivity } from '../../../../../core/domain/activity.js';
 import { useState } from '../../../ui/state/public.ts';
-import { FALLBACK_SIZE, type CardComponentProps, type RegisteredCard } from '../registry.js';
-import type { CardHost, CardHostCapabilities, MountedCard } from '../host.js';
-import { CardHead } from './card-head.tsx';
+import { FALLBACK_SIZE } from '../registry.js';
+import type { CardHost } from '../host.js';
+import { CardCell, type BoardHostItem } from './card-cell.tsx';
 import {
   GRID_COLS,
   GRID_MARGIN,
@@ -52,25 +51,7 @@ function revealWithinBoard(container: HTMLElement, active: HTMLElement): void {
     : activeBox.bottom - containerBox.bottom;
 }
 
-export type BoardHostItem = Readonly<{
-  card: RegisteredCard;
-  title: string;
-  originalIndex: number;
-  /** The kernel's `deletable` bit; absent means deletable (older servers omit it, matching `cardWireSchema`'s `.default(true)`). */
-  deletable?: boolean;
-  /** The kernel's activity verdict, or `null` when the board has no overlay to read. */
-  activity: CardActivity | null;
-  /** The composer's one-line state for the card, or `null`; see `CardComponentProps.notice`. */
-  notice: string | null;
-}>;
-
-function cardWithTitle(item: BoardHostItem): RegisteredCard {
-  const card = item.card;
-  if (!('title' in card)) return card;
-  const current = (card as { title: string | null }).title;
-  if (current !== null && current !== '') return card;
-  return { ...card, title: item.title };
-}
+export type { BoardHostItem } from './card-cell.tsx';
 
 export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: {
   host: CardHost;
@@ -227,7 +208,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
               data-nc-card-id={item.card.id}
               data-nc-card-viewport={host.registry.get(item.card.type)?.viewport}
             >
-              <BoardCell
+              <CardCell
                 host={host}
                 item={item}
                 focused={visible && item.card.id === activeCardId}
@@ -242,56 +223,4 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
       )}
     </div>
   );
-}
-
-function BoardCell({ host, item, focused, visible, onRemove }: {
-  host: CardHost;
-  item: BoardHostItem;
-  focused: boolean;
-  visible: boolean;
-  onRemove?: () => void;
-}) {
-  const mountedRef = useRef<MountedCard | null>(null);
-  const cardRef = useRef(item.card);
-  cardRef.current = cardWithTitle(item);
-  const [capabilities, setCapabilities] = useState<CardHostCapabilities | null>(null);
-  const entry = host.registry.get(item.card.type);
-  const Component: ComponentType<CardComponentProps> | undefined = entry?.component;
-  const cardId = item.card.id;
-
-  useLayoutEffect(() => {
-    const mounted = host.mount(cardRef.current);
-    mountedRef.current = mounted;
-    setCapabilities(mounted.card);
-    return () => {
-      mounted.unmount();
-      if (mountedRef.current === mounted) {
-        mountedRef.current = null;
-        setCapabilities(null);
-      }
-    };
-  }, [host, cardId]);
-
-  useLayoutEffect(() => {
-    mountedRef.current?.host.setVisible(visible);
-    mountedRef.current?.host.setFocused(focused);
-  }, [host, cardId, visible, focused]);
-
-  if (Component === undefined || capabilities === null) {
-    return (
-      <div className="term">
-        {/* No entry claims an unknown card, so the × is drawn here rather than by the absent component. */}
-        <CardHead
-          className="card-drag-handle"
-          title={item.title}
-          onClose={onRemove}
-          closeAriaLabel={`Delete card ${item.title}`}
-        />
-        <div className="term-body">
-          <p className="term-line">{Component === undefined ? 'Unknown card' : item.title}</p>
-        </div>
-      </div>
-    );
-  }
-  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} notice={item.notice} />;
 }

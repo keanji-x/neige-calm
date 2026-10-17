@@ -1,4 +1,6 @@
 import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
+import { useTerminalWorkbench, TerminalWorkbenchView, type TerminalWorkbench } from '../../features/track/workbench/public.tsx';
+import { TerminalCompanion } from './terminal-companion.tsx';
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
@@ -22,7 +24,7 @@ import {
   createRootRoute, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
 import { createRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
+import { TrackViewProvider, useTrackViewState, useTrackViews } from './track-view-state.tsx';
 import { TrackReportRegion, useTrackReportPresentation, useTrackReportArrival } from './track-report-presentation.tsx';
 import type { ReportPreparationPort } from '../../features/report/document/preparation.ts';
 import { TrackPending } from '../../features/track/page/pending.tsx';
@@ -316,7 +318,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
+  options?: { terminal?: { workbench: TerminalWorkbench; render: () => ReactNode }; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
 ) {
   const registry = useConversationRegistry();
   const compact = useCompactViewport();
@@ -341,9 +343,14 @@ function useConversationPanel(
   const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
     .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, reportComposer: undefined, ownedCardIds, inline: true, slotId: sideSlot, enabled: belongsToParent });
+    { ...options, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, retain: options?.terminal !== undefined, inline: true, slotId: sideSlot, enabled: belongsToParent });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawerFor : undefined,
+    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retain: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
+      companionVisible: (!compact && options?.terminal?.workbench.open === true) || (belongsToParent && side.isOpen),
+      companion: options?.terminal !== undefined
+        ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={!compact}
+            sideOpen={belongsToParent && side.isOpen} side={side.drawerFor(group)} terminal={options.terminal!.render()} />
+        : belongsToParent && side.isOpen ? side.drawerFor : undefined,
       onSide: (parent, entries, question) => {
         if (compact) { setSideError('Side conversations are available on desktop.'); return false; }
         if (capabilities.data?.conversationSide !== true) {
@@ -351,6 +358,7 @@ function useConversationPanel(
           return false;
         }
         setSideError(null);
+        options?.terminal?.workbench.suspend();
         if (sideDraft !== null && sideDraft.sentText !== null) {
           sideTarget[1]({ kind: 'draft' });
           if (question !== '') { setSideError('This side draft still has an unsettled delivery. Continue or retry it before starting another.'); return false; }
@@ -375,7 +383,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationPaneTarget>,
-  options?: { reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
+  options?: { onTerminal?: () => void; retain?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -616,6 +624,7 @@ function useConversationPane(
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
               showSideCommand={(options?.showSideCommand ?? true) && sideSourceReady}
               onSideConversation={!hasSideConversation || !composerView.historyReady ? undefined : sideQuestion}
+              onTerminal={options?.onTerminal}
               onSend={sendText}
               allowEmptyText={!editingQueue && composerAttachments.items.length > 0}
               onFiles={editingQueue || !composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
@@ -675,7 +684,7 @@ function useConversationPane(
               )}
             />
   ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, changeComposer, composerView,
-    replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion, sideSourceReady,
+    replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, options?.onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
@@ -689,6 +698,8 @@ function useConversationPane(
         inline={options?.inline}
         stacked={options?.stacked}
         companion={options?.companion}
+        companionVisible={options?.companionVisible}
+        retain={options?.retain}
         closeLabel={options?.inline === true ? 'Close side conversation' : 'Close conversation'}
         open={open !== null || draftOpen}
         /* A draft has no name yet, and naming it after the words being typed
@@ -714,7 +725,7 @@ function useConversationPane(
               </ChatFooterNotice>
             )}
             {/* Initial submit hands words to the held draft, including refusal; only recovery uses the takeover boolean. */}
-            <ChatComposer layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
+            <ChatComposer onTerminal={options?.onTerminal} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
               focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
               draft={{ text: newConversationText, onChange: setNewConversationText }}
@@ -1088,6 +1099,12 @@ function TrackRouteBody({
   );
   const openAsks = useMemo(() => openAsksOf(track.attentionItems), [track.attentionItems]);
   /* `'rows'` unconditionally: an empty list with a `+` over it is the whole feature. */
+  const trackViews = useTrackViews();
+  if (trackViews === null) throw new Error('Terminal workbench requires TrackViewProvider');
+  const workbench = useTerminalWorkbench({ session: trackViews.terminals.forTrack(track.id), trackId: track.id, cards, ordinaryCardOpen: requestedCardId !== null,
+    create: (body, key) => trackMutations.createTerminal(track.id, body, key),
+    request: () => ({ key: mintIdempotencyKey(), body: { theme: readHostThemeRgb() } }),
+  });
   const chat = useConversationPanel(
     transport,
     unauthorized,
@@ -1120,7 +1137,9 @@ function TrackRouteBody({
         role: plannerRole,
       },
     },
-    { showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
+    { terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
+      items={workbench.ordinaryHost ? [] : gridItems.filter(item => workbench.cardIds.has(item.card.id))} visible={!compactViewport && workbench.open}
+      onRemove={cardDeletion.request} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
   useMobileConversationOwner({ track, conversations: rows, onNew: chat.startConversation,
     selectedConversationId: chat.selectedConversationId, onClose: chat.close, onOpen: chat.openConversation, conversationOpen: chat.isOpen });
@@ -1208,6 +1227,11 @@ function TrackRouteBody({
     // return surface and block anchor describe where the reader is.
     goSameTrack(track.id, { card: undefined }, { replace: true });
   }, [goSameTrack, knownCard, requestedCardId, track.id]);
+  useEffect(() => {
+    if (compactViewport || requestedCardId === null || !workbench.cardIds.has(requestedCardId)) return;
+    workbench.reveal(requestedCardId);
+    goSameTrack(track.id, { card: undefined }, { replace: true });
+  }, [compactViewport, requestedCardId, cards, goSameTrack, track.id, workbench]);
   /* `?panel=` is a compact concept: above the breakpoint `TrackPage` would put
    * `inert` on the desktop panel. Corrected here with `replace`, and the
    * injection below is gated on the viewport too, because on a cold start this
@@ -1400,17 +1424,17 @@ function TrackRouteBody({
          it too, so the reader can hand the destination to somebody else. */
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
-      cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} label="Tools" icon="more" />}
+      cardsAction={<>{!compactViewport && <Button label="Terminal workbench" variant="ghost" onClick={() => workbench.reveal()} />}<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} label="Tools" icon="more" /></>}
       recentFiles={recentFilePaths.length === 0 ? undefined : <RecentFiles inline
         paths={recentFilePaths}
         onOpen={(path) => openReportFile({ path })}
       />}
-      onOpenCard={(cardId) => { go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
+      onOpenCard={(cardId) => { if (!compactViewport && workbench.cardIds.has(cardId)) { workbench.reveal(cardId); return; } go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
       onDeleteCard={cardDeletion.request}
       board={<>
         <CardGridOverlay
-          open={knownCard}
-          items={gridItems}
+          open={knownCard && (compactViewport || !workbench.cardIds.has(requestedCardId))}
+          items={workbench.ordinaryHost ? gridItems : gridItems.filter(item => !workbench.cardIds.has(item.card.id))}
           host={cardRuntime.host}
           activeCardId={requestedCardId}
           onRemoveCard={cardDeletion.request}

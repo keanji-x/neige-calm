@@ -64,3 +64,7 @@ heading, accessible label and close/focus behavior are unchanged.
 open marker to reveal covered content and start layout restoration, rather than
 waiting for the exit node to disappear. The shell owns its panel allocation;
 Drawer and its seam keep their existing shared presence spring.
+
+## Retained companion slots
+
+`retain` explicitly keeps a closed drawer's DOM; closed retained content is hidden and inert and continues to follow its current props, and does not publish the shell's open-drawer marker. The default still unmounts after the existing closing spring. `companionVisible` controls the second cell independently, so it can remain mounted while hidden or open without the primary card. Callers own resource visibility and must send it separately; retaining DOM does not create, stop or dispose a resource.

@@ -15,10 +15,11 @@ function readDocumentTheme(): 'light' | 'dark' {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
 }
 
-export function TerminalSurface({ card, recovery = null, visible = true, onStatusChange }: {
+export function TerminalSurface({ card, recovery = null, visible = true, focused = false, onStatusChange }: {
   card: { readonly id: string; readonly terminalId: string | null };
   recovery?: RecoveryAccess | null;
   visible?: boolean;
+  focused?: boolean;
   onStatusChange?: (status: TerminalConnectionStatus) => void;
 }) {
   const [resolved, setResolved] = useState<'light' | 'dark'>(readDocumentTheme);
@@ -30,5 +31,5 @@ export function TerminalSurface({ card, recovery = null, visible = true, onStatu
     return () => observer.disconnect();
   }, []);
   if (card.terminalId === null) return null;
-  return <XtermView recovery={recovery} terminalId={card.terminalId} theme={resolved} visible={visible} onStatusChange={onStatusChange} />;
+  return <XtermView recovery={recovery} terminalId={card.terminalId} theme={resolved} visible={visible} focused={focused} onStatusChange={onStatusChange} />;
 }

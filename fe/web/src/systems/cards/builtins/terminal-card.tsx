@@ -34,10 +34,16 @@ export function TerminalCardView({
   /** A new value mounts a fresh terminal attach: a restarted child on the same terminal (a Claude card's new runtime). */
   attachKey?: string | null;
 }) {
+  const [focused, setFocused] = useState(() => host.lifecycle.getSnapshot().focused);
   const [visible, setVisible] = useState(() => host.lifecycle.getSnapshot().visible);
-  useEffect(() => host.lifecycle.subscribe(() => {
+  useEffect(() => {
+    const sync = () => {
     setVisible(host.lifecycle.getSnapshot().visible);
-  }), [host]);
+    setFocused(host.lifecycle.getSnapshot().focused);
+    };
+    sync();
+    return host.lifecycle.subscribe(sync);
+  }, [host]);
   const [connection, setConnection] = useState<Readonly<{
     terminalId: string | null; attachKey: string | null; status: TerminalConnectionStatus;
   }>>({ terminalId: card.terminalId, attachKey, status: 'connecting' });
@@ -90,7 +96,7 @@ export function TerminalCardView({
         {attached
           ? (
             <Suspense fallback={<div className="term-line">Loading terminal…</div>}>
-              <TerminalSurface key={attachKey ?? ''} recovery={host.recovery} card={card} visible={visible} onStatusChange={onStatusChange} />
+              <TerminalSurface key={attachKey ?? ''} recovery={host.recovery} card={card} visible={visible} focused={focused} onStatusChange={onStatusChange} />
             </Suspense>
           )
           : <div className="term-line">{ended ? 'No terminal session available.' : message}</div>}

@@ -430,3 +430,19 @@ describe('a held drag that is interrupted', () => {
     expect(resize.onCommit).not.toHaveBeenCalled();
   });
 });
+
+it('keeps the default closed companion unmounted without a retention opt-in', () => {
+  render(<Drawer open={false} title="Main" onClose={vi.fn()} companion={() => <p>Companion resource</p>}>
+    <p>Main resource</p>
+  </Drawer>);
+  expect(screen.queryByText('Companion resource')).toBeNull();
+  expect(screen.queryByText('Main resource')).toBeNull();
+});
+
+it('updates retained closed content when its owner releases it without removing the companion', () => {
+  const companion = () => <p>Retained companion</p>;
+  const view = render(<Drawer open retain title="Main" onClose={vi.fn()} companion={companion}><p>Transferred content</p></Drawer>);
+  view.rerender(<Drawer open={false} retain title="Main" onClose={vi.fn()} companion={companion} companionVisible={false}>{null}</Drawer>);
+  expect(screen.queryByText('Transferred content')).toBeNull();
+  expect(screen.getByText('Retained companion')).toBeTruthy();
+});

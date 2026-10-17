@@ -11,7 +11,7 @@ import styles from './mobile-chat.module.css';
 
 /** One host owns mobile presentation, focus and visible-viewport geometry for the panel and stationary footer. */
 export function ConversationSurface({ mobileSheet, contextTitle, focusInput = false, ...props }: ComponentProps<typeof Drawer> & Readonly<{ mobileSheet: boolean; contextTitle?: string; focusInput?: boolean }>) {
-  const nativeSheet = mobileSheet && props.companion === undefined;
+  const nativeSheet = mobileSheet;
   const [editing, setEditing] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const previousOpen = useRef(props.open);
@@ -22,7 +22,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   const [nativePresented, setNativePresented] = useState(false);
   const [navigationBottom, setNavigationBottom] = useState(0);
   const [footerHeight, setFooterHeight] = useState(0);
-  const visibleViewport = useVisibleViewport(mobileSheet && (props.open || footerAttached) && props.companion === undefined);
+  const visibleViewport = useVisibleViewport(nativeSheet && (props.open || footerAttached));
   const restingViewportHeight = useRef(visibleViewport.height);
   if (!props.open && !footerAttached) restingViewportHeight.current = visibleViewport.height;
   const expandedForInput = (focusInput || editing) && visibleViewport.height < restingViewportHeight.current;
@@ -112,7 +112,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     return () => observer.disconnect();
   }, [footerAttached, footerHost, nativeSheet, props.open]);
   useLayoutEffect(() => {
-    if (!mobileSheet || !props.open || props.companion !== undefined) return;
+    if (!nativeSheet || !props.open) return;
     const navigation = document.querySelector<HTMLElement>('[data-nc-workspace-header] [data-nc-mobile-header]');
     if (navigation === null) return;
     const sync = () => {
@@ -123,7 +123,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     observer.observe(navigation);
     sync();
     return () => { observer.disconnect(); };
-  }, [mobileSheet, props.companion, props.open]);
+  }, [nativeSheet, props.open]);
   useLayoutEffect(() => {
     const footer = footerHost.firstElementChild;
     if (footer === null || footer === undefined) return;
@@ -147,7 +147,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     }
   }, [props.open]);
   useEffect(() => {
-    if (!mobileSheet || props.companion !== undefined || !props.open || !focusInput) return;
+    if (!nativeSheet || !props.open || !focusInput) return;
     const panel = panelRef.current;
     const dialog = panel?.closest('dialog');
     if (panel === null || dialog == null || !footerAttached) return;
@@ -165,11 +165,11 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     observer.observe(dialog, { attributes: true, attributeFilter: ['open'] });
     focusEditor();
     return () => { observer.disconnect(); };
-  }, [focusInput, footerHost, footerAttached, mobileSheet, props.companion, props.open]);
+  }, [focusInput, footerHost, footerAttached, nativeSheet, props.open]);
   const requestedHeight = visibleViewport.height * (fullscreen ? 1 : expandedForInput ? 0.92 : 0.8);
   const sheetHeight = fullscreen ? requestedHeight : Math.min(requestedHeight, Math.max(0, visibleViewport.bottomEdge - navigationBottom));
   // Grouped conversations retain the pane renderer that owns companion switching.
-  const surface = !nativeSheet ? <Drawer {...props} footer={<div ref={captureDesktop} />} /> : <div className={styles.sheet}><BottomSheet ref={capturePanel} className={`${styles.panel} ${mobileFontClassName}`} data-nc-mobile-chat-panel="" data-nc-fullscreen={fullscreen}
+  const surface = nativeSheet ? <div className={styles.sheet}><BottomSheet ref={capturePanel} className={`${styles.panel} ${mobileFontClassName}`} data-nc-mobile-chat-panel="" data-nc-fullscreen={fullscreen}
     onKeyDown={(event) => {
       // A composer trigger/edit handler already owns this Escape; native sheet dismissal must stand down.
       if (event.key === 'Escape' && event.defaultPrevented) event.stopPropagation();
@@ -188,8 +188,10 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
         <div className={styles.scrollOverlay} style={{ bottom: footerHeight }} data-nc-chat-scroll-overlay="" />
       </div>
     </section>
-  </BottomSheet></div>;
-  return <>{surface}{createPortal(<LayerDepthProvider><div className={nativeSheet ? styles.footer : undefined}
+  </BottomSheet></div> : null;
+  // Keep the desktop resource slot at one React position across viewport changes.
+  return <><Drawer {...props} open={!nativeSheet && props.open} companionVisible={!nativeSheet && props.companionVisible}
+    footer={nativeSheet ? undefined : <div ref={captureDesktop} />} >{nativeSheet ? null : props.children}</Drawer>{surface}{createPortal(<LayerDepthProvider><div className={nativeSheet ? styles.footer : undefined}
     data-nc-chat-footer={nativeSheet ? '' : undefined} data-nc-conversation-region={props.id}
     style={nativeSheet ? { bottom: visibleViewport.bottomInset } : undefined}
     onFocusCapture={(event) => { if (event.target instanceof HTMLElement && event.target.matches('[contenteditable="true"], textarea')) setEditing(true); }}

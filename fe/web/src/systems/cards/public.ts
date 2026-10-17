@@ -52,3 +52,5 @@ export type { GridPlacement, StoredPosition, StoredPositions } from './ui/layout
 
 // Development-only composition; uses the same BoardHost and card lifecycle.
 export { CardMotionPreview } from './ui/motion-preview.js';
+
+export { CardDockHost } from './ui/card-dock-host.js';

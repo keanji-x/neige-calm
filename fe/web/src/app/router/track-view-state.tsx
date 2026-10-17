@@ -1,3 +1,4 @@
+import { createTerminalWorkbenchSessions } from '../../features/track/workbench/public.tsx';
 import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { useRouterState } from '@tanstack/react-router';
 import { useState } from '../../ui/state/public.ts';
@@ -15,6 +16,7 @@ function createTrackViews() {
   const views = new Map<string, TrackView>();
   return {
     reports: createReportPreparationCache(),
+    terminals: createTerminalWorkbenchSessions(),
     get: (id: string) => views.get(id),
     ensure: (id: string) => {
       let view = views.get(id);
