@@ -9,8 +9,9 @@ pub use containment::{
 use qualification::NamespaceContext;
 pub use qualification::{
     LocalObjectProfile, ObjectQualificationFailure, ObjectQualificationStage,
-    ObjectQualificationUnknown, ObjectQualificationUnsupported, QualifiedCwd, QualifiedHeldObjects,
-    QualifiedObjectFact, local_object_platform,
+    ObjectQualificationUnknown, ObjectQualificationUnsupported, QualifiedCwd,
+    QualifiedDirectoryPair, QualifiedHeldObjects, QualifiedObjectFact, local_object_platform,
+    qualify_directory_pair,
 };
 pub use relation::{
     DirectoryObservationStage, DirectoryPairFacts, DirectoryPairFailure, DirectoryRelationOutcome,

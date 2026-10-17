@@ -16,8 +16,10 @@ pub mod rights;
 #[cfg(not(target_os = "linux"))]
 #[path = "execution/rights_unsupported.rs"]
 pub mod rights;
+mod transferred_directory;
 pub use attachment::*;
 pub use directory_relation::*;
+pub use transferred_directory::*;
 
 pub const EXECUTION_ENVELOPE_VERSION: u32 = 3;
 
@@ -117,6 +119,7 @@ pub enum ExecutionRequest {
     ObserveDirectories(Box<DirectoryRelationRequest>),
     /// Release this exact immutable lease after its executor references settle.
     RetireRegistration(ObjectRegistrationReceipt),
+    ObserveTransferredDirectories(Box<TransferredDirectoryRelationRequest>),
 }
 
 /// All process actions, including future variants, must first resolve this exact capability.
@@ -208,6 +211,7 @@ pub enum ExecutionReply {
         reason: String,
     },
     DirectoryRelation(Box<DirectoryRelationReport>),
+    TransferredDirectoryRelation(Box<TransferredDirectoryRelationReport>),
     ObjectQualificationFailed {
         failure: workspace::execution::objects::ObjectQualificationFailure,
     },

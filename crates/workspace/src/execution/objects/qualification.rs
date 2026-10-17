@@ -1,5 +1,8 @@
 //! Local held-object semantics, not authorization, Ready, ancestry or backing independence.
 use super::{HeldObjectIdentity, HeldRootKey, HeldSourceObjects, ObjectFact, ObjectRole, fact};
+mod directory_pair;
+pub use directory_pair::{QualifiedDirectoryPair, qualify_directory_pair};
+
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs::File, io, os::unix::fs::MetadataExt};
 
@@ -27,6 +30,10 @@ pub enum ObjectQualificationUnsupported {
     CwdMountBoundary {
         root: u64,
         cwd: u64,
+    },
+    DirectoryMountBoundary {
+        ancestor: u64,
+        subject: u64,
     },
 }
 
@@ -56,6 +63,7 @@ pub enum ObjectQualificationUnknown {
     },
     InvalidMountInformation,
     CwdChanged,
+    DirectoryPairChanged,
 }
 
 /// Serializable failure diagnostics cannot reproduce the nonserializable live witness.

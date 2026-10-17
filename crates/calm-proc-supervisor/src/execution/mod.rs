@@ -254,6 +254,7 @@ impl Executor {
                 mode: hello.mode,
             }),
             ExecutionRequest::Attach(_)
+            | ExecutionRequest::ObserveTransferredDirectories(_)
             | ExecutionRequest::Export(_)
             | ExecutionRequest::ExportAck(_) => {
                 anyhow::bail!("object attachment requires the controlled ancillary transport")
