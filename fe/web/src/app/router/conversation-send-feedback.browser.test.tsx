@@ -103,9 +103,16 @@ it.each([false, true])('shows a readable local message and Sending before the re
   const view = mount();
   try {
     await open(view, draft);
+    const send = screen.getByRole('button', { name: 'Send' });
     act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
+    expect(send.isConnected).toBe(true);
+    expect(send.hasAttribute('disabled')).toBe(true);
     expectReadableMessage();
-    expect(screen.getByRole('button', { name: 'Sending…' })).toBeDefined();
+    const pendingSend = screen.getByRole('button', { name: 'Send' });
+    expect(pendingSend.hasAttribute('disabled')).toBe(true);
+    await expect.poll(() => pendingSend.getAnimations({ subtree: true })
+      .some(animation => animation.effect?.getTiming().iterations === Infinity)).toBe(true);
+    expect(screen.getByText('Sending…')).toBeDefined();
     expect(screen.queryByText('Running')).toBeNull();
     expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
@@ -152,7 +159,8 @@ it('keeps Stop available during an additional queued send', async () => {
     act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
     expectReadableMessage();
     expect(screen.getByText('Sending…')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Stop' }).getAnimations({ subtree: true })
+      .some(animation => animation.effect?.getTiming().iterations === Infinity)).toBe(false);
     expect(screen.queryByRole('button', { name: 'Sending…' })).toBeNull();
     await act(async () => { view.answer(); await Promise.resolve(); });
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
@@ -160,7 +168,8 @@ it('keeps Stop available during an additional queued send', async () => {
     act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
     expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(2);
     expect(screen.getByText('Sending…')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Stop' }).getAnimations({ subtree: true })
+      .some(animation => animation.effect?.getTiming().iterations === Infinity)).toBe(false);
     expect(screen.queryByRole('button', { name: 'Sending…' })).toBeNull();
   } finally { cleanup(); view.answer(); view.client.clear(); }
 });
@@ -172,7 +181,10 @@ it('provides the same immediate message and pending feedback under reduced motio
     await open(view);
     act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
     expectReadableMessage();
-    expect(screen.getByRole('button', { name: 'Sending…' })).toBeDefined();
+    const pendingSend = screen.getByRole('button', { name: 'Send' });
+    expect(pendingSend.hasAttribute('disabled')).toBe(true);
+
+    expect(screen.getByText('Sending…')).toBeDefined();
     await act(async () => { view.answer(); await Promise.resolve(); });
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
     expectReadableMessage();

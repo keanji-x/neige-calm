@@ -115,7 +115,7 @@ it.each(['idle', 'turn_running'])('shows the local sending state before a held %
     expect(screen.queryByText('Queued · sends when this turn ends')).toBeNull();
     if (phase === 'turn_running') expect(screen.getByRole('button', { name: 'Stop' })).toBeDefined();
     else {
-      expect(screen.getByRole('button', { name: 'Sending…' }).hasAttribute('disabled')).toBe(true);
+      expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true);
       expect(screen.queryByText('Running', { exact: true })).toBeNull();
     }
     fireEvent.keyDown(field(), { key: 'Enter' });
@@ -135,6 +135,6 @@ it('shows first-message sending feedback while conversation creation is held', a
     await waitFor(() => expect(view.requests.some(request => request.method === 'POST' && request.path.endsWith('/conversations'))).toBe(true));
     expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toBe('The first local message');
     expect(screen.getByText('Sending…')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Sending…' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true);
   } finally { await response.release({ id: 'created', trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1, lastTurnCompletedAt: null }); cleanup(); view.client.clear(); }
 });

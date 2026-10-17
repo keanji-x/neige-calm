@@ -19,6 +19,7 @@ import {
 import { Code } from '@astryxdesign/core/Code';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 import { Button } from '@astryxdesign/core/Button';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import { useIcon } from '@astryxdesign/core/Icon';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
@@ -741,11 +742,14 @@ export function ChatComposer({
             /></div>
           )}
           /* Send's availability is Astryx's own (`canSend`). Astryx renders `aria-disabled` only with a `tooltip`, which `ChatSendButton` does not take, so this is a native `disabled` that drops focus to `<body>` — the focus effect above moves it back into the field first. */
-          /* `ChatSendButton` has no busy state and a fixed label; in those two states this is its button under the name it then has. */
-          sendButton={sendWaiting && !stopShown ? <Button label="Sending…" variant="primary" isIconOnly isLoading icon={sendIcon} className={styles.sendOwn} />
-            : editing === undefined ? <ChatSendButton sendIcon={layout === 'mobile' ? <Icon name="arrow-up" /> : undefined} />
-              : <Button label="Replace message" variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
-                isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)} onClick={() => { submit(draft); }} />}
+          /* Keep the native Send/Stop control mounted. Its public icon slot gives
+             immediate decorative feedback; the local status names Sending. */
+          sendButton={editing === undefined ? <ChatSendButton sendIcon={sendWaiting && !stopShown
+            ? <Spinner size="sm" shade="inherit" aria-hidden="true" />
+            : layout === 'mobile' ? <Icon name="arrow-up" /> : undefined} />
+            : <Button label={sendWaiting ? 'Sending…' : 'Replace message'} variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
+              isLoading={sendWaiting} isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)}
+              onClick={() => { submit(draft); }} />}
         />
       </SizeMotion>
     </div>

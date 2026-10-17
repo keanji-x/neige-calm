@@ -34,6 +34,7 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@astryxdesign/core/BottomSheet',
   '@astryxdesign/core/MobileNav',
   '@astryxdesign/core/Button',
+  '@astryxdesign/core/Spinner',
   '@astryxdesign/core/Banner',
   '@astryxdesign/core/DateInput',
   '@astryxdesign/core/TimeInput',
