@@ -1,0 +1,164 @@
+//! Native display and telemetry observations; input and execution facts stay with their owners.
+use super::*;
+
+pub(in crate::harness::run_loop) async fn on_notification(
+    inner: &Arc<Inner>,
+    live: &LiveReplyWriter,
+    kind: PlannerEventKind,
+) -> Result<()> {
+    match kind {
+        PlannerEventKind::Item {
+            phase,
+            params,
+            questions,
+        } => {
+            content_observer::on_item(inner, live, phase, params, questions).await?;
+        }
+        PlannerEventKind::ReplyDelta {
+            turn_id,
+            item_id,
+            delta,
+        } => live.delta(&turn_id, &item_id, &delta),
+        PlannerEventKind::TokenUsage { params } => {
+            observe_metadata(inner, Metadata::Usage(params)).await?;
+        }
+        PlannerEventKind::ContextReplaced { turn_id } => {
+            observe_metadata(inner, Metadata::ContextBoundary(turn_id)).await?;
+        }
+        PlannerEventKind::TurnStarted { turn_id } => {
+            let current = read_current(inner).await?;
+            // This only opens the installed ephemeral reply writer. The actual
+            // report owner has already selected the current native execution;
+            // raw start events cannot change phase, delivery or active claims.
+            if current.snapshot.header.phase == HarnessPhaseTag::TurnRunning
+                && current.snapshot.header.last_turn_id.as_deref() == Some(turn_id.as_str())
+            {
+                live.turn_started(&turn_id);
+            }
+            consume_end(inner).await?;
+        }
+        PlannerEventKind::TurnCompleted { turn } => {
+            if let Some(turn_id) = turn.get("id").and_then(Value::as_str) {
+                live_reply::settle(inner, live, turn_id, &turn).await;
+            }
+            consume_end(inner).await?;
+        }
+        PlannerEventKind::TurnAborted { .. } | PlannerEventKind::ThreadIdle => {
+            consume_end(inner).await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn consume_end(inner: &Arc<Inner>) -> Result<()> {
+    if let Some(done) = crate::harness::input_dispatch::complete_once(
+        inner.repo.as_ref(),
+        &inner.backend,
+        inner.card_id.as_str(),
+        &inner.worker_session_id,
+    )
+    .await?
+    {
+        publish(inner, written(done)?).await;
+    }
+    Ok(())
+}
+
+enum Metadata {
+    Usage(Value),
+    ContextBoundary(String),
+}
+
+async fn observe_metadata(inner: &Arc<Inner>, observation: Metadata) -> Result<()> {
+    let card = inner.card_id.to_string();
+    let worker = inner.worker_session_id.clone();
+    let next = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
+            let mut next: CanonicalHarnessSnapshot =
+                serde_json::from_value(carrier.snapshot().clone())?;
+            let header = &mut next.header;
+            // A preceding turn's last_turn_id can remain on an Issuing frame.
+            // Neither its late usage nor an ambiguous new turn may update it.
+            if !matches!(
+                header.phase,
+                HarnessPhaseTag::TurnRunning | HarnessPhaseTag::TurnCompleted
+            ) {
+                return Ok(None);
+            }
+            match observation {
+                Metadata::Usage(params) => {
+                    let reading_turn = item_turn_id(&params);
+                    if reading_turn.is_none() || reading_turn != header.last_turn_id.as_deref() {
+                        return Ok(None);
+                    }
+                    let Some(reading) = TokenUsage::from_params(&params, crate::model::now_ms())
+                    else {
+                        return Ok(None);
+                    };
+                    header.token_usage = Some(reading.sticky_merge(header.token_usage.as_ref()));
+                    // Preserve the existing automatic-context-boundary rule:
+                    // billing may continue without claiming retained occupancy.
+                    if !header.context_usage_invalidated
+                        || reading_turn != header.context_usage_invalidated_turn.as_deref()
+                    {
+                        header.context_usage_invalidated = false;
+                        header.context_usage_invalidated_turn = None;
+                    }
+                }
+                Metadata::ContextBoundary(turn) => {
+                    if header.last_turn_id.as_deref() != Some(turn.as_str()) {
+                        return Ok(None);
+                    }
+                    header.context_usage_invalidated = true;
+                    header.context_usage_invalidated_turn = Some(turn);
+                }
+            }
+            let persisted = persist_runtime_frame_tx(
+                tx,
+                &card,
+                &worker,
+                &RuntimeExecutionFence::from_carrier(&carrier),
+                header_value(&next)?,
+            )
+            .await?;
+            Ok(Some(written(persisted)?))
+        })
+    })
+    .await?;
+    if let Some(next) = next {
+        publish(inner, next).await;
+    }
+    Ok(())
+}
+
+pub(in crate::harness::run_loop) async fn persist_native_item(
+    inner: &Arc<Inner>,
+    thread: &str,
+    turn: Option<&str>,
+    method: &str,
+    params: &Value,
+) -> Result<Option<i64>> {
+    let card = inner.card_id.to_string();
+    let worker = inner.worker_session_id.clone();
+    let thread = thread.to_owned();
+    let turn = turn.map(str::to_owned);
+    let method = method.to_owned();
+    let params = params.clone();
+    write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
+            Ok(crate::db::sqlite::conversation::observe_native_item_tx(
+                tx,
+                &carrier,
+                &thread,
+                turn.as_deref(),
+                &method,
+                &params,
+            )
+            .await?)
+        })
+    })
+    .await
+}

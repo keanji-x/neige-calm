@@ -35,7 +35,7 @@ pub use plans::{
     erase_submission_render_payloads_tx, human_plan_for_pending_prefix_tx,
     original_input_execution_tx, submission_identity_tx, submission_plan_tx,
 };
-pub use presentation::{PresentationSource, allocate_presentation_tx};
+pub use presentation::{PresentationSource, allocate_presentation_tx, observe_native_item_tx};
 pub use release::release_submission_tx;
 pub use runtime_frame::{
     RuntimeExecutionFence, RuntimeFrameAfterWrite, complete_input_execution_tx,
