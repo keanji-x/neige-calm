@@ -94,3 +94,8 @@ Button loading contract while Edit remains displayed.
 The named Message composer group declares `aria-busy` for local dispatch, so a
 standalone composer exposes the pending fact even without a transcript status.
 Its Send purpose stays named Send; visual progress does not replace the control.
+
+The Send arrow and waiting ring remain mounted in one grid slot. Dispatch only
+changes visibility and pauses or runs the ring, so its glyph resources do not
+add a layout flush to a long transcript update. The ring shares the UI
+indicator's reduced-motion contract and carries no model activity marker.

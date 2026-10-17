@@ -183,6 +183,8 @@ it('provides the same immediate message and pending feedback under reduced motio
     expectReadableMessage();
     const pendingSend = screen.getByRole('button', { name: 'Send' });
     expect(pendingSend.hasAttribute('disabled')).toBe(true);
+    expect(pendingSend.getAnimations({ subtree: true })
+      .some(animation => animation.effect?.getTiming().iterations === Infinity && animation.playState === 'running')).toBe(false);
 
     expect(screen.getByText('Sending…')).toBeDefined();
     await act(async () => { view.answer(); await Promise.resolve(); });

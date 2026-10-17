@@ -19,11 +19,11 @@ import {
 import { Code } from '@astryxdesign/core/Code';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 import { Button } from '@astryxdesign/core/Button';
-import { Spinner } from '@astryxdesign/core/Spinner';
 import { useIcon } from '@astryxdesign/core/Icon';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
+import { LoadingIndicator } from '../../../ui/activity-indicator/loading-indicator.tsx';
 import { EdgeNavigator } from '../../../ui/edge-navigation/public.tsx';
 import { observeResize } from '../../../ui/edge-navigation/resize.ts';
 import { createScrollFollower } from '../../../ui/drawer/follow-scroll.ts';
@@ -745,9 +745,12 @@ export function ChatComposer({
           /* Send's availability is Astryx's own (`canSend`). Astryx renders `aria-disabled` only with a `tooltip`, which `ChatSendButton` does not take, so this is a native `disabled` that drops focus to `<body>` — the focus effect above moves it back into the field first. */
           /* Keep the native Send/Stop control mounted. Its public icon slot gives
              immediate decorative feedback; the local status names Sending. */
-          sendButton={editing === undefined ? <ChatSendButton sendIcon={sendWaiting && !stopShown
-            ? <Spinner size="sm" shade="inherit" aria-hidden="true" />
-            : layout === 'mobile' ? <Icon name="arrow-up" /> : undefined} />
+          sendButton={editing === undefined ? <ChatSendButton sendIcon={
+            <span className={styles.sendGlyph} data-nc-waiting={sendWaiting && !stopShown} aria-hidden="true">
+              <span className={styles.sendArrow}>{layout === 'mobile' ? <Icon name="arrow-up" /> : sendIcon}</span>
+              <span className={styles.sendWait}><LoadingIndicator active={sendWaiting && !stopShown} /></span>
+            </span>
+          } />
             : <Button label={sendWaiting ? 'Sending…' : 'Replace message'} variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
               isLoading={sendWaiting} isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)}
               onClick={() => { submit(draft); }} />}

@@ -14,6 +14,11 @@
     border-inline-end-color: var(--text-2);
     animation: activity-turn 900ms linear infinite;
   }
+  .loading {
+    border-color: color-mix(in srgb, currentColor 30%, transparent);
+    border-block-start-color: currentColor;
+    border-inline-end-color: currentColor;
+  }
   /* Approved contextual motion is opt-in; ordinary running markers keep the ring. */
   .motion {
     inline-size: var(--glyph);

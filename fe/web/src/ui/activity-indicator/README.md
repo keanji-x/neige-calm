@@ -3,6 +3,11 @@
 A domain-free visual marker: working spins grey, unread is accent, attention is
 warn, failed is error, and `quiet` renders nothing. Motion follows the
 reduced-motion preference.
+`LoadingIndicator` is a separate decorative control glyph. The caller supplies
+the accessible busy state and keeps the glyph mounted. `active` runs or pauses
+the same reduced-motion-aware ring; visibility belongs to the control. It
+inherits the control's colour and does not declare a domain activity state.
+
 The owning feature decides state precedence and supplies an accessible name or
 description on its control. The marker itself is decorative.
 

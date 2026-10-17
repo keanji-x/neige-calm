@@ -1,4 +1,10 @@
 @layer features {
+  /* Both glyphs occupy one stable slot. A send changes visibility without
+     mounting icon resources in the same commit as the outgoing transcript. */
+  .sendGlyph { display: inline-grid; place-items: center; vertical-align: middle; }
+  .sendArrow, .sendWait { display: flex; grid-area: 1 / 1; }
+  .sendGlyph[data-nc-waiting="false"] .sendWait,
+  .sendGlyph[data-nc-waiting="true"] .sendArrow { visibility: hidden; }
   .edgeNavigation {
     --nc-rail-preview-max-inline-size: calc(
       min(var(--conversation-span, 22rem), 100cqi - var(--space-5) * 2) - var(--space-3)

@@ -178,14 +178,19 @@ describe('the / command menu, as the engine lays it out', () => {
     const view = render(<ImageOnlyCard disabled />);
     const control = screen.getByRole('button', { name: 'Send' });
     const send = control.getBoundingClientRect();
+    const glyphNodes = [...control.querySelectorAll('*')];
+    expect(control.getAnimations({ subtree: true }).filter(animation => animation.effect?.getTiming().iterations === Infinity)
+      .every(animation => animation.playState === 'paused')).toBe(true);
     view.rerender(<ImageOnlyCard sendWaiting />);
     const waiting = screen.getByRole('button', { name: 'Send' });
     expect(waiting).toBe(control);
+    // Starting feedback must not mount new glyph resources in the send commit.
+    expect([...waiting.querySelectorAll('*')]).toEqual(glyphNodes);
     expect(waiting.hasAttribute('disabled')).toBe(true);
     expect(screen.getByRole('group', { name: 'Message composer' }).getAttribute('aria-busy')).toBe('true');
     expect(document.querySelector('[data-nc-send-attachment]')).toBeNull();
     await expect.poll(() => waiting.getAnimations({ subtree: true })
-      .some(animation => animation.effect?.getTiming().iterations === Infinity)).toBe(true);
+      .some(animation => animation.effect?.getTiming().iterations === Infinity && animation.playState === 'running')).toBe(true);
     const box = waiting.getBoundingClientRect();
     expect([box.width, box.height, box.right, box.bottom]).toEqual([send.width, send.height, send.right, send.bottom]);
     expect(parseFloat(getComputedStyle(waiting).borderTopLeftRadius)).toBeGreaterThanOrEqual(box.height / 2);
@@ -194,6 +199,10 @@ describe('the / command menu, as the engine lays it out', () => {
     document.body.append(probe);
     expect(getComputedStyle(waiting).backgroundColor).toBe(getComputedStyle(probe).backgroundColor);
     probe.remove();
+    view.rerender(<ImageOnlyCard disabled />);
+    expect([...control.querySelectorAll('*')]).toEqual(glyphNodes);
+    expect(control.getAnimations({ subtree: true }).filter(animation => animation.effect?.getTiming().iterations === Infinity)
+      .every(animation => animation.playState === 'paused')).toBe(true);
   });
 
   it('shows edit mode as one bar above the field and Replace on Send\'s round chip, at phone width too', async () => {

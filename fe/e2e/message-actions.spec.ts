@@ -114,7 +114,9 @@ test('edits the latest message in the composer and replaces it on Send, in one k
     await composer.press('End');
     await composer.pressSequentially(' Keep it short.');
     await page.getByRole('button', { name: 'Replace message' }).click();
-    await expect(page.getByRole('button', { name: 'Sending…' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+    await expect(page.getByRole('group', { name: 'Message composer' })).toHaveAttribute('aria-busy', 'true');
+    await expect(page.getByText('Sending…', { exact: true })).toBeVisible();
     await expect.poll(() => sent).toEqual([{ text: 'Original prompt Keep it short.', attachments: [imageId], replaces_turn: 'turn' }]);
     expect(keys[0]).toBeTruthy();
     /* Until the answer the turn stays, marked, and there is no ✕ to drop the words. */
@@ -122,7 +124,7 @@ test('edits the latest message in the composer and replaces it on Send, in one k
     await expect(page.locator('[data-nc-thread] [data-nc-turn="you"][data-nc-editing]')).toHaveText('Original prompt');
     await expect(page.locator('[data-nc-edit-bar]')).toHaveCount(0);
     releaseReplace();
-    await expect(page.getByRole('button', { name: 'Sending…' })).toHaveCount(0);
+    await expect(page.getByRole('group', { name: 'Message composer' })).not.toHaveAttribute('aria-busy', 'true');
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toHaveCount(0);
     expect(sent).toHaveLength(1);
     expect(rewinds).toEqual([]);
