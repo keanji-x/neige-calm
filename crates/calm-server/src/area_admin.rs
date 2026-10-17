@@ -13,30 +13,100 @@ pub(crate) async fn card_is_admin(pool: &SqlitePool, card_id: &str) -> Result<bo
     .await?)
 }
 
-/// Every grant writer and the detail affordance share this predicate. Grant writers pass
-/// their write transaction's connection; the detail affordance reads through the pool without a write lock.
+/// Every grant writer and the detail affordance share the same live storage facts.
+/// Writers pass their transaction's connection; discovery reads through the pool.
 pub async fn eligible_tx<'e>(
     executor: impl sqlx::Executor<'e, Database = Sqlite>,
     track: &Track,
 ) -> Result<bool> {
-    Ok(sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM tracks t JOIN areas a ON a.id = t.area_id \
-         WHERE t.id = ?1 AND t.parent_track_id IS NULL AND t.creator_track_id IS NULL \
-         AND COALESCE(t.purpose, '') <> 'area-chat' AND t.plugin_scope IS NULL \
-         AND a.kind <> 'system' AND NOT EXISTS \
-         (SELECT 1 FROM managed_track_identities m WHERE m.track_id = t.id))",
+    Ok(ineligibility_reason_tx(executor, track).await?.is_none())
+}
+
+pub async fn require_eligible_tx<'e>(
+    executor: impl sqlx::Executor<'e, Database = Sqlite>,
+    track: &Track,
+) -> Result<()> {
+    if let Some(reason) = ineligibility_reason_tx(executor, track).await? {
+        return Err(CalmError::Forbidden(format!("ineligible: {reason}")));
+    }
+    Ok(())
+}
+
+#[derive(sqlx::FromRow)]
+struct EligibilityFacts {
+    child: bool,
+    created_by_track: bool,
+    area_chat: bool,
+    plugin_scope: Option<String>,
+    template_id: Option<String>,
+    system_area: bool,
+    managed: bool,
+}
+
+async fn ineligibility_reason_tx<'e>(
+    executor: impl sqlx::Executor<'e, Database = Sqlite>,
+    track: &Track,
+) -> Result<Option<String>> {
+    let facts: Option<EligibilityFacts> = sqlx::query_as(
+        "SELECT t.parent_track_id IS NOT NULL AS child, \
+         t.creator_track_id IS NOT NULL AS created_by_track, \
+         COALESCE(t.purpose, '') = 'area-chat' AS area_chat, t.plugin_scope, t.template_id, \
+         a.kind = 'system' AS system_area, EXISTS \
+         (SELECT 1 FROM managed_track_identities m WHERE m.track_id = t.id) AS managed \
+         FROM tracks t JOIN areas a ON a.id = t.area_id WHERE t.id = ?1",
     )
     .bind(track.id.as_str())
-    .fetch_one(executor)
-    .await?)
+    .fetch_optional(executor)
+    .await?;
+    let Some(facts) = facts else {
+        return Ok(Some(
+            "Track or Area no longer exists. Refresh the Area and choose another Track.".into(),
+        ));
+    };
+    let (reason, action): (String, &str) = if facts.child {
+        (
+            "child Tracks cannot be Area admins.".into(),
+            "Create a new top-level Track directly in this Area, then grant admin.",
+        )
+    } else if facts.created_by_track {
+        (
+            "Tracks created by another Track cannot be Area admins.".into(),
+            "Create a new top-level Track yourself in this Area, then grant admin.",
+        )
+    } else if facts.area_chat {
+        (
+            "Area chat Tracks cannot be Area admins.".into(),
+            "Create a separate top-level Track in this Area, then grant admin.",
+        )
+    } else if let Some(plugin) = facts.plugin_scope {
+        let template = facts
+            .template_id
+            .map(|id| format!(" (template `{id}`)"))
+            .unwrap_or_default();
+        (
+            format!("Track is bound to plugin `{plugin}`{template} and cannot be an Area admin."),
+            "Create a new top-level Track without a plugin-bound template, then grant admin.",
+        )
+    } else if facts.system_area {
+        (
+            "Tracks in a system Area cannot be Area admins.".into(),
+            "Create a top-level Track in a non-system Area, then grant admin.",
+        )
+    } else if facts.managed {
+        (
+            "Tracks with a managed identity cannot be Area admins.".into(),
+            "Create a separate top-level Track without a managed identity, then grant admin.",
+        )
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(format!("{reason} {action}")))
 }
 
 /// Grant is conditional on live eligibility; revocation is unconditional. Returns the live row.
 pub async fn set_tx(tx: &mut Transaction<'_, Sqlite>, track: &Track, admin: bool) -> Result<Track> {
-    if admin && !eligible_tx(&mut **tx, track).await? {
-        return Err(CalmError::Forbidden(
-            "ineligible: track cannot be an Area admin".into(),
-        ));
+    if admin {
+        require_eligible_tx(&mut **tx, track).await?;
     }
     sqlx::query("UPDATE tracks SET admin_granted_at = ?2, updated_at = ?3 WHERE id = ?1")
         .bind(track.id.as_str())

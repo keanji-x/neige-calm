@@ -97,3 +97,36 @@ async fn create_key_reused_with_other_admin_conflicts() {
     assert!(error.to_string().contains("idempotency_key_reused"));
     assert_eq!(b.track_count().await, 1);
 }
+
+#[tokio::test]
+async fn create_admin_explains_system_area_and_rolls_back() {
+    use super::*;
+    let b = boot_without_daemon().await;
+    let pool = b.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE areas SET kind='system' WHERE id=?1")
+        .bind(&b.area_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, body) = b
+        .post_create(
+            Some("refused-admin"),
+            json!({
+                "planner_provider":"codex", "area_id":b.area_id, "admin":true,
+                "theme":{"fg":[255,255,255],"bg":[0,0,0]}
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("system Area"), "{body}");
+    assert!(error.contains("non-system Area"), "{body}");
+    assert_eq!(b.track_count().await, 0);
+    assert_eq!(b.card_count().await, 0);
+    assert_eq!(b.binding_count().await, 0);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}

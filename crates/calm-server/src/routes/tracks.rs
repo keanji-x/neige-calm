@@ -2738,13 +2738,8 @@ pub(crate) async fn update_track(
                 let mut patch = p_for_tx;
                 let admin = patch.admin.take();
                 let live = crate::db::sqlite::track_get_tx(tx, &id.clone().into()).await?;
-                if admin == Some(true)
-                    && live.admin_granted_at.is_none()
-                    && !crate::area_admin::eligible_tx(&mut **tx, &live).await?
-                {
-                    return Err(CalmError::Forbidden(
-                        "ineligible: track cannot be an Area admin".into(),
-                    ));
+                if admin == Some(true) && live.admin_granted_at.is_none() {
+                    crate::area_admin::require_eligible_tx(&mut **tx, &live).await?;
                 }
                 let admin_changed =
                     admin.is_some_and(|value| value != live.admin_granted_at.is_some());
