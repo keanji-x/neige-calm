@@ -91,3 +91,44 @@ it('rejects a preparation supplied for another report identity', () => {
   expect(() => render(<ReportDocument report={other} preparation={prepareReportDocument(one)} empty={null} />))
     .toThrow('Report preparation does not match the displayed report');
 });
+
+it('decodes stable report sources and peeks without preparing Markdown', async () => {
+  const parse = vi.spyOn(markdown, 'parse');
+  const cache = createReportPreparationCache(); const wire = card();
+  const source = cache.source([wire]);
+  expect(source.card).toBe(wire);
+  expect(source.report).toEqual(readTrackReport([wire]));
+  expect(cache.source([{ ...wire, kind: 'notes', payload: {} }, wire])).toBe(source);
+  expect(cache.peek(source)).toBeUndefined();
+  expect(parse).not.toHaveBeenCalled();
+  const execute = vi.fn((report: TrackReport | null) => structuredClone(prepareReportDocument(report)));
+  const prepared = await cache.prepare(source, execute, new AbortController().signal);
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(prepared.report).not.toBe(source.report);
+  expect(cache.peek(source)).toBe(prepared);
+  expect(cache.read([wire])).toBe(prepared);
+  expect(await cache.prepare(source, execute, new AbortController().signal)).toBe(prepared);
+  expect(execute).toHaveBeenCalledTimes(1);
+});
+
+it('does not execute empty inputs, pre-aborted leases or retain aborted results and failures', async () => {
+  const cache = createReportPreparationCache();
+  const execute = vi.fn(prepareReportDocument);
+  const empty = cache.source([]); const invalid = cache.source([{ ...card(), payload: null }]);
+  expect(await cache.prepare(empty, execute, new AbortController().signal)).toBe(cache.peek(empty));
+  expect(await cache.prepare(invalid, execute, new AbortController().signal)).toBe(cache.peek(invalid));
+  expect(execute).not.toHaveBeenCalled();
+  const source = cache.source([card()]);
+  const controller = new AbortController(); controller.abort();
+  await expect(cache.prepare(source, execute, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(execute).not.toHaveBeenCalled();
+  let resolve!: (value: ReturnType<typeof prepareReportDocument>) => void;
+  const pending = new Promise<ReturnType<typeof prepareReportDocument>>(done => { resolve = done; });
+  const active = new AbortController(); const result = cache.prepare(source, () => pending, active.signal);
+  active.abort(); resolve(prepareReportDocument(source.report));
+  await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+  expect(cache.peek(source)).toBeUndefined();
+  const failed = new Error('Execution failed');
+  await expect(cache.prepare(source, () => { throw failed; }, new AbortController().signal)).rejects.toBe(failed);
+  expect(cache.peek(source)).toBeUndefined();
+});

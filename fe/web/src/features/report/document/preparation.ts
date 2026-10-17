@@ -71,20 +71,51 @@ export function prepareReportDocument(report: TrackReport | null): PreparedRepor
     outlineOnly: blocks.every(slot => slot.prose !== null && headingsOnly(slot.prose)) };
 }
 
-/** Per-router derived data only. Weak keys do not extend query-card reachability; the signed-in scope owns this instance. */
+export type ReportPreparationPort = (report: TrackReport | null, signal: AbortSignal) => PreparedReport | Promise<PreparedReport>;
+
+/** Cheap canonical input identity. It contains no prepared syntax or live capabilities. */
+export type ReportSource = Readonly<{ card: CardWire | null; report: TrackReport | null }>;
+
+/** Per-router derived data only. Weak keys do not extend query-card reachability. */
 export function createReportPreparationCache() {
-  const prepared = new WeakMap<CardWire, PreparedReport>();
+  const sources = new WeakMap<CardWire, ReportSource>();
+  const prepared = new WeakMap<ReportSource, PreparedReport>();
+  const emptySource: ReportSource = { card: null, report: null };
   const empty = prepareReportDocument(null);
+  prepared.set(emptySource, empty);
+  const sourceOf = (cards: readonly CardWire[]): ReportSource => {
+    const card = trackReportCardIn(cards);
+    if (card === undefined) return emptySource;
+    let source = sources.get(card);
+    if (source === undefined) {
+      source = { card, report: readTrackReport([card]) };
+      sources.set(card, source);
+      if (source.report === null) prepared.set(source, empty);
+    }
+    return source;
+  };
   return {
+    source: sourceOf,
+    peek: (source: ReportSource): PreparedReport | undefined => prepared.get(source),
     read(cards: readonly CardWire[]): PreparedReport {
-      const card = trackReportCardIn(cards);
-      if (card === undefined) return empty;
-      let result = prepared.get(card);
+      const source = sourceOf(cards);
+      let result = prepared.get(source);
       if (result === undefined) {
-        result = prepareReportDocument(readTrackReport([card]));
-        prepared.set(card, result);
+        result = prepareReportDocument(source.report);
+        prepared.set(source, result);
       }
+      return result;
+    },
+    async prepare(source: ReportSource, execute: ReportPreparationPort, signal: AbortSignal): Promise<PreparedReport> {
+      signal.throwIfAborted();
+      const cached = prepared.get(source);
+      if (cached !== undefined) return cached;
+      const result = await execute(source.report, signal);
+      signal.throwIfAborted();
+      prepared.set(source, result);
       return result;
     },
   };
 }
+
+export type ReportPreparationCache = ReturnType<typeof createReportPreparationCache>;

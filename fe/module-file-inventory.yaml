@@ -156,3 +156,5 @@
 - { path: fe/web/src/ui/navigation-row, type: directory, owner: ui/navigation-row, readonly: false, basis: "User-approved shared sidebar icon, label and action column geometry" }
 
 - { path: fe/web/src/ui/content-presentation, type: directory, owner: ui/content-presentation, readonly: false, basis: "Generic visit-scoped content admission; Track and conversation presentation" }
+
+- { path: fe/web/src/systems/worker-task, type: directory, owner: systems/worker-task, readonly: false, basis: "Per-job typed Worker execution and cancellation for feature-owned preparation (#2711)" }
