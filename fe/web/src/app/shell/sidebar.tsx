@@ -51,6 +51,7 @@ export type SidebarProps = Readonly<{
   /** The shell never signs out itself; the owner of the session does. */
   onSignOut: () => void;
   onStartGuide?: () => void;
+  onOpenDemo?: () => void;
   guideActive?: boolean;
   /** Owned by the shell: collapsing changes the shell grid, not just the rail. */
   collapsed: boolean;
@@ -78,7 +79,7 @@ export function initialsOf(label: string): string {
 export function Sidebar({
   areas, tracksByArea, tracks, trackGroups: memberships, currentPath, onGo,
   onRequestCreateArea, onRequestEditArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
-  onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed, onStartGuide, guideActive = false,
+  onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed, onStartGuide, onOpenDemo, guideActive = false,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
@@ -307,6 +308,9 @@ export function Sidebar({
               aria-label="New area" onClick={onRequestCreateArea}><Icon name="plus" /></button>}
             </GuideAnchor>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
+              <>
+              {onOpenDemo !== undefined && <button type="button" data-nc-role="row"
+                className={`${styles.emptyAreaCreate} ${rowLayout('labelStart')}`} onClick={onOpenDemo}>先体验 Demo</button>}
               <button
                 type="button"
                 data-nc-role="row"
@@ -315,6 +319,7 @@ export function Sidebar({
               >
                 Create your first area
               </button>
+              </>
             )}
 
             {shownAreas.length > 0 && (

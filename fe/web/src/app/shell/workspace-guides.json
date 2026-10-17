@@ -31,7 +31,7 @@
           "id": "area-defaults",
           "target": "area-defaults",
           "title": "选一个可以放心练习的目录",
-          "description": "做这次页面练习，保留 Neige workspace 即可：开始工作时会新建目录。如果想改自己的项目，就点这里选择那个仓库；先确认选的是你想操作的目录。",
+          "description": "这次保留 Neige workspace 即可。Demo 中的目录是虚拟的；实际使用时，你可以在这个位置选择自己的仓库。",
           "advance": "next",
           "outcome": "选好后点“下一步”，然后创建项目。"
         },
@@ -39,7 +39,7 @@
           "id": "area-create",
           "target": "area-create",
           "title": "把这个练习项目建好",
-          "description": "名字和默认选项已填好，点 Create area。这里仅创建项目分组，还不会让 AI 执行任务。",
+          "description": "点 Create area 建好演示项目。项目名称和选项只保留在这次 Demo 中。",
           "outcome": "左侧会出现项目名字。下一步点名字旁的 ＋ 写第一条需求。",
           "advance": "activate"
         }
@@ -93,8 +93,8 @@
           "id": "track-send",
           "target": "track-send",
           "title": "确认后发送这条需求",
-          "description": "点这个发送箭头，创建这项工作并让 AI 开始执行。发送前仍可修改输入框内容；目录不对就先回去调整 Folder。",
-          "outcome": "会打开对话，随后报告中会出现执行进展和成果。若提示模型不可用，按提示到 Planners 完成连接后再试。",
+          "description": "点发送箭头，体验一次执行。Demo 会展示预置页面，不调用 AI；输入内容只保留在演示对话中。",
+          "outcome": "报告里会出现预置成果。真实使用时，这一步才会调用你连接的 AI 工具。",
           "advance": "activate"
         }
       ],
@@ -112,7 +112,7 @@
           "id": "conversation-input",
           "target": "conversation-input",
           "title": "在这里提出修改或回答问题",
-          "description": "如果 AI 正在执行，先等任务完成；如果它提问，就在这里回答。看过练习页面后，可以填入下面的改标题需求，继续同一项工作。已关闭时先点“重新打开并继续”。",
+          "description": "看过演示页面后，可以填入下面的改标题需求，再发送一次。Demo 只预置了生成页面和改标题两种结果；已关闭时先点“重新打开并继续”。",
           "advance": "next",
           "outcome": "再次发送后，回到 Report 看页面是否随修改更新。",
           "example": {
@@ -188,7 +188,7 @@
           "id": "track-report",
           "target": "track-report",
           "title": "进展和成果都汇总在这里",
-          "description": "发送需求后，先看这里有没有“待你定”的问题；有就去对话回答，没有就等任务完成。出现真实页面预览后，检查它是否符合你的需求。",
+          "description": "这里展示演示进展和预置成果。先看看结果，再点 Open 打开页面；验证说明会标明哪些内容是演示数据。",
           "advance": "next",
           "outcome": "看见页面后点 Open 放大，接着可以要求再改一次。"
         },
@@ -196,9 +196,9 @@
           "id": "track-panel",
           "target": "track-panel",
           "title": "当前工作的对话与进展",
-          "description": "展开正在执行的任务，看它是在运行、验证，还是需要处理失败。对话上的 Completed 只表示一轮回复结束；还有运行中的任务时，请继续等待。",
+          "description": "展开演示任务，可以查看状态和预置的完成说明。真实使用时，还能在这里判断任务是在运行、验证，还是遇到了问题。",
           "advance": "next",
-          "outcome": "任务完成后，回到报告核对实际成果与验证结果。"
+          "outcome": "这次是预置的 Completed 状态，并没有实际运行模型或测试。"
         },
         {
           "id": "preview-open",
@@ -231,7 +231,7 @@
           "id": "workspace-add",
           "target": "workspace-add",
           "title": "先做出一个能预览的小作品",
-          "description": "我们先让 AI 做一个作品集页面，再看结果、改一次标题。现在点这个 ＋ 建一个练习项目，暂时不用研究日历、工具和全部设置。",
+          "description": "先在 Demo 里做一个作品集，再试一次改标题。点这个 ＋ 建立演示项目；整个练习只使用预置数据，不连接 AI，也不修改你的文件。",
           "advance": "activate",
           "outcome": "会打开项目设置窗口，先给练习项目取名。"
         },

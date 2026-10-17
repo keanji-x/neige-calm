@@ -16,6 +16,7 @@ import { type TrackActionsProps } from '../../features/track/row/actions.tsx';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 type MobileTracksProps = Readonly<{
+  onOpenDemo?: () => void;
   view: 'areas' | 'tracks';
   tracksBackLabel?: string;
   areas: readonly Area[];
@@ -58,7 +59,7 @@ export function MobileTracks(props: MobileTracksProps) {
 }
 
 function NavigationPage({
-  view, tracksBackLabel = 'Areas', areas, tracksByArea, areaId, currentTrackId, onBack, onCreateArea, onSelectArea, onEditArea, onOpenTrack, onNewTrack, onOpenSettings, onStartGuide,
+  view, tracksBackLabel = 'Areas', areas, tracksByArea, areaId, currentTrackId, onBack, onCreateArea, onSelectArea, onEditArea, onOpenTrack, onNewTrack, onOpenSettings, onStartGuide, onOpenDemo,
   isUnread, trackActions, readError, readLoading, onRetryRead,
 }: MobileTracksProps) {
   const shown = visibleAreas(areas);
@@ -87,7 +88,9 @@ function NavigationPage({
               <span className={styles.trackArrow}><Icon name="chevron-right" /></span>
             </button>}</GuideAnchor>
           </li>)}
-          {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty>No areas yet.</MobileListEmpty>}
+          {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty>
+            {onOpenDemo === undefined ? 'No areas yet.' : <button type="button" onClick={onOpenDemo}>先体验 Demo</button>}
+          </MobileListEmpty>}
         </MobileList> : <MobileTrackList tracks={tracks} currentTrackId={currentTrackId} onOpenTrack={onOpenTrack}
           isUnread={isUnread} trackActions={trackActions} emptyMessage={readError === null && !readLoading ? 'No tracks in this area yet.' : undefined} />}
       </MobileListGroup>

@@ -1,6 +1,6 @@
 import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { renderDailyFixture } from '../router/daily-planner-fixture.tsx';
 import { createUiPreferences } from '../providers/ui-preferences.tsx';
@@ -168,5 +168,21 @@ it('continues to visible workspace controls after a report tour and reveals the 
   await expect.element(page.getByRole('note', { name: '现在给 AI 一件具体的事做' })).toBeVisible();
   const add = page.getByRole('button', { name: 'New track in Project', exact: true });
   expect(getComputedStyle(add.element()).opacity).toBe('1');
+  fixture.client.clear();
+});
+
+
+it('opens Demo from normal onboarding instead of teaching against the real transport', async () => {
+  await page.viewport(1280, 900);
+  const preferences = createUiPreferences(); preferences.setDatabaseScope('normal-with-demo'); preferences.setGuideEnabled(true);
+  const onOpenDemo = vi.fn();
+  const fixture = renderDailyFixture({ emptyWorkspace: true, uiPreferences: preferences, onOpenDemo });
+  await page.getByRole('button', { name: '先体验 Demo', exact: true }).click();
+  expect(onOpenDemo).toHaveBeenCalledOnce();
+  await expect.element(page.getByRole('note')).not.toBeInTheDocument();
+  await page.getByRole('button', { name: 'Account menu for You', exact: true }).click();
+  await page.getByRole('menuitem', { name: '入门引导', exact: true }).click();
+  expect(onOpenDemo).toHaveBeenCalledTimes(2);
+  expect(fixture.requests.filter(request => request.method === 'POST' && request.path === '/api/areas')).toHaveLength(0);
   fixture.client.clear();
 });

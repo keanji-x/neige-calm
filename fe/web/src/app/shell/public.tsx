@@ -90,6 +90,7 @@ export function useMobileConversationOwner(owner: Scope) {
 }
 
 export type AppShellProps = Readonly<{
+  onOpenDemo?: () => void;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
@@ -139,7 +140,7 @@ export function useOpenMobileSection(): OpenMobileSection {
 }
 
 export function AppShell({
-  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel, initialWorkspaceGuide = false,
+  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel, initialWorkspaceGuide = false, onOpenDemo,
 }: AppShellProps) {
   const guideSupported = supportsAnchoredHints();
   const workspace = useWorkspace(transport, unauthorized);
@@ -178,8 +179,8 @@ export function AppShell({
   const preferences = useUiPreferences();
   const guide = useWorkspaceGuide(preferences, initialWorkspaceGuide && guideSupported,
     visibleAreas(workspace.areas).length === 0 && !readLoading && readError === null,
-    guideSupported && !readLoading && readError === null);
-  const guideEnabled = guide.enabled && guideSupported;
+    onOpenDemo === undefined && guideSupported && !readLoading && readError === null);
+  const guideEnabled = onOpenDemo === undefined && guide.enabled && guideSupported;
   const manualRailCollapsed = preferences.railCollapsed();
   const drawerWidth = useDrawerWidthHost(preferences);
   const narrowRail = useCompactViewport();
@@ -440,7 +441,8 @@ export function AppShell({
               />
             ) : mobileSection !== null ? (
               <MobileTracks
-                onStartGuide={guideSupported ? guide.start : undefined}
+                onOpenDemo={onOpenDemo}
+                onStartGuide={onOpenDemo ?? (guideSupported ? guide.start : undefined)}
                 view={mobileSection.kind === 'tracks' ? 'tracks' : 'areas'}
                 onSelectArea={(areaId) => { cancelMobileExit(); setMobileSection({ kind: 'tracks', areaId }); }}
                 onBack={mobileSection.kind === 'tracks' && mobileSection.returnTo !== 'report' ? () => setMobileSection({ kind: 'areas', areaId: navigationArea?.id }) : closeMobileSection}
@@ -473,7 +475,8 @@ export function AppShell({
             ) : null
           ) : <Sidebar
             trackGroups={trackGroups}
-            onStartGuide={guideSupported ? guide.start : undefined}
+            onOpenDemo={onOpenDemo}
+            onStartGuide={onOpenDemo ?? (guideSupported ? guide.start : undefined)}
             guideActive={guideEnabled && areas.length === 0}
             collapsed={railCollapsed}
             onToggleCollapsed={() => preferences.setRailCollapsed(!railCollapsed)}

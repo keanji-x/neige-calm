@@ -145,21 +145,21 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
   return <AnchoredHint open={active} title={active ? guide.current.step.title : ''}
     description={active ? guide.current.step.description : ''} reserveSpace={reserveSpace} placement={placement}
     onSkip={() => guide?.skip()}
+    contextLabel={active ? `${guide.current.tour} · ${String(guide.current.index + 1).padStart(2, '0')} / ${String(guide.current.count).padStart(2, '0')}` : undefined}
     detail={step === null ? undefined : <>
       {example !== undefined && <div className={styles.example}>
-        <span className={styles.title}>可以先试这个</span>
+        <span className={styles.exampleLabel}>试一试</span>
         <p>{example.summary}</p>
-        {onExample !== undefined && <Button type="button" label={example.label} size="sm" variant="secondary"
+        {onExample !== undefined && <Button type="button" className={styles.exampleAction} label={example.label} size="sm" variant="primary"
           onClick={() => { element?.focus({ preventScroll: true }); onExample(example.text); }} />}
       </div>}
       {step.outcome !== undefined && <p className={styles.outcome}>接下来：{step.outcome}</p>}
     </>}
     footer={active ? <>
-      <span className={styles.progress}>{guide.current.tour} · {guide.current.index + 1}/{guide.current.count}</span>
       <div className={styles.actions}>
-        <Button label="跳过引导" size="sm" variant="ghost" onClick={() => act(guide.skip)} />
+        <Button type="button" className={styles.skip} label="跳过引导" size="sm" variant="ghost" onClick={() => act(guide.skip)} />
         {guide.previous !== undefined && <Button label="上一步" size="sm" variant="ghost" onClick={() => act(guide.previous)} />}
-        <Button type="button" label={advance === 'activate' ? '略过这一步' : guide.current.index + 1 === guide.current.count ? '知道了' : '下一步'} isDisabled={!canAdvance} size="sm" variant={advance === 'activate' ? 'ghost' : 'secondary'} onClick={() => act(guide.next)} />
+        <Button type="button" label={advance === 'activate' ? '略过这一步' : guide.current.index + 1 === guide.current.count ? '知道了' : '下一步'} isDisabled={!canAdvance} size="sm" variant={advance === 'activate' ? 'ghost' : 'primary'} onClick={() => act(guide.next)} />
       </div>
     </> : undefined}>
     {(anchor, describedBy) => <BoundGuideControl anchor={anchor} onElement={setElement} describedBy={describedBy}>{children}</BoundGuideControl>}

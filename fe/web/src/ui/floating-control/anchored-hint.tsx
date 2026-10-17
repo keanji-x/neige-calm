@@ -10,13 +10,14 @@ export function supportsAnchoredHints(): boolean {
 }
 
 /** A nonmodal description of an existing control; its native action stays with the caller. */
-export function AnchoredHint({ open, title, description, onSkip, children, reserveSpace = false, placement = 'bottom', footer, detail }: Readonly<{
+export function AnchoredHint({ open, title, description, onSkip, children, reserveSpace = false, placement = 'bottom', footer, detail, contextLabel }: Readonly<{
   open: boolean;
   /** Reserve the hint’s measured height below the control in a form row. */
   reserveSpace?: boolean;
   placement?: 'top' | 'bottom';
   footer?: ReactNode;
   detail?: ReactNode;
+  contextLabel?: string;
   title: string;
   description: string;
   onSkip: () => void;
@@ -63,11 +64,14 @@ export function AnchoredHint({ open, title, description, onSkip, children, reser
   const nativeControl = children(anchor, visible ? id : undefined);
   const hint = visible && <div ref={(element) => refs.setFloating(element)} id={id} popover="manual" data-nc-guide-hint="" role="note" aria-label={title}
       className={styles.hint} style={{ ...floatingStyles, visibility: isPositioned && !middlewareData.hide?.referenceHidden ? 'visible' : 'hidden' }}>
-      <FloatingArrow ref={arrowRef} context={context} width={18} height={8} tipRadius={2}
-        fill="var(--paper)" className={styles.arrow} aria-hidden="true" />
+      <FloatingArrow ref={arrowRef} context={context} width={14} height={7} tipRadius={2}
+        fill="var(--paper)" stroke="var(--hairline)" strokeWidth={1} className={styles.arrow} aria-hidden="true" />
+      {contextLabel !== undefined && <span className={styles.context}>{contextLabel}</span>}
+      <div className={styles.body}>
       <strong className={styles.title}>{title}</strong>
       <p className={styles.description}>{description}</p>
       {detail}
+      </div>
       {footer ?? <Button label="跳过引导" size="sm" variant="ghost" onClick={() => {
         control.current?.focus({ preventScroll: true });
         onSkip();
