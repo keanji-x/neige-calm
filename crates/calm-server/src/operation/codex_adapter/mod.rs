@@ -424,6 +424,7 @@ impl ProviderAdapter for CodexAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
+        let expected_output = output.clone();
         let payload: CodexCreateOperationPayload = serde_json::from_value(op.payload.clone())?;
         let card_id = output.output_string("card_id", "codex")?;
         let cwd = output.output_string("cwd", "codex")?;
@@ -468,6 +469,7 @@ impl ProviderAdapter for CodexAdapter {
                 &self.card_role_cache,
                 &self.track_area_cache,
                 op,
+                &expected_output,
                 output,
                 payload.actor.clone(),
                 &card_id,
@@ -477,6 +479,7 @@ impl ProviderAdapter for CodexAdapter {
             output.result = serde_json::to_value(&updated)?;
             let turn_started_at_ms = output_optional_i64(output, "turn_started_at_ms")?;
             if turn_started_at_ms.is_none() {
+                let expected_output = output.clone();
                 self.shared_codex_appserver
                     // Worker/dedicated threads carry no per-card model selection (the picker addresses planner cards only).
                     .turn_start(
@@ -488,7 +491,8 @@ impl ProviderAdapter for CodexAdapter {
                     )
                     .await?;
                 output.set_output_data("turn_started_at_ms", json!(now_ms()), "codex")?;
-                checkpoint_prompt_turn_started(ctx, op, output, &thread_id).await?;
+                checkpoint_prompt_turn_started(ctx, op, &expected_output, output, &thread_id)
+                    .await?;
             }
             match await_shared_initial_turn_lifecycle(
                 &mut notifs,
@@ -511,6 +515,7 @@ impl ProviderAdapter for CodexAdapter {
                 &self.card_role_cache,
                 &self.track_area_cache,
                 op,
+                &expected_output,
                 output,
                 payload.actor,
                 &card_id,
@@ -1610,6 +1615,7 @@ async fn verify_codex_worker_workspace(
     let runtime_id_for_tx = runtime_id.clone();
     let op_for_tx = op.clone();
     let output_for_tx = checkpoint_output.clone();
+    let expected_output_for_tx = output.clone();
     let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     write_with_events_typed(
         ctx.repo.as_ref(),
@@ -1625,6 +1631,7 @@ async fn verify_codex_worker_workspace(
                     AppServerInteractKind::RegisterPending {
                         entry_id: Some(card_id_for_tx.clone()),
                     },
+                    &expected_output_for_tx,
                     &output_for_tx,
                 )
                 .await?;
@@ -1653,6 +1660,7 @@ async fn persist_prompt_thread(
     card_role_cache: &CardRoleCache,
     track_area_cache: &TrackAreaCache,
     op: &Operation,
+    expected_output: &TxOutput,
     output: &TxOutput,
     actor: ActorId,
     card_id: &str,
@@ -1670,6 +1678,7 @@ async fn persist_prompt_thread(
     let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
+    let expected_output_for_tx = expected_output.clone();
     let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
@@ -1718,6 +1727,7 @@ async fn persist_prompt_thread(
                     AppServerInteractKind::MintAndAwait {
                         thread_id: Some(thread_id_for_tx.clone()),
                     },
+                    &expected_output_for_tx,
                     &checkpoint_output,
                 )
                 .await?;
@@ -1744,11 +1754,13 @@ async fn persist_prompt_thread(
 async fn checkpoint_prompt_turn_started(
     ctx: &SpawnCtx,
     op: &Operation,
+    expected_output: &TxOutput,
     output: &TxOutput,
     thread_id: &str,
 ) -> Result<()> {
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
+    let expected_output_for_tx = expected_output.clone();
     let thread_id_for_tx = thread_id.to_string();
     write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
@@ -1758,6 +1770,7 @@ async fn checkpoint_prompt_turn_started(
                 AppServerInteractKind::MintAndAwait {
                     thread_id: Some(thread_id_for_tx),
                 },
+                &expected_output_for_tx,
                 &output_for_tx,
             )
             .await
@@ -1771,6 +1784,7 @@ async fn persist_pending_thread_status(
     card_role_cache: &CardRoleCache,
     track_area_cache: &TrackAreaCache,
     op: &Operation,
+    expected_output: &TxOutput,
     output: &TxOutput,
     actor: ActorId,
     card_id: &str,
@@ -1786,6 +1800,7 @@ async fn persist_pending_thread_status(
     let card_for_event = card;
     let op_for_tx = op.clone();
     let output_for_tx = output.clone();
+    let expected_output_for_tx = expected_output.clone();
     let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
     let (updated, _ids) = write_with_events_typed(
         ctx.repo.as_ref(),
@@ -1822,6 +1837,7 @@ async fn persist_pending_thread_status(
                     AppServerInteractKind::RegisterPending {
                         entry_id: Some(card_id_for_tx.clone()),
                     },
+                    &expected_output_for_tx,
                     &checkpoint_output,
                 )
                 .await?;

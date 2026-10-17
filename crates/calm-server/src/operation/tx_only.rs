@@ -14,7 +14,9 @@ use crate::error::Result;
 use crate::event::BroadcastEnvelope;
 use crate::model::new_id;
 
-use super::repo_sqlite::{insert_pending_row, operation_from_row, write_phase_and_tx_output};
+use super::repo_sqlite::{
+    PhaseWrite, insert_pending_row, operation_from_row, write_phase_and_tx_output,
+};
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, OperationId,
     OperationKey, OperationResult, Phase, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle,
@@ -192,7 +194,7 @@ async fn commit_in_tx(
     let mut output = adapter.prepare_tx(tx, &payload, &op).await?;
     let events = std::mem::take(&mut output.post_commit_events);
     // Inserted above in this transaction, so the row holds no lease.
-    write_phase_and_tx_output(&mut **tx, &op_id, None, &Phase::Succeeded, &output).await?;
+    write_phase_and_tx_output(tx, PhaseWrite::Inserted(&op), &Phase::Succeeded, &output).await?;
     // The answer is read back from the row, the same way a replay reads it; a row the write missed
     // has not settled.
     let result = operation_result_from(&read_row(tx, &op_id).await?)?.ok_or_else(|| {

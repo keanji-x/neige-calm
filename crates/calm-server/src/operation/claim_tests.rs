@@ -1,3 +1,4 @@
+use super::super::AppServerInteractKind;
 use super::*;
 
 async fn claimed_operation() -> (crate::db::sqlite::SqlxRepo, SqlxOperationRepo, Operation) {
@@ -69,4 +70,390 @@ async fn expired_claim_cannot_replace_output_without_reclaim() {
     let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
     assert_eq!(stored.phase.tag(), PhaseTag::AppServerInteract);
     assert_eq!(stored.tx_output.unwrap().result, json!({"original": true}));
+}
+
+fn compensation() -> CompensationStateVersioned {
+    CompensationStateVersioned {
+        version: 1,
+        from_phase: PhaseTag::AppServerInteract,
+        reason: "test failure".into(),
+        steps: vec![],
+    }
+}
+
+fn interaction(thread: &str) -> AppServerInteractKind {
+    AppServerInteractKind::MintAndAwait {
+        thread_id: Some(thread.into()),
+    }
+}
+
+#[tokio::test]
+async fn expired_claim_rejects_compensation_and_failure_writers() {
+    let (db, repo, op) = claimed_operation().await;
+    expire(&db, &op).await;
+    let output = op.tx_output.as_ref().unwrap();
+    assert!(
+        repo.set_compensating(&op, &compensation(), output)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.update_compensation_state(&op, &compensation())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.mark_failed(&op, "stale".into(), op.phase.tag(), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.mark_stuck(&op, "stale".into(), op.phase.tag())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
+    assert_eq!(stored.phase.tag(), PhaseTag::AppServerInteract);
+    assert!(stored.compensation_state.is_none());
+    assert!(stored.last_error.is_none());
+}
+
+#[tokio::test]
+async fn expired_claim_rejects_provider_checkpoint() {
+    let (db, repo, op) = claimed_operation().await;
+    expire(&db, &op).await;
+    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    assert!(
+        checkpoint_app_server_interact_tx(
+            &mut tx,
+            &op,
+            interaction("stale"),
+            op.tx_output.as_ref().unwrap(),
+            &TxOutput::new("unknown", None, json!({"stale": true})),
+        )
+        .await
+        .is_err()
+    );
+    tx.rollback().await.unwrap();
+    let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
+    assert_eq!(stored.tx_output.unwrap().result, json!({"original": true}));
+    assert_eq!(stored.phase, op.phase);
+}
+
+#[tokio::test]
+async fn expired_claim_rejects_spawn_artifacts_and_parking() {
+    let (db, repo, op) = claimed_operation().await;
+    sqlx::query("UPDATE operations SET phase='spawn_started', phase_detail_json=NULL WHERE id=?1")
+        .bind(&op.id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let op = repo.get_operation(&op.id).await.unwrap().unwrap();
+    let artifacts = SpawnArtifacts {
+        pid: 1,
+        pgid: 1,
+        start_time: 1,
+        boot_id: "fixture".into(),
+        log_path: None,
+        extra: Value::Null,
+    };
+    repo.record_spawn_artifacts(&op, &artifacts).await.unwrap();
+    expire(&db, &op).await;
+    let mut replacement = artifacts.clone();
+    replacement.pid = 2;
+    assert!(
+        repo.record_spawn_artifacts(&op, &replacement)
+            .await
+            .is_err()
+    );
+    assert!(
+        repo.set_parked(&op, now_ms() + 10_000)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
+    assert_eq!(stored.phase, Phase::SpawnStarted);
+    assert_eq!(stored.spawn_artifacts, Some(artifacts));
+}
+
+#[tokio::test]
+async fn original_identity_phase_owner_and_completion_are_claim_fences() {
+    for changed in [
+        "operation_key='another-key'",
+        "kind='another-kind'",
+        "idempotency_key='another-idempotency-key'",
+        "payload_hash='another-hash'",
+        "payload_json='{}'",
+        "phase='spawn_started'",
+        "lease_owner='another-owner'",
+        "completed_at_ms=1",
+    ] {
+        let (db, repo, op) = claimed_operation().await;
+        sqlx::query(&format!("UPDATE operations SET {changed} WHERE id=?1"))
+            .bind(&op.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        assert!(
+            repo.set_phase(&op, Phase::Succeeded)
+                .await
+                .unwrap()
+                .is_none(),
+            "{changed}"
+        );
+        assert!(
+            repo.set_phase_and_tx_output(&op, Phase::SpawnStarted, op.tx_output.as_ref().unwrap())
+                .await
+                .unwrap()
+                .is_none(),
+            "{changed}"
+        );
+        let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+        assert!(
+            checkpoint_app_server_interact_tx(
+                &mut tx,
+                &op,
+                interaction("stale"),
+                op.tx_output.as_ref().unwrap(),
+                op.tx_output.as_ref().unwrap()
+            )
+            .await
+            .is_err(),
+            "{changed}"
+        );
+        tx.rollback().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn sequential_provider_checkpoints_use_explicit_previous_output() {
+    let (db, repo, op) = claimed_operation().await;
+    let original = op.tx_output.as_ref().unwrap();
+    let first = TxOutput::new("unknown", None, json!({"checkpoint": 1}));
+    let second = TxOutput::new("unknown", None, json!({"checkpoint": 2}));
+    for (expected, output, thread) in [(original, &first, "first"), (&first, &second, "second")] {
+        let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+        checkpoint_app_server_interact_tx(&mut tx, &op, interaction(thread), expected, output)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.phase,
+        Phase::AppServerInteract {
+            kind: interaction("second")
+        }
+    );
+    assert_eq!(stored.tx_output.unwrap().result, second.result);
+    // The driver retains its original phase detail; it accepts the callback's
+    // own final committed output without freezing a whole Operation snapshot.
+    let next = repo
+        .set_phase_and_tx_output(&op, Phase::SpawnStarted, &second)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.phase, Phase::SpawnStarted);
+    assert_eq!(next.tx_output.unwrap().result, second.result);
+}
+
+#[tokio::test]
+async fn stale_same_claim_output_cannot_overwrite_a_committed_checkpoint() {
+    let (db, repo, op) = claimed_operation().await;
+    let original = op.tx_output.as_ref().unwrap();
+    let first = TxOutput::new("unknown", None, json!({"checkpoint": 1}));
+    let stale = TxOutput::new("unknown", None, json!({"checkpoint": "stale"}));
+    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    checkpoint_app_server_interact_tx(&mut tx, &op, interaction("first"), original, &first)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    assert!(
+        checkpoint_app_server_interact_tx(&mut tx, &op, interaction("stale"), original, &stale)
+            .await
+            .is_err()
+    );
+    tx.rollback().await.unwrap();
+    assert!(
+        repo.set_phase_and_tx_output(&op, Phase::SpawnStarted, &stale)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.set_compensating(&op, &compensation(), &stale)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.phase,
+        Phase::AppServerInteract {
+            kind: interaction("first")
+        }
+    );
+    assert_eq!(stored.tx_output.unwrap().result, first.result);
+    assert_eq!(stored.lease_owner, op.lease_owner);
+}
+
+#[tokio::test]
+async fn phase_only_settlement_preserves_a_provider_checkpoint() {
+    let (db, repo, op) = claimed_operation().await;
+    let output = TxOutput::new("unknown", None, json!({"checkpoint": "owned"}));
+    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    checkpoint_app_server_interact_tx(
+        &mut tx,
+        &op,
+        interaction("owned"),
+        op.tx_output.as_ref().unwrap(),
+        &output,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let settled = repo
+        .set_phase(&op, Phase::Succeeded)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.tx_output.unwrap().result, output.result);
+}
+
+#[tokio::test]
+async fn settlement_retains_released_terminal_launch_owner_bytes() {
+    let (db, repo, op) = claimed_operation().await;
+    let state = json!({"version":1,"state":"requested","terminal_id":"original-terminal","supervisor_sock":"/original.sock"});
+    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data',json(?1)) WHERE id=?2")
+        .bind(serde_json::to_string(&json!({"terminal_launch":state})).unwrap())
+        .bind(&op.id).execute(db.pool()).await.unwrap();
+    let op = repo.get_operation(&op.id).await.unwrap().unwrap();
+    let mut output = op.tx_output.clone().unwrap();
+    output.data = json!({"terminal_launch":{"state":"not_requested","version":1}});
+    let settled = repo
+        .set_compensating(&op, &compensation(), &output)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(settled.tx_output.unwrap().data["terminal_launch"], state);
+}
+
+struct TxOnlyClaimAdapter;
+
+#[async_trait]
+impl super::super::TxOnlyAdapter for TxOnlyClaimAdapter {
+    fn kind(&self) -> &'static str {
+        "claim-test-tx-only"
+    }
+    async fn validate(&self, _input: &Value) -> Result<()> {
+        Ok(())
+    }
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        _input: &Value,
+        op: &Operation,
+    ) -> Result<TxOutput> {
+        sqlx::query("INSERT INTO claim_effects (op_id) VALUES (?1)")
+            .bind(&op.id)
+            .execute(&mut **tx)
+            .await?;
+        Ok(TxOutput::new("unknown", None, json!({"created": true})))
+    }
+}
+
+#[tokio::test]
+async fn keyed_commit_settles_its_own_unleased_insert_and_replays_once() {
+    use super::super::tx_only::{KeyedCommit, commit_tx_only};
+    let db = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE claim_effects (op_id TEXT PRIMARY KEY)")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(new_id()),
+        payload_hash: "same".into(),
+    };
+    let first = commit_tx_only(
+        db.pool(),
+        &TxOnlyClaimAdapter,
+        key.clone(),
+        json!({"input":"accepted"}),
+    )
+    .await
+    .unwrap();
+    let KeyedCommit::Committed { result, .. } = first else {
+        panic!("first request must commit")
+    };
+    let second = commit_tx_only(
+        db.pool(),
+        &TxOnlyClaimAdapter,
+        key,
+        json!({"input":"accepted"}),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(second, KeyedCommit::Replay(id) if id == result.op_id));
+    let stored = SqlxOperationRepo::new(db.pool().clone())
+        .get_operation(&result.op_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.phase, Phase::Succeeded);
+    assert!(stored.lease_owner.is_none());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM claim_effects")
+            .fetch_one(db.pool())
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn expired_claim_cannot_use_the_inserted_transaction_branch() {
+    let (db, repo, op) = claimed_operation().await;
+    expire(&db, &op).await;
+    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    assert!(
+        write_phase_and_tx_output(
+            &mut tx,
+            PhaseWrite::Inserted(&op),
+            &Phase::Succeeded,
+            op.tx_output.as_ref().unwrap()
+        )
+        .await
+        .is_err()
+    );
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        repo.get_operation(&op.id).await.unwrap().unwrap().phase,
+        op.phase
+    );
+}
+
+#[tokio::test]
+async fn expired_claim_cannot_enter_prepare_callback() {
+    let (db, repo, op) = claimed_operation().await;
+    expire(&db, &op).await;
+    // This table intentionally does not exist. Entering the real prepare_tx
+    // callback would error, even if a later settlement rolled it back.
+    assert!(
+        repo.prepare_tx_and_advance(&op, &TxOnlyClaimAdapter)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
+    assert_eq!(stored.phase, op.phase);
+    assert_eq!(stored.tx_output.unwrap().result, json!({"original":true}));
 }

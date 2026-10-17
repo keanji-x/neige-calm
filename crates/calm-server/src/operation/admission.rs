@@ -8,13 +8,8 @@ use sqlx::SqlitePool;
 use super::{
     Operation, OperationId, OperationKey, Tx, idempotency_payload_conflict,
     repo_sqlite::{insert_pending_row, operation_from_row},
-    required_lease_owner,
 };
-use crate::{
-    db::sqlite::begin_immediate_tx,
-    error::{CalmError, Result},
-    model::{new_id, now_ms},
-};
+use crate::{db::sqlite::begin_immediate_tx, error::Result, model::new_id};
 
 #[async_trait]
 pub(crate) trait OperationAdmission: Send + Sync {
@@ -64,37 +59,4 @@ pub(super) async fn insert_admitted(
     Ok(original.id)
 }
 
-/// One generic live-claim predicate for a new operation effect and its owning
-/// preparation transaction. Domain owners do not copy lease/phase SQL.
-pub(crate) async fn require_live_claim_tx(tx: &mut Tx<'_>, original: &Operation) -> Result<()> {
-    let phase = original.phase.tag();
-    let detail = original
-        .phase_detail
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-    let current: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM operations WHERE id=?1 AND operation_key=?2 AND kind=?3 \
-         AND idempotency_key IS ?4 AND payload_hash=?5 AND payload_json=?6 \
-         AND phase=?7 AND phase_detail_json IS ?8 AND lease_owner=?9 \
-         AND lease_until_ms>=?10 AND completed_at_ms IS NULL",
-    )
-    .bind(&original.id)
-    .bind(&original.operation_key)
-    .bind(&original.kind)
-    .bind(&original.idempotency_key)
-    .bind(&original.payload_hash)
-    .bind(serde_json::to_string(&original.payload)?)
-    .bind(phase.as_str())
-    .bind(detail)
-    .bind(required_lease_owner(original)?)
-    .bind(now_ms())
-    .fetch_optional(&mut **tx)
-    .await?;
-    if current.is_none() {
-        return Err(CalmError::Conflict(
-            "operation no longer owns its original live claim".into(),
-        ));
-    }
-    Ok(())
-}
+pub(crate) use super::repo_sqlite::require_live_claim_tx;

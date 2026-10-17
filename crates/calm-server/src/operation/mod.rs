@@ -855,29 +855,7 @@ pub trait OperationRepo: Send + Sync {
         op: &Operation,
         artifacts: &SpawnArtifacts,
     ) -> Result<()> {
-        let artifacts_text = serde_json::to_string(artifacts)?;
-        let pool = self.sqlite_pool();
-        let result = sqlx::query(
-            r#"UPDATE operations
-               SET spawn_artifacts_json = ?1,
-                   updated_at_ms = ?2
-               WHERE id = ?3
-                 AND lease_owner = ?4
-                 AND phase = 'spawn_started'"#,
-        )
-        .bind(artifacts_text)
-        .bind(now_ms())
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&pool)
-        .await?;
-        if result.rows_affected() == 0 {
-            return Err(CalmError::Internal(format!(
-                "operation {} lost lease while recording spawn artifacts",
-                op.id
-            )));
-        }
-        Ok(())
+        repo_sqlite::record_spawn_artifacts(&self.sqlite_pool(), op, artifacts).await
     }
 
     async fn set_parked(
@@ -885,34 +863,7 @@ pub trait OperationRepo: Send + Sync {
         op: &Operation,
         deadline_ms: TimestampMs,
     ) -> Result<Option<Operation>> {
-        let now = now_ms();
-        let pool = self.sqlite_pool();
-        let result = sqlx::query(
-            r#"UPDATE operations
-               SET phase = 'parked',
-                   phase_detail_json = NULL,
-                   parked_at_ms = ?1,
-                   parked_deadline_ms = ?2,
-                   lease_owner = NULL,
-                   lease_until_ms = NULL,
-                   updated_at_ms = ?1
-               WHERE id = ?3
-                 AND lease_owner = ?4
-                 AND spawn_artifacts_json IS NOT NULL"#,
-        )
-        .bind(now)
-        .bind(deadline_ms)
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&pool)
-        .await?;
-        if result.rows_affected() == 0 {
-            return Ok(None);
-        }
-        self.get_operation(&op.id)
-            .await?
-            .map(Some)
-            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+        repo_sqlite::set_parked(&self.sqlite_pool(), op, deadline_ms).await
     }
 
     async fn claim_parked(&self, op_id: &str) -> Result<Option<Operation>> {
