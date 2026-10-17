@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { commands } from 'vitest/browser';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import '../../styles/entry.css';
 import { SizeMotion } from './size.tsx';
 
@@ -16,7 +16,7 @@ function Panel({ mode, height = mode === 'expanded' ? 160 : 40, margin = 0 }: {
 const host = () => document.querySelector<HTMLElement>('[data-nc-size-motion]')!;
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 const settled = () => expect.poll(() => host().style.height).toBe('');
-afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
+afterEach(async () => { cleanup(); vi.restoreAllMocks(); await commands.emulateReducedMotion(false); });
 
 it('includes arbitrary content margins in its intrinsic size', () => {
   render(<Panel mode="compact" margin={16} />);
@@ -135,4 +135,14 @@ it('preserves outward velocity when an expanded panel reverses toward its compac
   expect(parseFloat(String(frames[1].height))).toBeGreaterThan(parseFloat(String(frames[0].height)));
   await settled();
   expect(host().getBoundingClientRect().height).toBe(40);
+});
+
+it('does not synchronously measure an unchanged mode when ordinary children update', () => {
+  const view = render(<Panel mode="compact" />);
+  const content = host().firstElementChild as HTMLElement;
+  const measure = vi.spyOn(content, 'getBoundingClientRect');
+  view.rerender(<Panel mode="compact" height={80} />);
+  expect(measure).not.toHaveBeenCalled();
+  expect(host().style.height).toBe('');
+  expect(host().getBoundingClientRect().height).toBe(80);
 });
