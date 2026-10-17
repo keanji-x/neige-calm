@@ -55,11 +55,11 @@ it('follows native actions, yields to dialogs, resumes unseen groups and skips w
 it('supports previous and next without invoking product actions', async () => {
   await page.viewport(1000, 800);
   render(<Fixture />);
-  await page.getByRole('button', { name: '下一步', exact: true }).click();
+  await page.getByRole('button', { name: '略过这一步', exact: true }).click();
   await expect.element(page.getByRole('note', { name: 'Second group' })).toBeVisible();
   await page.getByRole('button', { name: '上一步', exact: true }).click();
   await expect.element(page.getByRole('note', { name: 'First action' })).toBeVisible();
-  await page.getByRole('button', { name: '下一步', exact: true }).click();
+  await page.getByRole('button', { name: '略过这一步', exact: true }).click();
   await expect.element(page.getByRole('note', { name: 'Second group' })).toBeVisible();
   await expect.element(page.getByRole('dialog')).not.toBeInTheDocument();
 });

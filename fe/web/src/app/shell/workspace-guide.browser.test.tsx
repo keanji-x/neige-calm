@@ -54,7 +54,7 @@ it('keeps existing projects ordinary and starts the relevant page guide on reque
   await page.getByRole('menuitem', { name: '入门引导', exact: true }).click();
   await expect.element(page.getByRole('note', { name: '继续当前工作，还是新开一项？' })).toBeVisible();
   await expect.element(page.getByRole('note', { name: '先做出一个能预览的小作品' })).not.toBeInTheDocument();
-  await page.getByRole('button', { name: '下一步', exact: true }).click();
+  await page.getByRole('button', { name: '略过这一步', exact: true }).click();
   await expect.element(page.getByRole('note', { name: '进展和成果都汇总在这里' })).toBeVisible();
   await page.getByRole('button', { name: '上一步', exact: true }).click();
   await expect.element(page.getByRole('note', { name: '继续当前工作，还是新开一项？' })).toBeVisible();

@@ -159,7 +159,7 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
       <div className={styles.actions}>
         <Button label="跳过引导" size="sm" variant="ghost" onClick={() => act(guide.skip)} />
         {guide.previous !== undefined && <Button label="上一步" size="sm" variant="ghost" onClick={() => act(guide.previous)} />}
-        <Button type="button" label={guide.current.index + 1 === guide.current.count ? '知道了' : '下一步'} isDisabled={!canAdvance} size="sm" variant="secondary" onClick={() => act(guide.next)} />
+        <Button type="button" label={advance === 'activate' ? '略过这一步' : guide.current.index + 1 === guide.current.count ? '知道了' : '下一步'} isDisabled={!canAdvance} size="sm" variant={advance === 'activate' ? 'ghost' : 'secondary'} onClick={() => act(guide.next)} />
       </div>
     </> : undefined}>
     {(anchor, describedBy) => <BoundGuideControl anchor={anchor} onElement={setElement} describedBy={describedBy}>{children}</BoundGuideControl>}
