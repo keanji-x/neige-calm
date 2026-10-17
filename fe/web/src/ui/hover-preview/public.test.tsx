@@ -46,6 +46,26 @@ describe('HoverPreview lifecycle', () => {
     advance(180);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+  it.each([{ isComposing: true }, { keyCode: 229 }])('keeps waiting activation and cancellation with IME flags inert: %j', flags => {
+    mount(); hover(); advance(100);
+    const trigger = screen.getByRole('button', { name: 'Notes' });
+    fireEvent.keyDown(trigger, { key: 'Escape', ...flags });
+    advance(200);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(trigger, { key: 'ArrowDown', ...flags });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+  it('consumes waiting Escape and cancels the pending preview', () => {
+    mount(); hover(); advance(100);
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    act(() => { screen.getByRole('button', { name: 'Notes' }).dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    advance(1000);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
   it('cancels an accidental hover before opening', () => {
     mount(); hover(); advance(100);
     fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);

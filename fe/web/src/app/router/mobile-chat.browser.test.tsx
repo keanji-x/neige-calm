@@ -325,8 +325,45 @@ it('uses the shared dismissal stack for idle portalled editors and leaves IME Es
   editor.focus();
   for (const properties of [{ isComposing: true }, { keyCode: 229 }]) {
     editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...properties }));
+    // Do not mistake a still-visible exit animation for an IME-safe open host.
+    await expect.poll(() => dialog.element().getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+    expect((dialog.element() as HTMLDialogElement).open).toBe(true);
+    expect(document.querySelector('[data-nc-mobile-chat-panel]')?.closest('[inert]')).toBeNull();
     await expect.element(dialog).toBeVisible();
   }
   await userEvent.keyboard('{Escape}');
   await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(false);
+});
+
+it('preserves the footer DOM and caret across native and desktop presentations then returns focus after exit', async () => {
+  await page.viewport(390, 844);
+  renderDailyFixture({ emptyWorkspace: true });
+  await page.getByRole('textbox', { name: 'Chat message', exact: true }).click();
+  const field = page.getByRole('combobox', { name: 'Message', exact: true });
+  await field.fill('Retained caret draft');
+  const editor = field.element() as HTMLElement;
+  const footer = editor.closest('[data-nc-conversation-region]')!;
+  const text = editor.firstChild!;
+  const range = document.createRange();
+  range.setStart(text, 5); range.collapse(true);
+  document.getSelection()!.removeAllRanges(); document.getSelection()!.addRange(range);
+  for (const width of [1280, 390, 1280, 390]) {
+    await page.viewport(width, 844);
+    await expect.poll(() => Boolean(editor.closest('dialog'))).toBe(width === 390);
+    expect(field.element()).toBe(editor);
+    expect(editor.closest('[data-nc-conversation-region]')).toBe(footer);
+    await expect.poll(() => document.activeElement).toBe(editor);
+    await expect.poll(() => document.getSelection()?.anchorNode).toBe(text);
+    expect(document.getSelection()?.anchorOffset).toBe(5);
+    expect(editor.textContent).toBe('Retained caret draft');
+  }
+  await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+  await expect.poll(() => document.querySelector('dialog[open]')).toBeNull();
+  await expect.poll(() => document.activeElement?.hasAttribute('data-nc-chat-dock')).toBe(true);
+  await expect.element(page.getByRole('textbox', { name: 'Chat message', exact: true })).toHaveValue('Retained caret draft');
+  await page.getByRole('textbox', { name: 'Chat message', exact: true }).click();
+  await expect.element(field).toHaveTextContent('Retained caret draft');
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => document.querySelector('dialog[open]')).toBeNull();
+  await expect.poll(() => document.activeElement?.hasAttribute('data-nc-chat-dock')).toBe(true);
 });

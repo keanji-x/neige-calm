@@ -1,5 +1,6 @@
 export { PreviewSummary, PreviewTextLink } from './summary.tsx';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
 import { LayerDepthProvider, useLayer, useLayerDismissal } from '@astryxdesign/core/Layer';
 
 import { useState } from '../state/public.ts';
@@ -65,18 +66,10 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     close();
     if (card.current?.contains(document.activeElement)) focusTrigger();
   }, [close, focusTrigger]);
-  const { shouldDismissOnCloseRequest } = useLayerDismissal({
+  useLayerDismissal({
     isActive: visible, onDismiss: dismissLayer, getContainer: () => card.current,
     isPresent: () => card.current?.isConnected ?? false,
   });
-  const dismissOnEscape = (event: KeyboardEvent<HTMLElement>) => {
-    // Native dialog hosts handle Escape at element level. Claim it here
-    // only when the shared Layer stack assigns this preview ownership.
-    if (event.key !== 'Escape' || event.defaultPrevented || !shouldDismissOnCloseRequest()) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dismissLayer();
-  };
   const dismissForNavigation = useCallback(() => {
     close();
     // Hand the destination a connected opener before it captures return focus.
@@ -209,7 +202,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       leave();
     }}
     onKeyDown={(event) => {
-      if (visible) dismissOnEscape(event);
+      if (event.defaultPrevented || isImeKeyEvent(event.nativeEvent)) return;
       // React portals bubble through this span; only its actual trigger owns activation.
       if (!(event.target instanceof Node) || !anchor.current?.contains(event.target)) return;
       if (event.key === 'ArrowDown') {

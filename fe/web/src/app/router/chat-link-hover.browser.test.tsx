@@ -203,3 +203,42 @@ it.each(['native initial', 'desktop to narrow'])('keeps file body above the nati
   await expect.poll(() => requests.some(request => request.path.includes('/workspace/readfile?path=nested.md'))).toBe(true);
   await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(true);
 });
+
+it.each(['parent content', 'root trigger'])('dismisses only the hovered child with %s focused in native chat', async focus => {
+  await setup({ narrow: true, fileText: '# Parent file\n\n[Read nested](./nested.md)' });
+  const trigger = page.getByRole('button', { name: 'Chat file', exact: true });
+  await expect.element(trigger).toBeVisible();
+  const host = trigger.element().closest('dialog')!;
+  await expect.poll(() => host.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+  trigger.element().focus();
+  await userEvent.keyboard('{ArrowDown}');
+  const parent = page.getByRole('region', { name: 'Preview content: Chat file' });
+  await expect.element(parent).toBeVisible();
+  if (focus === 'root trigger') trigger.element().focus();
+  else (parent.element() as HTMLElement).focus();
+  const nested = parent.getByRole('button', { name: 'Read nested', exact: true });
+  const child = page.getByRole('dialog', { name: 'Preview: Read nested' });
+  await trigger.hover();
+  await nested.hover();
+  await expect.element(child).toBeVisible();
+  expect(document.activeElement).toBe(focus === 'root trigger' ? trigger.element() : parent.element());
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => child.query()).toBeNull();
+  expect(host.open).toBe(true);
+  expect(parent.query()).not.toBeNull();
+  // Reopen without moving focus into the child, then unwind one owner per key.
+  await trigger.hover();
+  await nested.hover();
+  await expect.element(child).toBeVisible();
+  expect(document.activeElement).toBe(focus === 'root trigger' ? trigger.element() : parent.element());
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => child.query()).toBeNull();
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => parent.query()).toBeNull();
+  expect(host.open).toBe(true);
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => host.open).toBe(false);
+  await page.getByRole('button', { name: /^Conversation Link chat/ }).click();
+  await expect.element(page.getByRole('button', { name: 'Chat file', exact: true })).toBeVisible();
+  await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(true);
+});
