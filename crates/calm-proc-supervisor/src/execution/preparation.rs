@@ -68,7 +68,7 @@ impl Executor {
             // Terminal/historical exact retries return their original facts without recreating
             // source authority. A still-Prepared retry must satisfy today's source qualification.
             if !matches!(existing.phase, Phase::Prepared | Phase::Reserved { .. }) {
-                return Ok(reply(existing));
+                return self.replay_reply(existing);
             }
         }
         anyhow::ensure!(
@@ -97,7 +97,7 @@ impl Executor {
         let root = self.resolve(&request.identity, true)?;
         let _cwd = root.launch_cwd(scope_cwd(&request.identity.scope))?;
         if let Some(existing) = existing {
-            return Ok(reply(&existing));
+            return self.replay_reply(&existing);
         }
         // Immutable scope equality makes exact retries share the same resource gate.
         // The global reservation is released before journal IO, and survives failed persistence.

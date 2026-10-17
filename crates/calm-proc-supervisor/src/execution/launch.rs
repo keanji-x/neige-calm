@@ -19,10 +19,7 @@ impl Executor {
         let mut record = self.record(&request.execution_id)?;
         Self::check_ticket(&record, &request)?;
         if !matches!(record.phase, Phase::Prepared | Phase::Reserved { .. }) {
-            if record.pending_persistence {
-                self.persist(record.clone())?;
-            }
-            return Ok(reply(&record));
+            return self.replay_reply(&record);
         }
         anyhow::ensure!(
             !self.closing.load(std::sync::atomic::Ordering::SeqCst),
@@ -70,7 +67,7 @@ impl Executor {
                     anyhow::ensure!(
                         previous_state
                             .as_ref()
-                            .is_some_and(|previous| previous.phase.state().permits_handoff()),
+                            .is_some_and(|previous| previous.durably_settled()),
                         "previous execution is not positively drained/revoked/no-child"
                     );
                     slot.version
@@ -209,13 +206,14 @@ mod tests {
             .into_iter()
             .map(|fd| fd.as_fd().try_clone_to_owned().unwrap())
             .collect();
-        assert!(matches!(
-            executor
-                .attach_objects(transfer.clone(), files)
-                .await
-                .unwrap(),
-            ExecutionReply::Registered(_)
-        ));
+        let registered = match executor
+            .attach_objects(transfer.clone(), files)
+            .await
+            .unwrap()
+        {
+            ExecutionReply::Registered(receipt) => receipt,
+            other => panic!("attachment failed: {other:?}"),
+        };
         let request = PrepareExecution {
             identity: ExecutionIdentity {
                 execution_id: ExecutionId::fresh().unwrap(),
@@ -248,6 +246,18 @@ mod tests {
             executor.prepare(request.clone()).await.unwrap(),
             ExecutionReply::Prepared
         ));
+        let mut next = request.clone();
+        next.identity.execution_id = ExecutionId::fresh().unwrap();
+        next.identity.ticket_id = LaunchTicketId::fresh().unwrap();
+        next.ticket = CapabilityToken::fresh().unwrap();
+        next.handoff = Some(AliasHandoff {
+            previous_execution: request.identity.execution_id.clone(),
+            expected_slot_version: 1,
+        });
+        assert!(matches!(
+            executor.prepare(next.clone()).await.unwrap(),
+            ExecutionReply::Prepared
+        ));
         let consume = ConsumeExecution {
             execution_id: request.identity.execution_id.clone(),
             ticket_id: request.identity.ticket_id.clone(),
@@ -261,24 +271,62 @@ mod tests {
                 std::fs::rename(&journal, &moved_journal).unwrap();
             })
             .await;
+        assert!(
+            executor.prepare(request.clone()).await.is_err(),
+            "Prepare acknowledged an unpersisted terminal conclusion"
+        );
         std::fs::rename(&moved_source, &path).unwrap();
         std::fs::rename(&moved_journal, &journal).unwrap();
         assert!(failed.is_err());
+        let next_consume = ConsumeExecution {
+            execution_id: next.identity.execution_id.clone(),
+            ticket_id: next.identity.ticket_id.clone(),
+            ticket: next.ticket.clone(),
+        };
+        assert!(
+            executor.launch(next_consume.clone()).await.is_err(),
+            "handoff consumed a nondurable predecessor"
+        );
+        executor.revoke(next_consume).await.unwrap();
+        assert!(
+            executor
+                .retire_registration(registered.clone())
+                .await
+                .is_err(),
+            "retirement consumed a nondurable terminal ticket"
+        );
         let original = executor.record(&consume.execution_id).unwrap();
         assert!(matches!(original.phase, Phase::NoChild { .. }));
         assert!(matches!(
-            executor.launch(consume).await.unwrap(),
+            executor.launch(consume.clone()).await.unwrap(),
             ExecutionReply::Receipt {
                 receipt: None,
                 state: ExecutionState::NoChild { .. }
             }
         ));
-        let durable = executor.store.load().unwrap().pop().unwrap();
+        let durable = executor
+            .store
+            .load()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.request.identity.execution_id == request.identity.execution_id)
+            .unwrap();
         assert_eq!(
             serde_json::to_value(&durable.phase).unwrap(),
             serde_json::to_value(&original.phase).unwrap()
         );
         assert!(!path.join("created").exists());
+        assert!(matches!(
+            executor.retire_registration(registered).await.unwrap(),
+            ExecutionReply::RegistrationRetired { .. }
+        ));
+        assert!(matches!(
+            executor.launch(consume).await.unwrap(),
+            ExecutionReply::Receipt {
+                state: ExecutionState::NoChild { .. },
+                ..
+            }
+        ));
         assert!(executor.processes.lock().unwrap().is_empty());
     }
 }

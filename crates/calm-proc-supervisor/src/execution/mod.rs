@@ -298,6 +298,14 @@ impl Executor {
         Ok(())
     }
 
+    fn replay_reply(&self, record: &Journal) -> anyhow::Result<ExecutionReply> {
+        // Unknown remains an uncertainty report; a new positive settlement needs its barrier.
+        if record.pending_persistence && record.phase.state().permits_handoff() {
+            self.persist(record.clone())?;
+        }
+        Ok(reply(record))
+    }
+
     fn latch(&self, mut record: Journal) -> anyhow::Result<Journal> {
         record.pending_persistence = true;
         self.records
@@ -453,10 +461,7 @@ impl Executor {
                 })
             }
             ProcessAction::Cleanup => {
-                anyhow::ensure!(
-                    record.phase.state().permits_handoff(),
-                    "execution not positively drained"
-                );
+                anyhow::ensure!(record.durably_settled(), "execution not durably drained");
                 self.processes.lock().map_err(poison)?.remove(id);
                 Ok(ExecutionReply::ActionComplete)
             }

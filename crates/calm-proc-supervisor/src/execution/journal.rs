@@ -22,6 +22,12 @@ pub(super) struct Journal {
     pub pending_persistence: bool,
 }
 
+impl Journal {
+    pub fn durably_settled(&self) -> bool {
+        !self.pending_persistence && self.phase.state().permits_handoff()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) enum Phase {
     Prepared,

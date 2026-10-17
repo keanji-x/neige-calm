@@ -34,7 +34,7 @@ impl Executor {
                 .values()
                 .all(
                     |record| record.request.identity.source_registration != receipt.id
-                        || record.phase.state().permits_handoff()
+                        || record.durably_settled()
                 ),
             "registration still owns a pending or live execution"
         );

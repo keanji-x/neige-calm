@@ -109,7 +109,7 @@ impl Executor {
         for record in self.records.lock().map_err(poison)?.values() {
             if scope_resource(&record.request.identity.scope)
                 == registration_resource(&root.registration)
-                && !record.phase.state().permits_handoff()
+                && !record.durably_settled()
                 && (directory_changed
                     || !same_runtime(&record.request.identity.scope, &root.registration))
             {
