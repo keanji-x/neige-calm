@@ -38,13 +38,20 @@ async fn current_human_ref_matches_tx(
 ) -> Result<bool> {
     let principal = source.current_principal()?;
     let stored = conversation::message_tx(tx, &message.message_id).await?;
-    Ok(stored.card_id == carrier.card_id()
-        && stored.current == *message
-        && stored.withdrawn_at_ms.is_none()
-        && stored.author
-            == (MessageAuthor::AuthenticatedHuman {
+    if stored.card_id != carrier.card_id()
+        || stored.current != *message
+        || stored.withdrawn_at_ms.is_some()
+        || stored.author
+            != (MessageAuthor::AuthenticatedHuman {
                 registered_user_id: principal.user_id,
-            }))
+            })
+    {
+        return Ok(false);
+    }
+    Ok(matches!(
+        conversation::revision_tx(tx, message).await?.payload,
+        calm_types::conversation::PrivateHistoryPayload::Present { .. }
+    ))
 }
 
 /// Derive transient source associations from the sole committed pending order.
@@ -59,12 +66,7 @@ pub(crate) async fn human_pending_source_refs_tx(
         let calm_types::conversation::PendingInput::Human { message, .. } = pending else {
             break;
         };
-        if !current_human_ref_matches_tx(tx, source, carrier, message).await?
-            || !matches!(
-                conversation::revision_tx(tx, message).await?.payload,
-                calm_types::conversation::PrivateHistoryPayload::Present { .. }
-            )
-        {
+        if !current_human_ref_matches_tx(tx, source, carrier, message).await? {
             break;
         }
         refs.push(message.clone());

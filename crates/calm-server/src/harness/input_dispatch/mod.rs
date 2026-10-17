@@ -95,7 +95,10 @@ impl PreparedInputDispatch {
                 Ok(())
             })
         })
-        .await
+        .await?;
+        // The issuer may expire while its protected SQL decision commits. No
+        // await follows this issuer check before the native owner admits RPC.
+        self.source.current_principal().map(|_| ())
     }
 }
 

@@ -84,13 +84,29 @@ async fn input_gate_case(erase_private_body: bool) {
     );
     let checkpoint = fixture.checkpoint().await;
     assert!(checkpoint.active.is_none());
-    assert_eq!(checkpoint.pending.len(), 1);
-    assert_eq!(
-        checkpoint.pending[0].input_ref(),
-        AcceptedInputRef::Human {
-            message: fixture.message.clone()
-        }
-    );
+    if erase_private_body {
+        assert!(
+            checkpoint.pending.is_empty(),
+            "erased private content must never be restored to pending"
+        );
+        let mut tx = begin_immediate_tx(fixture.repo.pool()).await.unwrap();
+        assert!(matches!(
+            revision_tx(&mut tx, &fixture.message)
+                .await
+                .unwrap()
+                .payload,
+            PrivateHistoryPayload::ErasedByPrivateHistoryOperation { .. }
+        ));
+        tx.rollback().await.unwrap();
+    } else {
+        assert_eq!(checkpoint.pending.len(), 1);
+        assert_eq!(
+            checkpoint.pending[0].input_ref(),
+            AcceptedInputRef::Human {
+                message: fixture.message.clone()
+            }
+        );
+    }
     assert!(matches!(
         checkpoint.attempt(&fixture.submission).unwrap().delivery,
         InputDeliveryFact::NotDispatched { .. }
