@@ -31,7 +31,6 @@ pub(crate) use writes::{
 use writes::{has_live_claim_tx, read_output_tx};
 
 #[cfg(test)]
-#[path = "claim_tests.rs"]
 mod claim_tests;
 
 #[derive(Clone)]
