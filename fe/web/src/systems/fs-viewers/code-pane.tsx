@@ -165,6 +165,9 @@ export function CodePane({
   return (
     <CodeMirror
       value={text}
+      // Bound the vendor host as this pane's flex item; height sizes only its
+      // editor. The editor must scroll without moving the overlaid find bar.
+      style={{ flex: 1, minHeight: 0 }}
       height="100%"
       theme={theme === 'dark' ? githubDark : githubLight}
       extensions={extensions}
