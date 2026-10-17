@@ -114,7 +114,7 @@ async fn boot_without_daemon() -> Boot {
 fn app_for_state(state: AppState) -> axum::Router {
     routes::router()
         .layer(Extension(Principal {
-            user_id: "owner".into(),
+            user_id: LEGACY_OWNER_USER_ID.into(),
             display_name: "owner".into(),
             role: "owner".into(),
             session_id: "test".into(),

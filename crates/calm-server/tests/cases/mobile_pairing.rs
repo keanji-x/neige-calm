@@ -11,6 +11,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 struct Fixture {
+    state: calm_server::state::AppState,
     _temp: TempDir,
     state_path: std::path::PathBuf,
     auth: AuthState,
@@ -71,7 +72,7 @@ async fn fixture(options: Value) -> Fixture {
             public.clone(),
         )
         .await;
-    let local = routes::application_router(state, auth.clone());
+    let local = routes::application_router(state.clone(), auth.clone());
     let (status, headers, _) = request(
         &local,
         "POST",
@@ -89,6 +90,7 @@ async fn fixture(options: Value) -> Fixture {
         .unwrap()
         .to_owned();
     Fixture {
+        state,
         _temp: temp,
         state_path,
         auth,
@@ -835,3 +837,6 @@ mod github_preview;
 
 #[path = "mobile_pairing/settings.rs"]
 mod settings;
+
+#[path = "mobile_pairing/track_detail.rs"]
+mod track_detail;

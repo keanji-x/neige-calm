@@ -1,8 +1,8 @@
 pub use calm_truth::db::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
-    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, TrackEvent,
-    TranscriptRow, WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
-    WriteWithEventsFn, rows,
+    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, TrackAreaMembership,
+    TrackEvent, TranscriptRow, WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn,
+    WriteWithEventFn, WriteWithEventsFn, rows,
 };
 
 use async_trait::async_trait;
@@ -30,6 +30,11 @@ pub mod prelude {
 pub trait ServerRepoReadExt {
     /// Current registry/membership reads; internal global readers remain separate.
     async fn application_user_require_registered(&self, user_id: &str) -> Result<()>;
+    async fn track_area_membership(
+        &self,
+        track_id: &str,
+        user_id: &str,
+    ) -> Result<Option<TrackAreaMembership>>;
     async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>>;
     async fn area_require_access(
         &self,
@@ -136,6 +141,15 @@ where
 {
     async fn application_user_require_registered(&self, user_id: &str) -> Result<()> {
         calm_truth::db::RepoRead::application_user_require_registered(self, user_id)
+            .await
+            .map_err(Into::into)
+    }
+    async fn track_area_membership(
+        &self,
+        track_id: &str,
+        user_id: &str,
+    ) -> Result<Option<TrackAreaMembership>> {
+        calm_truth::db::RepoRead::track_area_membership(self, track_id, user_id)
             .await
             .map_err(Into::into)
     }

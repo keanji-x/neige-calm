@@ -23,6 +23,14 @@ pub mod sqlite;
 pub mod terminal_outcome;
 pub mod worker_flow_capture;
 
+/// Current Track parent and the requested registered user's membership, observed
+/// by one read statement. This is factual data, not a cached authorization grant.
+#[derive(Debug, Clone)]
+pub struct TrackAreaMembership {
+    pub area: Area,
+    pub member_role: Option<calm_types::organization::AreaMemberRole>,
+}
+
 /// Closure shape accepted by `Repo::write_with_event`; returns the `Event` to persist + broadcast. Not generic over a
 /// returned row (that would break dyn-compatibility) — `write_with_event_typed` captures the typed row for callers.
 pub type WriteWithEventFn<'a> = Box<
@@ -144,6 +152,13 @@ pub struct WorkspaceLease {
 pub trait RepoRead: Send + Sync + 'static {
     /// Current registry/membership reads; internal global readers remain separate.
     async fn application_user_require_registered(&self, user_id: &str) -> Result<()>;
+    /// No Track payload decoding or write lock. Unknown users are refused before
+    /// interpreting the optional Track; a registered user's missing Track is None.
+    async fn track_area_membership(
+        &self,
+        track_id: &str,
+        user_id: &str,
+    ) -> Result<Option<TrackAreaMembership>>;
     async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>>;
     async fn area_require_access(
         &self,

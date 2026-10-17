@@ -72,6 +72,14 @@ impl SqlxRepo {
 
 #[async_trait]
 impl RepoRead for SqlxRepo {
+    async fn track_area_membership(
+        &self,
+        track_id: &str,
+        user_id: &str,
+    ) -> Result<Option<crate::db::TrackAreaMembership>> {
+        super::area_membership::track_area_membership(&self.pool, track_id, user_id).await
+    }
+
     async fn application_user_require_registered(&self, user_id: &str) -> Result<()> {
         let mut connection = self.pool.acquire().await?;
         super::area_membership::application_user_require_registered(&mut connection, user_id).await

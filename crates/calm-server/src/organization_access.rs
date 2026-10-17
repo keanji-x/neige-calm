@@ -5,7 +5,7 @@ use crate::auth::Principal;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, Result};
 use crate::model::{Area, AreaKind};
-use calm_types::organization::AreaAccess;
+use calm_types::organization::{AreaAccess, AreaMemberRole};
 use sqlx::SqliteConnection;
 
 /// Preflight before filesystem/process effects, through the declared read contract.
@@ -57,6 +57,21 @@ fn system_area_access(area: &Area, principal: &Principal, access: AreaAccess) ->
         return Err(CalmError::Forbidden("system Area cannot be deleted".into()));
     }
     Ok(true)
+}
+
+/// Consume membership facts from a single current registered-user/Area read.
+/// The snapshot is data only; callers must re-read at their publication boundary.
+pub(crate) fn require_area_access_from_membership(
+    area: &Area,
+    member_role: Option<AreaMemberRole>,
+    principal: &Principal,
+    access: AreaAccess,
+) -> Result<()> {
+    if system_area_access(area, principal, access)? {
+        return Ok(());
+    }
+    crate::db::sqlite::area_membership::require_member_access(member_role, access)?;
+    Ok(())
 }
 
 pub(crate) fn require_deployment_owner(principal: &Principal) -> Result<()> {

@@ -1,10 +1,69 @@
 //! Authoritative registry and membership policy. Connections can be a protected
 //! write transaction or a read snapshot; callers do not cache membership grants.
-use sqlx::SqliteConnection;
+use sqlx::{FromRow, Row, SqliteConnection, SqlitePool};
 
 use crate::error::{CalmError, Result};
 use crate::model::{Area, AreaKind, now_ms};
 use calm_types::organization::{AreaAccess, AreaMemberRole};
+
+/// A single autocommit snapshot of registration, the actual Track parent and
+/// that user's membership. Never select or decode the Track's opaque fields.
+pub async fn track_area_membership(
+    pool: &SqlitePool,
+    track_id: &str,
+    user_id: &str,
+) -> Result<Option<crate::db::TrackAreaMembership>> {
+    let row = sqlx::query(
+        "SELECT EXISTS(SELECT 1 FROM application_users WHERE id=?2) AS registered,
+                t.id AS track_id, a.id, a.name, a.color, a.sort, a.kind,
+                a.default_template_id, a.default_cwd, a.created_at, a.updated_at,
+                m.role AS member_role
+         FROM (SELECT 1)
+         LEFT JOIN tracks t ON t.id=?1
+         LEFT JOIN areas a ON a.id=t.area_id
+         LEFT JOIN area_members m ON m.area_id=a.id AND m.user_id=?2",
+    )
+    .bind(track_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    if !row.try_get::<bool, _>("registered")? {
+        return Err(CalmError::Forbidden(
+            "application user is not registered".into(),
+        ));
+    }
+    if row.try_get::<Option<String>, _>("track_id")?.is_none() {
+        return Ok(None);
+    }
+    if row.try_get::<Option<String>, _>("id")?.is_none() {
+        return Err(CalmError::Internal("Track parent Area is missing".into()));
+    }
+    Ok(Some(crate::db::TrackAreaMembership {
+        area: crate::db::rows::AreaRow::from_row(&row)?.into(),
+        member_role: decode_member_role(row.try_get("member_role")?)?,
+    }))
+}
+
+fn decode_member_role(role: Option<String>) -> Result<Option<AreaMemberRole>> {
+    match role.as_deref() {
+        Some("owner") => Ok(Some(AreaMemberRole::Owner)),
+        Some("member") => Ok(Some(AreaMemberRole::Member)),
+        None => Ok(None),
+        Some(value) => Err(CalmError::Internal(format!(
+            "invalid Area member role {value}"
+        ))),
+    }
+}
+
+/// UserArea membership policy, shared by transactional and snapshot readers.
+/// Registration and actual Area scope are checked by the owning factual read.
+pub fn require_member_access(role: Option<AreaMemberRole>, access: AreaAccess) -> Result<()> {
+    let role = role.ok_or_else(|| CalmError::Forbidden("Area membership required".into()))?;
+    if !role.permits(access) {
+        return Err(CalmError::Forbidden("Area owner required".into()));
+    }
+    Ok(())
+}
 
 /// Profile reconciliation is explicit startup work. This does not issue a
 /// credential, assign a deployment role, or repair any Area membership.
@@ -64,19 +123,7 @@ pub async fn area_require_access(
             .bind(user_id)
             .fetch_optional(connection)
             .await?;
-    let role = match role.as_deref() {
-        Some("owner") => AreaMemberRole::Owner,
-        Some("member") => AreaMemberRole::Member,
-        None => return Err(CalmError::Forbidden("Area membership required".into())),
-        Some(value) => {
-            return Err(CalmError::Internal(format!(
-                "invalid Area member role {value}"
-            )));
-        }
-    };
-    if !role.permits(access) {
-        return Err(CalmError::Forbidden("Area owner required".into()));
-    }
+    require_member_access(decode_member_role(role)?, access)?;
     Ok(area)
 }
 

@@ -76,6 +76,10 @@ mod fork_guard;
 
 pub(crate) use add::RouteTrackCreator;
 
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub use crate::track_access::{TrackDetailReadHook, install_track_detail_read_hook_for_test};
+
 /// Test seam that makes the cross-instance same-key mint race deterministic.
 pub type TrackCreateMintRendezvous = Option<std::sync::Arc<TrackCreateMintGate>>;
 
@@ -727,6 +731,7 @@ pub(crate) async fn list_tracks_window(
     params(("id" = String, Path, description = "Track id")),
     responses(
         (status = 200, description = "Track detail (track + its cards + overlays)", body = TrackDetail),
+        (status = 403, description = "Current Area membership required; System Area requires the deployment owner", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -734,12 +739,16 @@ pub(crate) async fn list_tracks_window(
 pub(crate) async fn get_track_detail(
     State(s): State<RouteState>,
     Path(id): Path<String>,
+    principal: Principal,
 ) -> Result<Json<TrackDetail>> {
+    let area_id =
+        crate::track_access::require_detail_access(s.repo.as_ref(), &id, &principal).await?;
     let mut detail = s
         .repo
         .track_detail(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
+    crate::track_access::require_same_area(&area_id, &detail.track.area_id)?;
     let pool = s
         .mcp_context
         .sqlite_pool
@@ -755,6 +764,10 @@ pub(crate) async fn get_track_detail(
     // this binary supports never reach the frontend.
     detail.overlays = crate::routes::overlays::filter_unsupported_overlay_versions(detail.overlays);
     project_runtime_into_cards_payload(s.repo.as_ref(), &mut detail.cards).await?;
+    #[cfg(feature = "fixtures")]
+    crate::track_access::after_assembly(&id).await?;
+    crate::track_access::require_detail_publication(s.repo.as_ref(), &id, &area_id, &principal)
+        .await?;
     Ok(Json(detail))
 }
 

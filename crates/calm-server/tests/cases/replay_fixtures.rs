@@ -350,6 +350,15 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .with_state(state);
 
     let body = json!({
@@ -859,6 +868,15 @@ fn build_full_app(repo: Arc<calm_server::db::sqlite::SqlxRepo>, events: EventBus
     routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
         ))
         .with_state(state)
 }
