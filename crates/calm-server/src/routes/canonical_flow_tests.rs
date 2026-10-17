@@ -216,7 +216,9 @@ async fn post(app: &axum::Router, cookie: &str, uri: &str, key: &str, body: Valu
     body
 }
 
-async fn original_input_flow(native_initially_available: bool) {
+mod cold_recovery_tests;
+
+async fn original_input_flow(native_initially_available: bool, cold_second_turn: bool) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let area = post(
@@ -414,14 +416,21 @@ async fn original_input_flow(native_initially_available: bool) {
     assert_eq!(after.2.header.last_turn_id.as_deref(), Some(TURN));
     assert_eq!(fixture.receipt(area_id).await, original_receipt);
     assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
+    if cold_second_turn {
+        cold_recovery_tests::second_turn(
+            &fixture, &restarted, &app, &cookie, track, &card, &worker,
+        )
+        .await;
+        assert_eq!(fixture.receipt(area_id).await, original_receipt);
+    }
 }
 
 #[tokio::test]
 async fn production_http_executes_original_input_and_reopens_its_completed_record() {
-    original_input_flow(true).await;
+    original_input_flow(true, false).await;
 }
 
 #[tokio::test]
 async fn production_http_retry_after_native_unavailability_resumes_original_head() {
-    original_input_flow(false).await;
+    original_input_flow(false, false).await;
 }
