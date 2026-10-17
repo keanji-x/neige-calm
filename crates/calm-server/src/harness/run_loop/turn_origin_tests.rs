@@ -9,6 +9,7 @@ fn origin(observation: &str, event_id: Option<i64>) -> Option<HarnessInputOrigin
     Some(HarnessInputOrigin {
         observation: observation.into(),
         event_id,
+        queue_entry_id: None,
     })
 }
 
@@ -63,7 +64,8 @@ async fn a_mail_wake_turn_records_the_wake_event() {
 #[tokio::test]
 async fn a_user_message_turn_records_a_user_message_with_no_event() {
     let fx = Fixture::new().await;
-    fx.harness
+    let accepted = fx
+        .harness
         .observe_user_message_durable(
             "why did you stop?".into(),
             vec![],
@@ -87,7 +89,11 @@ async fn a_user_message_turn_records_a_user_message_with_no_event() {
                 presentation: HarnessInputPresentation::User,
                 text: "User says:\nwhy did you stop?".into(),
                 attachments: vec![],
-                origin: origin("user_message", None),
+                origin: Some(HarnessInputOrigin {
+                    observation: "user_message".into(),
+                    event_id: None,
+                    queue_entry_id: accepted.entry_id.map(|id| id.as_str().to_string()),
+                }),
             },
         ]
     );

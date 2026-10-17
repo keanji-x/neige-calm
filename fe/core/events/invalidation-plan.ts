@@ -116,6 +116,7 @@ function runtimePlan(cardId: string, context: InvalidationContext): Invalidation
     ['overlays', 'card'],
     ...trackFilesDerived(trackId),
     ...conversationLists(trackId),
+    trackId === null ? ['conversation-initial-input'] : ['conversation-initial-input', trackId, cardId],
   ]);
 }
 
@@ -142,7 +143,7 @@ function policies(): PolicyMap {
       ['tracks', 'area', event.data.area_id], ['overlays', 'track'], ['tracks-range'],
       ['track-report'],
     ],
-    [['track', event.data.id], ['track-report', event.data.id]],
+    [['track', event.data.id], ['track-report', event.data.id], ['conversation-initial-input', event.data.id]],
   )),
   'card.added': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id],
@@ -152,42 +153,42 @@ function policies(): PolicyMap {
        showing the previous model and sends under it; the mutation's own invalidation repairs only its tab. */
   'card.updated': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id],
-    ['planner-run', event.data.id],
+    ['planner-run', event.data.id], ['conversation-initial-input', event.data.track_id, event.data.id],
     ...conversationLists(event.data.track_id),
   ])),
-  /* No conversation key: nothing drops a deleted conversation's row today. */
+  /* The accepted-input observation lease belongs to this card; deleted cards cannot retain it. */
   'card.deleted': plan((event) => result([
     ['track', event.data.track_id], ['track-files', event.data.track_id], ['track-report'],
-  ])),
+  ], [['conversation-initial-input', event.data.track_id, event.data.id]])),
   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
+  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id], ['conversation-initial-input', event.data.track_id, event.data.card_id]])),
   /* `harness-items` is here because the phase event IS the delivery signal for the per-turn
    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */
   'harness.phase.changed': plan((event) => result([
-    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    ['conversation-initial-input', event.data.track_id, event.data.card_id],    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...(event.data.new_phase === 'turn_completed' ? [['model-catalog', { kind: 'card', cardId: event.data.card_id }]] : []),
     ...conversationLists(event.data.track_id),
     // Harness observations update runtime activity without a separate worker status event.
     ['track', event.data.track_id],
   ])),
   'harness.transcript.cleared': plan((event) => result([
-    ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
+    ['conversation-initial-input', event.data.track_id, event.data.card_id],    ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
   ])),
   /* An Edit's replace deletes the turn's rows and may move the phase; it invalidates what a phase change does. */
   'harness.transcript.rewound': plan((event) => result([
-    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    ['conversation-initial-input', event.data.track_id, event.data.card_id],    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationLists(event.data.track_id), ['track', event.data.track_id],
   ])),
   'harness.user_message.enqueued': plan((event) => result([
-    ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
+    ['conversation-initial-input', event.data.track_id, event.data.card_id],    ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
     ...conversationLists(event.data.track_id),
   ])),
   /* `harness-items` is here for `steered` (the kernel writes its transcript row once codex has
    * taken it) and `restored` (whose completion sweep deletes that row again). */
   'harness.queue.changed': plan((event) => result([
-    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    ['conversation-initial-input', event.data.track_id, event.data.card_id],    ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationLists(event.data.track_id),
   ])),
   /* `['today-launchpad']` carries `report_has_noninitial_content` (Today's empty-state predicate) and

@@ -106,6 +106,9 @@ export async function runOperation<T>(
 
 // Key shapes match the legacy app so a cache dump reads the same in both.
 export const queryKeys = Object.freeze({
+  initialInputPrefix: () => ['conversation-initial-input'] as const,
+  initialInputTrack: (trackId: string) => ['conversation-initial-input', trackId] as const,
+  initialInput: (trackId: string, cardId: string) => ['conversation-initial-input', trackId, cardId] as const,
   serverVersion: () => ['server-version'] as const,
   areas: () => ['areas'] as const,
   areaFolders: (areaId: string) => ['area-folders', areaId] as const,
@@ -241,6 +244,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
            turn an accepted send into a failed write. Not awaited: a hung read must not retain the send lease. */
     void Promise.all([
       refreshTranscript(),
+      cancelThenInvalidate(client, queryKeys.initialInputPrefix()),
       client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }),
     ]).catch(() => undefined);
     return result;
@@ -248,7 +252,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
      flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
   const refreshAfterSend = <T,>(result: T): T => {
-    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) void cancelThenInvalidate(client, queryKey);
+    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId), queryKeys.initialInputPrefix()]) void cancelThenInvalidate(client, queryKey);
     return result;
   };
   return {
@@ -331,13 +335,17 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   };
 }
 
+import { initialInputObservationOperation, type CreatedConversation } from '../../../../core/domain/conversation-initial-input.ts';
+import type { ConversationInitialInputObservation } from '../../../../core/api/generated/wire.ts';
 import type { SideConversation } from '../../../../core/domain/conversation.ts';
 
 export type ConversationMutations = Readonly<{
   /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */
-  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined,
+    answered: (result: CreatedConversation) => void) => Promise<CreatedConversation>;
+  inspect: (cardId: string, idempotencyKey: string) => Promise<ConversationInitialInputObservation>;
   /** Re-read the list and hand back what it now holds. */
-  refresh: () => Promise<Conversation[]>;
+  refresh: (beforePublish: (rows: readonly Conversation[]) => void) => Promise<Conversation[]>;
 }>;
 
 /** One track's assistant conversations; the event bridge already maps this key, so the list is live the moment it mounts. */
@@ -357,9 +365,11 @@ export function useTrackConversationMutations(
 ): ConversationMutations {
   const client = useQueryClient();
   const create = useRecoveryMutation(transport, {
-    mutationFn: ({ text, idempotencyKey, provider, selection, side }: { text: string; idempotencyKey: string; provider: AgentProvider; selection: ModelSelection; side?: SideConversation }, transport: ApiTransportPort) =>
+    mutationFn: ({ text, idempotencyKey, provider, selection, side }: { text: string; idempotencyKey: string; provider: AgentProvider; selection: ModelSelection; side?: SideConversation; answered: (result: CreatedConversation) => void }, transport: ApiTransportPort) =>
       runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey, provider, selection, side), unauthorized),
-    onSuccess: (row) => {
+    onSuccess: (result, { answered }) => {
+      answered(result);
+      const row = result.conversation;
       /* Written through as well as invalidated: the drawer switches to this row in the same tick. */
       client.setQueryData<Conversation[]>(queryKeys.trackConversations(trackId), (current) => {
         const rows = current ?? [];
@@ -373,17 +383,27 @@ export function useTrackConversationMutations(
     },
   });
   return {
-    create: (text, idempotencyKey, provider, selection, side) => create.mutateAsync({ text, idempotencyKey, provider, selection, side }),
-    refresh: () => client.fetchQuery({
-      ...trackConversationsQueryOptions(transport, trackId, unauthorized),
-      staleTime: 0,
-    }),
+    create: (text, idempotencyKey, provider, selection, side, answered) => create.mutateAsync({ text, idempotencyKey, provider, selection, side, answered }),
+    inspect: (cardId, key) => runOperation(transport, initialInputObservationOperation(trackId, cardId, key), unauthorized),
+    refresh: async (beforePublish) => {
+      const admitted = admitTransport(transport);
+      const rows = await runOperation(admitted, trackConversationsOperation(trackId), unauthorized);
+      admitted.recovery?.checkpoint()();
+      // A manual cache write does not stop the list's older retryer from overwriting it.
+      // Fence that existing read before receipt adoption and its canonical row publish together.
+      await client.cancelQueries({ queryKey: queryKeys.trackConversations(trackId) });
+      admitted.recovery?.checkpoint()();
+      beforePublish(rows);
+      client.setQueryData(queryKeys.trackConversations(trackId), rows);
+      return rows;
+    },
   };
 }
 
 const serverVersionSchema = z.object({
   assistantProviders: z.boolean().optional(),
   conversationCreateModel: z.boolean().optional(),
+  conversationInitialInput: z.boolean().optional(),
   conversationSide: z.boolean().optional(),
   webCompatVersion: z.number(),
   minWebCompatVersion: z.number(),

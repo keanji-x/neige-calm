@@ -2,6 +2,11 @@
 
 use sha2::{Digest, Sha256};
 
+/// SHA-256 of the submitted message's exact UTF-8 bytes, without normalisation.
+pub(crate) fn first_message_digest(text: &str) -> String {
+    hex::encode(Sha256::digest(text.as_bytes()))
+}
+
 /// The pair of ids one `(track, Idempotency-Key)` pair derives.
 pub(crate) struct DerivedConversationKeys {
     /// The conversation card id never carries the `#N` retry suffix; only the

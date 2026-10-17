@@ -7,7 +7,8 @@ import type { SideConversation, PendingQueueEntry, PlannerQueueEditOutcome } fro
 import {
   isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
-import { beginSendOp, withConfirmedSends, type RetiredSend, type SendOp } from '../../../../core/domain/conversation-outbox.ts';
+import { receiptMatchesSubmission, type CreatedConversation, type SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
+import { beginSendOp, withConfirmedSends, type RetiredSend, type SendOp, type ConversationOutboxOp } from '../../../../core/domain/conversation-outbox.ts';
 import {
   EMPTY_COMPOSER, isSameComposer, tookEveryImage, withRefill, type ComposerContent,
 } from '../../../../core/domain/conversation-composer.ts';
@@ -16,7 +17,7 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 
 /**
  * A conversation being written. The key belongs to the draft for its whole lifetime: a failed create
- * keeps `key` and `sentText`, since retrying an ambiguous request under a new key would mint a second conversation.
+ * keeps `key` and `submitted`, since retrying an ambiguous request under a new key would mint a second conversation.
  */
 export type ConversationDraft = Readonly<{
   /** The Track this draft belongs to. */
@@ -32,8 +33,8 @@ export type ConversationDraft = Readonly<{
   key: string;
   /** The words the drawer is holding after its composer clears on send. */
   text: string | null;
-  /** The words actually posted under `key`, or null before any POST. */
-  sentText: string | null;
+  /** Original dispatched body and client display time; retries preserve this exact fact. */
+  submitted: SubmittedConversationInput | null;
   /** The create/recovery chain for this key has not settled yet. */
   creating: boolean;
   error: string | null;
@@ -90,7 +91,7 @@ function moveDraft(slots: DraftSlots, move: DraftMove): DraftSlots {
         : slots;
     case 'discard-unsent': {
       const slot = slots[move.scopeId];
-      return slot?.kind === 'held' && slot.draft.sentText === null
+      return slot?.kind === 'held' && slot.draft.submitted === null
         ? withoutSlot(slots, move.scopeId)
         : slots;
     }
@@ -135,6 +136,8 @@ export type RememberedConversation = Readonly<{
 export type ConversationRegistry = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly TranscriptEntry[];
+  /** Stored canonical source only. Never feed the display's outbox fold back into memory. */
+  rememberedTurnsOf: (conversationId: string) => readonly TranscriptEntry[];
   remember: (conversation: Conversation, turns: readonly TranscriptEntry[]) => void;
   /**
    * Amend an entry that already exists, reading it inside the state updater rather than through the
@@ -155,19 +158,19 @@ export type ConversationRegistry = Readonly<{
   editDraft: (
     from: ConversationDraftId, next: (current: ConversationDraft) => ConversationDraft,
   ) => void;
-  /** Atomically retire `from` and leave its resulting row for that route to open. */
-  adoptDraft: (from: ConversationDraftId, conversationId: string) => void;
+  /** Import original acceptance and adopt only this still-held scope/key before list publication. */
+  acceptDraft: (from: ConversationDraftId, result: CreatedConversation, submitted: SubmittedConversationInput) => boolean;
   discardDraft: (from: ConversationDraftId) => void;
   discardUnsentDraft: (scopeId: string) => void;
   adoptedDraftIdOf: (scopeId: string) => string | null;
   finishDraftAdoption: (scopeId: string, conversationId: string) => void;
   /** Each conversation's keyed sends not yet shown by the server, above every route remount. */
-  outboxOf: (conversationId: string) => readonly SendOp[];
+  outboxOf: (conversationId: string) => readonly ConversationOutboxOp[];
   /** Start a send there (`beginSendOp`): false while that conversation cannot take it. Clears its Edit notice, and
    * ends the Edit the send replaces the turn of. */
   beginSend: (conversationId: string, op: SendOp) => boolean;
   /** Change one conversation's outbox, whichever is shown; returns it as written. */
-  editOutbox: (conversationId: string, next: (current: readonly SendOp[]) => readonly SendOp[]) => readonly SendOp[];
+  editOutbox: (conversationId: string, next: (current: readonly ConversationOutboxOp[]) => readonly ConversationOutboxOp[]) => readonly ConversationOutboxOp[];
   /** Remove the sends server state now carries; each row that retired one stands for no other send of the outbox (#2068). */
   retireSends: (conversationId: string, retired: readonly RetiredSend[]) => void;
   /** The rows that already retired a send of that conversation's outbox. */
@@ -220,7 +223,7 @@ export type ConversationRegistry = Readonly<{
 
 const ConversationContext = createContext<ConversationRegistry | null>(null);
 
-const NO_SENDS: readonly SendOp[] = Object.freeze([]);
+const NO_SENDS: readonly ConversationOutboxOp[] = Object.freeze([]);
 const NO_ROWS: readonly string[] = Object.freeze([]);
 const NO_TURNS: readonly TranscriptEntry[] = Object.freeze([]);
 
@@ -240,11 +243,16 @@ function equalEntry(left: RememberedConversation | undefined, conversation: Conv
 export function ConversationProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Readonly<Record<string, RememberedConversation>>>({});
   /* Keyed by Track because leaving one Track may legitimately start another draft before the first failure is retried. */
-  const [draftSlots, moveDraftTo] = useReducer(moveDraft, {} as DraftSlots);
+  const [draftSlots, dispatchDraft] = useReducer(moveDraft, {} as DraftSlots);
+  const draftSlotsRef = useRef(draftSlots);
+  const moveDraftTo = useCallback((move: DraftMove) => {
+    draftSlotsRef.current = moveDraft(draftSlotsRef.current, move);
+    dispatchDraft(move);
+  }, []);
   const [openRequest, setOpenRequest] = useState<
     { id: string; focusComposer: boolean } | null
   >(null);
-  const outboxesRef = useRef<Readonly<Record<string, readonly SendOp[]>>>({});
+  const outboxesRef = useRef<Readonly<Record<string, readonly ConversationOutboxOp[]>>>({});
   const [outboxes, setOutboxes] = useState(outboxesRef.current);
   const readsStarted = useRef(0);
   const [spentRows, setSpentRows] = useState<Readonly<Record<string, readonly string[]>>>({});
@@ -258,7 +266,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     });
   }, []);
   /* Written through the ref first, so two presses in one tick see each other. */
-  const editOutbox = useCallback((conversationId: string, next: (current: readonly SendOp[]) => readonly SendOp[]) => {
+  const editOutbox = useCallback((conversationId: string, next: (current: readonly ConversationOutboxOp[]) => readonly ConversationOutboxOp[]) => {
     const before = outboxesRef.current[conversationId] ?? NO_SENDS;
     const after = next(before);
     if (after === before) return before;
@@ -457,31 +465,40 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   }, [draftSlots]);
   const startDraft = useCallback((draft: ConversationDraft) => {
     moveDraftTo({ kind: 'start', draft });
-  }, []);
+  }, [moveDraftTo]);
   const editDraft = useCallback((
     from: ConversationDraftId, next: (current: ConversationDraft) => ConversationDraft,
   ) => {
     moveDraftTo({ kind: 'edit', from, next });
-  }, []);
-  const adoptDraft = useCallback((from: ConversationDraftId, conversationId: string) => {
-    moveDraftTo({ kind: 'adopt', from, conversationId });
-  }, []);
+  }, [moveDraftTo]);
+  const acceptDraft = useCallback((from: ConversationDraftId, result: CreatedConversation, submitted: SubmittedConversationInput) => {
+    if (!slotHolds(draftSlotsRef.current[from.scopeId], from)) return false;
+    if (result.initialInput.kind === 'known') {
+      const { receipt } = result.initialInput;
+      if (!receiptMatchesSubmission(receipt, submitted)) throw new Error('The first-message receipt does not match the submitted message.');
+      editOutbox(result.conversation.id, (ops) => ops.some((op) => op.key === from.key) ? ops
+        : [...ops, { phase: 'initial-accepted', key: from.key, trackId: result.conversation.trackId, receipt, submitted }]);
+    }
+    moveDraftTo({ kind: 'adopt', from, conversationId: result.conversation.id });
+    return true;
+  }, [editOutbox, moveDraftTo]);
   const discardDraft = useCallback((from: ConversationDraftId) => {
     moveDraftTo({ kind: 'discard', from });
-  }, []);
+  }, [moveDraftTo]);
   const discardUnsentDraft = useCallback((scopeId: string) => {
     moveDraftTo({ kind: 'discard-unsent', scopeId });
-  }, []);
+  }, [moveDraftTo]);
   const adoptedDraftIdOf = useCallback((scopeId: string) => {
     const slot = draftSlots[scopeId];
     return slot?.kind === 'adopted' ? slot.conversationId : null;
   }, [draftSlots]);
   const finishDraftAdoption = useCallback((scopeId: string, conversationId: string) => {
     moveDraftTo({ kind: 'finish-adoption', scopeId, conversationId });
-  }, []);
+  }, [moveDraftTo]);
   const requestedOpenId = openRequest?.id ?? null;
   const requestedOpenFocusesComposer = openRequest?.focusComposer ?? false;
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
+  const rememberedTurnsOf = useCallback((conversationId: string) => entries[conversationId]?.turns ?? NO_TURNS, [entries]);
   const turnsOf = useCallback(
     (conversationId: string) => withConfirmedSends(entries[conversationId]?.turns ?? NO_TURNS, outboxes[conversationId] ?? NO_SENDS,
       spentRows[conversationId] ?? NO_ROWS),
@@ -489,18 +506,18 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   );
   const value = useMemo<ConversationRegistry>(
     () => ({
-      conversations, turnsOf, remember, updateExisting,
+      conversations, turnsOf, rememberedTurnsOf, remember, updateExisting,
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
-      draftOf, startDraft, editDraft, adoptDraft, discardDraft, discardUnsentDraft,
+      draftOf, startDraft, editDraft, acceptDraft, discardDraft, discardUnsentDraft,
       adoptedDraftIdOf, finishDraftAdoption,
       outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       composerOf, editComposer, refillComposer, newConversationComposerOf, editNewConversationComposer,
       editOf, beginEdit, cancelEdit, settleQueuedEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, editUpload,
       queueWriteOutOf, holdQueueWrite, restartOutOf, holdRestart,
     }),
-    [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
+    [acceptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
       composerOf, discardUnsentDraft, draftOf, editComposer, refillComposer, queueWriteOutOf, holdQueueWrite, restartOutOf, holdRestart, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, settleQueuedEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
-      remember, requestOpen,
+      remember, rememberedTurnsOf, requestOpen,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf,
       updateExisting],
   );

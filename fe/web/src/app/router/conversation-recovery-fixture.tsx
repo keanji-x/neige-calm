@@ -1,3 +1,4 @@
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { useLayoutEffect } from 'react';
 import { useConversationRegistry } from '../conversations/public.tsx';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -39,7 +40,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
   }
   const view = renderDailyFixture({ strict, routeProbe: onDraftCommit === undefined ? undefined : <DraftCommitProbe />, withTransport: recovery === undefined ? undefined : transport => createRecoveryTransports(transport, recovery).business,
     initial: '/track/daily?panel=conversations', extraPlanner: true, reply: async request => {
-    if (request.path === '/api/version') return ok({ assistantProviders: true, conversationCreateModel: true,
+    if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true,
       webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'recovery-feedback' });
     if (request.path.startsWith('/api/agent-providers/managed')) {
       if (capabilitiesUnavailable) return { status: 500, statusText: 'Error', body: { error: 'Capabilities unavailable.' } };
@@ -62,9 +63,15 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
         const key = request.headers?.['Idempotency-Key'];
         if (key === undefined) throw new Error('A create must carry its original key.');
         created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, lastTurnCompletedAt: null };
-        return { status: 201, statusText: 'Created', body: created };
+        return { status: 201, statusText: 'Created', body: { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } } };
       }
       return ok({ card_id: 'second-planner', worker_session_id: 'runtime' });
+    }
+    if (created !== null && request.path.endsWith('/initial-input')) {
+      const post = view.requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
+        && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
+      if (post === undefined) throw new Error('No original creation request');
+      return ok({ kind: 'projected', receipt: initialReceiptFor(post, 'first-entry'), runtimeId: 'runtime', itemId: 2, segmentIndex: 0 });
     }
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
     if (request.path.endsWith('/planner/run')) return read(() => ({ card_id: created?.id ?? 'second-planner', worker_session_id: 'runtime', phase: 'idle',

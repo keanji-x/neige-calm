@@ -56,9 +56,14 @@ describe('invalidation plan behavior', () => {
       invalidate: [
         ['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range'], ['track-report'],
       ],
-      remove: [['track', 'w1'], ['track-report', 'w1']],
+      remove: [['track', 'w1'], ['track-report', 'w1'], ['conversation-initial-input', 'w1']],
       writeThrough: [],
     });
+  });
+
+  it('removes only the deleted card’s accepted-input observation lease', () => {
+    expect(invalidationPlanFor(event({ ev: 'card.deleted', data: { id: 'card-1', track_id: 'track-1' } })).remove)
+      .toEqual([['conversation-initial-input', 'track-1', 'card-1']]);
   });
 
   it('refreshes pending diagnostics after a task plan mutation', () => {
@@ -120,7 +125,7 @@ describe('invalidation plan behavior', () => {
     )).toEqual({
       invalidate: [
         ['track', 'track-1'], ['overlays', 'card'], ['track-files', 'track-1'], ['track-report', 'track-1'],
-        ['track-conversations', 'track-1'],
+        ['track-conversations', 'track-1'], ['conversation-initial-input', 'track-1', 'card-1'],
       ],
       remove: [],
       writeThrough: [],
@@ -135,7 +140,7 @@ describe('invalidation plan behavior', () => {
     )).toEqual({
       invalidate: [
         ['overlays', 'card'], ['track-files'], ['track-report'],
-        ['track-conversations'],
+        ['track-conversations'], ['conversation-initial-input'],
       ],
       remove: [],
       writeThrough: [],
@@ -185,24 +190,24 @@ describe('invalidation plan behavior', () => {
     const planned = (ev: WireEvent['ev']) => invalidationPlanFor(
       event({ ev, data: { card_id: 'card-1', track_id: 'track-1' } }),
     ).invalidate;
-    expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
+    expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1'], ['conversation-initial-input', 'track-1', 'card-1']]);
     // The phase event delivers the turn outcome row, which emits no `harness.item.added` of its own.
     expect(planned('harness.phase.changed')).toEqual([
-      ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
+      ['conversation-initial-input', 'track-1', 'card-1'],      ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
       ['track', 'track-1'],
     ]);
     expect(invalidationPlanFor(event({ ev: 'harness.phase.changed', data: { card_id: 'card-1', track_id: 'track-1', new_phase: 'turn_completed' } })).invalidate)
       .toContainEqual(['model-catalog', { kind: 'card', cardId: 'card-1' }]);
     expect(planned('harness.transcript.cleared')).toEqual([
-      ['harness-items', 'card-1'], ['planner-run', 'card-1'],
+      ['conversation-initial-input', 'track-1', 'card-1'],      ['harness-items', 'card-1'], ['planner-run', 'card-1'],
     ]);
     expect(planned('harness.user_message.enqueued')).toEqual([
-      ['harness-items', 'card-1'], ['planner-run', 'card-1'],
+      ['conversation-initial-input', 'track-1', 'card-1'],      ['harness-items', 'card-1'], ['planner-run', 'card-1'],
       ['track-conversations', 'track-1'],
     ]);
     // `harness-items` is for `steered` (adds a transcript row) and `restored` (its sweep deletes it again).
     expect(planned('harness.queue.changed')).toEqual([
-      ['planner-run', 'card-1'], ['harness-items', 'card-1'],
+      ['conversation-initial-input', 'track-1', 'card-1'],      ['planner-run', 'card-1'], ['harness-items', 'card-1'],
       ['track-conversations', 'track-1'],
     ]);
   });

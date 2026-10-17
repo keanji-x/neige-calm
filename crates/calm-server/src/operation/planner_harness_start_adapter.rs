@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use calm_types::conversation_receipt::{
+    ConversationInitialInputReceipt, InitialInputReceiptVersion,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -932,6 +935,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             ));
             seeded = true;
         }
+        let mut initial_input_receipt = None;
         if let Some(text) = payload.first_message.as_deref() {
             if text.trim().is_empty() {
                 return Err(CalmError::BadRequest(
@@ -939,7 +943,18 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 ));
             }
             // Minted through the same constructor as every other user message, so it gets a stable queue id. No attachments: nothing on this path has ever seen an upload.
-            entries.push(QueueEntry::user_message(text.to_string(), None, Vec::new()));
+            let entry = QueueEntry::user_message(text.to_string(), None, Vec::new());
+            let actual = entry
+                .user_view()
+                .expect("user_message constructs an addressable user entry");
+            initial_input_receipt = Some(ConversationInitialInputReceipt {
+                version: InitialInputReceiptVersion::V1,
+                entry_id: actual.id.as_str().to_string(),
+                queued_at_ms: actual.queued_at_ms,
+                text_sha256: crate::conversation_keys::first_message_digest(text),
+                initial_runtime_id: worker_session_id.clone(),
+            });
+            entries.push(entry);
             seeded = true;
         }
         // `set_pending_entries` rebuilds all four stored arrays together, so write only when something was pushed.
@@ -1059,6 +1074,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     .collect::<Vec<_>>(),
             ),
         });
+        if let Some(receipt) = initial_input_receipt {
+            output.set_output_data(
+                "initial_input_receipt",
+                serde_json::to_value(receipt)?,
+                "planner harness",
+            )?;
+        }
         if let Some(old_worker_session_id) = old_worker_session_id {
             output.set_output_data(
                 "old_runtime_id",

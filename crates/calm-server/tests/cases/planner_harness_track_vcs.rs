@@ -946,7 +946,7 @@ async fn first_turn_with_last_seen_head_none_has_no_diff_block() {
         json!([
             budget,
             {"presentation": "user", "text": "read the goal", "attachments": [],
-             "origin": {"observation": "track_goal", "event_id": null}}
+             "origin": {"observation": "track_goal", "event_id": null, "queue_entry_id": null}}
         ])
     );
     assert!(runtime_snapshot(&boot).await.last_seen_head.is_none());

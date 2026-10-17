@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use crate::actor::Actor;
+use crate::conversation_keys::first_message_digest;
 use crate::db::sqlite::TrackCreateRequestFingerprint;
 use crate::error::{CalmError, Result};
 use crate::ids::{ActorId, CardId};
@@ -15,7 +16,7 @@ use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperatio
 use crate::operation::planner_start_fence::CardStartFence;
 use crate::per_card_lock::lock_card;
 use crate::routes::conversations_shared::{
-    PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
+    PLANNER_HARNESS_START, retryable_operation_key, validate_first_message,
 };
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
 use crate::session_projection_repo::CardConversation;

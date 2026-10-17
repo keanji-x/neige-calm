@@ -1248,3 +1248,6 @@ mod keyed;
 mod assistant_provider_contract;
 #[path = "assistant_provider_create.rs"]
 mod assistant_provider_create;
+
+#[path = "track_conversation_receipt.rs"]
+mod initial_receipt;

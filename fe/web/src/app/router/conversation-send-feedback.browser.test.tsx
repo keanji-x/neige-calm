@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
@@ -34,7 +35,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
     params: JSON.stringify({ item: { type: 'userMessage', content: [{ text: body }] } }), created_at_ms: Date.now(),
   });
   const view = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, reply: request => {
-    if (request.path === '/api/version') return ok({ assistantProviders: true, conversationCreateModel: true,
+    if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true,
       webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'send-feedback' });
     if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
@@ -53,6 +54,12 @@ function mount({ persistSent = false, running = false, message = text }: { persi
     }, ...(storedText === null ? [] : [userRow('second-planner', storedText)])]);
     }
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
+    if (created !== null && request.path.endsWith('/initial-input')) {
+      const post = view.requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
+        && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
+      if (post === undefined) throw new Error('No original creation request');
+      return ok({ kind: 'projected', receipt: initialReceiptFor(post, 'first-entry'), runtimeId: 'runtime', itemId: 2, segmentIndex: 0 });
+    }
     if (created !== null && request.path.includes(`/${created.id}/harness/items`)) {
       canonicalReads++;
       return ok([userRow(created.id, message)]);
@@ -64,7 +71,8 @@ function mount({ persistSent = false, running = false, message = text }: { persi
           const key = request.headers?.['Idempotency-Key'];
           if (key === undefined) throw new Error('The create request must carry its key.');
           created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, lastTurnCompletedAt: null };
-          return { status: 201, statusText: 'Created', body: created };
+          return { status: 201, statusText: 'Created', body: { ...created,
+            initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } } };
         }
         if (persistSent) {
           const body = request.body as { text: string };

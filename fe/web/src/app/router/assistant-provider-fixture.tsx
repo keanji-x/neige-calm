@@ -1,3 +1,4 @@
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -47,7 +48,7 @@ export function renderAssistantProviderFixture(options: {
     let body: unknown = [];
     let status = 200;
     if (request.path === '/api/version') body = { assistantProviders: options.assistantProviders ?? true,
-      conversationCreateModel: true, conversationSide: true, webCompatVersion: options.webCompatVersion ?? WEB_COMPAT_VERSION, minWebCompatVersion: options.webCompatVersion ?? WEB_COMPAT_VERSION,
+      conversationInitialInput: true, conversationCreateModel: true, conversationSide: true, webCompatVersion: options.webCompatVersion ?? WEB_COMPAT_VERSION, minWebCompatVersion: options.webCompatVersion ?? WEB_COMPAT_VERSION,
       syncEventVersion: 20, dbInstanceId: 'provider-browser' };
     if (request.path.startsWith('/api/agent-providers/managed')) body = options.answers;
     if (request.path.startsWith('/api/models?')) body = options.catalogUnavailable ? { ...catalog, models: [], source: 'unavailable' } : catalog;
@@ -66,9 +67,17 @@ export function renderAssistantProviderFixture(options: {
           trackId: track.id, provider: input.provider, title: 'Created Assistant', kind: 'track-assistant',
           state: null, updatedAt: 3, lastTurnCompletedAt: null,
           ...(input.side === undefined ? {} : { sourceCardId: input.side.source_card_id }) };
-        rows.push(created); body = created; status = 201;
+        rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } }; status = 201;
         if (options.landFirstCreate && attempts === 1) return { status: 503, statusText: 'Unavailable', body: { code: 'service_unavailable', error: 'Unconfirmed' } };
       } else body = options.hideLanded ? [] : rows;
+    }
+    if (request.path.endsWith('/initial-input')) {
+      const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
+        && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
+      if (post === undefined) throw new Error('No original creation request');
+      const receipt = initialReceiptFor(post, 'first-entry');
+      body = { kind: 'queued', receipt, runtimeId: 'runtime', entryId: receipt.entryId, rev: 0,
+        text: (post.body as { text: string }).text, textSha256: receipt.textSha256 };
     }
     const cardId = request.path.split('/')[3];
     if (request.path.endsWith('/planner/run')) body = { card_id: cardId, worker_session_id: restarted ? 'replacement' : null,

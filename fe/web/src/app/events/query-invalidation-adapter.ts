@@ -21,6 +21,7 @@ export interface QueryCachePort extends QueryRefreshPort {
  */
 function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
   const cancelFirst = queryKey[0] === 'track-report'
+    || queryKey[0] === 'conversation-initial-input'
     || (queryKey[0] === 'overlays' && queryKey[1] === 'track');
   if (!cancelFirst) {
     void client.invalidateQueries({ queryKey });
@@ -42,6 +43,11 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);
+  if (head === 'conversation-initial-input' && key.length === 1) return queryKeys.initialInputPrefix();
+  if (head === 'conversation-initial-input' && typeof first === 'string' && key.length === 2) return queryKeys.initialInputTrack(first);
+  if (head === 'conversation-initial-input' && typeof first === 'string' && typeof second === 'string' && key.length === 3) {
+    return queryKeys.initialInput(first, second);
+  }
   /* Both arities: the `task.*` events carry no track-id field (the plan declines to parse the task id),
        so dropping the prefix would leave the TASKS panel dead for exactly the events that change it. */
   if (head === 'track-report' && key.length === 1) return queryKeys.trackReportPrefix();

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { onlineManager } from '@tanstack/react-query';
+import { onlineManager, useQueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
@@ -9,10 +9,12 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
+  outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp,
 } from '../../../../core/domain/conversation-outbox.ts';
+import type { ObservedInitialInput } from '../../../../core/domain/conversation-initial-input.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
+import { queryKeys } from '../providers/queries.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useState } from '../../ui/state/public.ts';
@@ -42,7 +44,7 @@ export function useRunReads(nextRead: () => number): RunReads {
 
 /** The row a confirmed send leaves in the tab's memory, written whether or not its conversation is open. */
 function rememberSent(
-  entry: RememberedConversation, ops: readonly SendOp[], spent: readonly string[], text: string, atMs: number,
+  entry: RememberedConversation, ops: readonly ConversationOutboxOp[], spent: readonly string[], text: string, atMs: number,
 ): RememberedConversation {
   const shown = withConfirmedSends(entry.turns, ops, spent);
   return {
@@ -64,7 +66,7 @@ function rememberSent(
  */
 export function useConversationOutbox({
   cardId, transport, send, serverEntries, serverTurns, liveReplies, queuedEntries, stalled, landed,
-  queuesInput, highWater, pressed,
+  queuesInput, highWater, pressed, initialInput, hiddenInitialQueueIds,
 }: {
   cardId: string;
   transport: ApiTransportPort;
@@ -83,8 +85,11 @@ export function useConversationOutbox({
   highWater: number;
   /** A send of the conversation shown went out. */
   pressed: () => void;
+  initialInput: ReadonlyMap<string, ObservedInitialInput>;
+  hiddenInitialQueueIds: ReadonlySet<string>;
 }) {
   const registry = useConversationRegistry();
+  const client = useQueryClient();
   const { editOutbox, retireSends, beginSend, nextRead, updateExisting } = registry;
   const ops = registry.outboxOf(cardId);
   const spent = registry.spentRowsOf(cardId);
@@ -97,16 +102,21 @@ export function useConversationOutbox({
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
   const facts = useMemo(
-    () => outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops: observedOps, spent, landed }),
-    [serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed],
+    () => outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops: observedOps, spent, landed, initialInput, hiddenInitialQueueIds }),
+    [serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed, initialInput, hiddenInitialQueueIds],
   );
   const view = useMemo(() => withOutboxLiveReplies(facts, liveReplies), [facts, liveReplies]);
   const { retire } = view;
   /* Retiring by key is safe only because a `confirmed` or `replayed` op, the only ones retired, never changes phase
      again: an op under that key here is still the one the view retired. */
   useEffect(() => {
-    if (retire.length > 0) retireSends(cardId, retire);
-  }, [cardId, retireSends, retire]);
+    if (retire.length === 0) return;
+    retireSends(cardId, retire);
+    for (const { key } of retire) {
+      const initial = ops.find((op) => op.key === key && op.phase === 'initial-accepted');
+      if (initial?.phase === 'initial-accepted') client.removeQueries({ queryKey: [...queryKeys.initialInput(initial.trackId, cardId), key] });
+    }
+  }, [cardId, client, ops, retireSends, retire]);
 
   /** Words and images back in the composer of the card they were sent from, whichever conversation is shown: the one
    * way a send gives its words back (#2068). */
@@ -177,7 +187,7 @@ export function useConversationOutbox({
   const discard = (key: string, may: (op: SendOp) => boolean): SendOp | null => {
     let taken: SendOp | null = null;
     editOutbox(cardId, (current) => {
-      taken = current.find((op) => op.key === key && op.phase === 'failed' && may(op)) ?? null;
+      taken = current.find((op): op is SendOp => op.key === key && op.phase === 'failed' && may(op)) ?? null;
       return taken === null ? current : settleSendOp(current, key, null);
     });
     return taken;
@@ -194,7 +204,7 @@ export function useConversationOutbox({
      */
     send: (conversationId: string, text: string, attachments: readonly PlannerAttachment[], fromComposer: boolean,
       replaces: ReplacedTurn | null): Promise<void> | null => {
-      if (conversationId !== cardId || stalled || view.failed !== null) return null;
+      if (conversationId !== cardId || stalled || view.failed !== null || view.checkingInitialInput) return null;
       /* Admitted at the press. Where the transport carries a recovery admission (the bundled build), a press that
          cannot leave the browser is refused here and sends nothing: the composer keeps its words, and the global
          recovery status already says why. The web build admits every press, and a send that cannot leave fails as a

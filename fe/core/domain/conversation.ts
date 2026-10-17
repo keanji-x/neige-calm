@@ -15,6 +15,7 @@ import {
 import { classifyFailure, failureReason, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
 import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { sha256Hex } from './sha256.js';
+import { initialInputReceiptResultSchema, type CreatedConversation } from './conversation-initial-input.js';
 
 /** A frozen discussion source; does not name a provider session. */
 export type SideConversation = Readonly<{ source_card_id: string; context: string }>;
@@ -112,6 +113,10 @@ export type ConversationTurn = Readonly<{
   attachments?: readonly PlannerAttachment[];
   /** Set when the agent asked this through `neige_user_ask`; the quiet-sync fold keeps it outside the fold. */
   origin?: 'ask';
+  /** Exact input provenance, independent of the rendered item/segment id. Absent on historical rows. */
+  queueEntryId?: string | null;
+  /** Canonical structured-input source; rendered ids remain the renderer's separate identity. */
+  inputSource?: Readonly<{ itemId: number; segmentIndex: number }>;
 }>;
 
 /**
@@ -172,7 +177,9 @@ export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.objec
   /* Defaulted rather than required: older segments have no such key, and a row that fails to decode disappears. */
   attachments: z.array(plannerAttachmentSchema).optional().default([]),
   /* Absent on segments recorded before the kernel named each segment's observation and event. */
-  origin: z.object({ observation: z.string(), event_id: z.number().nullable() }).optional(),
+  origin: z.object({ observation: z.string(), event_id: z.number().nullable(),
+    // Historical origin objects omitted this metadata; current producers emit required nullable identity.
+    queue_entry_id: z.string().nullable().optional().transform((value) => value ?? null) }).optional(),
 });
 
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
@@ -761,7 +768,7 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
  */
 export function createTrackConversationOperation(
   trackId: string, text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation,
-): ApiOperation<Conversation> {
+): ApiOperation<CreatedConversation> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
@@ -771,7 +778,8 @@ export function createTrackConversationOperation(
       ...(selection.model === null ? {} : { model: selection.model }),
       ...(selection.reasoning_effort === null ? {} : { reasoning_effort: selection.reasoning_effort }),
     },
-    responseSchema: trackConversationSummarySchema.transform(toTrackConversation),
+    responseSchema: trackConversationSummarySchema.and(z.object({ initialInput: initialInputReceiptResultSchema }))
+      .transform((row) => ({ conversation: toTrackConversation(row), initialInput: row.initialInput })),
   };
 }
 
@@ -982,7 +990,9 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
       const id = segments.length === 1
         ? String(item.id) : `${item.id}:${index}`;
       if (segment.presentation === 'user') {
-        return [{ id, author: 'you' as const, text, atMs, attachments }];
+        return [{ id, author: 'you' as const, text, atMs, attachments,
+          inputSource: { itemId: item.id, segmentIndex: index },
+          ...(segment.origin?.queue_entry_id === undefined ? {} : { queueEntryId: segment.origin.queue_entry_id }) }];
       }
       return [{
         id, author: 'system' as const,

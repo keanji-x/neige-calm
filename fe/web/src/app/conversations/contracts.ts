@@ -19,6 +19,9 @@ export type ConversationStore = Readonly<{
   sendBlocked: boolean;
   /** Existing outbox reconciliation gate, with read errors left to their explicit retry surface. */
   awaitingConversationUpdate: boolean;
+  initialInputChecking: boolean;
+  initialInputError: string | null;
+  retryInitialInput: () => void;
   /** The addressable page of the harness pending queue. */
   pendingQueue: readonly PendingQueueEntry[];
   pendingSends: readonly PendingQueueSend[];
@@ -94,6 +97,7 @@ export type ConversationStore = Readonly<{
 export type ConversationRouteIntent = Readonly<{
   /** Open panes own their live rows; list refreshes must not overwrite them. */
   ownedCardIds?: readonly string[];
+  visible?: boolean;
   rows: readonly Conversation[];
   rememberOn: string;
 }>;
@@ -118,6 +122,8 @@ export type PlannerConversationScope = Readonly<{
 /** First-message creation, its deterministic identity and its recovery read. */
 export type ConversationCreationSource = Readonly<{
   derivedCardId: (idempotencyKey: string) => string;
-  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
-  refresh: () => Promise<readonly Conversation[]>;
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined,
+    answered: (result: import('../../../../core/domain/conversation-initial-input.ts').CreatedConversation) => void) => Promise<import('../../../../core/domain/conversation-initial-input.ts').CreatedConversation>;
+  inspect: (cardId: string, idempotencyKey: string) => Promise<import('../../../../core/api/generated/wire.ts').ConversationInitialInputObservation>;
+  refresh: (beforePublish: (rows: readonly Conversation[]) => void) => Promise<readonly Conversation[]>;
 }>;

@@ -96,6 +96,8 @@ pub struct VersionInfo {
     pub conversation_create_model: bool,
     /// Atomic discussion creation with a persisted source and frozen text snapshot.
     pub conversation_side: bool,
+    /// Exact first-input receipt and coherent current-carrier inspection.
+    pub conversation_initial_input: bool,
     pub kernel_version: String,
     /// REST contract version. Diagnostic-only on the wire — the frontend gates on
     /// `min_web_compat_version` and `sync_event_version`.
@@ -121,6 +123,7 @@ pub fn current_version_info(db_instance_id: String, database_id: String) -> Vers
         area_create_idempotency: true,
         conversation_create_model: true,
         conversation_side: true,
+        conversation_initial_input: true,
         kernel_version: env!("CARGO_PKG_VERSION").to_string(),
         api_version: compatibility.api_version,
         sync_event_version: compatibility.sync_event_version,
@@ -163,6 +166,7 @@ mod tests {
             area_create_idempotency: true,
             conversation_create_model: true,
             conversation_side: true,
+            conversation_initial_input: true,
             kernel_version: env!("CARGO_PKG_VERSION").to_string(),
             api_version: API_VERSION.to_string(),
             sync_event_version: SYNC_EVENT_VERSION,

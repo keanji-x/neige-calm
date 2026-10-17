@@ -1,3 +1,4 @@
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -43,7 +44,7 @@ function renderApp(managed = false) {
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
-      if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true }));
+      if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true }));
       if (request.path.startsWith('/api/agent-providers/managed')) return Promise.resolve(ok([{
         availability: { provider: managed ? 'claude' : 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -59,7 +60,7 @@ function renderApp(managed = false) {
           trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, lastTurnCompletedAt: null,
         };
         minted.set(trackId, [...rows, row]);
-        return Promise.resolve({ status: 201, statusText: 'Created', body: row });
+        return Promise.resolve({ status: 201, statusText: 'Created', body: { ...row, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } } });
       }
       if (request.path === '/api/today/launchpad') {
         return Promise.resolve(ok({ track_id: 'lp', report_has_noninitial_content: false }));
@@ -175,7 +176,7 @@ it('leaves an empty field for the next `+` after the first message is sent', asy
     fireEvent.keyDown(messageField(), { key: 'Enter' });
     await Promise.resolve();
   });
-  await screen.findByRole('complementary', { name: 'Assistant' });
+  await screen.findByRole('complementary', { name: 'The first message' });
   expect(requests.filter((request) => request.method === 'POST').map((request) => request.body))
     .toEqual([{ text: 'The first message', provider: 'codex' }]);
   closeDrawer();

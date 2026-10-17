@@ -20,6 +20,7 @@ pub mod claude_cards;
 pub mod claude_version;
 pub mod codex;
 pub mod codex_cards;
+pub mod conversation_initial_input;
 pub mod conversations_shared;
 pub mod daily_planner;
 pub mod fs;

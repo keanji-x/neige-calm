@@ -34,8 +34,8 @@ The extraction preserves function bodies and contract types, with AST parity
 checked against the source snapshot before moving them.
 
 `draft-actions.ts` assembles first-message commands from a required draft
-snapshot, the Registry edit/start/adopt/discard port, recovery-admitted transport,
-typed create/refresh/derived-id ports, capability booleans and open/close/onGone
+snapshot, the Registry edit/start/accept/discard port, recovery-admitted transport,
+typed create/inspect/refresh/derived-id ports, capability booleans and open/close/onGone
 signals. Construction performs no IO or Hook initialization. Dispatched attempts
 retain their original scope/key/text and settle through the Registry, including
 unknown-result rereads and refused-before-dispatch restoration. Navigation
@@ -96,3 +96,38 @@ Only recovery commands consume the local-takeover boolean, so a private retry
 cannot leave an extra restored copy in the next new-conversation composer.
 Initial admission also passes its actual text to the held-draft owner: recovery
 capture can refuse the POST without erasing the first sentence or inventing a send.
+
+First-message creation uses this existing outbox with a distinct accepted-input
+arm. It retains the original `{text, atMs}` submission and real immutable receipt;
+it grants no ordinary input retry, edit, dismiss, queued caption or running status.
+The mutation imports that acceptance and adopts its actual scope/key synchronously
+before publishing the canonical list row. A recovery lookup follows the same
+publication boundary, cancelling the list's older retryer before adoption and
+publication; a listed but incomplete creation is not accepted input.
+
+Current presence comes from the serialized server inspector through an ordinary
+TanStack query. Its 1000 ms refresh applies only to an unresolved accepted input
+in a visible pane; events, reopen, focus, reconnect and Reload also recheck it.
+Every coherent response publishes its observation immediately and starts a fresh
+history/run read pair behind that observation's boundary, including repeated
+payloads. Periodic inspection pauses while either actual source query is fetching,
+so slow reads can finish; explicit refreshes still use the existing query owner.
+Queued evidence outranks stale projections after rebuffer. Exact segment provenance
+deduplicates local words. Later actual history and run reads can display newer
+canonical words while an older queued claim remains unresolved; projected handoff requires the inspector's actual item and
+raw segment index, or successful history and run reads started after the observation.
+Changed/absent evidence hides the original words immediately and releases input,
+retaining nondrawing receipt bookkeeping until both cached sources catch up.
+Stale queued text and controls use the same observation/read fence; a newer real
+run page can report a restored entry. Empty reads and elapsed time prove nothing.
+The existing query cache retains that last coherent fact while its accepted op is
+held, including across close/reopen. Retirement removes its exact query; card,
+track and database-scope deletion use the existing cache-removal channel.
+
+The Registry exposes raw `rememberedTurnsOf` separately from display `turnsOf`.
+Only raw source enters the store's history fallback and memory writes: a local
+outbox projection must never feed itself back into canonical memory. Before content
+admission the router selects one renderable outgoing text from the same final,
+queue-filtered display and uses the existing pure `OutgoingMessage`; `ChatThread`
+replaces it in the admission commit. This adds no second transcript or presentation
+acknowledgement state, and grants no read receipt, source snapshot or history action.

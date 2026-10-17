@@ -4,6 +4,7 @@ import {
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
 import { withoutEditedTurn } from './conversation-composer.js';
+import { initialInputEcho, initialInputRetirement, initialInputDisplaced, initialInputSourcesFresh, type AcceptedInitialInput, type ObservedInitialInput } from './conversation-initial-input.js';
 
 /** The latest turn an Edit's send replaces (#2043): the turn id the server removes, and its outcome row here. */
 export type ReplacedTurn = Readonly<{ turnId: string; outcomeId: string }>;
@@ -37,6 +38,12 @@ export type SendOp = Readonly<{
   replaces: ReplacedTurn | null;
 }> & SendOpPhase;
 
+export type ConversationOutboxOp = SendOp | AcceptedInitialInput;
+
+export function isOrdinarySend(op: ConversationOutboxOp): op is SendOp {
+  return op.phase !== 'initial-accepted';
+}
+
 export type FailedSendOp = Extract<SendOp, { phase: 'failed' }>;
 
 /** Whether an attempt of this op was ever unknown: then only a 200 settles it, and its 200 is not trusted. */
@@ -49,43 +56,50 @@ export function wasUnknown(op: SendOp): boolean {
  * Start `op` (a press, or a Try again resuming a failed op under its key): `null` while another send
  * of the conversation is out, or while a failed one waits for its own Try again, Edit or Dismiss.
  */
-export function beginSendOp(ops: readonly SendOp[], op: SendOp): readonly SendOp[] | null {
+export function beginSendOp(ops: readonly ConversationOutboxOp[], op: SendOp): readonly ConversationOutboxOp[] | null {
   if (ops.some((held) => held.phase === 'sending' || (held.phase === 'failed' && held.key !== op.key))) return null;
   return [...ops.filter((held) => held.key !== op.key), op];
 }
 
 /** Replace the op under `key`, or remove it with `null`; an op no longer held stays gone. */
-export function settleSendOp(ops: readonly SendOp[], key: string, next: SendOp | null): readonly SendOp[] {
+export function settleSendOp(ops: readonly ConversationOutboxOp[], key: string, next: SendOp | null): readonly ConversationOutboxOp[] {
   if (!ops.some((held) => held.key === key)) return ops;
   return next === null ? ops.filter((held) => held.key !== key) : ops.map((held) => held.key === key ? next : held);
 }
 
 /** A queued entry this client deleted is gone for good: no read will ever show the confirmed send that claimed it. */
-export function withoutQueuedEntry(ops: readonly SendOp[], entryId: string): readonly SendOp[] {
+export function withoutQueuedEntry(ops: readonly ConversationOutboxOp[], entryId: string): readonly ConversationOutboxOp[] {
   const kept = ops.filter((op) => op.phase !== 'confirmed' || op.echo.entryId !== entryId);
   return kept.length === ops.length ? ops : kept;
 }
 
-/**
- * The ops a persisted user row now stands for, each with that row's id: one row each, oldest op first, only rows
- * that did not exist before that op's press (`serverHighWaterBefore`), and never a `spent` row, one that already
- * retired an op. Over its lifetime a row stands for one op: equal words cannot tell two sends apart (#2068).
- *
- * This is how server state carries a send: the entry id a 200 answers is not visible in every read.
- * A drain takes the whole queue as one batch under the *first* entry's id
- * (crates/calm-server/src/harness/run_loop.rs `maybe_issue_turn`, the `projection_client_id` slot),
- * and `input_segments` carry no entry id, so the second and later entries of a batch lose theirs. The
- * id is therefore used only while the queue page lists it; after the drain the row is matched here.
- */
+/** Exact provenance permits folded ops to share one carrier. Historical/unknown input uses the bounded,
+ * one-to-one text/high-water rule; rows claimed by exact provenance are reserved from that fallback. */
+function afterSend(turn: ConversationTurn, op: SendOp): boolean {
+  const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
+  return sequence > op.echo.serverHighWaterBefore;
+}
+
 export function matchSendOps(
-  serverTurns: readonly ConversationMessage[], ops: readonly SendOp[], spent: readonly string[],
+  serverTurns: readonly ConversationMessage[], ops: readonly ConversationOutboxOp[], spent: readonly string[],
 ): ReadonlyMap<string, string> {
-  const available = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you' && !spent.includes(turn.id));
+  const rows = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you');
   const matched = new Map<string, string>();
-  for (const op of [...ops].sort((left, right) => left.echo.atMs - right.echo.atMs)) {
+  const exactRows = new Set<string>();
+  for (const op of ops) {
+    const entryId = op.phase === 'initial-accepted' ? op.receipt.entryId : op.echo.entryId;
+    if (entryId === null) continue;
+    const row = rows.find((turn) => turn.queueEntryId === entryId && (op.phase === 'initial-accepted' || afterSend(turn, op)));
+    if (row === undefined) continue;
+    matched.set(op.key, row.id);
+    exactRows.add(row.id);
+  }
+  const available = rows.filter((turn) => !spent.includes(turn.id) && !exactRows.has(turn.id));
+  for (const op of ops.filter(isOrdinarySend).sort((left, right) => left.echo.atMs - right.echo.atMs)) {
+    if (matched.has(op.key)) continue;
     const match = available.findIndex((turn) => {
-      const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
-      return sequence > op.echo.serverHighWaterBefore && reconcileUserEchoes([turn], [op.echo]).length === 0;
+      if (op.echo.entryId !== null && turn.queueEntryId != null) return false;
+      return afterSend(turn, op) && reconcileUserEchoes([turn], [op.echo]).length === 0;
     });
     if (match < 0) continue;
     matched.set(op.key, available[match].id);
@@ -110,12 +124,12 @@ function withoutReplacedTurns(entries: readonly TranscriptEntry[], ops: readonly
 }
 
 /** The turn a replace still out is about to remove, which stays on screen, marked, until it is answered. */
-export function replacingTurn(ops: readonly SendOp[]): ReplacedTurn | null {
-  return ops.find((op) => op.phase === 'sending' && op.replaces !== null)?.replaces ?? null;
+export function replacingTurn(ops: readonly ConversationOutboxOp[]): ReplacedTurn | null {
+  return ops.filter(isOrdinarySend).find((op) => op.phase === 'sending' && op.replaces !== null)?.replaces ?? null;
 }
 
 /** The turn a replace names while it is out or failed: shown marked as being replaced, its message as the replacement. */
-export function markedReplace(ops: readonly SendOp[]): ReplacedTurn | null {
+export function markedReplace(ops: readonly ConversationOutboxOp[]): ReplacedTurn | null {
   return replacingTurn(ops) ?? ops.find((op): op is FailedSendOp => op.phase === 'failed')?.replaces ?? null;
 }
 
@@ -142,7 +156,7 @@ export type OutboxView = Readonly<{
   /** Server entries, live replies and the outbox's messages, as the thread draws them. */
   transcript: readonly TranscriptEntry[];
   /** The messages the reader is looking at that the server has not shown yet, failed ones excluded. */
-  shown: readonly OptimisticConversationTurn[];
+  shown: readonly ConversationTurn[];
   /** Those the server has answered 200 without an unknown attempt: what the tab may remember. */
   confirmed: readonly OptimisticConversationTurn[];
   /** The ops server state now carries; the caller removes them and keeps their rows from standing for another. */
@@ -153,6 +167,7 @@ export type OutboxView = Readonly<{
   /** An answered send still blocks input until the existing read/replay fence is satisfied. */
   awaitingReconciliation: boolean;
   failed: FailedSendOp | null;
+  checkingInitialInput: boolean;
 }>;
 
 /** Low-frequency delivery facts and the inputs for the display-only transcript fold. */
@@ -177,21 +192,48 @@ export function outboxView(input: Parameters<typeof outboxFacts>[0] & Readonly<{
  * One conversation's thread: server state plus its outbox. An op's message is drawn here unless the
  * queue region draws its claimed entry, or a newer persisted row already stands for it.
  */
-export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed }: {
+export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed, initialInput, hiddenInitialQueueIds }: {
   /** The transcript as read, rows the queue region lists already removed. */
   serverEntries: readonly TranscriptEntry[];
   /** Every persisted message, queue-listed ones included. */
   serverTurns: readonly ConversationMessage[];
   queuedEntryIds: ReadonlySet<string>;
   stalled: boolean;
-  ops: readonly SendOp[];
+  ops: readonly ConversationOutboxOp[];
   /** The rows that already retired an op of this outbox. */
   spent: readonly string[];
   landed: LandedReads;
+  initialInput?: ReadonlyMap<string, ObservedInitialInput>;
+  hiddenInitialQueueIds?: ReadonlySet<string>;
 }): OutboxFacts {
   const matched = matchSendOps(serverTurns, ops, spent);
-  const live = ops.filter((op) => op.phase !== 'failed' && !matched.has(op.key));
-  const failed = ops.findLast((op): op is FailedSendOp => op.phase === 'failed') ?? null;
+  const ordinary = ops.filter(isOrdinarySend);
+  const initial = ops.filter((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
+  const inspectedQueueIds = new Set(initial.filter((op) => {
+    const observed = initialInput?.get(op.key);
+    return observed !== undefined && (observed.observation.kind === 'queued' || initialInputDisplaced(op, observed))
+      && !initialInputSourcesFresh(observed, landed);
+  })
+    .map((op) => op.receipt.entryId));
+  const currentEntries = serverEntries.filter((entry) => entry.author !== 'you' || entry.queueEntryId == null || !inspectedQueueIds.has(entry.queueEntryId));
+  const initialRetire = initial.flatMap((op) => {
+    const observation = initialInput?.get(op.key)?.observation;
+    const carrier = observation?.kind !== 'projected' ? undefined : currentEntries.find((turn): turn is ConversationTurn =>
+      turn.author === 'you' && turn.queueEntryId === op.receipt.entryId && turn.inputSource?.itemId === observation.itemId
+      && turn.inputSource.segmentIndex === observation.segmentIndex);
+    const retired = initialInputRetirement(op, initialInput?.get(op.key), carrier, landed, hiddenInitialQueueIds?.has(op.receipt.entryId) ?? false);
+    return retired === null ? [] : [{ key: op.key, row: retired.row }];
+  });
+  const initialLive = initial.filter((op) => !initialRetire.some(({ key }) => key === op.key));
+  const initialVisible = initialLive.filter((op) => !initialInputDisplaced(op, initialInput?.get(op.key)));
+  const initialDrawn = initialVisible.filter((op) => !queuedEntryIds.has(op.receipt.entryId)
+    && !currentEntries.some((entry) => entry.id === matched.get(op.key))).map(initialInputEcho);
+  const checkingInitialInput = initialVisible.some((op) => {
+    const observed = initialInput?.get(op.key)?.observation;
+    return observed === undefined || observed.kind !== 'queued';
+  });
+  const live = ordinary.filter((op) => op.phase !== 'failed' && !matched.has(op.key));
+  const failed = ordinary.findLast((op): op is FailedSendOp => op.phase === 'failed') ?? null;
   /* A spent unknown send whose message a read shows is drawn once, by the server; it keeps its Try again. */
   const failedShown = failed !== null && !(failed.delivery === 'unknown' && matched.has(failed.key));
   const drawn = [...live, ...(failedShown && failed !== null ? [failed] : [])]
@@ -205,28 +247,31 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
   return {
     /* KNOWN GAP (#1923): a steer sent while a reply streams draws its echo below the live reply,
        then its stored row above it: a one-time reorder that converges. */
-    entries: withoutReplacedTurns(serverEntries, ops),
-    echoes: drawn,
-    shown: live.filter(drawsEcho).map((op) => op.echo),
+    entries: withoutReplacedTurns(currentEntries, ordinary),
+    echoes: [...drawn, ...initialDrawn],
+    shown: [...live.filter(drawsEcho).map((op) => op.echo), ...initialVisible.filter((op) => !matched.has(op.key)).map(initialInputEcho)],
     confirmed: live.filter((op) => op.phase === 'confirmed').map((op) => op.echo),
-    retire: retiredOps(ops, matched, landed),
+    retire: [...retiredOps(ordinary, matched, landed), ...initialRetire],
     sending,
     awaitingReconciliation: !stalled && failed === null && !sending && waitingForReads,
     /* Any send still out blocks, even one a read already shows: the next press would be refused and its words lost.
        A queued confirmed message cannot be waited on: the queue writes no row until the turn ends. */
-    blocked: stalled || failed !== null || sending || waitingForReads,
+    blocked: stalled || failed !== null || sending || waitingForReads || checkingInitialInput,
     failed,
+    checkingInitialInput,
   };
 }
 
 /** A conversation's remembered entries with the confirmed messages no read has shown yet. */
 export function withConfirmedSends(
-  entries: readonly TranscriptEntry[], ops: readonly SendOp[], spent: readonly string[],
+  entries: readonly TranscriptEntry[], ops: readonly ConversationOutboxOp[], spent: readonly string[],
 ): readonly TranscriptEntry[] {
-  const confirmed = ops.filter((op) => op.phase === 'confirmed');
-  if (confirmed.length === 0) return entries;
-  const matched = matchSendOps(entries.filter(isConversationMessage), confirmed, spent);
-  return mergeTranscript(withoutReplacedTurns(entries, confirmed), confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo));
+  const confirmed = ops.filter((op): op is SendOp & { phase: 'confirmed' } => op.phase === 'confirmed');
+  const initial = ops.filter((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
+  if (confirmed.length === 0 && initial.length === 0) return entries;
+  const matched = matchSendOps(entries.filter(isConversationMessage), [...confirmed, ...initial], spent);
+  return mergeTranscript(withoutReplacedTurns(entries, confirmed), [...confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo),
+    ...initial.filter((op) => !matched.has(op.key)).map(initialInputEcho)]);
 }
 
 /**

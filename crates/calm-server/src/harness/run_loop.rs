@@ -329,6 +329,10 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    InspectInput {
+        entry_id: QueueEntryId,
+        answer: oneshot::Sender<Result<input_inspection::InputInspection>>,
+    },
     Hibernate {
         done: oneshot::Sender<Result<bool>>,
     },
@@ -1421,6 +1425,9 @@ async fn run_loop(
                             Err(error) => Err(error),
                         };
                         let _ = persisted.send(result);
+                    }
+                    HarnessObservationCommand::InspectInput { entry_id, answer } => {
+                        let _ = answer.send(input_inspection::inspect(&inner, &entry_id).await);
                     }
                     HarnessObservationCommand::Mutate { mutation, actor, applied } => {
                         let outcome = handle_queue_mutation(&inner, &mutation, &actor).await;
@@ -4686,6 +4693,9 @@ mod compact_command;
 mod compact_tests;
 mod held;
 mod hibernation;
+pub(crate) mod input_inspection;
+#[cfg(test)]
+mod input_inspection_tests;
 mod live_reply;
 mod native_ask;
 mod replace_command;

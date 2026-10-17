@@ -1,3 +1,4 @@
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -30,7 +31,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     requests.push(request);
     let body: unknown = [];
     let status = 200;
-    if (request.path === '/api/version') body = { assistantProviders: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 1, dbInstanceId: 'browser-side' };
+    if (request.path === '/api/version') body = { assistantProviders: true, conversationInitialInput: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 1, dbInstanceId: 'browser-side' };
     if (request.path.startsWith('/api/agent-providers/managed')) body = [{
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
       capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -45,8 +46,16 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
       if (request.method === 'POST') {
         const id = trackConversationCardId(track.id, request.headers?.['Idempotency-Key'] ?? '');
         const created: typeof parent = { ...parent, id, title: 'Side discussion', sourceCardId: parent.id, updatedAt: 3 };
-        rows.push(created); body = created; status = 201;
+        rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } }; status = 201;
       } else body = rows;
+    }
+    if (request.path.endsWith('/initial-input')) {
+      const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
+        && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
+      if (post === undefined) throw new Error('No original creation request');
+      const receipt = initialReceiptFor(post, 'first-entry');
+      body = { kind: 'queued', receipt, runtimeId: 'runtime', entryId: receipt.entryId, rev: 0,
+        text: (post.body as { text: string }).text, textSha256: receipt.textSha256 };
     }
     const cardId = request.path.split('/')[3];
     if (request.path.endsWith('/planner/run')) body = { card_id: cardId, worker_session_id: `session-${cardId}`,

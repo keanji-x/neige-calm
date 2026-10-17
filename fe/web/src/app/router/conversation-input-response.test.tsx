@@ -44,7 +44,7 @@ function heldResponse() {
 }
 function mount({ phase = 'idle', input }: { phase?: string; input?: Promise<ApiTransportResponse> } = {}) {
   return renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, reply: request => {
-    if (request.path === '/api/version') return ok({ assistantProviders: true, conversationCreateModel: true,
+    if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true,
       webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'input-response' });
     if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },

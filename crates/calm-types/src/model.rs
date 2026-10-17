@@ -437,6 +437,11 @@ pub struct HarnessInputOrigin {
     /// `null` when no event did, e.g. a user message or the Track goal seed.
     #[schema(required = true, nullable = true)]
     pub event_id: Option<i64>,
+    /// Actual addressable queue identity, preserved when entries are folded or transferred.
+    /// Null for non-user/legacy entries; historical segments may omit this metadata.
+    #[serde(default)]
+    #[schema(required = true, nullable = true)]
+    pub queue_entry_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]

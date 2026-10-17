@@ -68,6 +68,17 @@
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 
+# #2740 bounded contract exception: runtime_id/crates 1224 -> 1245 and fe 0 -> 12
+# cover the approved receipt/current-presence runtimeId wire fields, their typed constructors,
+# serde/schema oracle, generated declarations, and existing TxOutput runtime_id key reads.
+# harness_item/crates 288 -> 291 covers the existing transcript repository read
+# and two test-only failure triggers on the frozen transcript table. These are approved wire
+# fields and existing physical names; no excluded file, regex, count rule, or executable policy changes.
+# #2740 frontend consumers: runtime_id/fe 12 -> 38 covers only the declared receipt
+# and observation fields in decoding, receipt equality, and real response fixtures.
+# harness_item/fe 106 -> 112 adds four existing wire/derivation references in the identity
+# regression and two existing wire-row type references in the continuity fixture; no new domain name.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
