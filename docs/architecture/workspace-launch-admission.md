@@ -6,10 +6,13 @@ fresh dual review is required. Baseline
 is claimed. This refines [workspace-identity-launch.md](workspace-identity-launch.md)
 and [track-workspace.md](track-workspace.md), keeping S1 behavior, S3 delivery
 policy and S4 provider qualification at their existing owners.
-The executor seam, kernel-side descriptor retention and reverse export, the
-kernel-restart live-index rebuild, the first two crash-table rows, the slice
-plan and the task-admission placement are superseded clause by clause in
-[workspace-execution.md](workspace-execution.md) §9; the rest stays in force.
+[workspace-execution.md](workspace-execution.md) (S2a execution lifecycle only)
+narrows three clauses for its Terminal consumer, listed in its §9: the raw-cwd
+wrapping rule of the executor seam, the ExternalDir registration wording and the
+first slice's terminal consumer. It issues no typed Ready or PreparedLaunch.
+Everything else here, including descriptor retention, the crash table,
+RuntimeSafety and the task-admission cutover, stays in force for the later
+resource cutover milestone.
 
 ## Outcome and current boundary
 
