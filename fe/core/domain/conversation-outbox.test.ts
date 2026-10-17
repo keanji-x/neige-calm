@@ -317,7 +317,7 @@ it('updates only the confirmed queue identity when equal messages coexist', () =
 
 it('keeps accepted first-input evidence outside ordinary queue placement and send delivery helpers', () => {
   const initial: import('./conversation-outbox.js').AcceptedInitialInput = {
-    phase: 'initial-accepted', key: 'create', trackId: 'track', submitted: { text: 'first input', atMs: 1 },
+    phase: 'initial-accepted', localWrite: null, sourceWitness: null, key: 'create', trackId: 'track', submitted: { text: 'first input', atMs: 1 },
     receipt: { version: 'initial-input-v1', entryId: 'first-entry', queuedAtMs: 2,
       textSha256: 'a'.repeat(64), initialRuntimeId: 'runtime' },
   };

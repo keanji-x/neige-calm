@@ -1,6 +1,6 @@
 import {
   isConversationMessage, isOptimisticConversationTurn, mergeTranscript, reconcileUserEchoes,
-  type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry, type PendingQueueEntry,
+  type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry, type PendingQueueEntry, type PlannerInputMutation,
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
 import { withoutEditedTurn } from './conversation-composer.js';
@@ -44,11 +44,15 @@ export type SendOp = Readonly<{
 export type AcceptedInitialInput = Readonly<{
   phase: 'initial-accepted'; key: string; trackId: string; submitted: SubmittedConversationInput;
   receipt: ConversationInitialInputReceipt;
+  /** Latest actual local PATCH/DELETE ACK; one terminal fact, retained for this registry lifecycle. */
+  localWrite: PlannerInputMutation | null;
+  /** One exact raw source actually handed to display; page misses cannot reclaim its ownership. */
+  sourceWitness: NonNullable<ConversationTurn['inputSource']> | null;
 }>;
 export type ObservedInitialInput = Readonly<{ observation: ConversationInitialInputObservation; afterRead: number }>;
 
 export function initialInputEcho(op: AcceptedInitialInput): ConversationTurn {
-  return { id: `initial-${op.key}`, author: 'you', text: op.submitted.text, atMs: op.submitted.atMs };
+  return { id: `initial-${op.key}`, author: 'you', text: op.submitted.text, atMs: op.submitted.atMs, queueEntryId: op.receipt.entryId };
 }
 
 export type ConversationOutboxOp = SendOp | AcceptedInitialInput;
@@ -86,6 +90,46 @@ export function withoutQueuedEntry(ops: readonly ConversationOutboxOp[], entryId
   return kept.length === ops.length ? ops : kept;
 }
 
+/** Import only the actual acknowledged entry identity; keep the original receipt/body immutable. */
+export function acknowledgeQueueMutation(ops: readonly ConversationOutboxOp[], result: PlannerInputMutation): readonly ConversationOutboxOp[] {
+  return ops.map(op => op.phase !== 'initial-accepted' || op.receipt.entryId !== result.entry_id
+    || (op.localWrite !== null && op.localWrite.rev > result.rev) ? op : { ...op, localWrite: result });
+}
+
+function locallyDisplaced(op: AcceptedInitialInput): boolean {
+  const result = op.localWrite;
+  return result !== null && (result.text === null || sha256Hex(result.text) !== op.receipt.textSha256);
+}
+
+/** The creation observer ends at positive display handoff or an actual local terminal write. */
+export function initialInputNeedsObservation(op: AcceptedInitialInput): boolean {
+  return op.sourceWitness === null && !locallyDisplaced(op);
+}
+
+function initialInputSource(op: AcceptedInitialInput, entries: readonly TranscriptEntry[]): ConversationTurn | undefined {
+  return entries.find((entry): entry is ConversationTurn => entry.author === 'you'
+    && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined);
+}
+
+/** Import only sources that the authoritative display fold has actually admitted. */
+export function withInitialInputSources(ops: readonly ConversationOutboxOp[], entries: readonly TranscriptEntry[]): readonly ConversationOutboxOp[] {
+  let changed = false;
+  const next = ops.map(op => {
+    if (op.phase !== 'initial-accepted' || op.sourceWitness !== null) return op;
+    const source = initialInputSource(op, entries)?.inputSource;
+    if (source === undefined) return op;
+    changed = true;
+    return { ...op, sourceWitness: source };
+  });
+  return changed ? next : ops;
+}
+
+/** A local ACK supersedes only its exact unbound source; bound history remains historical fact. */
+function localWriteHidesSource(op: AcceptedInitialInput, entry: TranscriptEntry): boolean {
+  if (op.localWrite === null || entry.author !== 'you' || entry.queueEntryId !== op.receipt.entryId || entry.inputSource?.turnId != null) return false;
+  return op.localWrite?.text == null || sha256Hex(entry.text) !== sha256Hex(op.localWrite.text);
+}
+
 /** Exact provenance permits folded ops to share one carrier. Historical/unknown input uses the bounded,
  * one-to-one text/high-water rule; rows claimed by exact provenance are reserved from that fallback. */
 function afterSend(turn: ConversationTurn, op: SendOp): boolean {
@@ -102,7 +146,7 @@ export function matchSendOps(
   for (const op of ops) {
     const entryId = op.phase === 'initial-accepted' ? op.receipt.entryId : op.echo.entryId;
     if (entryId === null) continue;
-    const row = rows.find((turn) => turn.queueEntryId === entryId && (op.phase === 'initial-accepted' || afterSend(turn, op)));
+    const row = rows.find((turn) => turn.queueEntryId === entryId && (op.phase === 'initial-accepted' ? turn.inputSource !== undefined : afterSend(turn, op)));
     if (row === undefined) continue;
     matched.set(op.key, row.id);
     exactRows.add(row.id);
@@ -149,10 +193,14 @@ export function markedReplace(ops: readonly ConversationOutboxOp[]): ReplacedTur
 /** The read numbers of the data now held: which transcript and run reads it came from. */
 export type LandedReads = Readonly<{ transcript: number; run: number }>;
 
+function predatesLocalWrite(op: AcceptedInitialInput, observed: ObservedInitialInput | undefined): boolean {
+  return op.localWrite !== null && observed?.observation.kind === 'queued' && observed.observation.rev < op.localWrite.rev;
+}
+
 /** Coherent queued state outranks stale projections left after rebuffer. Empty GET pairs cannot retire words. */
 export function initialInputDisplaced(op: AcceptedInitialInput, observed: ObservedInitialInput | undefined): boolean {
   const observation = observed?.observation;
-  return observation?.kind === 'absent' || (observation?.kind === 'queued' && observation.textSha256 !== op.receipt.textSha256);
+  return locallyDisplaced(op) || (!predatesLocalWrite(op, observed) && observation?.kind === 'queued' && observation.textSha256 !== op.receipt.textSha256);
 }
 
 /** A coherent observation fences old caches; later actual source reads may report a changed or restored input. */
@@ -165,29 +213,27 @@ export function initialInputQueueView(entries: readonly PendingQueueEntry[], op:
   observed: ObservedInitialInput | undefined, runRead: number): Readonly<{ entries: readonly PendingQueueEntry[]; hiddenIds: ReadonlySet<string> }> {
   const hiddenIds = new Set<string>();
   const observation = observed?.observation;
-  if (op === undefined || observed === undefined || observation === undefined || observation.kind === 'unavailable' || runRead > observed.afterRead) {
-    return { entries, hiddenIds };
-  }
+  if (op === undefined) return { entries, hiddenIds };
   const shown = entries.filter((entry) => {
     if (entry.entry_id !== op.receipt.entryId) return true;
-    const hide = observation.kind !== 'queued' || entry.rev < observation.rev || sha256Hex(entry.text) !== observation.textSha256;
-    if (hide) hiddenIds.add(entry.entry_id);
-    return !hide;
+    const local = op.localWrite;
+    const hideLocal = local !== null && (entry.rev < local.rev
+      || (local.text !== null && entry.rev === local.rev && sha256Hex(entry.text) !== sha256Hex(local.text)));
+    const hideObserved = initialInputNeedsObservation(op) && !predatesLocalWrite(op, observed) && observed !== undefined && observation !== undefined && observation.kind !== 'unavailable'
+      && runRead <= observed.afterRead && (observation.kind !== 'queued' || entry.rev < observation.rev || sha256Hex(entry.text) !== observation.textSha256);
+    if (hideLocal || hideObserved) hiddenIds.add(entry.entry_id);
+    return !hideLocal && !hideObserved;
   });
   return { entries: hiddenIds.size === 0 ? entries : shown, hiddenIds };
 }
 
-export function initialInputRetirement(op: AcceptedInitialInput, observed: ObservedInitialInput | undefined,
-  carrier: ConversationTurn | undefined, landed: LandedReads, hiddenQueue: boolean): { row: string | null } | null {
-  if (observed === undefined) return null;
-  const { observation } = observed;
+function initialInputRetirement(op: AcceptedInitialInput, observed: ObservedInitialInput | undefined, landed: LandedReads): { row: string | null } | null {
+  // Page misses cannot prove an old unbound stored row was deleted; keep the terminal ACK's fence.
+  if (!initialInputNeedsObservation(op) || observed === undefined) return null;
+  const observation = observed.observation;
   const freshSources = initialInputSourcesFresh(observed, landed);
   if (initialInputDisplaced(op, observed)) return freshSources ? { row: null } : null;
-  if (observation.kind === 'projected') {
-    // The caller resolves this carrier through the inspector's exact source pair.
-    if (!hiddenQueue && carrier !== undefined) return { row: carrier.id };
-    if (freshSources) return { row: null };
-  }
+  if (observation.kind === 'projected' && freshSources) return { row: null };
   return null;
 }
 
@@ -247,7 +293,7 @@ export function outboxView(input: Parameters<typeof outboxFacts>[0] & Readonly<{
  * One conversation's thread: server state plus its outbox. An op's message is drawn here unless the
  * queue region draws its claimed entry, or a newer persisted row already stands for it.
  */
-export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed, initialInput, hiddenInitialQueueIds }: {
+export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed, initialInput }: {
   /** The transcript as read, rows the queue region lists already removed. */
   serverEntries: readonly TranscriptEntry[];
   /** Every persisted message, queue-listed ones included. */
@@ -259,31 +305,33 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
   spent: readonly string[];
   landed: LandedReads;
   initialInput?: ReadonlyMap<string, ObservedInitialInput>;
-  hiddenInitialQueueIds?: ReadonlySet<string>;
 }): OutboxFacts {
   const matched = matchSendOps(serverTurns, ops, spent);
   const ordinary = ops.filter(isOrdinarySend);
   const initial = ops.filter((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
   const inspectedQueueIds = new Set(initial.filter((op) => {
     const observed = initialInput?.get(op.key);
-    return observed !== undefined && (observed.observation.kind === 'queued' || initialInputDisplaced(op, observed))
+    return initialInputNeedsObservation(op) && observed !== undefined && (observed.observation.kind === 'queued' || initialInputDisplaced(op, observed))
       && !initialInputSourcesFresh(observed, landed);
   })
     .map((op) => op.receipt.entryId));
-  const currentEntries = serverEntries.filter((entry) => entry.author !== 'you' || entry.queueEntryId == null || !inspectedQueueIds.has(entry.queueEntryId));
+  const currentEntries = serverEntries.filter(entry => {
+    if (entry.author !== 'you' || entry.queueEntryId == null) return true;
+    const local = initial.find(op => op.receipt.entryId === entry.queueEntryId && op.localWrite !== null);
+    return local === undefined ? !inspectedQueueIds.has(entry.queueEntryId) : !localWriteHidesSource(local, entry);
+  });
+  const displayedEntries = withoutReplacedTurns(currentEntries, ordinary);
   const initialRetire = initial.flatMap((op) => {
-    const observation = initialInput?.get(op.key)?.observation;
-    const carrier = observation?.kind !== 'projected' ? undefined : currentEntries.find((turn): turn is ConversationTurn =>
-      turn.author === 'you' && turn.queueEntryId === op.receipt.entryId && turn.inputSource?.itemId === observation.itemId
-      && turn.inputSource.segmentIndex === observation.segmentIndex);
-    const retired = initialInputRetirement(op, initialInput?.get(op.key), carrier, landed, hiddenInitialQueueIds?.has(op.receipt.entryId) ?? false);
+    if (initialInputSource(op, displayedEntries) !== undefined) return [];
+    const retired = initialInputRetirement(op, initialInput?.get(op.key), landed);
     return retired === null ? [] : [{ key: op.key, row: retired.row }];
   });
   const initialLive = initial.filter((op) => !initialRetire.some(({ key }) => key === op.key));
-  const initialVisible = initialLive.filter((op) => !initialInputDisplaced(op, initialInput?.get(op.key)));
+  const initialVisible = initialLive.filter((op) => op.sourceWitness === null && !initialInputDisplaced(op, initialInput?.get(op.key)));
   const initialDrawn = initialVisible.filter((op) => !queuedEntryIds.has(op.receipt.entryId)
-    && !currentEntries.some((entry) => entry.id === matched.get(op.key))).map(initialInputEcho);
+    && initialInputSource(op, displayedEntries) === undefined).map(initialInputEcho);
   const checkingInitialInput = initialVisible.some((op) => {
+    if (!initialInputNeedsObservation(op) || initialInputSource(op, displayedEntries) !== undefined) return false;
     const observed = initialInput?.get(op.key)?.observation;
     return observed === undefined || observed.kind !== 'queued';
   });
@@ -302,7 +350,7 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
   return {
     /* KNOWN GAP (#1923): a steer sent while a reply streams draws its echo below the live reply,
        then its stored row above it: a one-time reorder that converges. */
-    entries: withoutReplacedTurns(currentEntries, ordinary),
+    entries: displayedEntries,
     echoes: [...drawn, ...initialDrawn],
     shown: [...live.filter(drawsEcho).map((op) => op.echo), ...initialVisible.filter((op) => !matched.has(op.key)).map(initialInputEcho)],
     confirmed: live.filter((op) => op.phase === 'confirmed').map((op) => op.echo),
@@ -311,7 +359,7 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
     awaitingReconciliation: !stalled && failed === null && !sending && waitingForReads,
     /* Any send still out blocks, even one a read already shows: the next press would be refused and its words lost.
        A queued confirmed message cannot be waited on: the queue writes no row until the turn ends. */
-    blocked: stalled || failed !== null || sending || waitingForReads || checkingInitialInput,
+    blocked: stalled || failed !== null || sending || waitingForReads,
     failed,
     checkingInitialInput,
   };
@@ -324,9 +372,10 @@ export function withConfirmedSends(
   const confirmed = ops.filter((op): op is SendOp & { phase: 'confirmed' } => op.phase === 'confirmed');
   const initial = ops.filter((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
   if (confirmed.length === 0 && initial.length === 0) return entries;
-  const matched = matchSendOps(entries.filter(isConversationMessage), [...confirmed, ...initial], spent);
-  return mergeTranscript(withoutReplacedTurns(entries, confirmed), [...confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo),
-    ...initial.filter((op) => !matched.has(op.key)).map(initialInputEcho)]);
+  const current = entries.filter(entry => !initial.some(op => localWriteHidesSource(op, entry)));
+  const matched = matchSendOps(current.filter(isConversationMessage), [...confirmed, ...initial], spent);
+  return mergeTranscript(withoutReplacedTurns(current, confirmed), [...confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo),
+    ...initial.filter((op) => op.sourceWitness === null && !locallyDisplaced(op) && !matched.has(op.key)).map(initialInputEcho)]);
 }
 
 /**

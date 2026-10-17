@@ -115,10 +115,10 @@ export type ConversationTurn = Readonly<{
   attachments?: readonly PlannerAttachment[];
   /** Set when the agent asked this through `neige_user_ask`; the quiet-sync fold keeps it outside the fold. */
   origin?: 'ask';
-  /** Exact input provenance, independent of the rendered item/segment id. Absent on historical rows. */
+  /** Exact input provenance, including a known acceptance receipt; only inputSource names raw stored source. */
   queueEntryId?: string | null;
   /** Canonical structured-input source; rendered ids remain the renderer's separate identity. */
-  inputSource?: Readonly<{ itemId: number; segmentIndex: number }>;
+  inputSource?: Readonly<{ itemId: number; segmentIndex: number; turnId: string | null }>;
 }>;
 
 /**
@@ -993,7 +993,7 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
         ? String(item.id) : `${item.id}:${index}`;
       if (segment.presentation === 'user') {
         return [{ id, author: 'you' as const, text, atMs, attachments,
-          inputSource: { itemId: item.id, segmentIndex: index },
+          inputSource: { itemId: item.id, segmentIndex: index, turnId: item.turn_id },
           ...(segment.origin?.queue_entry_id === undefined ? {} : { queueEntryId: segment.origin.queue_entry_id }) }];
       }
       return [{

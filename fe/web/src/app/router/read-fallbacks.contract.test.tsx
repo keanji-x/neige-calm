@@ -12,6 +12,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { CONVERSATION_CREATE_TEXT, trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
@@ -196,7 +197,7 @@ describe('degraded workspace reads stay usable', () => {
   it('finishes an offline conversation submission without waiting for delivery reconciliation', async () => {
     const creates: ApiRequest[] = [];
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -232,7 +233,7 @@ describe('degraded workspace reads stay usable', () => {
     const creates: ApiRequest[] = [];
     let revealLanding = false;
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -243,6 +244,11 @@ describe('degraded workspace reads stay usable', () => {
       if (request.method === 'POST') {
         creates.push(request);
         return fail('Acknowledgement lost');
+      }
+      if (request.path.endsWith('/initial-input') && revealLanding) {
+        const original = creates[0];
+        if (original === undefined) throw new Error('No dispatched original create.');
+        return ok({ kind: 'unavailable', reason: 'runtime-unavailable', receipt: initialReceiptFor(original, 'entry-0001') });
       }
       if (request.path === '/api/tracks/w1/conversations' && revealLanding) {
         return ok([{
@@ -264,7 +270,8 @@ describe('degraded workspace reads stay usable', () => {
             item: { id: 'entry-0001', clientId: 'entry-0001', type: 'userMessage', content: [{ type: 'text', text: 'User says:\nOriginal uncertain intent' }] },
             _projection: true,
           }),
-          input_segments: [{ presentation: 'user', text: 'User says:\nOriginal uncertain intent', attachments: [] }],
+          input_segments: [{ presentation: 'user', text: 'User says:\nOriginal uncertain intent', attachments: [],
+            origin: { observation: 'user', event_id: null, queue_entry_id: 'entry-0001' } }],
           created_at_ms: 1,
         }]);
       }
@@ -304,7 +311,7 @@ describe('degraded workspace reads stay usable', () => {
   it('keeps a create undispatched when connectivity drops between the click and its mutation', async () => {
     const creates: ApiRequest[] = [];
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },

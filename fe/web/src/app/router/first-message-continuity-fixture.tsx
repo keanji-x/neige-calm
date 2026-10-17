@@ -2,7 +2,7 @@ import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/type
 import type { ConversationInitialInputObservation, HarnessItem, TrackConversationSummary } from '../../../../core/api/generated/wire.ts';
 import type { PendingQueueEntry } from '../../../../core/domain/conversation.ts';
 import { sha256Hex } from '../../../../core/domain/sha256.ts';
-import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
+import { HARNESS_ITEMS_PAGE_LIMIT, trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { initialReceiptFor } from './initial-input-fixture.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -18,6 +18,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
   let original: ApiRequest | null = null;
   let created: TrackConversationSummary | null = null;
   let history: HarnessItem[] = [];
+  let earlierHistory: HarnessItem[] = [];
   let observation: ConversationInitialInputObservation | null = null;
   let replyCreate: (() => void) | null = null;
   let replyInspect: (() => void) | null = null;
@@ -80,13 +81,39 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         return result;
       }
       if (created !== null && request.path.includes(`/${created.id}/harness/items`)) {
-        const result = failHistory ? { status: 500, statusText: 'Error', body: { error: 'History unavailable.' } } : ok(history);
+        const cursor = new URL(request.path, 'http://fixture.test').searchParams.get('after_id');
+        if (cursor === null) throw new Error('The history request lacks its declared cursor.');
+        const page = Number(cursor) > 0 ? earlierHistory.filter(row => row.id < Number(cursor)) : history;
+        const result = failHistory ? { status: 500, statusText: 'Error', body: { error: 'History unavailable.' } } : ok(page);
         if (options.holdHistory) return await new Promise<ApiTransportResponse>(resolve => { heldHistory.push(() => { resolve(result); }); });
         return result;
+      }
+      if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
+        return ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime', entry_id: 'ordinary-entry' });
       }
       if (options.refuseQueueDelete && request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry')) {
         return { status: 409, statusText: 'Conflict', body: { code: 'planner_input_stale', error: 'Entry changed.',
           entry_id: 'first-entry', text: 'Changed elsewhere.', rev: 1 } };
+      }
+      if (request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry')) {
+        const entry = pending.find(entry => entry.entry_id === 'first-entry');
+        if (entry === undefined) throw new Error('No actual first entry to delete.');
+        pending = pending.filter(candidate => candidate.entry_id !== entry.entry_id);
+        return ok({ card_id: created?.id, entry_id: entry.entry_id, rev: entry.rev + 1, text: null });
+      }
+      if (request.method === 'PATCH' && request.path.endsWith('/planner/input/first-entry')) {
+        const entry = pending.find(entry => entry.entry_id === 'first-entry');
+        const text = (request.body as { text?: unknown }).text;
+        if (entry === undefined || typeof text !== 'string') throw new Error('No actual queued edit.');
+        const saved = { ...entry, text, rev: entry.rev + 1 };
+        pending = pending.map(candidate => candidate.entry_id === entry.entry_id ? saved : candidate);
+        return ok({ card_id: created?.id, entry_id: saved.entry_id, rev: saved.rev, text: saved.text });
+      }
+      if (request.method === 'POST' && request.path.endsWith('/planner/input/first-entry/steer')) {
+        const entry = pending.find(entry => entry.entry_id === 'first-entry');
+        if (entry === undefined) throw new Error('No actual first entry to steer.');
+        pending = pending.filter(candidate => candidate.entry_id !== entry.entry_id);
+        return ok({ card_id: created?.id, entry_id: entry.entry_id, steered: true, turn_id: 'running-first-input' });
       }
       if (request.path.endsWith('/planner/run')) {
         const result = ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime',
@@ -111,13 +138,12 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
     heldInspectionCount: () => heldInspections.length,
     releaseInspection: (index: number) => { heldInspections[index](); },
     answerCreate: () => { replyCreate?.(); },
-    observe: (kind: 'queued' | 'changed' | 'projected' | 'absent' | 'unavailable') => {
+    observe: (kind: 'queued' | 'changed' | 'projected' | 'unavailable') => {
       const binding = receipt();
       observation = kind === 'queued' || kind === 'changed' ? { kind: 'queued', receipt: binding, runtimeId: 'runtime', entryId: binding.entryId,
         rev: kind === 'changed' ? 1 : 0, text: kind === 'changed' ? 'Changed by another client.' : FIRST_MESSAGE,
         textSha256: kind === 'changed' ? sha256Hex('Changed by another client.') : binding.textSha256 }
         : kind === 'projected' ? { kind, receipt: binding, runtimeId: 'runtime', itemId: 7, segmentIndex: options.harvestedInput === false ? 0 : 1 }
-        : kind === 'absent' ? { kind, receipt: binding, runtimeId: 'runtime' }
         : { kind, receipt: binding, reason: 'runtime-unavailable' };
       replyInspect?.();
     },
@@ -125,7 +151,15 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
     recoverHistory: () => { failHistory = false; },
     historyCount: () => heldHistory.length,
     releaseHistory: (index: number) => { heldHistory[index](); },
-    clearHistory: () => { history = []; },
+    clearHistory: () => { history = []; earlierHistory = []; },
+    advanceHistoryWindow: () => {
+      if (created === null) throw new Error('No created conversation for a later page.');
+      const cardId = created.id; earlierHistory = history;
+      history = Array.from({ length: HARNESS_ITEMS_PAGE_LIMIT }, (_, index) => ({ id: 20 + index, card_id: cardId,
+        worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread', turn_id: 'later-turn',
+        item_uuid: `later-item-${index}`, item_type: 'agentMessage', method: 'item/completed',
+        params: JSON.stringify({ item: { text: `Later page reply ${index}.` } }), created_at_ms: 20 + index, turn_error_text: null }));
+    },
     outbox: () => created === null ? [] : registry?.outboxOf(created.id) ?? [],
     queueOriginal: () => { pending = [{ entry_id: 'first-entry', text: FIRST_MESSAGE, queued_at_ms: 100, rev: 0 }]; },
     queueEdited: (text: string) => { pending = [{ entry_id: 'first-entry', text, queued_at_ms: 100, rev: 1 }]; },
@@ -135,10 +169,10 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
     holdNextList: () => { holdNextList = true; },
     listCount: () => heldList.length,
     releaseList: (index: number) => { heldList[index](); },
-    project: (text = FIRST_MESSAGE) => {
+    project: (text = FIRST_MESSAGE, provisional = false) => {
       if (created === null) throw new Error('No canonical conversation');
-      history = [{ id: 7, card_id: created.id, worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread', turn_id: null,
-        item_uuid: options.harvestedInput === false ? 'first-entry' : 'harvested-entry', item_type: 'userMessage', method: 'item/completed', params: '{}', created_at_ms: 8, turn_error_text: null,
+      history = [{ id: 7, card_id: created.id, worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread', turn_id: provisional ? null : 'accepted-first-turn',
+        item_uuid: options.harvestedInput === false ? 'first-entry' : 'harvested-entry', item_type: 'userMessage', method: 'item/completed', params: provisional ? JSON.stringify({ _projection: true }) : '{}', created_at_ms: 8, turn_error_text: null,
         input_segments: [
           ...(options.harvestedInput === false ? [] : [{ presentation: 'user' as const, text: 'Harvested before first input', attachments: [],
             origin: { observation: 'user', event_id: null, queue_entry_id: 'harvested-entry' } }]),

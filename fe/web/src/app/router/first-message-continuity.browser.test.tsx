@@ -100,7 +100,7 @@ it.each([1280, 390])('keeps the first bubble in place through native admission w
       for (let index = 0; index < fixture.runCount(); index++) fixture.releaseRun(index);
       await Promise.resolve();
     });
-    await expect.poll(() => fixture.outbox().length).toBe(0);
+    await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.sourceWitness?.itemId === 7)).toBe(true);
     expect(bubbles()).toHaveLength(1);
     expect(Math.abs(offset() - before)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: `../../../../test-results/first-message-native-canonical-${width}.png` });
@@ -166,5 +166,59 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
     expect(drawn).toHaveLength(1);
     expect(original).toHaveLength(edited ? 0 : 1);
     expect(fixture.outbox()).toMatchObject([{ phase: 'initial-accepted' }]);
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+
+it.each([{ width: 1280, steer: false }, { width: 390, steer: false }, { width: 1280, steer: true }, { width: 390, steer: true }])(
+  'keeps the acknowledged local first-input queue write truthful ($width px, steer=$steer)', async ({ width, steer }) => {
+    await page.viewport(width, 900); await commands.emulateReducedMotion(false);
+    const fixture = renderFirstMessageFixture({ mobile: width === 390, running: steer });
+    try {
+      if (width === 390) {
+        await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
+        await page.getByRole('button', { name: '发起新对话', exact: true }).click();
+      } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+      await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+      if (!steer) fixture.project(FIRST_MESSAGE, true);
+      fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
+      await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
+      const cardId = fixture.createdId();
+      if (cardId === null) throw new Error('No actual created conversation');
+      await expect.poll(() => fixture.client.getQueriesData<{ observation: { kind: string } }>({ queryKey: ['conversation-initial-input', 'daily', cardId] })
+        .some(([, value]) => value?.observation.kind === 'queued')).toBe(true);
+      fixture.observe('unavailable');
+      await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['conversation-initial-input', 'daily', cardId] }); });
+      await page.getByRole('button', { name: steer ? 'Say it now' : 'Delete this message', exact: true }).click();
+      await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
+      const copies = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE).length;
+      await page.screenshot({ path: `../../../../test-results/first-message-local-write-${width}-${steer}.png` });
+      expect(copies).toBe(steer ? 1 : 0);
+    } finally { cleanup(); fixture.client.clear(); }
+  },
+);
+
+
+it.each([1280, 390])('keeps one accepted fallback when a real queue update arrives before canonical input (%ipx)', async width => {
+  await page.viewport(width, 900); await commands.emulateReducedMotion(false);
+  const fixture = renderFirstMessageFixture({ mobile: width === 390 });
+  try {
+    if (width === 390) {
+      await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
+      await page.getByRole('button', { name: '发起新对话', exact: true }).click();
+    } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+    fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
+    await expect.element(page.getByRole('button', { name: 'Delete this message', exact: true })).toBeEnabled();
+    const cardId = fixture.createdId();
+    if (cardId === null) throw new Error('No actual created conversation');
+    fixture.observe('unavailable');
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['conversation-initial-input', 'daily', cardId] }); });
+    fixture.clearQueue();
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
+    await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
+    const count = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE).length;
+    await page.screenshot({ path: `../../../../test-results/first-message-fallback-before-canonical-${width}.png` });
+    expect(count).toBe(1);
   } finally { cleanup(); fixture.client.clear(); }
 });

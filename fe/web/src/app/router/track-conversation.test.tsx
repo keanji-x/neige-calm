@@ -2294,11 +2294,12 @@ describe('track conversations', () => {
     const deleteIn = (card: string) => within(entryOf(card)!).getByRole('button', { name: 'Delete this message' });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
+    await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false));
     fireEvent.click(deleteIn(ASSISTANT_CARD.id));
     await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(true));
     await pickPlanner();
     await waitFor(() => expect(entryOf(PLANNER_CARD.id)).toBeDefined());
-    expect(deleteIn(PLANNER_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false);
+    await waitFor(() => expect(deleteIn(PLANNER_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false));
     await act(async () => { answer(); await answered; });
   });
 
@@ -2325,6 +2326,7 @@ describe('track conversations', () => {
     const deleteIn = (card: string) => within(entryOf(card)!).getByRole('button', { name: 'Delete this message' });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
+    await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false));
     fireEvent.click(deleteIn(ASSISTANT_CARD.id));
     await waitFor(() => expect(deletes()).toHaveLength(1));
     await pickPlanner();
@@ -3224,10 +3226,10 @@ describe('track conversations', () => {
     expect(drawer.querySelector('[data-nc-turn="you"]')).toBe(before);
   });
 
-  /* The create's message never drained, so the kernel wrote no row; the reader
-   * types it again, and the one row that lands belongs to that send. */
+  /* The reader cancels the accepted first queue entry, then explicitly sends the same words again. */
   it('leaves the composer open when the first sentence is retyped and one row lands', async () => {
     const minted: Row[] = [];
+    let pending = true;
     let persisted: ReturnType<typeof harnessMessage>[] = [];
     const { requests } = setup((request) => {
       if (request.method === 'POST' && request.path === CONVERSATIONS) {
@@ -3235,12 +3237,19 @@ describe('track conversations', () => {
         minted.push(row);
         return created(row, request);
       }
-      if (request.path.endsWith('/initial-input')) return ok({ kind: 'absent', runtimeId: 'runtime',
+      if (request.path.endsWith('/initial-input')) return ok({ kind: 'unavailable', reason: 'runtime-unavailable',
         receipt: initialReceiptFor(creates(requests, CONVERSATIONS)[0], 'entry-0001') });
       if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
       if (request.path.includes(HISTORY_PATH)) return ok([...persisted]);
       if (request.path.endsWith('/planner/input')) return inputAccepted();
-      if (request.path.endsWith('/planner/run')) return runIdle();
+      if (request.method === 'DELETE' && request.path.endsWith('/planner/input/entry-0001')) {
+        pending = false;
+        return ok({ card_id: pathCardId(request.path), entry_id: 'entry-0001', rev: 1, text: null });
+      }
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle',
+        model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true,
+        compact_outcome: null, context_usage_invalidated: false, running_turn: null,
+        pending: pending ? [{ entry_id: 'entry-0001', text: 'hi', rev: 0, queued_at_ms: 1 }] : [], pending_overflow: 0 });
       return undefined;
     });
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
@@ -3249,9 +3258,14 @@ describe('track conversations', () => {
     await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
     const drawer = drawerElement();
-    expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0);
+    await waitFor(() => {
+      const remove = within(drawer).getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
+      expect(remove.disabled || remove.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Delete this message' }));
+    await waitFor(() => expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0));
 
-    /* Nothing came back, so they say it again. The composer allows it. */
+    /* Cancellation was acknowledged; sending the words again is a new explicit input. */
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     persisted = [harnessMessage(1, 'userMessage', { content: [{ text: 'hi' }] })];
     await write('hi');

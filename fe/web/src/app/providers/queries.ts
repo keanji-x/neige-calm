@@ -62,7 +62,7 @@ import {
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation, PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT,
   type Conversation, type ModelCatalogScope, type ModelSelection, type ModelSelectionResult,
-  type PlannerQueueWriteOutcome, type PlannerQueueEditOutcome, type PendingQueueEntry,
+  type PlannerQueueWriteOutcome, type PlannerQueueEditOutcome, type PendingQueueEntry, type PlannerInputMutation,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import { setPlannerPermissionModeOperation } from '../../../../core/domain/planner-permission-mode.ts';
@@ -250,18 +250,20 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     return result;
   };
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
-     flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
-  const refreshAfterSend = <T,>(result: T): T => {
+     flight from before the answer; input acceptance must reconcile against actual reads started after its ACK. */
+  const refreshAfterInput = <T,>(result: T): T => {
     for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId), queryKeys.initialInputPrefix()]) void cancelThenInvalidate(client, queryKey);
     return result;
   };
+  const refreshAfterQueueWrite = <T extends Readonly<{ kind: string }>>(result: T): T =>
+    result.kind === 'done' ? refreshAfterInput(result) : refreshAfter(result);
   return {
     /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again.
        `answered` runs when the 200 is in hand, before the refresh starts its reads. */
     send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
       admitted: ApiTransportPort, answered: () => void) =>
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
-        .then((sent) => { answered(); return refreshAfterSend(sent); }),
+        .then((sent) => { answered(); return refreshAfterInput(sent); }),
     /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
     compact: () => Promise.resolve().then(() => admitTransport(transport))
       .then((admitted) => runOperation(admitted, compactPlannerOperation(cardId), unauthorized)).then(refreshAfter),
@@ -280,28 +282,28 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     },
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
-    editQueued: (entry: PendingQueueEntry, text: string): Promise<PlannerQueueEditOutcome> =>
+    editQueued: (entry: PendingQueueEntry, text: string, answered: (saved: PlannerInputMutation & Readonly<{ text: string }>) => void): Promise<PlannerQueueEditOutcome> =>
       runOperation(transport, editPlannerInputOperation(cardId, entry.entry_id, text, entry.rev), unauthorized)
-        .then((saved): PlannerQueueEditOutcome => ({ kind: 'done', entry: { ...entry, text: saved.text, rev: saved.rev } }))
+        .then((saved): PlannerQueueEditOutcome => { answered(saved); return { kind: 'done', entry: { ...entry, text: saved.text, rev: saved.rev } }; })
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not edit the queued message.',
-        )).then(refreshAfter),
-    deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+        )).then(refreshAfterQueueWrite),
+    deleteQueued: (entryId: string, ifEntryRev: number, answered: (removed: PlannerInputMutation) => void): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
-        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .then((removed): PlannerQueueWriteOutcome => { answered(removed); return { kind: 'done' }; })
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not remove the queued message.',
         ))
-        .then(refreshAfter),
+        .then(refreshAfterQueueWrite),
     /* Same classification as the delete, plus the steer's own 409s (`not_running`, `unanswered`); on a
      * 200 the refresh is what makes the transcript pick up the row the kernel wrote. */
-    steerQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+    steerQueued: (entryId: string, ifEntryRev: number, answered: () => void): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, steerPlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
-        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .then((): PlannerQueueWriteOutcome => { answered(); return { kind: 'done' }; })
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not send the queued message now.',
         ))
-        .then(refreshAfter),
+        .then(refreshAfterQueueWrite),
     /* The stored selection is read back from `planner-run`; the catalog goes with it because the default
      * this card follows is part of that answer. */
     setModel: (selection: ModelSelection): Promise<ModelSelectionResult> =>

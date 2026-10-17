@@ -20,7 +20,6 @@ const initialInputObservationSchema: z.ZodType<ConversationInitialInputObservati
     .refine(value => value.entryId === value.receipt.entryId && sha256Hex(value.text) === value.textSha256),
   z.object({ kind: z.literal('projected'), receipt: initialInputReceiptSchema, runtimeId: z.string().min(1),
     itemId: z.number().int().positive(), segmentIndex: z.number().int().nonnegative() }),
-  z.object({ kind: z.literal('absent'), receipt: initialInputReceiptSchema, runtimeId: z.string().min(1) }),
   z.object({ kind: z.literal('unavailable'), receipt: initialInputReceiptSchema.nullable(), reason: z.enum(['legacy-operation', 'creation-incomplete', 'runtime-unavailable',
     'runtime-changed', 'shutting-down', 'legacy-projection', 'integrity']) }).refine(value =>
       ['legacy-operation', 'creation-incomplete', 'integrity'].includes(value.reason) ? value.receipt === null : value.receipt !== null),

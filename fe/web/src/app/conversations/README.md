@@ -107,21 +107,41 @@ publication; a listed but incomplete creation is not accepted input.
 
 Current presence comes from the serialized server inspector through an ordinary
 TanStack query. Its 1000 ms refresh applies only to an unresolved accepted input
-in a visible pane; events, reopen, focus, reconnect and Reload also recheck it.
+in a visible pane before an error; events, reopen, focus, reconnect and Reload can recheck
+an unresolved input after an unavailable/error result.
 Every coherent response publishes its observation immediately and starts a fresh
 history/run read pair behind that observation's boundary, including repeated
 payloads. Periodic inspection pauses while either actual source query is fetching,
 so slow reads can finish; explicit refreshes still use the existing query owner.
 Queued evidence outranks stale projections after rebuffer. Exact segment provenance
 deduplicates local words. Later actual history and run reads can display newer
-canonical words while an older queued claim remains unresolved; projected handoff requires the inspector's actual item and
-raw segment index, or successful history and run reads started after the observation.
-Changed/absent evidence hides the original words immediately and releases input,
-retaining nondrawing receipt bookkeeping until both cached sources catch up.
+canonical words while an older queued claim remains unresolved. Once the filtered display
+admits an exact raw source, the accepted op retains its required nullable `sourceWitness`.
+This positive handoff ends creation-specific observation and prevents unloaded pages
+from reclaiming the original display. It does not claim provider delivery. Projected
+evidence can also retire an unresolved original outside the loaded page after both fresh reads.
+A changed queued body hides the original words immediately and releases input,
+retaining nondrawing receipt bookkeeping until both cached sources catch up. An
+unknown current owner remains unavailable with its known receipt; empty queue
+and history reads cannot establish absence. An actual local PATCH/DELETE ACK
+records its typed entry/revision/body before reconciliation starts. Deletion or
+a changed stored body suppresses the original copy and stale canonical source
+without treating freshly reread old unbound rows or loaded-page misses as deletion proof.
+The existing accepted op keeps at most one actual source witness and the latest actual
+ACK for its registry lifetime. Card/track deletion keeps the existing
+query removal and pane cleanup; registry disposal releases the retained record.
+No additional journal or list is kept. Source handoff or a locally displaced original
+releases the exact creation-query lease, including its in-flight request; later event,
+focus, reopen and manual reads belong to the existing history/run query owners. Actual
+provider-bound historical input and an exact source carrying the ACK's stored
+edited body stay readable without claiming new provider delivery.
+A same-body edit retains original acceptance; a successful steer delivers the
+input and only retires its departed queue copy. Actual newer queue revisions
+retain their controls under the existing queue owner.
 Stale queued text and controls use the same observation/read fence; a newer real
 run page can report a restored entry. Empty reads and elapsed time prove nothing.
-The existing query cache retains that last coherent fact while its accepted op is
-held, including across close/reopen. Retirement removes its exact query; card,
+The existing query cache retains the last coherent fact only while creation observation
+is needed, including across close/reopen. Handoff, terminal ACK or retirement removes its exact query; card,
 track and database-scope deletion use the existing cache-removal channel.
 
 The Registry exposes raw `rememberedTurnsOf` separately from display `turnsOf`.
@@ -131,3 +151,16 @@ admission the router selects one renderable outgoing text from the same final,
 queue-filtered display and uses the existing pure `OutgoingMessage`; `ChatThread`
 replaces it in the admission commit. This adds no second transcript or presentation
 acknowledgement state, and grants no read receipt, source snapshot or history action.
+
+
+An accepted display copy carries its receipt's real queue entry identity, while
+`inputSource` remains absent. The existing accounted-identity fold therefore
+retires a departed queue ghost whenever that accepted fallback already draws the
+words, including when a run update precedes a write ACK or stored history. This
+does not manufacture canonical source, queue status or provider delivery.
+
+
+Initial-input inspection describes current source certainty, not permission to
+send. A declared accepted creation and healthy ordinary history/run paths keep
+the composer usable while inspection is unavailable. The existing stalled,
+failed-send, in-flight and ordinary reconciliation gates still own admission.

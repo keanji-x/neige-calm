@@ -5,7 +5,7 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
 import { describeConversation, pendingConversationIds, withRememberedConversation, withRememberedTitle, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
 import { useInitialInputObservation } from './initial-input.ts';
-import { synchronizeQueuedSends, rememberQueuePlacements, presentPendingMessages, queueTombstoneHides as tombstoneHides, initialInputQueueView, type AcceptedInitialInput } from '../../../../core/domain/conversation-outbox.ts';
+import { rememberQueuePlacements, presentPendingMessages, initialInputNeedsObservation, queueTombstoneHides as tombstoneHides, initialInputQueueView, type AcceptedInitialInput } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { PERMISSION_MODE_CHANGE_TEXT, PLANNER_PERMISSION_MODE_FAILURES } from '../../../../core/domain/planner-permission-mode.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
@@ -75,9 +75,9 @@ export function useConversationStore(
   const acceptedInitial = registry.outboxOf(cardId).find((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
   const initialObservation = useInitialInputObservation(transport, unauthorized, cardId, acceptedInitial,
     scope !== null && routeIntent.visible !== false, history.isFetching || run.isFetching, registry.nextRead);
-  const initialInput = useMemo(() => new Map(acceptedInitial !== undefined && initialObservation.data !== undefined
+  const initialInput = useMemo(() => new Map(acceptedInitial !== undefined && initialInputNeedsObservation(acceptedInitial) && initialObservation.data !== undefined
     ? [[acceptedInitial.key, initialObservation.data]] : []), [acceptedInitial, initialObservation.data]);
-  const initialInputError = acceptedInitial === undefined ? null : initialObservation.error !== null
+  const initialInputError = acceptedInitial === undefined || !initialInputNeedsObservation(acceptedInitial) ? null : initialObservation.error !== null
     ? readErrorText(initialObservation.error, 'The first message’s current status could not be checked.')
     : null;
   const phase = run.data?.phase ?? null;
@@ -178,7 +178,7 @@ export function useConversationStore(
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
   const outbox = useConversationOutbox({
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntries: pendingQueue,
-    stalled, landed, initialInput, hiddenInitialQueueIds: initialQueue.hiddenIds, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
+    stalled, landed, initialInput, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view } = outbox;
@@ -195,8 +195,9 @@ export function useConversationStore(
   [view.transcript, pendingQueue, view.shown, placements, view.failed, stalled, queueOps]);
   const reconciledQueueIds = useMemo(() => new Set([
     ...initialQueue.hiddenIds,
+    ...[...forgotten.keys()].filter(key => key.startsWith(`${cardId}\u0000`)).map(key => key.slice(cardId.length + 1)),
     ...presentation.transcript.flatMap(entry => entry.author === 'you' && entry.queueEntryId != null ? [entry.queueEntryId] : []),
-  ]), [initialQueue.hiddenIds, presentation.transcript]);
+  ]), [cardId, forgotten, initialQueue.hiddenIds, presentation.transcript]);
   /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
      server has answered it, and only until a read shows it in its place. */
   const turns = useMemo(
@@ -270,22 +271,15 @@ export function useConversationStore(
 
   /* Held in the registry, so a strip remounted on the way back still sees its conversation's write out (#2068). */
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
-    registry.holdQueueWrite(cardId, () => mutations.deleteQueued(entry.entry_id, entry.rev)).then((outcome) => {
-      /* `gone` is not a retirement: the entry drained and its transcript row is on its way. */
-      if (outcome.kind === 'done') {
-        outbox.forgetQueuedEntry(entry.entry_id);
-        forgetQueuedEntry(entry);
-      }
-      return outcome;
-    });
-  /* On a steer's `done` the entry is forgotten but its send is NOT: a steer delivers the sentence, and the
-       kernel's transcript row shows it. */
+    registry.holdQueueWrite(cardId, () => mutations.deleteQueued(entry.entry_id, entry.rev, removed => {
+      // Import the real ACK before the mutation owner starts either reconciliation read.
+      outbox.forgetQueuedEntry(removed);
+      forgetQueuedEntry(entry);
+    }));
+  /* A successful steer delivers this entry; only its queue copy departs. */
   const steerQueuedEntry = phase === 'turn_running'
-    ? (entry: PendingQueueEntry) =>
-      registry.holdQueueWrite(cardId, () => mutations.steerQueued(entry.entry_id, entry.rev)).then((outcome) => {
-        if (outcome.kind === 'done') forgetQueuedEntry(entry);
-        return outcome;
-      })
+    ? (entry: PendingQueueEntry) => registry.holdQueueWrite(cardId,
+      () => mutations.steerQueued(entry.entry_id, entry.rev, () => { forgetQueuedEntry(entry); }))
     : undefined;
 
   return {
@@ -306,10 +300,9 @@ export function useConversationStore(
     pendingSends: presentation.sending,
     reconciledQueueIds,
     pendingQueueOverflow,
-    editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => mutations.editQueued(entry, text)).then(outcome => {
-      if (outcome.kind === 'done') registry.editOutbox(cardId, current => synchronizeQueuedSends(current, [outcome.entry]));
-      return outcome;
-    }),
+    editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => mutations.editQueued(entry, text, saved => {
+      outbox.acknowledgeQueuedEdit(entry, saved);
+    })),
     deleteQueuedEntry,
     queueWriteOut: registry.queueWriteOutOf(cardId),
     steerQueuedEntry,
