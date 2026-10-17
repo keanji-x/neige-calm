@@ -2937,7 +2937,7 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
 /// bytes, and an operation submitted by an older binary and retried after a deploy would come back 409.
 #[tokio::test]
 async fn a_message_less_create_writes_byte_identical_payload_json() {
-    let b = boot().await;
+    let mut b = boot().await;
     let (status, body) = b.create_track(None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let payloads = b.operation_payloads().await;
@@ -2949,22 +2949,86 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
         );
     }
 
-    // And the positive half: a keyed create DOES carry it.
+    // Human first input binds the original fingerprint in canonical storage,
+    // independently of the old start-operation body and native readiness.
+    // Only this test gains a real issuer; the shared legacy fixture is unchanged.
+    b.app = b.app.layer(axum::middleware::from_fn_with_state(
+        calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+            username: None,
+            password: None,
+            dev_autologin: true,
+            display_name: "fixture owner".into(),
+        }),
+        calm_server::auth::require_session,
+    ));
     let (status, body) = b
         .create_track(Some("idem-digest"), Some("ship the thing"))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let payloads = b.operation_payloads().await;
-    let keyed: Vec<&Value> = payloads
-        .iter()
-        .filter(|p| p.get("first_message").is_some())
-        .collect();
-    assert_eq!(keyed.len(), 1, "one keyed start: {payloads:?}");
-    assert!(
-        keyed[0]["create_request_sha256"].is_string(),
-        "a keyed create must carry the digest so operation replay keeps the same payload identity: {:?}",
-        keyed[0]
+    assert_eq!(
+        b.operation_payloads().await,
+        payloads,
+        "accepted Human body is not copied into a V1 start operation"
     );
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+        .await
+        .unwrap();
+    let original = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
+        &mut tx,
+        &b.area_id,
+        "idem-digest",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(original.source_user_id, LEGACY_OWNER_USER_ID);
+    assert_eq!(original.create_request_sha256.len(), 64);
+    let calm_server::db::sqlite::conversation::HumanTrackCreationAck::V1 {
+        track_id,
+        planner_card_id,
+        first_message,
+        ..
+    } = &original.acknowledgement;
+    assert_eq!(track_id, body["id"].as_str().unwrap());
+    let author =
+        calm_server::db::sqlite::conversation::message_tx(&mut tx, &first_message.message_id)
+            .await
+            .unwrap();
+    assert_eq!(author.card_id, *planner_card_id);
+    assert_eq!(
+        author.author,
+        calm_types::conversation::MessageAuthor::AuthenticatedHuman {
+            registered_user_id: LEGACY_OWNER_USER_ID.into(),
+        }
+    );
+    let revision = calm_server::db::sqlite::conversation::revision_tx(&mut tx, first_message)
+        .await
+        .unwrap();
+    assert!(
+        matches!(revision.payload, calm_types::conversation::PrivateHistoryPayload::Present { value } if value.text == "ship the thing")
+    );
+    tx.commit().await.unwrap();
+    let (status, replay) = b
+        .create_track(Some("idem-digest"), Some("ship the thing"))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{replay}");
+    assert_eq!(replay["id"], body["id"]);
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+        .await
+        .unwrap();
+    let retained = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
+        &mut tx,
+        &b.area_id,
+        "idem-digest",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        retained, original,
+        "the original fingerprints and ACK survive replay"
+    );
+    tx.commit().await.unwrap();
     b.shutdown_harnesses().await;
 }
 

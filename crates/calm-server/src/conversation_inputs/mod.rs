@@ -23,11 +23,11 @@ use crate::db::sqlite::conversation::{
 use crate::error::{CalmError, Result};
 use crate::harness::PlannerBackend;
 
-async fn authorize_human_tx(
+pub(crate) async fn authorize_human_tx(
     tx: &mut Transaction<'_, Sqlite>,
     principal: &Principal,
     card_id: &str,
-) -> Result<()> {
+) -> Result<crate::model::Area> {
     let area = conversation::conversation_area_tx(tx, card_id).await?;
     crate::organization_access::require_area_access_tx(
         tx,
@@ -35,8 +35,7 @@ async fn authorize_human_tx(
         principal,
         AreaAccess::Collaborate,
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 pub(crate) async fn accept_human_tx(

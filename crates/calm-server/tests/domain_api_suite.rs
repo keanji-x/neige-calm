@@ -19,6 +19,8 @@ mod auth_login_throttle;
 mod auth_origin;
 #[path = "cases/briefing_in_mint_tx.rs"]
 mod briefing_in_mint_tx;
+#[path = "cases/canonical_ingress.rs"]
+mod canonical_ingress;
 #[path = "cases/card_cascade_semantics.rs"]
 mod card_cascade_semantics;
 #[path = "cases/cards_deletable.rs"]

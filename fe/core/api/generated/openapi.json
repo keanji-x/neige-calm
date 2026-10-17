@@ -2624,14 +2624,13 @@
         "tags": [
           "cards"
         ],
-        "summary": "Queue one message for the card's harness, under a required `Idempotency-Key`.",
-        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\n`replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever\nhappened to the message since. The same key with a different body is 409 `idempotency_key_reused`. A\nrefusal stores and binds nothing, so its key can be sent again. A binding lasts as long as its card.\n\nWith `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing\nqueued: it is removed and this message queued in the transaction that binds the key, and the\nprovider drops the turn when the next one starts. There is no lazy recovery on this path.\n\nA person's plain send to a card that nothing else can start any more and that has no thread or\ntranscript to preserve (a kernel-managed Track's card, whose creation starts no model, or a\nconversation whose own minting start failed) starts its conversation first, then queues it.",
+        "summary": "Accept ordinary Human text through the canonical transaction before wake.\nThe original source-bound key and acknowledgement survive native unavailability.",
         "operationId": "send_planner_input",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Planner card id",
+            "description": "Harness conversation card id",
             "required": true,
             "schema": {
               "type": "string"
@@ -2640,7 +2639,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required.** One key per message, at most 128 ASCII bytes; a retry under it replays the first answer.",
+            "description": "Required original message key, at most 128 visible ASCII bytes. Its verified author and original request are bound atomically with canonical acceptance.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2659,7 +2658,7 @@
         },
         "responses": {
           "200": {
-            "description": "User text queued for next harness turn, or the answer of the earlier request under this Idempotency-Key",
+            "description": "Canonical Human input committed, or the original acknowledgement replayed after current source and Area authorization. Native wake/start failure cannot undo this acceptance. entry_id names the accepted message; worker_session_id remains the original acknowledgement, not an instruction to recover that runtime.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2669,7 +2668,7 @@
             }
           },
           "400": {
-            "description": "Empty text, a blank `replaces_turn`, or a missing or invalid Idempotency-Key (`idempotency_key_invalid`)",
+            "description": "Invalid text/request or missing/invalid Idempotency-Key (idempotency_key_invalid)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2679,7 +2678,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "A verified current Human session source is required; invalid or revoked sessions are refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -2689,7 +2688,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`",
+            "description": "Registered current Area collaboration access is required, including before key replay",
             "content": {
               "application/json": {
                 "schema": {
@@ -2699,7 +2698,7 @@
             }
           },
           "404": {
-            "description": "Card or track not found",
+            "description": "Conversation or its owning Area was not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -2709,7 +2708,7 @@
             }
           },
           "409": {
-            "description": "Distinguished by `code`:\n* `idempotency_key_reused` — this Idempotency-Key was already used for a different message on this card (text, attachments, `replaces_turn` or actor); final, send the new message under a new key.\n* `idempotency_key_concurrent` — another request under this key was stored at the same moment and nothing of this one was; send it again under the same key to receive that answer.\n* `planner_harness_dormant` — the planner harness session is dormant and not recoverable; `POST /planner/restart` starts a fresh one and keeps the history.\n* `planner_harness_runtime_superseded` — on a plain send, the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor.\n* `planner_turn_not_replaceable` — on a send with `replaces_turn`, the turn cannot be replaced now (not the latest, still running, messages waiting, the conversation shutting down or no longer the card's, or the provider refusing the cut) and nothing changed; the body carries the reason.\n* `conflict` — the conversation's run loop is shutting down, already closed, or stopped before answering, on a plain send and on a send with `replaces_turn` alike. This answer does not say whether the message was stored or the turn replaced: a loop that stopped before answering may have committed it. Send it again under the same key.",
+            "description": "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses fresh attachments/history replacement, a missing canonical carrier or historical storage requiring activation; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2749,17 +2748,7 @@
             }
           },
           "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly",
+            "description": "Internal storage or response error; reconcile an uncertain outcome with the original key",
             "content": {
               "application/json": {
                 "schema": {
@@ -9182,7 +9171,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201 and starts its Planner again only when every earlier start of it failed (a Planner that already has a session, from the first start or a reset or re-point since, keeps it; one with no session yet while another start of it is running answers 503), a different create shape under the same key is 409 `idempotency_key_reused`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `idempotency_key_reused`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, non-null `model` / `reasoning_effort`, and a `planner_provider` other than `codex`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `idempotency_key_reused`, including after a terminal operation failure. A different `first_message` is also `idempotency_key_reused` after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries, unless the track's Planner already has a session (a reset or re-point started it since): that retry is 409 `conflict`, starts nothing and delivers nothing, so send the message through `POST /api/cards/{id}/planner/input`. With no session yet but another start of the Planner running, it is 503. A `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 `idempotency_key_reused` because the server cannot prove request equality. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`.",
+            "description": "Required with first_message; optional for message-less resource creation. A Human first message binds the original request, verified author and exact accepted message to this key. A same-author identical replay rechecks current Area access and returns the original resource acknowledgement without starting or recovering its old runtime. Different original input or an unproven historical binding is idempotency_key_reused. Historical #N delivery attempts are not adopted or implicitly retried. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation.",
             "required": false,
             "schema": {
               "type": [
@@ -9204,7 +9193,7 @@
         },
         "responses": {
           "201": {
-            "description": "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.",
+            "description": "Track created. With first_message, canonical input and its original acknowledgement have committed independently of native readiness. Acceptance does not promise execution has started. Identical authorized retries mint no second Track or message.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9214,7 +9203,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty, non-ASCII or over 128 bytes; code `idempotency_key_invalid`) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Invalid create/key/message. Fresh Human first-message creation currently supports a blank managed Track; attached cwd, template, recipe, fork, admin and cross-Area preparation are explicitly unsupported. These mutable preparation checks do not run on an accepted replay.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9224,7 +9213,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "No verified live Human source for first_message, or the session is invalid or revoked",
             "content": {
               "application/json": {
                 "schema": {
@@ -9234,7 +9223,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "description": "Registered current Area collaboration access is required for Human input; System targets are not Human Track creation",
             "content": {
               "application/json": {
                 "schema": {
@@ -9244,7 +9233,7 @@
             }
           },
           "404": {
-            "description": "Area not found",
+            "description": "Area or surviving accepted resource not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -9254,7 +9243,7 @@
             }
           },
           "409": {
-            "description": "Folder-claim conflict (structured `FolderConflict` body), `idempotency_key_reused` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, `idempotency_key_concurrent` when another create under the same key committed at the same moment (nothing of this request was kept; retry the identical request under the same key and it resolves to that track), `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized, or `conflict` naming `attached-repo-diverged` when the attached checkout has unpushed commits and its upstream moved on, so the track's worktree cannot be made (the track is already committed and stays, as after a failed managed materialization; reconcile the checkout, then retry under the same key), or `conflict` when a `first_message` retry after a failed start finds that the track's Planner already has a session, so the retry starts nothing (send the message through `POST /api/cards/{id}/planner/input`). Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request after `idempotency_key_reused` (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.",
+            "description": "Idempotency key reused/concurrent/exhausted, an original resource was deleted, or a resource lifecycle conflict. An unsupported historical key is never converted into new canonical work. Preserve the original accepted identity; this response is not permission to resend under a fresh key.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9294,7 +9283,7 @@
             }
           },
           "500": {
-            "description": "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.",
+            "description": "Internal storage or response error; an uncertain outcome must be reconciled under the original key",
             "content": {
               "application/json": {
                 "schema": {
@@ -9304,7 +9293,7 @@
             }
           },
           "503": {
-            "description": "A keyed retry found the Planner with no session yet and a start running; it started nothing. Retry shortly.",
+            "description": "A message-less resource creation found a concurrent Planner start; no Human input acceptance is inferred",
             "content": {
               "application/json": {
                 "schema": {
@@ -13585,14 +13574,14 @@
               "string",
               "null"
             ],
-            "description": "Omitted / null persists `default_cwd()` and skips `area_folders`; present values\n(including the empty string) keep the absolute-path + claim rules."
+            "description": "Message-less resource creation keeps the existing cwd/claim contract.\nHuman first-message creation supports only the configured managed root;\nan explicit cwd requires its own preparation and is currently refused."
           },
           "first_message": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The user's first sentence, seeded into the planner harness as a user message. Supplying\nit makes `Idempotency-Key` required and turns a harness-start failure into a 500 (the\ncommitted track is not undone)."
+            "description": "The verified Human's first accepted message. Requires Idempotency-Key.\nCanonical input and original resource acknowledgement commit before any\nnative startup; a later startup failure cannot undo that acceptance."
           },
           "fork_report_from": {
             "type": [
@@ -16638,14 +16627,14 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
             },
-            "description": "Ids returned by `POST /api/cards/{id}/planner/attachments`. Naming an attachment here is what BINDS it: the bytes move out of the sweepable staging area before this request writes anything to the queue.\nAn id belonging to another card is a 400, as is naming the same one twice or naming more than eight."
+            "description": "Attachment identifiers retain their wire shape. Fresh Human attachment\ninput is explicitly refused until its owning canonical admission is available."
           },
           "replaces_turn": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The `turnId` of the conversation's latest response, when this message replaces that turn\n(Edit). The turn's rows leave the conversation and this message is queued in one commit; a\nrefusal is 409 `planner_turn_not_replaceable` and changes nothing. Person only."
+            "description": "Historical replacement intent. Fresh Human history replacement is\nexplicitly refused until its owning canonical operation is available."
           },
           "text": {
             "type": "string"
@@ -16667,7 +16656,7 @@
               "string",
               "null"
             ],
-            "description": "Stable id of the queue entry this text landed in, so the client can match its optimistic echo. Null only when the text folded into a pre-id queue entry."
+            "description": "Accepted canonical message identity. Historical internal acknowledgements\nretain their original optional entry shape."
           },
           "worker_session_id": {
             "type": "string"

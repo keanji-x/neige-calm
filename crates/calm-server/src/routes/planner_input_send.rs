@@ -27,16 +27,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::ToSchema;
 
+mod human;
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendPlannerInputRequest {
     pub text: String,
-    /// Ids returned by `POST /api/cards/{id}/planner/attachments`. Naming an attachment here is what BINDS it: the bytes move out of the sweepable staging area before this request writes anything to the queue.
-    /// An id belonging to another card is a 400, as is naming the same one twice or naming more than eight.
+    /// Attachment identifiers retain their wire shape. Fresh Human attachment
+    /// input is explicitly refused until its owning canonical admission is available.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
-    /// The `turnId` of the conversation's latest response, when this message replaces that turn
-    /// (Edit). The turn's rows leave the conversation and this message is queued in one commit; a
-    /// refusal is 409 `planner_turn_not_replaceable` and changes nothing. Person only.
+    /// Historical replacement intent. Fresh Human history replacement is
+    /// explicitly refused until its owning canonical operation is available.
     #[serde(default)]
     pub replaces_turn: Option<String>,
 }
@@ -50,7 +51,8 @@ pub struct SendPlannerInputResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub worker_session_id: String,
-    /// Stable id of the queue entry this text landed in, so the client can match its optimistic echo. Null only when the text folded into a pre-id queue entry.
+    /// Accepted canonical message identity. Historical internal acknowledgements
+    /// retain their original optional entry shape.
     pub entry_id: Option<String>,
 }
 
@@ -64,45 +66,31 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     }
 }
 
-/// Queue one message for the card's harness, under a required `Idempotency-Key`.
-///
-/// The first request under a key that the server stores binds the key to that message, in the
-/// transaction that stores it. A retry with the same key and the same body (text, attachments,
-/// `replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever
-/// happened to the message since. The same key with a different body is 409 `idempotency_key_reused`. A
-/// refusal stores and binds nothing, so its key can be sent again. A binding lasts as long as its card.
-///
-/// With `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing
-/// queued: it is removed and this message queued in the transaction that binds the key, and the
-/// provider drops the turn when the next one starts. There is no lazy recovery on this path.
-///
-/// A person's plain send to a card that nothing else can start any more and that has no thread or
-/// transcript to preserve (a kernel-managed Track's card, whose creation starts no model, or a
-/// conversation whose own minting start failed) starts its conversation first, then queues it.
+/// Accept ordinary Human text through the canonical transaction before wake.
+/// The original source-bound key and acknowledgement survive native unavailability.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/input",
     tag = "cards",
     params(
-        ("id" = String, Path, description = "Planner card id"),
-        ("Idempotency-Key" = String, Header, description = "**Required.** One key per message, at most 128 ASCII bytes; a retry under it replays the first answer."),
+        ("id" = String, Path, description = "Harness conversation card id"),
+        ("Idempotency-Key" = String, Header, description = "Required original message key, at most 128 visible ASCII bytes. Its verified author and original request are bound atomically with canonical acceptance."),
     ),
     request_body = SendPlannerInputRequest,
     responses(
-        (status = 200, description = "User text queued for next harness turn, or the answer of the earlier request under this Idempotency-Key", body = SendPlannerInputResponse),
-        (status = 400, description = "Empty text, a blank `replaces_turn`, or a missing or invalid Idempotency-Key (`idempotency_key_invalid`)", body = ErrorBody),
-        (status = 403, description = "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`", body = ErrorBody),
-        (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "Distinguished by `code`:\n* `idempotency_key_reused` — this Idempotency-Key was already used for a different message on this card (text, attachments, `replaces_turn` or actor); final, send the new message under a new key.\n* `idempotency_key_concurrent` — another request under this key was stored at the same moment and nothing of this one was; send it again under the same key to receive that answer.\n* `planner_harness_dormant` — the planner harness session is dormant and not recoverable; `POST /planner/restart` starts a fresh one and keeps the history.\n* `planner_harness_runtime_superseded` — on a plain send, the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor.\n* `planner_turn_not_replaceable` — on a send with `replaces_turn`, the turn cannot be replaced now (not the latest, still running, messages waiting, the conversation shutting down or no longer the card's, or the provider refusing the cut) and nothing changed; the body carries the reason.\n* `conflict` — the conversation's run loop is shutting down, already closed, or stopped before answering, on a plain send and on a send with `replaces_turn` alike. This answer does not say whether the message was stored or the turn replaced: a loop that stopped before answering may have committed it. Send it again under the same key.", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-        (status = 503, description = "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly", body = ErrorBody),
+        (status = 200, description = "Canonical Human input committed, or the original acknowledgement replayed after current source and Area authorization. Native wake/start failure cannot undo this acceptance. entry_id names the accepted message; worker_session_id remains the original acknowledgement, not an instruction to recover that runtime.", body = SendPlannerInputResponse),
+        (status = 400, description = "Invalid text/request or missing/invalid Idempotency-Key (idempotency_key_invalid)", body = ErrorBody),
+        (status = 401, description = "A verified current Human session source is required; invalid or revoked sessions are refused", body = ErrorBody),
+        (status = 403, description = "Registered current Area collaboration access is required, including before key replay", body = ErrorBody),
+        (status = 404, description = "Conversation or its owning Area was not found", body = ErrorBody),
+        (status = 409, description = "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses fresh attachments/history replacement, a missing canonical carrier or historical storage requiring activation; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.", body = ErrorBody),
+        (status = 500, description = "Internal storage or response error; reconcile an uncertain outcome with the original key", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
 pub(crate) async fn send_planner_input(
     State(s): State<RouteState>,
-    State(w): State<WorkerState>,
-    State(cs): State<CodexShellState>,
+    source: crate::auth::HumanInputSource,
     actor: Actor,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -114,12 +102,13 @@ pub(crate) async fn send_planner_input(
                 .into(),
         )
     })?;
-    send_planner_input_keyed(&s, &w, &cs, actor, id, body, idempotency_key)
+    human::accept(&s, source, actor, id, body, idempotency_key)
         .await
         .map(Json)
 }
 
-/// The send behind the route, for callers inside the server that mint their own key.
+/// Historical internal feature sends. They have no authenticated Human source
+/// and cannot enter a canonical runtime through this body-queue path.
 #[allow(deprecated)]
 pub(crate) async fn send_planner_input_keyed(
     s: &RouteState,
@@ -195,6 +184,18 @@ pub(crate) async fn send_planner_input_keyed(
         .track_get(card.track_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {} for card {id}", card.track_id)))?;
+    if let Some(runtime) = s.repo.session_projection_active_for_card(&id).await?
+        && runtime.handle_state_json.as_ref().is_some_and(|value| {
+            value
+                .get("schema_version")
+                .and_then(serde_json::Value::as_u64)
+                == Some(2)
+        })
+    {
+        return Err(CalmError::Conflict(
+            "internal feature input requires its canonical source admission".into(),
+        ));
+    }
     let image_root = if attachments.is_empty() {
         None
     } else {
