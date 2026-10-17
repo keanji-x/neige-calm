@@ -14,6 +14,7 @@ pub struct CurrentInputCarrier {
     pub(super) checkpoint: ConversationInputCheckpoint,
     pub(super) snapshot: Value,
     original_snapshot: String,
+    execution_current: bool,
 }
 
 impl CurrentInputCarrier {
@@ -28,6 +29,15 @@ impl CurrentInputCarrier {
     }
     pub fn card_id(&self) -> &str {
         &self.card_id
+    }
+
+    pub(super) fn require_execution_current(&self) -> Result<()> {
+        if !self.execution_current {
+            return Err(CalmError::Conflict(
+                "failed carrier permits content only, not execution",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn phase(&self) -> Result<HarnessPhaseTag> {
@@ -49,17 +59,44 @@ pub async fn current_input_carrier_tx(
     card_id: &str,
     worker_session_id: &str,
 ) -> Result<CurrentInputCarrier> {
-    let original_snapshot: Option<String> = sqlx::query_scalar(
-        "SELECT ws.handle_state_json FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id
+    load_input_carrier_tx(tx, card_id, worker_session_id, false).await
+}
+
+/// Content remains saveable on the actual current failed carrier. This grants
+/// no claim/marker/phase transition and never picks a historical replacement.
+pub async fn current_input_content_carrier_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<CurrentInputCarrier> {
+    let worker: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten();
+    let worker = worker
+        .ok_or_else(|| CalmError::Conflict("accepted conversation has no current carrier"))?;
+    load_input_carrier_tx(tx, card_id, &worker, true).await
+}
+
+async fn load_input_carrier_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    worker_session_id: &str,
+    content: bool,
+) -> Result<CurrentInputCarrier> {
+    let row: Option<(String,Option<String>)> = sqlx::query_as(
+        "SELECT ws.state, ws.handle_state_json FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id
          WHERE c.id=?1 AND ws.id=?2 AND ws.card_id=c.id AND ws.track_id=c.track_id
            AND ws.mode='resumable' AND ws.provider IN ('codex','claude','opencode')
-           AND ws.state IN ('starting','running','idle','turn_pending')",
+           AND (ws.state IN ('starting','running','idle','turn_pending') OR (?3 AND ws.state='failed'))",
     )
     .bind(card_id)
     .bind(worker_session_id)
+    .bind(content)
     .fetch_optional(&mut **tx)
-    .await?
-    .flatten();
+    .await?;
+    let (state, original_snapshot) =
+        row.ok_or_else(|| CalmError::Conflict("conversation has no current content carrier"))?;
     let original_snapshot = original_snapshot.ok_or_else(|| {
         CalmError::Conflict("conversation input carrier changed or has no checkpoint")
     })?;
@@ -72,6 +109,7 @@ pub async fn current_input_carrier_tx(
         checkpoint,
         snapshot,
         original_snapshot,
+        execution_current: state != "failed",
     };
     carrier.checkpoint.validate().map_err(CalmError::Conflict)?;
     carrier.phase()?;
@@ -92,10 +130,22 @@ pub(super) async fn save_input_carrier_tx(
     let current: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id
           WHERE c.id=?1 AND ws.id=?2 AND ws.card_id=c.id AND ws.track_id=c.track_id
-            AND ws.state IN ('starting','running','idle','turn_pending') AND ws.handle_state_json=?3)",
-    ).bind(&carrier.card_id).bind(&carrier.worker_session_id).bind(&carrier.original_snapshot).fetch_one(&mut **tx).await?;
+            AND (ws.state IN ('starting','running','idle','turn_pending') OR (?4 AND ws.state='failed')) AND ws.handle_state_json=?3)",
+    ).bind(&carrier.card_id).bind(&carrier.worker_session_id).bind(&carrier.original_snapshot).bind(!carrier.execution_current).fetch_one(&mut **tx).await?;
     if !current {
         return Err(CalmError::Conflict("canonical input checkpoint changed"));
+    }
+    if !carrier.execution_current {
+        super::super::session_set_handle_state_of_any_runtime_tx(
+            tx,
+            &carrier.worker_session_id,
+            Some(carrier.snapshot.clone()),
+            crate::model::now_ms(),
+        )
+        .await
+        .map_err(|error| CalmError::Internal(error.to_string()))?;
+        carrier.original_snapshot = serde_json::to_string(&carrier.snapshot)?;
+        return Ok(());
     }
     let written = super::super::session_set_handle_state_tx(
         tx,

@@ -487,7 +487,7 @@ async fn prepare_pr(repo: Arc<SqlxRepo>, track: &str, tmp: &Path, shim: &Path) -
                 repo.clone(), events.clone(), write.clone(), socket.clone(), PathBuf::from("/nonexistent-shim-bin"),
                 registry.clone(), None, host_cell.clone(), op_cell.clone(), logs.clone()).await.unwrap();
             let ctx = support::done_delivery::context(repo.clone(), events.clone(), write.clone(), host_cell, op_cell.clone(), logs.clone());
-            let wiring = support::done_delivery::wire(repo.clone(), events, write, cache, track_areas,
+            let wiring = support::done_delivery::wire(repo.clone(), host.clone(), events, write, cache, track_areas,
                 server, &tmp.join("prepare-workspaces"), &logs).await;
             op_cell.set(wiring.runtime.clone()).ok().unwrap();
             let started = support::done_delivery::start(&repo, &ctx, &registry, planner.clone(), "implement").await;

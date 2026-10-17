@@ -14,10 +14,13 @@ mod plans;
 mod presentation;
 mod release;
 mod runtime_frame;
+mod storage_contract;
 
 pub use acceptance::{AcceptedPendingInput, accept_pending_human_tx};
 pub use attempts::{begin_input_attempt_tx, record_input_attempt_fact_tx};
-pub use carrier::{CurrentInputCarrier, current_input_carrier_tx};
+pub use carrier::{
+    CurrentInputCarrier, current_input_carrier_tx, current_input_content_carrier_tx,
+};
 pub use claims::{
     ClaimedSubmission, claim_initial_submission_tx, claim_supplemental_submission_tx,
 };
@@ -41,6 +44,7 @@ pub use runtime_frame::{
     RuntimeExecutionFence, RuntimeFrameAfterWrite, complete_input_execution_tx,
     persist_runtime_frame_tx,
 };
+pub use storage_contract::card_has_canonical_storage;
 
 use crate::error::{CalmError, Result};
 use calm_types::conversation::ConversationHistoryContract;

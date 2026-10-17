@@ -957,6 +957,24 @@ impl SharedCodexAppServer {
             .map(|minted| minted.thread_id)
     }
 
+    /// The caller's real source owner re-admits new native effects after this
+    /// owner's awaited start gate/settings work. No credential enters this owner.
+    pub(crate) async fn thread_start_mint_admitted_for_card<F, A>(
+        self: &Arc<Self>,
+        card_id: &str,
+        params: SharedThreadStartParams,
+        admit: F,
+    ) -> Result<String>
+    where
+        F: Fn() -> A + Send + Sync,
+        A: std::future::Future<Output = Result<()>> + Send,
+    {
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        self.thread_start_mint_inner_admitted(card_id, params, &admit)
+            .await
+            .map(|minted| minted.thread_id)
+    }
+
     /// Worker mint: inject per-card MCP shell credentials without Planner tool delegation.
     pub async fn thread_start_mint_mcp_shell(
         self: &Arc<Self>,
@@ -987,6 +1005,21 @@ impl SharedCodexAppServer {
         card_id: &str,
         params: SharedThreadStartParams,
     ) -> Result<MintedThread> {
+        self.thread_start_mint_inner_admitted(card_id, params, &|| async { Ok(()) })
+            .await
+    }
+
+    async fn thread_start_mint_inner_admitted<F, A>(
+        self: &Arc<Self>,
+        card_id: &str,
+        params: SharedThreadStartParams,
+        admit: &F,
+    ) -> Result<MintedThread>
+    where
+        F: Fn() -> A + Send + Sync,
+        A: std::future::Future<Output = Result<()>> + Send,
+    {
+        admit().await?;
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.fail_next_thread_start.swap(false, Ordering::SeqCst) {
@@ -1010,6 +1043,7 @@ impl SharedCodexAppServer {
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
         let config = params.config.to_wire_config()?;
+        admit().await?;
         let thread = client
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
@@ -1021,6 +1055,7 @@ impl SharedCodexAppServer {
             .await?;
         let thread_id = thread
             .thread_id()
+            .filter(|id| !id.trim().is_empty())
             .ok_or_else(|| CalmError::CodexAppServer("thread/start returned no thread.id".into()))?
             .to_string();
         self.kernel_initiated_threads
@@ -3315,6 +3350,19 @@ impl SharedCodexAppServer {
                      while the resume replay was in flight"
                 );
                 continue;
+            }
+            match crate::conversation_inputs::has_canonical_storage(self.repo.as_ref(), &card_id)
+                .await
+            {
+                Ok(false) => {}
+                Ok(true) => {
+                    tracing::info!(%card_id, "canonical conversation awaits current-source recovery");
+                    continue;
+                }
+                Err(_) => {
+                    tracing::warn!(%card_id, "conversation storage contract unavailable; automatic resume held");
+                    continue;
+                }
             }
             tracing::info!(
                 target = "shared_codex_daemon::resume",

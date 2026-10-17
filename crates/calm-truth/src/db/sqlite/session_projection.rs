@@ -28,6 +28,21 @@ use crate::session_projection_row::{
 };
 use calm_types::worker::WorkerSessionState;
 
+/// Attach the original native-start operation to this existing current row.
+/// This is a coordination CAS, not source authorization, allocation or readiness.
+pub async fn session_claim_start_operation_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    card_id: &str,
+    id: &str,
+    operation_id: &str,
+) -> WorkerSessionProjectionResult<bool> {
+    let changed=sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2 AND card_id=?3
+        AND mode='resumable' AND state IN ('starting','running','idle','turn_pending') AND spawn_op_id IS NULL
+        AND EXISTS(SELECT 1 FROM cards c WHERE c.id=?3 AND c.session_id=worker_sessions.id AND c.track_id=worker_sessions.track_id)")
+        .bind(operation_id).bind(id).bind(card_id).execute(&mut **tx).await?;
+    Ok(changed.rows_affected() == 1)
+}
+
 pub(super) async fn runtime_current_status_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,

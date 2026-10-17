@@ -64,6 +64,13 @@ pub(crate) async fn connect(daemon: &Arc<SharedCodexAppServer>) -> (Arc<CodexApp
     (client, peer)
 }
 
+/// Exercise the actual automatic recovery owner with no request source. Cache
+/// attribution is populated by the real native receipt, never this helper.
+pub(crate) async fn resume_cached_without_source(daemon: &SharedCodexAppServer) {
+    daemon.resume_cached_threads(ResumeMode::HotTakeover).await;
+    daemon.resume_cached_threads(ResumeMode::ColdRespawn).await;
+}
+
 pub(crate) async fn hold_attribution(daemon: &SharedCodexAppServer) -> impl Drop + '_ {
     daemon.kernel_initiated_threads.lock().await
 }

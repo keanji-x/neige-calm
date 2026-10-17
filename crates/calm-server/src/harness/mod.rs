@@ -154,6 +154,13 @@ pub async fn spawn_recovered_harness(
     runtime: WorkerSessionProjection,
     claim_mode: ClaimMode,
 ) -> Result<RecoveryOutcome> {
+    // Boot has no current human invocation. In particular, neither an absent
+    // pointer nor an old operation may route a V2 conversation into V1 replay,
+    // credential setup or a newly minted native session. Explicit live-source
+    // activation uses the original retained-carrier lifecycle instead.
+    if crate::conversation_inputs::has_canonical_storage(repo.as_ref(), &runtime.card_id).await? {
+        return Ok(RecoveryOutcome::Skipped);
+    }
     let Some(card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };

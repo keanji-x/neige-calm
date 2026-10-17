@@ -39,6 +39,8 @@ pub(super) async fn recover(
     cs: &CodexShellState,
     runtime: WorkerSessionProjection,
 ) -> Result<WorkerSessionProjection> {
+    crate::conversation_inputs::require_historical_storage(s.repo.as_ref(), &runtime.card_id)
+        .await?;
     let card = s
         .repo
         .card_get(&runtime.card_id)

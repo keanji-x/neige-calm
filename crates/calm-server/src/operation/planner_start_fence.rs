@@ -48,6 +48,30 @@ impl CardStartFence {
         }
     }
 
+    /// Retain the original card fence and request source until the owning
+    /// invocation finishes. Dropping an HTTP waiter does not cancel native work.
+    pub(crate) async fn wake_retained(
+        self,
+        adapter: Arc<super::planner_harness_start_adapter::PlannerHarnessStartAdapter>,
+        source: crate::auth::HumanInputSource,
+        workspace_root: std::path::PathBuf,
+    ) -> Result<()> {
+        tokio::spawn(async move {
+            let result = adapter
+                .wake_retained(
+                    &self.operation_runtime,
+                    &self.card_id,
+                    source,
+                    workspace_root,
+                )
+                .await;
+            drop(self);
+            result
+        })
+        .await
+        .map_err(|_| CalmError::Internal("retained activation task failed".into()))?
+    }
+
     /// What a fresh start would lose, read under the guard, so no other start or recovery of
     /// the card can move it before this fence's own start.
     pub(crate) async fn conversation(&self) -> Result<CardConversation> {
@@ -104,4 +128,37 @@ impl CardStartFence {
             .await?;
         self.operation_runtime.wait(&op_id).await
     }
+}
+
+/// Called only after Human acceptance/ACK commits, for both Fresh and Replayed
+/// requests. The original lifecycle owner re-reads the actual current head.
+pub(crate) fn wake_canonical_human(
+    state: crate::state::RouteState,
+    card_id: CardId,
+    source: crate::auth::HumanInputSource,
+) {
+    tokio::spawn(async move {
+        let fence = CardStartFence::lock(
+            &state.planner_recovery_locks,
+            &state.repo,
+            &state.operation_runtime,
+            &card_id,
+        )
+        .await;
+        if let Err(error) = fence
+            .wake_retained(
+                state.planner_start_adapter.clone(),
+                source,
+                state.workspace_root.clone(),
+            )
+            .await
+        {
+            let reason = match error {
+                CalmError::Unauthorized | CalmError::Forbidden(_) => "source_refused",
+                CalmError::Conflict(_) => "retained_state_held",
+                _ => "activation_unavailable",
+            };
+            tracing::warn!(%card_id, reason, "accepted canonical work remains held by its original lifecycle");
+        }
+    });
 }
