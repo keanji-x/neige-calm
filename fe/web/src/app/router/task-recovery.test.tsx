@@ -94,7 +94,7 @@ function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' 
       type: 'event', event, meta: { id: requests.length + 1, eventVersion: 1 },
     }).effects);
   }, open: async () => {
-    await userEvent.click(await screen.findByText('Reference'));
+    await userEvent.click(await screen.findByText('Reference', {}, { timeout: 5_000 }));
     await userEvent.click(document.querySelector('[data-nc-task-state] > summary')!);
   } };
 }

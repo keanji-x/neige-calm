@@ -75,6 +75,7 @@ it('resumes independent report and grid positions through real sidebar navigatio
   await page.viewport(1440, 900);
   const { router } = setup();
   await expect.element(page.getByRole('button', { name: 'Rename track', exact: true })).toBeVisible();
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to.', { exact: true })).toBeVisible();
   await settle();
   reportPage().scrollTop = 700;
   await settle();

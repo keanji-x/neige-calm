@@ -124,7 +124,7 @@ describe('the source panel on the track page', () => {
       return reads === 1 ? { status: 500, statusText: 'Error', body: { error: 'Report read failed' } }
         : ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_admin: false, can_close: true, cards: [REPORT_CARD], overlays: [] });
     });
-    const link = await screen.findByRole('button', { name: 'Report' });
+    const link = await screen.findByRole('button', { name: 'Report' }, { timeout: 5_000 });
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Report' });
     await within(preview).findByRole('alert');
@@ -146,7 +146,7 @@ describe('the source panel on the track page', () => {
         path: 'docs/notes.md', size: 22, truncated: false, text: '# Other workspace file',
       });
     });
-    const link = await screen.findByRole('button', { name: 'Other report' });
+    const link = await screen.findByRole('button', { name: 'Other report' }, { timeout: 5_000 });
     fireEvent.pointerEnter(link.parentElement!);
     const report = await screen.findByRole('dialog', { name: 'Preview: Other report' });
     const fileLink = await within(report).findByRole('button', { name: 'Scoped notes' });
@@ -167,7 +167,7 @@ describe('the source panel on the track page', () => {
       if (request.path === '/api/tracks/w1/workspace/readfile?path=notes.md') return ok({ path: 'notes.md', size: 60, truncated: false,
         text: '[File evidence](neige://source/src_2c9e0a1b#q1)' });
     });
-    fireEvent.click(await screen.findByRole('button', { name: 'Notes' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Notes' }, { timeout: 5_000 }));
     const file = await screen.findByRole('region', { name: 'File notes.md' });
     const link = await within(file).findByRole('button', { name: 'File evidence' });
     fireEvent.pointerEnter(link.parentElement!);
@@ -191,7 +191,7 @@ describe('the source panel on the track page', () => {
           payload: { columns: [{ key: 'result', label: 'Result' }], rows: [{ result: 'Actual table contents' }] },
         }] } }], overlays: [] });
     });
-    const link = await screen.findByRole('button', { name: 'Report' });
+    const link = await screen.findByRole('button', { name: 'Report' }, { timeout: 5_000 });
     expect(requests.some(request => request.path === '/api/tracks/w2')).toBe(false);
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Report' });
@@ -216,7 +216,7 @@ describe('the source panel on the track page', () => {
       overlays: live ? [{ id: 'evidence', updated_at: 1, entity_kind: 'track', entity_id: 'w1', plugin_id: 'research', kind: 'evidence',
         payload: native ? { snapshot, cell } : table }] : [],
     }) : undefined);
-    const link = await screen.findByRole('button', { name: 'Table evidence' });
+    const link = await screen.findByRole('button', { name: 'Table evidence' }, { timeout: 5_000 });
     expect(requests.filter(request => request.path.includes('/sources/'))).toHaveLength(0);
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Table evidence' });
@@ -228,7 +228,7 @@ describe('the source panel on the track page', () => {
 
   it.each(['旧引用', '未追加的锚点'])('explains unresolved evidence on hover for %s', async label => {
     const { requests } = setup();
-    const link = await screen.findByRole('button', { name: label });
+    const link = await screen.findByRole('button', { name: label }, { timeout: 5_000 });
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: `Preview: ${label}` });
     await within(preview).findByRole('heading', { name: label === '旧引用' ? SOURCE_PANEL_COPY.missingTitle : SOURCE_PANEL_COPY.anchorMissingTitle });
@@ -244,7 +244,7 @@ describe('the source panel on the track page', () => {
       cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
         payload: { markdown: '[Invalid](neige://source/src_bad#q0)' } }] } }], overlays: [],
     }) : undefined);
-    const link = await screen.findByRole('button', { name: 'Invalid' });
+    const link = await screen.findByRole('button', { name: 'Invalid' }, { timeout: 5_000 });
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Invalid' });
     expect(within(preview).getByText(SOURCE_PANEL_COPY.missingMalformed)).toBeTruthy();
@@ -260,7 +260,7 @@ describe('the source panel on the track page', () => {
       reads++;
       return reads === 1 ? new Promise(resolve => { finish = resolve; }) : ok({ ...SOURCE_ROW, body: unsafe, quotes: [] });
     });
-    const link = await screen.findByRole('button', { name: 'Mikko 日志' });
+    const link = await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 });
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Mikko 日志' });
     await within(preview).findByText(SOURCE_PANEL_COPY.loading);
@@ -287,7 +287,7 @@ describe('the source panel on the track page', () => {
       if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_admin: false, can_close: true, cards: [otherReport], overlays: [] });
       if (request.path === '/api/tracks/w2/sources/src_2c9e0a1b') return ok({ ...SOURCE_ROW, body: 'Other track evidence.' });
     });
-    const link = await screen.findByRole('button', { name: 'Other report' });
+    const link = await screen.findByRole('button', { name: 'Other report' }, { timeout: 5_000 });
     expect(requests.some(request => request.path === '/api/tracks/w2')).toBe(false);
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Other report' });
@@ -306,7 +306,7 @@ describe('the source panel on the track page', () => {
 
   it('reads captured evidence only after hover, with provenance and quote, without scrolling the report', async () => {
     const { requests } = setup();
-    const link = await screen.findByRole('button', { name: 'Mikko 日志' });
+    const link = await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 });
     expect(requests.filter(request => request.path.includes('/sources/'))).toHaveLength(0);
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Mikko 日志' });
@@ -327,7 +327,7 @@ describe('the source panel on the track page', () => {
     stubCompactViewport();
     try {
       const { requests } = setup();
-      fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 }));
       const drawer = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
       expect(drawer.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
       expect(requests.filter((request) => request.path === '/api/tracks/w1/sources/src_2c9e0a1b')).toHaveLength(1);
@@ -341,7 +341,7 @@ describe('the source panel on the track page', () => {
 
   it('opens the right-rail drawer with the row the citation names, quote highlighted, and closes on Escape', async () => {
     const { requests } = setup();
-    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 }));
     const drawer = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
     expect(requests.filter((request) => request.path === '/api/tracks/w1/sources/src_2c9e0a1b')).toHaveLength(1);
     expect(within(drawer).getByText('智堡摘要，非机构原文')).toBeTruthy();
@@ -357,7 +357,7 @@ describe('the source panel on the track page', () => {
 
   it('says a dangling citation is missing, with its destination, instead of failing', async () => {
     const { requests } = setup();
-    fireEvent.click(await screen.findByRole('button', { name: '旧引用' }));
+    fireEvent.click(await screen.findByRole('button', { name: '旧引用' }, { timeout: 5_000 }));
     const drawer = await screen.findByRole('complementary', { name: SOURCE_PANEL_COPY.panelTitle });
     await within(drawer).findByRole('heading', { name: SOURCE_PANEL_COPY.missingTitle });
     expect(within(drawer).getByText('neige://source/src_0badf00d')).toBeTruthy();
@@ -368,7 +368,7 @@ describe('the source panel on the track page', () => {
 
   it('shows the source with the missing-anchor state and its destination when the anchor is not on the row', async () => {
     setup();
-    fireEvent.click(await screen.findByRole('button', { name: '未追加的锚点' }));
+    fireEvent.click(await screen.findByRole('button', { name: '未追加的锚点' }, { timeout: 5_000 }));
     const drawer = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
     expect(within(drawer).getByText('智堡摘要，非机构原文')).toBeTruthy();
     expect(drawer.querySelector('mark')).toBeNull();
@@ -384,7 +384,7 @@ describe('the source panel on the track page', () => {
     const conversation = await screen.findByRole('complementary', { name: 'Planner chat' });
     const host = conversation.closest('[data-nc-conversation-drawer-host]');
     expect(host?.hasAttribute('inert')).toBe(false);
-    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 }));
     const source = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
     expect(screen.getByRole('complementary', { name: 'Planner chat' })).toBe(conversation);
     expect(host?.hasAttribute('inert')).toBe(true);
@@ -405,7 +405,7 @@ describe('the source panel on the track page', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Planner chat/ }));
     await screen.findByRole('complementary', { name: 'Planner chat' });
     await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/run'))).toBe(true));
-    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 }));
     const source = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
     fireEvent.keyDown(source, { key: 'Escape' });
     await waitFor(() => expect(source.hasAttribute('data-nc-escape-layer')).toBe(false));

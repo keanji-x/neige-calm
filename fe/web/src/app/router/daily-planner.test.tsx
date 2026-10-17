@@ -7,7 +7,8 @@ afterEach(cleanup);
 
 it('uses the real Planner and opens cited reports from the daily homepage without creation writes', async () => {
   const { router, requests } = renderDailyFixture();
-  await screen.findByText('Prioritize the release. Read', { exact: false });
+  // Functional content waits include admission; production latency is measured separately.
+  await screen.findByText('Prioritize the release. Read', { exact: false }, { timeout: 5_000 });
   expect((await screen.findByRole('button', { name: 'Rename track' })).textContent).toBe('2026-10-04');
   expect(screen.queryByRole('navigation', { name: 'Daily Planner dates' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Open daily Planner' })).toBeNull();
@@ -22,7 +23,7 @@ it('uses the real Planner and opens cited reports from the daily homepage withou
   await userEvent.keyboard('{Escape}');
   await userEvent.click(await screen.findByRole('button', { name: 'Project evidence' }));
   await waitFor(() => expect(router.state.location.pathname).toBe('/track/project'));
-  await screen.findByText('Release is ready.');
+  await screen.findByText('Release is ready.', {}, { timeout: 5_000 });
 });
 
 it('reads yesterday’s report changes and individual edits with the server snapshot cursor', async () => {
@@ -57,7 +58,7 @@ it('keeps historical daily links readable without a second date toolbar', async 
 
 it.each(['/today/legacy', '/today/legacy?day=2026-10-04'])('redirects %s to the sole Today renderer without singleton requests', async (initial) => {
   const { router, requests } = renderDailyFixture({ initial });
-  await screen.findByText('Prioritize the release.', { exact: false });
+  await screen.findByText('Prioritize the release.', { exact: false }, { timeout: 5_000 });
   expect(router.state.location.pathname).toBe('/');
   await screen.findByRole('region', { name: 'Calendar tasks' });
   expect(requests.some((request) => request.path.includes('/today/launchpad'))).toBe(false);
