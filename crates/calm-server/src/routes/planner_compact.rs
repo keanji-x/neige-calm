@@ -43,6 +43,15 @@ pub(crate) async fn compact_planner_card(
         "context compaction",
         "Only the person may compact their conversation.",
     )?;
+    let card_id = CardId::from(id.clone());
+    let _card = crate::operation::planner_start_fence::CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &card_id,
+    )
+    .await;
+    crate::conversation_archive::require_unarchived(s.repo.as_ref(), &id).await?;
     let card = s
         .repo
         .card_get(&id)

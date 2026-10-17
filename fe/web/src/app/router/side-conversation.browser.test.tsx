@@ -23,7 +23,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
   const requests: ApiRequest[] = [];
   const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
-  const parent: Conversation & { provider: 'codex' } = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null };
+  const parent: Conversation & { provider: 'codex' } = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
   const rows = [parent];
   const transport: ApiTransportPort = { async send(request) {
     await Promise.resolve();

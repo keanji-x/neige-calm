@@ -1,3 +1,5 @@
+import { ConversationGroups } from '../../features/chat/list/groups.tsx';
+import { ConversationArchiveAction } from '../../features/chat/list/public.tsx';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { useCallback, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
@@ -34,7 +36,7 @@ function groupName(at: number, now: number): string {
   return at >= today.getTime() ? '今天' : at >= yesterday.getTime() ? '昨天' : '更早';
 }
 
-export function MobileHistory({ open, onOpenChange, conversations, loading, failed, onRetry, onNew, onSelect,
+export function MobileHistory({ open, onOpenChange, conversations, loading, failed, onRetry, onNew, onSelect, onArchive,
   onOpenSettings, accountLabel, accountInitial, onSignOut, now, scopeLabel, selectedConversationId, trackGroups, currentTrackId, onOpenTrack, isUnread, tracksLoading, tracksError, onRetryTracks }: Readonly<{
   selectedConversationId: string | null;
   trackGroups: Pick<SidebarTrackGroups, 'pinned' | 'unread' | 'waiting'>;
@@ -52,6 +54,7 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
   onRetry: () => void;
   onNew: (() => void) | null;
   onSelect: (conversation: Conversation) => void;
+  onArchive?: (cardId: string, archived: boolean) => Promise<void>;
   onOpenSettings: () => void;
   scopeLabel: string;
   accountLabel: string;
@@ -72,11 +75,6 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
     node?.addEventListener('close', didClose);
   }, [didClose]);
   const leave = (action: () => void) => { afterClose.current = action; onOpenChange(false); };
-  const groups = new Map<string, Conversation[]>();
-  for (const row of conversations) {
-    const name = groupName(row.updatedAt, now);
-    const group = groups.get(name) ?? []; group.push(row); groups.set(name, group);
-  }
   return <MobileNav id="mobile-conversation-history" ref={captureDialog} isOpen={open} onOpenChange={onOpenChange} side="start" width={320}
     label={view === 'current' ? '历史对话' : VIEW_LABELS[view]} header={<span className={styles.drawerHeading}>{view === 'current' ? '历史对话' : VIEW_LABELS[view]}</span>} className={`${styles.drawer} ${mobileFontClassName}`}
     >
@@ -101,15 +99,28 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
         <p className={styles.scope}>{scopeLabel}</p>
         {failed && <ErrorBox message="部分历史对话未能加载。" actionLabel="重试" onRetry={onRetry} />}
         {loading && <p role="status">正在加载历史对话…</p>}
-        {[...groups].map(([name, rows]) => <section key={name} aria-label={name}>
-          <h2 className={styles.group}>{name}</h2>
-          {rows.map((row) => <button key={row.id} type="button" className={styles.row} aria-current={row.id === selectedConversationId ? 'true' : undefined}
-            aria-label={`${historyTitle(row)}${historySubtitle(row) ? ` ${historySubtitle(row)}` : ''}`} onClick={() => leave(() => onSelect(row))}>
-            <span className={styles.title}>{historyTitle(row)}</span>
-            <span className={styles.meta} title={historySubtitle(row)}>{row.kind === PLANNER_CONVERSATION_KIND ? null : historySubtitle(row)}<span aria-hidden="true">{row.kind === PLANNER_CONVERSATION_KIND ? '' : ' · '}{new Date(row.updatedAt).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).replaceAll('/', '-')}</span></span>
-          </button>)}
-        </section>)}
-        {!loading && !failed && conversations.length === 0 && <p className={styles.empty}>当前 Track 还没有对话。</p>}
+        <ConversationGroups conversations={conversations} emptyActive={!loading && !failed ? <p className={styles.empty}>{conversations.length === 0 ? '当前 Track 还没有对话。' : '暂无活跃对话。'}</p> : null}>
+          {rows => {
+            const groups = new Map<string, Conversation[]>();
+            for (const row of rows) {
+              const name = groupName(row.updatedAt, now);
+              const group = groups.get(name) ?? []; group.push(row); groups.set(name, group);
+            }
+            return <>
+              {[...groups].map(([name, rows]) => <section key={name} className={styles.dateGroup} aria-label={name}>
+                <h2 className={styles.group}>{name}</h2>
+                {rows.map((row) => <div key={row.id} className={styles.conversationRow}><button type="button" className={styles.row} aria-current={row.id === selectedConversationId ? 'true' : undefined}
+                  aria-label={`${historyTitle(row)}${historySubtitle(row) ? ` ${historySubtitle(row)}` : ''}`} onClick={() => leave(() => onSelect(row))}>
+                  <span className={styles.title}>{historyTitle(row)}</span>
+                  <span className={styles.meta} title={historySubtitle(row)}>{row.kind === PLANNER_CONVERSATION_KIND ? null : historySubtitle(row)}<span aria-hidden="true">{row.kind === PLANNER_CONVERSATION_KIND ? '' : ' · '}{new Date(row.updatedAt).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).replaceAll('/', '-')}</span></span>
+                </button>
+                {onArchive !== undefined && row.kind === 'track-assistant' && <ConversationArchiveAction
+                  conversation={row} onArchive={onArchive} className={styles.conversationActions} />}
+                </div>)}
+              </section>)}
+            </>;
+          }}
+        </ConversationGroups>
         </> : <>
           <p className={styles.scope}>全部工作区</p>
           {tracksError !== null && <ErrorBox message={tracksError} actionLabel="重试" onRetry={onRetryTracks} />}

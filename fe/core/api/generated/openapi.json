@@ -12007,6 +12007,149 @@
         }
       }
     },
+    "/api/tracks/{track_id}/conversations/{card_id}/archive": {
+      "patch": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "set_conversation_archive",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Owning Track",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Assistant conversation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationArchiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Archive state saved; repeating the same assignment changes nothing"
+          },
+          "400": {
+            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only the person can archive an Assistant conversation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Track or conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Reply or queued input still in progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Archive state could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Conversation issuance is still settling; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{track_id}/terminal-cards": {
       "post": {
         "tags": [
@@ -13401,6 +13544,18 @@
             "description": "Absolute `http://` / `https://` endpoint."
           }
         }
+      },
+      "ConversationArchiveRequest": {
+        "type": "object",
+        "required": [
+          "archived"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "ConversationRecoveryNotice": {
         "type": "object",
@@ -17675,6 +17830,7 @@
         "type": "object",
         "description": "One row of `GET /api/tracks/{track_id}/conversations`.",
         "required": [
+          "archivedAt",
           "provider",
           "id",
           "trackId",
@@ -17682,6 +17838,14 @@
           "updatedAt"
         ],
         "properties": {
+          "archivedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Person-owned archive time, or null while the conversation is in the active list."
+          },
           "id": {
             "type": "string",
             "description": "The assistant card's id; the conversation's identity everywhere."

@@ -34,6 +34,8 @@ pub mod area_membership;
 mod area_ownership_tests;
 mod card;
 mod card_composite;
+mod conversation_archive;
+pub use conversation_archive::conversation_archive_set_tx;
 mod database_identity;
 mod events;
 mod infra;

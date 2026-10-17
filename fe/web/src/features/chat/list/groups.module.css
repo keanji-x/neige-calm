@@ -1,0 +1,26 @@
+@layer features {
+  .group + .group {
+    margin-block-start: var(--space-2);
+  }
+
+  .heading {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    inline-size: 100%;
+    min-block-size: var(--row-h);
+    border-radius: var(--radius-sm);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .heading:hover {
+    background: var(--overlay-hover);
+  }
+
+  .chevron {
+    display: grid;
+    place-items: center;
+    color: var(--text-3);
+  }
+}

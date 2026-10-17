@@ -83,7 +83,7 @@ async fn boot() -> Boot {
     ));
     let app = routes::router()
         .layer(Extension(Principal {
-            user_id: "owner".into(),
+            user_id: LEGACY_OWNER_USER_ID.into(),
             display_name: "owner".into(),
             role: "owner".into(),
             session_id: "test".into(),
@@ -1248,3 +1248,6 @@ mod keyed;
 mod assistant_provider_contract;
 #[path = "assistant_provider_create.rs"]
 mod assistant_provider_create;
+
+#[path = "conversation_archive.rs"]
+mod conversation_archive;

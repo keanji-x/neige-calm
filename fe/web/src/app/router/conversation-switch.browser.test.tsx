@@ -48,7 +48,7 @@ it.each([20, 900])('presents the selected shell before mounting %i cached messag
     reply: request => {
       if (request.path === '/api/tracks/daily/conversations') return { status: 200, statusText: 'OK', body: [{
         id: 'second-planner', trackId: 'daily', title: 'Other conversation', kind: 'track-assistant',
-        provider: 'codex', state: 'idle', updatedAt: count, lastTurnCompletedAt: count,
+        provider: 'codex', state: 'idle', updatedAt: count, archivedAt: null, lastTurnCompletedAt: count,
       }] };
       return request.path.includes('/second-planner/harness/items')
         ? { status: 200, statusText: 'OK', body: rows }

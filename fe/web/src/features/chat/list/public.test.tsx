@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // `Conversation.state` is the server's session reading and reads into none of the fold: the harness
 // leaves it at `turn_pending` / `running` long after a turn ended.
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../../core/domain/conversation.ts';
@@ -101,4 +101,32 @@ it('distinguishes Planner and Assistant by their declared role even when their n
   expect(plannerRow.querySelector('svg')?.innerHTML).not.toBe(assistantRow.querySelector('svg')?.innerHTML);
   plannerRow.click(); assistantRow.click();
   expect(onOpen.mock.calls).toEqual([[planner], [assistant]]);
+});
+
+
+it.each([false, true])('archives through either renderer and preserves failed rows (context=%s)', async context => {
+  const onArchive = vi.fn().mockRejectedValue(new Error('Archive refused'));
+  render(<ChatList context={context} cards={{}} onOpen={vi.fn()} onArchive={onArchive} conversations={[
+    conversation(), conversation({ id: 'planner', kind: PLANNER_CONVERSATION_KIND, title: 'Planner' }),
+  ]} />);
+  expect(screen.queryByRole('button', { name: 'Actions for conversation: Planner' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Actions for conversation: Assistant' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive conversation' }));
+  await waitFor(() => expect(onArchive).toHaveBeenCalledWith('c1', true));
+  expect((await screen.findByRole('alert')).textContent).toBe('Archive refused');
+  expect(screen.getByRole('button', { name: 'Conversation Assistant' })).not.toBeNull();
+});
+
+it.each([false, true])('keeps archived history accessible and restores the original id (context=%s)', async context => {
+  const onArchive = vi.fn().mockResolvedValue(undefined);
+  const onOpen = vi.fn();
+  const row = conversation({ archivedAt: 5 });
+  render(<ChatList context={context} cards={{}} onOpen={onOpen} onArchive={onArchive} conversations={[row]} />);
+  expect(screen.queryByRole('button', { name: 'Conversation Assistant' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Archived conversations' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Conversation Assistant' }));
+  expect(onOpen).toHaveBeenCalledWith(row);
+  fireEvent.click(screen.getByRole('button', { name: 'Actions for conversation: Assistant' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Restore conversation' }));
+  await waitFor(() => expect(onArchive).toHaveBeenCalledWith('c1', false));
 });
