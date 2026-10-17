@@ -36,7 +36,7 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> PlannerHarness {
 
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot,
+            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
         },
         1024,
     );

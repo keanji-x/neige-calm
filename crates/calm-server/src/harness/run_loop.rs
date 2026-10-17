@@ -45,6 +45,11 @@ use crate::thread_seals::{DeletionThreadSeals, ThreadSeals};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 
+mod canonical;
+mod input_contract;
+pub use input_contract::HarnessRuntimeSnapshot;
+use input_contract::{LoadedRuntimeSnapshot, RuntimeInputs, RuntimeSnapshotKind};
+
 /// Fixtures-only: park a runtime immediately before it turns its pending queue into a turn.
 /// Parked one statement before `inner.issuance` is taken, because `shutdown_inner` takes that
 /// same lock and a hook parked under it would deadlock the `PATCH` a test orders against.
@@ -168,7 +173,7 @@ pub struct PlannerHarnessParams {
     /// The server's one registry: [`crate::harness::HarnessRegistry::live_replies`].
     pub live_replies: Arc<LiveReplies>,
     pub config: HarnessConfig,
-    pub snapshot: HarnessSnapshot,
+    pub snapshot: HarnessRuntimeSnapshot,
 }
 
 pub(super) struct Inner {
@@ -190,7 +195,7 @@ pub(super) struct Inner {
         Option<crate::harness::compact_outcome::CompactOutcome>,
         bool,
     )>,
-    pending_queue: Mutex<VecDeque<QueueEntry>>,
+    inputs: RuntimeInputs,
     recent_hook_keys: Mutex<VecDeque<String>>,
     recent_hook_key_set: Mutex<HashSet<String>>,
     push_watermark: Mutex<i64>,
@@ -282,6 +287,12 @@ struct SteeredEntry {
     /// The transcript projection written once codex accepted, or `None` if that write failed;
     /// without a row the sweep cannot tell a delivery from a drop and leaves the entry alone.
     row_id: Option<i64>,
+}
+
+impl Inner {
+    fn historical_queue(&self) -> Result<&Mutex<VecDeque<QueueEntry>>> {
+        self.inputs.historical_queue()
+    }
 }
 
 pub(super) struct IssueTurnHandle<'a> {
@@ -520,14 +531,22 @@ impl PlannerHarness {
         self.inner.held_request_sender.clone()
     }
 
-    pub fn run(params: PlannerHarnessParams) -> Self {
-        params.snapshot.assert_known_schema();
+    pub async fn run(params: PlannerHarnessParams) -> Result<Self> {
+        let loaded = match &params.snapshot.kind {
+            RuntimeSnapshotKind::Historical(snapshot) => {
+                LoadedRuntimeSnapshot::Historical(snapshot.clone())
+            }
+            RuntimeSnapshotKind::Canonical => {
+                LoadedRuntimeSnapshot::Canonical(canonical::load_current(&params).await?)
+            }
+        };
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let events = params.backend.subscribe_events();
         let (held_tx, held_rx) = held_requests::channel();
         let (inner, announce_dropped_first) = inner_from_params(
             params,
+            loaded,
             ObservationIngress::Running(obs_tx),
             shutdown_tx,
             held_tx,
@@ -554,7 +573,7 @@ impl PlannerHarness {
         tokio::spawn(async move {
             let _ = task.await;
         });
-        handle
+        Ok(handle)
     }
 
     #[cfg(feature = "fixtures")]
@@ -562,7 +581,10 @@ impl PlannerHarness {
         params: PlannerHarnessParams,
         observation_buffer: usize,
     ) -> (Self, mpsc::Receiver<HarnessObservationDelivery>) {
-        params.snapshot.assert_known_schema();
+        let RuntimeSnapshotKind::Historical(snapshot) = &params.snapshot.kind else {
+            panic!("the unstarted historical fixture cannot stand in for a canonical runtime");
+        };
+        let loaded = LoadedRuntimeSnapshot::Historical(snapshot.clone());
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
         // No run loop on this path to flush the drop announcements early; the `persist_snapshot_inner`
@@ -570,6 +592,7 @@ impl PlannerHarness {
         let (held_tx, _held_rx) = held_requests::channel();
         let (inner, _announce_dropped_first) = inner_from_params(
             params,
+            loaded,
             ObservationIngress::Unstarted(obs_tx),
             shutdown_tx,
             held_tx,
@@ -1193,20 +1216,49 @@ fn map_observation_send_error<T>(e: mpsc::error::TrySendError<T>) -> CalmError {
 
 fn inner_from_params(
     params: PlannerHarnessParams,
+    loaded: LoadedRuntimeSnapshot,
     observations: ObservationIngress,
     shutdown: broadcast::Sender<()>,
     held_request_sender: HeldRequestSender,
 ) -> (Arc<Inner>, bool) {
-    let mut snapshot = params.snapshot;
-    let dropped_on_load = truncate_snapshot_pending_queue(&mut snapshot);
+    let (header, inputs, dropped_on_load, debounce, recent_hook_keys, recent_hook_key_set,
+        projection_client_id, legacy_issued_input_segments) = match loaded {
+        LoadedRuntimeSnapshot::Historical(mut snapshot) => {
+            let dropped = truncate_snapshot_pending_queue(&mut snapshot);
+            let queue = snapshot.pending_entries().into_iter().collect::<VecDeque<_>>();
+            let debounce = debounce_from_initial_queue(&queue);
+            let (keys, key_set) = recent_hook_keys_from_pending_queue(&queue);
+            snapshot.restore_context_feedback();
+            (
+                snapshot.runtime_header(),
+                RuntimeInputs::Historical(Mutex::new(queue)),
+                dropped,
+                debounce,
+                keys,
+                key_set,
+                snapshot.projection_client_id,
+                snapshot.issued_input_segments,
+            )
+        }
+        LoadedRuntimeSnapshot::Canonical(frame) => (
+            frame.snapshot.header.clone(),
+            RuntimeInputs::Canonical(canonical::CanonicalInputs::new(frame)),
+            Vec::new(),
+            DebounceState::default(),
+            VecDeque::new(),
+            HashSet::new(),
+            None,
+            None,
+        ),
+    };
     let announce_first = !dropped_on_load.is_empty();
-    let pending_queue: VecDeque<_> = snapshot.pending_entries().into_iter().collect();
-    let debounce = debounce_from_initial_queue(&pending_queue);
-    snapshot.restore_context_feedback();
-    let state = state_from_snapshot(&snapshot);
-    let last_phase = snapshot.phase;
-    let (recent_hook_keys, recent_hook_key_set) =
-        recent_hook_keys_from_pending_queue(&pending_queue);
+    let state = state_from_runtime_header(&header, &inputs);
+    let last_phase = header.phase;
+    let thread_id = if inputs.canonical().is_some() {
+        header.last_thread_id.clone()
+    } else {
+        params.thread_id.or(header.last_thread_id.clone())
+    };
     let live_claim = params
         .live_replies
         .claim(&params.card_id, &params.worker_session_id);
@@ -1214,7 +1266,7 @@ fn inner_from_params(
         worker_session_id: params.worker_session_id,
         track_id: params.track_id,
         card_id: params.card_id,
-        thread_id: RwLock::new(params.thread_id.or(snapshot.last_thread_id.clone())),
+        thread_id: RwLock::new(thread_id),
         repo: params.repo,
         events: params.events,
         card_role_cache: params.card_role_cache,
@@ -1225,40 +1277,40 @@ fn inner_from_params(
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
         last_context_feedback: Mutex::new((
-            snapshot.compact_outcome.clone(),
-            snapshot.context_usage_invalidated,
+            header.compact_outcome.clone(),
+            header.context_usage_invalidated,
         )),
-        pending_queue: Mutex::new(pending_queue),
+        inputs,
         recent_hook_keys: Mutex::new(recent_hook_keys),
         recent_hook_key_set: Mutex::new(recent_hook_key_set),
-        push_watermark: Mutex::new(snapshot.push_watermark),
-        last_turn_id: Mutex::new(snapshot.last_turn_id),
+        push_watermark: Mutex::new(header.push_watermark),
+        last_turn_id: Mutex::new(header.last_turn_id),
         issued_turn_id: Mutex::new(None),
-        interruption_intent: Mutex::new(snapshot.interruption_intent),
-        issued_turn_head: Mutex::new(snapshot.issued_turn_head),
-        projection_client_id: Mutex::new(snapshot.projection_client_id),
-        legacy_issued_input_segments: Mutex::new(snapshot.issued_input_segments),
-        last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
-        last_seen_head: Mutex::new(snapshot.last_seen_head),
+        interruption_intent: Mutex::new(header.interruption_intent),
+        issued_turn_head: Mutex::new(header.issued_turn_head),
+        projection_client_id: Mutex::new(projection_client_id),
+        legacy_issued_input_segments: Mutex::new(legacy_issued_input_segments),
+        last_report_body_sha256: Mutex::new(header.last_report_body_sha256),
+        last_seen_head: Mutex::new(header.last_seen_head),
         // Round-trips through the snapshot: codex only re-pushes it on the next model response, so a
         // resumed-but-idle thread would otherwise read as having no context usage.
-        token_usage: Mutex::new(snapshot.token_usage),
+        token_usage: Mutex::new(header.token_usage),
         maintenance_turns: Mutex::new(
-            snapshot
+            header
                 .compact_outcome
                 .as_ref()
                 .and_then(|outcome| outcome.turn_id.clone())
                 .into_iter()
                 .collect(),
         ),
-        compact_outcome: Mutex::new(snapshot.compact_outcome),
-        context_usage_invalidation: Mutex::new(snapshot.context_usage_invalidated.then_some(
+        compact_outcome: Mutex::new(header.compact_outcome),
+        context_usage_invalidation: Mutex::new(header.context_usage_invalidated.then_some(
             compact_command::UsageInvalidation {
-                user_turn_id: snapshot.context_usage_invalidated_turn,
+                user_turn_id: header.context_usage_invalidated_turn,
             },
         )),
-        pending_rewind: Mutex::new(snapshot.pending_rewind),
-        last_turn_base: Mutex::new(snapshot.last_turn_base),
+        pending_rewind: Mutex::new(header.pending_rewind.map(Into::into)),
+        last_turn_base: Mutex::new(header.last_turn_base.map(Into::into)),
         rewound_turns: Mutex::new(HashSet::new()),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
@@ -1281,7 +1333,7 @@ fn inner_from_params(
         held_request_sender,
         watchdog_held_since: Mutex::new(None),
         abort_handle: StdMutex::new(None),
-        turn_budget: Mutex::new(snapshot.turn_budget),
+        turn_budget: Mutex::new(header.turn_budget),
         config: params.config,
     });
     (inner, announce_first)
@@ -4401,14 +4453,24 @@ async fn persist_snapshot_inner(
     Ok(written)
 }
 
-fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
+fn state_from_runtime_header(
+    snapshot: &calm_types::harness::snapshot::HarnessRuntimeHeader,
+    inputs: &RuntimeInputs,
+) -> HarnessState {
     let now = Instant::now();
     match snapshot.phase {
         HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
         HarnessPhaseTag::Idle => HarnessState::Idle,
         HarnessPhaseTag::Compacting => HarnessState::Wedged { since: now, reason: "Context compaction was interrupted by a server restart; reset the conversation to continue.".into() },
         HarnessPhaseTag::IssuingTurn => {
-            if snapshot.last_turn_id.is_some() {
+            if inputs.canonical().is_some() {
+                // An unresolved canonical invocation is still issuing. Neither
+                // a missing native ID nor restart makes it a completed turn.
+                HarnessState::Issuing {
+                    since: now,
+                    kind: IssuingKind::TurnStart,
+                }
+            } else if snapshot.last_turn_id.is_some() {
                 HarnessState::Resumed { resumed_at: now }
             } else {
                 HarnessState::TurnCompleted {
@@ -4419,11 +4481,14 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
         HarnessPhaseTag::IssuingInterrupt | HarnessPhaseTag::TurnRunning => {
             HarnessState::Resumed { resumed_at: now }
         }
-        HarnessPhaseTag::TurnCompleted => HarnessState::TurnCompleted {
-            last_turn_id: snapshot
-                .last_turn_id
-                .clone()
-                .unwrap_or_else(|| "unknown-turn".into()),
+        HarnessPhaseTag::TurnCompleted => {
+            let last_turn_id = if inputs.canonical().is_some() {
+                snapshot.last_turn_id.clone()
+                    .expect("canonical load checks the completed turn identity")
+            } else {
+                snapshot.last_turn_id.clone().unwrap_or_else(|| "unknown-turn".into())
+            };
+            HarnessState::TurnCompleted { last_turn_id }
         },
         HarnessPhaseTag::Resumed => HarnessState::Resumed { resumed_at: now },
         HarnessPhaseTag::Wedged => HarnessState::Wedged {

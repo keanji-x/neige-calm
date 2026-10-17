@@ -966,8 +966,8 @@ impl Fx {
 
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot,
-        });
+            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+        }).await.expect("historical fixture harness");
         handle
             .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
             .await

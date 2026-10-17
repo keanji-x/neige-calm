@@ -359,8 +359,8 @@ pub async fn spawn_recovered_harness(
         backend,
         live_replies: registry.live_replies().clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into()?,
+    }).await?;
     Ok(match install_or_shutdown(reservation, handle).await? {
         Some(handle) => RecoveryOutcome::Installed(handle),
         None => RecoveryOutcome::Skipped,
@@ -823,8 +823,8 @@ mod tests {
 
             live_replies: registry.live_replies().clone(),
             config: HarnessConfig::default(),
-            snapshot: HarnessSnapshot::initial(0, vec![]),
-        });
+            snapshot: (HarnessSnapshot::initial(0, vec![])).try_into().expect("historical fixture snapshot contract"),
+        }).await.expect("historical fixture harness");
         let installed = install_or_shutdown(reservation, handle.clone())
             .await
             .unwrap();

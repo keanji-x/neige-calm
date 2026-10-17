@@ -133,8 +133,8 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     let daemon = &boot.state.shared_codex_appserver;
     daemon.emit_notification_for_test(
         calm_server::codex_appserver::Notification::ThreadStatusChanged {
@@ -285,8 +285,8 @@ async fn a_live_failed_loop_is_replaced_without_interrupting_or_resetting_its_th
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),
-    });
+        snapshot: (HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap())).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), old.clone());
     let (status, body) = post_planner_input(
         boot.app.clone(),
@@ -694,8 +694,8 @@ async fn recovery_backfills_the_matching_error_when_quiescence_precedes_completi
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: HarnessSnapshot::from_value_strict(before.handle_state_json.unwrap()),
-    });
+        snapshot: (HarnessSnapshot::from_value_strict(before.handle_state_json.unwrap())).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), old);
     let sock = boot._tmp.path().join("run/codex-appserver.sock");
     std::fs::write(sock.with_extension("thread-read"),json!({"thread":{"id":thread,"status":{"type":"systemError"},"turns":[

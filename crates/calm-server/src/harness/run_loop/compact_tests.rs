@@ -310,7 +310,7 @@ async fn compact_boundary_invalidates_even_when_maintenance_fails_or_is_interrup
                 backend: old.backend.clone(),
                 live_replies: crate::harness::LiveReplies::for_test(),
                 config: HarnessConfig::default(),
-                snapshot,
+                snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
             },
             8,
         );

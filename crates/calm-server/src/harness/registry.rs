@@ -361,7 +361,7 @@ mod tests {
 
                 live_replies: crate::harness::LiveReplies::for_test(),
                 config: HarnessConfig::default(),
-                snapshot: HarnessSnapshot::initial(0, vec![]),
+                snapshot: (HarnessSnapshot::initial(0, vec![])).try_into().expect("historical fixture snapshot contract"),
             },
             4,
         );

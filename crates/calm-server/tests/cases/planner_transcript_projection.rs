@@ -240,8 +240,8 @@ async fn boot_with(plan: BootPlan) -> Boot {
             resumed_reconcile_budget: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
 
     let state = AppState::from_parts(
         repo_dyn,

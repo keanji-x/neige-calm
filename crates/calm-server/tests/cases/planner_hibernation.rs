@@ -49,8 +49,8 @@ async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: HarnessSnapshot::from_value_strict(snapshot),
-    });
+        snapshot: (HarnessSnapshot::from_value_strict(snapshot)).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), handle.clone());
     assert_eq!(
         boot.state

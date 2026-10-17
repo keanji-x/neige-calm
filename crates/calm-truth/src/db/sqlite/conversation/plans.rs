@@ -2,11 +2,12 @@
 use super::digest;
 use crate::error::{CalmError, Result};
 use calm_types::conversation::{
-    AcceptedInputRef, ConversationExecutionProvenance, ConversationMessageId, InputCorrelationFact,
-    InputDeliveryFact, InputSubmissionId, LogicalTurnId, MessageRevisionRef,
+    AcceptedInputRef, ConversationExecutionProvenance, ConversationMessageId, FrozenHumanAttribution,
+    InputCorrelationFact, InputDeliveryFact, InputSubmissionId, LogicalTurnId, MessageAuthor,
+    MessageRevisionRef, PendingInput,
     PrivateHistoryOperationId, PrivateHistoryPayload, SubmissionDispatchProof,
     SubmissionRenderDigest, SubmissionRenderInput, SubmissionRenderPlan, SubmissionRenderPlanRef,
-    SubmissionRenderPlanVersion, SubmissionRenderSegment, SystemObservationId,
+    SubmissionRenderPlanVersion, SubmissionRenderSegment, SystemObservationId, SystemRenderContext,
 };
 use sqlx::{Row, Sqlite, Transaction};
 use std::num::NonZeroU32;
@@ -15,6 +16,64 @@ use std::num::NonZeroU32;
 pub struct StoredSubmissionPlan {
     pub plan: SubmissionRenderPlan,
     pub original_digest: SubmissionRenderDigest,
+}
+
+/// Construct attribution from canonical provenance and the registered author,
+/// never the caller or the source which may later authorize execution. This is
+/// a body-free plan; the claim owner still validates this exact pending prefix,
+/// current revisions and execution authority in the same protected transaction.
+pub async fn human_plan_for_pending_prefix_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &super::CurrentInputCarrier,
+    input_count: NonZeroU32,
+    contexts: Vec<SystemRenderContext>,
+) -> Result<SubmissionRenderPlan> {
+    let count = usize::try_from(input_count.get())
+        .map_err(|_| CalmError::Conflict("human input prefix is too large"))?;
+    let entries = carrier
+        .checkpoint()
+        .pending
+        .get(..count)
+        .ok_or(CalmError::Conflict("pending human input prefix changed"))?;
+    let mut segments = contexts
+        .into_iter()
+        .map(|context| SubmissionRenderSegment::Context {
+            payload: PrivateHistoryPayload::Present { value: context },
+        })
+        .collect::<Vec<_>>();
+    for (position, entry) in entries.iter().enumerate() {
+        let PendingInput::Human { message, .. } = entry else {
+            return Err(CalmError::Conflict(
+                "human plan cannot reinterpret another pending source",
+            ));
+        };
+        let identity = super::message_tx(tx, &message.message_id).await?;
+        let MessageAuthor::AuthenticatedHuman { registered_user_id } = identity.author else {
+            return Err(CalmError::Conflict(
+                "human pending input has no authenticated author",
+            ));
+        };
+        let display_name: Option<String> =
+            sqlx::query_scalar("SELECT display_name FROM application_users WHERE id=?1")
+                .bind(&registered_user_id)
+                .fetch_optional(&mut **tx)
+                .await?;
+        let display_name = display_name.ok_or(CalmError::Conflict(
+            "human input author is no longer registered",
+        ))?;
+        segments.push(SubmissionRenderSegment::Input {
+            input_position: u32::try_from(position)
+                .map_err(|_| CalmError::Conflict("human input position is too large"))?,
+            input: SubmissionRenderInput::Human {
+                message: message.clone(),
+                author: FrozenHumanAttribution {
+                    registered_user_id,
+                    display_name,
+                },
+            },
+        });
+    }
+    Ok(SubmissionRenderPlan::V1 { segments })
 }
 
 /// Identity and execution provenance come from their original owners, never a

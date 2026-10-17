@@ -150,8 +150,8 @@ async fn seed_harness_with_snapshot(
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
 
     (
         harness,

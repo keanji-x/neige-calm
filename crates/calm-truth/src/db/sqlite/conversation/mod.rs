@@ -32,7 +32,8 @@ pub use messages::{
 pub use pending_edit::{edit_pending_human_tx, withdraw_pending_human_tx};
 pub use plans::{
     OriginalInputExecution, StoredSubmissionIdentity, StoredSubmissionPlan,
-    erase_submission_render_payloads_tx, original_input_execution_tx, submission_identity_tx,
+    erase_submission_render_payloads_tx, human_plan_for_pending_prefix_tx,
+    original_input_execution_tx, submission_identity_tx,
     submission_plan_tx,
 };
 pub use presentation::{PresentationSource, allocate_presentation_tx};

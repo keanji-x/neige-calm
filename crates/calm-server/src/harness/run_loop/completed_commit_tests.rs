@@ -141,7 +141,7 @@ impl Fixture {
                     debounce_max_wait: Duration::ZERO,
                     ..HarnessConfig::default()
                 },
-                snapshot,
+                snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
             },
             8,
         );
@@ -321,7 +321,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
             backend: inner.backend.clone(),
             live_replies: crate::harness::LiveReplies::for_test(),
             config: inner.config,
-            snapshot,
+            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
         },
         8,
     );

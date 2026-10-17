@@ -141,8 +141,8 @@ async fn boot() -> Boot {
             report_edit_max_wait: Duration::from_millis(200),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
 
     Boot {
         repo,
@@ -226,8 +226,8 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
             debounce_max_wait: Duration::from_millis(100),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     let before: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1 AND message = 'transcript refresh'",
     )
@@ -368,8 +368,8 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
             debounce_max_wait: Duration::from_millis(100),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     // User text goes through the durable route, the only one that mints a queue id.
     harness
         .observe_user_message_durable(
@@ -1026,8 +1026,8 @@ async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     wait_for_state(&recovered, |s| matches!(s, HarnessState::Resumed { .. })).await;
 
     boot.daemon

@@ -446,7 +446,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
             backend: inner.backend.clone(),
             live_replies: crate::harness::LiveReplies::for_test(),
             config: inner.config,
-            snapshot,
+            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
         },
         8,
     );

@@ -125,8 +125,8 @@ async fn idle_harness(
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     (harness, daemon, track.id)
 }
 

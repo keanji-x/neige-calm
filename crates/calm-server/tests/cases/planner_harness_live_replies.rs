@@ -636,8 +636,8 @@ async fn a_harness_that_loses_its_start_leaves_the_installed_harness_streaming()
 
         live_replies: boot.registry.live_replies().clone(),
         config: HarnessConfig::default(),
-        snapshot: idle_snapshot(vec![]),
-    });
+        snapshot: (idle_snapshot(vec![])).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     assert!(!stale.install(loser.clone()), "the start was superseded");
     loser.shutdown().await.unwrap();
 

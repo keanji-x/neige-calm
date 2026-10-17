@@ -3817,8 +3817,8 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
 
         live_replies: crate::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     handle
         .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
         .await

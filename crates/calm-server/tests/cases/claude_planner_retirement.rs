@@ -289,8 +289,8 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
         backend: PlannerBackend::claude_for_test(session),
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     let asked = std::time::Instant::now();
     while loser.refused_issuances_for_test() == 0 {
         assert!(

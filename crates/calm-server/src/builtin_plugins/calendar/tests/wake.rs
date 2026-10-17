@@ -51,8 +51,8 @@ pub(super) async fn planner(fx: &Fixture) -> Planner {
 
         live_replies: crate::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     // Keep delivered observations queued instead of issuing a turn on the stub backend.
     harness
         .force_phase_for_dev(HarnessPhaseTag::TurnRunning)

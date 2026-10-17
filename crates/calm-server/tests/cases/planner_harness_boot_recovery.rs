@@ -741,8 +741,8 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         .unwrap(),
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: HarnessSnapshot::initial(0, vec![]),
-    });
+        snapshot: (HarnessSnapshot::initial(0, vec![])).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
 
     let hook_fired = Arc::new(AtomicUsize::new(0));
     let pending_user_install = Arc::new(std::sync::Mutex::new(Some(user_handle.clone())));

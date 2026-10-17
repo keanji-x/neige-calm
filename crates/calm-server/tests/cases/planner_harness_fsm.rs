@@ -137,8 +137,8 @@ async fn harness_with(
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     (repo, harness, worker_session_id, thread_id)
 }
 
@@ -194,8 +194,8 @@ async fn harness_from_snapshot(
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
     (harness, worker_session_id)
 }
 
@@ -836,8 +836,8 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
-        snapshot,
-    });
+        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+    }).await.expect("historical fixture harness");
 
     tokio::time::timeout(
         config.debounce_min_idle + Duration::from_millis(300),
