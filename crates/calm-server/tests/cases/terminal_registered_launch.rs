@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, ensure};
 use axum::{body::Body, http::Request};
 use calm_server::{
-    auth::{self, AuthConfig, AuthState},
+    auth::{AuthConfig, AuthState},
     db::{prelude::*, sqlite::SqlxRepo},
     event::EventBus,
     model::{NewArea, NewTrack, Terminal},
@@ -226,16 +226,7 @@ impl Fixture {
             dev_autologin: false,
             display_name: "Owner".into(),
         });
-        let protected = calm_server::routes::protected_router()
-            .layer(axum::middleware::from_fn(
-                calm_server::actor::actor_middleware,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                auth_state.clone(),
-                auth::require_session,
-            ))
-            .with_state(state.clone());
-        let app = protected.merge(auth::router().with_state(auth_state));
+        let app = calm_server::routes::application_router(state.clone(), auth_state);
         let login = app
             .clone()
             .oneshot(
@@ -578,3 +569,6 @@ async fn terminal_http_source_survives_keyless_operation_cleanup() -> anyhow::Re
     );
     Ok(())
 }
+
+#[path = "terminal_registered_launch/ws.rs"]
+mod ws;
