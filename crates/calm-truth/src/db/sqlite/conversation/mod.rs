@@ -7,6 +7,7 @@ mod carrier;
 mod claim_storage;
 mod claim_validation;
 mod claims;
+mod creation;
 mod messages;
 mod pending_edit;
 mod plans;
@@ -19,6 +20,10 @@ pub use attempts::{begin_input_attempt_tx, record_input_attempt_fact_tx};
 pub use carrier::{CurrentInputCarrier, current_input_carrier_tx};
 pub use claims::{
     ClaimedSubmission, claim_initial_submission_tx, claim_supplemental_submission_tx,
+};
+pub use creation::{
+    HumanTrackCreationAck, HumanTrackCreationRecord, human_track_creation_get_tx,
+    human_track_creation_insert_tx,
 };
 pub use messages::{
     StoredMessage, StoredMessageRevision, append_unclaimed_human_revision_tx,

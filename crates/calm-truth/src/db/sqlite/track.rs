@@ -521,6 +521,22 @@ pub async fn track_create_idempotency_get_pool(
     area_id: &str,
     idempotency_key: &str,
 ) -> Result<Option<TrackCreateBinding>> {
+    track_create_idempotency_get(pool, area_id, idempotency_key).await
+}
+
+pub async fn track_create_idempotency_get_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    area_id: &str,
+    idempotency_key: &str,
+) -> Result<Option<TrackCreateBinding>> {
+    track_create_idempotency_get(&mut **tx, area_id, idempotency_key).await
+}
+
+async fn track_create_idempotency_get<'e, E: sqlx::SqliteExecutor<'e>>(
+    executor: E,
+    area_id: &str,
+    idempotency_key: &str,
+) -> Result<Option<TrackCreateBinding>> {
     let row: Option<TrackCreateBindingRow> = sqlx::query_as(
         "SELECT track_id, planner_card_id, report_card_id, request_fingerprint_version, \
                 create_request_sha256, first_message_sha256 \
@@ -529,7 +545,7 @@ pub async fn track_create_idempotency_get_pool(
     )
     .bind(area_id)
     .bind(idempotency_key)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     row.map(
         |(

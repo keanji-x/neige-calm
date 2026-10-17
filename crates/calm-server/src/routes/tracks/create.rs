@@ -24,6 +24,7 @@ use crate::state::RouteState;
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
 mod delivery;
+pub(super) mod dormant;
 use delivery::{SubmitArm, start_planner_harness_with_first_message};
 
 /// Which arm this request takes: binding miss + vacant key → `Mint`; hit + occupied →
@@ -235,6 +236,19 @@ fn derive_track_create_operation_key(area_id: &str, idempotency_key: &str) -> St
     format!("track-create-{}", hex::encode(hasher.finalize()))
 }
 
+fn track_create_key(headers: &HeaderMap) -> Result<Option<String>> {
+    let idempotency_key = parse_idempotency_key_header(headers)?;
+    if let Some(key) = &idempotency_key
+        && key.starts_with(TRACK_ADD_KEY_PREFIX)
+    {
+        return Err(CalmError::IdempotencyKeyInvalid(format!(
+            "the key must not start with `{TRACK_ADD_KEY_PREFIX}`: that namespace belongs to {}",
+            crate::mcp_server::tools::track_add::TOOL_TRACK_ADD
+        )));
+    }
+    Ok(idempotency_key)
+}
+
 /// Parse and validate the first-message half of the request, and pick the arm — before
 /// `create_track` validates, let alone mints, anything.
 pub(super) async fn plan_first_message(
@@ -246,15 +260,7 @@ pub(super) async fn plan_first_message(
 ) -> Result<CreatePlan> {
     // The header is parsed BEFORE the `first_message` fork because it decides the
     // message-less fork too; a malformed key on a message-less create is a 400.
-    let idempotency_key = parse_idempotency_key_header(headers)?;
-    if let Some(key) = &idempotency_key
-        && key.starts_with(TRACK_ADD_KEY_PREFIX)
-    {
-        return Err(CalmError::IdempotencyKeyInvalid(format!(
-            "the key must not start with `{TRACK_ADD_KEY_PREFIX}`: that namespace belongs to {}",
-            crate::mcp_server::tools::track_add::TOOL_TRACK_ADD
-        )));
-    }
+    let idempotency_key = track_create_key(headers)?;
     let Some(text) = first_message else {
         // No key means the legacy path verbatim; a key opts this shape into the same binding
         // row the `first_message` path uses.

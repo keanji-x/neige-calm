@@ -234,3 +234,74 @@ CREATE TABLE conversation_migration_aliases (
     accepted_ref_json TEXT NOT NULL CHECK(json_valid(accepted_ref_json)),
     PRIMARY KEY(card_id,source_locator)
 );
+
+-- Human first-input acceptance is independent of native startup. Keep this
+-- permanent source/key/ack identity when resources are explicitly deleted.
+CREATE TABLE conversation_human_track_creations (
+    area_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL CHECK(length(idempotency_key)>0 AND length(idempotency_key)<=128),
+    source_user_id TEXT NOT NULL REFERENCES application_users(id) ON DELETE RESTRICT,
+    create_request_sha256 TEXT NOT NULL CHECK(length(create_request_sha256)=64 AND create_request_sha256 NOT GLOB '*[^0-9a-f]*'),
+    first_message_sha256 TEXT NOT NULL CHECK(length(first_message_sha256)=64 AND first_message_sha256 NOT GLOB '*[^0-9a-f]*'),
+    ack_version INTEGER NOT NULL CHECK(ack_version=1),
+    track_id TEXT NOT NULL,
+    planner_card_id TEXT NOT NULL,
+    report_card_id TEXT NOT NULL,
+    origin_runtime_id TEXT NOT NULL CHECK(length(origin_runtime_id)=32 AND origin_runtime_id NOT GLOB '*[^0-9a-f]*'),
+    message_id TEXT NOT NULL CHECK(length(message_id)=32 AND message_id NOT GLOB '*[^0-9a-f]*'),
+    message_revision INTEGER NOT NULL CHECK(message_revision=1),
+    presentation_sequence INTEGER NOT NULL CHECK(presentation_sequence>0),
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(area_id,idempotency_key),
+    UNIQUE(track_id),
+    UNIQUE(planner_card_id),
+    UNIQUE(origin_runtime_id),
+    UNIQUE(message_id)
+);
+CREATE TRIGGER conversation_human_track_creation_fact_scope
+BEFORE INSERT ON conversation_human_track_creations
+WHEN NOT EXISTS (
+    SELECT 1 FROM track_create_idempotency b
+    JOIN tracks t ON t.id=b.track_id AND t.area_id=b.area_id
+    JOIN cards c ON c.id=b.planner_card_id AND c.track_id=t.id AND c.role='planner'
+    JOIN cards r ON r.id=b.report_card_id AND r.track_id=t.id AND r.role='reportcard'
+    JOIN worker_sessions ws ON ws.id=c.session_id AND ws.card_id=c.id AND ws.track_id=t.id
+    JOIN conversation_messages m ON m.id=NEW.message_id AND m.card_id=c.id
+    JOIN conversation_message_revisions mr ON mr.message_id=m.id AND mr.revision=NEW.message_revision
+    JOIN conversation_presentations p ON p.card_id=c.id AND p.source_kind='human_message' AND p.message_id=m.id
+    WHERE b.area_id=NEW.area_id AND b.idempotency_key=NEW.idempotency_key
+      AND b.track_id=NEW.track_id AND b.planner_card_id=NEW.planner_card_id AND b.report_card_id=NEW.report_card_id
+      AND b.request_fingerprint_version=1
+      AND b.create_request_sha256=NEW.create_request_sha256 AND b.first_message_sha256=NEW.first_message_sha256
+      AND ws.id=NEW.origin_runtime_id AND ws.mode='resumable' AND ws.contract='planner' AND ws.state='idle'
+      AND ws.thread_id IS NULL AND ws.agent_session_id IS NULL AND ws.active_turn_id IS NULL
+      AND ws.mcp_token_hash IS NULL
+      AND CASE WHEN json_valid(ws.handle_state_json) THEN
+        json_extract(ws.handle_state_json,'$.schema_version')=2
+        AND json_extract(ws.handle_state_json,'$.mode')='harness'
+        AND json_extract(ws.handle_state_json,'$.phase')='idle'
+        AND json_array_length(ws.handle_state_json,'$.canonical_inputs.pending')=1
+        AND json_extract(ws.handle_state_json,'$.canonical_inputs.next_queue_position')=1
+        AND json_type(ws.handle_state_json,'$.canonical_inputs.active')='null'
+        AND json_array_length(ws.handle_state_json,'$.canonical_inputs.attempts')=0
+        AND json_extract(ws.handle_state_json,'$.canonical_inputs.pending[0].kind')='human'
+        AND json_extract(ws.handle_state_json,'$.canonical_inputs.pending[0].message.message_id')=NEW.message_id
+        AND json_extract(ws.handle_state_json,'$.canonical_inputs.pending[0].message.revision')=NEW.message_revision
+      ELSE 0 END IS TRUE
+      AND m.author_kind='authenticated_human' AND m.author_user_id=NEW.source_user_id AND m.current_revision=1
+      AND m.withdrawn_at_ms IS NULL AND json_extract(mr.payload_json,'$.state')='present'
+      AND p.sequence=NEW.presentation_sequence
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Human creation acceptance must bind its actual dormant allocation and first input');
+END;
+CREATE TRIGGER conversation_human_track_creation_immutable
+BEFORE UPDATE ON conversation_human_track_creations
+BEGIN
+    SELECT RAISE(ABORT, 'Original Human creation acceptance is immutable');
+END;
+CREATE TRIGGER conversation_human_track_creation_permanent
+BEFORE DELETE ON conversation_human_track_creations
+BEGIN
+    SELECT RAISE(ABORT, 'Original Human creation keys cannot be reused');
+END;
