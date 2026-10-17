@@ -64,6 +64,8 @@
   /* Every rail state paints the same inset surface. The hit target and global
      status gutter remain full width; navigation-row owns the depth geometry. */
   .variantRail {
+    min-block-size: var(--row-h);
+    grid-template-columns: minmax(0, 1fr);
     position: relative;
     isolation: isolate;
     background: transparent;
@@ -135,14 +137,6 @@
      grid for the trailing edge, and with the age gone too the title is the
      whole row. It keeps the panel's own row height and fill padding. */
   .variantPanel {
-    min-block-size: var(--row-h);
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* One column. The status dot left the grid for the trailing edge (see
-     `.statusSlot`), and this variant has neither a relative time nor a second
-     line, so the title is the whole row. */
-  .variantRail {
     min-block-size: var(--row-h);
     grid-template-columns: minmax(0, 1fr);
   }
