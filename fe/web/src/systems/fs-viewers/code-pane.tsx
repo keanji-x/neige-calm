@@ -59,28 +59,34 @@ function emptyPanel() {
 }
 
 /** 1-based; `current` of `0` means no current match. */
-function computeMatchState(view: EditorView, query: SearchQuery): { current: number; total: number } {
+function computeMatchState(view: EditorView, query: SearchQuery, knownTotal?: number): { current: number; total: number } {
   if (!query.valid) return { current: 0, total: 0 };
-  const cursor = query.getCursor(view.state.doc);
-  let total = 0;
-  let current = 0;
   const selectionFrom = view.state.selection.main.from;
   const selectionTo = view.state.selection.main.to;
+  // Once the total is known, only the prefix can affect this selection's ordinal.
+  // Keep using the editor's matching policy; retain no per-match position array.
+  const cursor = query.getCursor(view.state.doc, 0, knownTotal === undefined ? undefined : selectionTo);
+  let total = 0;
+  let current = 0;
   let step = cursor.next();
   while (!step.done) {
     total += 1;
     if (step.value.from === selectionFrom && step.value.to === selectionTo) current = total;
     step = cursor.next();
   }
-  return { current, total };
+  return { current, total: knownTotal ?? total };
 }
 
 function buildCodeSearchAdapter(
   view: EditorView,
   onCount: (current: number, total: number) => void,
 ): PaneSearchAdapter {
+  let counted: { document: EditorState['doc']; query: SearchQuery; total: number } | null = null;
   const emit = () => {
-    const { current, total } = computeMatchState(view, getSearchQuery(view.state));
+    const query = getSearchQuery(view.state);
+    const knownTotal = counted?.document === view.state.doc && counted.query === query ? counted.total : undefined;
+    const { current, total } = computeMatchState(view, query, knownTotal);
+    counted = { document: view.state.doc, query, total };
     onCount(current, total);
   };
   return {
@@ -89,6 +95,7 @@ function buildCodeSearchAdapter(
       if (pattern !== '' && !searchPanelOpen(view.state)) openSearchPanel(view);
       view.dispatch({ effects: setSearchQuery.of(query) });
       if (pattern === '') {
+        counted = null;
         closeSearchPanel(view);
         onCount(0, 0);
         return;
@@ -99,6 +106,7 @@ function buildCodeSearchAdapter(
     next() { findNext(view); emit(); },
     prev() { findPrevious(view); emit(); },
     dispose() {
+      counted = null;
       view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: '' })) });
       closeSearchPanel(view);
     },
