@@ -10,17 +10,21 @@ fn execution_directory_helper_report_requires_exact_boot_nonce_receipts_and_role
         executor_boot: ExecutorBootId::fresh().unwrap(),
         nonce: TransferNonce::fresh().unwrap(),
         ancestor: ProbeRoot {
-            registration: ObjectRegistrationId::fresh().unwrap(),
-            incarnation: SourceObjectIncarnation::ExternalDir(
-                ExternalDirectoryIncarnationId::fresh().unwrap(),
-            ),
+            origin: ProbeOrigin::Registered {
+                registration: ObjectRegistrationId::fresh().unwrap(),
+                incarnation: SourceObjectIncarnation::ExternalDir(
+                    ExternalDirectoryIncarnationId::fresh().unwrap(),
+                ),
+            },
             role: ObjectRole::Root,
         },
         subject: ProbeRoot {
-            registration: ObjectRegistrationId::fresh().unwrap(),
-            incarnation: SourceObjectIncarnation::ExternalDir(
-                ExternalDirectoryIncarnationId::fresh().unwrap(),
-            ),
+            origin: ProbeOrigin::Registered {
+                registration: ObjectRegistrationId::fresh().unwrap(),
+                incarnation: SourceObjectIncarnation::ExternalDir(
+                    ExternalDirectoryIncarnationId::fresh().unwrap(),
+                ),
+            },
             role: ObjectRole::Root,
         },
         facts: current_directory_pair(&first, &second).ok().unwrap(),
@@ -43,11 +47,17 @@ fn execution_directory_helper_report_requires_exact_boot_nonce_receipts_and_role
         match fault {
             0 => bad.nonce = TransferNonce::fresh().unwrap(),
             1 => bad.executor_boot = ExecutorBootId::fresh().unwrap(),
-            2 => bad.subject.registration = ObjectRegistrationId::fresh().unwrap(),
+            2 => {
+                if let ProbeOrigin::Registered { registration, .. } = &mut bad.subject.origin {
+                    *registration = ObjectRegistrationId::fresh().unwrap();
+                }
+            }
             3 => {
-                bad.subject.incarnation = SourceObjectIncarnation::ExternalDir(
-                    ExternalDirectoryIncarnationId::fresh().unwrap(),
-                )
+                if let ProbeOrigin::Registered { incarnation, .. } = &mut bad.subject.origin {
+                    *incarnation = SourceObjectIncarnation::ExternalDir(
+                        ExternalDirectoryIncarnationId::fresh().unwrap(),
+                    );
+                }
             }
             4 => bad.subject.role = ObjectRole::GitDirectory,
             5 => {}

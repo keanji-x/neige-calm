@@ -158,6 +158,17 @@ impl Executor {
             rights::send(stream, &ControlReply::Execution(Box::new(reply)), &[]).await?;
             return Ok(());
         }
+        if let ExecutionRequest::ObserveTransferredDirectories(request) = request {
+            let reply = match self
+                .observe_transferred_directories(*request, descriptors)
+                .await
+            {
+                Ok(reply) => reply,
+                Err(error) => qualification_or_refusal(&error),
+            };
+            rights::send(stream, &ControlReply::Execution(Box::new(reply)), &[]).await?;
+            return Ok(());
+        }
         anyhow::ensure!(
             descriptors.is_empty(),
             "descriptors on a non-attachment request"
