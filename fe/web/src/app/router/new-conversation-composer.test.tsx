@@ -87,9 +87,14 @@ function renderApp(managed = false) {
   return { requests, router };
 }
 
+async function expectEmptyConversationList() {
+  await screen.findByRole('button', { name: 'New conversation' });
+  await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Conversation / })).toHaveLength(0));
+}
+
 async function openTrack(router: ReturnType<typeof renderApp>['router'], trackId: string) {
   await act(async () => { await router.navigate({ to: '/track/$trackId', params: { trackId } }); });
-  await screen.findByText('No conversations yet.');
+  await expectEmptyConversationList();
 }
 
 /** The `+`, which opens the "Untitled" drawer of a conversation not created yet. */
@@ -124,7 +129,7 @@ async function typeInto(text: string) {
 
 it('brings the words back when the drawer is closed and `+` is pressed again', async () => {
   const { requests } = renderApp();
-  await screen.findByText('No conversations yet.');
+  await expectEmptyConversationList();
   await pressPlus();
   await typeInto('Half a first message');
   closeDrawer();
@@ -135,7 +140,7 @@ it('brings the words back when the drawer is closed and `+` is pressed again', a
 
 it('keeps the words when the reader leaves the Track and comes back', async () => {
   const { router } = renderApp();
-  await screen.findByText('No conversations yet.');
+  await expectEmptyConversationList();
   await pressPlus();
   await typeInto('Written before leaving');
   await act(async () => { await router.navigate({ to: '/' }); });
@@ -147,7 +152,7 @@ it('keeps the words when the reader leaves the Track and comes back', async () =
 
 it('gives another Track its own empty field', async () => {
   const { router } = renderApp();
-  await screen.findByText('No conversations yet.');
+  await expectEmptyConversationList();
   await pressPlus();
   await typeInto('Only for track one');
   closeDrawer();
@@ -163,7 +168,7 @@ it('gives another Track its own empty field', async () => {
 
 it('leaves an empty field for the next `+` after the first message is sent', async () => {
   const { requests } = renderApp();
-  await screen.findByText('No conversations yet.');
+  await expectEmptyConversationList();
   await pressPlus();
   await typeInto('The first message');
   await act(async () => {
@@ -180,7 +185,7 @@ it('leaves an empty field for the next `+` after the first message is sent', asy
 
 it('offers the registered managed backend and sends the selected provider', async () => {
   const { requests } = renderApp(true);
-  await screen.findByText('No conversations yet.');
+  await expectEmptyConversationList();
   await pressPlus();
   fireEvent.click(await screen.findByRole('button', { name: /Model:/ }));
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Sonnet' }));
