@@ -169,6 +169,17 @@ pub(crate) async fn get_conversation_initial_input(
             receipt: Some(receipt),
         }));
     }
+    let observed_rev = match &observed {
+        InputInspection::Queued { rev, .. } => Some(*rev),
+        InputInspection::Projected { entry_rev, .. } => Some(*entry_rev),
+        InputInspection::Unavailable(_) => None,
+    };
+    if observed_rev.is_some_and(|rev| rev < receipt.entry_rev) {
+        return Ok(Json(Observation::Unavailable {
+            reason: Reason::RuntimeUnavailable,
+            receipt: Some(receipt),
+        }));
+    }
     Ok(Json(match observed {
         InputInspection::Queued {
             entry_id,
@@ -185,11 +196,13 @@ pub(crate) async fn get_conversation_initial_input(
         InputInspection::Projected {
             item_id,
             segment_index,
+            entry_rev,
         } => Observation::Projected {
             receipt,
             runtime_id: runtime.id,
             item_id,
             segment_index,
+            entry_rev,
         },
         InputInspection::Unavailable(reason) => {
             let receipt = match reason {

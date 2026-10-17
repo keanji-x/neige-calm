@@ -18,6 +18,7 @@ pub enum InitialInputReceiptVersion {
 pub struct ConversationInitialInputReceipt {
     pub version: InitialInputReceiptVersion,
     pub entry_id: String,
+    pub entry_rev: u32,
     pub queued_at_ms: i64,
     pub text_sha256: String,
     /// The original carrier; later recovery may move the same entry to another runtime.
@@ -83,6 +84,8 @@ pub enum ConversationInitialInputObservation {
         item_id: i64,
         #[serde(rename = "segmentIndex")]
         segment_index: u32,
+        #[serde(rename = "entryRev")]
+        entry_rev: u32,
     },
     Unavailable {
         reason: InitialInputUnavailableReason,
@@ -102,6 +105,7 @@ mod tests {
         let receipt = ConversationInitialInputReceipt {
             version: InitialInputReceiptVersion::V1,
             entry_id: "actual-entry".into(),
+            entry_rev: 1,
             queued_at_ms: 17,
             text_sha256: "digest".into(),
             initial_runtime_id: "original-runtime".into(),
@@ -120,6 +124,7 @@ mod tests {
                 runtime_id: "current-runtime".into(),
                 item_id: 42,
                 segment_index: 1,
+                entry_rev: 2,
             },
             ConversationInitialInputObservation::Unavailable {
                 reason: InitialInputUnavailableReason::RuntimeUnavailable,

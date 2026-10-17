@@ -29,6 +29,7 @@ async fn initial_input_inspection_names_each_equal_text_entry_in_one_batch() {
     let InputInspection::Projected {
         item_id,
         segment_index,
+        ..
     } = first
     else {
         panic!("{first:?}");
@@ -36,6 +37,7 @@ async fn initial_input_inspection_names_each_equal_text_entry_in_one_batch() {
     let InputInspection::Projected {
         item_id: other_row,
         segment_index: other_segment,
+        ..
     } = second
     else {
         panic!("{second:?}");
@@ -282,8 +284,9 @@ async fn initial_input_inspection_rejects_failed_issuance_residue_after_queue_de
             .origin
             .as_ref()
             .unwrap()
-            .queue_entry_id
-            .as_deref(),
+            .queue_entry
+            .as_ref()
+            .map(|entry| entry.id.as_str()),
         Some(id.as_str())
     );
     let InputInspection::Queued { rev, .. } = fx.harness.inspect_input(id.clone()).await.unwrap()

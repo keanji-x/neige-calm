@@ -2,6 +2,37 @@
 //! event put it there. Driven through the real queue and `maybe_issue_turn`.
 use super::completed_commit_tests::Fixture;
 use super::*;
+
+#[tokio::test]
+async fn versioned_input_origin_serializes_the_actual_edited_queue_revision() {
+    let fx = Fixture::new().await;
+    let entry = QueueEntry::user_message("before edit".into(), None, vec![]);
+    let id = entry.id().unwrap().clone();
+    fx.enqueue(vec![entry]).await;
+    let edited = fx
+        .harness
+        .mutate_pending_entry(
+            crate::harness::queue::QueueMutation::Edit {
+                entry_id: id.clone(),
+                text: "actual revised input".into(),
+                if_entry_rev: 0,
+            },
+            ActorId::User,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(edited.rev, 1);
+    fx.issue().await;
+    let segments = fx.projected_segments().await;
+    assert_eq!(
+        serde_json::to_value(&segments[1].origin).unwrap(),
+        serde_json::json!({
+            "observation":"user_message", "event_id":null,
+            "queue_entry":{"id":id.as_str(),"rev":edited.rev},
+        })
+    );
+}
 use crate::model::HarnessInputOrigin;
 use calm_types::observation::MAIL_WAKE_SOURCE;
 
@@ -9,7 +40,7 @@ fn origin(observation: &str, event_id: Option<i64>) -> Option<HarnessInputOrigin
     Some(HarnessInputOrigin {
         observation: observation.into(),
         event_id,
-        queue_entry_id: None,
+        queue_entry: None,
     })
 }
 
@@ -73,6 +104,8 @@ async fn a_user_message_turn_records_a_user_message_with_no_event() {
         )
         .await
         .unwrap();
+    let pending = fx.harness.snapshot().await.pending_entries();
+    let actual = pending.iter().find_map(|entry| entry.user_view()).unwrap();
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
@@ -92,7 +125,10 @@ async fn a_user_message_turn_records_a_user_message_with_no_event() {
                 origin: Some(HarnessInputOrigin {
                     observation: "user_message".into(),
                     event_id: None,
-                    queue_entry_id: accepted.entry_id.map(|id| id.as_str().to_string()),
+                    queue_entry: Some(crate::model::HarnessQueueEntryRef {
+                        id: accepted.entry_id.unwrap().to_string(),
+                        rev: actual.rev,
+                    }),
                 }),
             },
         ]

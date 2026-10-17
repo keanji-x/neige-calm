@@ -364,6 +364,7 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         text: "hello from the queue".into(),
     }]);
     let entry_id = entries[0].id().expect("a user entry has an id").to_string();
+    let entry_rev = entries[0].user_view().unwrap().rev;
     let boot = boot(entries, false).await;
     wait_for_turn_start(&boot).await;
 
@@ -379,7 +380,7 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         json!([
             budget,
             {"presentation": "user", "text": "User says:\nhello from the queue", "attachments": [],
-             "origin": {"observation": "user_message", "event_id": null, "queue_entry_id": entry_id}}
+             "origin": {"observation": "user_message", "event_id": null, "queue_entry": {"id":entry_id,"rev":entry_rev}}}
         ])
     );
     let params: Value = serde_json::from_str(projection["params"].as_str().unwrap()).unwrap();

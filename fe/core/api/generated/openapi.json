@@ -13540,9 +13540,15 @@
               "runtimeId",
               "itemId",
               "segmentIndex",
+              "entryRev",
               "kind"
             ],
             "properties": {
+              "entryRev": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
               "itemId": {
                 "type": "integer",
                 "format": "int64"
@@ -13605,6 +13611,7 @@
         "required": [
           "version",
           "entryId",
+          "entryRev",
           "queuedAtMs",
           "textSha256",
           "initialRuntimeId"
@@ -13612,6 +13619,11 @@
         "properties": {
           "entryId": {
             "type": "string"
+          },
+          "entryRev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           },
           "initialRuntimeId": {
             "type": "string",
@@ -14587,7 +14599,7 @@
         "required": [
           "observation",
           "event_id",
-          "queue_entry_id"
+          "queue_entry"
         ],
         "properties": {
           "event_id": {
@@ -14602,12 +14614,16 @@
             "type": "string",
             "description": "The observation's serde `type` tag, e.g. `task_completed`, `track_wake`, `user_message`."
           },
-          "queue_entry_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Actual addressable queue identity, preserved when entries are folded or transferred.\nNull for non-user/legacy entries; historical segments may omit this metadata."
+          "queue_entry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HarnessQueueEntryRef",
+                "description": "Identity and actual revision are one fact. Null for non-user/legacy entries;\nreleased historical origins without this metadata remain unversioned."
+              }
+            ]
           }
         }
       },
@@ -14827,6 +14843,24 @@
           "resumed",
           "wedged"
         ]
+      },
+      "HarnessQueueEntryRef": {
+        "type": "object",
+        "description": "The actual addressable queue entry and the revision its input was built from.",
+        "required": [
+          "id",
+          "rev"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
       },
       "HarnessTimeoutEvidence": {
         "oneOf": [

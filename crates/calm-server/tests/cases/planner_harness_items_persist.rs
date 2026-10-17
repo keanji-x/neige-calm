@@ -338,6 +338,7 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
     ];
     let pending = QueueEntry::entries_from_observations_for_test(pending);
     let user_entry_id = pending[1].id().unwrap().to_string();
+    let user_entry_rev = pending[1].user_view().unwrap().rev;
     let (harness, daemon, card_id, _track_id) =
         seed_harness_with_pending(repo.clone(), events, pending).await;
     wait_for_notification_receiver(&daemon).await;
@@ -398,9 +399,9 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
         )
         .unwrap(),
         json!([
-            {"observation": "task_completed", "event_id": null, "queue_entry_id": null},
-            {"observation": "user_message", "event_id": null, "queue_entry_id": user_entry_id},
-            {"observation": "task_failed", "event_id": null, "queue_entry_id": null}
+            {"observation": "task_completed", "event_id": null, "queue_entry": null},
+            {"observation": "user_message", "event_id": null, "queue_entry": {"id":user_entry_id,"rev":user_entry_rev}},
+            {"observation": "task_failed", "event_id": null, "queue_entry": null}
         ])
     );
     assert!(

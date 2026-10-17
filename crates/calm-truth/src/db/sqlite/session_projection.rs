@@ -495,14 +495,13 @@ pub struct HarvestedQueues {
 
 /// One queue entry taken off a retired row. `ids` is never empty: the decoder
 /// mints one for entries enqueued before the field existed.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HarvestedMessage {
     pub text: String,
     pub ids: Vec<String>,
-    /// The `QueueEntryId` this sentence already had, kept across the move so a
-    /// browser holding it is not left addressing a renamed entry. `None`: a legacy
-    /// entry, which gains one on arrival.
-    pub entry_id: Option<String>,
+    /// Actual paired identity/revision captured by the queue owner. `None` is
+    /// explicitly legacy or an old journal whose revision cannot be proved.
+    pub entry_ref: Option<HarnessQueueEntryRef>,
 }
 
 /// Compensating half of [`harvest_pending_user_messages_tx`]: a `thread/start`

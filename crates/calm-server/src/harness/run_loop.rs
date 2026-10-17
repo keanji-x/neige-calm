@@ -4698,6 +4698,8 @@ pub(crate) mod input_inspection;
 mod input_inspection_recovery_tests;
 #[cfg(test)]
 mod input_inspection_tests;
+#[cfg(test)]
+mod input_version_tests;
 mod live_reply;
 mod native_ask;
 mod replace_command;

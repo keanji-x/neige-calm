@@ -171,7 +171,7 @@ fn a_segment_names_its_observation_and_event() {
             Some(HarnessInputOrigin {
                 observation: observation.type_tag().into(),
                 event_id: Some(42),
-                queue_entry_id: None,
+                queue_entry: None,
             })
         );
     }

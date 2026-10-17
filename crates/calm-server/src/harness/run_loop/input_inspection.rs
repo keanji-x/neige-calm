@@ -20,6 +20,7 @@ pub(crate) enum InputInspection {
     Projected {
         item_id: i64,
         segment_index: u32,
+        entry_rev: u32,
     },
     Unavailable(InitialInputUnavailableReason),
 }
@@ -94,6 +95,18 @@ pub(super) async fn inspect(
         .any(|entry| matches!(entry, QueueEntry::LegacyUser { .. }));
     drop(queue);
 
+    // Accepted steers can have no row. Their real entry revision still bounds
+    // what older retained history can prove while this owner holds the input.
+    let mut latest: Option<(u32, Option<(i64, u32)>)> = inner
+        .steered_into_running_turn
+        .lock()
+        .await
+        .iter()
+        .filter_map(|steered| steered.entry.user_view())
+        .filter(|entry| entry.id == entry_id)
+        .map(|entry| entry.rev)
+        .max()
+        .map(|rev| (rev, None));
     let mut before = 0;
     loop {
         let page = inner
@@ -128,18 +141,22 @@ pub(super) async fn inspect(
                 match segment
                     .origin
                     .as_ref()
-                    .and_then(|origin| origin.queue_entry_id.as_deref())
+                    .and_then(|origin| origin.queue_entry.as_ref())
                 {
-                    Some(id) if id == entry_id.as_str() => {
+                    Some(entry) if entry.id == entry_id.as_str() => {
                         // The drain writes before turn/start, with no turn binding. Cleanup
                         // can fail, and recovery can discard the old owner's uncertainty.
                         // Only the provider's completed user-message upgrade binds this row
                         // to a real turn while preserving these exact entry segments.
-                        if item.turn_id.is_some() {
-                            return Ok(InputInspection::Projected {
-                                item_id: item.id,
-                                segment_index: index as u32,
-                            });
+                        let bound = item.turn_id.as_ref().map(|_| (item.id, index as u32));
+                        match latest.as_mut() {
+                            Some((rev, known)) if *rev == entry.rev => {
+                                if known.is_none() {
+                                    *known = bound;
+                                }
+                            }
+                            Some((rev, _)) if *rev > entry.rev => {}
+                            _ => latest = Some((entry.rev, bound)),
                         }
                     }
                     Some(_) => {}
@@ -147,6 +164,13 @@ pub(super) async fn inspect(
                 }
             }
         }
+    }
+    if let Some((entry_rev, Some((item_id, segment_index)))) = latest {
+        return Ok(InputInspection::Projected {
+            item_id,
+            segment_index,
+            entry_rev,
+        });
     }
     Ok(if legacy {
         InputInspection::Unavailable(InitialInputUnavailableReason::LegacyProjection)

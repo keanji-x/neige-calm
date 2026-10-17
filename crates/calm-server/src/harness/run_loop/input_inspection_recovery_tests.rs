@@ -35,7 +35,7 @@ pub(super) async fn confirm_projection(
     daemon.emit_notification_for_test(crate::codex_appserver::Notification::Item {
         method: "item/completed".into(),
         params: json!({"threadId":thread_id,"turn":{"id":turn_id},"item":{
-            "id":format!("provider-item-{client_id}"),"clientId":client_id.as_str(),"type":"userMessage",
+            "id":format!("provider-item-{client_id}-{turn_id}"),"clientId":client_id.as_str(),"type":"userMessage",
             "content":[{"type":"text","text":"provider confirms the original projection"}]
         }}),
     });

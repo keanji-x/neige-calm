@@ -300,6 +300,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         HarnessInputPresentation,
         HarnessInputSegment,
         calm_types::model::HarnessInputOrigin,
+        calm_types::model::HarnessQueueEntryRef,
         calm_types::planner_attachment::AttachmentId,
         calm_types::planner_attachment::PlannerAttachment,
         calm_types::planner_attachment::UploadAttachmentResponse,

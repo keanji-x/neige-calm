@@ -2900,7 +2900,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
                         text: text.to_owned(),
                         ids: vec![format!("id-of-{text}")],
                         // `None` is what a pre-addressable-id queue entry carries, which is the case this fixture stands in for.
-                        entry_id: None,
+                        entry_ref: None,
                     })
             })
             .collect();

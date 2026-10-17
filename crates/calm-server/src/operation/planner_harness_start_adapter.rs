@@ -30,8 +30,8 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
-    PlannerBackend, PlannerHarness, PlannerHarnessParams, QueueEntry, QueueEntryId,
-    initial_snapshot_with_goal, is_harness_snapshot_value,
+    PlannerBackend, PlannerHarness, PlannerHarnessParams, QueueEntry, initial_snapshot_with_goal,
+    is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::wiring::{
@@ -849,14 +849,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         continue;
                     }
                     let ids = entry.ensure_message_id().to_vec();
-                    let entry_id = entry.id().map(|id| id.as_str().to_string());
+                    let entry_ref = entry.user_ref();
                     let Observation::UserMessage { text } = entry.observation() else {
                         continue;
                     };
                     messages.push(HarvestedMessage {
                         text,
                         ids,
-                        entry_id,
+                        entry_ref,
                     });
                 }
                 if !messages.is_empty() {
@@ -931,7 +931,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             entries.push(QueueEntry::user_message_moved(
                 message.text,
                 message.ids,
-                message.entry_id.map(QueueEntryId::from_wire),
+                message.entry_ref,
             ));
             seeded = true;
         }
@@ -950,6 +950,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             initial_input_receipt = Some(ConversationInitialInputReceipt {
                 version: InitialInputReceiptVersion::V1,
                 entry_id: actual.id.as_str().to_string(),
+                entry_rev: actual.rev,
                 queued_at_ms: actual.queued_at_ms,
                 text_sha256: crate::conversation_keys::first_message_digest(text),
                 initial_runtime_id: worker_session_id.clone(),
@@ -1339,7 +1340,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                                     entries.push(QueueEntry::user_message_moved(
                                         message.text,
                                         message.ids,
-                                        message.entry_id.map(QueueEntryId::from_wire),
+                                        message.entry_ref,
                                     ));
                                 }
                                 runtime_snapshot.set_pending_entries(entries);
@@ -1987,7 +1988,7 @@ async fn return_harvested_queues_and_fail_tx(
             source_entries.push(QueueEntry::user_message_moved(
                 message.text.clone(),
                 message.ids.clone(),
-                message.entry_id.clone().map(QueueEntryId::from_wire),
+                message.entry_ref.clone(),
             ));
             returned_any_ids.extend(message.ids.iter().cloned());
         }
@@ -2067,7 +2068,9 @@ fn harvested_from_journal(taken_from: &[HarvestedFrom]) -> Value {
                         .messages
                         .iter()
                         .map(|m| json!({
-                            "text": m.text, "ids": m.ids, "entry_id": m.entry_id,
+                            "text": m.text, "ids": m.ids,
+                            "entry_id": m.entry_ref.as_ref().map(|entry| &entry.id),
+                            "entry_rev": m.entry_ref.as_ref().map(|entry| entry.rev),
                         }))
                         .collect::<Vec<_>>(),
                 })
@@ -2096,8 +2099,20 @@ fn read_harvested_from_journal(output: &TxOutput) -> Vec<HarvestedFromJournalEnt
                 .iter()
                 .filter_map(|m| {
                     Some(HarvestedMessage {
-                        // Absent in older journals; `None` is the right reading, nothing holds an id.
-                        entry_id: m.get("entry_id").and_then(Value::as_str).map(str::to_owned),
+                        // Old journals can name an id without its revision. That is
+                        // unknown version evidence, never a manufactured revision zero.
+                        entry_ref: m
+                            .get("entry_id")
+                            .and_then(Value::as_str)
+                            .zip(
+                                m.get("entry_rev")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|rev| u32::try_from(rev).ok()),
+                            )
+                            .map(|(id, rev)| crate::model::HarnessQueueEntryRef {
+                                id: id.to_string(),
+                                rev,
+                            }),
                         text: m.get("text")?.as_str()?.to_string(),
                         ids: m
                             .get("ids")?
@@ -2147,14 +2162,14 @@ fn stranded_user_messages(worker_session_id: &str, handle_state_json: &str) -> H
         if entry.is_user_authored() {
             // MINT AT THE TRANSFER BOUNDARY: an id-less entry could be moved off its row and never returned. The same id goes into the successor's snapshot and the journal in one transaction.
             let ids = entry.ensure_message_id().to_vec();
-            let entry_id = entry.id().map(|id| id.as_str().to_string());
+            let entry_ref = entry.user_ref();
             let Observation::UserMessage { text } = entry.observation() else {
                 continue;
             };
             taken.push(HarvestedMessage {
                 text,
                 ids,
-                entry_id,
+                entry_ref,
             });
         } else {
             kept.push(entry);
@@ -2415,9 +2430,9 @@ mod tests {
         );
     }
 
-    /// The two transfer boundaries do DIFFERENT things to a `LegacyUser`: the inherit carries it whole, the harvest rebuilds it as a `User`.
+    /// Neither transfer boundary invents a queue identity/revision for historical input.
     #[test]
-    fn the_harvest_makes_a_legacy_sentence_addressable_and_the_inherit_does_not() {
+    fn the_harvest_and_inherit_preserve_legacy_unknown_versions() {
         // A legacy row: user text in `pending_queue`, no meta slot. Reached through JSON because no constructor produces it.
         let seeded = crate::harness::HarnessSnapshot::initial(
             0,
@@ -2449,7 +2464,7 @@ mod tests {
             "the inherit boundary leaves it OFF the addressable page — GAP-B verbatim"
         );
 
-        // THE HARVEST cannot: it rebuilds the entry on the successor.
+        // The harvest reconstructs the same unknown-version input on the successor.
         let taken = super::stranded_user_messages(
             "r1",
             &serde_json::to_string(&snapshot).expect("serialize snapshot"),
@@ -2462,17 +2477,17 @@ mod tests {
         );
         assert_eq!(taken[0].ids.len(), 1, "with an id minted at the boundary");
         assert_eq!(
-            taken[0].entry_id, None,
+            taken[0].entry_ref, None,
             "and no queue id to carry, because it never had one"
         );
         let rebuilt = QueueEntry::user_message_moved(
             taken[0].text.clone(),
             taken[0].ids.clone(),
-            taken[0].entry_id.clone().map(QueueEntryId::from_wire),
+            taken[0].entry_ref.clone(),
         );
         assert!(
-            rebuilt.user_view().is_some(),
-            "the harvest boundary DOES make it addressable, and the doc must say so"
+            rebuilt.user_view().is_none(),
+            "an old unknown version is not a newly accepted send"
         );
         assert_eq!(
             rebuilt.message_ids(),
@@ -2481,9 +2496,9 @@ mod tests {
         );
     }
 
-    /// A harvest does not rename an addressable entry (the browser claims a queued message by `entry_id`); an entry that never had an id must still GAIN one.
+    /// A harvest preserves actual identity and revision; historical input remains unversioned.
     #[test]
-    fn a_harvest_carries_an_addressable_id_and_mints_only_for_one_without() {
+    fn a_harvest_carries_an_addressable_revision_and_keeps_legacy_unknown() {
         let addressable =
             QueueEntry::user_message("please look at the report".into(), None, Vec::new());
         let claimed = addressable
@@ -2491,6 +2506,18 @@ mod tests {
             .expect("a minted user entry is addressable")
             .as_str()
             .to_string();
+        let mut queue = std::collections::VecDeque::from([addressable]);
+        let edited = crate::harness::queue::apply_mutation(
+            &mut queue,
+            &crate::harness::queue::QueueMutation::Edit {
+                entry_id: crate::harness::QueueEntryId::from_wire(claimed.clone()),
+                text: "revised before harvest".into(),
+                if_entry_rev: 0,
+            },
+        )
+        .unwrap();
+        let addressable = queue.pop_front().unwrap();
+        assert_eq!(edited.rev, addressable.user_view().unwrap().rev);
 
         let mut snapshot = HarnessSnapshot::initial(0, vec![addressable]);
         // An older sentence beside it: `pending_queue` holds the text and the meta slot is absent.
@@ -2513,12 +2540,13 @@ mod tests {
         .taken;
         assert_eq!(taken.len(), 2, "both sentences are harvested");
         assert_eq!(
-            taken[0].entry_id.as_deref(),
+            taken[0].entry_ref.as_ref().map(|entry| entry.id.as_str()),
             Some(claimed.as_str()),
             "the journal carries the id the client is holding"
         );
+        assert_eq!(taken[0].entry_ref.as_ref().unwrap().rev, edited.rev);
         assert_eq!(
-            taken[1].entry_id, None,
+            taken[1].entry_ref, None,
             "and carries none for the entry that never had one"
         );
 
@@ -2528,7 +2556,7 @@ mod tests {
                 QueueEntry::user_message_moved(
                     message.text.clone(),
                     message.ids.clone(),
-                    message.entry_id.clone().map(QueueEntryId::from_wire),
+                    message.entry_ref.clone(),
                 )
             })
             .collect();
@@ -2537,13 +2565,8 @@ mod tests {
             Some(claimed),
             "the successor lists the SAME id, so the claim still names this sentence"
         );
-        let minted = rebuilt[1]
-            .id()
-            .expect("the legacy sentence becomes addressable on arrival");
-        assert!(
-            !minted.as_str().is_empty(),
-            "and it is a real id, not an empty one"
-        );
+        assert_eq!(rebuilt[0].user_view().unwrap().rev, edited.rev);
+        assert_eq!(rebuilt[1].id(), None, "no synthetic version-zero identity");
     }
 
     /// The persisted wire shape, pinned as a golden: this payload is hashed into `operations.payload_hash` and a renamed field is a permanent 409.

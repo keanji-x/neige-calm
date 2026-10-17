@@ -50,6 +50,7 @@ async fn initial_input_receipt_is_the_minted_entry_and_survives_success_replay()
         "digest preserves exact whitespace and UTF-8"
     );
     assert_eq!(receipt["entryId"], actual.id.as_str());
+    assert_eq!(receipt["entryRev"], actual.rev);
     assert_eq!(receipt["queuedAtMs"], actual.queued_at_ms);
     assert_eq!(receipt["initialRuntimeId"], output["data"]["runtime_id"]);
     assert_eq!(receipt, &output["data"]["initial_input_receipt"]);
