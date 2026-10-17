@@ -1,0 +1,125 @@
+[
+  {
+    "name": "source_ls",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "session_ls",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "roots": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "search": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "directory",
+        "roots",
+        "limit"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "message_ls",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^ses"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "before": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "directory",
+        "session_id",
+        "limit"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "message_cat",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^ses"
+        },
+        "message_id": {
+          "type": "string",
+          "pattern": "^msg"
+        }
+      },
+      "required": [
+        "source_id",
+        "directory",
+        "session_id",
+        "message_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  }
+]

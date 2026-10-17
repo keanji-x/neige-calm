@@ -855,7 +855,9 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
             "{argv:?}"
         );
         assert!(
-            stderr.contains("Objects: track, report, mail, task, message, op, admin, tool\n"),
+            stderr.contains(
+                "Objects: catalog, track, report, mail, task, message, op, admin, tool\n"
+            ),
             "{stderr}"
         );
     }
@@ -863,14 +865,14 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     assert_eq!(
         (stderr.as_str(), exit),
         (
-            "neige: unknown action `cat-at` for `neige track`; expected one of: ls, cat, show, diff, log, status, close\n",
+            "neige: unknown action `cat-at` for `neige track`; expected one of: add, ls, cat, show, diff, log, status, close\n",
             1
         )
     );
     let (_, stderr, exit) = cli(&boot, &["help", "track", "cat-at"]).await;
     assert_eq!(exit, 1);
     assert!(
-        stderr.contains("expected one of: ls, cat, show"),
+        stderr.contains("expected one of: add, ls, cat, show"),
         "{stderr}"
     );
     let (_, stderr, exit) = cli(&boot, &["--json", "snow"]).await;

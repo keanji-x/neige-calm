@@ -1,0 +1,28 @@
+{
+  "manifest_version": 4,
+  "id": "opencodehistory",
+  "version": "0.1.0",
+  "min_kernel_version": "0.0.1",
+  "display_name": "OpenCode history",
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "history_config_path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "history_config_path"
+    ],
+    "additionalProperties": false
+  },
+  "kind": "builtin",
+  "agent_tools_scope": "bound-track",
+  "templates": [
+    {
+      "id": "opencode-history-rebuild"
+    }
+  ],
+  "description": "Read explicitly selected OpenCode history and prepare a self-contained ordinary Track handoff.",
+  "exposes_tools": []
+}

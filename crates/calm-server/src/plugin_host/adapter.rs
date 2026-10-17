@@ -155,19 +155,15 @@ impl Backends for Builtins {
         crate::forge_trust::trusted_forge_plugin(id)
     }
 }
+#[async_trait::async_trait]
 impl BuiltinBackend for crate::builtin_plugins::BuiltinPlugin {
     fn manifest(&self) -> &Manifest {
         self.manifest()
     }
-    fn tools_call(&self, tool: &str, args: &serde_json::Value) -> Result<CallToolResult, RpcError> {
-        self.tools_call(tool, args)
-    }
-    fn forge_tools_call(
-        &self,
-        tool: &str,
-        args: &serde_json::Value,
-        caller: &forge_caller::ForgeCallerScope,
-    ) -> Result<CallToolResult, RpcError> {
-        self.forge_tools_call(tool, args, caller)
+    async fn start(
+        &'static self,
+        config: serde_json::Value,
+    ) -> Result<Arc<dyn plugin::host::ports::BuiltinRun>, String> {
+        self.start(config).await
     }
 }

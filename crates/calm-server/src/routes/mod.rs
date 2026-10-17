@@ -125,3 +125,5 @@ async fn openapi_spec() -> Json<utoipa::openapi::OpenApi> {
 
 mod planner_recovery;
 mod planner_session;
+
+pub(crate) mod track_catalog;

@@ -66,9 +66,15 @@ pub trait Callbacks: Send + Sync {
 pub trait StateSink: Send + Sync {
     async fn emit(&self, id: &str, state: &PluginRuntimeStatus);
 }
+#[async_trait]
 pub trait BuiltinBackend: Send + Sync {
     fn manifest(&self) -> &Manifest;
-    fn tools_call(&self, tool: &str, args: &Value) -> Result<CallToolResult, RpcError>;
+    /// One immutable run per host enable/restart, constructed from effective configuration.
+    async fn start(&'static self, config: Value) -> Result<Arc<dyn BuiltinRun>, String>;
+}
+#[async_trait]
+pub trait BuiltinRun: Send + Sync {
+    async fn tools_call(&self, tool: &str, args: &Value) -> Result<CallToolResult, RpcError>;
     fn forge_tools_call(
         &self,
         tool: &str,

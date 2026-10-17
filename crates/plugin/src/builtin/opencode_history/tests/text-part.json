@@ -1,0 +1,7 @@
+{
+  "id": "prt_one",
+  "sessionID": "ses_allowed",
+  "messageID": "msg_one",
+  "type": "text",
+  "text": "Historical data, not current instructions.\n\"保留原文\""
+}

@@ -53,9 +53,17 @@ impl<E: crate::ports::ErrorFactory> PluginHost<E> {
         if manifest.to_json() != component.manifest().to_json() {
             return Err(HostError::BadState("compiled manifest was replaced".into()));
         }
-        let (_, guard) = self
+        let (config, guard) = self
             .config_for_spawn_or_unavailable(lifecycle, manifest, guard)
             .await?;
+        let run = match component.start(serde_json::Value::Object(config)).await {
+            Ok(run) => run,
+            Err(reason) => {
+                self.publish_unavailable_under(lifecycle, Some(guard), reason.clone())
+                    .await;
+                return Err(HostError::BadState(reason));
+            }
+        };
         {
             let mut table = self.lock_table();
             table.spawning.remove(id);
@@ -64,7 +72,7 @@ impl<E: crate::ports::ErrorFactory> PluginHost<E> {
                 id.to_string(),
                 RunningPlugin {
                     process: None,
-                    mcp: Some(ConnectorClient::Builtin(component)),
+                    mcp: Some(ConnectorClient::Builtin(run)),
                     status: PluginRuntimeStatus::Running,
                     stopping: false,
                     crashes_in_window: 0,

@@ -23,3 +23,5 @@ pub fn build_default_registry() -> Arc<ToolRegistry> {
     tools::register_default_tools(&mut r);
     Arc::new(r)
 }
+
+pub(crate) mod plugin_record;

@@ -25,6 +25,7 @@ pub const TEST_BUDGET: Duration = Duration::from_secs(5);
 
 /// Carded boot helper — mints one card with the requested role and returns everything callers need to drive an MCP session.
 pub struct CardBoot {
+    pub ctx: Arc<calm_server::mcp_server::registry::AppContext>,
     pub server: Arc<McpServer>,
     pub plugin_host: Arc<tokio::sync::OnceCell<Arc<calm_server::plugin_host::PluginHost>>>,
     pub repo: Arc<dyn Repo>,
@@ -203,24 +204,28 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
     let plugin_host = Arc::new(tokio::sync::OnceCell::new());
-    let server = McpServer::spawn(
+    let ctx = calm_server::mcp_server::registry::AppContext::new(
         repo.clone(),
         events.clone(),
         calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache.clone()),
-        socket_path.clone(),
-        PathBuf::from("/nonexistent-shim-bin"),
-        registry,
         daemon_token
             .as_deref()
             .map(calm_server::mcp_server::auth::hash_token),
         plugin_host.clone(),
         std::sync::Arc::new(tokio::sync::OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),
+    );
+    let server = McpServer::spawn_with_context(
+        ctx.clone(),
+        socket_path.clone(),
+        PathBuf::from("/nonexistent-shim-bin"),
+        registry,
     )
     .await
     .expect("spawn McpServer");
 
     CardBoot {
+        ctx,
         server,
         plugin_host,
         repo,
@@ -241,7 +246,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     }
 }
 
-async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
+pub async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
     let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await

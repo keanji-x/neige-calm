@@ -1,0 +1,1 @@
+Planner-only: read one template (availability/input/tasks, instructions/body/plugin_guides) or recipe (identity/revision/body), at most 64 KiB. Guides grant no plugin tools. Compose a self-contained first message for neige_track_add: current intent, necessary evidence, source IDs/times/digests and exact coverage/omissions; another Track cannot read your source receipts.

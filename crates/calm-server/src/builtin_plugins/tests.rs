@@ -407,67 +407,26 @@ async fn builtin_legacy_issue_documentation_preserves_snapshot_and_authority() {
     );
 }
 
-/// #2087 B5: each compiled id constant names its own manifest, and both are one word, so the
-/// kv namespace, the Track scope and the `plugins` row a built-in writes are the row
-/// `reconcile_builtins` keeps.
+/// #2087 B5: preserve the existing protocol constants and require a word for every
+/// compiled identity. Each component also checks its own constant against its declaration.
 #[test]
 fn builtin_plugin_ids_are_their_manifest_ids_and_words() {
     for id in [calendar::PLUGIN_ID, dev::PLUGIN_ID] {
         let component = get(id).unwrap_or_else(|| panic!("`{id}` names no compiled manifest"));
         assert_eq!(component.manifest().id, id);
+    }
+    for component in catalog() {
+        let id = &component.manifest().id;
         assert!(
             crate::plugin_host::manifest::is_word_plugin_id(id),
             "`{id}` is not one word"
         );
     }
-    assert_eq!(catalog().len(), 2, "every built-in is checked above");
 }
 
-const PLANNER_AND_ASSISTANT: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
-
-/// #2227: every compiled tool, written out: its plugin id, local name, served name and roles.
-const NATIVE_TOOLS: &[(&str, &str, &str, &[CardRole])] = &[
-    (
-        "calendar",
-        "add",
-        "plugin_calendar_add",
-        PLANNER_AND_ASSISTANT,
-    ),
-    (
-        "calendar",
-        "ls",
-        "plugin_calendar_ls",
-        PLANNER_AND_ASSISTANT,
-    ),
-    (
-        "calendar",
-        "rm",
-        "plugin_calendar_rm",
-        PLANNER_AND_ASSISTANT,
-    ),
-    (
-        "calendar",
-        "set",
-        "plugin_calendar_set",
-        PLANNER_AND_ASSISTANT,
-    ),
-    (
-        "gitforge",
-        plugin::builtin::gitforge::rerun::RERUN_FAILED,
-        "plugin_gitforge_gh_run_rerun",
-        &[CardRole::Planner],
-    ),
-    (
-        "gitforge",
-        dev::publish::PUBLISH,
-        "plugin_gitforge_publish",
-        &[CardRole::Planner],
-    ),
-];
-
 /// #2227: a compiled tool is a plugin tool. Each is served under the name `registry_name` mints
-/// from its plugin id and its local name, written out here, keeps its roles, and has no other
-/// spelling in the kernel registry.
+/// from its declaration's plugin/local name and keeps the declared roles. The full registry
+/// golden owns fixed wire spellings; this wiring check needs no second tool-name inventory.
 #[test]
 fn builtin_native_tools_are_served_under_their_minted_names() {
     let registry = crate::mcp_server::build_default_registry();
@@ -477,18 +436,20 @@ fn builtin_native_tools_are_served_under_their_minted_names() {
         .filter_map(|d| owner(&d.name).map(|p| (p.manifest().id.clone(), d.name, d.roles.to_vec())))
         .collect();
     served.sort_by(|a, b| a.1.cmp(&b.1));
-    let want: Vec<(String, String, Vec<CardRole>)> = NATIVE_TOOLS
+    let mut want: Vec<(String, String, Vec<CardRole>)> = plugin::builtin::catalog()
         .iter()
-        .map(|(id, _, name, roles)| (id.to_string(), name.to_string(), roles.to_vec()))
+        .flat_map(|component| {
+            component.tools().iter().map(move |tool| {
+                (
+                    component.manifest().id.clone(),
+                    registry_name(&component.manifest().id, &tool.name),
+                    tool.roles.to_vec(),
+                )
+            })
+        })
         .collect();
+    want.sort_by(|a, b| a.1.cmp(&b.1));
     assert_eq!(served, want);
-    for &(id, local, name, _) in NATIVE_TOOLS {
-        assert_eq!(registry_name(id, local), name, "{id}/{local}");
-        assert!(
-            name.starts_with(&registry_name(id, "")),
-            "{name} is not under its plugin's prefix"
-        );
-    }
 }
 
 /// #2227: manifest tools route after the kernel registry, so a compiled tool that minted a
@@ -503,16 +464,7 @@ fn builtin_native_tools_never_mint_a_manifest_tool_name() {
         .flat_map(|plugin| plugin.native.descriptors())
         .map(|descriptor| descriptor.name)
         .collect();
-    let mut sorted = native.clone();
-    sorted.sort();
-    assert_eq!(
-        sorted,
-        NATIVE_TOOLS
-            .iter()
-            .map(|(_, _, name, _)| name.to_string())
-            .collect::<Vec<_>>(),
-        "anti-vacuity: every compiled tool is checked"
-    );
+    assert!(!native.is_empty(), "anti-vacuity: compiled native tools");
     let colliding: Vec<&String> = native.iter().filter(|n| manifest.contains(*n)).collect();
     assert!(
         colliding.is_empty(),
@@ -520,24 +472,30 @@ fn builtin_native_tools_never_mint_a_manifest_tool_name() {
     );
 }
 
-/// The natives' half of `mcp_tool_role_matrix`: with every built-in running and each native's
-/// Track in its plugin's scope, a `{}` call by every card role is refused for the role reason
-/// (the registry's gate, `-32403`) exactly when the native's declared `roles` exclude that role.
+/// Zero-config components' half of `mcp_tool_role_matrix`. Configured components use explicit
+/// operator fixtures in their own module to exercise this same global registered entry.
 #[tokio::test]
 async fn native_tools_refuse_exactly_the_roles_they_do_not_declare() {
     let fx = Fixture::new().await;
     let running = fx.host.running_plugin_ids().await;
-    for plugin in catalog() {
+    let components: Vec<_> = catalog()
+        .iter()
+        .filter(|p| {
+            plugin::config::missing_required(p.manifest(), &serde_json::Map::new()).is_empty()
+        })
+        .collect();
+    for plugin in &components {
         if !running.contains(&plugin.manifest().id) {
             fx.host.enable(&plugin.manifest().id).await.unwrap();
         }
     }
     let registry = crate::mcp_server::build_default_registry();
     let mut checked = 0;
-    for plugin in catalog() {
+    for plugin in components {
         let id = plugin.manifest().id.as_str();
-        // `gitforge` serves only a Track bound to it; the other built-ins serve an unbound one.
-        let track = fx.track((id == ID).then_some(ID)).await;
+        let bound = plugin.manifest().agent_tools_scope
+            == crate::plugin_host::manifest::AgentToolsScope::BoundTrack;
+        let track = fx.track(bound.then_some(id)).await;
         for descriptor in plugin.native.descriptors() {
             for role in [
                 CardRole::Planner,

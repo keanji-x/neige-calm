@@ -581,7 +581,7 @@ impl SeriesResolver {
                         .await
                 }
                 ConnectorClient::Cli(c) => c.tools_call(&request.tool, arguments).await,
-                ConnectorClient::Builtin(c) => c.tools_call(&request.tool, &arguments),
+                ConnectorClient::Builtin(c) => c.tools_call(&request.tool, &arguments).await,
                 ConnectorClient::Http(_) => Err(crate::plugin_host::mcp::RpcError::internal(
                     "remote connectors are not series sources",
                 )),
