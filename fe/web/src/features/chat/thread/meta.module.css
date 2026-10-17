@@ -26,10 +26,14 @@
     flex-shrink: 0;
     align-items: center;
     gap: var(--space-half);
-    /* Align the glyph to the text edge while retaining the full control hit target. */
-    margin-inline-end: calc((var(--glyph-meta) - var(--control-h)) / 2);
   }
   .action { inline-size: var(--control-h); block-size: var(--control-h); min-inline-size: var(--control-h); min-block-size: var(--control-h); }
-  .icon { inline-size: var(--glyph-meta); block-size: var(--glyph-meta); color: var(--text-3); }
+  .icon {
+    inline-size: var(--glyph-meta);
+    block-size: var(--glyph-meta);
+    color: var(--text-3);
+    /* Align ink inside the hit target instead of overflowing the conversation. */
+    translate: calc((var(--control-h) - var(--glyph-meta)) / 2) 0;
+  }
   .reason { margin-block-start: var(--space-2); color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
 }

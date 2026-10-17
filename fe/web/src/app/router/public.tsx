@@ -587,23 +587,18 @@ function useConversationPane(
     manualCompactSupported: store.manualCompactSupported,
     attachmentsSupported: store.attachmentsSupported,
     contextUsage: store.contextUsage,
-    deleteQueuedEntry: deleteQueuedEntry,
     historyReady: store.historyReady,
     interrupt: interrupt,
     model: store.model,
     modelCatalog: store.modelCatalog,
-    pendingQueue: store.pendingQueue,
-    pendingQueueOverflow: store.pendingQueueOverflow,
     permissionMode: store.permissionMode,
-    queueWriteOut: store.queueWriteOut,
     sendBlocked: store.sendBlocked,
     sending: store.sending,
     setModel: setModel,
     setPermissionMode: setPermissionMode,
-    steerQueuedEntry: canSteer ? steerQueuedEntry : undefined,
     stopping: store.stopping,
     working: store.working
-  }), [compact, store.compacting, store.manualCompactSupported, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.permissionMode, store.queueWriteOut, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working, canSteer, steerQueuedEntry]);
+  }), [compact, store.compacting, store.manualCompactSupported, store.attachmentsSupported, store.contextUsage, store.historyReady, interrupt, store.model, store.modelCatalog, store.permissionMode, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working]);
   const { bar: editingBar } = edit;
   const replacing = edit.replacing || edit.queuedSaving;
   const editingQueue = edit.queued !== null;
