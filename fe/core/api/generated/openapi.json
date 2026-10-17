@@ -9364,6 +9364,16 @@
               }
             }
           },
+          "403": {
+            "description": "Current Area membership required; System needs deployment owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Track not found",
             "content": {

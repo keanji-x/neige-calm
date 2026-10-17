@@ -731,7 +731,7 @@ pub(crate) async fn list_tracks_window(
     params(("id" = String, Path, description = "Track id")),
     responses(
         (status = 200, description = "Track detail (track + its cards + overlays)", body = TrackDetail),
-        (status = 403, description = "Current Area membership required; System Area requires the deployment owner", body = ErrorBody),
+        (status = 403, description = "Current Area membership required; System needs deployment owner", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

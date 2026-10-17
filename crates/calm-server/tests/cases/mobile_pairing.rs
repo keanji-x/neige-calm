@@ -645,7 +645,7 @@ async fn private_tailnet_fixture() -> (Fixture, std::path::PathBuf, tokio::task:
         .configure_private(config, public.clone())
         .await
         .unwrap();
-    let local = routes::application_router(state, auth.clone());
+    let local = routes::application_router(state.clone(), auth.clone());
     let (status, headers, _) = request(
         &local,
         "POST",
@@ -664,6 +664,7 @@ async fn private_tailnet_fixture() -> (Fixture, std::path::PathBuf, tokio::task:
         .into();
     (
         Fixture {
+            state,
             _temp: temp,
             state_path: config_path,
             auth,
