@@ -580,13 +580,19 @@ function useConversationPane(
   [attachmentItems, attachmentIds, attachmentBusy, attachmentError, atCapacity, attach, removeAttachment]);
   const canSteer = store.steerQueuedEntry !== undefined;
   const refocusQueuedComposer = useCommittedCallback(existingId, () => { if (existingId !== null) focusComposer(existingId); });
+  const [pendingPresentation, setPendingPresentation] = useState<Readonly<{ conversationId: string | null; visible: boolean }> | null>(null);
+  const pendingPresenceChanged = useCallback((visible: boolean) => {
+    if (shownComposer.current !== existingId) return;
+    setPendingPresentation(previous => previous?.conversationId === existingId && previous.visible === visible
+      ? previous : { conversationId: existingId, visible });
+  }, [existingId]);
   const pendingMessages = useMemo(() => <PendingQueue key={existingId}
     entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow} reconciledQueueIds={store.reconciledQueueIds}
     busy={!threadPresented || store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
     canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
-    savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onSteer={canSteer ? steerQueuedEntry : undefined} />,
+    savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onPresenceChange={pendingPresenceChanged} onSteer={canSteer ? steerQueuedEntry : undefined} />,
   [existingId, threadPresented, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.reconciledQueueIds, store.sending, store.queueWriteOut,
-    deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, canSteer, steerQueuedEntry]);
+    deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, pendingPresenceChanged, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
     compact: compact,
@@ -845,6 +851,7 @@ function useConversationPane(
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
               <ChatThread readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
+                hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
                 imageFiles={imageFiles}
                 turns={openTurns} editing={edit.marked}

@@ -533,6 +533,8 @@
 
   .emptyFrame { block-size: 100%; }
   .pendingMessages { min-inline-size: 0; align-self: stretch; }
+  /* A queue at the transcript start shares the ordinary first message's inset. */
+  .pendingMessages:first-child { --nc-pending-queue-start-gap: var(--space-0); }
   .pendingMessages:empty { display: none; }
   .empty > [data-nc-current-meta] { align-self: stretch; }
   .thread.empty > * + * { margin-block-start: 0; }

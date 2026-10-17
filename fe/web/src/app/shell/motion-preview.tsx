@@ -67,7 +67,7 @@ function Preview() {
             return false;
           }} />
       }>
-        <ChatThread conversation={conversation} turns={turns} cards={{}} stalled={false} canContinue={false}
+        <ChatThread hasPendingMessages={false} conversation={conversation} turns={turns} cards={{}} stalled={false} canContinue={false}
           editing={editing ? 'outcome' : null}
           editMessage={!editing && isComposerEmpty({ text: draft, attachments: [] }) ? () => {
             setDraft(prompt); setEditing(true); setFocus(value => value + 1);

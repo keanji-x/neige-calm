@@ -24,6 +24,8 @@ export type PendingQueueProps = Readonly<{
   editingEntryId: string | null;
   savedEntry: PendingQueueEntry | null;
   onFocusComposer: () => void;
+  /** Includes the existing departing-row lifetime so an empty view cannot reposition its exit. */
+  onPresenceChange?: (present: boolean) => void;
   onSteer?: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;
 }>;
 const NO_SENDS: readonly PendingQueueSend[] = Object.freeze([]);
@@ -71,7 +73,7 @@ function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | '
 }
 
 
-export function PendingQueue({ entries, reconciledQueueIds, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onSteer }: PendingQueueProps) {
+export function PendingQueue({ entries, reconciledQueueIds, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onPresenceChange, onSteer }: PendingQueueProps) {
   const mobile = useCompactViewport();
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [writing, setWriting] = useState(false);
@@ -119,6 +121,7 @@ export function PendingQueue({ entries, reconciledQueueIds, sending = NO_SENDS, 
   const count = entries.length + sending.length + overflow;
   const retained = snapshot.rows.length > 0;
   const visible = count > 0 || retained;
+  useLayoutEffect(() => { onPresenceChange?.(visible); }, [onPresenceChange, visible]);
   const run = async (entry: PendingQueueEntry, action: () => Promise<PlannerQueueWriteOutcome>) => {
     if (blocked || writeLease.current) return;
     writeLease.current = true;

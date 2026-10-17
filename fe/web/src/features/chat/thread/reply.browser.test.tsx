@@ -23,11 +23,11 @@ it('loads a local screenshot in streamed and stored replies and fits a narrow co
     const reply = (id: string, text: string): ConversationTurn => ({ id, author: 'agent', text, atMs: 1 });
     const props = { conversation, imageFiles, canContinue: false, cards: {}, stalled: false };
     const { container, rerender } = render(<div style={{ inlineSize: 320 }}>
-      <ChatThread {...props} turns={[reply('live', 'Here is the screenshot.')]} />
+      <ChatThread hasPendingMessages={false} {...props} turns={[reply('live', 'Here is the screenshot.')]} />
     </div>);
     const text = 'Here is the screenshot.\n\n![Screenshot](/work/track/screenshots/page.svg)';
     rerender(<div style={{ inlineSize: 320 }}>
-      <ChatThread {...props} turns={[reply('live', text)]} />
+      <ChatThread hasPendingMessages={false} {...props} turns={[reply('live', text)]} />
     </div>);
     await waitFor(() => expect(container.querySelector<HTMLImageElement>('img')?.naturalWidth).toBe(1200));
     const image = screen.getByRole('img', { name: 'Screenshot' });
@@ -35,7 +35,7 @@ it('loads a local screenshot in streamed and stored replies and fits a narrow co
     expect(image.getBoundingClientRect().width).toBeLessThanOrEqual(320);
     expect(container.firstElementChild?.scrollWidth).toBeLessThanOrEqual(320);
     rerender(<div style={{ inlineSize: 320 }}>
-      <ChatThread {...props} turns={[reply('stored', text)]} />
+      <ChatThread hasPendingMessages={false} {...props} turns={[reply('stored', text)]} />
     </div>);
     await waitFor(() => expect(container.querySelector<HTMLImageElement>('img')?.naturalWidth).toBe(1200));
   } finally {

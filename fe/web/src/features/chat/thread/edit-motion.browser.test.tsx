@@ -18,7 +18,7 @@ function Scene({ onUpdate = () => {}, message = TEXT }: { onUpdate?: () => void;
     { id: 'outcome', author: 'turn', turnId: 'turn', status: 'completed', elapsedMs: null, atMs: 2 },
   ];
   return <div data-nc-drawer="" style={{ width: 440 }}>
-    <ChatThread conversation={conversation} turns={turns} cards={{}} stalled={false} canContinue={false}
+    <ChatThread hasPendingMessages={false} conversation={conversation} turns={turns} cards={{}} stalled={false} canContinue={false}
       editing={editing ? 'outcome' : null} editMessage={() => { onUpdate(); setEditing(true); setText(message); }} />
     <ChatComposer onSend={() => {}} draft={{ text, onChange: setText }} focusRequest={editing ? 1 : 0}
       {...(editing ? { editing: { preview: message, onCancel: () => { setEditing(false); setText(''); } } } : {})} />

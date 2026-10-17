@@ -521,7 +521,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
           style={{ blockSize: paneHeight, flex: 'none' }}
         >
           <div className={drawerStyles.bodyInner} data-nc-rail-pane-inner="">
-            <ChatThread canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
+            <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={turns} />
           </div>
         </div>
       </div>
@@ -1586,7 +1586,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     const onClose = vi.fn();
     render(<div style={{ position: 'relative', blockSize: 600, inlineSize: 900 }}>
       <Drawer open title="Ship the rewrite" onClose={onClose}>
-        <ChatThread canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={railTurns(8)} />
+        <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={railTurns(8)} />
         <textarea aria-label="Preview test composer" />
       </Drawer>
     </div>);
@@ -1625,7 +1625,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     function Harness({ open }: { open: boolean }) {
       return (
         <Drawer open={open} title="Ship the rewrite" onClose={() => {}}>
-          <ChatThread canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={railTurns(8)} />
+          <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={railConversation()} turns={railTurns(8)} />
         </Drawer>
       );
     }
@@ -1878,7 +1878,7 @@ it('paints persisted mention pills in a narrow transcript', async () => {
   await page.viewport(414, 896);
   const text = 'see @`tag:部署` @`area/reports/Deploy notes.md` '
     + '@`area/reports/Deploy notes.md#b_1a2b`';
-  render(<div style={{ width: 320 }}><ChatThread canContinue={false} cards={{}} stalled={false}
+  render(<div style={{ width: 320 }}><ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
     conversation={railConversation()}
     turns={[{ id: 'mention-turn', author: 'you', text, atMs: 1 }]} /></div>);
   await expect.element(page.getByText('#部署', { exact: true })).toBeVisible();
@@ -1896,7 +1896,7 @@ it('keeps long mention pills inside a narrow transcript', async () => {
   await page.viewport(414, 896);
   const name = 'Very long report name '.repeat(12);
   const tag = '部署'.repeat(32);
-  render(<div style={{ width: 320 }}><ChatThread canContinue={false} cards={{}} stalled={false}
+  render(<div style={{ width: 320 }}><ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
     conversation={railConversation()}
     turns={[{ id: 'long-mention', author: 'you',
       text: '@`area/reports/' + name + '.md` @`tag:' + tag + '`', atMs: 1 }]} /></div>);

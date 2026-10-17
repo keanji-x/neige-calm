@@ -15,7 +15,7 @@ function surface() {
   const close = vi.fn();
   render(<ConversationSurface mobileSheet open title="Current conversation" contextTitle="Neige Calm" onClose={close}
     footer={<div style={{ height: 80, background: 'white' }}><input aria-label="Draft" /></div>}>
-    <ChatThread canContinue={false} cards={{}} stalled={false}
+    <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
       conversation={{ provider: 'codex' as const, id: 'chat', trackId: 'track', title: 'Current conversation', kind: 'codex', state: 'idle', updatedAt: 0 }} turns={history} />
   </ConversationSurface>);
   return close;

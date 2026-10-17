@@ -8,7 +8,7 @@ afterEach(cleanup);
 it('copies the visible response Markdown only after a deliberate click', async () => {
   const copyText = vi.fn().mockResolvedValue(undefined);
   const text = 'Reply\n\n```ts\nx()\n```';
-  render(<ChatThread conversation={{ provider: 'codex' as const, id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
+  render(<ChatThread hasPendingMessages={false} conversation={{ provider: 'codex' as const, id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
     stalled={false} canContinue={false} copyText={copyText} turns={[
       { id: 'u', author: 'you', text: 'Prompt', atMs: 1 }, { id: 'a', author: 'agent', text, atMs: 2 },
       { id: 'end', author: 'turn', elapsedMs: null, turnId: 'turn', status: 'completed', atMs: 3 },
@@ -59,7 +59,7 @@ it('regenerates only the delivered prompt after an explicit click, including its
   const user = { id: 'u', author: 'you' as const, text: 'Prompt', atMs: 1, attachments: [
     { id: 'image', contentType: 'image/png', size: 4, url: '/image' },
   ] };
-  render(<ChatThread conversation={{ provider: 'codex' as const, id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
+  render(<ChatThread hasPendingMessages={false} conversation={{ provider: 'codex' as const, id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
     stalled={false} canContinue={false} regenerateMessage={regenerate} turns={[
       user, { id: 'a', author: 'agent', text: 'Answer', atMs: 2 },
       { id: 'end', author: 'turn', elapsedMs: null, turnId: 'turn', status: 'completed', atMs: 3 },
@@ -80,7 +80,7 @@ const editTurns = (first: 'you' | 'system' = 'you') => [
 
 it('hands the current turn’s outcome to Edit at the click; the caller owns the replace', () => {
   const edit = vi.fn();
-  render(<ChatThread conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
+  render(<ChatThread hasPendingMessages={false} conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
     editMessage={edit} turns={editTurns()} />);
   expect(edit).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
@@ -89,7 +89,7 @@ it('hands the current turn’s outcome to Edit at the click; the caller owns the
 });
 
 it('marks the messages of the turn being edited and leaves the rest alone', () => {
-  render(<ChatThread conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
+  render(<ChatThread hasPendingMessages={false} conversation={EDIT_CONVERSATION} cards={{}} stalled={false} canContinue={false}
     editing="end" turns={[{ id: 'u0', author: 'you', text: 'Earlier', atMs: 0 }, { id: 'o0', author: 'turn', turnId: 'turn-6', status: 'completed', elapsedMs: null, atMs: 0 },
       ...editTurns()]} />);
   expect(Array.from(document.querySelectorAll('[data-nc-editing]')).map((said) => said.textContent)).toEqual(['Prompt']);
@@ -101,7 +101,7 @@ it.each([
   ['a live response', { editMessage: vi.fn(), cards: { c: 'working' as const }, turns: editTurns() }],
   ['an automatic turn', { editMessage: vi.fn(), cards: {}, turns: editTurns('system') }],
 ])('offers no Edit with %s', (_, { editMessage, cards, turns }) => {
-  render(<ChatThread conversation={EDIT_CONVERSATION} cards={cards} stalled={false} canContinue={false}
+  render(<ChatThread hasPendingMessages={false} conversation={EDIT_CONVERSATION} cards={cards} stalled={false} canContinue={false}
     editMessage={editMessage} turns={turns} />);
   const button = screen.getByRole('button', { name: 'Edit message (not available now)' });
   expect(button.getAttribute('aria-disabled')).toBe('true');

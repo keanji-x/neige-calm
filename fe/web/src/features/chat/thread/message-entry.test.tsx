@@ -20,12 +20,12 @@ const stored: ConversationTurn = { id: 'stored', author: 'agent', text: 'Stored 
 const live: ConversationTurn = { id: 'live', author: 'agent', text: 'Live response', atMs: 3 };
 
 it('leaves stored message bodies untouched when live text grows and transcript objects are replaced', () => {
-  const view = render(<ChatThread conversation={conversation} turns={[question, stored, live]}
+  const view = render(<ChatThread hasPendingMessages={false} conversation={conversation} turns={[question, stored, live]}
     cards={{}} stalled={false} canContinue={false} />);
   const existing = screen.getByText('First question');
   expect(sentMentionParts).toHaveBeenCalledWith('First question');
   vi.mocked(sentMentionParts).mockClear();
-  view.rerender(<ChatThread conversation={conversation}
+  view.rerender(<ChatThread hasPendingMessages={false} conversation={conversation}
     turns={[{ ...question }, { ...stored }, { ...live, text: 'Live response grows' }]}
     cards={{}} stalled={false} canContinue={false} />);
   expect(sentMentionParts).not.toHaveBeenCalled();
@@ -35,11 +35,11 @@ it('leaves stored message bodies untouched when live text grows and transcript o
 });
 
 it('updates changed stored words under the same message identity', () => {
-  const view = render(<ChatThread conversation={conversation} turns={[question, stored]}
+  const view = render(<ChatThread hasPendingMessages={false} conversation={conversation} turns={[question, stored]}
     cards={{}} stalled={false} canContinue={false} />);
   const existing = screen.getByText('First question');
   vi.mocked(sentMentionParts).mockClear();
-  view.rerender(<ChatThread conversation={conversation} turns={[{ ...question, text: 'Second question' }, stored]}
+  view.rerender(<ChatThread hasPendingMessages={false} conversation={conversation} turns={[{ ...question, text: 'Second question' }, stored]}
     cards={{}} stalled={false} canContinue={false} />);
   expect(sentMentionParts).toHaveBeenCalledWith('Second question');
   expect(screen.getByText('Second question')).toBe(existing);
