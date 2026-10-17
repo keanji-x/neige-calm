@@ -150,7 +150,7 @@ impl ProviderAdapter for DeliverThenFailSpawn {
 
 /// Swap the operation runtime for one whose start adapter is [`DeliverThenFailSpawn`]; returns
 /// the boot's own state, to put back.
-fn fail_starts_after_delivering(
+async fn fail_starts_after_delivering(
     boot: &mut Boot,
     delivered: &'static str,
 ) -> calm_server::state::AppState {
@@ -191,7 +191,7 @@ fn fail_starts_after_delivering(
         ),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
-    boot.app = crate::planner_first_start::router(&boot.state);
+    boot.app = crate::planner_first_start::router(&boot.state).await;
     original
 }
 
@@ -341,7 +341,7 @@ async fn a_failed_start_does_not_give_back_what_its_new_session_delivered() {
         .wedge_with_queued(QUEUED, "interrupt_timeout", &image)
         .await;
 
-    let original = fail_starts_after_delivering(&mut boot, QUEUED);
+    let original = fail_starts_after_delivering(&mut boot, QUEUED).await;
     let (status, body) = boot.fresh_start("restart").await;
     assert!(
         !status.is_success(),
@@ -372,7 +372,7 @@ async fn a_failed_start_does_not_give_back_what_its_new_session_delivered() {
     );
 
     boot.state = original;
-    boot.app = crate::planner_first_start::router(&boot.state);
+    boot.app = crate::planner_first_start::router(&boot.state).await;
     let (status, body) = boot.fresh_start("restart").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(
@@ -607,7 +607,7 @@ async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
         ),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
-    boot.app = crate::planner_first_start::router(&boot.state);
+    boot.app = crate::planner_first_start::router(&boot.state).await;
 
     let (status, body) = boot.fresh_start("restart").await;
     assert!(
@@ -629,7 +629,7 @@ async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
     );
 
     boot.state = original;
-    boot.app = crate::planner_first_start::router(&boot.state);
+    boot.app = crate::planner_first_start::router(&boot.state).await;
     let (status, body) = boot.fresh_start("restart").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     wait_for("the fold reaches the model", async || {

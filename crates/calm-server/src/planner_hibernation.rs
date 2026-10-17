@@ -135,6 +135,7 @@ pub(crate) async fn sleeping_thread(pool: &sqlx::SqlitePool, thread: &str) -> Re
 /// this context cannot retain their resources after the application is dropped.
 #[derive(Clone)]
 pub(crate) struct WakeContext {
+    historical_source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     repo: std::sync::Arc<dyn crate::db::Repo>,
     events: crate::event::EventBus,
     write: crate::state::WriteContext,
@@ -154,6 +155,7 @@ impl WakeContext {
         shell: crate::state::CodexShellState,
     ) -> Self {
         Self {
+            historical_source: None,
             repo,
             events: route.events.clone(),
             write: route.write.clone(),
@@ -165,6 +167,14 @@ impl WakeContext {
             thread_seals: route.thread_seals.clone(),
             providers: route.claude_planner_wiring(),
         }
+    }
+
+    pub(crate) fn with_historical_source(
+        mut self,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Self {
+        self.historical_source = source;
+        self
     }
 
     pub(crate) async fn ensure(
@@ -216,6 +226,11 @@ impl WakeContext {
         .await?;
         use crate::session_projection_repo::AgentProvider;
         let s = self;
+        if let Some(source) = &s.historical_source {
+            source
+                .require_card(s.repo.as_ref(), &runtime.card_id)
+                .await?;
+        }
         match runtime.agent_provider.as_ref() {
             Some(AgentProvider::Codex) => {
                 let card =
@@ -241,15 +256,17 @@ impl WakeContext {
                     crate::harness::effective_runtime_thread_id(&runtime).ok_or_else(|| {
                         crate::error::CalmError::Conflict("conversation thread is missing".into())
                     })?;
-                s.daemon
-                    .upgrade()
-                    .ok_or_else(|| {
-                        crate::error::CalmError::ServiceUnavailable(
-                            "application daemon stopped".into(),
-                        )
-                    })?
-                    .resume_active_conversation(&runtime, &thread)
-                    .await?;
+                let daemon = s.daemon.upgrade().ok_or_else(|| {
+                    crate::error::CalmError::ServiceUnavailable("application daemon stopped".into())
+                })?;
+                match &s.historical_source {
+                    Some(source) => {
+                        daemon
+                            .resume_historical_conversation(&runtime, &thread, Some(source.clone()))
+                            .await?
+                    }
+                    None => daemon.resume_active_conversation(&runtime, &thread).await?,
+                }
             }
             Some(AgentProvider::Claude) => s.providers.claude.check_ready().await?,
             Some(AgentProvider::OpenCode) => {
@@ -273,7 +290,7 @@ impl WakeContext {
         runtime: crate::session_projection_repo::WorkerSessionProjection,
     ) -> Result<crate::harness::PlannerHarness> {
         let s = self;
-        crate::harness::spawn_recovered_harness(
+        crate::harness::spawn_recovered_harness_admitted(
             self.repo.clone(),
             s.events.clone(),
             s.write.role_cache().clone(),
@@ -287,6 +304,7 @@ impl WakeContext {
             &s.track_delete_locks,
             runtime,
             crate::harness::ClaimMode::Replace,
+            s.historical_source.clone(),
         )
         .await?
         .installed()

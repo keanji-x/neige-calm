@@ -13,10 +13,8 @@ use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::Extension;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
@@ -29,7 +27,6 @@ use calm_server::harness::run_loop::{
 };
 use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::shared_codex_appserver::TurnStartReturnHook;
@@ -111,18 +108,8 @@ async fn boot_without_daemon() -> Boot {
     boot_with_daemon(false).await
 }
 
-fn app_for_state(state: AppState) -> axum::Router {
-    routes::router()
-        .layer(Extension(Principal {
-            user_id: LEGACY_OWNER_USER_ID.into(),
-            display_name: "owner".into(),
-            role: "owner".into(),
-            session_id: "test".into(),
-        }))
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state)
+async fn app_for_state(state: AppState) -> axum::Router {
+    crate::support::authenticated_router::application(state).await
 }
 
 async fn boot_with_daemon(daemon_running: bool) -> Boot {
@@ -207,7 +194,7 @@ async fn instance_on(
     } else {
         SharedCodexAppServer::new_stub_with_pending(repo_dyn, None)
     });
-    let app = app_for_state(state.clone());
+    let app = app_for_state(state.clone()).await;
     Boot {
         app,
         state,
@@ -218,12 +205,12 @@ async fn instance_on(
 }
 
 impl Boot {
-    fn app_with_running_daemon(&self) -> axum::Router {
+    async fn app_with_running_daemon(&self) -> axum::Router {
         let repo: Arc<dyn Repo> = self.repo.clone();
         let state = self.state.clone().with_shared_codex_appserver(
             SharedCodexAppServer::new_fake_running_with_pending(repo, None),
         );
-        app_for_state(state)
+        app_for_state(state).await
     }
 
     /// `POST /api/tracks`; `idempotency_key` and `first_message` are both optional.
@@ -2120,7 +2107,7 @@ async fn an_operationless_binding_rejects_a_different_first_message() {
         "premise: no payload hash exists"
     );
 
-    let running_app = b.app_with_running_daemon();
+    let running_app = b.app_with_running_daemon().await;
     let mut edited = json!({
         "planner_provider": "codex",
         "area_id": b.area_id,
@@ -2171,7 +2158,7 @@ async fn an_operationless_binding_rejects_a_different_create_shape() {
     let mut edited = base;
     edited["title"] = json!("different title");
     let (status, body) = b
-        .post_create_on(b.app_with_running_daemon(), Some(key), edited)
+        .post_create_on(b.app_with_running_daemon().await, Some(key), edited)
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
@@ -2390,7 +2377,8 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
             .state
             .clone()
             .with_track_create_mint_rendezvous(gate.clone()),
-    );
+    )
+    .await;
 
     // The loser starts first and parks after its lookup 1 missed, before its create transaction opens.
     let loser_body = json!({

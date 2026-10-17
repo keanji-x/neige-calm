@@ -15,6 +15,8 @@ pub async fn card_has_canonical_storage(
         "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE card_id=?1)
          OR EXISTS(SELECT 1 FROM conversation_turns WHERE card_id=?1)
          OR EXISTS(SELECT 1 FROM conversation_presentations WHERE card_id=?1)
+         OR EXISTS(SELECT 1 FROM planner_input_idempotency
+             WHERE card_id=?1 AND payload_hash LIKE ?3)
          OR EXISTS(SELECT 1 FROM conversation_human_track_creations a
              JOIN track_create_idempotency b ON b.area_id=a.area_id AND b.idempotency_key=a.idempotency_key
              WHERE b.planner_card_id=?1)
@@ -27,6 +29,7 @@ pub async fn card_has_canonical_storage(
     )
     .bind(card_id)
     .bind(calm_types::harness::HARNESS_MODE)
+    .bind(format!("{}%", crate::db::sqlite::CANONICAL_PLANNER_INPUT_BINDING_PREFIX))
     .fetch_one(connection)
     .await?;
     Ok(canonical)

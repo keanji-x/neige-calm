@@ -17,11 +17,15 @@ pub(crate) trait ActiveRecoveryAdmission: Send + Sync {
 
 struct HistoricalRecovery {
     runtime: WorkerSessionProjection,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 }
 
 #[async_trait::async_trait]
 impl ActiveRecoveryAdmission for HistoricalRecovery {
     async fn validate_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
+        if let Some(source) = &self.source {
+            source.require_card_tx(tx, &self.runtime.card_id).await?;
+        }
         crate::conversation_inputs::require_historical_storage_tx(tx, &self.runtime.card_id)
             .await?;
         let current = session_projection_active_for_card_tx(tx, &self.runtime.card_id).await?;
@@ -50,11 +54,22 @@ impl SharedCodexAppServer {
         runtime: &WorkerSessionProjection,
         thread_id: &str,
     ) -> Result<()> {
+        self.resume_historical_conversation(runtime, thread_id, None)
+            .await
+    }
+
+    pub(crate) async fn resume_historical_conversation(
+        &self,
+        runtime: &WorkerSessionProjection,
+        thread_id: &str,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Result<()> {
         self.resume_active_core(
             runtime,
             thread_id,
             Arc::new(HistoricalRecovery {
                 runtime: runtime.clone(),
+                source,
             }),
             LoadedTurnPolicy::PreserveHistoricalTurn,
         )
@@ -198,6 +213,16 @@ impl SharedCodexAppServer {
         runtime: &WorkerSessionProjection,
         thread_id: &str,
     ) -> Result<Option<(i64, String)>> {
+        self.resume_system_error_conversation_admitted(runtime, thread_id, None)
+            .await
+    }
+
+    pub(crate) async fn resume_system_error_conversation_admitted(
+        &self,
+        runtime: &WorkerSessionProjection,
+        thread_id: &str,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Result<Option<(i64, String)>> {
         // Same order as daemon replacement -> cached-thread resume. A daemon
         // cannot turn a hot read into a cold resume while credentials are chosen.
         let _transition = self.transition_serial.lock().await;
@@ -225,11 +250,15 @@ impl SharedCodexAppServer {
             })
             .ok_or_else(|| CalmError::Conflict("card is not a Codex harness conversation".into()))?
             .profile;
-        self.validate_recovery_carrier(runtime, thread_id, &snapshot)
+        self.validate_recovery_carrier(runtime, thread_id, &snapshot, source.clone())
             .await?;
         // thread/read and thread/resume share Codex's global exclusive thread queue, so after a
         // lost resume response this read waits for that resume to settle, across connections.
-        let before = self.read_recovery_thread(thread_id).await?;
+        let before = self
+            .read_recovery_thread_admitted(thread_id, || {
+                self.validate_recovery_carrier(runtime, thread_id, &snapshot, source.clone())
+            })
+            .await?;
         let cold = match before.get("status").and_then(|s| s.get("type")).and_then(Value::as_str) {
             Some("notLoaded") => true,
             Some("idle" | "systemError") => false,
@@ -246,11 +275,15 @@ impl SharedCodexAppServer {
             let id = runtime.id.clone();
             let thread = thread_id.to_owned();
             let expected = snapshot.clone();
+            let admission = source.clone();
             // Persist before RPC: a lost response can leave a loaded thread.
             // Its token must already be known on retry, while Failed continues
             // to deny that token authority until the final restore commits.
             let raw = write_in_tx_typed(self.repo.as_ref(), move |tx| {
                 Box::pin(async move {
+                    if let Some(source) = admission {
+                        source.require_card_tx(tx, &card).await?;
+                    }
                     if !session_system_error_recovery_matches_tx(tx, &card, &id, &thread, &expected)
                         .await?
                     {
@@ -270,7 +303,11 @@ impl SharedCodexAppServer {
         } else {
             ThreadConfig::NoMcp
         };
-        let resumed = self.resume_recovery_thread(thread_id, config).await?;
+        let resumed = self
+            .resume_recovery_thread_admitted(thread_id, config, || {
+                self.validate_recovery_carrier(runtime, thread_id, &snapshot, source.clone())
+            })
+            .await?;
         if resumed.get("id").and_then(Value::as_str) != Some(thread_id)
             || !matches!(
                 resumed
@@ -292,8 +329,12 @@ impl SharedCodexAppServer {
         let card = runtime.card_id.clone();
         let id = runtime.id.clone();
         let thread = thread_id.to_owned();
+        let admission = source;
         let restored = write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
+                if let Some(source) = admission {
+                    source.require_card_tx(tx, &card).await?;
+                }
                 Ok(session_resume_system_error_tx(tx, &card, &id, &thread, &snapshot).await?)
             })
         })
@@ -361,6 +402,7 @@ impl SharedCodexAppServer {
         runtime: &WorkerSessionProjection,
         thread_id: &str,
         snapshot: &Value,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<()> {
         let card = runtime.card_id.clone();
         let id = runtime.id.clone();
@@ -368,6 +410,9 @@ impl SharedCodexAppServer {
         let expected = snapshot.clone();
         let valid = write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
+                if let Some(source) = source {
+                    source.require_card_tx(tx, &card).await?;
+                }
                 Ok(
                     session_system_error_recovery_matches_tx(tx, &card, &id, &thread, &expected)
                         .await?,
@@ -382,11 +427,6 @@ impl SharedCodexAppServer {
                 "conversation is no longer eligible for recovery; history is retained".into(),
             ))
         }
-    }
-
-    async fn read_recovery_thread(&self, thread_id: &str) -> Result<Value> {
-        self.read_recovery_thread_admitted(thread_id, || async { Ok(()) })
-            .await
     }
 
     async fn read_recovery_thread_admitted<F, Fut>(
@@ -411,11 +451,6 @@ impl SharedCodexAppServer {
         let client = self.connected_client().await?;
         admit().await?;
         Ok(client.thread_read_full(thread_id).await?.thread)
-    }
-
-    async fn resume_recovery_thread(&self, thread_id: &str, config: ThreadConfig) -> Result<Value> {
-        self.resume_recovery_thread_admitted(thread_id, config, || async { Ok(()) })
-            .await
     }
 
     async fn resume_recovery_thread_admitted<F, Fut>(

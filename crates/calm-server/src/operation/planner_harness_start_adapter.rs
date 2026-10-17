@@ -61,6 +61,7 @@ use super::{
 
 #[cfg(all(test, feature = "fixtures"))]
 mod canonical_lifecycle_tests;
+mod historical;
 mod retained;
 use retained::{RetainedPayload, StartInvocation};
 
@@ -554,11 +555,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         }
         let decoded = super::assistant_start_wire::StartInput::decode(input)?;
         let payload = decoded.payload;
-        crate::conversation_inputs::require_historical_storage(
-            self.repo.as_ref(),
-            payload.planner_card_id.as_str(),
-        )
-        .await?;
+        self.admit_historical(payload.planner_card_id.as_str())
+            .await?;
         let track = self
             .repo
             .track_get(&payload.track_id)
@@ -705,7 +703,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 track.id
             )));
         }
-        self.check_ready(&provider).await
+        self.check_ready(&provider).await?;
+        self.admit_historical(payload.planner_card_id.as_str())
+            .await
     }
 
     async fn prepare_tx<'tx>(
@@ -722,7 +722,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let card_id = payload.planner_card_id;
         let track_id = payload.track_id;
         let report_card_id = payload.report_card_id;
-        crate::conversation_inputs::require_historical_storage_tx(tx, card_id.as_str()).await?;
+        self.admit_historical_tx(tx, card_id.as_str()).await?;
         let defer_runtime_start = payload.force_new_thread;
         // The briefing is rendered HERE, inside the mint transaction, and MUST stay ABOVE this transaction's first write: its reads run on a pool
         // connection, and once `tx` holds RESERVED on `events` the shared-lock read deadlocks against it (pinned by `briefing_ordering_survives_contention_in_the_mint_transaction`).
@@ -749,6 +749,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 )));
             }
         }
+        self.admit_historical_tx(tx, card_id.as_str()).await?;
         // Mint the chat card in this very transaction, so the card and its session row commit together and compensation can undo both.
         let mut post_commit_events = Vec::new();
         if let Some(seed) = payload.create_card.as_ref() {
@@ -1131,11 +1132,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             return self.retained_interact(&wire, output, op, ctx).await;
         }
         let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
-        crate::conversation_inputs::require_historical_storage(
-            self.repo.as_ref(),
-            payload.planner_card_id.as_str(),
-        )
-        .await?;
+        self.admit_historical(payload.planner_card_id.as_str())
+            .await?;
         let reset_transcript = payload.reset_harness_items;
         let profile = payload.profile;
         // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).
@@ -1163,9 +1161,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             output.output_optional_string("old_runtime_id", "planner harness")?
             && old_worker_session_id != worker_session_id
         {
+            self.admit_historical(&card_id).await?;
             self.harness_registry
                 .shutdown_and_remove(&old_worker_session_id)
                 .await?;
+            self.admit_historical(&card_id).await?;
             if provider == AgentProvider::OpenCode {
                 crate::planner_process::stop(&self.acp_host.instance, &old_worker_session_id)
                     .await?;
@@ -1194,6 +1194,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             });
         }
         let mint_lock_guard = self.lock_card_mint(&card_id).await;
+        self.admit_historical(&card_id).await?;
         // Every start mints its own thread; none adopts another's. `prepare_tx` has already superseded the
         // card's active row and inserted this start's own thread-less row (one active row per card), and
         // every submitter holds the card's `CardStartFence`, so normally no other start's thread exists here.
@@ -1221,6 +1222,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     .await?,
                 ),
             };
+            self.admit_historical(&card_id).await?;
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
@@ -1232,7 +1234,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 raw,
                 PathBuf::from(socket_path),
             );
-            if runtime_deferred {
+            if self.historical_human_source().is_some() {
+                self.daemon
+                    .thread_start_admitted_for_card(
+                        &card_id,
+                        (!runtime_deferred).then_some(card_role),
+                        params,
+                        || self.admit_historical(&card_id),
+                    )
+                    .await?
+            } else if runtime_deferred {
                 self.daemon
                     .thread_start_mint_for_card(&card_id, params)
                     .await?
@@ -1273,6 +1284,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
         let provider_for_tx = provider.clone();
+        let this = self.clone();
         let (tx_out, _id) = write_with_event_typed(
             ctx.repo.as_ref(),
             payload.actor,
@@ -1282,6 +1294,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             &write,
             move |tx| {
                 Box::pin(async move {
+                    this.admit_historical_tx(tx, &card_id).await?;
                     let mut checkpoint_output = output_clone;
                     let mut old_worker_session_id = None;
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
@@ -1520,11 +1533,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             return self.retained_spawn(&wire, &ctx.events).await;
         }
         let payload = super::assistant_start_wire::StartInput::decode(&_op.payload)?.payload;
-        crate::conversation_inputs::require_historical_storage(
-            self.repo.as_ref(),
-            payload.planner_card_id.as_str(),
-        )
-        .await?;
+        self.admit_historical(payload.planner_card_id.as_str())
+            .await?;
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
@@ -1542,6 +1552,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         if provider == AgentProvider::Claude {
             claude_spawn_failure::fire(&card_id).await?;
         }
+        self.admit_historical(&card_id).await?;
         let reservation = self
             .harness_registry
             .reserve_after_shutdown(worker_session_id.clone())
@@ -1562,6 +1573,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
         }
+        self.admit_historical(&card_id).await?;
         let backend = PlannerBackend::open(
             provider.clone(),
             self.daemon.clone(),
@@ -1583,6 +1595,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             },
         )
         .await?;
+        self.admit_historical(&card_id).await?;
+        let checked_card = card_id.clone();
         let handle = PlannerHarness::run(PlannerHarnessParams {
             worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from(track_id),
@@ -1598,6 +1612,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             snapshot: (snapshot).try_into()?,
         })
         .await?;
+        if let Err(error) = self.admit_historical(&checked_card).await {
+            handle.shutdown().await?;
+            return Err(error);
+        }
         if !reservation.install(handle.clone()) {
             // Superseded by a concurrent `reserve_replacing`: shut down the handle we just built (never leak its run loop) and fail the op.
             handle.shutdown().await?;
@@ -1630,6 +1648,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             });
         }
         let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
+        // This is the original operation's scoped kernel cleanup. A revoked
+        // request source cannot prevent it; canonical storage remains fenced.
         crate::conversation_inputs::require_historical_storage(
             self.repo.as_ref(),
             payload.planner_card_id.as_str(),
@@ -1722,6 +1742,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             return Ok(());
         }
         let payload = super::assistant_start_wire::StartInput::decode(&_op.payload)?.payload;
+        // This is the original operation's scoped kernel cleanup. A revoked
+        // request source cannot prevent it; canonical storage remains fenced.
         crate::conversation_inputs::require_historical_storage(
             self.repo.as_ref(),
             payload.planner_card_id.as_str(),

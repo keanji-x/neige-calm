@@ -368,6 +368,7 @@ enum HarnessObservationCommand {
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
         key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
         persisted: oneshot::Sender<Result<DurableAck>>,
     },
     /// A human edit or delete against one queue entry. Rides the same mpsc as every other command,
@@ -394,6 +395,7 @@ enum HarnessObservationCommand {
         turn_id: String,
         delivery: HarnessObservationDelivery,
         key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
         answer: oneshot::Sender<Result<DurableAck>>,
     },
 }
@@ -702,14 +704,30 @@ impl PlannerHarness {
         attachments: Vec<BoundAttachment>,
         key: SendKey,
     ) -> Result<DurableAck> {
-        self.observe_durable_entries(vec![QueueEntry::user_message(text, None, attachments)], key)
+        self.observe_user_message_admitted(text, attachments, key, None)
             .await
+    }
+
+    pub(crate) async fn observe_user_message_admitted(
+        &self,
+        text: String,
+        attachments: Vec<BoundAttachment>,
+        key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Result<DurableAck> {
+        self.observe_durable_entries(
+            vec![QueueEntry::user_message(text, None, attachments)],
+            key,
+            source,
+        )
+        .await
     }
 
     async fn observe_durable_entries(
         &self,
         entries: Vec<QueueEntry>,
         key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<DurableAck> {
         self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
@@ -729,6 +747,7 @@ impl PlannerHarness {
                     .try_send(HarnessObservationCommand::Durable {
                         deliveries,
                         key,
+                        source,
                         persisted,
                     })
                     .map_err(map_observation_send_error)?;
@@ -741,9 +760,13 @@ impl PlannerHarness {
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
                 let (ack, checkpoint) = stage_durable_entries(&self.inner, deliveries).await?;
-                if let Err(error) =
-                    persist_snapshot_for_durable_send(&self.inner, &key, ack.entry_id.as_ref())
-                        .await
+                if let Err(error) = persist_snapshot_for_durable_send(
+                    &self.inner,
+                    &key,
+                    ack.entry_id.as_ref(),
+                    source,
+                )
+                .await
                 {
                     restore_durable_user_message(&self.inner, checkpoint).await?;
                     return Err(error);
@@ -894,6 +917,18 @@ impl PlannerHarness {
         attachments: Vec<BoundAttachment>,
         key: SendKey,
     ) -> Result<DurableAck> {
+        self.replace_turn_admitted(turn_id, text, attachments, key, None)
+            .await
+    }
+
+    pub(crate) async fn replace_turn_admitted(
+        &self,
+        turn_id: String,
+        text: String,
+        attachments: Vec<BoundAttachment>,
+        key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Result<DurableAck> {
         self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
@@ -912,6 +947,7 @@ impl PlannerHarness {
                         turn_id,
                         delivery,
                         key,
+                        source,
                         answer,
                     })
                     .map_err(map_observation_send_error)?;
@@ -924,7 +960,14 @@ impl PlannerHarness {
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                replace_command::handle_replace(&self.inner, &turn_id, delivery.entry, &key).await
+                replace_command::handle_replace_admitted(
+                    &self.inner,
+                    &turn_id,
+                    delivery.entry,
+                    &key,
+                    source,
+                )
+                .await
             }
         }
     }
@@ -1607,10 +1650,16 @@ async fn run_loop(
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
                     }
-                    HarnessObservationCommand::Durable { deliveries, key, persisted } => {
+                    HarnessObservationCommand::Durable { deliveries, key, source, persisted } => {
+                        if let Some(source) = &source
+                            && let Err(error) = source.require_card(inner.repo.as_ref(), inner.card_id.as_str()).await
+                        {
+                            let _ = persisted.send(Err(error));
+                            continue;
+                        }
                         let result = match stage_durable_entries(&inner, deliveries).await {
                             Ok((ack, checkpoint)) => {
-                                match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref()).await {
+                                match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref(), source).await {
                                     Ok(()) => Ok(ack),
                                     Err(error) => {
                                         match restore_durable_user_message(&inner, checkpoint).await {
@@ -1632,9 +1681,9 @@ async fn run_loop(
                         let outcome = handle_steer(&inner, &entry_id, if_entry_rev, &actor).await;
                         let _ = applied.send(outcome);
                     }
-                    HarnessObservationCommand::Replace { turn_id, delivery, key, answer } => {
+                    HarnessObservationCommand::Replace { turn_id, delivery, key, source, answer } => {
                         let outcome =
-                            replace_command::handle_replace(&inner, &turn_id, delivery.entry, &key).await;
+                            replace_command::handle_replace_admitted(&inner, &turn_id, delivery.entry, &key, source).await;
                         // A reply of the removed turn that failed to store stays live until the
                         // next turn starts; the turn is gone, so its text goes now.
                         if outcome.is_ok() {
@@ -4380,8 +4429,10 @@ async fn persist_snapshot_for_durable_send(
     inner: &Arc<Inner>,
     key: &SendKey,
     entry_id: Option<&QueueEntryId>,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<()> {
-    let bind = DurableSendBinding::new(inner, key, entry_id);
+    let mut bind = DurableSendBinding::new(inner, key, entry_id);
+    bind.source = source;
     if persist_snapshot_inner(inner, None, Some(bind)).await? {
         return Ok(());
     }
@@ -4402,6 +4453,7 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
 
 /// A durable send's key binding, written by the same transaction as the snapshot that holds it.
 struct DurableSendBinding {
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     idempotency_key: String,
     binding: crate::db::sqlite::PlannerInputBinding,
 }
@@ -4410,6 +4462,7 @@ impl DurableSendBinding {
     /// `key` bound to the answer this runtime gives: its session and the entry the message is in.
     fn new(inner: &Inner, key: &SendKey, entry_id: Option<&QueueEntryId>) -> Self {
         Self {
+            source: None,
             idempotency_key: key.idempotency_key.clone(),
             binding: crate::db::sqlite::PlannerInputBinding {
                 payload_hash: key.payload_hash.clone(),
@@ -4444,6 +4497,11 @@ async fn persist_snapshot_inner(
     }
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
+    if let Some(source) = send.as_ref().and_then(|send| send.source.as_ref()) {
+        source
+            .require_card(inner.repo.as_ref(), inner.card_id.as_str())
+            .await?;
+    }
     flush_dropped_announcements(inner).await?;
     let mut snapshot = snapshot_for(inner).await?;
     if let Some(head) = last_seen_head_override {
@@ -4468,6 +4526,9 @@ async fn persist_snapshot_inner(
 
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
+            if let Some(source) = send.as_ref().and_then(|send| send.source.as_ref()) {
+                source.require_card_tx(tx, &bound_card_id).await?;
+            }
             let written = crate::db::sqlite::session_set_handle_state_tx(
                 tx,
                 &runtime_id,

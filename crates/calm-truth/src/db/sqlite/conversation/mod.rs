@@ -85,10 +85,29 @@ pub async fn history_contract_tx(
     .bind(card_id)
     .fetch_optional(&mut **tx)
     .await?;
+    decode_history_contract(contract, &format!("conversation {card_id}"))
+}
+
+pub async fn area_history_contract_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    area_id: &str,
+) -> Result<ConversationHistoryContract> {
+    let contract =
+        sqlx::query_scalar("SELECT conversation_history_contract FROM areas WHERE id=?1")
+            .bind(area_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    decode_history_contract(contract, &format!("area {area_id}"))
+}
+
+fn decode_history_contract(
+    contract: Option<String>,
+    resource: &str,
+) -> Result<ConversationHistoryContract> {
     match contract.as_deref() {
         Some("private") => Ok(ConversationHistoryContract::Private),
         Some("shared_history") => Ok(ConversationHistoryContract::SharedHistory),
-        None => Err(CalmError::NotFound(format!("conversation {card_id}"))),
+        None => Err(CalmError::NotFound(resource)),
         Some(_) => Err(CalmError::Internal(
             "unknown conversation history contract".into(),
         )),

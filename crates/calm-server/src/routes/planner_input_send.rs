@@ -32,12 +32,12 @@ mod human;
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendPlannerInputRequest {
     pub text: String,
-    /// Attachment identifiers retain their wire shape. Fresh Human attachment
-    /// input is explicitly refused until its owning canonical admission is available.
+    /// Historical conversations retain attachment binding. Canonical attachment
+    /// input requires its owning admission and is currently refused.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
-    /// Historical replacement intent. Fresh Human history replacement is
-    /// explicitly refused until its owning canonical operation is available.
+    /// Historical replacement intent. Canonical history replacement requires
+    /// its owning operation and is currently refused.
     #[serde(default)]
     pub replaces_turn: Option<String>,
 }
@@ -51,8 +51,8 @@ pub struct SendPlannerInputResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub worker_session_id: String,
-    /// Accepted canonical message identity. Historical internal acknowledgements
-    /// retain their original optional entry shape.
+    /// Canonical message identity or the original historical queue entry.
+    /// A folded historical entry retains its original optional acknowledgement.
     pub entry_id: Option<String>,
 }
 
@@ -66,30 +66,33 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     }
 }
 
-/// Accept ordinary Human text through the canonical transaction before wake.
-/// The original source-bound key and acknowledgement survive native unavailability.
+/// Select the persisted conversation contract before acceptance or replay.
+/// Canonical errors never enter the historical queue. Historical public work
+/// requires the current deployment owner and its existing Private resources.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/input",
     tag = "cards",
     params(
         ("id" = String, Path, description = "Harness conversation card id"),
-        ("Idempotency-Key" = String, Header, description = "Required original message key, at most 128 visible ASCII bytes. Its verified author and original request are bound atomically with canonical acceptance."),
+        ("Idempotency-Key" = String, Header, description = "Required original message key, at most 128 visible ASCII bytes. The selected conversation contract binds the original request and acknowledgement; canonical receipts additionally bind the verified author."),
     ),
     request_body = SendPlannerInputRequest,
     responses(
-        (status = 200, description = "Canonical Human input committed, or the original acknowledgement replayed after current source and Area authorization. Native wake/start failure cannot undo this acceptance. entry_id names the accepted message; worker_session_id remains the original acknowledgement, not an instruction to recover that runtime.", body = SendPlannerInputResponse),
+        (status = 200, description = "Input committed under its persisted conversation contract, or its original acknowledgement replayed after current source/resource authorization. Canonical acceptance survives native wake failure. Historical input retains its original lazy start, queue entry and acknowledgement semantics.", body = SendPlannerInputResponse),
         (status = 400, description = "Invalid text/request or missing/invalid Idempotency-Key (idempotency_key_invalid)", body = ErrorBody),
         (status = 401, description = "A verified current Human session source is required; invalid or revoked sessions are refused", body = ErrorBody),
-        (status = 403, description = "Registered current Area collaboration access is required, including before key replay", body = ErrorBody),
+        (status = 403, description = "Canonical content requires registered current Area collaboration access. Historical public input additionally requires the deployment owner and its existing Private resources, including before key replay", body = ErrorBody),
         (status = 404, description = "Conversation or its owning Area was not found", body = ErrorBody),
-        (status = 409, description = "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses fresh attachments/history replacement, a missing canonical carrier or historical storage requiring activation; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.", body = ErrorBody),
+        (status = 409, description = "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses unsupported canonical attachments/history replacement or a missing canonical carrier; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.", body = ErrorBody),
         (status = 500, description = "Internal storage or response error; reconcile an uncertain outcome with the original key", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
 pub(crate) async fn send_planner_input(
     State(s): State<RouteState>,
+    State(w): State<WorkerState>,
+    State(cs): State<CodexShellState>,
     source: crate::auth::HumanInputSource,
     actor: Actor,
     headers: HeaderMap,
@@ -102,9 +105,30 @@ pub(crate) async fn send_planner_input(
                 .into(),
         )
     })?;
-    human::accept(&s, source, actor, id, body, idempotency_key)
-        .await
-        .map(Json)
+    let contract =
+        crate::conversation_inputs::human_input_storage_contract(s.repo.as_ref(), &source, &id)
+            .await?;
+    match contract {
+        crate::conversation_inputs::InputStorageContract::Canonical => {
+            human::accept(&s, source, actor, id, body, idempotency_key).await
+        }
+        crate::conversation_inputs::InputStorageContract::Historical => {
+            send_keyed(
+                &s,
+                &w,
+                &cs,
+                actor,
+                id,
+                body,
+                idempotency_key,
+                Some(crate::conversation_inputs::HistoricalHumanSource::new(
+                    source,
+                )),
+            )
+            .await
+        }
+    }
+    .map(Json)
 }
 
 /// Historical internal feature sends. They have no authenticated Human source
@@ -119,6 +143,25 @@ pub(crate) async fn send_planner_input_keyed(
     body: SendPlannerInputRequest,
     idempotency_key: String,
 ) -> Result<SendPlannerInputResponse> {
+    send_keyed(s, w, cs, actor, id, body, idempotency_key, None).await
+}
+
+#[allow(clippy::too_many_arguments, deprecated)]
+async fn send_keyed(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    actor: Actor,
+    id: String,
+    body: SendPlannerInputRequest,
+    idempotency_key: String,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<SendPlannerInputResponse> {
+    if let Some(source) = &source {
+        source.require_card(s.repo.as_ref(), &id).await?;
+    } else {
+        crate::conversation_inputs::require_historical_storage(s.repo.as_ref(), &id).await?;
+    }
     let SendPlannerInputRequest {
         text,
         attachments,
@@ -169,7 +212,7 @@ pub(crate) async fn send_planner_input_keyed(
         &format!("{}\u{0}{}", card.id, key.idempotency_key),
     )
     .await;
-    if let Some(answer) = replay(w, &card.id, &key).await? {
+    if let Some(answer) = replay(w, &card.id, &key, source.as_ref()).await? {
         return Ok(answer);
     }
     #[cfg(feature = "fixtures")]
@@ -209,7 +252,17 @@ pub(crate) async fn send_planner_input_keyed(
     };
     // `_recovery_guard` holds the card's start fence (its recovery lock) until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
     let (runtime, harness, _recovery_guard) = match replaces_turn {
-        None => super::planner_session::ensure_planner_session(s, w, cs, &card.id, &actor).await?,
+        None => {
+            super::planner_session::ensure_planner_session(
+                s,
+                w,
+                cs,
+                &card.id,
+                &actor,
+                source.clone(),
+            )
+            .await?
+        }
         Some(_) => live_planner_harness(s, &card.id).await?,
     };
     let scope = EventScope::Card {
@@ -225,11 +278,19 @@ pub(crate) async fn send_planner_input_keyed(
         let root = image_root
             .as_ref()
             .expect("nonempty images were admitted before recovery");
-        crate::planner_attachments::bind::bind_attachments(
+        crate::planner_attachments::bind::bind_attachments_admitted(
             root,
             &card.id,
             &attachments,
             &s.planner_attachment_locks,
+            || async {
+                if let Some(source) = &source {
+                    source
+                        .require_card(s.repo.as_ref(), card.id.as_str())
+                        .await?;
+                }
+                Ok(())
+            },
         )
         .await?
     };
@@ -248,12 +309,12 @@ pub(crate) async fn send_planner_input_keyed(
     let ack = match replaces_turn {
         None => {
             harness
-                .observe_user_message_durable(text, attachments, key)
+                .observe_user_message_admitted(text, attachments, key, source)
                 .await?
         }
         Some(turn_id) => {
             harness
-                .replace_turn_durable(turn_id, text, attachments, key)
+                .replace_turn_admitted(turn_id, text, attachments, key, source)
                 .await?
         }
     };
@@ -308,13 +369,23 @@ async fn replay(
     w: &WorkerState,
     card_id: &CardId,
     key: &SendKey,
+    source: Option<&crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<Option<SendPlannerInputResponse>> {
-    let pool = w.repo.sqlite_pool().ok_or_else(|| {
-        CalmError::Internal("planner input keys require a sqlite-backed repo".into())
-    })?;
-    let Some(binding) =
-        planner_input_binding_get(&pool, card_id.as_str(), &key.idempotency_key).await?
-    else {
+    let source = source.cloned();
+    let id = card_id.to_string();
+    let raw_key = key.idempotency_key.clone();
+    let binding = crate::db::write_in_tx_typed(w.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            if let Some(source) = source {
+                source.require_card_tx(tx, &id).await?;
+            } else {
+                crate::conversation_inputs::require_historical_storage_tx(tx, &id).await?;
+            }
+            Ok(planner_input_binding_get(&mut **tx, &id, &raw_key).await?)
+        })
+    })
+    .await?;
+    let Some(binding) = binding else {
         return Ok(None);
     };
     if binding.payload_hash != key.payload_hash {

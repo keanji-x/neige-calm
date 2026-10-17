@@ -2,8 +2,7 @@
 //! provenance/runtime are facts, never a reusable permission for a later write.
 use super::*;
 use calm_types::conversation::{
-    ConversationExecutionProvenance, ConversationHistoryContract, MessageAuthor,
-    SubmissionRenderInput, SubmissionRenderSegment,
+    ConversationExecutionProvenance, MessageAuthor, SubmissionRenderInput, SubmissionRenderSegment,
 };
 use calm_types::worker::WorkerSession;
 
@@ -15,12 +14,21 @@ pub(crate) async fn authorize_human_resource_tx(
     source: &HumanInputSource,
     carrier: &CurrentInputCarrier,
 ) -> Result<()> {
-    let principal = source.current_principal()?;
     let area = conversation::conversation_area_tx(tx, carrier.card_id()).await?;
-    crate::organization_access::require_legacy_input_execution_tx(tx, area.id.as_str(), &principal)
-        .await?;
-    if conversation::history_contract_tx(tx, carrier.card_id()).await?
-        != ConversationHistoryContract::Private
+    authorize_legacy_human_area_tx(tx, source, area.id.as_str()).await
+}
+
+/// The same private deployment resource policy is used by canonical execution
+/// and historical public effects. Content acceptance has its separate ACL.
+pub(super) async fn authorize_legacy_human_area_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    source: &HumanInputSource,
+    area_id: &str,
+) -> Result<()> {
+    let principal = source.current_principal()?;
+    crate::organization_access::require_legacy_input_execution_tx(tx, area_id, &principal).await?;
+    if conversation::area_history_contract_tx(tx, area_id).await?
+        != calm_types::conversation::ConversationHistoryContract::Private
     {
         return Err(CalmError::Forbidden(
             "legacy deployment execution cannot run SharedHistory".into(),

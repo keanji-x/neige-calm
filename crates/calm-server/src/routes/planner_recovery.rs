@@ -39,6 +39,17 @@ pub(super) async fn recover(
     cs: &CodexShellState,
     runtime: WorkerSessionProjection,
 ) -> Result<WorkerSessionProjection> {
+    recover_admitted(s, w, cs, runtime, None).await
+}
+
+#[allow(deprecated)]
+pub(super) async fn recover_admitted(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    runtime: WorkerSessionProjection,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<WorkerSessionProjection> {
     crate::conversation_inputs::require_historical_storage(s.repo.as_ref(), &runtime.card_id)
         .await?;
     let card = s
@@ -66,6 +77,11 @@ pub(super) async fn recover(
         CalmError::Conflict("original conversation thread is missing; history is retained".into())
     })?;
     if let Some(old) = s.harness.get(&runtime.id) {
+        if let Some(source) = &source {
+            source
+                .require_card(s.repo.as_ref(), &runtime.card_id)
+                .await?;
+        }
         old.quiesce_system_error_for_recovery().await?;
         s.harness.remove_if_same(&runtime.id, &old);
     }
@@ -76,10 +92,18 @@ pub(super) async fn recover(
         .session_projection_by_id(&runtime.id)
         .await?
         .ok_or_else(|| CalmError::Conflict("conversation changed during recovery".into()))?;
-    let outcome = cs
-        .shared_codex_appserver
-        .resume_system_error_conversation(&runtime, &thread)
-        .await?;
+    let outcome = match source {
+        Some(source) => {
+            cs.shared_codex_appserver
+                .resume_system_error_conversation_admitted(&runtime, &thread, Some(source))
+                .await?
+        }
+        None => {
+            cs.shared_codex_appserver
+                .resume_system_error_conversation(&runtime, &thread)
+                .await?
+        }
+    };
     if let Some((item_db_id, turn_id)) = outcome {
         s.repo
             .log_pure_event(

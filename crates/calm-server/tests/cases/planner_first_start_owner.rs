@@ -71,7 +71,7 @@ async fn a_send_between_a_creates_commit_and_its_start_does_not_pre_empt_the_cre
         )
         .await
         .unwrap();
-    let app = router(&state);
+    let app = router(&state).await;
     let parked = PausePoint {
         entered: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
@@ -161,7 +161,7 @@ async fn an_ordinary_track_whose_create_time_start_failed_stays_dormant_for_its_
     state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
-    let app = router(&state);
+    let app = router(&state).await;
     let (status, body) = create_ordinary_track(app.clone(), area.id.to_string(), "inert").await;
     assert!(
         status.is_success(),
@@ -219,7 +219,7 @@ async fn a_send_after_a_failed_launchpad_bootstrap_waits_for_the_launchpads_own_
     state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
-    let app = router(&state);
+    let app = router(&state).await;
     let (status, body) = ensure_launchpad(app.clone()).await;
     assert!(
         status.is_server_error(),

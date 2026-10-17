@@ -21,7 +21,6 @@ use calm_server::db::prelude::*;
 use calm_server::harness::PlannerHarness;
 use calm_server::model::{CardRole, NewArea};
 use calm_server::proc_identity::read_proc_start_time;
-use calm_server::routes;
 use calm_server::session_projection_repo::WorkerSessionProjection;
 use calm_server::state::AppState;
 use calm_types::worker::WorkerSessionId;
@@ -221,20 +220,7 @@ impl Stack {
         )
         .await
         .expect("boot recovery");
-        let app = routes::router()
-            .layer(axum::middleware::from_fn(
-                calm_server::actor::actor_middleware,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                    username: None,
-                    password: None,
-                    dev_autologin: true,
-                    display_name: "Owner".into(),
-                }),
-                calm_server::auth::require_session,
-            ))
-            .with_state(state.clone());
+        let app = crate::support::authenticated_router::application(state.clone()).await;
         Self { state, app }
     }
 

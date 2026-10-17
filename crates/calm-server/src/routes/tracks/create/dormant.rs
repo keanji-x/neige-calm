@@ -262,7 +262,7 @@ async fn require_surviving_allocation_tx(
     Ok(())
 }
 
-async fn prior_start_attempt_tx(
+pub(super) async fn prior_start_attempt_tx(
     tx: &mut Transaction<'_, Sqlite>,
     area_id: &str,
     raw_key: &str,

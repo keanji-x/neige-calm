@@ -42,12 +42,27 @@ pub async fn bind_attachments(
     ids: &[AttachmentId],
     locks: &PerCardLocks,
 ) -> Result<Vec<BoundAttachment>> {
+    bind_attachments_admitted(root, card_id, ids, locks, || async { Ok(()) }).await
+}
+
+pub(crate) async fn bind_attachments_admitted<F, A>(
+    root: &Path,
+    card_id: &CardId,
+    ids: &[AttachmentId],
+    locks: &PerCardLocks,
+    admit: F,
+) -> Result<Vec<BoundAttachment>>
+where
+    F: Fn() -> A + Send + Sync,
+    A: std::future::Future<Output = Result<()>> + Send,
+{
     validate_attachment_list(ids)?;
     if ids.is_empty() {
         // No lock for the empty case: it would put every text-only message behind any upload in flight on the same card.
         return Ok(Vec::new());
     }
     let turn = lock_card(locks, card_id.as_str()).await;
+    admit().await?;
     // Resolve everything first, publish second, and let the publish own the lock: the guard moves into the blocking closure so it is released when the write finishes, not when the caller stops waiting.
     let mut resolved = Vec::with_capacity(ids.len());
     for id in ids {
@@ -61,10 +76,12 @@ pub async fn bind_attachments(
         });
     }
 
+    admit().await?;
     let dirs = dir::open_card_dirs(root, card_id).await?;
 
     let sizes = resolved.iter().map(|item| item.size).collect::<Vec<_>>();
 
+    admit().await?;
     let published: Result<()> = tokio::task::spawn_blocking(move || -> Result<()> {
         // Held until every publish is done, whatever the caller is doing.
         let _turn = turn;

@@ -961,6 +961,39 @@ impl SharedCodexAppServer {
 
     /// The caller's real source owner re-admits new native effects after this
     /// owner's awaited start gate/settings work. No credential enters this owner.
+    pub(crate) async fn thread_start_admitted_for_card<F, A>(
+        self: &Arc<Self>,
+        card_id: &str,
+        role: Option<CardRole>,
+        params: SharedThreadStartParams,
+        admit: F,
+    ) -> Result<String>
+    where
+        F: Fn() -> A + Send + Sync,
+        A: std::future::Future<Output = Result<()>> + Send,
+    {
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        admit().await?;
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.started_thread_params
+                .lock()
+                .expect("fake shared codex thread params mutex poisoned")
+                .push((
+                    params.developer_instructions.clone(),
+                    matches!(params.config, ThreadConfig::NoMcp),
+                    role,
+                ));
+        }
+        #[cfg(not(feature = "fixtures"))]
+        let _ = role;
+        self.thread_start_mint_inner_admitted(card_id, params, &admit)
+            .await
+            .map(|minted| minted.thread_id)
+    }
+
+    /// The retained caller uses the same admitted mint without historical role
+    /// observations. Its actual input owner proves the current source.
     pub(crate) async fn thread_start_mint_admitted_for_card<F, A>(
         self: &Arc<Self>,
         card_id: &str,

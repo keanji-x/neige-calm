@@ -38,7 +38,8 @@ pub(super) async fn accept(
                 original["replaces_turn"] = json!(turn);
             }
             let payload_hash = format!(
-                "v2:{}",
+                "{}{}",
+                crate::db::sqlite::CANONICAL_PLANNER_INPUT_BINDING_PREFIX,
                 stable_payload_hash(&json!({
                     "author_user_id":principal.user_id,
                     "request":original,

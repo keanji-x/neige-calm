@@ -179,11 +179,18 @@ impl OperationRuntime {
         }
         Self::require_submission_key(invocation.as_ref(), &key)?;
         let _drive = self.drive_mutex.lock().await;
-        invocation.validate(&payload).await?;
-        let op_id = self
-            .repo
-            .insert_operation(invocation.kind(), key, payload)
-            .await?;
+        // Like submit, an original keyed receipt precedes mutable validation.
+        // The invocation owner still re-admits every fresh effect while driving
+        // this exact operation; a completed result needs no new native start.
+        let op_id = match self.keyed_replay(invocation.kind(), &key).await? {
+            Some(op_id) => op_id,
+            None => {
+                invocation.validate(&payload).await?;
+                self.repo
+                    .insert_operation(invocation.kind(), key, payload)
+                    .await?
+            }
+        };
         loop {
             if let Some(result) = self.repo.operation_result(&op_id).await? {
                 return Ok(result);
