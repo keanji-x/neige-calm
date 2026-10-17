@@ -290,15 +290,55 @@ async fn a_legacy_committed_row_replays_its_card() {
     ] {
         let (status, first) = post_keyed(&fx, body.clone(), Some(key)).await;
         assert_eq!(status, StatusCode::CREATED, "{first}");
-        sqlx::query("UPDATE operations SET phase = 'tx_committed' WHERE idempotency_key = ?1")
-            .bind(key)
-            .execute(&pool)
-            .await
-            .unwrap();
+        let accepted: (String, Option<i64>, String, String, String) = sqlx::query_as(
+            "SELECT phase,completed_at_ms,payload_json,payload_hash,tx_output_json \
+             FROM operations WHERE idempotency_key=?1",
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(accepted.0, "succeeded");
+        assert!(
+            accepted.1.is_some(),
+            "the modern create completed before staging the legacy crash"
+        );
+        // An older server stopped after prepare and before settlement. Rewind
+        // both lifecycle facts together, preserving the accepted request and
+        // the card checkpoint byte for byte.
+        sqlx::query(
+            "UPDATE operations SET phase = 'tx_committed', completed_at_ms = NULL \
+             WHERE idempotency_key = ?1",
+        )
+        .bind(key)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let legacy: (String, Option<i64>, String, String, String) = sqlx::query_as(
+            "SELECT phase,completed_at_ms,payload_json,payload_hash,tx_output_json \
+             FROM operations WHERE idempotency_key=?1",
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            legacy,
+            (
+                "tx_committed".to_string(),
+                None,
+                accepted.2,
+                accepted.3,
+                accepted.4
+            ),
+            "the fixture is unfinished and retains the original request/hash/card output"
+        );
         let (status, replay) =
             tokio::time::timeout(Duration::from_secs(5), post_keyed(&fx, body, Some(key)))
                 .await
-                .expect("an unfinished legacy operation must replay without waiting for lease expiry");
+                .expect(
+                    "an unfinished legacy operation must replay without waiting for lease expiry",
+                );
         assert_eq!(status, StatusCode::CREATED, "{replay}");
         assert_eq!(replay["id"], first["id"]);
         let phase: String =

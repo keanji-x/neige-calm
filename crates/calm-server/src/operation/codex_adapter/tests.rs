@@ -214,8 +214,8 @@ async fn prepare_worker_with_task_key(
     (output, events)
 }
 
-/// [`prepare_worker_with_task_key`] plus the claimed operation row, for a
-/// test that carries the op past prepare the way the driver does.
+/// [`prepare_worker_with_task_key`] plus the original claim for direct adapter
+/// tests. Tests that advance phases use the repository's owning prepare entry.
 async fn prepare_worker_and_op(
     harness: &WorkerLeaseHarness,
     key: &str,
@@ -228,13 +228,30 @@ async fn prepare_worker_and_op(
     (output, events, op)
 }
 
-/// [`prepare_worker_and_op`] that returns the prepare's refusal; a refused prepare commits
-/// nothing. A `tasks` row the test inserted first is kept.
+/// Direct adapter preparation with its refusal exposed. A refusal rolls back the
+/// adapter writes; the accepted task and operation remain fixture facts.
 async fn try_prepare_worker_and_op(
     harness: &WorkerLeaseHarness,
     key: &str,
     task_key: &str,
 ) -> Result<(TxOutput, Operation)> {
+    let op = claim_worker_operation(harness, key, task_key).await;
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let output = harness
+        .adapter
+        .prepare_tx(&mut tx, &op.payload, &op)
+        .await?;
+    tx.commit().await.unwrap();
+    Ok((output, op))
+}
+
+/// Shared accepted facts for direct adapter tests and the real repository path.
+/// This creates a claimed pending row; it does not synthesize a checkpoint.
+async fn claim_worker_operation(
+    harness: &WorkerLeaseHarness,
+    key: &str,
+    task_key: &str,
+) -> Operation {
     let payload = worker_payload(&harness.track_id, key);
     let task_id = format!("{}:{key}", harness.track_id);
     sqlx::query(
@@ -257,21 +274,17 @@ async fn try_prepare_worker_and_op(
                 idempotency_key: Some(format!("op-{key}")),
                 payload_hash: format!("hash-{key}"),
             },
-            payload.clone(),
+            payload,
         )
         .await
         .unwrap();
-    let op = op_repo
+    op_repo
         .claim_drive_batch(1)
         .await
         .unwrap()
         .into_iter()
         .find(|op| op.id == op_id)
-        .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = harness.adapter.prepare_tx(&mut tx, &payload, &op).await?;
-    tx.commit().await.unwrap();
-    Ok((output, op))
+        .unwrap()
 }
 
 #[tokio::test]
@@ -479,13 +492,27 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
 #[tokio::test]
 async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
     let harness = worker_lease_harness().await;
-    let (mut output, _, op) = prepare_worker_and_op(&harness, "pinned", "pinned").await;
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let pending = claim_worker_operation(&harness, "pinned", "pinned").await;
+    let (prepared, _) = op_repo
+        .prepare_tx_and_advance(&pending, &harness.adapter)
+        .await
+        .unwrap()
+        .expect("prepare commits its owning operation checkpoint");
+    let mut output = super::super::required_output(&prepared).unwrap().clone();
+    let op = op_repo
+        .claim_drive_batch(1)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|claimed| claimed.id == prepared.id)
+        .expect("the prepared operation is claimed at tx_committed");
+    assert_eq!(op.phase, Phase::TxCommitted);
     let card_id = output.output_string("card_id", "test").unwrap();
     let cwd = output.output_string("cwd", "test").unwrap();
     let recorded_base = output.output_string("base_sha", "test").unwrap();
     assert_eq!(git_head(Path::new(&cwd)), recorded_base);
 
-    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
     let kind = harness
         .adapter
         .app_server_interact_kind(&output, &op)
