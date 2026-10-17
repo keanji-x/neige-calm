@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { CardWire } from '../../../../core/domain/track.ts';
+import { useState } from '../../ui/state/public.ts';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { ReportDocument, type ReportDocumentProps } from '../../features/report/document/public.tsx';
@@ -63,8 +64,16 @@ export function TrackReportRegion({ presentation, trackId, activityAt, openedAt,
 }
 
 /** A navigation intent is served once, after its current complete report commits. */
-export function useTrackReportArrival(anchorId: string | null, navigationAt: number, current: boolean) {
-  const request = useMemo(() => ({ anchorId, navigationAt }), [anchorId, navigationAt]);
+export function useTrackReportArrival(anchorId: string | null, intent: string | undefined, current: boolean) {
+  const [arrival, setArrival] = useState(() => ({ anchorId, intent, request: { anchorId } }));
+  let active = arrival;
+  if (anchorId !== arrival.anchorId || (intent !== undefined && intent !== arrival.intent)) {
+    // File/panel navigation may temporarily remove state and restore it on Back.
+    // Keep the last explicit intent so that restoring it cannot replay a served hash.
+    active = { anchorId, intent: intent ?? arrival.intent, request: { anchorId } };
+    setArrival(active);
+  }
+  const request = active.request;
   const served = useRef<typeof request | null>(null);
   useLayoutEffect(() => {
     if (!current || request.anchorId === null || request.anchorId === '' || served.current === request) return;

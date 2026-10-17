@@ -19,14 +19,14 @@ import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
-function setup(prepareReport: ReportPreparationPort = prepareReportDocument) {
+function setup(prepareReport: ReportPreparationPort = prepareReportDocument, initial = '/track/a') {
   const tracks = ['a', 'b'].map((id) => ({ id, area_id: 'area', title: `Track ${id}`, sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null,
     created_at: 1, updated_at: 2 }));
   const cardsFor = (id: string) => [{ id: `report-${id}`, track_id: id, title: null, kind: 'track-report',
     sort: 0, deletable: false, created_at: 1, updated_at: 2,
     payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: Array.from({ length: 50 }, (_, i) => ({
-      id: `paragraph-${i}`, kind: 'prose', rev: 1, payload: { markdown: `Paragraph ${i}. A long report to read and return to.` },
+      id: `paragraph-${i}`, kind: 'prose', rev: 1, payload: { markdown: `Paragraph ${i}. A long report to read and return to.${i === 0 ? '\n\n[Jump to paragraph](neige://wave/a#paragraph-40) and [Read file](README.md)' : ''}` },
     })) } }, ...Array.from({ length: 8 }, (_, i) => ({ id: `${id}-card-${i}`, track_id: id,
       title: `Surface ${i}`, kind: 'view-state-surface', sort: i + 1, deletable: true,
       created_at: 1, updated_at: 2, payload: {},
@@ -55,7 +55,7 @@ function setup(prepareReport: ReportPreparationPort = prepareReportDocument) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ prepareReport, transport, client, cards: runtime,
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/track/a'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   const container = document.createElement('div');
   container.id = 'root';
   document.body.append(container);
@@ -136,7 +136,7 @@ async function replaceReport(client: QueryClient, serverCards: ReturnType<typeof
   if (cards === undefined) throw new Error('Missing fixture Track a');
   const replacement = cards.map(card => card.kind !== 'track-report' ? card : ({ ...card,
     payload: { schemaVersion: 3, docRev: revision, summary: '', body: '', blocks: Array.from({ length: 50 }, (_, i) => ({
-      id: `paragraph-${i}`, kind: 'prose', rev: revision, payload: { markdown: `Paragraph ${i}. A long report to read and return to. Revision ${revision}.` },
+      id: `paragraph-${i}`, kind: 'prose', rev: revision, payload: { markdown: `Paragraph ${i}. A long report to read and return to. Revision ${revision}.${i === 0 ? '\n\n[Jump to paragraph](neige://wave/a#paragraph-40) and [Read file](README.md)' : ''}` },
     })) },
   }));
   serverCards.set('a', replacement);
@@ -192,7 +192,7 @@ it('serves pending and repeated anchor navigation after current content and does
   await settle(); expect(reportPage().scrollTop).toBe(0);
   await replaceReport(client, serverCards, 3);
   await expect.poll(() => control.jobs.length).toBe(2);
-  await act(() => router.navigate({ to: '/track/a', hash: 'paragraph-40' }));
+  await act(() => (page.getByRole('button', { name: 'Jump to paragraph', exact: true }).element() as HTMLButtonElement).click());
   await settle(); expect(reportPage().scrollTop).toBe(0);
   await control.release(1);
   await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 3.', { exact: true })).toBeVisible();
@@ -213,4 +213,24 @@ it('keeps the saved reading position when a pending header action is used', asyn
   await control.release(0);
   await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 2.', { exact: true })).toBeVisible();
   await settle(); expect(reportPage().scrollTop).toBe(700);
+});
+
+it('does not replay a served report hash when a same-Track panel destination changes', async () => {
+  await page.viewport(1440, 900);
+  const { router } = setup(prepareReportDocument, '/track/a#paragraph-40');
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to.', { exact: true })).toBeVisible();
+  await settle(); expect(reportPage().scrollTop).toBeGreaterThan(700);
+  reportPage().scrollTop = 100; await settle();
+  // Activate the actual report file link: its owner pushes a file entry retaining hash.
+  await act(() => (page.getByRole('button', { name: 'Read file', exact: true }).element() as HTMLButtonElement).click());
+  await expect.poll(() => router.state.location.search.file).toBe('README.md');
+  await settle(); expect(reportPage().scrollTop).toBe(100);
+  const file = page.getByRole('region', { name: 'File README.md', exact: true }).element();
+  await act(() => file.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  await expect.poll(() => router.state.location.search.file).toBeUndefined();
+  await settle(); expect(reportPage().scrollTop).toBe(100);
+  await act(() => router.navigate({ to: '/track/a', search: { card: 'a-card-7' }, hash: true }));
+  await settle(); expect(reportPage().scrollTop).toBe(100);
+  await act(() => router.navigate({ to: '/track/a', search: {}, hash: true }));
+  await settle(); expect(reportPage().scrollTop).toBe(100);
 });

@@ -64,5 +64,5 @@ Only an actually committed same-visit report can remain visible during replaceme
 Its series revision, previews and task declarations remain coherent until swap.
 New-source receipts wait for current complete content; unchanged-source overlay
 updates retain existing behavior. Empty success commits through the same boundary.
-Hash plus router navigation intent is served once after current content; an
+Hash changes plus an explicit report-anchor activation token is served once after current content; an
 ordinary report refresh does not replay a served anchor. Today uses this same path.

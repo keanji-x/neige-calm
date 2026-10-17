@@ -287,6 +287,8 @@ export function createAppRouter(deps: AppRouterDeps) {
     routeTree: createRouteTree(deps),
     basepath: APP_BASEPATH,
     defaultPreload: false,
+    // Report arrivals reveal only after their current complete content commits.
+    defaultHashScrollIntoView: false,
   });
 }
 
@@ -1289,7 +1291,8 @@ function TrackRouteBody({
 
   /* Every report arrival follows the current committed content boundary. */
   const arrivalAnchorId = useRouteHash();
-  useTrackReportArrival(arrivalAnchorId, navigationCompletedAt, reportPresentation.current);
+  const reportAnchorIntent = useRouterState({ select: (state) => state.location.state.ncReportAnchorIntent });
+  useTrackReportArrival(arrivalAnchorId, reportAnchorIntent, reportPresentation.current);
   const openReportLink = (target: ReportLinkTarget) => {
     if (target.trackId === track.id) {
       // Same track: a move within the report, so the return surface survives and the

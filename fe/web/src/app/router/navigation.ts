@@ -18,6 +18,8 @@ declare module '@tanstack/history' {
     ncNewTrackPushed?: boolean;
     /** A plain Track selection resumes its saved viewport; explicit targets reveal themselves. */
     ncResumeTrackView?: boolean;
+    /** Explicit report-anchor activation, independent of file/panel navigation. */
+    ncReportAnchorIntent?: string;
     ncFilePushed?: boolean;
     ncOpenPlanner?: boolean;
   }
@@ -110,7 +112,8 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
       search,
       replace: switchingDraft || options?.replace,
       ...(draftState === undefined ? {} : { state: draftState }),
-      ...(target.name === 'track' ? { state: { ...state, ncResumeTrackView: resumeTrack } } : {}),
+      ...(target.name === 'track' ? { state: { ...state, ncResumeTrackView: resumeTrack,
+        ...(target.blockId === undefined ? {} : { ncReportAnchorIntent: Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-') }) } } : {}),
     });
   }, [navigate, router, views]);
 }
