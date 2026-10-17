@@ -237,8 +237,9 @@ pub struct CreateTrackRequest {
     #[schema(required = false)]
     pub title: String,
     pub sort: Option<f64>,
-    /// Omitted / null persists `default_cwd()` and skips `area_folders`; present values
-    /// (including the empty string) keep the absolute-path + claim rules.
+    /// Message-less resource creation keeps the existing cwd/claim contract.
+    /// Human first-message creation supports only the configured managed root;
+    /// an explicit cwd requires its own preparation and is currently refused.
     #[serde(default)]
     pub cwd: Option<String>,
     /// A built-in roster template to instantiate the report from; mutually exclusive with
@@ -263,9 +264,9 @@ pub struct CreateTrackRequest {
     /// inside the track-create transaction.
     #[serde(default)]
     pub fork_report_from: Option<String>,
-    /// The user's first sentence, seeded into the planner harness as a user message. Supplying
-    /// it makes `Idempotency-Key` required and turns a harness-start failure into a 500 (the
-    /// committed track is not undone).
+    /// The verified Human's first accepted message. Requires Idempotency-Key.
+    /// Canonical input and original resource acknowledgement commit before any
+    /// native startup; a later startup failure cannot undo that acceptance.
     #[serde(default)]
     pub first_message: Option<String>,
     /// Model slug for the planner's first and subsequent turns (for a `claude` Planner, a value of
@@ -764,26 +765,36 @@ pub(crate) async fn get_track_detail(
     path = "/api/tracks",
     tag = "tracks",
     params(
-        ("Idempotency-Key" = Option<String>, Header, description = "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201 and starts its Planner again only when every earlier start of it failed (a Planner that already has a session, from the first start or a reset or re-point since, keeps it; one with no session yet while another start of it is running answers 503), a different create shape under the same key is 409 `idempotency_key_reused`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `idempotency_key_reused`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, non-null `model` / `reasoning_effort`, and a `planner_provider` other than `codex`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `idempotency_key_reused`, including after a terminal operation failure. A different `first_message` is also `idempotency_key_reused` after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries, unless the track's Planner already has a session (a reset or re-point started it since): that retry is 409 `conflict`, starts nothing and delivers nothing, so send the message through `POST /api/cards/{id}/planner/input`. With no session yet but another start of the Planner running, it is 503. A `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 `idempotency_key_reused` because the server cannot prove request equality. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Required with first_message; optional for message-less resource creation. A Human first message binds the original request, verified author and exact accepted message to this key. A same-author identical replay rechecks current Area access and returns the original resource acknowledgement without starting or recovering its old runtime. Different original input or an unproven historical binding is idempotency_key_reused. Historical #N delivery attempts are not adopted or implicitly retried. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation."),
     ),
     request_body = CreateTrackRequest,
     responses(
-        (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
-        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty, non-ASCII or over 128 bytes; code `idempotency_key_invalid`) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
-        (status = 404, description = "Area not found", body = ErrorBody),
-        (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `idempotency_key_reused` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, `idempotency_key_concurrent` when another create under the same key committed at the same moment (nothing of this request was kept; retry the identical request under the same key and it resolves to that track), `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized, or `conflict` naming `attached-repo-diverged` when the attached checkout has unpushed commits and its upstream moved on, so the track's worktree cannot be made (the track is already committed and stays, as after a failed managed materialization; reconcile the checkout, then retry under the same key), or `conflict` when a `first_message` retry after a failed start finds that the track's Planner already has a session, so the retry starts nothing (send the message through `POST /api/cards/{id}/planner/input`). Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request after `idempotency_key_reused` (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
-        (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.", body = ErrorBody),
-        (status = 503, description = "A keyed retry found the Planner with no session yet and a start running; it started nothing. Retry shortly.", body = ErrorBody),
+        (status = 201, description = "Track created. With first_message, canonical input and its original acknowledgement have committed independently of native readiness. Acceptance does not promise execution has started. Identical authorized retries mint no second Track or message.", body = Track),
+        (status = 400, description = "Invalid create/key/message. Fresh Human first-message creation currently supports a blank managed Track; attached cwd, template, recipe, fork, admin and cross-Area preparation are explicitly unsupported. These mutable preparation checks do not run on an accepted replay.", body = ErrorBody),
+        (status = 401, description = "No verified live Human source for first_message, or the session is invalid or revoked", body = ErrorBody),
+        (status = 403, description = "Registered current Area collaboration access is required for Human input; System targets are not Human Track creation", body = ErrorBody),
+        (status = 404, description = "Area or surviving accepted resource not found", body = ErrorBody),
+        (status = 409, description = "Idempotency key reused/concurrent/exhausted, an original resource was deleted, or a resource lifecycle conflict. An unsupported historical key is never converted into new canonical work. Preserve the original accepted identity; this response is not permission to resend under a fresh key.", body = ErrorBody),
+        (status = 500, description = "Internal storage or response error; an uncertain outcome must be reconciled under the original key", body = ErrorBody),
+        (status = 503, description = "A message-less resource creation found a concurrent Planner start; no Human input acceptance is inferred", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_track(
     State(s): State<RouteState>,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
     actor: Actor,
     headers: HeaderMap,
     State(codex): State<CodexShellState>,
     JsonBody(mut request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
+    if request.first_message.is_some() {
+        let source = source.ok_or(CalmError::Unauthorized)?.0;
+        let accepted =
+            create::dormant::accept_dormant_human_track(s.clone(), source, headers, request)
+                .await?;
+        return Ok((StatusCode::CREATED, Json(accepted.track)).into_response());
+    }
     if request.admin {
         super::track_report_blocks::require_rest_user_actor_for(
             &actor,

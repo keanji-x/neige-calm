@@ -27,9 +27,12 @@ pub(in crate::routes::tracks) enum HumanTrackCreationDisposition {
     Replayed,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(in crate::routes::tracks) struct HumanTrackCreationResult {
     pub ack: HumanTrackCreationAck,
+    /// The finite response view read under the same Area/resource decision.
+    /// It is transient output, never another persisted acceptance authority.
+    pub track: crate::model::Track,
     pub disposition: HumanTrackCreationDisposition,
 }
 
@@ -82,7 +85,8 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                         ));
                     }
                     require_surviving_allocation_tx(tx, &area_id, &stored.acknowledgement).await?;
-                    let _ = replay_tx.send(stored.acknowledgement);
+                    let track = response_track_tx(tx, &stored.acknowledgement).await?;
+                    let _ = replay_tx.send((stored.acknowledgement, track));
                     return Err(CalmError::Conflict(
                         "Human Track acceptance already committed".into(),
                     ));
@@ -185,7 +189,8 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                     },
                 )
                 .await?;
-                Ok((stored.acknowledgement, events))
+                let track = response_track_tx(tx, &stored.acknowledgement).await?;
+                Ok(((stored.acknowledgement, track), events))
             })
         },
     )
@@ -193,19 +198,29 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     // Acceptance is already committed. Native availability/wake/report is not
     // part of this acknowledgement and cannot turn it back into "unaccepted".
     match result {
-        Ok((ack, _)) => Ok(HumanTrackCreationResult {
+        Ok(((ack, track), _)) => Ok(HumanTrackCreationResult {
             ack,
+            track,
             disposition: HumanTrackCreationDisposition::Fresh,
         }),
         Err(error @ CalmError::Conflict(_)) => replay_rx
             .try_recv()
-            .map(|ack| HumanTrackCreationResult {
+            .map(|(ack, track)| HumanTrackCreationResult {
                 ack,
+                track,
                 disposition: HumanTrackCreationDisposition::Replayed,
             })
             .map_err(|_| error),
         Err(error) => Err(error),
     }
+}
+
+async fn response_track_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    ack: &HumanTrackCreationAck,
+) -> Result<crate::model::Track> {
+    let HumanTrackCreationAck::V1 { track_id, .. } = ack;
+    Ok(crate::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(track_id.clone())).await?)
 }
 
 async fn require_surviving_allocation_tx(

@@ -53,7 +53,7 @@ impl Fixture {
         }
     }
 
-    async fn application(&self) -> (axum::Router, String) {
+    async fn state(&self) -> AppState {
         let repo: Arc<dyn Repo> = self.repo.clone();
         let events = EventBus::new();
         let roles = calm_server::card_role_cache::CardRoleCache::new();
@@ -80,15 +80,22 @@ impl Fixture {
             Some(tracks),
         )
         .with_workspace_root(self.tmp.path().join("workspaces"));
-        let app = routes::application_router(
-            state,
-            AuthState::new(AuthConfig {
+        state
+    }
+
+    async fn application_with_auth(&self, auth: AuthState) -> axum::Router {
+        routes::application_router(self.state().await, auth)
+    }
+
+    async fn application(&self) -> (axum::Router, String) {
+        let app = self
+            .application_with_auth(AuthState::new(AuthConfig {
                 username: Some("jian".into()),
                 password: Some("fixture-password".into()),
                 dev_autologin: false,
                 display_name: "Jian".into(),
-            }),
-        );
+            }))
+            .await;
         let response = app
             .clone()
             .oneshot(
@@ -262,4 +269,222 @@ async fn unavailable_native_plain_send_persists_before_wake_and_replays_without_
         count, 2,
         "a retried send cannot leave an extra stored message"
     );
+}
+
+#[tokio::test]
+async fn actual_session_authors_bind_plain_send_keys_and_recheck_revocation() {
+    use calm_server::auth::{SessionAuthority, SessionIdentity};
+    let fixture = Fixture::new().await;
+    let auth = AuthState::new(AuthConfig {
+        username: Some("jian".into()),
+        password: Some("fixture-password".into()),
+        dev_autologin: false,
+        display_name: "Jian".into(),
+    });
+    let owner_token = auth.sessions.create(
+        SessionIdentity::owner(&auth.config),
+        SessionAuthority::PasswordLogin,
+    );
+    let alice_token = auth.sessions.create(
+        SessionIdentity {
+            user_id: "alice".into(),
+            display_name: "Alice".into(),
+            role: "member".into(),
+        },
+        SessionAuthority::PairedDevice,
+    );
+    let owner = format!("calm-session={owner_token}");
+    let alice = format!("calm-session={alice_token}");
+    let app = fixture.application_with_auth(auth.clone()).await;
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(fixture.repo.pool())
+        .await
+        .unwrap();
+    calm_server::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
+    )
+    .bind(&fixture.area)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let (status, created) = post(&app, &owner, "/api/tracks", "first", fixture.create_body()).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (card, _, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
+    let uri = format!("/api/cards/{card}/planner/input");
+    let body = json!({"text":"same words", "attachments":[]});
+    let (status, original) = post(&app, &owner, &uri, "ordinary", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{original}");
+    let (status, changed) = post(&app, &owner, &uri, "ordinary", json!({"text":"different"})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{changed}");
+    assert_eq!(changed["code"], "idempotency_key_reused");
+    let (status, foreign) = post(&app, &alice, &uri, "ordinary", body.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{foreign}");
+    assert_eq!(foreign["code"], "idempotency_key_reused");
+    let (status, own) = post(&app, &alice, &uri, "alice-key", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{own}");
+    assert_ne!(own["entry_id"], original["entry_id"]);
+    let authors: Vec<String> = sqlx::query_scalar(
+        "SELECT author_user_id FROM conversation_messages WHERE card_id=?1 ORDER BY rowid",
+    )
+    .bind(&card)
+    .fetch_all(fixture.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        authors,
+        vec![
+            LEGACY_OWNER_USER_ID.to_string(),
+            LEGACY_OWNER_USER_ID.to_string(),
+            "alice".to_string()
+        ]
+    );
+    sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
+        .bind(&fixture.area)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    let (status, denied) = post(&app, &alice, &uri, "alice-key", body.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    auth.sessions.remove(&owner_token).unwrap();
+    let (status, denied) = post(&app, &owner, &uri, "ordinary", body).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
+            .bind(&card)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 3,
+        "refusals and retries cannot create accepted messages"
+    );
+}
+
+#[tokio::test]
+async fn a_bare_actor_cannot_supply_the_required_first_message_source() {
+    let fixture = Fixture::new().await;
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(fixture.state().await);
+    let (status, body) = post(&app, "", "/api/tracks", "first", fixture.create_body()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks WHERE area_id=?1")
+        .bind(&fixture.area)
+        .fetch_one(fixture.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "Actor data cannot authorize or allocate Human input"
+    );
+}
+
+#[tokio::test]
+async fn unsupported_fresh_shapes_and_historical_keys_never_fall_back_to_v1() {
+    let fixture = Fixture::new().await;
+    let (app, cookie) = fixture.application().await;
+    let mut attached = fixture.create_body();
+    attached["cwd"] = json!(fixture.tmp.path().display().to_string());
+    let (status, body) = post(&app, &cookie, "/api/tracks", "unsupported", attached).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, created) =
+        post(&app, &cookie, "/api/tracks", "first", fixture.create_body()).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (card, runtime, before) = fixture.carrier(created["id"].as_str().unwrap()).await;
+    let uri = format!("/api/cards/{card}/planner/input");
+    for body in [
+        json!({"text":"edit","replaces_turn":"native-turn"}),
+        json!({"text":"image","attachments":["00000000-0000-4000-8000-000000000000.png"]}),
+    ] {
+        let (status, answer) = post(&app, &cookie, &uri, "unsupported-send", body).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    }
+    sqlx::query(
+        "INSERT INTO planner_input_idempotency
+         (card_id,idempotency_key,payload_hash,worker_session_id,entry_id,created_at_ms)
+         VALUES(?1,'historical','v1:opaque-original',?2,'legacy-entry',0)",
+    )
+    .bind(&card)
+    .bind(&runtime)
+    .execute(fixture.repo.pool())
+    .await
+    .unwrap();
+    let (status, body) = post(
+        &app,
+        &cookie,
+        &uri,
+        "historical",
+        json!({"text":"same intent"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "idempotency_key_reused");
+    assert_eq!(
+        fixture.carrier(created["id"].as_str().unwrap()).await.2,
+        before
+    );
+    let hash: String = sqlx::query_scalar(
+        "SELECT payload_hash FROM planner_input_idempotency
+         WHERE card_id=?1 AND idempotency_key='historical'",
+    )
+    .bind(&card)
+    .fetch_one(fixture.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        hash, "v1:opaque-original",
+        "unproven historical evidence is unchanged"
+    );
+}
+
+#[tokio::test]
+async fn canonical_send_replay_does_not_restore_its_original_runtime() {
+    let fixture = Fixture::new().await;
+    let (app, cookie) = fixture.application().await;
+    let (status, created) =
+        post(&app, &cookie, "/api/tracks", "first", fixture.create_body()).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (card, original, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
+    let uri = format!("/api/cards/{card}/planner/input");
+    let body = json!({"text":"original send"});
+    let (status, ack) = post(&app, &cookie, &uri, "ordinary", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(fixture.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
+        .bind(&original)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
+        .bind(&card)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (status, replay) = post(&app, &cookie, &uri, "ordinary", body).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(
+        replay, ack,
+        "the original ACK is not a request to revive its runtime"
+    );
+    let state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?1")
+        .bind(&original)
+        .fetch_one(fixture.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(state, "failed");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
+            .bind(&card)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 2);
 }
