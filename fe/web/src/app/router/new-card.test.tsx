@@ -101,7 +101,7 @@ function setup({ createFails = false, deferCreate = false, answers = [] as reado
 }
 
 async function pickKind(label: string) {
-  const trigger = await screen.findByRole('button', { name: 'Add card' });
+  const trigger = await screen.findByRole('button', { name: 'Tools' });
   /* The popover's close from the previous cycle can land after the next click and
        read as a close, so the click is retried until the menu is actually showing. */
   await waitFor(async () => {
@@ -382,7 +382,7 @@ describe('a keyed card create', () => {
   /* Offline, a press is refused before anything is sent (`NotSentError`). */
   it('drops a fresh intent that could not be sent: a refusal with no Try again', async () => {
     const { posts } = setup();
-    await screen.findByRole('button', { name: 'Add card' });
+    await screen.findByRole('button', { name: 'Tools' });
     onlineManager.setOnline(false);
     await pickKind('terminal');
     expect(within(await screen.findByRole('alert')).getByText('The terminal card was not created.')).toBeTruthy();

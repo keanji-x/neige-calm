@@ -46,9 +46,10 @@ it('keeps Referenced by readable without a decorative heading icon and retains i
   await browserPage.viewport(1280, 900);
   const follow = vi.fn();
   renderPage({ backlinks: <a href="#source" onClick={event => { event.preventDefault(); follow(); }}>Source report</a> });
-  const heading = browserPage.getByRole('heading', { name: 'Referenced by', exact: true });
+  const heading = browserPage.getByText('Related', { exact: true });
   await expect.element(heading).toBeVisible();
   expect(heading.element().querySelector('svg')).toBeNull();
+  await heading.click();
   const link = browserPage.getByRole('link', { name: 'Source report', exact: true });
   await expect.element(link).toBeVisible();
   expect(link.element().getAttribute('href')).toBe('#source');
@@ -450,14 +451,19 @@ describe('the report-to-Planner entry', () => {
     const reason = 'Validation failed because the expected report snapshot is missing. '.repeat(4);
     renderPage({ tasks: [{ blockId: 'verify', key: 'verify', state: 'ready', declaration: null,
       status: 'failed', statusDetail: reason, kind: 'codex', workerCardId: null, pendingReason: null }] });
-    const group = document.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="failed"]')!;
-    expect(group.open).toBe(true);
+    const group = browserPage.getByText('Progress', { exact: true }).element().closest('details')!;
+    expect(group.open).toBe(false);
+    await userEvent.click(group.querySelector('summary')!);
     const reveal = group.querySelector<HTMLElement>('[data-nc-row-action="reveal-block"]')!;
     expect(reveal.getAttribute('aria-description')).toContain('Validation failed');
     const metadata = group.querySelector<HTMLElement>('[data-nc-inventory-metadata]')!;
     expect(metadata.getBoundingClientRect().width).toBeLessThanOrEqual(1);
-    expect(group.querySelector<HTMLElement>('[data-nc-field="kind"]')!.getBoundingClientRect().right)
-      .toBeLessThanOrEqual(group.getBoundingClientRect().right);
+    const row = group.querySelector<HTMLElement>('[data-nc-row]')!;
+    const rowBox = row.getBoundingClientRect();
+    expect(row.textContent).toContain('Failed');
+    expect(rowBox.height).toBeLessThanOrEqual(32);
+    expect(rowBox.right).toBeLessThanOrEqual(group.closest('aside')!.getBoundingClientRect().right);
+    expect(reveal.getBoundingClientRect().right).toBeLessThanOrEqual(rowBox.right);
   });
 });
 
