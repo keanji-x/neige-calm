@@ -75,8 +75,8 @@ async fn read_facts(tx: &mut Tx<'_>, track_id: &str, attempt: &str) -> Result<Fa
         .fetch_one(&mut **tx)
         .await?;
     let workspace = track_workspace_read_tx(tx, track_id).await?;
-    let observation = workspace_observation_snapshot(&mut **tx, track_id).await?;
-    let occupancy = checkout_occupancy(&mut **tx, track_id, attempt).await?;
+    let observation = workspace_observation_snapshot(tx, track_id).await?;
+    let occupancy = checkout_occupancy(tx, track_id, attempt).await?;
     if !occupancy.admits(task.access) {
         return Err(CalmError::Conflict(
             "track checkout is in use by another attempt".into(),
