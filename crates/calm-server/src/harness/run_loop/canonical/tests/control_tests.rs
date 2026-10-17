@@ -200,7 +200,9 @@ async fn accepted_stop_drains_its_original_target_after_native_gate_failure_and_
     let row = fx
         .original
         .repo
-        .session_projection_by_id(&fx.harness.inner.worker_session_id)
+        .session_get(&calm_types::worker::WorkerSessionId(
+            fx.harness.inner.worker_session_id.clone(),
+        ))
         .await
         .unwrap()
         .unwrap();
