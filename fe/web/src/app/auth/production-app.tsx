@@ -104,6 +104,7 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     clear: () => clearSessionArtifacts(client, cursorStore, runtime), online: () => navigator.onLine, visible: () => !document.hidden,
   }, { input: takeScanInput(window, window.location.origin, Date.now()), pairing: createScanPairingPort(base) }) : undefined;
   const router = createAppRouter({
+    initialWorkspaceGuide: new URLSearchParams(window.location.search).get('onboarding') === 'workspace',
     prepareReport: (report, signal) => runWorkerTask<TrackReport | null, PreparedReport>(
       () => new Worker(new URL('../../features/report/document/preparation.worker.ts', import.meta.url), { type: 'module' }), report, signal),
     transport,

@@ -16,6 +16,7 @@ import {
   FolderPill, NO_TEMPLATE_ID, TemplatePill,
 } from '../default-pills/public.tsx';
 import styles from './area-editor.module.css';
+import { GuideAnchor, useGuideTargetActive } from '../../../ui/floating-control/public.ts';
 
 // Astryx's public type does not expose the native `required` constraint, and
 // `isRequired` would duplicate this dialog's only field label with "· Required".
@@ -55,6 +56,7 @@ export function AreaEditorForm({
   listDirectory, nameInputRef, submitLabel, onCancel, onSubmit,
 }: AreaEditorFormProps) {
   const folderId = `${useId()}-default-folder`;
+  const guiding = useGuideTargetActive('area-defaults');
   const [name, setName] = useState(initial.name);
   const [templateId, setTemplateId] = useState(initial.defaultTemplateId ?? NO_TEMPLATE_ID);
   const [cwd, setCwd] = useState(initial.defaultCwd ?? '');
@@ -119,7 +121,7 @@ export function AreaEditorForm({
         width="100%"
         isDisabled={submitting || locked}
       />
-      <HStack gap={1} align="center" className={styles.controlRow}>
+      <HStack gap={1} align="center" className={`${styles.controlRow} ${guiding ? styles.guided : ''}`}>
         <HStack gap={1} align="center" className={styles.pills}>
           <TemplatePill
             templates={templates}
@@ -130,15 +132,19 @@ export function AreaEditorForm({
             controlLabel="Default template"
             isDisabled={submitting || locked}
           />
-          <FolderPill
+          <GuideAnchor id="area-defaults" reserveSpace disabled={browsing || submitting || locked}>
+          {(anchor, describedBy) => <FolderPill
             buttonId={folderId}
+            buttonRef={anchor}
+            describedBy={describedBy}
             value={cwd}
             controlLabel="Default folder"
             clearLabel="Use a new Neige workspace"
             isDisabled={submitting || locked}
             onBrowse={() => setBrowsing(true)}
             onClear={() => setCwd('')}
-          />
+          />}
+          </GuideAnchor>
         </HStack>
         <HStack gap={1} justify="end" className={styles.actions}>
           <Button type="button" variant="ghost" label={cancelLabel} isDisabled={submitting} onClick={onCancel} />

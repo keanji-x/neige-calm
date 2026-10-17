@@ -1,3 +1,4 @@
+import { GuideAnchor } from '../../../ui/floating-control/public.ts';
 import { ContextAction, ContextFrame, ContextGroup } from '../../../ui/panel-card/context.tsx';
 import { TrackTitle } from '../title/public.tsx';
 // The `/track/$trackId` surface. Presentational: every mutation and navigation leaves through a callback,
@@ -396,7 +397,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
           </>
         }
         actions={(
-          <span className={styles.headerActions}>
+          <GuideAnchor id="track-actions" disabled={boardOpen || conversationOpen}>{(anchor, describedBy) => <span ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.headerActions}>
             {!boardOpen && !conversationOpen && (onReply !== undefined || onStartConversation !== undefined) && (
               <AstryxButton
                 className={styles.desktopChatAction}
@@ -430,11 +431,11 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                 }}
               />
             </span>
-          </span>
+          </span>}</GuideAnchor>
         )}
       />
 
-      {createPortal(<div className={titleInHeader ? styles.mobileHeaderIdentity : styles.titleCluster}
+      {createPortal(<GuideAnchor id="track-report" disabled={conversationOpen}>{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={titleInHeader ? styles.mobileHeaderIdentity : styles.titleCluster}
         onFocusCapture={(event) => { lastFocusedTitleRef.current = event.target; }}
         onBlurCapture={(event) => {
           if (relocatingTitleRef.current) event.stopPropagation();
@@ -452,7 +453,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         {!titleInHeader && <TrackAdminBadge adminGrantedAt={adminGrantedAt} />}
         {/* The same indicator the rail paints. `unread` is `false` by construction: the page is the reader, and its receipt clears the moment it is visible. The mobile page head carries no indicator. */}
         {!titleInHeader && <ActivityIndicator state={trackActivityState(track, false)} />}
-      </div>, titleContainer)}
+      </div>}</GuideAnchor>, titleContainer)}
       {headerActionsHost !== null && mobileActions !== undefined && createPortal(mobileActions, headerActionsHost)}
       {titleInHeader && !boardOpen ? null : <div className={styles.mobileTrackHeader}>
         <MobileHeader
@@ -466,6 +467,13 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         />
       </div>}
 
+      {!boardOpen && canReopenTrack && <div className={styles.continueNotice} role="note">
+        <span>这项工作已关闭，成果已保留。想继续修改？</span>
+        <AstryxButton label="重新打开并继续" variant="ghost" size="sm" isDisabled={closedPending}
+          onClick={() => {
+            void setTrackClosed('reopen').then((done) => { if (done) (onReply ?? onStartConversation)?.(); });
+          }}>重新打开并继续</AstryxButton>
+      </div>}
       <div className={styles.workspace}>
       <div
         className={styles.content}
@@ -549,6 +557,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
             aria-hidden={mobilePanelOpen ? true : undefined}
             inert={mobilePanelOpen}
           >
+          <GuideAnchor id="track-panel" disabled={conversationOpen || compactViewport}>{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.workCard}>
           <PanelCard className={styles.workCard}>
             <ContextFrame action={hasDesktopConversations ? undefined : cardsAction}>
               {hasDesktopConversations && <ContextGroup title="Conversations" secondaryAction={cardsAction}
@@ -563,6 +572,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
               </ContextGroup>}
             </ContextFrame>
           </PanelCard>
+          </div>}</GuideAnchor>
           </div>
         </aside>
       </div>

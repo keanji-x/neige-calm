@@ -1,6 +1,6 @@
 import { useThreadReadingView, type ThreadReadingView } from './reading-view.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
-import { floatingControlClassName, floatingControlMaterialClassName } from '../../../ui/floating-control/public.ts';
+import { floatingControlClassName, floatingControlMaterialClassName, GuideAnchor } from '../../../ui/floating-control/public.ts';
 import mobileStyles from './mobile-composer.module.css';
 import { markdownExcerpt } from '../../../../../core/markdown/public.ts';
 // The conversation itself: a transcript and the box you write into. The unit is the
@@ -655,8 +655,8 @@ export function ChatComposer({
   ) : undefined;
 
   return (
-    <div
-      ref={rootRef}
+    <GuideAnchor id="conversation-input" placement="top">{(anchor, describedBy) => <div
+      ref={(node) => { rootRef.current = node; anchor(node); }} aria-describedby={describedBy}
       className={`${styles.composer} ${layout === 'mobile' ? mobileStyles.composer : ''}`}
       data-nc-composer=""
       /* Programmatic focus only: the perch the send effect parks on so focus taken off a disabling Send is not on `<body>`. */
@@ -765,7 +765,7 @@ export function ChatComposer({
               onClick={() => { submit(draft); }} />}
         />
       </SizeMotion>
-    </div>
+    </div>}</GuideAnchor>
   );
 }
 

@@ -176,6 +176,7 @@ export type AppRouterDeps = Readonly<{
   prepareReport: ReportPreparationPort;
   recentFiles?: RecentFileHistory;
   uiPreferences?: UiPreferences;
+  initialWorkspaceGuide?: boolean;
 }>;
 
 function renderNothing(): null { return null; }
@@ -186,7 +187,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRoute({ component: () => (
     <UiPreferencesProvider preferences={preferences}><ReadReceiptsProvider transport={transport} unauthorized={unauthorized}>
-      <TrackViewProvider><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></TrackViewProvider>
+      <TrackViewProvider><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} initialWorkspaceGuide={deps.initialWorkspaceGuide} /></MobileConversationProvider></TrackViewProvider>
     </ReadReceiptsProvider></UiPreferencesProvider>
   ) });
 
@@ -292,11 +293,12 @@ export function createAppRouter(deps: AppRouterDeps) {
   });
 }
 
-function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {
+function ShellRoute({ transport, unauthorized, onSignOut, initialWorkspaceGuide }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void; initialWorkspaceGuide?: boolean }) {
   const go = useGo();
   return (
     <ConversationProvider><NewTrackDraftProvider>
       <AppShell
+        initialWorkspaceGuide={initialWorkspaceGuide}
         transport={transport}
         unauthorized={unauthorized}
         onOpenSettings={() => go({ name: 'settings' })}
@@ -1224,7 +1226,10 @@ function TrackRouteBody({
   );
   const reportFiles = useMemo(
     () => createTrackWorkspaceFilesPort(transport, unauthorized, track.id),
-    [track.id, transport, unauthorized],
+    // These identities invalidate mounted file reads after delivery, even when an HTML block's
+    // path and payload did not change. Unchanged query refetches preserve both identities.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Report and verdict changes are resource invalidation boundaries, not inputs to the transport adapter.
+    [track.id, transport, unauthorized, report, verdicts],
   );
   const [cardDraft, setCardDraft] = useState<CardAddMenuEntry | null>(null);
   const [creatingCard, setCreatingCard] = useState(false);
@@ -1412,7 +1417,7 @@ function TrackRouteBody({
             files={reportFiles}
             linkPreview={linkPreview}
             fileRoot={track.agentCwd}
-            wide={gridItems.length === 0}
+            wide={gridItems.length === 0 && !chat.isOpen}
             onClose={closeBoard}
             onFileOpened={(path) => { rememberReportFile({ path }); }}
             onOpenFileLink={openReportFile}

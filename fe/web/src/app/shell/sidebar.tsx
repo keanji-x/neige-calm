@@ -1,7 +1,7 @@
 import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
 // The workspace rail: shared groups with owner-defined membership and actions.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu } from '@astryxdesign/core/DropdownMenu';
 
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
@@ -28,6 +28,7 @@ import { AreaGroup } from './area-group.tsx';
 import { SidebarGroup, SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
 import { navigationRowClass as rowLayout } from '../../ui/navigation-row/public.ts';
+import { GuideAnchor } from '../../ui/floating-control/public.ts';
 
 export type SidebarProps = Readonly<{
   areas: readonly Area[];
@@ -49,6 +50,8 @@ export type SidebarProps = Readonly<{
   onOpenPlugins: () => void;
   /** The shell never signs out itself; the owner of the session does. */
   onSignOut: () => void;
+  onStartGuide?: () => void;
+  guideActive?: boolean;
   /** Owned by the shell: collapsing changes the shell grid, not just the rail. */
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -75,12 +78,23 @@ export function initialsOf(label: string): string {
 export function Sidebar({
   areas, tracksByArea, tracks, trackGroups: memberships, currentPath, onGo,
   onRequestCreateArea, onRequestEditArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
-  onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed,
+  onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed, onStartGuide, guideActive = false,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
   const preferences = useUiPreferences();
   const railRef = useRef<HTMLElement | null>(null);
+  const accountButtonRef = useRef<HTMLButtonElement | null>(null);
+  const areaGuideOpen = guideActive;
+  const previousAreaGuide = useRef(areaGuideOpen);
+  useLayoutEffect(() => {
+    const ended = previousAreaGuide.current && !areaGuideOpen;
+    previousAreaGuide.current = areaGuideOpen;
+    // Restoring a collapsed/hidden section can remove the guide's anchor.
+    if (ended && document.activeElement === document.body) {
+      accountButtonRef.current?.focus({ preventScroll: true });
+    }
+  }, [areaGuideOpen]);
   const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingAreaFocusRef = useRef<string | null>(null);
   const pendingOptionsFocusRef = useRef(false);
@@ -103,7 +117,7 @@ export function Sidebar({
   const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);
   const sectionVisible = (id: SidebarSectionId) => preferences.sidebarGroupVisible(id)
     && (id === 'areas' || id === 'unread' || id === 'running' || groups.find((group) => group.id === id)!.tracks.length > 0);
-  const shownSections = sectionOrder.filter(sectionVisible);
+  const shownSections = sectionOrder.filter(id => (id === 'areas' && guideActive) || sectionVisible(id));
   const areaOrder = preferences.sidebarOrder('areas', userAreas.map((area) => area.id));
   const orderedAreas = areaOrder.map((id) => userAreas.find((area) => area.id === id)!);
   const shownAreas = orderedAreas.filter((area) => preferences.sidebarGroupVisible(`area:${area.id}`));
@@ -151,7 +165,7 @@ export function Sidebar({
   // Reveal the current row when visible without undoing manual Area collapse.
   const activeAreaId = userTracks.find((track) => track.id === activeTrackId)?.areaId;
   const activeAreaExpanded = activeAreaId === undefined ? true : preferences.areaExpanded(activeAreaId);
-  const areasExpanded = preferences.sidebarGroupExpanded('areas');
+  const areasExpanded = guideActive || preferences.sidebarGroupExpanded('areas');
   useEffect(() => {
     if (collapsed || activeTrackId === null) return;
     railRef.current?.querySelector('[aria-current="page"]')
@@ -288,8 +302,10 @@ export function Sidebar({
             management={management(id, 'Group actions for Areas')}
             expanded={areasExpanded}
             onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
-            actions={<button type="button" data-nc-role="icon" className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}
-              aria-label="New area" onClick={onRequestCreateArea}><Icon name="plus" /></button>}>
+            actions={<GuideAnchor id="workspace-add" disabled={userAreas.length > 0}>
+              {(anchor, describedBy) => <button ref={anchor} aria-describedby={describedBy} type="button" data-nc-role="icon" className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}
+              aria-label="New area" onClick={onRequestCreateArea}><Icon name="plus" /></button>}
+            </GuideAnchor>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
               <button
                 type="button"
@@ -333,11 +349,12 @@ export function Sidebar({
         </>
       )}
 
-      <div className={styles.userRow}>
+      <GuideAnchor id="workspace-account">{(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.userRow}>
             <Menu
               items={[
                 { label: 'Settings', onSelect: onOpenSettings },
                 { label: 'Plugins', onSelect: onOpenPlugins },
+                ...(onStartGuide === undefined ? [] : [{ label: '入门引导', onSelect: onStartGuide }]),
                 { label: 'Sign out', onSelect: onSignOut },
               ]}
               wrapClassName={styles.menuWrap}
@@ -346,6 +363,7 @@ export function Sidebar({
               trigger={(triggerProps) => (
                 <button
                   {...triggerProps}
+                  ref={(element) => { accountButtonRef.current = element; triggerProps.ref(element); }}
                   type="button"
                   data-nc-role="icon"
                   className={styles.avatar}
@@ -355,7 +373,7 @@ export function Sidebar({
                 </button>
               )}
             />
-      </div>
+      </div>}</GuideAnchor>
 
       <ConfirmDialog
         open={trackConfirm.open}

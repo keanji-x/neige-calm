@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "tours": [
+    {
+      "id": "area",
+      "title": "项目设置",
+      "priority": 100,
+      "steps": [
+        {
+          "id": "area-defaults",
+          "target": "area-defaults",
+          "title": "项目目录与默认工作流",
+          "description": "Name 填项目名称。Template 和 Folder 会带入新工作：已有仓库选它的目录；Neige workspace 会为新工作创建目录。这些默认值以后仍可修改。",
+          "advance": "next"
+        }
+      ],
+      "exclusive": true,
+      "requires": []
+    },
+    {
+      "id": "create-track",
+      "title": "发起一项工作",
+      "priority": 90,
+      "steps": [
+        {
+          "id": "track-options-collapsed",
+          "target": "track-options-collapsed",
+          "title": "先展开工作选项",
+          "description": "点输入框左下角的 …，里面是 Template（工作流）和 Folder（项目目录）。首次可沿用默认值；Development 会验证并保存 Git 提交，也可按授权发 PR；Small change 适合不需要 Git 交付的直接修改。",
+          "advance": "activate"
+        },
+        {
+          "id": "track-options",
+          "target": "track-options",
+          "title": "确认工作方式和项目目录",
+          "description": "Template 决定工作流程，Folder 决定在哪个仓库执行。可直接沿用项目默认值；Development 会验证并保存 Git 提交，也可按授权发 PR；Small change 适合不需要 Git 交付的直接修改。",
+          "advance": "next"
+        },
+        {
+          "id": "template-choices",
+          "target": "template-choices",
+          "title": "按目标选择工作流",
+          "description": "这里是可用模板及其用途。选中后会展示具体步骤和需要填写的信息。模板可以切换；不需要先研究所有配置。",
+          "advance": "activate"
+        },
+        {
+          "id": "track-request",
+          "target": "track-request",
+          "title": "写下第一项需求",
+          "description": "描述你希望改什么，以及怎样算完成，再点发送箭头创建 Track。它保存这一项工作的对话与报告。模型和角色可以先用默认值，无需先在 Tools 中添加 AI 工具。",
+          "advance": "next"
+        }
+      ],
+      "exclusive": true,
+      "requires": [
+        "has-projects"
+      ]
+    },
+    {
+      "id": "conversation",
+      "title": "继续对话",
+      "priority": 80,
+      "steps": [
+        {
+          "id": "conversation-input",
+          "target": "conversation-input",
+          "title": "在这里提出修改或回答问题",
+          "description": "在当前工作的对话里，写清下一步需求或回答问题再发送。若这项工作已关闭，先点「重新打开并继续」。模型、附件和权限选项可以先用默认值；独立的新需求请返回项目列表，用 ＋ 新建一项工作。",
+          "advance": "next"
+        }
+      ],
+      "exclusive": true,
+      "requires": [
+        "has-work"
+      ]
+    },
+    {
+      "id": "settings",
+      "title": "配置环境",
+      "priority": 70,
+      "steps": [
+        {
+          "id": "settings-plugins",
+          "target": "settings-plugins",
+          "title": "按需要启用工作流能力",
+          "description": "插件为模板和工具提供能力。仅在所选工作流提示缺少插件时再来配置；不用为了开始第一项需求安装全部插件。修改前可先查看插件的说明与配置。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-planners",
+          "target": "settings-planners",
+          "title": "使用已有 AI 编程工具",
+          "description": "这里管理 AI 提供方的连接与可用状态。如果创建工作时提示工具不可用，请根据这里的状态完成登录或配置；引导本身不会提交 AI 请求。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-network",
+          "target": "settings-network",
+          "title": "配置 AI 网络与设备连接",
+          "description": "模型连接需要代理时，在这里填写并保存。等当前工作结束后，用原启动方式重启 Neige，再到 Planners 点 Recheck 确认 Ready。仅连接其他设备时，可按需配对。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-appearance",
+          "target": "settings-appearance",
+          "title": "调整当前设备的显示",
+          "description": "这里设置外观。它只影响当前设备的显示，不会修改项目、工作流或其他设备的设置。",
+          "advance": "next"
+        },
+        {
+          "id": "settings-about",
+          "target": "settings-about",
+          "title": "检查当前版本",
+          "description": "这里显示应用版本与构建信息。排查连接或界面问题时，可以将这些信息提供给维护者。",
+          "advance": "next"
+        }
+      ],
+      "exclusive": true,
+      "requires": []
+    },
+    {
+      "id": "track",
+      "title": "理解这项工作",
+      "priority": 50,
+      "steps": [
+        {
+          "id": "track-actions",
+          "target": "track-actions",
+          "title": "继续当前工作，还是新开一项？",
+          "description": "点击「讨论这项工作」继续提出修改需求；若已关闭，先点「重新打开并继续」。手机底部输入框也可发消息。独立的新需求，请从项目列表的 ＋ 新建一项工作。",
+          "advance": "activate"
+        },
+        {
+          "id": "track-report",
+          "target": "track-report",
+          "title": "进展和成果都汇总在这里",
+          "description": "概要记录这项工作的目标；待你定的事项需要你在对话里回答，已完成部分汇总结果。报告会随工作更新，不用自己从所有消息里整理进展。",
+          "advance": "next"
+        },
+        {
+          "id": "track-panel",
+          "target": "track-panel",
+          "title": "当前工作的对话与进展",
+          "description": "这里汇总本项工作的对话、正在执行的任务和相关资料。点击对话继续讨论，展开任务查看进度；Related 中可找回文件与引用。添加工具按需使用，开始开发不需要先配置。",
+          "advance": "next"
+        },
+        {
+          "id": "preview-open",
+          "target": "preview-open",
+          "title": "打开成果预览",
+          "description": "嵌入区域可直接查看页面、HTML 或图片。点 Open 打开完整预览；要修改成果，回到本项工作的对话描述需求；已关闭时先点「重新打开并继续」。",
+          "advance": "activate"
+        }
+      ],
+      "exclusive": false,
+      "requires": [
+        "has-work"
+      ]
+    },
+    {
+      "id": "workspace",
+      "title": "认识工作区",
+      "priority": 20,
+      "steps": [
+        {
+          "id": "workspace-projects",
+          "target": "workspace-projects",
+          "title": "先选择要继续的项目",
+          "description": "Area 是项目，里面的每个 Track 是一项工作。先点项目名称：可打开已有工作，或点下一层的 ＋ 发起独立的新需求。已有项目不需要再创建一个 Area。",
+          "advance": "activate"
+        },
+        {
+          "id": "workspace-add",
+          "target": "workspace-add",
+          "title": "先添加一个项目 Area",
+          "description": "Area 是一个项目的容器，下面每一行 Track 是这个项目的一项工作。点这个 ＋ 添加 Area，然后选择项目目录和默认工作流。",
+          "advance": "activate"
+        },
+        {
+          "id": "workspace-new-track",
+          "target": "workspace-new-track",
+          "title": "给这个项目发起一项工作",
+          "description": "点 Area 名称旁的 ＋ 创建 Track，例如修改首页或修一个问题。一个 Area 可以有多项独立工作；点击下面已有的 Track 可继续之前的工作。",
+          "advance": "activate"
+        },
+        {
+          "id": "workspace-new-track-compact",
+          "target": "workspace-new-track-compact",
+          "title": "给这个项目发起一项工作",
+          "description": "点右下角的 ＋ 创建 Track：它代表这个项目里的一项独立需求。打开列表中已有的工作，则是继续之前的需求。",
+          "advance": "activate"
+        },
+        {
+          "id": "workspace-account",
+          "target": "workspace-account",
+          "title": "设置与引导入口",
+          "description": "头像菜单可打开设置、插件管理，也能重新开始入门引导。已有项目不会自动弹出整套教学；随时可以跳过，之后按需重看。",
+          "advance": "next"
+        }
+      ],
+      "exclusive": false,
+      "requires": []
+    }
+  ]
+}

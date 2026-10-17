@@ -1,0 +1,25 @@
+@layer ui {
+  .hint {
+    box-sizing: border-box;
+    inset: auto;
+    inline-size: min(18rem, calc(100dvw - var(--space-6)));
+    margin: 0;
+    padding: var(--space-4);
+    border: 0;
+    border-radius: var(--radius-md);
+    overflow: visible;
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+    color: var(--text-2);
+    font: var(--type-content);
+    letter-spacing: var(--type-content-tracking);
+  }
+  .title { display: block; color: var(--text); font-weight: var(--weight-medium); }
+  .description { margin-block: var(--space-2) var(--space-3); }
+  .reserved { display: flex; flex: none; flex-direction: column; }
+  .controls { display: flex; gap: var(--space-1); align-items: center; }
+  .unreserved, .unreserved > .controls { display: contents; }
+  .progress { display: block; margin-block-end: var(--space-2); color: var(--text-3); font: var(--type-label); }
+  .actions { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
+  .arrow { pointer-events: none; }
+}

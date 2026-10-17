@@ -19,6 +19,13 @@
     margin-inline-start: auto;
   }
 
+  .guided {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .guided .pills { align-items: flex-start; }
+
   .notice {
     font-size: var(--font-step-1-size);
     line-height: var(--font-step-1-line);
