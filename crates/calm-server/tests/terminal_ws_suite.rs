@@ -4,6 +4,8 @@ mod planner_terminal;
 mod terminal_action_observation;
 #[path = "cases/terminal_card_endpoint.rs"]
 mod terminal_card_endpoint;
+#[path = "cases/terminal_registered_launch.rs"]
+mod terminal_registered_launch;
 #[path = "cases/terminal_input_control.rs"]
 mod terminal_input_control;
 #[path = "cases/terminal_lifecycle.rs"]
