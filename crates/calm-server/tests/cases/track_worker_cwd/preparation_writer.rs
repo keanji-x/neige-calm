@@ -359,7 +359,8 @@ async fn obsolete_worker_task_or_allocation_publishes_no_prepared_rows() {
             });
             barrier.wait().await;
             let task = current(&fx.boot, "obsolete-race").await;
-            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.pool())
+            let pool = fx.pool();
+            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
                 .await
                 .unwrap();
             if change == "context" {
