@@ -2,7 +2,8 @@
 
 The router owns a tab-local snapshot per Track. A plain selection of another
 Track resumes its report, desktop-panel and grid scroll offsets, plus its
-card/file/mobile-panel destination. Conversation selection continues to use the
+card/file/mobile-panel destination and Progress disclosure. Progress starts folded;
+manual expansion or collapse resumes independently for each Track. Conversation selection continues to use the
 existing UiPreferencesProvider, including explicit close and reload behavior.
 Leaving still unmounts the route and releases its card hosts and subscriptions.
 SessionGate unmounts the router tree on sign-out; snapshots do not survive it or

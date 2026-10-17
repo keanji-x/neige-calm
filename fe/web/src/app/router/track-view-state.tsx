@@ -7,6 +7,7 @@ import type { TrackSearch } from './track-search.ts';
 type Offset = Readonly<{ top: number; left: number }>;
 type TrackView = {
   search: TrackSearch;
+  progressOpen: boolean;
   scroll: Map<string, Offset>;
 };
 
@@ -18,7 +19,7 @@ function createTrackViews() {
     ensure: (id: string) => {
       let view = views.get(id);
       if (view === undefined) {
-        view = { search: {}, scroll: new Map() };
+        view = { search: {}, scroll: new Map(), progressOpen: false };
         views.set(id, view);
       }
       return view;
@@ -47,6 +48,7 @@ export function useTrackReportCache() {
 /** Detail/search are current immediately; report geometry waits for its committed content. */
 export function useTrackViewState(trackId: string, reportReady: boolean) {
   const views = useTrackViews();
+  const [progressOpen, setProgressOpen] = useState(() => views?.get(trackId)?.progressOpen ?? false);
   const search = useRouterState({ select: (state) => state.location.search as TrackSearch });
   const hash = useRouterState({ select: (state) => state.location.hash });
   const resumeBoard = useRouterState({ select: (state) => state.location.state.ncResumeTrackView === true });
@@ -59,6 +61,10 @@ export function useTrackViewState(trackId: string, reportReady: boolean) {
   useTrackScrollPort(views, trackId, 'page', reportReady, hash, resumeBoard);
   useTrackScrollPort(views, trackId, 'panel', true, hash, resumeBoard);
   useTrackScrollPort(views, trackId, 'board', true, hash, resumeBoard);
+  return { open: progressOpen, onOpenChange: (open: boolean) => {
+    if (views !== null) views.ensure(trackId).progressOpen = open;
+    setProgressOpen(open);
+  } };
 }
 
 type ScrollPort = 'page' | 'panel' | 'board';

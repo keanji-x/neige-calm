@@ -1009,7 +1009,7 @@ function TrackRouteBody({
   prepareReport: ReportPreparationPort;
 }) {
   const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
-  useTrackViewState(track.id, reportPresentation.presentable);
+  const progressDisclosure = useTrackViewState(track.id, reportPresentation.presentable);
   // The same key and comparison point the rail uses: the overlay's completion
   // high-water mark, never the row's `updatedAt`.
   // A completed navigation also acknowledges a repeated selection of this already rendered Track.
@@ -1378,6 +1378,7 @@ function TrackRouteBody({
     <>
     <TrackStage>
     <TrackPage
+      progressDisclosure={progressDisclosure}
       panelContent={panelContent}
       mobileReportIntro={mobileReportIntro}
       mobilePanelObscured={chat.isOpen || sourceOpen}
