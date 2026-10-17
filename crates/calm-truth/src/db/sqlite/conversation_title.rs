@@ -91,9 +91,10 @@ pub(super) async fn context(
             runtimes: Default::default(),
         });
     }
-    // A deferred read transaction pins the snapshot on the first candidate SELECT.
-    // Keep every candidate batch and the runtime query on this connection.
-    let mut tx = repo.pool().begin().await?;
+    // Claim writer eligibility before any SELECT: shared-cache readers must not
+    // hold a table lock while waiting on an existing writer on another table.
+    // This serializes metadata with writers until all local reads commit.
+    let mut tx = super::begin_immediate_tx(repo.pool()).await?;
     let sources = sources_on_connection(&mut tx, ids).await?;
     let runtimes =
         super::session_projection::runtime_get_projectable_for_cards_on_connection(&mut tx, ids)
