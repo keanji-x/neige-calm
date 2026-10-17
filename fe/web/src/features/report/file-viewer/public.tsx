@@ -98,7 +98,7 @@ export function ReportFileViewer({
               <button type="button" className={styles.view} aria-pressed={pageView === 'source'} onClick={() => { setPageView('source'); }}>Source</button>
             </div>
             {pageView === 'page'
-              ? <ReportHtmlFrame url={resource.url} title={resource.path} />
+              ? <ReportHtmlFrame key={resource.text} url={resource.url} title={resource.path} />
               : <div className={styles.pageSource} data-nc-report-file-source=""><ReadOnlyCode text={resource.text} source={{ kind: 'filename', value: resource.path }} /></div>}
           </div>
         )}

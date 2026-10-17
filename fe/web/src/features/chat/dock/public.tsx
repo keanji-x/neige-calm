@@ -1,4 +1,4 @@
-import { floatingControlClassName } from '../../../ui/floating-control/public.ts';
+import { floatingControlClassName, GuideAnchor } from '../../../ui/floating-control/public.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './dock.module.css';
 
@@ -10,7 +10,7 @@ export function ChatDock({ text, onChange, onSend, disabled, onBeginInput }: Rea
   onBeginInput: () => void;
   disabled: boolean;
 }>) {
-  return <form className={`${styles.bar} ${floatingControlClassName}`} aria-label="Quick chat" data-nc-chat-dock="" tabIndex={-1} onSubmit={(event) => {
+  return <GuideAnchor id="track-actions" placement="top">{(anchor, describedBy) => <form ref={anchor} aria-describedby={describedBy} className={`${styles.bar} ${floatingControlClassName}`} aria-label="Quick chat" data-nc-chat-dock="" tabIndex={-1} onSubmit={(event) => {
     event.preventDefault();
     if (!disabled && text.trim() !== '') onSend(text);
   }}>
@@ -19,5 +19,5 @@ export function ChatDock({ text, onChange, onSend, disabled, onBeginInput }: Rea
     <button type="submit" className={styles.send} aria-label="Send chat message" disabled={disabled || text.trim() === ''}>
       <Icon name="arrow-up" />
     </button>
-  </form>;
+  </form>}</GuideAnchor>;
 }

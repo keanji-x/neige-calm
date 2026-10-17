@@ -168,6 +168,8 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
 export type CardRuntime = Readonly<{ registry: CardRegistry; host: CardHost }>;
 
 export type AppRouterDeps = Readonly<{
+  onOpenDemo?: () => void;
+  workspaceFiles?: (trackId: string) => import('../../../../core/domain/fs.ts').WorkspaceFilePort;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   client: QueryClient;
@@ -176,6 +178,7 @@ export type AppRouterDeps = Readonly<{
   prepareReport: ReportPreparationPort;
   recentFiles?: RecentFileHistory;
   uiPreferences?: UiPreferences;
+  initialWorkspaceGuide?: boolean;
 }>;
 
 function renderNothing(): null { return null; }
@@ -186,7 +189,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRoute({ component: () => (
     <UiPreferencesProvider preferences={preferences}><ReadReceiptsProvider transport={transport} unauthorized={unauthorized}>
-      <TrackViewProvider><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></TrackViewProvider>
+      <TrackViewProvider><MobileConversationProvider><ShellRoute onOpenDemo={deps.onOpenDemo} transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} initialWorkspaceGuide={deps.initialWorkspaceGuide} /></MobileConversationProvider></TrackViewProvider>
     </ReadReceiptsProvider></UiPreferencesProvider>
   ) });
 
@@ -201,7 +204,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody workspaceFiles={deps.workspaceFiles} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           adminGrantedAt={detail.track.admin_granted_at} canAdminTrack={detail.can_admin}
@@ -220,6 +223,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     path: '/track/$trackId',
     validateSearch: (search: Record<string, unknown>): TrackSearch => validateTrackSearch(search),
     component: () => <TrackRoute
+      workspaceFiles={deps.workspaceFiles}
       prepareReport={prepareReport}
       transport={transport}
       unauthorized={unauthorized}
@@ -292,11 +296,13 @@ export function createAppRouter(deps: AppRouterDeps) {
   });
 }
 
-function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {
+function ShellRoute({ transport, unauthorized, onSignOut, initialWorkspaceGuide, onOpenDemo }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void; initialWorkspaceGuide?: boolean; onOpenDemo?: () => void }) {
   const go = useGo();
   return (
     <ConversationProvider><NewTrackDraftProvider>
       <AppShell
+        onOpenDemo={onOpenDemo}
+        initialWorkspaceGuide={initialWorkspaceGuide}
         transport={transport}
         unauthorized={unauthorized}
         onOpenSettings={() => go({ name: 'settings' })}
@@ -901,7 +907,8 @@ function useConversationPane(
   };
 }
 
-function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles, prepareReport }: {
+function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles, prepareReport, workspaceFiles }: {
+  workspaceFiles?: AppRouterDeps['workspaceFiles'];
   prepareReport: ReportPreparationPort;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -943,6 +950,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles, prepare
 
   return (
     <TrackRouteBody
+      workspaceFiles={workspaceFiles}
       key={track.id}
       prepareReport={prepareReport}
       transport={transport}
@@ -980,8 +988,9 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro, prepareReport,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro, prepareReport, workspaceFiles,
 }: {
+  workspaceFiles?: AppRouterDeps['workspaceFiles'];
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
@@ -1223,8 +1232,11 @@ function TrackRouteBody({
     [transport, unauthorized],
   );
   const reportFiles = useMemo(
-    () => createTrackWorkspaceFilesPort(transport, unauthorized, track.id),
-    [track.id, transport, unauthorized],
+    () => workspaceFiles === undefined ? createTrackWorkspaceFilesPort(transport, unauthorized, track.id) : workspaceFiles(track.id),
+    // These identities invalidate mounted file reads after delivery, even when an HTML block's
+    // path and payload did not change. Unchanged query refetches preserve both identities.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Report and verdict changes are resource invalidation boundaries, not inputs to the transport adapter.
+    [track.id, transport, unauthorized, report, verdicts, workspaceFiles],
   );
   const [cardDraft, setCardDraft] = useState<CardAddMenuEntry | null>(null);
   const [creatingCard, setCreatingCard] = useState(false);
@@ -1412,7 +1424,7 @@ function TrackRouteBody({
             files={reportFiles}
             linkPreview={linkPreview}
             fileRoot={track.agentCwd}
-            wide={gridItems.length === 0}
+            wide={gridItems.length === 0 && !chat.isOpen}
             onClose={closeBoard}
             onFileOpened={(path) => { rememberReportFile({ path }); }}
             onOpenFileLink={openReportFile}

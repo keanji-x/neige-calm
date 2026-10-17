@@ -36,6 +36,7 @@ import { createRecentFileHistory } from '../providers/recent-files.ts';
 import { createCardHost, createCardRegistry } from '../../systems/cards/public.js';
 import { bootCards } from '../cards.ts';
 import { BundledConnectionNotice, BundledLoginPage } from './bundled-connection.tsx';
+import { ONBOARDING_DEMO_URL } from '../onboarding-entry.ts';
 
 export function ProductionApp({ transport, unauthorized, client, runtime, cursorStore, router, renderEventBridge,
   renderLogin, renderError, recovery }: Readonly<{
@@ -104,6 +105,8 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     clear: () => clearSessionArtifacts(client, cursorStore, runtime), online: () => navigator.onLine, visible: () => !document.hidden,
   }, { input: takeScanInput(window, window.location.origin, Date.now()), pairing: createScanPairingPort(base) }) : undefined;
   const router = createAppRouter({
+    onOpenDemo: () => window.location.assign(ONBOARDING_DEMO_URL),
+    initialWorkspaceGuide: new URLSearchParams(window.location.search).get('onboarding') === 'workspace',
     prepareReport: (report, signal) => runWorkerTask<TrackReport | null, PreparedReport>(
       () => new Worker(new URL('../../features/report/document/preparation.worker.ts', import.meta.url), { type: 'module' }), report, signal),
     transport,

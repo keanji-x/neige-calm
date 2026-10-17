@@ -225,3 +225,51 @@ it('isolates Area pins by database and user while surviving restart', () => {
   preferences.setAreaTrackPinned('area', 't', true);
   expect(preferences.areaTrackPinned('area', 't')).toBe(false);
 });
+
+it('remembers guide enrollment and steps per stable database and revision', () => {
+  const storage = memoryStorage();
+  const first = createUiPreferences(storage);
+  first.setGuideEnabled(true); // Unconfirmed identity writes nothing.
+  expect(storage.values.size).toBe(0);
+  first.setDatabaseScope('first'); first.setGuideEnabled(true); first.setGuideStepSeen(1, 'options', true);
+  const restored = createUiPreferences(storage); restored.setDatabaseScope('first');
+  expect(restored.guideEnabled()).toBe(true);
+  expect(restored.guideStepSeen(1, 'options')).toBe(true);
+  expect(restored.guideStepSeen(2, 'options')).toBe(false);
+  restored.setDatabaseScope('second');
+  expect(restored.guideEnabled()).toBe(null);
+  expect(restored.guideStepSeen(1, 'options')).toBe(false);
+  restored.setDatabaseScope('first'); restored.setGuideEnabled(false);
+  expect(first.guideEnabled()).toBe(true); // Independent stores refresh on the next boot.
+  const skipped = createUiPreferences(storage); skipped.setDatabaseScope('first');
+  expect(skipped.guideEnabled()).toBe(false);
+});
+
+it('keeps guide browser choices across recovery boots and separates user namespaces', () => {
+  const preferences = createUiPreferences(memoryStorage());
+  preferences.setDatabaseScope('db');
+  preferences.setRecoveryScope(JSON.stringify(['https://example.test', 'one', 'boot-a']));
+  preferences.setGuideEnabled(true); preferences.setGuideStepSeen(1, 'options', true);
+  preferences.setRecoveryScope(JSON.stringify(['https://example.test', 'one', 'boot-b']));
+  expect(preferences.guideStepSeen(1, 'options')).toBe(true);
+  preferences.setRecoveryScope(JSON.stringify(['https://example.test', 'two', 'boot-b']));
+  expect(preferences.guideEnabled()).toBe(null);
+  expect(preferences.guideStepSeen(1, 'options')).toBe(false);
+});
+
+it('accepts a guide commit only for the live scope and publishes its fields together', () => {
+  const preferences = createUiPreferences(); preferences.setDatabaseScope('first');
+  const first = preferences.guideScope()!;
+  preferences.setDatabaseScope(null);
+  expect(preferences.commitGuideProgress(first, { version: 1, reset: [], seen: ['options'], enabled: true })).toBe(false);
+  preferences.setDatabaseScope('second');
+  expect(preferences.commitGuideProgress(first, { version: 1, reset: [], seen: ['options'], enabled: true })).toBe(false);
+  expect(preferences.guideStepSeen(1, 'options')).toBe(false);
+  const second = preferences.guideScope()!;
+  const observed: Array<readonly [boolean | null, boolean]> = [];
+  preferences.subscribe(() => observed.push([preferences.guideEnabled(), preferences.guideStepSeen(1, 'options')]));
+  expect(preferences.commitGuideProgress(second, { version: 1, reset: ['options'], seen: ['options'], enabled: true })).toBe(true);
+  expect(observed).toEqual([[true, true]]);
+  preferences.setRecoveryScope(JSON.stringify(['https://example.test', 'other-user', 'boot']));
+  expect(preferences.commitGuideProgress(second, { version: 1, reset: [], seen: ['options'], enabled: true })).toBe(false);
+});

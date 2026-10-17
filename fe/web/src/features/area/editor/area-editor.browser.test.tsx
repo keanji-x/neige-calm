@@ -30,6 +30,9 @@ it('renders both pills and both actions as one compact borderless row', async ()
     </Dialog>,
   );
   const template = screen.getByRole('button', { name: 'Default template: No template' });
+  const nameBox = screen.getByRole('textbox', { name: 'Name' }).getBoundingClientRect();
+  const dialogBox = screen.getByRole('dialog', { name: 'New area' }).getBoundingClientRect();
+  expect(nameBox.width).toBeGreaterThan(dialogBox.width * 0.8);
   const folder = screen.getByRole('button', { name: 'Default folder: Neige workspace' });
   for (const pill of [template, folder]) {
     const style = getComputedStyle(pill);
@@ -81,6 +84,9 @@ it('wraps safely at phone width while keeping Cancel and Save together', async (
   const cancelBox = screen.getByRole('button', { name: 'Cancel' }).getBoundingClientRect();
   const saveBox = screen.getByRole('button', { name: 'Save changes' }).getBoundingClientRect();
   const clear = screen.getByRole('button', { name: 'Use a new Neige workspace' });
+  const folderBox = screen.getByRole('button', { name: 'Default folder: /srv/a-folder-with-a-very-long-name' }).getBoundingClientRect();
+  const clearBox = clear.getBoundingClientRect();
+  expect(Math.abs((folderBox.top + folderBox.height / 2) - (clearBox.top + clearBox.height / 2))).toBeLessThan(1);
   expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth + 1);
   expect(Math.abs((cancelBox.top + cancelBox.height / 2) - (saveBox.top + saveBox.height / 2)))
     .toBeLessThan(1);
