@@ -179,7 +179,9 @@ async fn worker_reap_dead_pty_running_converged() {
         .await
         .unwrap()
         .unwrap();
-    calm_server::terminal_sweeper::reap_terminal_artifacts(&h.state, &term).await;
+    calm_server::terminal_sweeper::reap_terminal_artifacts(&h.state, &term)
+        .await
+        .unwrap();
     await_terminal_exit(&h, &p.terminal).await;
     await_pid_gone(p.pid).await;
     assert_eq!(session_row(&h, &p.session).await.0, "running");
@@ -644,7 +646,9 @@ async fn worker_reap_dead_codex_interrupts_only_owner_once() {
         .await
         .unwrap()
         .unwrap();
-    calm_server::terminal_sweeper::reap_terminal_artifacts(&h.state, &term).await;
+    calm_server::terminal_sweeper::reap_terminal_artifacts(&h.state, &term)
+        .await
+        .unwrap();
     await_terminal_exit(&h, &p.terminal).await;
     await_pid_gone(p.pid).await;
     assert_eq!(session_row(&h, &p.session).await.0, "running");

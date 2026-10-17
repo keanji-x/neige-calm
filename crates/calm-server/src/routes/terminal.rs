@@ -83,7 +83,7 @@ pub(crate) async fn spawn_terminal_with_parts(
         .map_err(|error| CalmError::Internal(error.to_string()))
 }
 
-async fn attach_original_registered(
+pub(crate) async fn attach_original_registered(
     daemon: &DaemonClient,
     renderer: &TerminalRendererRegistry,
     repo: &dyn RouteRepo,

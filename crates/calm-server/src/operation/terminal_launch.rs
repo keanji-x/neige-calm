@@ -8,38 +8,6 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 pub(crate) mod registered;
 
-/// Launch ownership is committed by this owner while a feature callback runs.
-/// Later operation settlement must retain that same original capability, even
-/// when the callback began with an earlier domain-output snapshot.
-pub(super) fn retain_owned_metadata(proposed: &mut Value, current: &Value) -> Result<()> {
-    if let Some(original) = current.get("registered_execution") {
-        if proposed
-            .get("registered_execution")
-            .is_some_and(|value| value != original)
-        {
-            return Err(CalmError::Conflict(
-                "original registered launch cannot be replaced by operation settlement".into(),
-            ));
-        }
-        proposed
-            .as_object_mut()
-            .ok_or_else(|| CalmError::Conflict("prepared operation data is not an object".into()))?
-            .insert("registered_execution".into(), original.clone());
-    } else if proposed.get("registered_execution").is_some() {
-        return Err(CalmError::Conflict(
-            "operation settlement cannot mint a registered launch".into(),
-        ));
-    }
-    // Released one-use worker launch bytes retain their existing owner and codec.
-    if let Some(original) = current.get("terminal_launch") {
-        proposed
-            .as_object_mut()
-            .ok_or_else(|| CalmError::Conflict("prepared operation data is not an object".into()))?
-            .insert("terminal_launch".into(), original.clone());
-    }
-    Ok(())
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum RequestState {

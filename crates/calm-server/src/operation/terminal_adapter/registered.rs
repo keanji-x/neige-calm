@@ -6,9 +6,8 @@ use crate::{
     db::sqlite::begin_immediate_tx,
     error::{CalmError, Result},
     operation::{
-        Operation, SpawnCtx, SpawnHandle, TxOutput,
-        admission::require_live_claim_tx,
-        terminal_launch::registered::{self, RegisteredRequest},
+        Operation, SpawnCtx, SpawnHandle, TxOutput, admission::require_live_claim_tx,
+        execution_request, terminal_launch::registered,
     },
     state::TerminalExecutionTransport,
 };
@@ -24,7 +23,8 @@ pub(super) async fn spawn(
             "original Terminal requires its configured registered executor".into(),
         ));
     };
-    if RegisteredRequest::read(&output.data)?.is_none() {
+    let original_request = execution_request::load(ctx.repo.as_ref(), op).await?;
+    if original_request.is_none() {
         let pool = ctx.operation_repo.sqlite_pool();
         let mut tx = begin_immediate_tx(&pool).await?;
         require_live_claim_tx(&mut tx, op).await?;
@@ -44,7 +44,7 @@ pub(super) async fn spawn(
             "Terminal prepared subject differs from its original acceptance".into(),
         ));
     }
-    let specification = match RegisteredRequest::read(&output.data)? {
+    let specification = match original_request {
         Some(original) => original.request.specification,
         None => crate::routes::terminal::terminal_execution_specification(
             &output.output_string("program", "terminal")?,

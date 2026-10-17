@@ -15,7 +15,7 @@ use calm_server::{
     auth::{self, AuthConfig, AuthState},
     db::{prelude::*, sqlite::SqlxRepo},
     event::EventBus,
-    model::{NewArea, NewTrack},
+    model::{NewArea, NewTrack, Terminal},
     plugin_host::{PluginHost, PluginRegistry},
     state::{AppState, CodexClient, DaemonClient, WriteContext},
 };
@@ -292,18 +292,20 @@ impl Fixture {
         })
     }
 
-    async fn exercise(&mut self) -> anyhow::Result<()> {
-        let response = self.app.clone().oneshot(
-            Request::builder().method("POST")
-                .uri(format!("/api/tracks/{}/terminal-cards", self.track))
-                .header("content-type", "application/json").header("cookie", &self.cookie)
-                .header("Idempotency-Key", "terminal-vertical-existing-worktree")
-                .body(Body::from(json!({
-                    "program": format!("'{}'", self.program.to_str().unwrap().replace('\'', "'\\''")),
-                    "env":{"NEIGE_TERMINAL_VERTICAL_OUTPUT":self.output,"NEIGE_TERMINAL_VERTICAL_COUNT":self.count},
-                    "theme":calm_server::routes::theme::RequestTheme::default_dark(),
-                }).to_string()))?,
-        ).await?;
+    async fn post_terminal(&self, key: Option<&str>) -> anyhow::Result<(Value, Terminal)> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/tracks/{}/terminal-cards", self.track))
+            .header("content-type", "application/json")
+            .header("cookie", &self.cookie);
+        if let Some(key) = key {
+            request = request.header("Idempotency-Key", key);
+        }
+        let response = self.app.clone().oneshot(request.body(Body::from(json!({
+            "program": format!("'{}'", self.program.to_str().unwrap().replace('\'', "'\\''")),
+            "env":{"NEIGE_TERMINAL_VERTICAL_OUTPUT":self.output,"NEIGE_TERMINAL_VERTICAL_COUNT":self.count},
+            "theme":calm_server::routes::theme::RequestTheme::default_dark(),
+        }).to_string()))?).await?;
         let status = response.status();
         let body: Value =
             serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
@@ -312,11 +314,18 @@ impl Fixture {
             "terminal HTTP failed before launch: {status} {body}"
         );
         let card = body["id"].as_str().context("created card has no id")?;
-        let term = self
+        let terminal = self
             .sql
             .terminal_get_by_card(card)
             .await?
             .context("no created terminal")?;
+        Ok((body, terminal))
+    }
+
+    async fn exercise(&mut self) -> anyhow::Result<()> {
+        let (_, term) = self
+            .post_terminal(Some("terminal-vertical-existing-worktree"))
+            .await?;
         let reported = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 match std::fs::read_to_string(&self.output) {
@@ -408,6 +417,113 @@ impl Fixture {
         Ok(())
     }
 
+    async fn exercise_source_lifetime(&self) -> anyhow::Result<()> {
+        let (card, first) = self.post_terminal(None).await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if std::fs::read_to_string(&self.count).ok().as_deref() == Some("executed\n") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("first actual Terminal program did not run exactly once")?;
+        let operation: String =
+            sqlx::query_scalar("SELECT launch_operation_id FROM terminals WHERE id=?1")
+                .bind(&first.id)
+                .fetch_one(self.sql.pool())
+                .await?;
+        let request_json: String = sqlx::query_scalar(
+            "SELECT execution_request_json FROM operations WHERE id=?1 AND idempotency_key IS NULL",
+        )
+        .bind(&operation)
+        .fetch_one(self.sql.pool())
+        .await?;
+        let first_request: PrepareExecution = serde_json::from_value(
+            serde_json::from_str::<Value>(&request_json)?["request"].clone(),
+        )?;
+        let source_before: String =
+            sqlx::query_scalar("SELECT registration_intent_json FROM workspace_execution_sources")
+                .fetch_one(self.sql.pool())
+                .await?;
+        let deletion = sqlx::query("DELETE FROM operations WHERE id=?1")
+            .bind(&operation)
+            .execute(self.sql.pool())
+            .await
+            .err()
+            .context("a live Terminal must retain its actual original request")?;
+        ensure!(
+            deletion.to_string().contains("FOREIGN KEY"),
+            "original request retention failed for a different reason: {deletion}"
+        );
+        // Product deletion uses the original executor capability and requires
+        // positive scope settlement before removing the Terminal relationship.
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/cards/{}", card["id"].as_str().unwrap()))
+                    .header("cookie", &self.cookie)
+                    .body(Body::empty())?,
+            )
+            .await?;
+        let status = response.status();
+        let bytes = response.into_body().collect().await?.to_bytes();
+        ensure!(
+            status == axum::http::StatusCode::NO_CONTENT,
+            "product Terminal deletion did not settle its scope: {status} {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        ensure!(
+            sqlx::query("DELETE FROM operations WHERE id=?1")
+                .bind(&operation)
+                .execute(self.sql.pool())
+                .await?
+                .rows_affected()
+                == 1,
+            "settled unkeyed operation was not deletable"
+        );
+        let (_, second) = self.post_terminal(None).await?;
+        let second_json: String = sqlx::query_scalar("SELECT o.execution_request_json FROM operations o JOIN terminals t ON t.launch_operation_id=o.id WHERE t.id=?1")
+            .bind(&second.id).fetch_one(self.sql.pool()).await?;
+        let second_request: PrepareExecution = serde_json::from_value(
+            serde_json::from_str::<Value>(&second_json)?["request"].clone(),
+        )?;
+        ensure!(
+            first_request.identity.execution_id != second_request.identity.execution_id,
+            "second Terminal reused the first execution"
+        );
+        ensure!(
+            first_request.identity.source_incarnation == second_request.identity.source_incarnation
+                && first_request.identity.scope == second_request.identity.scope,
+            "workspace source continuity was reconstructed from operation history"
+        );
+        let source_after: String =
+            sqlx::query_scalar("SELECT registration_intent_json FROM workspace_execution_sources")
+                .fetch_one(self.sql.pool())
+                .await?;
+        ensure!(
+            source_before == source_after,
+            "same-boot reuse replaced the original workspace source association"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if std::fs::read_to_string(&self.count).ok().as_deref()
+                    == Some("executed\nexecuted\n")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("second actual Terminal program did not run exactly once")?;
+        Ok(())
+    }
+
     async fn stop(&mut self) {
         // Complete cleanup before the red assertion; a panic must not abandon
         // the actual supervisor/renderer or race the next test.
@@ -446,6 +562,19 @@ async fn terminal_http_selected_workspace_uses_registered_launch() -> anyhow::Re
     ensure!(
         std::fs::read_to_string(&fixture.count)? == "executed\n",
         "original accepted Terminal program executed more than once"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_http_source_survives_keyless_operation_cleanup() -> anyhow::Result<()> {
+    let mut fixture = Fixture::start().await?;
+    let result = fixture.exercise_source_lifetime().await;
+    fixture.stop().await;
+    result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\nexecuted\n",
+        "Terminal cleanup or source reuse issued a duplicate execution"
     );
     Ok(())
 }

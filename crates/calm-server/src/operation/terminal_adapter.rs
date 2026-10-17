@@ -312,6 +312,13 @@ impl ProviderAdapter for TerminalAdapter {
             payload.planner_hooks,
         )
         .await?;
+        let linked = sqlx::query("UPDATE terminals SET launch_operation_id=?1 WHERE id=?2 AND launch_operation_id IS NULL")
+            .bind(&op.id).bind(&term.id).execute(&mut **tx).await?.rows_affected();
+        if linked != 1 {
+            return Err(CalmError::Conflict(
+                "Terminal original launch relationship changed".into(),
+            ));
+        }
         let event = Event::CardAdded(card.clone());
         let runtime_event = Event::WorkerSessionStarted {
             worker_session_id: runtime_id.clone(),
@@ -395,7 +402,8 @@ impl ProviderAdapter for TerminalAdapter {
             let grant = admission::TerminalExecutionGrant::load_tx(&mut tx, op).await?;
             if let Some(grant) = &grant {
                 if grant.contract == admission::TerminalExecutionContract::Legacy
-                    || super::terminal_launch::registered::RegisteredRequest::read(&output.data)?
+                    || super::execution_request::load_tx(&mut tx, op)
+                        .await?
                         .is_none()
                 {
                     super::admission::require_live_claim_tx(&mut tx, op).await?;

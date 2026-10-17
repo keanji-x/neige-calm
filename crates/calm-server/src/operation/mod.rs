@@ -40,6 +40,7 @@ pub(crate) mod worker_cleanup;
 
 pub use driver::{OperationCompletionBus, OperationRuntime};
 pub(crate) mod admission;
+pub(crate) mod execution_request;
 pub use repo_sqlite::SqlxOperationRepo;
 #[cfg(any(test, feature = "fixtures"))]
 #[doc(hidden)]

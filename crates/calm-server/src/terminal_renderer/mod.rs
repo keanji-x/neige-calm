@@ -770,7 +770,7 @@ async fn ensure_entry(
             cfg,
             RendererConnection::Registered(execution.clone()),
             None,
-            true,
+            execution.observation_replay_proven(),
             RendererExecution::Registered(execution),
         ),
         establish => {

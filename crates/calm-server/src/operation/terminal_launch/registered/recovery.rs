@@ -13,7 +13,7 @@ pub(crate) enum OriginalLaunch {
 
 pub(crate) struct OriginalRegisteredLaunch {
     pub(crate) operation: Operation,
-    pub(crate) original: RegisteredRequest,
+    pub(crate) original: OriginalExecutionRequest,
 }
 
 pub(crate) async fn lookup(
@@ -28,55 +28,55 @@ pub(crate) async fn lookup(
 }
 
 pub(crate) async fn lookup_tx(tx: &mut Tx<'_>, terminal_id: &str) -> Result<OriginalLaunch> {
-    let rows = sqlx::query("SELECT o.* FROM operations o \
-        JOIN terminals term ON json_extract(o.tx_output_json,'$.data.terminal_id')=term.id \
-        JOIN cards c ON c.id=term.card_id \
-        WHERE term.id=?1 AND o.kind='terminal-create' AND json_extract(o.payload_json,'$.track_id')=c.track_id LIMIT 2")
-        .bind(terminal_id).fetch_all(&mut **tx).await?;
-    if rows.len() > 1 {
-        return Err(CalmError::Conflict(
-            "Terminal has ambiguous original operations".into(),
-        ));
-    }
-    let Some(row) = rows.first() else {
+    let link: Option<Option<String>> =
+        sqlx::query_scalar("SELECT launch_operation_id FROM terminals WHERE id=?1")
+            .bind(terminal_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some(link) = link else {
+        return Err(CalmError::NotFound(format!("terminal {terminal_id}")));
+    };
+    let Some(operation_id) = link else {
         return Ok(OriginalLaunch::Legacy);
     };
-    let op = super::super::super::repo_sqlite::operation_from_row(row)?;
-    let grant = TerminalExecutionGrant::load_tx(tx, &op).await?;
-    let original = RegisteredRequest::read(
-        &op.tx_output
-            .as_ref()
-            .ok_or_else(|| CalmError::Conflict("Terminal original output is missing".into()))?
-            .data,
-    )?;
-    let result = match (grant, original) {
-        (Some(grant), Some(original))
-            if grant.contract == TerminalExecutionContract::Registered =>
+    let row = sqlx::query(
+        "SELECT o.* FROM operations o JOIN terminals term ON term.launch_operation_id=o.id \
+        JOIN cards c ON c.id=term.card_id WHERE term.id=?1 AND o.id=?2",
+    )
+    .bind(terminal_id)
+    .bind(operation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let op = super::super::super::repo_sqlite::operation_from_row(&row)?;
+    if op.kind != "terminal-create" {
+        return Err(CalmError::Conflict(
+            "Terminal original operation subject is inconsistent".into(),
+        ));
+    }
+    if let Some(original) = execution_request::load_tx(tx, &op).await? {
+        if original.request.identity.operation_id != op.id
+            || original.request.identity.process_alias != terminal_id
         {
-            if original.request.identity.operation_id != op.id
-                || original.request.identity.process_alias != terminal_id
-                || original.request.identity.authority != grant.authority
-            {
-                return Err(CalmError::Conflict(
-                    "Terminal original executor checkpoint disagrees with acceptance".into(),
-                ));
-            }
-            OriginalLaunch::Registered(Box::new(OriginalRegisteredLaunch {
-                operation: op,
-                original,
-            }))
-        }
-        (Some(grant), None) if grant.contract == TerminalExecutionContract::Registered => {
-            OriginalLaunch::AwaitingOriginalRequest
-        }
-        (_, Some(_)) => {
             return Err(CalmError::Conflict(
-                "registered Terminal has no matching original grant".into(),
+                "Terminal original executor subject is inconsistent".into(),
             ));
         }
-        (_, None) => OriginalLaunch::Legacy,
-    };
-    Ok(result)
+        // Original stop/query rights are not new-source authorization. A
+        // removed current grant cannot erase already-issued lifecycle control.
+        return Ok(OriginalLaunch::Registered(Box::new(
+            OriginalRegisteredLaunch {
+                operation: op,
+                original,
+            },
+        )));
+    }
+    let grant = TerminalExecutionGrant::load_tx(tx, &op).await?;
+    Ok(match grant {
+        Some(grant) if grant.contract == TerminalExecutionContract::Registered => {
+            OriginalLaunch::AwaitingOriginalRequest
+        }
+        _ => OriginalLaunch::Legacy,
+    })
 }
 
 async fn query(
@@ -119,6 +119,7 @@ pub(crate) async fn restore(
         repo,
         operation_id: original.operation.id.clone(),
         original_payload_hash: original.operation.payload_hash.clone(),
+        render_history: RenderHistory::UnprovenReattachment,
     }))
 }
 
