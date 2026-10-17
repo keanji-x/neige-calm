@@ -1,3 +1,4 @@
+import { isUserMessage } from '../domain/conversation.js';
 import type { Area, WireEvent } from '../api/schemas.js';
 
 export type EventKind = WireEvent['ev'];
@@ -84,6 +85,12 @@ function conversationLists(trackId: string | null): readonly QueryKey[] {
   return [trackConversations(trackId)];
 }
 
+/** Reads of input-derived titles: Planner metadata lives in track detail, Assistant metadata
+ * in the conversation list. A detached store has no track scope and must not fan out globally. */
+export function conversationInputMetadata(trackId: string | null): readonly QueryKey[] {
+  return trackId === null ? [] : [['track', trackId], ['track-conversations', trackId]];
+}
+
 function derivedTrackId(data: unknown, context: InvalidationContext): string | null {
   if (typeof data !== 'object' || data === null) return null;
   const value = data as { track_id?: unknown; card_id?: unknown };
@@ -162,33 +169,36 @@ function policies(): PolicyMap {
   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
+  'harness.item.added': plan((event) => result([
+    ['harness-items', event.data.card_id],
+    // The row is already persisted; only user input can change the first-input title.
+    ...(event.data.method === 'item/completed' && isUserMessage(event.data.item_type) ? conversationInputMetadata(event.data.track_id) : []),
+  ])),
   /* `harness-items` is here because the phase event IS the delivery signal for the per-turn
    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */
   'harness.phase.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...(event.data.new_phase === 'turn_completed' ? [['model-catalog', { kind: 'card', cardId: event.data.card_id }]] : []),
-    ...conversationLists(event.data.track_id),
-    // Harness observations update runtime activity without a separate worker status event.
-    ['track', event.data.track_id],
+    ...conversationInputMetadata(event.data.track_id),
   ])),
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
+    ...conversationInputMetadata(event.data.track_id),
   ])),
   /* An Edit's replace deletes the turn's rows and may move the phase; it invalidates what a phase change does. */
   'harness.transcript.rewound': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
-    ...conversationLists(event.data.track_id), ['track', event.data.track_id],
+    ...conversationInputMetadata(event.data.track_id),
   ])),
   'harness.user_message.enqueued': plan((event) => result([
     ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
-    ...conversationLists(event.data.track_id),
+    ...conversationInputMetadata(event.data.track_id),
   ])),
   /* `harness-items` is here for `steered` (the kernel writes its transcript row once codex has
    * taken it) and `restored` (whose completion sweep deletes that row again). */
   'harness.queue.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
-    ...conversationLists(event.data.track_id),
+    ...conversationInputMetadata(event.data.track_id),
   ])),
   /* `['today-launchpad']` carries `report_has_noninitial_content` (Today's empty-state predicate) and
    * `['track', id]` is where the document is read from; nothing generated protects either line. */

@@ -886,7 +886,7 @@ function isAgentMessage(itemType: string | null): boolean {
   return itemType === AGENT_MESSAGE || itemType === AGENT_MESSAGE_SNAKE_CASE;
 }
 
-function isUserMessage(itemType: string | null): boolean {
+export function isUserMessage(itemType: string | null): boolean {
   return itemType === USER_MESSAGE || itemType === USER_MESSAGE_SNAKE_CASE;
 }
 

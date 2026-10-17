@@ -65,6 +65,7 @@ const packageImportShapes = [
 const consumerImportShapes = new Map<string, boolean>([
   ['named-import', true], ['default-import', true], ['namespace-member', true],
   ['named-reexport', true], ['dynamic-import-destructure', true], ['require-member', true],
+  ['dynamic-import-renamed-destructure', true],
   ['computed-module-source', false], ['computed-namespace-property', false],
 ]);
 
@@ -313,6 +314,18 @@ describe('architecture fixtures', () => {
 });
 
 describe('duplication manifest on the application tree', () => {
+  it('retains every diagnostic in phase and source order within one file', () => {
+    expect(checkDuplicationManifest(resolve(shapeFixtures, 'diagnostic-order'))).toEqual([
+      'INV-DUP-003: FormField must be defined only in web/src/ui/schema-form/fields/public.tsx; found web/src/case.ts',
+      'INV-DUP-002: CalmSelect must be defined only in web/src/ui/calm-select/public.tsx; found web/src/case.ts',
+      'INV-DUP-001: SchemaForm must be defined only in web/src/ui/schema-form/public.tsx; found web/src/case.ts',
+      'INV-DUP-004: remark-gfm may only be imported by core/markdown/public.ts; found web/src/case.ts',
+      'INV-DUP-001: SchemaForm consumers must import web/src/ui/schema-form/public.tsx; found ./other in web/src/case.ts',
+      'INV-DUP-001: SchemaForm consumers must import web/src/ui/schema-form/public.tsx; found ./wrong in web/src/case.ts',
+      'INV-DUP-001: SchemaForm consumers must import web/src/ui/schema-form/public.tsx; found ./dynamic in web/src/case.ts',
+      'INV-DUP-001: SchemaForm consumers must import web/src/ui/schema-form/public.tsx; found ./required in web/src/case.ts',
+    ]);
+  });
   it('covers exactly the independently enumerated public-symbol syntax fixtures', () => {
     const fixtureNames = new Set(readdirSync(resolve(shapeFixtures, 'public-symbol')));
     expect(fixtureNames).toEqual(new Set(publicSymbolShapes.keys()));

@@ -3,7 +3,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
-import { describeConversation, pendingConversationIds, withRememberedConversation, withRememberedTitle, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
+import { describeConversation, pendingConversationIds, withRememberedConversation, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
 import { synchronizeQueuedSends, rememberQueuePlacements, presentPendingMessages, queueTombstoneHides as tombstoneHides } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { PERMISSION_MODE_CHANGE_TEXT, PLANNER_PERMISSION_MODE_FAILURES } from '../../../../core/domain/planner-permission-mode.ts';
@@ -114,7 +114,7 @@ export function useConversationStore(
   const pendingQueueIds = useMemo(
     () => new Set(pendingQueue.map((entry) => entry.entry_id)), [pendingQueue],
   );
-  const mutations = usePlannerMutations(transport, cardId, unauthorized);
+  const mutations = usePlannerMutations(transport, cardId, scope === null ? null : scope.id, unauthorized);
   /** What went wrong with an action of the card it names; another card's is never this one's. */
   const [compactPending, setCompactPending] = useState<ReadonlySet<string>>(() => new Set());
   const compactLeases = useRef(new Set<string>());
@@ -223,9 +223,9 @@ export function useConversationStore(
       /* The open row belongs to the effect above; writing the plain row over it here
                would undo it on every render. */
       if (row.id === conversation?.id || ownedCardIds?.includes(row.id)) continue;
-      /* A row arrives with `turns` absent and `title` null on the wire; carrying the
-               remembered values keeps a confirmed count and derived name from being
-               forgotten on refresh. A title the server does send wins. */
+      /* A row arrives with `turns` absent and a nullable `title` on the wire; carrying the
+               remembered count keeps confirmed activity from being forgotten on refresh.
+               The server owns its nullable title. */
       /* `updatedAt` never goes backwards: the listed row's time does not move when a
                turn is added, but the drawer knows and wrote it here. */
       const known = rememberedConversations.find((candidate) => candidate.id === row.id);
@@ -236,17 +236,10 @@ export function useConversationStore(
     }
   }, [conversation?.id, rememberedConversations, rememberedTurnsOf, remember, rememberOn, serverRows, ownedCardIds]);
 
-  const listedConversations = useMemo(
-    () => serverRows.map((row) => withRememberedTitle(
-      row, registry.conversations.find((candidate) => candidate.id === row.id),
-    )),
-    [registry.conversations, serverRows],
-  );
-  /* The open row is replaced in place by the live one: same id, plus the turns and
-       name only the transcript can supply. */
+  /* Server rows own names. The open projection adds local send feedback and activity. */
   const conversations = useMemo(() => conversation === null
-    ? listedConversations
-    : listedConversations.map((row) => row.id === conversation.id ? conversation : row), [conversation, listedConversations]);
+    ? serverRows
+    : serverRows.map((row) => row.id === conversation.id ? conversation : row), [conversation, serverRows]);
   const model = useMemo(() => run.data === undefined ? FOLLOW_INSTALLATION_DEFAULT
     : { model: run.data.model, reasoning_effort: run.data.reasoning_effort }, [run.data]);
 

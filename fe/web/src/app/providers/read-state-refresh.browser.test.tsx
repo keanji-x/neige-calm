@@ -73,7 +73,8 @@ it('keeps a visited track read after a page refresh, with nothing kept in browse
   const first = load(kernel, storage, '/track/seen');
   await expect.poll(() => first.marker('Fresh')).toBe('unread');
   await expect.poll(() => kernel.stored('track', 'seen')?.readThroughMs).toBe(100);
-  expect(first.marker('Seen')).toBeNull();
+  // The kernel commit precedes receipt delivery and the query observer's visible update.
+  await expect.poll(() => first.marker('Seen')).toBeNull();
   first.view.unmount();
 
   const second = load(kernel, storage, '/');

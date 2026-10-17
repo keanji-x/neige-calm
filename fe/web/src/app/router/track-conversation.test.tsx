@@ -451,14 +451,61 @@ describe('track conversations', () => {
     expect(screen.queryByRole('region', { name: 'Notifications' })).toBeNull();
   });
 
+  it('refreshes first pending metadata locally at the same phase without WS', async () => {
+    let pending = [{ entry_id: 'first', text: 'Original', rev: 0, queued_at_ms: 1 }];
+    const { client, requests } = setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({
+        track: TRACK, can_reopen: false, can_admin: false, can_close: true,
+        cards: [{ ...PLANNER_CARD, title: pending[0]?.text ?? null }, ASSISTANT_CARD], overlays: [],
+      });
+      if (request.path.endsWith('/planner/run')) return ok({ ...runIdle().body as object,
+        card_id: pathCardId(request.path), pending, pending_overflow: 0 });
+      if (request.method === 'PATCH') {
+        pending = [{ ...pending[0], text: 'Edited', rev: 1 }];
+        return ok({ ...pending[0], card_id: PLANNER_CARD.id });
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Original' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit queued message' }));
+    await typeInto(messageField(), 'Edited');
+    fireEvent.click(screen.getByRole('button', { name: 'Save queued message' }));
+    await waitFor(() => expect(client.getQueryData(['planner-run', PLANNER_CARD.id])).toMatchObject({ phase: 'idle', pending: [{ text: 'Edited' }] }));
+    await screen.findByRole('complementary', { name: 'Edited' });
+    expect(requests.filter(request => request.path.includes(HISTORY_PATH)).every(request => request.path.includes(PLANNER_CARD.id))).toBe(true);
+  });
+
+  it('uses fresh server metadata for both unopened conversations without eager history', async () => {
+    const { requests } = setup((request) => {
+      if (request.path === '/api/tracks/w1') return ok({
+        track: TRACK, can_reopen: false, can_admin: false, can_close: true,
+        cards: [{ ...PLANNER_CARD, title: 'Original planner input' }, ASSISTANT_CARD], overlays: [],
+      });
+      if (request.path === CONVERSATIONS) return ok([assistantRow({ title: 'Original assistant input' })]);
+      if (request.path.includes(HISTORY_PATH)) return ok([harnessMessage(900, 'userMessage', { content: [{ text: 'Latest page input' }] })]);
+      return undefined;
+    });
+    await screen.findByRole('button', { name: 'Conversation Original planner input' });
+    const assistant = await screen.findByRole('button', { name: 'Conversation Original assistant input' });
+    expect(requests.filter(request => request.path.includes(HISTORY_PATH))).toHaveLength(0);
+    fireEvent.click(assistant);
+    await screen.findByRole('complementary', { name: 'Original assistant input' });
+    await screen.findByText('Latest page input');
+    expect(requests.filter(request => request.path.includes(HISTORY_PATH))[0]?.path).toContain('direction=desc');
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    await screen.findByRole('button', { name: 'Conversation Original assistant input' });
+  });
+
   it('keeps the name derived from confirmed turns after the drawer closes', async () => {
     let historyAvailable = true;
-    const { client } = setup((request) => request.path.includes(HISTORY_PATH)
+    const { client } = setup((request) => request.path === CONVERSATIONS
+      ? ok([assistantRow({ title: 'Named from history' })])
+      : request.path.includes(HISTORY_PATH)
       ? historyAvailable
         ? ok([harnessMessage(1, 'userMessage', { content: [{ text: 'Named from history' }] })])
         : new Promise(() => undefined)
       : undefined);
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Named from history' }));
     expect(await screen.findByRole('complementary', { name: 'Named from history' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     const remembered = await screen.findByRole('button', { name: /Conversation Named from history/ });
@@ -476,6 +523,7 @@ describe('track conversations', () => {
     const oldRead = new Promise<ApiTransportResponse>((resolve) => { releaseOld = resolve; });
     const first = harnessMessage(1, 'userMessage', { content: [{ text: 'repeat me' }] });
     const { client, requests } = setup((request) => {
+      if (request.path === CONVERSATIONS) return ok([assistantRow({ title: 'repeat me' })]);
       if (request.path.includes(HISTORY_PATH)) {
         historyReads += 1;
         if (historyReads === 1) return oldRead;
@@ -489,8 +537,8 @@ describe('track conversations', () => {
       return undefined;
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    await screen.findByRole('complementary', { name: 'Assistant' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation repeat me' }));
+    await screen.findByRole('complementary', { name: 'repeat me' });
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     expect(screen.getByText('Loading conversation…')).toBeTruthy();
     expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(false);
@@ -1097,7 +1145,9 @@ describe('track conversations', () => {
     const earlier = harnessMessage(1, 'agentMessage', { text: 'Earlier answer' });
     let rows = [earlier];
     let accept = false;
+    let title: string | null = null;
     const { client } = setup((request) => {
+      if (request.path === CONVERSATIONS) return ok([assistantRow({ title })]);
       if (request.path.includes(HISTORY_PATH)) return ok(rows);
       if (!request.path.endsWith('/planner/input')) return undefined;
       if (!accept) throw new Error('response dropped');
@@ -1109,6 +1159,7 @@ describe('track conversations', () => {
     await write(text);
     await screen.findByRole('alert');
     /* The kernel had stored it after all; the queue drained into the transcript. */
+    title = text;
     rows = [earlier, harnessMessage(2, 'userMessage', { content: [{ text }] }), harnessMessage(3, 'agentMessage', { text: 'Reply to it' })];
     await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
     await screen.findByText('Reply to it');
@@ -1119,6 +1170,7 @@ describe('track conversations', () => {
     await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
 
+    await waitFor(() => expect(client.getQueryData(['track-conversations', 'w1'])).toMatchObject([{ title: text }]));
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Stored before/ }));
     await screen.findByText('Reply to it');
@@ -1828,8 +1880,8 @@ describe('track conversations', () => {
     });
   }
 
-  async function openEditableAssistant() {
-    fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+  async function openEditableAssistant(name: string | RegExp = /Conversation Assistant/) {
+    fireEvent.click(await screen.findByRole('button', { name }));
     await screen.findByRole('button', { name: 'Edit message' });
   }
 
@@ -1848,12 +1900,13 @@ describe('track conversations', () => {
   const markedImages = () => Array.from(drawerElement().querySelectorAll('[data-nc-turn-attachments][data-nc-editing] img')).map((image) => image.getAttribute('src'));
   const REFUSED_NOTE = 'Your message is back in the composer; sending adds a new one.';
   /** An earlier turn, then the one to edit (with its image), until a replace is answered 200. */
-  function twoTurnSetup(input: () => ApiTransportResponse | Promise<ApiTransportResponse> = inputAccepted) {
+  function twoTurnSetup(input: () => ApiTransportResponse | Promise<ApiTransportResponse> = inputAccepted, metadataTitle?: string) {
     let stage: 'before' | 'replaced' = 'before';
     const earlier = turnRows('turn-0', 81, 'Earlier prompt', 'Earlier answer');
     return scriptedSetup(() => stage === 'before'
       ? [...earlier, ...turnRows('turn', 91, 'Original prompt', 'Original answer', [REWIND_IMAGE])] : earlier,
     async (request) => {
+      if (request.path === CONVERSATIONS && metadataTitle !== undefined) return ok([assistantRow({ title: metadataTitle })]);
       if (!request.path.endsWith('/planner/input')) return undefined;
       const response = await input();
       if (response.status === 200 && replacesTurn(request)) stage = 'replaced';
@@ -1913,8 +1966,8 @@ describe('track conversations', () => {
 
   it('replaces the message on Send with one keyed request: a spinner, the turn kept and marked until its answer', async () => {
     const answer = heldAnswer();
-    const { requests } = twoTurnSetup(answer.reply);
-    await openEditableAssistant();
+    const { requests } = twoTurnSetup(answer.reply, 'Earlier prompt');
+    await openEditableAssistant(/Conversation Earlier prompt/);
     fireEvent.click(screen.getByRole('button', { name: 'Edit message' }));
     await typeInto(messageField(), 'Revised prompt');
     await submit();
@@ -2249,8 +2302,12 @@ describe('track conversations', () => {
   it('lets another conversation be written while one conversation’s send is out', async () => {
     let answer!: () => void;
     const answered = new Promise<void>((done) => { answer = done; });
-    const { requests } = editSetup(async () => { await answered; return undefined; });
-    await openEditableAssistant();
+    const { requests } = scriptedSetup(() => turnRows('turn', 91, 'Original prompt', 'Original answer', [REWIND_IMAGE]), async request => {
+      if (request.path === CONVERSATIONS) return ok([assistantRow({ title: 'Original prompt' })]);
+      if (request.path.endsWith('/planner/input')) { await answered; return inputAccepted(); }
+      return undefined;
+    });
+    await openEditableAssistant(/Conversation Original prompt/);
     await typeInto(messageField(), 'Sent from the assistant');
     await submit();
     await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
@@ -3440,7 +3497,10 @@ describe('registry write-through', () => {
         await act(async () => { latestSend(text); await new Promise((resolve) => setTimeout(resolve, 0)); });
       },
       /** The drawer shuts; the store stays mounted, as it does in production. */
-      closeDrawer: async () => { await act(async () => { rerender(view(null)); await Promise.resolve(); }); },
+      closeDrawer: async (metadataRows: readonly Conversation[] = rows) => {
+        rows = metadataRows;
+        await act(async () => { rerender(view(null)); await Promise.resolve(); });
+      },
       settle: async () => {
         await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       },
@@ -3556,8 +3616,8 @@ describe('registry write-through', () => {
     expect(errors.filter((error) => error !== null)).toEqual([]);
   });
 
-  /* The server's row is `title: null` for the life of an assistant conversation;
-   * the only name is the one the drawer derives, and the batch remember must carry it. */
+  /* The confirmed send acquires authoritative first-input metadata; closing must keep
+   * that metadata while the registry still owns its transcript and outbox. */
   it('[G5] keeps the name it derived from the first message after the drawer closes', async () => {
     const transport: ApiTransportPort = {
       send(request) {
@@ -3569,9 +3629,9 @@ describe('registry write-through', () => {
     const store = mountStore(transport);
     await store.send('rename this conversation');
     await waitFor(() => { expect(store.entry()?.title).toBe('rename this conversation'); });
-    await store.closeDrawer();
+    await store.closeDrawer([{ ...ROWS[0], title: 'rename this conversation' }]);
     await store.settle();
-    /* The batch remember did not put the server's `title: null` back over it. */
+    /* The batch remember consumes the server's actual post-confirmation metadata. */
     expect(store.entry()?.title).toBe('rename this conversation');
   });
 
@@ -4351,4 +4411,89 @@ it('compacts each selected conversation while another compaction request is pend
   await screen.findByText('Compacting conversation context…');
   act(() => { answers.get(b.id)?.(ok({ card_id: b.id, worker_session_id: 'r-b', started: true })); });
   await waitFor(() => expect(screen.queryByText('Compacting conversation context…')).toBeNull());
+});
+
+it('retires pending metadata after agent-only history on open and close', async () => {
+  let title: string | null = 'First pending';
+  const { client } = setup(request => {
+    if (request.path === CONVERSATIONS) return ok([assistantRow({ title })]);
+    if (request.path.includes(HISTORY_PATH)) return ok([harnessMessage(1, 'agentMessage', { text: 'Reply to a system-only turn' })]);
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation First pending' }));
+  await screen.findByText('Reply to a system-only turn');
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  await screen.findByRole('button', { name: 'Conversation First pending' });
+  title = null;
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  expect(client.getQueryData(['track-conversations', 'w1'])).toMatchObject([{ title: null }]);
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await screen.findByRole('complementary', { name: 'Assistant' });
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  await screen.findByRole('button', { name: 'Conversation Assistant' });
+});
+
+it.each(['reset', 'replace'] as const)('honors null metadata after confirmed input %s even while history is stale', async (change) => {
+  let title: string | null = 'Confirmed first input';
+  const { client } = setup(request => {
+    if (request.path === CONVERSATIONS) return ok([assistantRow({ title })]);
+    if (request.path.includes(HISTORY_PATH)) return ok([harnessMessage(1, 'userMessage', { content: [{ text: 'Confirmed first input' }] })]);
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Confirmed first input' }));
+  await screen.findByRole('complementary', { name: 'Confirmed first input' });
+  title = null;
+  const data = { worker_session_id: 'r', card_id: ASSISTANT_CARD.id, track_id: 'w1' };
+  const plan = invalidationPlanFor(change === 'reset'
+    ? { ev: 'harness.transcript.cleared', data: { ...data, cleared_item_count: 1, cleared_params_bytes: 20, card_age_ms_at_clear: 1 } }
+    : { ev: 'harness.transcript.rewound', data: { ...data, turn_id: 'old-turn', removed_item_count: 1 } });
+  act(() => { applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]); });
+  await screen.findByRole('complementary', { name: 'Assistant' });
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  await screen.findByRole('button', { name: 'Conversation Assistant' });
+});
+
+it('keeps attachment-only metadata unnamed and manual titles authoritative on open and close', async () => {
+  let title: string | null = null;
+  const { client } = setup(request => {
+    if (request.path === CONVERSATIONS) return ok([assistantRow({ title })]);
+    if (request.path.includes(HISTORY_PATH)) return ok([
+      { ...harnessMessage(1, 'userMessage', {}), input_segments: [{ presentation: 'user', text: '', attachments: [{ id: 'a.png', contentType: 'image/png', size: 3, url: '/api/cards/conv-assistant-1/planner/attachments/a.png' }] }] },
+      harnessMessage(2, 'userMessage', { content: [{ text: 'Later text must not name the conversation' }] }),
+    ]);
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await screen.findAllByText('Later text must not name the conversation', TRANSCRIPT_TEXT);
+  await screen.findByRole('complementary', { name: 'Assistant' });
+  title = 'Manual title';
+  await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
+  await screen.findByRole('complementary', { name: 'Manual title' });
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  await screen.findByRole('button', { name: 'Conversation Manual title' });
+});
+
+it('keeps first confirmed server metadata through close and a cold history read', async () => {
+  let confirmed = false;
+  let holdHistory = false;
+  const { client } = setup(request => {
+    if (request.path === CONVERSATIONS) return ok([assistantRow({ title: confirmed ? 'First confirmed sentence' : null })]);
+    if (request.path.includes(HISTORY_PATH)) return holdHistory ? new Promise(() => undefined)
+      : ok(confirmed ? [harnessMessage(1, 'userMessage', { content: [{ text: 'First confirmed sentence' }] })] : []);
+    if (request.path.endsWith('/planner/input')) {
+      confirmed = true;
+      return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' });
+    }
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+  await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+  await write('First confirmed sentence');
+  await waitFor(() => expect(client.getQueryData(['track-conversations', 'w1'])).toMatchObject([{ title: 'First confirmed sentence' }]));
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  const named = await screen.findByRole('button', { name: 'Conversation First confirmed sentence' });
+  holdHistory = true;
+  client.removeQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) });
+  fireEvent.click(named);
+  await screen.findByRole('complementary', { name: 'First confirmed sentence' });
 });

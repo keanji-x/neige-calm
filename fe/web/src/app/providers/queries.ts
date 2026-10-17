@@ -1,6 +1,7 @@
 // Query and mutation wiring shared by app/router, app/shell and every feature slice. It lives under
 // app/providers because the router renders the shell and both need the same reads (`no-circular`).
 
+import { conversationInputMetadata } from '../../../../core/events/invalidation-plan.ts';
 import {
   useQueries, useQuery, useQueryClient, type QueryClient, type UseQueryResult,
 } from '@tanstack/react-query';
@@ -228,7 +229,7 @@ function useCardSettingWriter<A, R>(
   return writer.current.write;
 }
 
-export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function usePlannerMutations(transport: ApiTransportPort, cardId: string, trackId: string | null, unauthorized: UnauthorizedChannel) {
   const client = useQueryClient();
   const setModelWrite = useCardSettingWriter<ModelSelection, ModelSelectionResult>(
     transport, cardId, setPlannerModelOperation, unauthorized);
@@ -245,10 +246,25 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     ]).catch(() => undefined);
     return result;
   };
+  const refreshInputMetadata = (admitted: ApiTransportPort = transport, error?: unknown) => {
+    let canRead = !(error instanceof ApiError && error.failure.kind === 'unauthorized');
+    try { admitted.recovery?.capture(); } catch { canRead = false; }
+    for (const queryKey of conversationInputMetadata(trackId)) {
+      // Recovery owns read admission and resumption. Retain stale metadata while denied;
+      // do not turn a refused/unknown write into a business read outside that permission.
+      if (canRead) void cancelThenInvalidate(client, queryKey);
+      else void client.invalidateQueries({ queryKey, refetchType: 'none' }).catch(() => undefined);
+    }
+  };
+  const refreshInputAfter = <T,>(result: T): T => {
+    refreshInputMetadata();
+    return refreshAfter(result);
+  };
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
      flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
   const refreshAfterSend = <T,>(result: T): T => {
     for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) void cancelThenInvalidate(client, queryKey);
+    refreshInputMetadata();
     return result;
   };
   return {
@@ -257,7 +273,11 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
       admitted: ApiTransportPort, answered: () => void) =>
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
-        .then((sent) => { answered(); return refreshAfterSend(sent); }),
+        .then((sent) => { answered(); return refreshAfterSend(sent); }, (error: unknown) => {
+          // A refusal may expose a stale revision; a lost answer may follow a durable write.
+          refreshInputMetadata(admitted, error);
+          throw error;
+        }),
     /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
     compact: () => Promise.resolve().then(() => admitTransport(transport))
       .then((admitted) => runOperation(admitted, compactPlannerOperation(cardId), unauthorized)).then(refreshAfter),
@@ -281,14 +301,14 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
         .then((saved): PlannerQueueEditOutcome => ({ kind: 'done', entry: { ...entry, text: saved.text, rev: saved.rev } }))
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not edit the queued message.',
-        )).then(refreshAfter),
+        )).then(refreshInputAfter),
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not remove the queued message.',
         ))
-        .then(refreshAfter),
+        .then(refreshInputAfter),
     /* Same classification as the delete, plus the steer's own 409s (`not_running`, `unanswered`); on a
      * 200 the refresh is what makes the transcript pick up the row the kernel wrote. */
     steerQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
@@ -297,7 +317,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not send the queued message now.',
         ))
-        .then(refreshAfter),
+        .then(refreshInputAfter),
     /* The stored selection is read back from `planner-run`; the catalog goes with it because the default
      * this card follows is part of that answer. */
     setModel: (selection: ModelSelection): Promise<ModelSelectionResult> =>

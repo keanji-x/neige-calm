@@ -261,6 +261,13 @@ pub trait RepoRead: Send + Sync + 'static {
         track_id: &str,
         blocks: &[calm_types::track_report::ReportBlock],
     ) -> Result<Vec<crate::db::sqlite::BlockVerdict>>;
+    /// Indexed input candidates and projectable runtime facts from one read snapshot.
+    /// Harness snapshots are opaque here and interpreted by their owner.
+    async fn conversation_title_context(
+        &self,
+        card_ids: &[String],
+    ) -> Result<crate::conversation_title::ConversationTitleContext>;
+
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
     /// Page **every** `harness_items` row for a card, whatever its `method`. The transcript feed must NOT use it.
     async fn harness_item_list_by_card(
