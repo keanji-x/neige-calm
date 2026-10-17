@@ -66,6 +66,17 @@ genesis:
    both hook kinds (among others) above the harness push watermark; a
    watermark older than the horizon cannot recover hooks that were pruned.
 
+Turn-start VCS transcript refresh prepares both formats from each visible card's
+latest 500 hook rows outside the writer. Before atomic publication it rechecks
+the current visible card IDs and each exact ordered selected hook-ID vector.
+This catches retention holes and cap backfill even when the maximum ID and
+retention watermark stay unchanged. Only hook bytes are staged: the current HEAD
+and nonhook content remain authoritative, so unrelated commits do not force a
+retry. Three input races abort that refresh without publication; the existing
+harness timeout/failure path can issue the turn without a refreshed override.
+Unchanged trees still produce refresh commits. The 500-row cap bounds event count,
+not payload bytes; this does not change hook retention or dirty paths on each hook.
+
 Both consume diagnostics-grade data; >30-day-old hook history is not needed
 for correctness of live tracks. `harness.phase.changed` / `harness.item.added`
 history and superseded `overlay.set` writes carry no state the folds need.

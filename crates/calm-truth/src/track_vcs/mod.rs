@@ -19,12 +19,12 @@ pub(crate) use snapshot::run_blob_bytes;
 mod store;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transcript_writer_tests;
+mod transcripts;
 mod types;
 
-pub use commit::{
-    commit_events_in_tx, commit_events_with_author_in_tx, commit_in_tx, commit_tree,
-    snapshot_transcripts_for_cards_in_track,
-};
+pub use commit::{commit_events_in_tx, commit_events_with_author_in_tx, commit_in_tx, commit_tree};
 pub use gc::{
     DEFAULT_TRACK_HISTORY_PRUNE_KEEP, prune_all_tracks_once, prune_track_history_tx,
     spawn_track_history_pruner, spawn_unreferenced_object_sweeper, sweep_unreferenced_objects_once,
@@ -39,3 +39,5 @@ pub use types::{
     CommitLog, CommitLogEntry, CommitRecord, DiffEntry, DiffStatus, FileDiff, HistoricalBlob,
     ManifestEntry, ReportPatch, SinceLastTurnBlock, TreeManifest, TreeSnapshot,
 };
+
+pub use transcripts::snapshot_transcripts_for_cards_in_track;

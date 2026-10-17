@@ -15,6 +15,7 @@ use super::snapshot::{
     runs_index_json, track_json,
 };
 use super::store::{load_blob_bytes_tx, normalize_path, put_rendered_entry};
+use super::transcripts::HookInputs;
 use super::types::{BlobContent, CardVisibility};
 use super::{ManifestEntry, TreeManifest};
 use crate::db::sqlite::canceled_task_attempts_by_track;
@@ -70,6 +71,7 @@ pub(super) async fn apply_delta_tx(
     delta: PathDelta,
     card_visibility: &CardVisibility,
     object_created_at: i64,
+    hooks: HookInputs<'_>,
 ) -> Result<()> {
     for prefix in delta.remove_prefixes {
         manifest
@@ -125,6 +127,12 @@ pub(super) async fn apply_delta_tx(
         .await?;
     }
     for path in delta.exact {
+        if hooks
+            .put_prepared_path(tx, &mut manifest.entries, &path, object_created_at)
+            .await?
+        {
+            continue;
+        }
         match render_path_tx(tx, track_id, &path, card_visibility).await? {
             Some(content) => {
                 put_rendered_entry(tx, &mut manifest.entries, path, content, object_created_at)

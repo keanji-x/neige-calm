@@ -196,6 +196,48 @@ pub(super) async fn load_blob_bytes_pool(pool: &SqlitePool, hash: &str) -> Resul
     Ok(row.map(|(bytes,)| bytes))
 }
 
+pub(super) struct PreparedBlob {
+    hash: ObjectHash,
+    content: BlobContent,
+}
+impl PreparedBlob {
+    pub(super) fn new(content: BlobContent) -> Self {
+        Self {
+            hash: hash_bytes("blob", &content.bytes),
+            content,
+        }
+    }
+
+    pub(super) async fn put_entry(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        entries: &mut BTreeMap<String, ManifestEntry>,
+        path: String,
+        created_at: i64,
+    ) -> Result<()> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM track_vcs_objects WHERE hash = ?1 AND kind = 'blob')",
+        )
+        .bind(&self.hash)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !exists {
+            #[cfg(test)]
+            super::transcript_writer_tests::record_blob_binding();
+            insert_object_at_tx(tx, &self.hash, "blob", &self.content.bytes, created_at).await?;
+        }
+        entries.insert(
+            path,
+            ManifestEntry {
+                blob_hash: self.hash.clone(),
+                byte_len: self.content.bytes.len() as u64,
+                content_type: self.content.content_type.clone(),
+            },
+        );
+        Ok(())
+    }
+}
+
 async fn put_object_at_tx(
     tx: &mut Transaction<'_, Sqlite>,
     kind: &str,
@@ -203,17 +245,28 @@ async fn put_object_at_tx(
     created_at: i64,
 ) -> Result<ObjectHash> {
     let hash = hash_bytes(kind, bytes);
+    insert_object_at_tx(tx, &hash, kind, bytes, created_at).await?;
+    Ok(hash)
+}
+
+async fn insert_object_at_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    hash: &str,
+    kind: &str,
+    bytes: &[u8],
+    created_at: i64,
+) -> Result<()> {
     sqlx::query(
         r#"INSERT OR IGNORE INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, ?2, ?3, ?4)"#,
     )
-    .bind(&hash)
+    .bind(hash)
     .bind(kind)
     .bind(bytes)
     .bind(created_at)
     .execute(&mut **tx)
     .await?;
-    Ok(hash)
+    Ok(())
 }
 
 pub(super) async fn head_in_tx(

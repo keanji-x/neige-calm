@@ -492,22 +492,14 @@ async fn log_worker_codex_hook(boot: &Boot, card: &Card, key: &str, prompt: &str
 }
 
 async fn refresh_transcripts(boot: &Boot) -> track_vcs::CommitHash {
-    let mut tx = boot
-        .repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin transcript refresh");
-    let commit = track_vcs::snapshot_transcripts_for_cards_in_track(
-        &mut tx,
+    track_vcs::snapshot_transcripts_for_cards_in_track(
+        boot.repo.pool(),
         &boot.track_id,
         None,
         track_vcs::MANIFEST_SCHEMA_VERSION,
     )
     .await
-    .expect("snapshot transcripts");
-    tx.commit().await.expect("commit transcript refresh");
-    commit
+    .expect("snapshot transcripts")
 }
 
 async fn start_worker_runtime_with_event(

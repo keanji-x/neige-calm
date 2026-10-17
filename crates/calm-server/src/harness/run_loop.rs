@@ -3265,18 +3265,19 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let refresh_repo = Arc::clone(&inner.repo);
         let refresh_track_id = inner.track_id.clone();
         transcript_refresh_with_timeout(
-            write_in_tx_typed::<track_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
-                Box::pin(async move {
-                    track_vcs::snapshot_transcripts_for_cards_in_track(
-                        tx,
-                        &refresh_track_id,
-                        None,
-                        track_vcs::MANIFEST_SCHEMA_VERSION,
-                    )
-                    .await
-                    .map_err(CalmError::from)
-                })
-            }),
+            async move {
+                let pool = refresh_repo.sqlite_pool().ok_or_else(|| {
+                    CalmError::Internal("transcript refresh requires a SQLite pool".into())
+                })?;
+                track_vcs::snapshot_transcripts_for_cards_in_track(
+                    &pool,
+                    &refresh_track_id,
+                    None,
+                    track_vcs::MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .map_err(CalmError::from)
+            },
             TRANSCRIPT_REFRESH_TIMEOUT,
             &inner.worker_session_id,
             inner.card_id.as_str(),

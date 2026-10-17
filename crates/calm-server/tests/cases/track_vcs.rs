@@ -554,17 +554,14 @@ async fn head_manifest(repo: &SqlxRepo, track_id: &TrackId) -> track_vcs::TreeMa
 }
 
 async fn refresh_transcripts(repo: &SqlxRepo, track_id: &TrackId) -> track_vcs::CommitHash {
-    let mut tx = repo.pool().begin().await.expect("begin transcript refresh");
-    let commit = track_vcs::snapshot_transcripts_for_cards_in_track(
-        &mut tx,
+    track_vcs::snapshot_transcripts_for_cards_in_track(
+        repo.pool(),
         track_id,
         None,
         MANIFEST_SCHEMA_VERSION,
     )
     .await
-    .expect("snapshot transcripts");
-    tx.commit().await.expect("commit transcript refresh");
-    commit
+    .expect("snapshot transcripts")
 }
 
 async fn commit_tree_hash(repo: &SqlxRepo, commit: &str) -> String {
@@ -2438,20 +2435,14 @@ async fn snapshot_transcripts_helper_produces_live_identical_blobs() {
         .expect("hook event");
     }
 
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin transcript snapshot");
     let commit = track_vcs::snapshot_transcripts_for_cards_in_track(
-        &mut tx,
+        repo.pool(),
         &track.id,
         None,
         MANIFEST_SCHEMA_VERSION,
     )
     .await
     .expect("snapshot transcripts");
-    tx.commit().await.expect("commit transcript snapshot");
 
     let manifest = track_vcs::tree_at(repo.pool(), &commit)
         .await
@@ -2527,41 +2518,27 @@ async fn snapshot_transcripts_helper_is_deterministic_noop_on_unchanged() {
         .expect("hook event");
     }
 
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin first transcript snapshot");
     let first = track_vcs::snapshot_transcripts_for_cards_in_track(
-        &mut tx,
+        repo.pool(),
         &track.id,
         None,
         MANIFEST_SCHEMA_VERSION,
     )
     .await
     .expect("first transcript snapshot");
-    tx.commit().await.expect("commit first transcript snapshot");
     let first_record = track_vcs::commit_record(repo.pool(), &first)
         .await
         .expect("first commit record")
         .expect("first commit");
 
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin second transcript snapshot");
     let second = track_vcs::snapshot_transcripts_for_cards_in_track(
-        &mut tx,
+        repo.pool(),
         &track.id,
         None,
         MANIFEST_SCHEMA_VERSION,
     )
     .await
     .expect("second transcript snapshot");
-    tx.commit()
-        .await
-        .expect("commit second transcript snapshot");
     let second_record = track_vcs::commit_record(repo.pool(), &second)
         .await
         .expect("second commit record")
