@@ -66,11 +66,13 @@ it('keeps category headers glyph-free and reserves the disclosure glyph for Area
     const section = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element();
     expect(area.querySelectorAll('svg').length).toBe(1);
     expect(section.querySelectorAll('svg').length).toBe(0);
-    expect(area.querySelector('[title]')!.getBoundingClientRect().left)
-      .toBe(section.querySelector('[title]')!.getBoundingClientRect().left);
+    const leading = area.querySelector('svg')!.parentElement!;
+    const captionStart = leading.getBoundingClientRect().left;
+    expect(textBounds(area.querySelector('[title]')!).left).toBeGreaterThan(captionStart);
     for (const title of ['Running', 'Unread', 'Pinned', 'Waiting on you', 'Areas']) {
       for (const action of ['Collapse', 'Expand']) {
         const disclosure = page.getByRole('button', { name: `${action} ${title}`, exact: true });
+        expect(textBounds(disclosure.element().querySelector('[title]')!).left).toBeCloseTo(captionStart, 1);
         await disclosure.hover();
         expect(disclosure.element().querySelectorAll('svg').length).toBe(0);
         await disclosure.click();
@@ -194,7 +196,7 @@ it('places view options and preserves disclosure and keyboard navigation', async
     .querySelector<HTMLElement>('[title="Areas"]')!;
   const areaTitle = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element()
     .querySelector<HTMLElement>('[title="Work"]')!;
-  expect(areaTitle.getBoundingClientRect().left).toBe(areasTitle.getBoundingClientRect().left);
+  expect(textBounds(areaTitle).left).toBeGreaterThan(textBounds(areasTitle).left);
 
   const areasButton = areasDisclosure.element();
   expect(areasButton.querySelector('svg')).toBeNull();

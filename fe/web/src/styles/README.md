@@ -1,9 +1,11 @@
 # Styles owner
 
 `theme.config.json` is the editable typography, spacing and theme registry. The
-build-time Zod schema validates paired steps, shared profiles, semantic bindings
-and their references. Keep a distinct semantic role when its purpose differs;
-roles may bind the same profile without copying its recipe.
+build-time Zod schema validates paired steps and one role registry. Each role
+defines a family/step/weight recipe or refers directly to a concrete role. Keep
+distinct semantic names for distinct purposes; share their recipe with a one-hop
+alias. Missing targets, alias chains/cycles and duplicate recipes are rejected.
+The schema normalizes aliases once before any token emission.
 
 Run `npm run theme:generate` after configuration or generator changes. It writes
 `tokens.css`, host constants in `theme-values.ts`, closed typography/spacing/

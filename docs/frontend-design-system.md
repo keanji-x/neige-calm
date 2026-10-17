@@ -46,7 +46,7 @@
 采用 [Radix Themes 字阶](https://www.radix-ui.com/themes/docs/theme/typography) 与
 [间距尺度](https://www.radix-ui.com/themes/docs/theme/spacing)，不迁移组件或新增运行时依赖。
 `theme.config.json` 的 `typography.scale` 每个 step 只定义一次字号、行高与 em 字距；
-profile仅引用step、family、weight；等值配方共用profile，语义role仅绑定profile ID。字体家族继续区分衬线阅读、sans 界面和等宽代码。
+role直接引用step、family、weight；等值配方用单跳role别名复用，不再维护profiles中间表。字体家族继续区分衬线阅读、sans 界面和等宽代码。
 
 | Step | 字号 / 行高 | 字距 |
 | --- | --- | --- |
@@ -61,10 +61,10 @@ profile仅引用step、family、weight；等值配方共用profile，语义role�
 | 9 | 60 / 60 | -.025em |
 
 普通界面、表格和列表内容使用 step2；阅读正文与输入使用 step3；工作标题与章节使用 step5。
-语义不同的table、reading、input等role保持独立，即使绑定同一profile。
+语义不同的table、reading、input等role保持独立，即使引用同一份配方。
 完整文字角色使用 `font: var(--type-role)` 与对应 `--type-role-tracking`。
 局部字号、行高和字距修饰消费同源step投影，保留inherit、强调与数值格式语义，不重设其余字体属性。
-Sidebar通过required NavigationRow presentation选择caption或entry：caption使用metadata，entry使用content；深度只改变文字与选中背景缩进，不移动状态列。其他列表保留自身group语义，host不再分别覆盖font和tracking。
+Sidebar通过required NavigationRow presentation选择caption或entry：caption使用metadata并从图标区域起点排版，entry使用content并保留文字列缩进；深度只改变entry文字与选中背景缩进，不移动状态列或右侧操作。其他列表保留自身group语义，host不再分别覆盖font和tracking。
 
 有限几何例外：编辑器代码保留12/20、等宽紧凑标签与固定双行数字槽保留12/12。
 这些例外也只在 `typography.exceptions` 中成对定义。终端12.5px、ANSI色板、宿主RGB、
@@ -79,7 +79,7 @@ PTY与CodeMirror几何保持原契约。`tnum`、italic、strong 等继承格式
 继续由原owner保留；drawer/seam/stack共用一次既有20px/28px安全边界声明。
 
 在 `fe/` 运行 `npm run theme:generate` 更新 tokens、宿主常量和通用UI typography-scope生成样式。
-`theme:check` 严格检查全部产物。build-time Zod Schema验证结构和所有profile/step/family/weight引用；公开字体、间距、导航类型与机器inventory同源生成，不手工重复角色名单。独立测试固定Radix尺度、字体栈、渲染与颜色/宿主边界。显式字体scope由UI适配器导出class，重新计算family相关role及投影，
+`theme:check` 严格检查全部产物。build-time Zod Schema验证结构和所有role/step/family/weight引用，拒绝重复配方、悬空引用和别名链/环；校验后统一展开别名；公开字体、间距、导航类型与机器inventory同源生成，不手工重复角色名单。独立测试固定Radix尺度、字体栈、渲染与颜色/宿主边界。显式字体scope由UI适配器导出class，重新计算family相关role及投影，
 避免root composite提前绑定字体；mobile-font在同一元素组合该class与自托管字体栈，无额外DOM。
 Astryx发布的size/family/unitless-leading由实际使用的role投影，不能用长度代替leading倍率。
 

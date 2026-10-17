@@ -6,8 +6,6 @@
     --font-code: var(--font-mono);
     --type-ui: 400 0.875rem/1.25rem var(--font-sans);
     --type-ui-family: var(--font-sans);
-    --type-action: 500 0.875rem/1.25rem var(--font-sans);
-    --type-action-family: var(--font-sans);
     --type-detail: 400 1rem/1.5rem var(--font-sans);
     --type-detail-family: var(--font-sans);
     --type-page-title: 600 1rem/1.5rem var(--font-sans);

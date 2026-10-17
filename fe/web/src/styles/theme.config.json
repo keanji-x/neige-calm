@@ -72,40 +72,10 @@
       "bold": 700
     },
     "roles": {
-      "ui": "ui",
-      "action": "action",
-      "detail": "detail",
-      "page-title": "page-title",
-      "navigation-label": "navigation-label",
-      "reading": "reading",
-      "chapter": "chapter",
-      "table": "ui",
-      "label": "label",
-      "metadata": "metadata",
-      "code": "code",
-      "content": "ui",
-      "metric": "metric",
-      "metric-primary": "metric-primary",
-      "heading": "heading",
-      "subheading": "subheading",
-      "subheading-small": "subheading-small",
-      "interface-heading": "interface-heading",
-      "empty-heading": "empty-heading",
-      "display-title": "display-title",
-      "compact-metadata": "compact-metadata",
-      "code-detail": "code-detail",
-      "input": "detail"
-    },
-    "profiles": {
       "ui": {
         "family": "ui",
         "step": "2",
         "weight": "regular"
-      },
-      "action": {
-        "family": "ui",
-        "step": "2",
-        "weight": "medium"
       },
       "detail": {
         "family": "ui",
@@ -132,6 +102,7 @@
         "step": "5",
         "weight": "bold"
       },
+      "table": "ui",
       "label": {
         "family": "ui",
         "step": "1",
@@ -147,6 +118,7 @@
         "step": "editor",
         "weight": "regular"
       },
+      "content": "ui",
       "metric": {
         "family": "ui",
         "step": "5",
@@ -196,7 +168,8 @@
         "family": "code",
         "step": "3",
         "weight": "regular"
-      }
+      },
+      "input": "detail"
     }
   },
   "navigation": {

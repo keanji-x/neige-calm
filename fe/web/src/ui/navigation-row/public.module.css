@@ -7,19 +7,21 @@
     --navigation-text-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
     --navigation-inner-inset: var(--navigation-text-inset);
     --navigation-depth-inset: 0px;
+    --navigation-label-start: calc(var(--navigation-text-inset) + var(--navigation-depth-inset));
     --navigation-selection-inset: var(--navigation-depth-inset);
     --navigation-two-actions: calc(var(--navigation-inner-inset) + var(--navigation-slot) + var(--navigation-gap));
     position: relative;
   }
 
   .nested { --navigation-depth-inset: var(--space-5); }
+  .caption { --navigation-label-start: var(--navigation-inset); }
 
   .content {
     min-inline-size: 0;
-    padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-depth-inset));
+    padding-inline-start: var(--navigation-label-start);
     padding-inline-end: var(--navigation-text-inset);
   }
-  .labelStart { padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-depth-inset)); }
+  .labelStart { padding-inline-start: var(--navigation-label-start); }
   .twoActions { padding-inline-end: var(--navigation-two-actions); }
 
   .leading,

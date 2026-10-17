@@ -20,8 +20,8 @@ function text(value, label) {
 }
 function rem(value) { return `${value / 16}rem`; }
 
-function roleProfile(type, name) { return type.profiles[type.roles[name]]; }
-function roleStep(type, name) { return { ...type.scale, ...type.exceptions }[roleProfile(type, name).step]; }
+function roleRecipe(type, name) { return type.roles[name]; }
+function roleStep(type, name) { return { ...type.scale, ...type.exceptions }[roleRecipe(type, name).step]; }
 
 /** Every emitted token keeps its semantic category and inherited-family dependency. */
 function tokenRegistry() {
@@ -35,8 +35,7 @@ function tokenRegistry() {
   return { add, values: () => [...records.values()] };
 }
 
-function typographyRecords(config) {
-  const type = typographySchema.parse(config.typography);
+function typographyRecords(type) {
   const familyTokens = { ui: '--font-sans', reading: '--font-serif', code: '--font-mono' };
   const registry = tokenRegistry();
   for (const [name, token] of Object.entries(familyTokens)) registry.add(token, type.families[name]);
@@ -44,9 +43,9 @@ function typographyRecords(config) {
     registry.add(`--weight-${name}`, String(type.weights[key]));
   }
   for (const name of Object.keys(type.roles)) {
-    const profile = roleProfile(type, name), step = roleStep(type, name);
-    const family = `var(${familyTokens[profile.family]})`;
-    registry.add(`--type-${name}`, `${type.weights[profile.weight]} ${rem(step.size)}/${rem(step.line)} ${family}`, 'TypographyToken', true);
+    const recipe = roleRecipe(type, name), step = roleStep(type, name);
+    const family = `var(${familyTokens[recipe.family]})`;
+    registry.add(`--type-${name}`, `${type.weights[recipe.weight]} ${rem(step.size)}/${rem(step.line)} ${family}`, 'TypographyToken', true);
     registry.add(`--type-${name}-tracking`, `${step.tracking}em`, 'TrackingToken');
     registry.add(`--type-${name}-family`, family, 'FontProjectionToken', true);
     registry.add(`--type-${name}-size`, rem(step.size), 'TypeScaleToken');
@@ -65,12 +64,13 @@ function themeRecords(input) {
   const config = object(input, 'theme');
   if (config.version !== 2) throw new Error('Unsupported theme version');
   keys(config, ['version', 'typography', 'navigation', 'shared', 'light', 'dark', 'hostRgb', 'terminal', 'terminalText', 'spacing'], 'theme');
+  const type = typographySchema.parse(config.typography);
   const registry = tokenRegistry();
   for (const [name, value] of Object.entries(object(config.shared, 'shared'))) {
     registry.add(name, value, name === '--leading-none' ? 'LeadingToken' : null,
       ['--font-display', '--font-numeric', '--font-code'].includes(name));
   }
-  for (const record of typographyRecords(config)) registry.add(record.name, record.value, record.category, record.fontDependency);
+  for (const record of typographyRecords(type)) registry.add(record.name, record.value, record.category, record.fontDependency);
   keys(config.spacing, ['0', 'px', 'half', '1', '2', '3', '4', '5', '6', '7', '8', '9'], 'spacing');
   for (const [name, value] of Object.entries(config.spacing)) {
     registry.add(`--space-${name}`, value === 0 ? '0' : `${number(value, 0, 64, `spacing.${name}`)}px`, 'SpacingToken');
@@ -80,7 +80,7 @@ function themeRecords(input) {
   keys(nav, [...Object.keys(navLimits), 'groupGap', 'sectionGap', 'labelInset'], 'navigation');
   for (const name of Object.keys(navLimits)) number(nav[name], navLimits[name][0], navLimits[name][1], name);
   for (const name of ['groupGap', 'sectionGap', 'labelInset']) if (!Object.hasOwn(config.spacing, nav[name])) throw new Error(`navigation.${name} references an unknown spacing step`);
-  if (nav.rowHeight < roleStep(config.typography, 'ui').line) throw new Error('Navigation row clips its text line');
+  if (nav.rowHeight < roleStep(type, 'ui').line) throw new Error('Navigation row clips its text line');
   for (const [name, value] of Object.entries(nav)) {
     if (name === 'railMix') continue;
     registry.add(`--navigation-${name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`,

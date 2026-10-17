@@ -3,12 +3,14 @@
 `navigationRowPresentation` accepts a required presentation: `{ kind: 'caption', depth: 0 }`
 or `{ kind: 'entry', depth: 0 | 1 }`. A frozen kind table selects the actual ListText
 tone: captions use secondary metadata, entries use primary content. Hosts apply that
-tone to their label, not merely the outer container. Domain membership, disclosure,
+tone to their label, not merely the outer container. Captions begin at the leading
+slot; entry names retain the separate label column. Domain membership, disclosure,
 menus, state and callbacks remain with their existing hosts.
 
 The CSS owner defines one status/disclosure slot, one label column and two trailing
 action slots. Depth shifts only the label and selected background by the same
-relationship. Indicators remain on the global leading axis. There are no host font,
+relationship. Indicators remain on the global leading axis; captions do not shift
+trailing actions. There are no host font,
 tracking or arbitrary label-offset overrides.
 
 `navigationRowClass` remains the geometry-only entry for brand and surrounding

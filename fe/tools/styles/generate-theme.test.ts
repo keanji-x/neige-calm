@@ -5,8 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { renderTheme, renderThemeValues, renderTypographyScope, renderTypographyTypes } from './generate-theme.mjs';
 
 type Step = { size: number; line: number; tracking: number };
+type Recipe = { family: string; step: string; weight: string };
 type Configuration = {
-  typography: { families: Record<string, string>; scale: Record<string, Step>; exceptions: Record<string, Step>; profiles: Record<string, Record<string, string>>; roles: Record<string, string> };
+  typography: { families: Record<string, string>; scale: Record<string, Step>; exceptions: Record<string, Step>; roles: Record<string, Recipe | string> };
   navigation: Record<string, string | number>;
   spacing: Record<string, number>;
   shared: Record<string, string>;
@@ -36,46 +37,57 @@ describe('central theme generation', () => {
     config.typography.scale['2'] = { size: 15, line: 22, tracking: .01 };
     const css = renderTheme(config);
     expect(css).toContain('--type-ui: 400 0.9375rem/1.375rem var(--font-sans);');
-    expect(css).toContain('--type-action: 500 0.9375rem/1.375rem var(--font-sans);');
+    expect(css).toContain('--type-table: 400 0.9375rem/1.375rem var(--font-sans);');
+    expect(css).toContain('--type-subheading-small: 600 0.9375rem/1.375rem var(--font-serif);');
     expect(css).toContain('--type-ui-tracking: 0.01em;');
     expect(css).toContain('--type-ui-size: 0.9375rem;');
     expect(css).toContain('--type-ui-leading: 1.4666666666666666;');
   });
   it('derives vendor fields from the reading role references including ratio one', () => {
     const config = source();
-    config.typography.profiles[config.typography.roles.reading].step = '2';
-    config.typography.profiles[config.typography.roles.reading].family = 'code';
+    config.typography.roles.reading = { family: 'code', step: '2', weight: 'regular' };
     config.typography.scale['2'] = { size: 20, line: 20, tracking: 0 };
     const css = renderTheme(config);
     expect(css).toContain('--type-reading-family: var(--font-mono);');
     expect(css).toContain('--type-reading-size: 1.25rem;');
     expect(css).toContain('--type-reading-leading: 1;');
   });
-  it('validates profile bindings without a duplicate semantic-role registry', () => {
+  it('validates and normalizes aliases in the single semantic-role registry', () => {
     const config = source();
-    config.typography.roles.reading = 'missing-profile';
-    expect(() => renderTheme(config)).toThrow('Unknown profile reference');
-    config.typography.roles.reading = config.typography.roles.detail;
+    config.typography.roles.reading = 'missing-role';
+    expect(() => renderTheme(config)).toThrow('Unknown role reference');
+    config.typography.roles.reading = 'detail';
     expect(renderTheme(config)).toContain('--type-reading: 400 1rem/1.5rem var(--font-sans);');
   });
-  it('rejects missing consumed semantics and duplicate profile recipes before emission', () => {
+  it.each([
+    { first: 'ui', second: 'first' },
+    { first: 'first' },
+    { first: 'second', second: 'first' },
+  ])('rejects aliases without a concrete target: %j', aliases => {
+    const config = source();
+    Object.assign(config.typography.roles, aliases);
+    for (const emit of [renderTheme, renderTypographyTypes, renderTypographyScope, renderThemeValues]) {
+      expect(() => emit(config)).toThrow('Alias must reference a concrete recipe');
+    }
+  });
+  it('rejects missing consumed semantics and duplicate role recipes before emission', () => {
     const config = source();
     delete config.typography.roles.ui;
     expect(() => renderTheme(config)).toThrow('Missing required semantic role ui');
     const duplicate = source();
-    duplicate.typography.profiles['extra-body'] = { ...duplicate.typography.profiles[duplicate.typography.roles.ui] };
-    expect(() => renderTheme(duplicate)).toThrow('Duplicate profile recipe');
+    duplicate.typography.roles['extra-body'] = { family: 'ui', step: '2', weight: 'regular' };
+    expect(() => renderTheme(duplicate)).toThrow('Duplicate role recipe');
   });
   it('generates the closed public types and inventory from the editable registry', () => {
     expect(renderTypographyTypes(source())).toBe(readFileSync(new URL('../../web/src/styles/typography.generated.ts', import.meta.url), 'utf8'));
     const config = source();
-    config.typography.roles['fixture-role'] = config.typography.roles.reading;
+    config.typography.roles['fixture-role'] = 'reading';
     expect(renderTypographyTypes(config)).toContain('"--type-fixture-role"');
     expect(renderTypographyScope(config)).toContain('--type-fixture-role:');
   });
   it.each(['size', 'family', 'line', 'leading', 'tracking'])('rejects a role colliding with the emitted %s field', field => {
     const config = source();
-    config.typography.roles[`ui-${field}`] = config.typography.roles.ui;
+    config.typography.roles[`ui-${field}`] = 'ui';
     for (const emit of [renderTheme, renderTypographyTypes, renderTypographyScope, renderThemeValues]) {
       expect(() => emit(config)).toThrow(`Duplicate token --type-ui-${field}`);
     }
@@ -83,7 +95,7 @@ describe('central theme generation', () => {
   it.each(['size', 'family', 'line', 'leading', 'tracking'])('classifies a noncolliding %s-suffixed role by its emission kind', async field => {
     const config = source();
     const role = `fixture-${field}`;
-    config.typography.roles[role] = config.typography.roles.ui;
+    config.typography.roles[role] = 'ui';
     const generated = renderTypographyTypes(config);
     const javascript = ts.transpileModule(generated, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
     const output = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString('base64')}`) as {
@@ -125,16 +137,18 @@ describe('central theme generation', () => {
   });
   it('rejects unknown role references and legacy independently maintained sizes', () => {
     const config = source();
-    config.typography.profiles[config.typography.roles.chapter].step = 'unknown';
+    config.typography.roles.chapter = { family: 'reading', step: 'unknown', weight: 'bold' };
     expect(() => renderTheme(config)).toThrow('Unknown step reference');
     const legacy = { ...source(), typography: { ...source().typography, sizes: { ui: 14 } } };
     expect(() => renderTheme(legacy)).toThrow();
+    const legacyProfiles = { ...source(), typography: { ...source().typography, profiles: {} } };
+    expect(() => renderTheme(legacyProfiles)).toThrow();
   });
   it('rejects unknown settings, missing steps and a line that clips its text', () => {
     const config = source();
-    config.typography.profiles[config.typography.roles.ui].colour = 'red';
-    expect(() => renderTheme(config)).toThrow();
-    delete config.typography.profiles[config.typography.roles.ui].colour;
+    const invalidRole = { ...config, typography: { ...config.typography, roles: { ...config.typography.roles,
+      ui: { family: 'ui', step: '2', weight: 'regular', colour: 'red' } } } };
+    expect(() => renderTheme(invalidRole)).toThrow();
     config.typography.scale['5'].line = 16;
     expect(() => renderTheme(config)).toThrow('line height is smaller');
     delete config.typography.scale['5'];
