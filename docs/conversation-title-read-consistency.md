@@ -1,10 +1,53 @@
-# Conversation title read consistency
+# Conversation title read consistency — blocked implementation checkpoint
 
 Review tier: L2, because this change crosses a persistence read boundary and
 repairs the title source transfer inside the harness owner. Formal independent
 reviews remain Planner-owned.
 
-## Final ownership and read design
+**Acceptance is not met.** The deterministic WAL regressions and mutations are
+proven, but the selected asynchronous deferred-transaction implementation fails
+an existing storage invariant. This checkpoint is not a merge candidate.
+
+## Blocking storage contract
+
+[The #930/#1016 production guard](../crates/calm-server/tests/cases/deferred_write_tx_invariant.rs)
+keeps `READ_ONLY_DEFERRED_ALLOWLIST` empty on purpose: a read-only transaction is
+not exempt unless it provably cannot park while holding a lock. The new title
+transaction spans awaited candidate batches and an awaited runtime read. It
+cannot establish that exemption under the current repository connection contract.
+
+[Existing shared-cache semantics](../crates/calm-truth/src/db/sqlite/deadlock_semantics_tests.rs)
+explain the reason: an explicit read transaction can retain one table's read lock
+while SQLx parks waiting on another table, closing a reader/writer cycle. An
+autocommit statement unwinds its table locks before parking. `sqlite::memory:`
+uses shared cache, and WAL pragmas do not turn it into a WAL database. The new
+storage scheduling tests intentionally use a real file-backed WAL database; they
+prove consistent facts across concurrent commits there, not shared-cache safety.
+The reset checkpoint also writes runtime state before deleting transcript rows,
+so this is a relevant multi-table writer order, not just a scanner spelling issue.
+No new title-specific deadlock execution is claimed; the blocking evidence is the
+actual production contract failure and these source-level semantics.
+
+Gate run 1 passed API, truth and Rust quick, then found two extra retiring-word
+references. Reusing the existing harness fixture and suffix-delete helper fixed
+that without changing the baseline. Runs 2 and 3 passed API 7/7, truth 7/7, Rust
+quick (including OpenAPI drift), and text gates. Both failed contract step 5 only
+at `production_deferred_transactions_are_read_only_allowlisted`, reporting
+`calm-truth/src/db/sqlite/conversation_title.rs:96: deferred .begin(`. The contract
+groups were 195 passed, 177/178 passed, and 13 passed. Steps 6–13 never ran.
+Run 3 was inadvertently launched by a gate join after run 2 had finished; no fix
+or source change occurred between them, and no green result is claimed from it.
+Logs are `/home/kenji/.local/share/neige-next/data/gate-logs/` followed by
+`7793bd62565c450282032faa12a61fbe:fix-title-consistent-snapshot-r8-r{1,2,3}.log`.
+
+The guard, allowlist, transaction scanner, and lock policy remain unchanged.
+Changing to an immediate transaction would serialize writers and invalidate the
+concurrent-commit schedule. Returning to independent autocommit reads reproduces
+the three consistency failures. A #930-compatible consistent-read capability or
+a separately justified isolation-policy design needs a new Planner task; this
+worker does not invent an exemption or broaden the storage boundary silently.
+
+## Implemented ownership and read design
 
 [ConversationTitleContext](../crates/calm-truth/src/conversation_title.rs) returns
 persisted input candidates and projectable runtime facts. The required collections
@@ -188,7 +231,7 @@ All Rust commands unset `NEIGE_CODEX_BIN`, set `RUSTC_WRAPPER=` and
 
 The original server API first-input assertion is retained. The kernel gate owns
 its API replay, the title-filter replays, Rust quick, text/contract checks and the
-existing frontend visibility/invalidation/scanner/browser regressions. Its final
+existing frontend visibility/invalidation/scanner/browser regressions. Its blocking
 verdict and the focused steer recovery result accompany the worker report; broad
 suites, new formal reviews, live providers and previews are outside this worker.
 
