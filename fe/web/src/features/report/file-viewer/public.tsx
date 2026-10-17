@@ -1,7 +1,8 @@
 import { ReadOnlyCode } from '../../../ui/code/public.tsx';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
+import type { TrackReport } from '../../../../../core/domain/report.ts';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import { FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
@@ -43,6 +44,9 @@ export function ReportFileViewer({
   const layerRef = useRef<HTMLDivElement | null>(null);
   const resource = useReportFileResource(path, files, onFileOpened);
   const markdown = resource.kind === 'loaded' && resource.format === 'markdown';
+  const markdownText = markdown ? resource.text : null;
+  const report = useMemo<TrackReport | null>(() => markdownText === null ? null
+    : { summary: '', body: markdownText, blocks: null }, [markdownText]);
   /* A page opens rendered; its source is one toggle away. */
   const [pageView, setPageView] = useState<'page' | 'source'>('page');
 
@@ -102,7 +106,7 @@ export function ReportFileViewer({
           <div className={styles.markdown}>
             {resource.truncated && <p className={styles.notice}>Showing the first 2 MiB of this file.</p>}
             <ReportDocument
-              report={{ summary: '', body: resource.text, blocks: null }}
+              report={report}
               empty={<></>}
               fileRoot={fileRoot}
               fileBasePath={parentDirectory(resource.path)}

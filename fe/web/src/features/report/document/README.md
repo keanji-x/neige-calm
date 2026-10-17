@@ -61,3 +61,12 @@ New report kinds continue through the existing typed block renderer; they add no
 cache registration or CI list. Preparation regressions are auto-discovered by the
 existing unit/browser projects. Performance evidence belongs in the PR; permanent
 tests pin reuse, invalidation, scope and rendering/admission invariants.
+
+Standalone Markdown files keep their legacy report identity while loaded text is
+unchanged. Lazy file/block previews prepare their prose and reference context with
+one local canonical parser reader; a referenced block still uses its whole
+report's repository context, while a file derives context from its own text.
+Only prepared data is memoized for the mounted consumer. Current roots and
+callbacks remain renderer inputs; closing a preview still releases it, and reopening
+still reads the file again. No global source cache, Track card identity, new read
+policy or asynchronous preparation is introduced for these consumers.

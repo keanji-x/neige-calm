@@ -1,10 +1,10 @@
 import { useMemo, type ReactNode } from 'react';
-import { prepareProse, type PreparedProse } from './preparation.ts';
+import { prepareProse, preparePreviewProse, type PreparedProse, type PreviewReferenceContext } from './preparation.ts';
 import type { SafeBlock, SafeInline } from '../../../../../core/markdown/public.ts';
 import { parseReportLink, type ReportLinkTarget } from '../../../../../core/domain/report.ts';
 import { parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import { reportDocumentReferenceRepository, reportReferenceRepository, reportTextReferences, qualifiedReportFileReference, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
+import { reportTextReferences, qualifiedReportFileReference, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
 import { isImagePath, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import { ReadOnlyCode } from '../../../ui/code/public.tsx';
@@ -22,6 +22,13 @@ export function ProseBlock({ markdown, blockId, ...options }: ProseOptions & Rea
 }>) {
   const prepared = useMemo(() => prepareProse(markdown, blockId), [markdown, blockId]);
   return <PreparedProseBlock prepared={prepared} {...options} />;
+}
+
+function PreviewProse({ markdown, referenceContext, ...options }: ProseOptions & Readonly<{
+  markdown: string; referenceContext: PreviewReferenceContext;
+}>) {
+  const prepared = useMemo(() => preparePreviewProse(markdown, referenceContext), [markdown, referenceContext]);
+  return <PreparedProseBlock {...options} prepared={prepared.prose} referenceRepository={prepared.referenceRepository} />;
 }
 
 /** The rendered half consumes prepared syntax; admission and live callbacks remain current. */
@@ -225,9 +232,9 @@ function Destination({ destination, label, body, image = false, context }: {
 }) {
   if (context.destinationMode === 'inert') return body;
   const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview } = context;
-  const renderMarkdown = (destination: PreviewDestination, text: string, basePath?: string) => <ProseBlock
-    markdown={text} blockId={null} {...context} referenceRepository={destination.kind === 'reference'
-      ? reportDocumentReferenceRepository(linkPreview?.report ?? null) : reportReferenceRepository([text])} fileBasePath={basePath ?? fileBasePath} />;
+  const renderMarkdown = (destination: PreviewDestination, text: string, basePath?: string) => <PreviewProse
+    markdown={text} {...context} referenceContext={destination.kind === 'reference' ? linkPreview?.report ?? null : 'self'}
+    fileBasePath={basePath ?? fileBasePath} />;
   const wrap = (destination: PreviewDestination, trigger: (activate: () => void, dismiss: () => void) => ReactNode, onOpen?: () => void) => (
     <ReportLinkPreview destination={destination} resources={linkPreview} label={label}
       trigger={trigger} onOpen={onOpen} renderMarkdown={(text, basePath) => renderMarkdown(destination, text, basePath)} />
