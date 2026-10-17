@@ -587,11 +587,11 @@ function useConversationPane(
       ? previous : { conversationId: existingId, visible });
   }, [existingId]);
   const pendingMessages = useMemo(() => <PendingQueue key={existingId}
-    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow} reconciledQueueIds={store.reconciledQueueIds}
+    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow} queueDisplayAccounting={store.queueDisplayAccounting}
     busy={!threadPresented || store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
     canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
     savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onPresenceChange={pendingPresenceChanged} onSteer={canSteer ? steerQueuedEntry : undefined} />,
-  [existingId, threadPresented, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.reconciledQueueIds, store.sending, store.queueWriteOut,
+  [existingId, threadPresented, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
     deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, pendingPresenceChanged, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({

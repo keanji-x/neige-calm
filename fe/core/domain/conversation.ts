@@ -173,15 +173,22 @@ const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
   id: z.string(), contentType: z.string(), size: z.number(), url: z.string(),
 });
 
+// Released origins contained only observation/event_id. Normalize their absent pair to unknown;
+// a present queue_entry still has to satisfy the current required nullable contract.
+const harnessInputOriginSchema = z.preprocess(value => {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'queue_entry')
+    && Object.keys(value).every(key => key === 'observation' || key === 'event_id')) return { ...value, queue_entry: null };
+  return value;
+}, z.object({ observation: z.string(), event_id: z.number().nullable(),
+  queue_entry: z.object({ id: z.string().min(1), rev: z.number().int().nonnegative() }).nullable() }));
+
 export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
   presentation: harnessInputPresentationSchema,
   text: z.string(),
   /* Defaulted rather than required: older segments have no such key, and a row that fails to decode disappears. */
   attachments: z.array(plannerAttachmentSchema).optional().default([]),
   /* Absent on segments recorded before the kernel named each segment's observation and event. */
-  origin: z.object({ observation: z.string(), event_id: z.number().nullable(),
-    // A null pair is legacy/unknown; an unreleased bare ID cannot certify a source version.
-    queue_entry: z.object({ id: z.string().min(1), rev: z.number().int().nonnegative() }).nullable() }).optional(),
+  origin: harnessInputOriginSchema.optional(),
 });
 
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({

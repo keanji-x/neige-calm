@@ -189,7 +189,7 @@ export function useConversationStore(
     stalled, landed, initialInput, reportedInput, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
-  const { view } = outbox;
+  const { view, accountQueueDisplay } = outbox;
   const queueOps = registry.outboxOf(cardId);
   const [placementMemory, setPlacementMemory] = useState(() => ({ cardId, ops: queueOps, queue: pendingQueue,
     placements: rememberQueuePlacements(new Map(), queueOps, pendingQueue) }));
@@ -201,10 +201,8 @@ export function useConversationStore(
   const presentation = useMemo(() => presentPendingMessages(view.transcript, pendingQueue, view.shown,
     placements, view.failed, stalled, queueOps),
   [view.transcript, pendingQueue, view.shown, placements, view.failed, stalled, queueOps]);
-  const reconciledQueueIds = useMemo(() => new Set([
-    ...initialQueue.hiddenIds,
-    ...presentation.transcript.flatMap(entry => entry.author === 'you' && entry.queueEntryId != null ? [entry.queueEntryId] : []),
-  ]), [initialQueue.hiddenIds, presentation.transcript]);
+  const queueDisplayAccounting = useMemo(() => accountQueueDisplay(presentation.transcript, initialQueue.suppressedRefs),
+    [accountQueueDisplay, initialQueue.suppressedRefs, presentation.transcript]);
   /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
      server has answered it, and only until a read shows it in its place. */
   const turns = useMemo(
@@ -310,7 +308,7 @@ export function useConversationStore(
     awaitingConversationUpdate: view.awaitingReconciliation && history.error === null && run.error === null,
     pendingQueue: presentation.queue,
     pendingSends: presentation.sending,
-    reconciledQueueIds,
+    queueDisplayAccounting,
     pendingQueueOverflow,
     editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => mutations.editQueued(entry, text, saved => {
       outbox.acknowledgeQueuedEdit(entry, saved);

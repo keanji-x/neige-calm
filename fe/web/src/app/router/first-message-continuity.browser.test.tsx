@@ -266,7 +266,7 @@ it.each([1280, 390])('keeps an acknowledged first edit readable with real post-w
     await act(async () => { fixture.releaseRun(3); await runRead; });
     await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
     expect(copies(edited)).toHaveLength(1); expect(copies(FIRST_MESSAGE)).toHaveLength(0);
-    fixture.project(1, edited, true);
+    fixture.project(1, edited);
     let historyRead: Promise<void> | null = null;
     act(() => { historyRead = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
     await expect.poll(() => fixture.historyCount()).toBe(4);
@@ -311,7 +311,7 @@ it.each([{ width: 1280, restore: true }, { width: 390, restore: true }, { width:
         await act(async () => { fixture.releaseRun(next); await read; });
       };
       if (restore) {
-        await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.sourceWitness !== null)).toBe(true);
+        await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.inputFact?.rev === 1 && op.sourceWitness === null)).toBe(true);
         fixture.queueAtRevision(external, 1); await readRun();
       }
       await expect.element(page.getByRole('button', { name: 'Edit queued message' })).toBeEnabled();
@@ -329,7 +329,7 @@ it.each([{ width: 1280, restore: true }, { width: 390, restore: true }, { width:
       expect(box.width).toBeGreaterThan(50); expect(box.height).toBeGreaterThan(10);
       expect(box.left).toBeGreaterThanOrEqual(0); expect(box.right).toBeLessThanOrEqual(width);
       expect(box.top).toBeGreaterThanOrEqual(0); expect(box.bottom).toBeLessThanOrEqual(900);
-      fixture.project(2, latest, true); const nextHistory = fixture.historyCount(); let historyRead: Promise<void> | null = null;
+      fixture.project(2, latest); const nextHistory = fixture.historyCount(); let historyRead: Promise<void> | null = null;
       act(() => { historyRead = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
       await expect.poll(() => fixture.historyCount()).toBe(nextHistory + 1);
       await act(async () => { fixture.releaseHistory(nextHistory); await historyRead; });

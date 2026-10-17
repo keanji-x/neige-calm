@@ -97,6 +97,12 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         return result;
       }
       if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
+        const tail = pending.find(entry => entry.entry_id === 'ordinary-entry');
+        if (tail !== undefined) {
+          const text = (request.body as { text: unknown }).text;
+          if (typeof text !== 'string') throw new Error('Ordinary fold lacks actual submitted text.');
+          pending = pending.map(entry => entry === tail ? { ...entry, rev: entry.rev + 1, text: `${entry.text}\n\n${text}` } : entry);
+        }
         return ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime', entry_id: 'ordinary-entry' });
       }
       if (options.refuseQueueDelete && request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry')) {
@@ -181,6 +187,16 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         params: JSON.stringify({ item: { text: `Later page reply ${index}.` } }), created_at_ms: 20 + index, turn_error_text: null }));
     },
     outbox: () => created === null ? [] : registry?.outboxOf(created.id) ?? [],
+    queueOrdinary: (text: string, rev: number) => { pending = [{ entry_id: 'ordinary-entry', text, queued_at_ms: 101, rev }]; },
+    projectOrdinary: (entryRev: number, text: string, provisional: boolean) => {
+      if (created === null) throw new Error('No canonical conversation');
+      const id = 9 + entryRev;
+      history = [...history.filter(row => row.id !== id), { id, card_id: created.id, worker_session_id: 'runtime', track_id: 'daily',
+        thread_id: 'thread', turn_id: provisional ? null : 'ordinary-provider-turn', item_uuid: `ordinary-source-${entryRev}`,
+        item_type: 'userMessage', method: 'item/completed', params: provisional ? JSON.stringify({ _projection: true }) : '{}',
+        created_at_ms: 9 + entryRev, turn_error_text: null, input_segments: [{ presentation: 'user', text, attachments: [],
+          origin: { observation: 'user', event_id: null, queue_entry: { id: 'ordinary-entry', rev: entryRev } } }] }];
+    },
     queueOriginal: () => { pending = [{ entry_id: 'first-entry', text: FIRST_MESSAGE, queued_at_ms: 100, rev: 0 }]; },
     queueEdited: (text: string) => { pending = [{ entry_id: 'first-entry', text, queued_at_ms: 100, rev: 1 }]; },
     queueAtRevision: (text: string, rev: number) => { pending = [{ entry_id: 'first-entry', text, queued_at_ms: 100, rev }]; },

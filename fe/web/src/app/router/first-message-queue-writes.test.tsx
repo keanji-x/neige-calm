@@ -101,7 +101,7 @@ it('hands the actual edited ACK body from queue to plain accepted display while 
     act(() => { historyRead = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
     await waitFor(() => expect(fixture.historyCount()).toBe(4));
     await act(async () => { fixture.releaseHistory(3); await historyRead; });
-    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: null } }]));
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { kind: 'source', rev: 1, text: edited }, sourceWitness: null }]));
     expect(copies(FIRST_MESSAGE)).toHaveLength(0); expect(copies(edited)).toHaveLength(1);
   } finally { cleanup(); fixture.client.clear(); }
 });
@@ -127,7 +127,7 @@ async function saveQueuedBody(fixture: ReturnType<typeof renderFirstMessageFixtu
   await waitFor(() => expect(fixture.runCount()).toBe(before + 1));
 }
 
-it('keeps an actual PATCH restoring submitted words after a different external unbound source already owned display', async () => {
+it('keeps an actual PATCH restoring submitted words after a different external unbound source was readable', async () => {
   const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
   const external = 'An external revision that was actually shown before the local edit.';
   try {
@@ -139,7 +139,7 @@ it('keeps an actual PATCH restoring submitted words after a different external u
     await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
     const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
-    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ localWrite: null, sourceWitness: { itemId: 7, turnId: null } }]));
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ localWrite: null, inputFact: { kind: 'source', rev: 1, text: external }, sourceWitness: null }]));
     expect(copies(external)).toHaveLength(1);
     fixture.queueAtRevision(external, 1); await readHeldRun(fixture, cardId);
     await saveQueuedBody(fixture, FIRST_MESSAGE, 2);
@@ -182,5 +182,84 @@ it('retains a real identity-bearing CAS revision hint as queue knowledge without
     await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
     expect(copies(latest)).toHaveLength(1); expect(copies(acknowledged)).toHaveLength(0);
     expect(fixture.outbox()).toMatchObject([{ localWrite: { rev: 1, text: acknowledged } }]);
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+it('keeps one first input through provisional withdrawal, same-revision rebuffer, retry and actual bound handoff', async () => {
+  let visible = false; const commits: number[] = [];
+  const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true, harvestedInput: false, onCommit: () => {
+    const count = copies(FIRST_MESSAGE).length; if (count > 0) visible = true; if (visible) commits.push(count);
+  } });
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    const field = await screen.findByRole('combobox', { name: 'Message' });
+    await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
+    await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+    fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
+    await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
+    act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
+    await waitFor(() => expect(document.querySelector('[data-nc-entry] [data-nc-turn="you"]')?.textContent).toBe(FIRST_MESSAGE));
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    const readHistory = async () => {
+      const next = fixture.historyCount(); let read: Promise<void> | null = null;
+      act(() => { read = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
+      await waitFor(() => expect(fixture.historyCount()).toBe(next + 1));
+      await act(async () => { fixture.releaseHistory(next); await read; });
+    };
+    // Failed provider start deletes the provisional row and requeues this exact version.
+    fixture.clearHistory(); fixture.queueOriginal(); await readHistory();
+    expect(copies(FIRST_MESSAGE)).toHaveLength(1);
+    await readHeldRun(fixture, cardId);
+    await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE));
+    expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 0 }, sourceWitness: null }]);
+    fixture.clearQueue(); await readHeldRun(fixture, cardId);
+    await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull());
+    expect(copies(FIRST_MESSAGE)).toHaveLength(1);
+    expect(copies(FIRST_MESSAGE)[0].closest('[data-nc-pending-queue]')).toBeNull();
+    fixture.project(0, FIRST_MESSAGE, true); await readHistory();
+    expect(copies(FIRST_MESSAGE)).toHaveLength(1); expect(fixture.outbox()).toMatchObject([{ sourceWitness: null }]);
+    fixture.project(0); await readHistory();
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { turnId: 'accepted-first-turn', entryRev: 0 } }]));
+    expect(copies(FIRST_MESSAGE)).toHaveLength(1);
+    expect(commits.length).toBeGreaterThan(0); expect(new Set(commits)).toEqual(new Set([1]));
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+it('retains an ordinary folded POST through older same-entry history before its actual queue revision lands', async () => {
+  const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true, running: true, harvestedInput: false });
+  const older = 'Older retained ordinary input A'; const next = 'Newly accepted ordinary input B'; const combined = `${older}\n\n${next}`;
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    const field = await screen.findByRole('combobox', { name: 'Message' });
+    await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
+    await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+    fixture.project(0); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
+    await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
+    act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { turnId: 'accepted-first-turn' } }]));
+    const stableField = await screen.findByRole('combobox', { name: 'Message' });
+    await waitFor(() => expect(stableField.getAttribute('contenteditable')).toBe('true'));
+    // The old provisional source survived cleanup; this browser has not read it or its rebuffered queue yet.
+    fixture.projectOrdinary(0, older, true); fixture.queueOrdinary(older, 0);
+    await userEvent.type(stableField, `${next}{Enter}`);
+    await waitFor(() => expect(fixture.outbox().some(op => op.phase === 'confirmed' && op.queueRevision === null)).toBe(true));
+    await waitFor(() => expect(fixture.historyCount()).toBe(2)); await waitFor(() => expect(fixture.runCount()).toBe(2));
+    act(() => { fixture.releaseHistory(1); });
+    await waitFor(() => expect(copies(older)).toHaveLength(1));
+    expect(copies(next)).toHaveLength(1);
+    expect(fixture.outbox().some(op => op.phase === 'confirmed' && op.queueRevision === null)).toBe(true);
+    act(() => { fixture.releaseRun(1); });
+    await waitFor(() => expect(fixture.outbox().some(op => op.phase === 'confirmed' && op.queueRevision === 1)).toBe(true));
+    expect(document.querySelector('[data-nc-pending-entry="ordinary-entry"]')?.textContent).toContain(next);
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    fixture.clearQueue(); fixture.projectOrdinary(1, combined, false);
+    const read = fixture.historyCount(); let history: Promise<void> | null = null;
+    act(() => { history = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
+    await waitFor(() => expect(fixture.historyCount()).toBe(read + 1));
+    await act(async () => { fixture.releaseHistory(read); await history; });
+    await readHeldRun(fixture, cardId);
+    await waitFor(() => expect(fixture.outbox().every(op => op.phase === 'initial-accepted')).toBe(true));
+    expect(copies(combined)).toHaveLength(1);
+    expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(1);
   } finally { cleanup(); fixture.client.clear(); }
 });

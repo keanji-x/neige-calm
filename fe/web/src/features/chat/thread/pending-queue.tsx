@@ -2,7 +2,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import type { PendingQueueEntry, PlannerQueueWriteOutcome } from '../../../../../core/domain/conversation.ts';
-import type { PendingQueueSend } from '../../../../../core/domain/conversation-outbox.ts';
+import { queueEntryIsAccounted, type QueueDisplayAccounting, type PendingQueueSend } from '../../../../../core/domain/conversation-outbox.ts';
 import { OutgoingMessage } from './outgoing-message.tsx';
 import { MessageActions } from './message-actions.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
@@ -13,8 +13,8 @@ import styles from './pending-queue.module.css';
 
 export type PendingQueueProps = Readonly<{
   entries: readonly PendingQueueEntry[];
-  /** Existing source owners account for these departed identities; alive entries always retain their controls. */
-  reconciledQueueIds: ReadonlySet<string>;
+  /** Declared versioned carriers/suppression cover only departed rows; alive rows retain their controls. */
+  queueDisplayAccounting: QueueDisplayAccounting;
   sending?: readonly PendingQueueSend[];
   overflow: number;
   busy: boolean;
@@ -73,7 +73,7 @@ function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | '
 }
 
 
-export function PendingQueue({ entries, reconciledQueueIds, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onPresenceChange, onSteer }: PendingQueueProps) {
+export function PendingQueue({ entries, queueDisplayAccounting, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onPresenceChange, onSteer }: PendingQueueProps) {
   const mobile = useCompactViewport();
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [writing, setWriting] = useState(false);
@@ -84,8 +84,8 @@ export function PendingQueue({ entries, reconciledQueueIds, sending = NO_SENDS, 
     setObservedSave(savedEntry);
     if (savedEntry !== null) setSaved(previous => new Map(previous).set(savedEntry.entry_id, savedEntry));
   }
-  const [snapshot, setSnapshot] = useState(() => ({ source: entries, saved, reconciledQueueIds, rows: entries }));
-  if (snapshot.source !== entries || snapshot.saved !== saved || snapshot.reconciledQueueIds !== reconciledQueueIds) {
+  const [snapshot, setSnapshot] = useState(() => ({ source: entries, saved, queueDisplayAccounting, rows: entries }));
+  if (snapshot.source !== entries || snapshot.saved !== saved || snapshot.queueDisplayAccounting !== queueDisplayAccounting) {
     const activeIds = new Set(entries.map(entry => entry.entry_id));
     const effective = (entry: PendingQueueEntry) => {
       const accepted = saved.get(entry.entry_id);
@@ -94,17 +94,17 @@ export function PendingQueue({ entries, reconciledQueueIds, sending = NO_SENDS, 
     // Active rows follow server order. Only departing ghosts retain their old neighbor.
     const rows = entries.map(effective);
     snapshot.rows.forEach((row, index) => {
-      if (activeIds.has(row.entry_id) || reconciledQueueIds.has(row.entry_id)) return;
+      if (activeIds.has(row.entry_id) || queueEntryIsAccounted(queueDisplayAccounting, effective(row))) return;
       const next = snapshot.rows.slice(index + 1).find(candidate => activeIds.has(candidate.entry_id));
       const position = next === undefined ? rows.length : rows.findIndex(candidate => candidate.entry_id === next.entry_id);
       rows.splice(position, 0, effective(row));
     });
     // A source handoff removes its old words immediately, instead of animating a duplicate carrier.
     // Ordinary removals still retain their departing neighbor and spring; active entries always win.
-    if ([...saved.keys()].some(id => !activeIds.has(id) && reconciledQueueIds.has(id))) {
-      setSaved(previous => new Map([...previous].filter(([id]) => activeIds.has(id) || !reconciledQueueIds.has(id))));
+    if ([...saved.values()].some(entry => !activeIds.has(entry.entry_id) && queueEntryIsAccounted(queueDisplayAccounting, entry))) {
+      setSaved(previous => new Map([...previous].filter(([id, entry]) => activeIds.has(id) || !queueEntryIsAccounted(queueDisplayAccounting, entry))));
     }
-    setSnapshot({ source: entries, saved, reconciledQueueIds, rows });
+    setSnapshot({ source: entries, saved, queueDisplayAccounting, rows });
   }
   const root = useRef<HTMLElement>(null);
   const [focus, requestFocus] = useState<Readonly<{ kind: 'button' | 'header'; id: string }> | null>(null);

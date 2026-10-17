@@ -116,9 +116,14 @@ so slow reads can finish; explicit refreshes still use the existing query owner.
 Queued evidence outranks stale projections after rebuffer. Exact segment provenance
 deduplicates local words. Later actual history and run reads can display newer
 canonical words while an older queued claim remains unresolved. Once the filtered display
-admits an exact raw source, the accepted op retains its required nullable `sourceWitness`.
-This positive handoff ends creation-specific observation and prevents unloaded pages
-from reclaiming the original display. It does not claim provider delivery. Projected
+admits an exact current source with an actual non-null provider turn, the accepted op
+retains its required nullable `sourceWitness`. This permanent handoff prevents unloaded
+pages from reclaiming the original display; it does not claim execution completed.
+An unbound provisional row contributes positive version/body knowledge and deduplicates
+while present, but can be withdrawn on failed start and rebuffered at the same revision.
+It therefore never becomes a permanent witness: its retained input fact supplies the
+plain copy across withdrawal and the next queue drain. Positive input facts still end
+creation-specific observation; normal history/run owners continue the retry. Projected
 evidence can also retire an unresolved original outside the loaded page after both fresh reads.
 A changed queued body hides the original words immediately and releases input,
 retaining nondrawing receipt bookkeeping until both cached sources catch up. An
@@ -171,9 +176,10 @@ submission or receipt. The queue fold overlays its stored text/revision only on
 an existing same-entry cached row; a real run omission never appends a queue row.
 Until an actual same-entry raw source carries that acknowledged body, the existing
 plain accepted display keeps it readable, with no queued caption or inputSource.
-An actual advancing revision begins a new handoff by clearing its prior source
-witness, even when its body repeats earlier words. Older and repeated facts preserve
-current ownership; page misses never reset it. Every
+The one latest actual provider-bound point remains monotonic across later versions.
+Only an exact current version owns current display; an older point cannot suppress
+newer words, even when their body repeats earlier text. Page misses never erase
+this positive history. Every
 actual local queue-write ACK ends original creation inspection, including edits
 that restore the original text. DELETE reports the removed revision and fences
 that revision and all older ones; only a strictly newer real queue entry restores
@@ -197,13 +203,16 @@ The existing queue-sync owner receives explicit `displayed` and `reported` sourc
 Ordinary sends keep their existing displayed-queue synchronization; accepted inputs
 consume only real reported facts. ACK overlays cannot report themselves as reads.
 The same fact importer drives the selected queue projection and the existing registry
-sync effect. It clears current source ownership only when effective known authority,
-revision or body advances; an older incoming fact may be retained as proof without
-reclaiming display, and repeated same-version/body facts are unchanged. Source matching,
+sync effect. Current source ownership always requires the selected actual version. An older
+incoming fact may be retained as proof without reclaiming display, and repeated
+same-version/body facts are unchanged. Source matching,
 unbound-source suppression, cached-row overlays and plain readable copies all use
-that one current version. A raw point can witness only its declared entry revision,
-regardless of equal words. Legacy sources explicitly retain an unknown revision;
-no zero revision or old wire-field compatibility is invented. No queue caption or provider delivery is inferred from it.
+that one current version. A provider-bound raw point can witness only its declared entry revision,
+regardless of equal words. The current wire pair remains required nullable. The FE
+decoder explicitly normalizes only a missing pair on the released legacy
+`{observation,event_id}` origin shape to unknown/null; a present malformed or incomplete
+pair still rejects the whole history page. No old `queue_entry_id` fallback or zero
+revision is invented. No queue caption or provider delivery is inferred from it.
 
 A first positive queue fact also ends the creation-only observation lease, leaving
 normal run/history/event owners responsible for later revisions. A queued inspection
@@ -214,3 +223,31 @@ responses pause periodic retries. A source read failure after a projected observ
 still leaves genuine reconciliation polling active. The record retains at most one
 observed input fact, one latest actual ACK and one source witness for the existing registry
 lifetime; no controller, journal, timer or unbounded list is added.
+
+
+Ordinary input receipts identify an entry but do not report its queue revision.
+Their exact provenance fast path therefore requires an actually known queue revision
+and an eligible raw source revision. With an unknown revision, the existing bounded
+text/high-water reconciliation remains authoritative; different known identities
+cannot consume one another, and known older sources cannot bypass their version
+fence merely because words repeat.
+
+
+The core shares one initial-input placement helper between live display and Registry
+projection. Without actual prior bound evidence, a missing creation prompt follows
+leading real user/system input and precedes response content. After an actual older
+bound version, the later current fallback retains ordinary tail placement, including
+when that older bound point moves off page. Canonical source order stays authoritative;
+ordinary queued/steer tail behavior and the existing #1923 gap remain unchanged. Role
+comes from positive bound source structure and the same bounded witness, never text,
+wall-clock ordering, renderer ID parsing or an inferred new provider turn.
+
+Queue display accounting passes required paired entry references in separate
+`displayed` and `suppressed` arrays. Core derives displayed references only from the
+final visible presentation, after waiting copies move into the queue. A bare accepted
+copy can account at its actual current revision without gaining inputSource; an
+ordinary copy needs an actually known revision. Unknown versions emit no reference.
+Suppression carries the initial-input owner's actual authoritative version, not the
+older cached row's version. The app threads this contract. PendingQueue asks the one
+core comparison about the effective saved departing revision; an older historical
+carrier cannot remove a newer ghost, while live rows always keep their controls.

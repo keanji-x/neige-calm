@@ -612,7 +612,8 @@ it.each([false, true])('admits one ordinary keyed input with healthy real reads 
   try {
     await sendFirst(); fixture.project(0, FIRST_MESSAGE, provisional); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
-    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7 } }]));
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { kind: 'source', rev: 0 },
+      sourceWitness: provisional ? null : { itemId: 7, turnId: 'accepted-first-turn' } }]));
     const field = screen.getByRole('combobox', { name: 'Message' });
     await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
     expect(words()).toHaveLength(1);
@@ -627,12 +628,12 @@ it.each([false, true])('admits one ordinary keyed input with healthy real reads 
 });
 
 
-it('ends the creation observer once actual unbound source owns display while history and run retain refresh', async () => {
+it('ends the creation observer on a positive unbound input fact while history and run retain refresh', async () => {
   const fixture = renderFirstMessageFixture(); focusManager.setFocused(true);
   try {
     await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
-    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: null } }]));
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { kind: 'source', rev: 0 }, sourceWitness: null }]));
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
     const key = queryKeys.initialInput('daily', cardId);
@@ -651,12 +652,12 @@ it('ends the creation observer once actual unbound source owns display while his
   } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); }
 });
 
-it('never reclaims first-input display after its real unbound source moves outside the later history window and reopens', async () => {
+it('never reclaims first-input display after its real provider-bound source moves outside the later history window and reopens', async () => {
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable');
+    await sendFirst(); fixture.project(0); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
-    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: null } }]));
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: 'accepted-first-turn', entryRev: 0 } }]));
     await waitFor(() => expect(words()).toHaveLength(1));
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');

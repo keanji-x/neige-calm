@@ -1,6 +1,6 @@
 import type { AgentProvider, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
 import type { Conversation, CreatedConversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerQueueEditOutcome, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import type { FailedSendOp, PendingQueueSend, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
+import type { FailedSendOp, PendingQueueSend, ReplacedTurn, QueueDisplayAccounting } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import type { UploadAttachment } from '../../features/planner/attachments.tsx';
@@ -25,9 +25,8 @@ export type ConversationStore = Readonly<{
   /** The addressable page of the harness pending queue. */
   pendingQueue: readonly PendingQueueEntry[];
   pendingSends: readonly PendingQueueSend[];
-  /** Departed queue identities accounted for by displayed known input identities, coherent supersession or acknowledged queue departure.
-   * Never suppresses a live queue entry or grants a projected/delivery claim. */
-  reconciledQueueIds: ReadonlySet<string>;
+  /** Versioned displayed carriers and intentional owner suppression; never suppresses an alive queue row. */
+  queueDisplayAccounting: QueueDisplayAccounting;
   editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueEditOutcome>;
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;

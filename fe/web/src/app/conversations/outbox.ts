@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { onlineManager, useQueryClient, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -9,7 +9,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  acknowledgeQueueMutation, initialInputNeedsObservation, withInitialInputSources, outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp, type ObservedInitialInput, type ReportedInput,
+  queueDisplayAccounting, acknowledgeQueueMutation, initialInputNeedsObservation, withInitialInputSources, outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp, type ObservedInitialInput, type ReportedInput, type QueueDisplayAccounting,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
@@ -112,6 +112,8 @@ export function useConversationOutbox({
     [serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed, initialInput],
   );
   const sourcedOps = useMemo(() => withInitialInputSources(observedOps, facts.entries), [observedOps, facts.entries]);
+  const accountQueueDisplay = useCallback((entries: readonly TranscriptEntry[], suppressed: QueueDisplayAccounting['suppressed']) =>
+    queueDisplayAccounting(entries, sourcedOps, suppressed), [sourcedOps]);
   useEffect(() => {
     if (sourcedOps !== ops) editOutbox(cardId, current => withInitialInputSources(synchronizeQueuedSends(current, { displayed: queuedEntries, reported: reportedInput }), facts.entries));
     releaseSettledInitialQueries(client, cardId, sourcedOps);
@@ -211,7 +213,7 @@ export function useConversationOutbox({
   };
 
   return {
-    view,
+    view, accountQueueDisplay,
     /**
      * A press: a new op under a new key, settled when it is answered; `null` when the conversation cannot take it now
      * and nothing was sent, so its words stay where they were typed. `attachments` are ids already uploaded; naming one
