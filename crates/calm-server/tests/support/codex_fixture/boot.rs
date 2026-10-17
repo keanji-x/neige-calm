@@ -304,6 +304,7 @@ pub async fn boot_forge_e2e_fixture(
     codex.codex_bin = codex_bin.display().to_string();
     let codex = Arc::new(codex);
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().join("terminals"),
         proc_supervisor_sock: None,
     });

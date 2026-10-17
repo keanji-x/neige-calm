@@ -138,6 +138,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         None
     };
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().join("terminals"),
         proc_supervisor_sock: requested_sock.or_else(|| {
             supervisor

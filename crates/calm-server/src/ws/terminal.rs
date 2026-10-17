@@ -144,6 +144,19 @@ pub(crate) async fn resolve_live_renderer_under_track_fence(
         )));
     }
 
+    // The original persisted protocol decides recovery. A typed execution is
+    // never probed through a Legacy alias or converted into a guessed exit.
+    if let Some(entry) = crate::routes::terminal::attach_original_registered(
+        s.daemon.as_ref(),
+        s.terminal_renderer.as_ref(),
+        s.repo.as_ref(),
+        &term,
+    )
+    .await?
+    {
+        return Ok(LiveRenderer::Alive(entry));
+    }
+
     if term.exit_code.is_some() {
         tracing::info!(
             terminal_id = %term.id,

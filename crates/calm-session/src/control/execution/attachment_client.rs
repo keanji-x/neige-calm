@@ -49,10 +49,7 @@ impl RegisteredExecutorConnection {
         }
     }
     /// Recover the actual held objects from this same executor boot. A path never fills a gap.
-    pub async fn export(
-        &mut self,
-        request: ExportRegistration,
-    ) -> io::Result<(ObjectRegistrationReceipt, HeldSourceObjects)> {
+    pub async fn export(&mut self, request: ExportRegistration) -> io::Result<RegistrationExport> {
         if request.executor_boot != self.executor_boot {
             return Err(io::Error::other("export executor boot mismatch"));
         }
@@ -78,6 +75,19 @@ impl RegisteredExecutorConnection {
                     && receipt.transfer.executor_boot == self.executor_boot =>
             {
                 receipt
+            }
+            ExecutionReply::RegistrationUnwitnessed {
+                executor_boot,
+                registration,
+                nonce,
+            } if self.mode == ExecutionProtocolMode::RegisteredV3QueryV1
+                && executor_boot == self.executor_boot
+                && registration == request.registration
+                && nonce == request.nonce
+                && files.is_empty() =>
+            {
+                self.in_flight = false;
+                return Ok(RegistrationExport::Unwitnessed);
             }
             _ => return Err(io::Error::other("export receipt/nonce mismatch")),
         };
@@ -105,6 +115,9 @@ impl RegisteredExecutorConnection {
         }
         self.in_flight = false;
         self.registrations.push(receipt.clone());
-        Ok((receipt, held))
+        Ok(RegistrationExport::Held {
+            receipt,
+            objects: held,
+        })
     }
 }

@@ -22,6 +22,7 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
+mod legacy_start;
 pub use control_writer::{INPUT_REVOKED_BEFORE_WRITE, SUBMIT_CR_GAP, WriteShape};
 mod input_authority;
 mod model_view;
@@ -146,6 +147,7 @@ pub struct RendererEntry {
     pub supervisor_sock: PathBuf,
     pub handle: RendererHandle,
     config: RendererConfig,
+    execution: RendererExecution,
     /// Set exactly once when the attach stream delivers `Exited`. Late client pumps replay this
     /// after `ServerHello` because broadcast receivers do not retain history.
     pub exit: SharedExitState,
@@ -165,6 +167,12 @@ pub struct RendererEntry {
     /// the reader ended WITHOUT persisting (an attach-stream read error breaks its loop too).
     exit_persisted: watch::Receiver<bool>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
+}
+
+#[derive(Clone)]
+enum RendererExecution {
+    Legacy,
+    Registered(Arc<crate::operation::terminal_launch::registered::RegisteredExecution>),
 }
 
 /// Outcome of waiting for the attach reader to persist the terminal exit.
@@ -237,7 +245,19 @@ impl RendererEntry {
     }
 
     pub async fn shutdown_signal(&self, sig: ProcSignal) {
-        signal_child_direct(&self.supervisor_sock, &self.proc_id, sig).await;
+        match &self.execution {
+            RendererExecution::Legacy => {
+                signal_child_direct(&self.supervisor_sock, &self.proc_id, sig).await
+            }
+            RendererExecution::Registered(execution) => {
+                if let Err(error) = execution
+                    .control(calm_session::control::execution::ProcessAction::Signal(sig))
+                    .await
+                {
+                    tracing::warn!(terminal_id=%self.terminal_id, %error, "original registered lifecycle signal unavailable");
+                }
+            }
+        }
     }
 
     /// Waits (bounded) for the attach reader to persist the terminal exit. Deliberately does NOT
@@ -298,27 +318,73 @@ pub struct TerminalRendererRegistry {
     /// Installed by [`Self::set_output_wake`] when the projector loop starts; cloned into every
     /// attach reader at spawn.
     output_wake: OutputWake,
+    client: RendererClient,
+}
+
+enum RendererClient {
+    Legacy,
+    Daemon(Arc<crate::state::DaemonClient>),
 }
 
 impl TerminalRendererRegistry {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            entries: StdMutex::new(HashMap::new()),
-            repo: None,
-            task_hook: StdMutex::new(None),
-            hook_settings_dir: StdMutex::new(None),
-            output_wake: Arc::new(StdMutex::new(None)),
+    pub(crate) fn owning_repository(&self) -> crate::error::Result<Arc<dyn RouteRepo>> {
+        self.repo.clone().ok_or_else(|| {
+            crate::error::CalmError::Conflict(
+                "registered renderer requires its original repository".into(),
+            )
         })
+    }
+    pub fn new() -> Arc<Self> {
+        Self::with_client(None, RendererClient::Legacy)
     }
 
     pub fn new_with_repo(repo: Arc<dyn RouteRepo>) -> Arc<Self> {
+        Self::with_client(Some(repo), RendererClient::Legacy)
+    }
+
+    pub(crate) fn new_with_repo_and_daemon(
+        repo: Arc<dyn RouteRepo>,
+        daemon: Arc<crate::state::DaemonClient>,
+    ) -> Arc<Self> {
+        Self::with_client(Some(repo), RendererClient::Daemon(daemon))
+    }
+
+    fn with_client(repo: Option<Arc<dyn RouteRepo>>, client: RendererClient) -> Arc<Self> {
         Arc::new(Self {
             entries: StdMutex::new(HashMap::new()),
-            repo: Some(repo),
+            repo,
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
             output_wake: Arc::new(StdMutex::new(None)),
+            client,
         })
+    }
+
+    pub(crate) async fn stop_original_registered(
+        &self,
+        original: &crate::operation::terminal_launch::registered::OriginalRegisteredLaunch,
+    ) -> crate::error::Result<()> {
+        let RendererClient::Daemon(daemon) = &self.client else {
+            return Err(crate::error::CalmError::Conflict(
+                "original registered Terminal control client is unavailable".into(),
+            ));
+        };
+        let crate::state::TerminalExecutionTransport::Registered(config) = &daemon.execution else {
+            return Err(crate::error::CalmError::Conflict(
+                "original registered Terminal cannot use a Legacy control client".into(),
+            ));
+        };
+        crate::operation::terminal_launch::registered::stop_original(config, original).await?;
+        let id = &original.original.request.identity.process_alias;
+        let entry = self
+            .entries
+            .lock()
+            .map_err(|_| crate::error::CalmError::Internal("renderer registry poisoned".into()))?
+            .remove(id);
+        if let Some(entry) = entry {
+            entry.abort_tasks();
+        }
+        Ok(())
     }
 
     /// Install the activity projector's wake-up sender; idempotent, last write wins. Readers
@@ -405,6 +471,15 @@ impl TerminalRendererRegistry {
         cfg: RendererConfig,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
         self.ensure_with_launch(cfg, None, Establish::AttachRunning)
+            .await
+    }
+
+    pub(crate) async fn attach_prepared(
+        &self,
+        cfg: RendererConfig,
+        execution: Arc<crate::operation::terminal_launch::registered::RegisteredExecution>,
+    ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        self.ensure_with_launch(cfg, None, Establish::Registered(execution))
             .await
     }
 
@@ -543,6 +618,7 @@ impl TerminalRendererRegistry {
                 supervisor_tx,
             },
             config: cfg,
+            execution: RendererExecution::Legacy,
             exit,
             signals: SignalRing::new(),
             last_output_ms: Arc::new(AtomicI64::new(0)),
@@ -610,6 +686,19 @@ impl TerminalRendererRegistry {
     /// Stop the child and wait for its recorded exit, retaining the final screen just as a
     /// natural exit does. The retained entry also makes ensure reuse this ended generation.
     pub(crate) async fn stop_child(&self, entry: &RendererEntry) -> RendererDropOutcome {
+        if let RendererExecution::Registered(execution) = &entry.execution {
+            if let Err(error) = execution.stop().await {
+                tracing::warn!(terminal_id=%entry.terminal_id, %error, "original registered scope not durably drained; retained for recovery");
+                return RendererDropOutcome::Unverified;
+            }
+            let persisted = entry.await_exit_persisted(EXIT_PERSIST_GRACE).await;
+            entry.abort_tasks();
+            return if persisted == ExitPersistWait::Persisted {
+                RendererDropOutcome::ExitPersisted
+            } else {
+                RendererDropOutcome::Unverified
+            };
+        }
         let terminal_id = entry.terminal_id.as_str();
         let term_at = tokio::time::Instant::now();
         entry.shutdown_signal(ProcSignal::Term).await;
@@ -648,12 +737,18 @@ impl TerminalRendererRegistry {
 }
 
 /// How [`TerminalRendererRegistry::ensure_with_launch`] may set up a renderer.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 enum Establish {
     /// Start the terminal's program unless the supervisor already runs it (`EnsureProc`).
     SpawnOrAttach,
     /// Attach to a running child only (#2516).
     AttachRunning,
+    Registered(Arc<crate::operation::terminal_launch::registered::RegisteredExecution>),
+}
+
+enum RendererConnection {
+    Legacy(tokio::net::UnixStream),
+    Registered(Arc<crate::operation::terminal_launch::registered::RegisteredExecution>),
 }
 
 struct EstablishedRenderer {
@@ -662,158 +757,37 @@ struct EstablishedRenderer {
 }
 
 async fn ensure_entry(
-    mut cfg: RendererConfig,
+    cfg: RendererConfig,
     repo: Option<Arc<dyn RouteRepo>>,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
     launch: Option<crate::operation::task_launch::TaskLaunch>,
     output_wake: OutputWake,
     establish: Establish,
 ) -> anyhow::Result<EstablishedRenderer> {
-    use crate::operation::terminal_launch::{self, TerminalStart};
-    // Match the absolute endpoint persisted in the one-use launch record.
-    if !cfg.supervisor_sock.is_absolute() {
-        cfg.supervisor_sock = std::env::current_dir()?.join(&cfg.supervisor_sock);
-    }
-    let start = match repo.as_deref() {
-        Some(repo) => {
-            terminal_launch::resolve(repo, &cfg.terminal_id, &cfg.supervisor_sock, launch).await?
-        }
-        None if launch.is_some() => anyhow::bail!("task launch requires its repository"),
-        None => TerminalStart::Unbound,
-    };
-    let (launch, attach_only) = match start {
-        TerminalStart::Fresh(launch) => (Some(*launch), false),
-        TerminalStart::Unbound => (None, establish == Establish::AttachRunning),
-        TerminalStart::AttachOnly(sock) => {
-            cfg.supervisor_sock = sock;
-            (None, true)
-        }
-    };
-    // A replay alone cannot reconstruct geometry changes from an earlier
-    // server lifetime. Human reattachment remains available; model observation
-    // refuses that unproven projection instead of inventing a fresh screen.
-    // The same fact (no pid persisted before this spawn) is what makes the
-    // replay this lifetime's output for the activity stamp below.
-    let observation_replay_proven = !attach_only
-        && match repo.as_deref() {
-            Some(repo) => repo
-                .terminal_get(&cfg.terminal_id)
-                .await?
-                .is_some_and(|terminal| terminal.pid.is_none()),
-            None => true,
-        };
-    let mut handoff = None;
-    let proc_id = format!("term:{}", cfg.terminal_id);
-    let mut control_conn = match calm_session::control::execution::connect_legacy(
-        &cfg.supervisor_sock,
-    )
-    .await
-    {
-        Ok(connection) => connection,
-        Err(error) => {
-            if let (Some(repo), Some(launch)) = (repo.as_deref(), launch.as_ref())
-                && let Err(reset_error) = terminal_launch::reset_unissued(repo, launch).await
-            {
-                tracing::warn!(terminal_id=%cfg.terminal_id, %reset_error, "unable to record terminal request not sent; ownership retained");
-            }
-            return Err(anyhow::anyhow!(
-                "connect proc supervisor {}: {error}",
-                cfg.supervisor_sock.display()
-            ));
-        }
-    };
-    if !attach_only {
-        let request = ControlMsg::EnsureProc(EnsureProcRequest {
-            proc_id: proc_id.clone(),
-            program: cfg.program.clone(),
-            args: cfg.args.clone(),
-            envs: cfg.envs.clone(),
-            cwd: cfg.cwd.clone(),
-            ready_timeout_ms: 0,
-            io_mode: IoMode::Pty {
-                cols: cfg.cols,
-                rows: cfg.rows,
-            },
-            replay_bytes: cfg.buffer_bytes,
-        });
-        let launch_sock = cfg.supervisor_sock.clone();
-        let launch_proc_id = proc_id.clone();
-        let exchange = async move {
-            write_frame(&mut control_conn, &request)
-                .await
-                .map_err(|error| crate::error::CalmError::Internal(error.to_string()))?;
-            // Unacknowledged launch cleanup remains in the existing bounded reader.
-            let reply = read_control_reply_or_kill(
-                &mut control_conn,
-                SPAWN_CONTROL_READ_TIMEOUT,
-                "spawn",
-                &launch_sock,
-                &launch_proc_id,
+    let attach_running = matches!(establish, Establish::AttachRunning);
+    let (cfg, connection, handoff, observation_replay_proven, execution) = match establish {
+        Establish::Registered(execution) => (
+            cfg,
+            RendererConnection::Registered(execution.clone()),
+            None,
+            execution.observation_replay_proven(),
+            RendererExecution::Registered(execution),
+        ),
+        establish => {
+            let start = legacy_start::start(cfg, repo.clone(), launch, establish).await?;
+            (
+                start.cfg,
+                RendererConnection::Legacy(start.control_conn),
+                start.handoff,
+                start.observation_replay_proven,
+                RendererExecution::Legacy,
             )
-            .await
-            .map_err(|error| crate::error::CalmError::Internal(error.to_string()))?;
-            Ok((reply, control_conn))
-        };
-        let (reply, returned_connection) = match launch.as_ref() {
-            Some(launch) => {
-                let repo = repo
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("task launch requires its repository"))?;
-                match launch.clone().run_observed(repo, exchange).await {
-                    Ok(reply) => reply,
-                    Err(failure) => {
-                        if !failure.effect_started
-                            && let Err(error) = terminal_launch::reset_unissued(repo, launch).await
-                        {
-                            tracing::warn!(terminal_id=%cfg.terminal_id, %error, "could not record unissued terminal request; retaining ownership");
-                        }
-                        if failure.effect_started {
-                            request_terminal_stop(&cfg.supervisor_sock, &cfg.terminal_id).await;
-                        }
-                        return Err(failure.error.into());
-                    }
-                }
-            }
-            None => exchange.await?,
-        };
-        control_conn = returned_connection;
-        // The admission transaction is over before PID and session persistence.
-        match reply {
-            ControlReply::Spawned { pid } => {
-                if let Some(repo) = repo.as_ref() {
-                    match repo.terminal_set_pid(&cfg.terminal_id, Some(pid)).await {
-                        Ok(()) => handoff = launch.map(|launch| (launch, pid)),
-                        Err(e) => tracing::warn!(terminal_id=%cfg.terminal_id, pid, error=%e,
-                            "failed to persist terminal pid after supervisor spawn; ownership retained"),
-                    }
-                }
-            }
-            ControlReply::SpawnFailed {
-                error, disposition, ..
-            } => {
-                if disposition == calm_session::control::SpawnFailedDisposition::NoChildCreated
-                    && let (Some(repo), Some(launch)) = (repo.as_deref(), launch.as_ref())
-                    && launch.terminal_role()
-                        == crate::operation::task_launch::TerminalLaunchRole::BusinessProcess
-                {
-                    terminal_launch::reject_no_child(
-                        repo,
-                        launch,
-                        &cfg.terminal_id,
-                        &cfg.supervisor_sock,
-                    )
-                    .await?;
-                }
-                anyhow::bail!("{error}")
-            }
-            other => anyhow::bail!("unexpected proc-supervisor spawn reply: {other:?}"),
         }
-        match read_control_reply(&mut control_conn, SPAWN_CONTROL_READ_TIMEOUT, "ready").await? {
-            ControlReply::Ready => {}
-            ControlReply::ReadyFailed { error, .. } => anyhow::bail!("{error}"),
-            other => anyhow::bail!("unexpected proc-supervisor ready reply: {other:?}"),
-        }
-    }
+    };
+    let proc_id = match &execution {
+        RendererExecution::Legacy => format!("term:{}", cfg.terminal_id),
+        RendererExecution::Registered(_) => cfg.terminal_id.clone(),
+    };
     #[cfg(feature = "fixtures")]
     attach_hold_for_test::hold(&cfg.terminal_id).await;
     let render_plane: SharedRenderPlane = Arc::new(StdMutex::new(RenderPlane::with_colors(
@@ -843,73 +817,109 @@ async fn ensure_entry(
     let event_rx = event_tx.subscribe();
     let (supervisor_tx, supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
 
-    let control_task = control_writer::spawn_supervisor_control_writer(
-        control_conn,
-        proc_id.clone(),
-        supervisor_rx,
-    );
-
-    let mut attach_conn = calm_session::control::execution::connect_legacy(&cfg.supervisor_sock)
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "connect proc supervisor attach {}: {e}",
-                cfg.supervisor_sock.display()
+    let (control_task, attach_conn, cursor_head, replay) = match connection {
+        RendererConnection::Legacy(control_conn) => {
+            let control_task = control_writer::spawn_supervisor_control_writer(
+                control_conn,
+                proc_id.clone(),
+                supervisor_rx,
+            );
+            let mut attach_conn =
+                calm_session::control::execution::connect_legacy(&cfg.supervisor_sock).await?;
+            write_frame(
+                &mut attach_conn,
+                &ControlMsg::Attach(AttachRequest {
+                    proc_id: proc_id.clone(),
+                    from_cursor: None,
+                    reader_id: "calm-server-renderer".into(),
+                }),
             )
-        })?;
-    write_frame(
-        &mut attach_conn,
-        &ControlMsg::Attach(AttachRequest {
-            proc_id: proc_id.clone(),
-            from_cursor: None,
-            reader_id: "calm-server-renderer".into(),
-        }),
-    )
-    .await?;
-    // Shared with the reader (its only writer after this function); read through the registry by
-    // the activity projector.
-    let last_output_ms = Arc::new(AtomicI64::new(0));
-    let output_capture =
-        match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await? {
-            ControlReply::AttachOk(Attached {
-                cursor_head,
-                replay,
-                running,
-                ..
-            }) => {
-                if establish == Establish::AttachRunning && !running {
-                    control_task.abort();
-                    anyhow::bail!(
-                        "terminal {} has no running child to attach to",
-                        cfg.terminal_id
-                    );
-                }
-                let output_capture =
-                    output_capture::TerminalOutputCapture::shared(cursor_head, &replay);
-                if cursor_head != 0 {
-                    model_view
-                        .lock()
-                        .unwrap()
-                        .invalidate("supervisor history gap before renderer attach");
-                }
-                if !replay.is_empty() {
-                    let effects = match render_plane.lock() {
-                        Ok(mut rp) => rp.on_pty_chunk(replay),
-                        Err(_) => Vec::new(),
-                    };
-                    client_pump::apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
-                    // The supervisor sends no `Output` frame for replayed bytes. A fresh launch's
-                    // replay is output this lifetime printed before the attach and stamps like a
-                    // frame; a reattach replay is an earlier lifetime's screen and stamps nothing.
-                    if observation_replay_proven {
-                        last_output_ms.store(crate::model::now_ms(), Ordering::Relaxed);
+            .await?;
+            match read_control_reply(&mut attach_conn, SPAWN_CONTROL_READ_TIMEOUT, "attach").await?
+            {
+                ControlReply::AttachOk(Attached {
+                    cursor_head,
+                    replay,
+                    running,
+                    ..
+                }) => {
+                    if attach_running && !running {
+                        control_task.abort();
+                        anyhow::bail!(
+                            "terminal {} has no running child to attach to",
+                            cfg.terminal_id
+                        );
                     }
+                    (
+                        control_task,
+                        attach_reader::AttachConnection::Legacy(attach_conn),
+                        cursor_head,
+                        replay,
+                    )
                 }
-                output_capture
+                ControlReply::Error { message, .. } => anyhow::bail!("{message}"),
+                _ => anyhow::bail!("unexpected proc-supervisor attach response"),
             }
-            ControlReply::Error { message, .. } => anyhow::bail!("{message}"),
-            other => anyhow::bail!("unexpected proc-supervisor attach reply: {other:?}"),
+        }
+        RendererConnection::Registered(execution) => {
+            use calm_session::control::execution::{ExecutionReply, ProcessAction};
+            let ExecutionReply::Observation {
+                cursor,
+                output,
+                state,
+                ..
+            } = execution
+                .control(ProcessAction::Observe { from_cursor: None })
+                .await?
+            else {
+                anyhow::bail!("original registered execution observation unavailable");
+            };
+            if !matches!(
+                state,
+                calm_session::control::execution::ExecutionState::Spawned
+                    | calm_session::control::execution::ExecutionState::Exited { .. }
+                    | calm_session::control::execution::ExecutionState::Drained { .. }
+            ) {
+                anyhow::bail!("original registered execution is unresolved; retain for recovery");
+            }
+            let cursor_head = cursor
+                .checked_sub(output.len() as u64)
+                .ok_or_else(|| anyhow::anyhow!("invalid registered output cursor"))?;
+            let task = control_writer::spawn_registered_control_writer(
+                execution.clone(),
+                proc_id.clone(),
+                supervisor_rx,
+            );
+            (
+                task,
+                attach_reader::AttachConnection::Registered {
+                    execution,
+                    cursor,
+                    pending_exit: None,
+                },
+                cursor_head,
+                output,
+            )
+        }
+    };
+    let last_output_ms = Arc::new(AtomicI64::new(0));
+    let output_capture = output_capture::TerminalOutputCapture::shared(cursor_head, &replay);
+    if cursor_head != 0 {
+        model_view
+            .lock()
+            .unwrap()
+            .invalidate("supervisor history gap before renderer attach");
+    }
+    if !replay.is_empty() {
+        let effects = match render_plane.lock() {
+            Ok(mut plane) => plane.on_pty_chunk(replay),
+            Err(_) => Vec::new(),
         };
+        client_pump::apply_broadcaster_effects(&event_tx, &supervisor_tx, effects);
+        if observation_replay_proven {
+            last_output_ms.store(crate::model::now_ms(), Ordering::Relaxed);
+        }
+    }
 
     let (exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
     // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
@@ -949,6 +959,7 @@ async fn ensure_entry(
                 supervisor_tx,
             },
             config: cfg,
+            execution,
             exit,
             signals: SignalRing::new(),
             last_output_ms,

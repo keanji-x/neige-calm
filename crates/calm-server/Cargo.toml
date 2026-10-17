@@ -166,6 +166,14 @@ name = "cooked-shell-child"
 path = "tests/fixtures/cooked-shell-child/main.rs"
 test = false
 
+# The actual supervisor entry point, built as a test-side artifact so the
+# Terminal HTTP integration test can use its real helper and durable executor.
+[[bin]]
+name = "terminal-vertical-supervisor-fixture"
+path = "../calm-proc-supervisor/src/main.rs"
+test = false
+required-features = ["fixtures"]
+
 [dependencies]
 calm-tailnet-control = { path = "../calm-tailnet-control" }
 calm-terminal-view = { path = "../calm-terminal-view" }

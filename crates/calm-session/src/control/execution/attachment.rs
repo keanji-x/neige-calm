@@ -28,3 +28,13 @@ pub struct ExportAcknowledgement {
     pub registration: ObjectRegistrationId,
     pub nonce: TransferNonce,
 }
+
+/// The negative result only reports that this executor holds no objects for
+/// this exact registration. It is neither NoChild nor source-replacement permission.
+pub enum RegistrationExport {
+    Held {
+        receipt: ObjectRegistrationReceipt,
+        objects: workspace::execution::objects::HeldSourceObjects,
+    },
+    Unwitnessed,
+}

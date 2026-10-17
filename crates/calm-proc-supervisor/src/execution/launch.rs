@@ -111,11 +111,23 @@ impl Executor {
             self.persist(record.clone())?;
             return Ok(reply(&record));
         }
-        let result = process::spawn(
+        #[cfg(any(test, feature = "test-support"))]
+        let reader_release = self.output_reader_release.lock().map_err(poison)?.clone();
+        let result = process::spawn_with_reader_hook(
             &self.helper_image,
             cwd.directory(),
             &record.request.specification,
             context,
+            move || {
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(path) = reader_release {
+                    std::fs::write(path.with_extension("ready"), b"actual reader held")
+                        .expect("reader barrier ready");
+                    while !path.exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            },
         );
         let (process, native, reports) = match result {
             Ok(spawned) => spawned,

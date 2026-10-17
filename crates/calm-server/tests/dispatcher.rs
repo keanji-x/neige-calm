@@ -91,6 +91,7 @@ async fn boot() -> (
 
 fn stub_daemon() -> Arc<DaemonClient> {
     Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: PathBuf::from("/tmp/neige-dispatcher-test-noop"),
         proc_supervisor_sock: Some(PathBuf::from(
             "/tmp/neige-dispatcher-test-missing-proc-supervisor.sock",

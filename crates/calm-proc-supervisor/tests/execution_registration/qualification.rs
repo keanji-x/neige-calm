@@ -64,14 +64,20 @@ async fn execution_qualification_received_ext4_objects_reach_prepare_and_real_cw
         original,
         "exact Attach replay retains the immutable receipt"
     );
-    let (_, received) = client
+    let RegistrationExport::Held {
+        receipt: _,
+        objects: received,
+    } = client
         .export(ExportRegistration {
             executor_boot: client.executor_boot().clone(),
             registration: original.id,
             nonce: TransferNonce::fresh().unwrap(),
         })
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("actual retained registration unexpectedly became Unwitnessed");
+    };
     assert_eq!(
         held.live_identity()
             .unwrap()
@@ -108,14 +114,20 @@ async fn execution_qualification_attach_replay_retains_original_open_description
     let receipt = client.attach(attachment.clone(), &original).await.unwrap();
     let fresh = HeldSourceObjects::open(&root.path, true).unwrap();
     assert_eq!(client.attach(attachment, &fresh).await.unwrap(), receipt);
-    let (_, exported) = client
+    let RegistrationExport::Held {
+        receipt: _,
+        objects: exported,
+    } = client
         .export(ExportRegistration {
             executor_boot: client.executor_boot().clone(),
             registration: receipt.id,
             nonce: TransferNonce::fresh().unwrap(),
         })
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("actual retained registration unexpectedly became Unwitnessed");
+    };
     assert_eq!(
         unsafe { libc::flock(exported.root().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0,

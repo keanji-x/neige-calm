@@ -604,7 +604,12 @@ pub(crate) async fn delete_card(
     // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal row must be removed, and its daemon + socket reaped, before the card row delete. Cleanup runs outside the write txn; if it fails the row stays and the sweeper retries next tick. The txn then deletes both rows in one commit under `Event::CardDeleted`.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;
     if let Some(t) = term.as_ref() {
-        reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), t).await;
+        reap_terminal_artifacts_with_renderer(
+            Some(w.terminal_renderer.as_ref()),
+            s.repo.as_ref(),
+            t,
+        )
+        .await?;
     }
     let terminal_id = term.map(|t| t.id);
 

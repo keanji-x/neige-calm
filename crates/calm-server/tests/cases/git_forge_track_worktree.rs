@@ -24,6 +24,7 @@ async fn create_attached_track(fx: &Fixture, cwd: &Path) -> String {
         repo.clone(),
         fx.events.clone(),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: fx._tmp.path().to_path_buf(),
             proc_supervisor_sock: None,
         }),

@@ -4263,6 +4263,7 @@ async fn track_updated_with_closed_at_reconciles_the_child() {
         write.clone(),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
+            execution: crate::state::TerminalExecutionTransport::Legacy,
             data_dir: workspace.path().join("daemon"),
             proc_supervisor_sock: None,
         }),

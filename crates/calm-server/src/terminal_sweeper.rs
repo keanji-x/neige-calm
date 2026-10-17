@@ -337,8 +337,12 @@ async fn reap_resolved(
             Ok(outcome == RendererDropOutcome::ExitPersisted)
         }
         crate::ws::terminal::LiveRenderer::Alive(_) => {
-            reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term)
-                .await;
+            reap_terminal_artifacts_with_renderer(
+                Some(state.terminal_renderer.as_ref()),
+                state.repo.as_ref(),
+                term,
+            )
+            .await?;
             Ok(true)
         }
         crate::ws::terminal::LiveRenderer::ChildExited { exit_code } => {
@@ -378,7 +382,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         state.daemon.proc_supervisor_sock.as_deref(),
     )
     .await?;
-    reap_terminal_artifacts(state, term).await;
+    reap_terminal_artifacts(state, term).await?;
 
     // Audit-log + row delete in one transaction. If the card has already been deleted (the common
     // case), fall back to `EventScope::System`; a missing ancestor never refuses the reap.
@@ -441,14 +445,58 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
 /// Daemon + socket housekeeping for a single terminal row, shared between the sweeper and the
 /// eager-teardown route handlers. Idempotent; the caller owns the row-delete step. Worst-case
 /// latency is `GRACEFUL_KILL_TIMEOUT` when the daemon is hung.
-pub async fn reap_terminal_artifacts(state: &AppState, term: &Terminal) {
-    reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term).await;
+pub async fn reap_terminal_artifacts(state: &AppState, term: &Terminal) -> Result<()> {
+    reap_terminal_artifacts_with_renderer(
+        Some(state.terminal_renderer.as_ref()),
+        state.repo.as_ref(),
+        term,
+    )
+    .await
+}
+
+enum OriginalCleanup {
+    Legacy,
+    Registered,
+}
+
+async fn quiesce_original_registered(
+    renderer: Option<&TerminalRendererRegistry>,
+    repo: &dyn crate::db::RouteRepo,
+    term: &Terminal,
+) -> Result<OriginalCleanup> {
+    use crate::operation::terminal_launch::registered::{self, OriginalLaunch};
+    match registered::lookup(repo, &term.id).await? {
+        OriginalLaunch::Legacy => Ok(OriginalCleanup::Legacy),
+        // The sole launch owner commits its write-once private request before
+        // any per-operation Attach/Prepare/Launch. With no request, no such
+        // effect was issued. A shared anchor remains workspace-owned.
+        OriginalLaunch::AwaitingOriginalRequest => Ok(OriginalCleanup::Registered),
+        OriginalLaunch::Registered(original) => {
+            let renderer = renderer.ok_or_else(|| {
+                crate::error::CalmError::Conflict(
+                    "original registered Terminal requires its owning lifecycle client".into(),
+                )
+            })?;
+            renderer.stop_original_registered(&original).await?;
+            Ok(OriginalCleanup::Registered)
+        }
+    }
 }
 
 pub async fn reap_terminal_artifacts_with_renderer(
     renderer: Option<&TerminalRendererRegistry>,
+    repo: &dyn crate::db::RouteRepo,
     term: &Terminal,
-) {
+) -> Result<()> {
+    if matches!(
+        quiesce_original_registered(renderer, repo, term).await?,
+        OriginalCleanup::Registered
+    ) {
+        if let Some(renderer) = renderer {
+            renderer.remove_hook_settings(term.card_id.as_str());
+        }
+        return Ok(());
+    }
     // 1. Graceful shutdown through the in-process renderer, on a fresh supervisor UDS connection
     // so it bypasses any queued PTY writes stuck behind backpressure.
     if let Some((renderer, entry)) = renderer.and_then(|r| r.get(&term.id).map(|e| (r, e))) {
@@ -493,6 +541,7 @@ pub async fn reap_terminal_artifacts_with_renderer(
             "SIGTERM failed (likely already exited)"
         );
     }
+    Ok(())
 }
 
 /// Preserve unresolved task launch ownership before the existing terminal
@@ -500,9 +549,16 @@ pub async fn reap_terminal_artifacts_with_renderer(
 /// EnsureProc. Observed leader exit does not prove all descendants stopped.
 pub async fn quiesce_terminal_artifacts_for_deletion(
     renderer: Option<&TerminalRendererRegistry>,
+    repo: &dyn crate::db::RouteRepo,
     supervisor_sock: Option<&std::path::Path>,
     term: &Terminal,
 ) -> crate::error::Result<()> {
+    if matches!(
+        quiesce_original_registered(renderer, repo, term).await?,
+        OriginalCleanup::Registered
+    ) {
+        return Ok(());
+    }
     // A renderer entry gives a supervisor-owned `proc_id` to TERM/KILL. Without the entry, the
     // legacy row has no `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
     // and fail closed instead of signaling a possibly recycled pid.

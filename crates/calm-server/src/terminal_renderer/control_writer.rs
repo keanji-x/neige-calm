@@ -50,7 +50,103 @@ pub const INPUT_REVOKED_BEFORE_WRITE: &str =
     "terminal input control or scope was revoked before write";
 
 pub fn spawn_supervisor_control_writer(
-    mut control_conn: UnixStream,
+    control_conn: UnixStream,
+    proc_id: String,
+    rx: mpsc::UnboundedReceiver<SupervisorControl>,
+) -> JoinHandle<()> {
+    spawn_writer(ControlConnection::Legacy(control_conn), proc_id, rx)
+}
+
+pub(super) fn spawn_registered_control_writer(
+    execution: std::sync::Arc<crate::operation::terminal_launch::registered::RegisteredExecution>,
+    proc_id: String,
+    rx: mpsc::UnboundedReceiver<SupervisorControl>,
+) -> JoinHandle<()> {
+    spawn_writer(ControlConnection::Registered(execution), proc_id, rx)
+}
+
+enum ControlConnection {
+    Legacy(UnixStream),
+    Registered(std::sync::Arc<crate::operation::terminal_launch::registered::RegisteredExecution>),
+}
+
+impl ControlConnection {
+    async fn exchange(&mut self, message: ControlMsg) -> anyhow::Result<ControlReply> {
+        use calm_session::control::execution::{ExecutionReply, ProcessAction};
+        match self {
+            Self::Legacy(stream) => {
+                write_frame(stream, &message).await?;
+                Ok(read_frame::<ControlReply, _>(stream).await?)
+            }
+            Self::Registered(execution) => match message {
+                ControlMsg::WriteStdin(request) => {
+                    let mut remaining = request.bytes.as_slice();
+                    while !remaining.is_empty() {
+                        match execution
+                            .control(ProcessAction::WriteStdin {
+                                bytes: remaining.to_vec(),
+                            })
+                            .await?
+                        {
+                            ExecutionReply::StdinProgress { accepted_bytes }
+                                if accepted_bytes <= remaining.len() =>
+                            {
+                                remaining = &remaining[accepted_bytes..];
+                                if accepted_bytes == 0 {
+                                    tokio::time::sleep(Duration::from_millis(5)).await;
+                                }
+                            }
+                            _ => anyhow::bail!("registered terminal write not acknowledged"),
+                        }
+                    }
+                    Ok(ControlReply::WriteAck {
+                        write_seq: request.write_seq.unwrap_or(0),
+                    })
+                }
+                ControlMsg::ResizePty(request) => {
+                    anyhow::ensure!(
+                        matches!(
+                            execution
+                                .control(ProcessAction::Resize {
+                                    cols: request.cols,
+                                    rows: request.rows,
+                                    pixel_w: request.pixel_w,
+                                    pixel_h: request.pixel_h,
+                                })
+                                .await?,
+                            ExecutionReply::ActionComplete
+                        ),
+                        "registered resize refused"
+                    );
+                    Ok(ControlReply::ResizeOk)
+                }
+                ControlMsg::Signal(request) => {
+                    anyhow::ensure!(
+                        matches!(
+                            execution.revoke().await?,
+                            ExecutionReply::RevocationAcknowledged { .. }
+                        ),
+                        "registered entry revocation refused"
+                    );
+                    anyhow::ensure!(
+                        matches!(
+                            execution
+                                .control(ProcessAction::Signal(request.sig))
+                                .await?,
+                            ExecutionReply::ActionComplete
+                        ),
+                        "registered lifecycle signal refused"
+                    );
+                    Ok(ControlReply::SignalOk)
+                }
+                _ => anyhow::bail!("invalid renderer control operation"),
+            },
+        }
+    }
+}
+
+fn spawn_writer(
+    mut control_conn: ControlConnection,
     proc_id: String,
     mut rx: mpsc::UnboundedReceiver<SupervisorControl>,
 ) -> JoinHandle<()> {
@@ -76,8 +172,6 @@ pub fn spawn_supervisor_control_writer(
                         }
                         continue;
                     };
-                    // One admitted item may be two physical writes (text, gap, CR); both sequence numbers are
-                    // reserved before the first byte, and the one 5 s budget, guard and InputAck span both round trips.
                     let parts = write_parts(data, shape);
                     let first = physical_sequence;
                     let Some(last) = physical_sequence.checked_add(parts.len() as u64) else {
@@ -91,16 +185,14 @@ pub fn spawn_supervisor_control_writer(
                                 tokio::time::sleep(SUBMIT_CR_GAP).await;
                             }
                             let next = first + index as u64 + 1;
-                            write_frame(
-                                &mut control_conn,
-                                &ControlMsg::WriteStdin(WriteStdinRequest {
+                            match control_conn
+                                .exchange(ControlMsg::WriteStdin(WriteStdinRequest {
                                     proc_id: proc_id.clone(),
                                     bytes,
                                     write_seq: Some(next),
-                                }),
-                            )
-                            .await?;
-                            match read_frame::<ControlReply, _>(&mut control_conn).await? {
+                                }))
+                                .await?
+                            {
                                 ControlReply::WriteAck { write_seq } if write_seq == next => {}
                                 _ => anyhow::bail!("supervisor did not acknowledge terminal write"),
                             }
@@ -127,55 +219,34 @@ pub fn spawn_supervisor_control_writer(
                     }
                 }
                 SupervisorControl::Resize { cols, rows } => {
-                    if cols == 0 || rows == 0 {
-                        continue;
-                    }
-                    if let Err(e) = write_frame(
-                        &mut control_conn,
-                        &ControlMsg::ResizePty(ResizePtyRequest {
+                    match control_conn
+                        .exchange(ControlMsg::ResizePty(ResizePtyRequest {
                             proc_id: proc_id.clone(),
                             cols,
                             rows,
                             pixel_w: 0,
                             pixel_h: 0,
-                        }),
-                    )
-                    .await
+                        }))
+                        .await
                     {
-                        tracing::warn!(error = %e, "failed to send supervisor ResizePty");
-                        break;
-                    }
-                    match read_frame::<ControlReply, _>(&mut control_conn).await {
                         Ok(ControlReply::ResizeOk) => {}
-                        Ok(other) => {
-                            tracing::warn!(reply = ?other, "unexpected supervisor resize reply")
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read supervisor ResizeOk");
+                        other => {
+                            tracing::warn!(?other, "terminal resize not acknowledged");
                             break;
                         }
                     }
                 }
                 SupervisorControl::Signal(sig) => {
-                    if let Err(e) = write_frame(
-                        &mut control_conn,
-                        &ControlMsg::Signal(SignalRequest {
+                    match control_conn
+                        .exchange(ControlMsg::Signal(SignalRequest {
                             proc_id: proc_id.clone(),
                             sig,
-                        }),
-                    )
-                    .await
+                        }))
+                        .await
                     {
-                        tracing::warn!(error = %e, "failed to send supervisor Signal");
-                        break;
-                    }
-                    match read_frame::<ControlReply, _>(&mut control_conn).await {
                         Ok(ControlReply::SignalOk) => {}
-                        Ok(other) => {
-                            tracing::warn!(reply = ?other, "unexpected supervisor signal reply")
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read supervisor SignalOk");
+                        other => {
+                            tracing::warn!(?other, "terminal signal not acknowledged");
                             break;
                         }
                     }

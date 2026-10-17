@@ -1,4 +1,5 @@
 mod child_environment;
+pub use child_environment::allowed_environment;
 #[cfg(target_os = "linux")]
 pub mod execution;
 #[cfg(not(target_os = "linux"))]
@@ -320,6 +321,15 @@ impl ProcRegistry {
         Ok(self)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_output_reader_release_for_test(self, path: PathBuf) -> anyhow::Result<Self> {
+        self.executor
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing test executor"))?
+            .set_output_reader_release_for_test(path)?;
+        Ok(self)
+    }
+
     fn legacy_gate(&self, alias: &str) -> anyhow::Result<Arc<Mutex<()>>> {
         Ok(self
             .legacy_gates
@@ -551,10 +561,12 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
     let mut negotiated: Option<(ExecutionProtocolMode, workspace::execution::CapabilityToken)> =
         None;
     loop {
-        let incoming = if negotiated
-            .as_ref()
-            .is_some_and(|(mode, _)| *mode == ExecutionProtocolMode::RegisteredV3)
-        {
+        let incoming = if negotiated.as_ref().is_some_and(|(mode, _)| {
+            matches!(
+                mode,
+                ExecutionProtocolMode::RegisteredV3 | ExecutionProtocolMode::RegisteredV3QueryV1
+            )
+        }) {
             calm_session::control::execution::rights::receive::<ControlMsg>(&stream)
                 .await
                 .map_err(FrameError::Io)
@@ -590,9 +602,12 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         {
             let reply = match &registry.executor {
                 Some(executor)
-                    if hello.mode == ExecutionProtocolMode::RegisteredV3
-                        && hello.required_contract
-                            == calm_session::control::execution::EXECUTION_ENVELOPE_VERSION
+                    if matches!(
+                        hello.mode,
+                        ExecutionProtocolMode::RegisteredV3
+                            | ExecutionProtocolMode::RegisteredV3QueryV1
+                    ) && hello.required_contract
+                        == calm_session::control::execution::EXECUTION_ENVELOPE_VERSION
                         && executor.authenticates(&hello.client_secret) =>
                 {
                     negotiated = Some((hello.mode.clone(), hello.client_secret.clone()));
@@ -625,7 +640,11 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         let typed = matches!(&msg, ControlMsg::Execution(_));
         let correct_mode = negotiated.as_ref().is_some_and(|(mode, _)| {
             if typed {
-                *mode == ExecutionProtocolMode::RegisteredV3
+                if matches!(&msg, ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::Query(_))) {
+                    *mode == ExecutionProtocolMode::RegisteredV3QueryV1
+                } else {
+                    matches!(mode, ExecutionProtocolMode::RegisteredV3 | ExecutionProtocolMode::RegisteredV3QueryV1)
+                }
             } else {
                 *mode == ExecutionProtocolMode::LegacyWorktree
             }
@@ -745,11 +764,11 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     .executor
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("registered executor unavailable"))?;
-                let (_, secret) = negotiated
+                let (mode, secret) = negotiated
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("handshake missing"))?;
                 executor
-                    .serve_registered(&stream, secret, *request, descriptors)
+                    .serve_registered(&stream, secret, mode, *request, descriptors)
                     .await?;
             }
         }

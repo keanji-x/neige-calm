@@ -87,14 +87,20 @@ async fn execution_attachment_export_retains_live_objects_after_kernel_connectio
     assert_eq!(persisted, original);
     drop(client); // No sender lease remains. The receiver's original open descriptions keep continuity.
     let mut recovered = harness.connect().await;
-    let (receipt, held) = recovered
+    let RegistrationExport::Held {
+        receipt: receipt,
+        objects: held,
+    } = recovered
         .export(ExportRegistration {
             executor_boot: recovered.executor_boot().clone(),
             registration: original.id.clone(),
             nonce: TransferNonce::fresh().unwrap(),
         })
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("actual retained registration unexpectedly became Unwitnessed");
+    };
     assert_eq!(receipt, original);
     assert_eq!(held.shape(), &original.transfer.shape);
     let duplicate = held.try_clone().unwrap();
@@ -484,7 +490,11 @@ async fn execution_attachment_lost_ack_recovers_by_frozen_registration_id() {
                 nonce: TransferNonce::fresh().unwrap(),
             })
             .await;
-        if let Ok((receipt, held)) = result {
+        if let Ok(RegistrationExport::Held {
+            receipt,
+            objects: held,
+        }) = result
+        {
             assert_eq!(receipt.id, frozen.registration_id);
             assert_eq!(receipt.transfer, frozen);
             assert_eq!(held.shape(), &receipt.transfer.shape);

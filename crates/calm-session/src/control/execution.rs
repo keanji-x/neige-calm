@@ -33,6 +33,7 @@ pub struct ExecutionHandshake {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionProtocolMode {
     RegisteredV3,
+    RegisteredV3QueryV1,
     LegacyWorktree,
 }
 
@@ -114,6 +115,9 @@ pub enum ExecutionRequest {
     ExportAck(ExportAcknowledgement),
     Prepare(PrepareExecution),
     Launch(ConsumeExecution),
+    /// Read this exact original ticket's journal. This cannot prepare, fork,
+    /// reopen a source or infer NoChild from a missing record.
+    Query(ConsumeExecution),
     Revoke(ConsumeExecution),
     Control(ExecutionControl),
     ObserveDirectories(Box<DirectoryRelationRequest>),
@@ -181,6 +185,11 @@ pub enum ExecutionReply {
         nonce: TransferNonce,
     },
     ExportAcknowledged,
+    RegistrationUnwitnessed {
+        executor_boot: ExecutorBootId,
+        registration: ObjectRegistrationId,
+        nonce: TransferNonce,
+    },
     RegistrationRetired {
         registration: ObjectRegistrationId,
     },
@@ -303,12 +312,35 @@ pub struct RegisteredExecutorConnection {
     executor_boot: ExecutorBootId,
     registrations: Vec<ObjectRegistrationReceipt>,
     in_flight: bool,
+    mode: ExecutionProtocolMode,
 }
 
 impl RegisteredExecutorConnection {
     pub async fn connect(
         path: impl AsRef<std::path::Path>,
         client_secret: CapabilityToken,
+    ) -> std::io::Result<Self> {
+        Self::connect_mode(path, client_secret, ExecutionProtocolMode::RegisteredV3).await
+    }
+
+    /// Explicit opt-in: an old v3 peer cannot acknowledge the original-ticket
+    /// query contract. Refusal never retries under a weaker profile.
+    pub async fn connect_with_query(
+        path: impl AsRef<std::path::Path>,
+        client_secret: CapabilityToken,
+    ) -> std::io::Result<Self> {
+        Self::connect_mode(
+            path,
+            client_secret,
+            ExecutionProtocolMode::RegisteredV3QueryV1,
+        )
+        .await
+    }
+
+    async fn connect_mode(
+        path: impl AsRef<std::path::Path>,
+        client_secret: CapabilityToken,
+        mode: ExecutionProtocolMode,
     ) -> std::io::Result<Self> {
         let mut stream = tokio::net::UnixStream::connect(path).await?;
         crate::write_frame(
@@ -317,7 +349,7 @@ impl RegisteredExecutorConnection {
                 ExecutionHandshake {
                     required_contract: EXECUTION_ENVELOPE_VERSION,
                     client_secret,
-                    mode: ExecutionProtocolMode::RegisteredV3,
+                    mode: mode.clone(),
                 },
             ))),
         )
@@ -325,9 +357,20 @@ impl RegisteredExecutorConnection {
         .map_err(std::io::Error::other)?;
         let reply = crate::read_frame::<super::ControlReply, _>(&mut stream)
             .await
-            .map_err(std::io::Error::other)?;
+            .map_err(|error| {
+                if mode == ExecutionProtocolMode::RegisteredV3QueryV1 {
+                    std::io::Error::new(std::io::ErrorKind::Unsupported, error)
+                } else {
+                    std::io::Error::other(error)
+                }
+            })?;
         let super::ControlReply::Execution(reply) = reply else {
-            return Err(std::io::Error::other(
+            return Err(std::io::Error::new(
+                if mode == ExecutionProtocolMode::RegisteredV3QueryV1 {
+                    std::io::ErrorKind::Unsupported
+                } else {
+                    std::io::ErrorKind::Other
+                },
                 "registered executor negotiation refused",
             ));
         };
@@ -335,14 +378,20 @@ impl RegisteredExecutorConnection {
             ExecutionReply::Handshake {
                 envelope_version: EXECUTION_ENVELOPE_VERSION,
                 executor_boot,
-                mode: ExecutionProtocolMode::RegisteredV3,
-            } => Ok(Self {
+                mode: echoed,
+            } if echoed == mode => Ok(Self {
                 stream,
                 executor_boot,
                 registrations: Vec::new(),
                 in_flight: false,
+                mode,
             }),
-            _ => Err(std::io::Error::other(
+            _ => Err(std::io::Error::new(
+                if mode == ExecutionProtocolMode::RegisteredV3QueryV1 {
+                    std::io::ErrorKind::Unsupported
+                } else {
+                    std::io::ErrorKind::Other
+                },
                 "registered executor negotiation refused",
             )),
         }
@@ -363,6 +412,14 @@ impl RegisteredExecutorConnection {
         Ok(())
     }
     pub async fn request(&mut self, request: ExecutionRequest) -> std::io::Result<ExecutionReply> {
+        if matches!(request, ExecutionRequest::Query(_))
+            && self.mode != ExecutionProtocolMode::RegisteredV3QueryV1
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "original-ticket query was not negotiated",
+            ));
+        }
         if matches!(request, ExecutionRequest::Handshake(_)) {
             return Err(std::io::Error::other("connection already negotiated"));
         }

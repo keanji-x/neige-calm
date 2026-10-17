@@ -16,6 +16,76 @@ use crate::terminal_renderer::output_capture::SharedTerminalOutputCapture;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
+pub(super) enum AttachConnection {
+    Legacy(UnixStream),
+    Registered {
+        execution: Arc<crate::operation::terminal_launch::registered::RegisteredExecution>,
+        cursor: u64,
+        pending_exit: Option<(Option<i32>, bool)>,
+    },
+}
+
+impl AttachConnection {
+    async fn read(&mut self, proc_id: &str) -> anyhow::Result<ControlReply> {
+        use calm_session::control::execution::{ExecutionReply, ExecutionState, ProcessAction};
+        match self {
+            Self::Legacy(stream) => Ok(read_frame::<ControlReply, _>(stream).await?),
+            Self::Registered {
+                execution,
+                cursor,
+                pending_exit,
+            } => loop {
+                if let Some((status, signalled)) = pending_exit.take() {
+                    return Ok(ControlReply::Exited {
+                        proc_id: proc_id.into(),
+                        status,
+                        signalled,
+                        cursor: *cursor,
+                    });
+                }
+                let reply = execution
+                    .control(ProcessAction::Observe {
+                        from_cursor: Some(*cursor),
+                    })
+                    .await?;
+                let ExecutionReply::Observation {
+                    state,
+                    cursor: next,
+                    output,
+                    ..
+                } = reply
+                else {
+                    anyhow::bail!("registered observation refused");
+                };
+                if next < *cursor || next.saturating_sub(*cursor) != output.len() as u64 {
+                    anyhow::bail!("registered terminal output has a replay gap");
+                }
+                let previous = *cursor;
+                *cursor = next;
+                match state {
+                    ExecutionState::Drained { status } => {
+                        *pending_exit = Some((status, status.is_none()))
+                    }
+                    ExecutionState::Spawned | ExecutionState::Exited { .. } => {}
+                    _ => anyhow::bail!(
+                        "original registered execution is unavailable; recovery required"
+                    ),
+                }
+                if !output.is_empty() {
+                    return Ok(ControlReply::Output {
+                        proc_id: proc_id.into(),
+                        cursor: previous,
+                        bytes: output,
+                    });
+                }
+                if pending_exit.is_none() {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+        }
+    }
+}
+
 struct ObservationSource {
     plane: SharedRenderPlane,
     exited: bool,
@@ -31,8 +101,8 @@ impl Drop for ObservationSource {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn spawn_supervisor_attach_reader(
-    mut attach_conn: UnixStream,
+pub(super) fn spawn_supervisor_attach_reader(
+    mut attach_conn: AttachConnection,
     proc_id: String,
     render_plane: SharedRenderPlane,
     exit: SharedExitState,
@@ -60,7 +130,7 @@ pub fn spawn_supervisor_attach_reader(
         };
         let mut exited_tx = Some(exited_tx);
         loop {
-            match read_frame::<ControlReply, _>(&mut attach_conn).await {
+            match attach_conn.read(&proc_id).await {
                 Ok(ControlReply::Output { bytes, .. }) => {
                     // One atomic swap: the previous stamp decides whether
                     // this frame is a leading edge (quiet → output); there

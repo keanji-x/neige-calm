@@ -30,6 +30,8 @@ use super::{
     ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
+pub(crate) mod admission;
+mod registered;
 mod target;
 
 pub type SpawnHook = Arc<
@@ -255,7 +257,7 @@ impl ProviderAdapter for TerminalAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<TxOutput> {
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
@@ -275,12 +277,17 @@ impl ProviderAdapter for TerminalAdapter {
         let runtime_id = payload.worker_session_id.clone().unwrap_or_else(new_id);
         let track_id = payload.request.track_id.clone();
         // An empty request `cwd` is resolved here, not in normalization: a default materialized into the operation payload would enter `stable_payload_hash`.
-        let cwd = terminal_cwd_or_track_workspace(
-            tx,
-            &track_id,
-            explicit_terminal_cwd(Some(payload.request.cwd.clone())),
-        )
-        .await?;
+        let cwd = if let Some(grant) = admission::TerminalExecutionGrant::load_tx(tx, op).await? {
+            grant.require_current_tx(tx).await?;
+            grant.input.path().to_owned()
+        } else {
+            terminal_cwd_or_track_workspace(
+                tx,
+                &track_id,
+                explicit_terminal_cwd(Some(payload.request.cwd.clone())),
+            )
+            .await?
+        };
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
@@ -305,6 +312,13 @@ impl ProviderAdapter for TerminalAdapter {
             payload.planner_hooks,
         )
         .await?;
+        let linked = sqlx::query("UPDATE terminals SET launch_operation_id=?1 WHERE id=?2 AND launch_operation_id IS NULL")
+            .bind(&op.id).bind(&term.id).execute(&mut **tx).await?.rows_affected();
+        if linked != 1 {
+            return Err(CalmError::Conflict(
+                "Terminal original launch relationship changed".into(),
+            ));
+        }
         let event = Event::CardAdded(card.clone());
         let runtime_event = Event::WorkerSessionStarted {
             worker_session_id: runtime_id.clone(),
@@ -363,7 +377,7 @@ impl ProviderAdapter for TerminalAdapter {
     async fn spawn_side_effect(
         &self,
         output: &TxOutput,
-        _op: &Operation,
+        op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output_card_id(output)?;
@@ -382,10 +396,35 @@ impl ProviderAdapter for TerminalAdapter {
             settings.write_settings(&card_id)?;
         }
 
-        match self
-            .spawn_terminal_from_output(terminal_id.clone(), program, cwd, env, ctx)
-            .await
-        {
+        let grant = {
+            let pool = ctx.operation_repo.sqlite_pool();
+            let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+            let grant = admission::TerminalExecutionGrant::load_tx(&mut tx, op).await?;
+            if let Some(grant) = &grant {
+                if grant.contract == admission::TerminalExecutionContract::Legacy
+                    || super::execution_request::load_tx(&mut tx, op)
+                        .await?
+                        .is_none()
+                {
+                    super::admission::require_live_claim_tx(&mut tx, op).await?;
+                    grant.require_current_tx(&mut tx).await?;
+                }
+            }
+            tx.commit().await?;
+            grant
+        };
+        let spawned = match grant {
+            Some(ref grant)
+                if grant.contract == admission::TerminalExecutionContract::Registered =>
+            {
+                registered::spawn(op, output, ctx, grant).await
+            }
+            _ => {
+                self.spawn_terminal_from_output(terminal_id.clone(), program, cwd, env, ctx)
+                    .await
+            }
+        };
+        match spawned {
             Ok(handle) => {
                 let status_result: Result<()> = async {
                     let existing = ctx.repo.session_projection_active_for_card(&card_id).await?;
@@ -547,8 +586,12 @@ impl ProviderAdapter for TerminalAdapter {
         let track = TrackId::from(track_id);
         let scope = card_scope(ctx.repo.as_ref(), card.clone(), track.clone()).await?;
         if let Some(term) = ctx.repo.terminal_get(&terminal_id).await? {
-            reap_terminal_artifacts_with_renderer(Some(ctx.terminal_renderer.as_ref()), &term)
-                .await;
+            reap_terminal_artifacts_with_renderer(
+                Some(ctx.terminal_renderer.as_ref()),
+                ctx.repo.as_ref(),
+                &term,
+            )
+            .await?;
         }
         let cache = self.card_role_cache.clone();
         let write = crate::state::WriteContext::new(

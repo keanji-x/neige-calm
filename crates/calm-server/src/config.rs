@@ -48,6 +48,15 @@ pub struct Config {
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
     pub proc_supervisor_sock: Option<PathBuf>,
 
+    /// Authenticated registered-execution endpoint. Both fields are required;
+    /// absence of the pair keeps existing callers on their Legacy contract.
+    #[arg(long, requires = "terminal_executor_key_file")]
+    pub terminal_executor_sock: Option<PathBuf>,
+
+    /// Explicit kernel client capability file for the registered endpoint.
+    #[arg(long, requires = "terminal_executor_sock")]
+    pub terminal_executor_key_file: Option<PathBuf>,
+
     /// Extra browser origin (typically a dev frontend) trusted for CORS and for
     /// cookie-authenticated writes and WS upgrades. Unset: only calm's own origins.
     #[arg(long, env = "CALM_ALLOWED_ORIGIN", value_parser = crate::auth::parse_origin)]

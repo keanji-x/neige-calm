@@ -6,6 +6,7 @@ use crate::error::{CalmError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+pub(crate) mod registered;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -115,6 +116,9 @@ pub(crate) async fn resolve(
         let card: String = sqlx::query_scalar("SELECT card_id FROM terminals WHERE id=?1")
             .bind(&terminal_id).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound(format!("terminal {terminal_id}")))?;
+        if !matches!(registered::lookup_tx(tx, &terminal_id).await?, registered::OriginalLaunch::Legacy) {
+            return Err(CalmError::Conflict("registered Terminal requires its original executor control; Legacy launch/attach refused".into()));
+        }
         let rows: Vec<(String,String,Option<String>,String)> = sqlx::query_as(&format!(
             "SELECT id,phase,lease_owner,tx_output_json {WORKER_OPS_OF_CARD} LIMIT 2"
         )).bind(&card).fetch_all(&mut **tx).await?;

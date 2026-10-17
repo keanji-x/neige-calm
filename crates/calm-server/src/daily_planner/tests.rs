@@ -19,6 +19,7 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, Arc<SqlxRepo>, AppState) {
     let tracks = TrackAreaCache::new();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
+        execution: crate::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().join("data"),
         proc_supervisor_sock: None,
     });

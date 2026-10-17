@@ -2,6 +2,7 @@
 //! Cookies are HttpOnly and SameSite=Strict; paired-device grants can survive restart.
 //! `dev_autologin` promotes every request to the owner without a cookie; production must never enable it.
 
+pub(crate) mod execution;
 pub mod login_throttle;
 mod session;
 
@@ -240,18 +241,7 @@ fn session_cookies(headers: &HeaderMap) -> impl Iterator<Item = &str> {
 
 /// `None` when there is no valid session AND dev_autologin is off; the caller decides whether to 401.
 pub(crate) fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal> {
-    if state.config.dev_autologin {
-        // Dev mode: a stable synthetic session id so whoami / logout behave consistently; nothing is written to the store.
-        return Some(Principal::from_identity(
-            SessionIdentity::owner(&state.config),
-            "dev-autologin".to_string(),
-        ));
-    }
-    let session = session_cookies(headers).find_map(|id| state.sessions.get(id))?;
-    Some(Principal::from_identity(
-        session.identity,
-        session.session_id,
-    ))
+    execution::resolve(state, headers).map(|session| session.principal().clone())
 }
 
 /// #1780: `SameSite=Strict` still attaches the cookie to pages on another port of the same host,
@@ -323,13 +313,14 @@ pub async fn require_session(
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response> {
-    let Some(principal) = resolve_principal(&auth, &headers) else {
+    let Some(session) = execution::resolve(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
     if checks_origin(request.method()) {
         check_origin(&auth, &headers)?;
     }
-    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(session.principal().clone());
+    request.extensions_mut().insert(session);
     Ok(next.run(request).await)
 }
 
@@ -340,11 +331,12 @@ pub async fn require_session_ws(
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response> {
-    let Some(principal) = resolve_principal(&auth, &headers) else {
+    let Some(session) = execution::resolve(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
     check_origin(&auth, &headers)?;
-    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(session.principal().clone());
+    request.extensions_mut().insert(session);
     Ok(next.run(request).await)
 }
 
@@ -599,6 +591,8 @@ mod tests {
             data_dir: None,
             workspace_root: None,
             proc_supervisor_sock: None,
+            terminal_executor_sock: None,
+            terminal_executor_key_file: None,
             allowed_origin: None,
             preview_ports: None,
             web_dist: None,
@@ -642,6 +636,8 @@ mod tests {
             data_dir: None,
             workspace_root: None,
             proc_supervisor_sock: None,
+            terminal_executor_sock: None,
+            terminal_executor_key_file: None,
             allowed_origin: None,
             preview_ports: None,
             web_dist: None,

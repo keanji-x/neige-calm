@@ -4,20 +4,31 @@ use clap::Parser;
 use std::path::PathBuf;
 use tokio::sync::oneshot;
 
-#[derive(Debug, Parser)]
-#[command(name = "calm-proc-supervisor", version)]
-struct Args {
-    /// Control Unix socket path. In production callers should use
-    /// $CALM_DATA_DIR/proc-supervisor.sock.
-    #[arg(long)]
-    control_sock: PathBuf,
-    /// Durable executor journal, outside workspace-private storage.
-    #[arg(long, requires = "kernel_client_key_file")]
-    execution_state_dir: Option<PathBuf>,
-    /// Kernel-owned JSON capability file; never inherited by launched execution.
-    #[arg(long, requires = "execution_state_dir")]
-    kernel_client_key_file: Option<PathBuf>,
+#[allow(
+    unexpected_cfgs,
+    reason = "This entry point is also built by calm-server under its fixtures feature."
+)]
+mod arguments {
+    use super::*;
+    #[derive(Debug, Parser)]
+    #[command(name = "calm-proc-supervisor", version)]
+    pub(super) struct Args {
+        /// Control Unix socket path. In production callers should use
+        /// $CALM_DATA_DIR/proc-supervisor.sock.
+        #[arg(long)]
+        pub(super) control_sock: PathBuf,
+        /// Durable executor journal, outside workspace-private storage.
+        #[arg(long, requires = "kernel_client_key_file")]
+        pub(super) execution_state_dir: Option<PathBuf>,
+        /// Kernel-owned JSON capability file; never inherited by launched execution.
+        #[arg(long, requires = "execution_state_dir")]
+        pub(super) kernel_client_key_file: Option<PathBuf>,
+        #[cfg(any(feature = "test-support", feature = "fixtures"))]
+        #[arg(long, hide = true)]
+        pub(super) test_output_reader_release: Option<PathBuf>,
+    }
 }
+use arguments::Args;
 
 fn main() -> anyhow::Result<()> {
     let helper_args: Vec<String> = std::env::args().collect();
@@ -34,6 +45,10 @@ fn main() -> anyhow::Result<()> {
         .block_on(serve())
 }
 
+#[allow(
+    unexpected_cfgs,
+    reason = "The shared fixture entry enables the dependency's test-support feature."
+)]
 async fn serve() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -58,6 +73,11 @@ async fn serve() -> anyhow::Result<()> {
         _ => anyhow::bail!("execution journal and client capability must be configured together"),
     };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    #[cfg(any(feature = "test-support", feature = "fixtures"))]
+    let registry = match args.test_output_reader_release {
+        Some(path) => registry.with_output_reader_release_for_test(path)?,
+        None => registry,
+    };
     let listener = bind_control_listener(&args.control_sock)?;
     let serve_task = tokio::spawn(serve_with_listener(
         listener,

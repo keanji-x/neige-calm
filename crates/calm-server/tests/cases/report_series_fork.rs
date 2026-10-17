@@ -81,6 +81,7 @@ async fn boot() -> Boot {
         repo.clone(),
         events,
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: tmp.path().to_path_buf(),
             proc_supervisor_sock: None,
         }),

@@ -188,6 +188,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: std::env::temp_dir().join(format!("neige-loop-pin-{tag}")),
             proc_supervisor_sock: None,
         }),
@@ -642,6 +643,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
         route_repo,
         operation_repo.clone(),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: PathBuf::from("/tmp/neige-loop-pin-dead-worker"),
             proc_supervisor_sock: None,
         }),
@@ -665,6 +667,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
         WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: PathBuf::from("/tmp/neige-loop-pin-dead-worker"),
             proc_supervisor_sock: None,
         }),

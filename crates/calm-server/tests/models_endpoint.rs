@@ -153,6 +153,7 @@ async fn boot(start_daemon: bool, scripted: impl FnOnce(&PathBuf)) -> Boot {
         repo_dyn.clone(),
         events.clone(),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: tmp.path().join("terminals"),
             proc_supervisor_sock: std::env::var_os("CALM_TEST_PROC_SUPERVISOR_SOCK")
                 .map(PathBuf::from),

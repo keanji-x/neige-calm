@@ -2,6 +2,7 @@
 //! interpreted once here; truth owns UserArea membership policy. Ingress owners
 //! revalidate this contract in the transaction committing their protected work.
 use crate::auth::Principal;
+use crate::auth::execution::AreaSubject;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, Result};
 use crate::model::{Area, AreaKind};
@@ -36,23 +37,34 @@ pub(crate) async fn require_area_access_tx(
     principal: &Principal,
     access: AreaAccess,
 ) -> Result<Area> {
+    require_area_access_subject_tx(connection, area_id, principal, access).await
+}
+
+pub(crate) async fn require_area_access_subject_tx(
+    connection: &mut SqliteConnection,
+    area_id: &str,
+    subject: &impl AreaSubject,
+    access: AreaAccess,
+) -> Result<Area> {
     use crate::db::sqlite::area_membership;
-    area_membership::application_user_require_registered(connection, &principal.user_id).await?;
+    area_membership::application_user_require_registered(connection, subject.user_id()).await?;
     let area = area_membership::area_get(connection, area_id).await?;
-    if system_area_access(&area, principal, access)? {
+    if system_area_access(&area, subject, access)? {
         return Ok(area);
     }
     Ok(
-        area_membership::area_require_access(connection, area_id, &principal.user_id, access)
+        area_membership::area_require_access(connection, area_id, subject.user_id(), access)
             .await?,
     )
 }
 
-fn system_area_access(area: &Area, principal: &Principal, access: AreaAccess) -> Result<bool> {
+fn system_area_access(area: &Area, subject: &impl AreaSubject, access: AreaAccess) -> Result<bool> {
     if area.kind != AreaKind::System {
         return Ok(false);
     }
-    require_deployment_owner(principal)?;
+    if !subject.deployment_owner() {
+        return Err(CalmError::Forbidden("deployment owner required".into()));
+    }
     if access == AreaAccess::Delete {
         return Err(CalmError::Forbidden("system Area cannot be deleted".into()));
     }

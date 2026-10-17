@@ -67,6 +67,8 @@ pub struct Executor {
     records: StdMutex<HashMap<ExecutionId, Journal>>,
     aliases: StdMutex<HashMap<String, AliasSlot>>,
     processes: StdMutex<HashMap<ExecutionId, Arc<process::Process>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    output_reader_release: StdMutex<Option<PathBuf>>,
 }
 
 impl Executor {
@@ -218,6 +220,8 @@ impl Executor {
             records: StdMutex::new(records),
             aliases: StdMutex::new(aliases),
             processes: Default::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            output_reader_release: Default::default(),
         });
         executor.store.write("executor.boot", &executor.boot)?;
         Ok(executor)
@@ -225,6 +229,12 @@ impl Executor {
 
     pub fn boot(&self) -> &ExecutorBootId {
         &self.boot
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_output_reader_release_for_test(&self, path: PathBuf) -> anyhow::Result<()> {
+        *self.output_reader_release.lock().map_err(poison)? = Some(path);
+        Ok(())
     }
     pub fn authenticates(&self, secret: &CapabilityToken) -> bool {
         self.config.kernel_client_secret.matches(secret)
@@ -265,6 +275,7 @@ impl Executor {
             }
             ExecutionRequest::Prepare(request) => self.prepare(request).await,
             ExecutionRequest::Launch(request) => self.launch(request).await,
+            ExecutionRequest::Query(request) => self.query(request),
             ExecutionRequest::Revoke(request) => self.revoke(request).await,
             ExecutionRequest::Control(control) => self.control(control).await,
             ExecutionRequest::ObserveDirectories(request) => {
@@ -376,6 +387,17 @@ impl Executor {
         Ok(())
     }
 
+    fn query(&self, request: ConsumeExecution) -> anyhow::Result<ExecutionReply> {
+        // One records-lock snapshot is the read's linearization point. No gate
+        // allocation, persistence repair, source resolution or alias mutation.
+        let original = self.record(&request.execution_id)?;
+        Self::check_ticket(&original, &request)?;
+        Ok(ExecutionReply::Receipt {
+            receipt: original.phase.receipt().cloned(),
+            state: original.observed_state(),
+        })
+    }
+
     async fn revoke(&self, request: ConsumeExecution) -> anyhow::Result<ExecutionReply> {
         let first = self.record(&request.execution_id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;
@@ -457,7 +479,7 @@ impl Executor {
                 };
                 Ok(ExecutionReply::Observation {
                     receipt: Some(receipt.clone()),
-                    state: record.phase.state(),
+                    state: record.observed_state(),
                     cursor,
                     output,
                 })
@@ -588,6 +610,17 @@ impl Executor {
                 && report.context.mechanism == receipt.scope_mechanism,
             "helper report identity mismatch"
         );
+        #[cfg(any(test, feature = "test-support"))]
+        if matches!(report.event, scope_helper::HelperEvent::Drained { .. })
+            && let Some(path) = self.output_reader_release.lock().map_err(poison)?.as_ref()
+        {
+            // The actual event owns its resource gate. A later lifecycle
+            // request cannot pass this report before its existing write.
+            std::fs::write(
+                path.with_extension("drained"),
+                b"validated helper report owns gate",
+            )?;
+        }
         record.phase = match report.event {
             scope_helper::HelperEvent::Started => {
                 if let Some(process) = self.processes.lock().map_err(poison)?.get(id) {

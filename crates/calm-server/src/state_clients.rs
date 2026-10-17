@@ -12,15 +12,29 @@ pub struct DaemonClient {
     /// Control socket for `calm-proc-supervisor`; fixture tests may leave it unset to use an
     /// in-process framed supervisor.
     pub proc_supervisor_sock: Option<PathBuf>,
+    pub execution: crate::terminal_executor_client::TerminalExecutionTransport,
 }
 
 impl DaemonClient {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &Config) -> anyhow::Result<Self> {
+        use crate::terminal_executor_client::{
+            RegisteredExecutorConfig, TerminalExecutionTransport,
+        };
+        let execution = match (&cfg.terminal_executor_sock, &cfg.terminal_executor_key_file) {
+            (Some(socket), Some(key)) => TerminalExecutionTransport::Registered(
+                RegisteredExecutorConfig::from_files(socket, key)?,
+            ),
+            (None, None) => TerminalExecutionTransport::Legacy,
+            _ => anyhow::bail!(
+                "registered executor socket and client key must be configured together"
+            ),
+        };
         let data_dir = cfg.data_dir_resolved().join("terminals");
-        Self {
+        Ok(Self {
             data_dir,
             proc_supervisor_sock: Some(cfg.proc_supervisor_sock_resolved()),
-        }
+            execution,
+        })
     }
 
     /// Placeholder for tests / dev paths that don't have a full `Config`.
@@ -32,6 +46,7 @@ impl DaemonClient {
         Self {
             data_dir: tmp,
             proc_supervisor_sock: None,
+            execution: crate::terminal_executor_client::TerminalExecutionTransport::Legacy,
         }
     }
 
@@ -224,6 +239,7 @@ mod tests {
     fn appserver_sock_path_is_under_user_owned_data_dir_per_card() {
         let data_dir = PathBuf::from("/home/u/.local/share/neige-calm");
         let daemon = DaemonClient {
+            execution: crate::state::TerminalExecutionTransport::Legacy,
             data_dir: data_dir.join("terminals"),
             proc_supervisor_sock: None,
         };

@@ -154,6 +154,26 @@ impl OperationRuntime {
         Ok(op_id)
     }
 
+    pub(crate) async fn submit_admitted(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+        admission: &dyn super::admission::OperationAdmission,
+    ) -> Result<OperationId> {
+        self.adapter(kind)?;
+        let op_id = super::admission::insert_admitted(
+            &self.repo.sqlite_pool(),
+            kind,
+            key,
+            payload,
+            admission,
+        )
+        .await?;
+        self.drive().await?;
+        Ok(op_id)
+    }
+
     /// The operation that already holds this request's key: `Some` for the same payload hash (a
     /// replay), 409 `idempotency_key_reused` for another; `None` when the key is vacant or absent.
     /// A read only: it drives nothing. [`Self::submit`] asks this first. A route whose work starts
@@ -235,9 +255,10 @@ impl OperationRuntime {
         if let Some(term) = self.spawn_ctx.repo.terminal_get_by_card(card_id).await? {
             reap_terminal_artifacts_with_renderer(
                 Some(self.spawn_ctx.terminal_renderer.as_ref()),
+                self.spawn_ctx.repo.as_ref(),
                 &term,
             )
-            .await;
+            .await?;
             if let Some(pid) = term.pid {
                 let verdict = wait_for_pid_exit(pid, Duration::from_secs(2)).await;
                 match verdict {

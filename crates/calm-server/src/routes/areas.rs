@@ -452,6 +452,7 @@ impl PreparedAreaDeletion {
                 if let Some(terminal) = route.repo.terminal_get_by_card(card.id.as_str()).await? {
                     quiesce_terminal_artifacts_for_deletion(
                         Some(worker.terminal_renderer.as_ref()),
+                        route.repo.as_ref(),
                         worker.daemon.proc_supervisor_sock.as_deref(),
                         &terminal,
                     )

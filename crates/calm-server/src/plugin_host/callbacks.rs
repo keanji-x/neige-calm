@@ -509,7 +509,9 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         .await
         .map_err(internal_repo_err)?;
     if let Some(t) = term.as_ref() {
-        reap_terminal_artifacts_with_renderer(None, t).await;
+        reap_terminal_artifacts_with_renderer(None, ctx.repo.as_ref(), t)
+            .await
+            .map_err(internal_repo_err)?;
     }
     let terminal_id = term.map(|t| t.id);
 
