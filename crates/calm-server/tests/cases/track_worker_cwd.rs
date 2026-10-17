@@ -162,12 +162,27 @@ async fn world_with_options(
                 boot.repo.clone(),
                 Arc::new(CodexClient::new_stub()),
                 worker_shared,
-                Some(worker_mcp),
+                Some(worker_mcp.clone()),
                 boot.card_role_cache.clone(),
-                track_areas,
+                track_areas.clone(),
                 workspace_root.to_path_buf(),
             );
-            vec![Arc::new(adapter) as Arc<dyn ProviderAdapter>]
+            let claude =
+                calm_server::operation::claude_adapter::ClaudeWorkerAdapter::new_with_spawn_hook(
+                    boot.repo.clone(),
+                    Arc::new(CodexClient::new_stub()),
+                    Some(worker_mcp),
+                    boot.card_role_cache.clone(),
+                    track_areas,
+                    workspace_root.to_path_buf(),
+                    Arc::new(|_, _, _, _| {
+                        Box::pin(async { Ok(calm_server::operation::SpawnHandle::NoOp) })
+                    }),
+                );
+            vec![
+                Arc::new(adapter) as Arc<dyn ProviderAdapter>,
+                Arc::new(claude),
+            ]
         },
     )
     .await;
@@ -613,3 +628,6 @@ async fn a_worktree_less_attached_track_refuses_workers() {
     assert_eq!(git(&fx.track_root, &["status", "--porcelain"]), status);
     assert_eq!(git(&fx.track_root, &["rev-parse", "HEAD"]), head);
 }
+
+#[path = "track_worker_cwd/preparation_writer.rs"]
+mod preparation_writer;

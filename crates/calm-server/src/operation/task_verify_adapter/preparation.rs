@@ -36,8 +36,7 @@ struct Facts {
 
 struct PreparedVerify {
     // The concrete value never leaves the task-verify owner or enters persisted tx_output.
-    op: Operation,
-    claim: String,
+    claim: crate::operation::preparation_claim::PreparationClaim,
     facts: Facts,
     gate: GateSpec,
     sampled: Option<std::result::Result<target::Sampled, target::SampleFailure>>,
@@ -95,8 +94,7 @@ pub(super) async fn collect(
         None
     };
     Ok(Some(Box::new(PreparedVerify {
-        op: op.clone(),
-        claim: crate::operation::required_lease_owner(op)?.to_owned(),
+        claim: crate::operation::preparation_claim::PreparationClaim::new(op)?,
         facts,
         gate,
         sampled,
@@ -117,19 +115,7 @@ impl PreparedTx for LostClaim {
 #[async_trait]
 impl PreparedTx for PreparedVerify {
     async fn apply(self: Box<Self>, tx: &mut Tx<'_>, op: &Operation) -> Result<PreparedTxResult> {
-        if self.op.id != op.id
-            || self.op.operation_key != op.operation_key
-            || self.op.kind != op.kind
-            || self.op.idempotency_key != op.idempotency_key
-            || self.op.payload_hash != op.payload_hash
-            || self.op.payload != op.payload
-            || self.op.phase != op.phase
-            || self.claim != crate::operation::required_lease_owner(op)?
-        {
-            return Err(CalmError::Internal(
-                "prepared verification belongs to a different operation claim".into(),
-            ));
-        }
+        self.claim.require_operation(op)?;
         // Compare the raw task first, before new admission errors can obscure stale evidence.
         if task_get_tx(tx, &self.facts.task.id).await?.as_ref() != Some(&self.facts.task) {
             return Ok(PreparedTxResult::Stale);

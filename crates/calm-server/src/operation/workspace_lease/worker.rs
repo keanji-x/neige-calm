@@ -262,6 +262,34 @@ async fn prepare_worker_lease_with_tx(
         TaskStart::Checkout => None,
         TaskStart::Upstream => Some(catch_up_tx(tx, track_id, &path, &branch).await?),
     };
+    let mut plan = observe_plan(
+        path.clone(),
+        branch,
+        access,
+        head,
+        base,
+        worktree,
+        track_id,
+        catch_up,
+    )?;
+    let superseded = supersede_stuck_leases_tx(tx, &path).await?;
+    plan.superseded = superseded;
+    Ok(plan)
+}
+
+/// The single base/reader observation, shared by staged ordinary preparation and the two
+/// explicitly retained filesystem-mutating transaction paths. This executes Git.
+#[allow(clippy::too_many_arguments)]
+fn observe_plan(
+    path: PathBuf,
+    branch: String,
+    access: TaskAccess,
+    head: Option<String>,
+    base: Option<String>,
+    worktree: Option<String>,
+    track_id: &str,
+    catch_up: Option<CatchUpFacts>,
+) -> Result<WorkerLeasePlan> {
     // One HEAD sample: the declared head is compared with the base the lease records, so the
     // spawn's base check also holds the declared head.
     let mut base_commit = directory_base(&path)?;
@@ -284,12 +312,11 @@ async fn prepare_worker_lease_with_tx(
             })
         }
     };
-    let superseded = supersede_stuck_leases_tx(tx, &path).await?;
     Ok(WorkerLeasePlan {
         path,
         branch,
         base: base_commit,
-        superseded,
+        superseded: Vec::new(),
         reader,
         catch_up,
     })
@@ -642,3 +669,5 @@ async fn supersede_stuck_leases_tx(tx: &mut Tx<'_>, path: &Path) -> Result<Vec<B
     }
     append_workspace_events_tx(tx, events).await
 }
+
+pub(crate) mod preparation;

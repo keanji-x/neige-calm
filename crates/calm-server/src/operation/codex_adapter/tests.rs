@@ -236,12 +236,12 @@ async fn try_prepare_worker_and_op(
     task_key: &str,
 ) -> Result<(TxOutput, Operation)> {
     let op = claim_worker_operation(harness, key, task_key).await;
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = harness
-        .adapter
-        .prepare_tx(&mut tx, &op.payload, &op)
-        .await?;
-    tx.commit().await.unwrap();
+    let output = crate::operation::tests::prepare_claimed_adapter(
+        harness.repo.clone(),
+        &harness.adapter,
+        &op,
+    )
+    .await?;
     Ok((output, op))
 }
 
@@ -494,8 +494,15 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
     let harness = worker_lease_harness().await;
     let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
     let pending = claim_worker_operation(&harness, "pinned", "pinned").await;
+    let evidence = crate::operation::tests::collect_claimed_preparation(
+        harness.repo.clone(),
+        &harness.adapter,
+        &pending,
+    )
+    .await
+    .unwrap();
     let (prepared, _) = op_repo
-        .prepare_tx_and_advance(&pending, &harness.adapter, None)
+        .prepare_tx_and_advance(&pending, &harness.adapter, evidence)
         .await
         .unwrap()
         .committed()
@@ -693,4 +700,46 @@ async fn worker_lease_is_kernel_policy() {
             .await
             .unwrap();
     assert_eq!(policy, None, "the plain fixture lease is legacy");
+}
+
+#[tokio::test]
+async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
+    let harness = worker_lease_harness().await;
+    let original = claim_worker_operation(&harness, "claim-bound", "claim-bound").await;
+    let prepared = crate::operation::tests::collect_claimed_preparation(
+        harness.repo.clone(),
+        &harness.adapter,
+        &original,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let operations = SqlxOperationRepo::new(harness.repo.pool().clone());
+    sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
+        .bind(now_ms() - 1)
+        .bind(&original.id)
+        .execute(harness.repo.pool())
+        .await
+        .unwrap();
+    let replacement = operations
+        .claim_drive_batch(32)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|op| op.id == original.id)
+        .unwrap();
+    assert_ne!(replacement.lease_owner, original.lease_owner);
+    let before: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"
+    ).fetch_one(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    assert!(prepared.apply(&mut tx, &replacement).await.is_err());
+    let after: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"
+    ).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(
+        after, before,
+        "different claim must be rejected before publication"
+    );
+    tx.rollback().await.unwrap();
 }

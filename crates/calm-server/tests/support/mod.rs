@@ -52,3 +52,6 @@ pub mod worker_flow;
 
 #[allow(dead_code)]
 pub mod planner_timeout_fixture;
+
+#[allow(dead_code)]
+pub mod worker_preparation;

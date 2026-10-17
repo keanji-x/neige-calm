@@ -2001,3 +2001,37 @@ impl ProviderAdapter for TestParkingAdapter {
         Ok(())
     }
 }
+
+pub(super) async fn collect_claimed_preparation(
+    repo: Arc<crate::db::sqlite::SqlxRepo>,
+    adapter: &dyn ProviderAdapter,
+    op: &Operation,
+) -> Result<Option<Box<dyn PreparedTx>>> {
+    let operations = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let ctx = SpawnCtx::new(
+        repo.clone(),
+        operations,
+        Arc::new(DaemonClient::new_stub()),
+        TerminalRendererRegistry::new_with_repo(repo),
+        EventBus::new(),
+        OperationCompletionBus::new(),
+    );
+    adapter.prepare_external(&op.payload, op, &ctx).await
+}
+
+pub(super) async fn prepare_claimed_adapter(
+    repo: Arc<crate::db::sqlite::SqlxRepo>,
+    adapter: &dyn ProviderAdapter,
+    op: &Operation,
+) -> Result<TxOutput> {
+    let prepared = collect_claimed_preparation(repo.clone(), adapter, op)
+        .await?
+        .expect("worker returns one-shot preparation");
+    let mut tx = begin_immediate_tx(repo.pool()).await?;
+    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+    let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, op).await? else {
+        panic!("stable fixture facts became stale");
+    };
+    tx.commit().await?;
+    Ok(output)
+}

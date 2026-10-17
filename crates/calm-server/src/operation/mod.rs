@@ -1127,3 +1127,5 @@ pub(crate) mod worker_attempt;
 
 #[cfg(test)]
 mod prepared_tx_tests;
+
+pub(crate) mod preparation_claim;

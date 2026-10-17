@@ -586,3 +586,66 @@ fn concurrent_materialization_of_one_path_all_succeed() {
 }
 
 include!("claim_tests.rs");
+
+#[cfg(unix)]
+#[test]
+fn observed_managed_metadata_consumption_runs_no_git() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut env = GitEnv::c_locale();
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, path) = sandbox(&tmp);
+    materialize(&root, &path).unwrap();
+    let observation = super::observe_materialized(&path, TRACK).unwrap().unwrap();
+    let exclude = crate::git::git_exclude_path(&path).unwrap();
+    std::fs::write(&exclude, "# metadata removed after observation\n").unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let invoked = tmp.path().join("git-invoked");
+    let shim = bin.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nexit 73\n",
+            invoked.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    env.previous.push(("PATH", std::env::var_os("PATH")));
+    // SAFETY: the existing GitEnv guard serializes this module's Git environment readers.
+    unsafe {
+        std::env::set_var("PATH", &bin);
+    }
+    assert!(super::consume_materialized(observation, &root, &path, TRACK).unwrap());
+    assert!(
+        !invoked.exists(),
+        "steady-state consumption must contain no indirect Git command"
+    );
+    assert!(crate::git::exclude_entry_present(&exclude, super::NEIGE_GIT_EXCLUDE_ENTRY).unwrap());
+}
+
+#[test]
+fn observed_managed_metadata_rechecks_owner_under_path_lock() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, path) = sandbox(&tmp);
+    materialize(&root, &path).unwrap();
+    let observation = super::observe_materialized(&path, TRACK).unwrap().unwrap();
+    super::write_owner_marker(&path, "different-owner").unwrap();
+    assert!(super::consume_materialized(observation, &root, &path, TRACK).is_err());
+    assert!(super::owned_by(&path, "different-owner"));
+}
+
+#[test]
+fn observed_managed_metadata_rejects_replaced_directory_without_repair() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, path) = sandbox(&tmp);
+    materialize(&root, &path).unwrap();
+    let observation = super::observe_materialized(&path, TRACK).unwrap().unwrap();
+    let moved = tmp.path().join("retained-old-directory");
+    std::fs::rename(&path, &moved).unwrap();
+    materialize(&root, &path).unwrap();
+    assert!(!super::consume_materialized(observation, &root, &path, TRACK).unwrap());
+    assert!(super::owned_by(&path, TRACK));
+}
