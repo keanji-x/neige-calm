@@ -1,3 +1,4 @@
+import { mergeTranscript, type ConversationTurn, type TranscriptEntry } from './conversation.js';
 import { describe, expect, it } from 'vitest';
 import type { ConversationInitialInputObservation } from '../api/generated/wire.js';
 import { initialInputObservationOperation, observationMatchesReceipt, receiptMatchesSubmission } from './conversation-initial-input.js';
@@ -420,4 +421,19 @@ it('keeps a later mutable input after actual older bound history and its reply, 
   const seenLate = withInitialInputSources(acknowledgeQueueMutation([accepted], { card_id: 'card', entry_id: receipt.entryId, rev: 1, text: 'Later actual input B' }), [prior]);
   expect(seenLate[0]).toMatchObject({ sourceWitness: prior.inputSource });
   expect(withConfirmedSends([reply], seenLate, []).map(entry => 'text' in entry ? entry.text : entry.author)).toEqual([reply.text, 'Later actual input B']);
+});
+
+
+it.each(['live', 'registry'] as const)('keeps the first input while existing Thought normalization changes the %s source length', consumer => {
+  const thought = { id: 'thought', author: 'activity' as const, verb: 'Thought', target: null, state: 'done' as const,
+    durationMs: null, detail: null, tool: null, atMs: 3 };
+  const reply = { id: 'actual-reply', author: 'agent' as const, text: 'Actual later agent speech', atMs: 4 };
+  const project = (entries: readonly TranscriptEntry[], live: readonly ConversationTurn[]) => consumer === 'live'
+    ? view(undefined, 0, { serverEntries: entries, liveReplies: live }).transcript
+    : withConfirmedSends(mergeTranscript(entries, live), [accepted], []);
+  const first = initialInputEcho(accepted);
+  expect(project([thought], [])).toEqual([first, thought]);
+  expect(project([thought], [reply])).toEqual([first, reply]);
+  const activity = { ...thought, id: 'actual-read', verb: 'Read' };
+  expect(project([activity], [])).toEqual([first, activity]);
 });

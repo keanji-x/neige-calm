@@ -232,8 +232,7 @@ function placeInitialInputs(entries: readonly TranscriptEntry[], inputs: readonl
   }
   const response = entries.findIndex(entry => entry.author !== 'you' && entry.author !== 'system');
   const split = response < 0 ? entries.length : response;
-  const added = mergeTranscript(entries, first).slice(entries.length);
-  return mergeTranscript([...entries.slice(0, split), ...added, ...entries.slice(split)], later);
+  return mergeTranscript([...entries.slice(0, split), ...first, ...entries.slice(split)], later);
 }
 
 /** Import only sources that the authoritative display fold has actually admitted. */
