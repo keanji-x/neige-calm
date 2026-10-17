@@ -1,7 +1,6 @@
 use crate::db::sqlite::begin_immediate_tx;
-use crate::error::{CalmError, Result};
+use crate::error::Result;
 use crate::ids::TrackId;
-use crate::model::now_ms;
 use serde_json::Value;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
