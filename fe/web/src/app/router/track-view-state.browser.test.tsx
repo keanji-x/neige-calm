@@ -5,7 +5,7 @@ import { act, cleanup, render } from '@testing-library/react';
 import { commands, page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
-import type { TrackReport } from '../../../../core/domain/report.ts';
+import { trackReportLinkUrl, type TrackReport } from '../../../../core/domain/report.ts';
 import { queryKeys } from '../providers/queries.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -26,7 +26,7 @@ function setup(prepareReport: ReportPreparationPort = prepareReportDocument, ini
   const cardsFor = (id: string) => [{ id: `report-${id}`, track_id: id, title: null, kind: 'track-report',
     sort: 0, deletable: false, created_at: 1, updated_at: 2,
     payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: Array.from({ length: 50 }, (_, i) => ({
-      id: `paragraph-${i}`, kind: 'prose', rev: 1, payload: { markdown: `Paragraph ${i}. A long report to read and return to.${i === 0 ? '\n\n[Jump to paragraph](neige://wave/a#paragraph-40) and [Read file](README.md)' : ''}` },
+      id: `paragraph-${i}`, kind: 'prose', rev: 1, payload: { markdown: `Paragraph ${i}. A long report to read and return to.${i === 0 ? `\n\n[Jump to paragraph](${trackReportLinkUrl('a')}#paragraph-40) and [Read file](README.md)` : ''}` },
     })) } }, ...Array.from({ length: 8 }, (_, i) => ({ id: `${id}-card-${i}`, track_id: id,
       title: `Surface ${i}`, kind: 'view-state-surface', sort: i + 1, deletable: true,
       created_at: 1, updated_at: 2, payload: {},
@@ -136,7 +136,7 @@ async function replaceReport(client: QueryClient, serverCards: ReturnType<typeof
   if (cards === undefined) throw new Error('Missing fixture Track a');
   const replacement = cards.map(card => card.kind !== 'track-report' ? card : ({ ...card,
     payload: { schemaVersion: 3, docRev: revision, summary: '', body: '', blocks: Array.from({ length: 50 }, (_, i) => ({
-      id: `paragraph-${i}`, kind: 'prose', rev: revision, payload: { markdown: `Paragraph ${i}. A long report to read and return to. Revision ${revision}.${i === 0 ? '\n\n[Jump to paragraph](neige://wave/a#paragraph-40) and [Read file](README.md)' : ''}` },
+      id: `paragraph-${i}`, kind: 'prose', rev: revision, payload: { markdown: `Paragraph ${i}. A long report to read and return to. Revision ${revision}.${i === 0 ? `\n\n[Jump to paragraph](${trackReportLinkUrl('a')}#paragraph-40) and [Read file](README.md)` : ''}` },
     })) },
   }));
   serverCards.set('a', replacement);
