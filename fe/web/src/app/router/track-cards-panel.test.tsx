@@ -307,14 +307,14 @@ describe('track route CARDS panel', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Track report', exact: true }));
+      expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Track report' }));
     });
     expect(document.querySelector('[data-nc-report]')).toBeNull();
     const action = screen.getByRole('button', { name: 'Rename track' });
     action.focus();
     await waitFor(() => expect(release).toBeTypeOf('function'));
     release();
-    await waitFor(() => expect(screen.getByRole('region', { name: 'Track report', exact: true }).getAttribute('aria-busy')).toBe('false'));
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Track report' }).getAttribute('aria-busy')).toBe('false'));
     expect(document.activeElement).toBe(action);
   });
 
