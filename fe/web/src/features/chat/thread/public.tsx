@@ -96,8 +96,7 @@ export type ChatThreadProps = Readonly<{
 }>;
 
 export const ChatThread = memo(function ChatThread({ conversation, turns, pending = false, sendingMessageId = null, sending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
-  const sendingRef = useRef<HTMLDivElement>(null);
-  useSendMotion(sendingRef, sendingMessageId !== null);
+  const sendingRef = useSendMotion();
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;

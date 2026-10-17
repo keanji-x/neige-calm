@@ -14,6 +14,15 @@ The library trajectory is sampled once at 10ms rendering precision and played th
 
 `useSpringPresence` gives a declared single surface or pair one progress trajectory; the owner supplies its geometric paint mapping. Dialog uses its existing small lift and immediate dismissal; Drawer uses its paired card/seam mapping. Drawer and seam map it to opacity and a spacing-token lift. They keep live content and velocity through reversal. Only the current playback may finish dismissal. Compact pages/reduced motion settle directly. Native-child transition events do not own the spring lifecycle.
 
+`useSpringArrival` owns one-shot physical-surface arrivals through a callback ref.
+Binding a new surface starts the shared spring; withdrawing its trigger/ref while
+the same DOM node remains does not stop it. Natural completion, actual removal
+in the owner's next commit, reduced motion or owner unmount releases the effect.
+One owner can hold overlapping arrivals without installing hooks on old rows.
+A weak set prevents the same physical surface from entering again on ref rebinding;
+only active native playbacks are strongly held. Callers supply geometry and choose
+which real surfaces arrive; this hook holds no business state or message identity.
+
 ## Other motion
 
 `readMotionTransition` consumes the styles-owned enter, exit, layout, disclosure, feedback and emphasis recipes for CSS/other consumers. Motion physics replaces the former size-specific distance formula. Keep simple color feedback, static controls, pointer-linear response, report emphasis and owner-defined activity/brand native loops on their existing contracts.

@@ -1,5 +1,5 @@
 import mobileStyles from './mobile-composer.module.css';
-import { memo, useRef, type Ref } from 'react';
+import { memo, type Ref } from 'react';
 import { useSendMotion } from './send-motion.ts';
 import { Badge } from '@astryxdesign/core/Badge';
 import type { ConversationTurn } from '../../../../../core/domain/conversation.ts';
@@ -92,7 +92,6 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
 
 /** The first message has a draft identity until the server creates its conversation. */
 export function DraftMessage({ text, sending }: Readonly<{ text: string; sending: boolean }>) {
-  const ref = useRef<HTMLParagraphElement>(null);
-  useSendMotion(ref, sending);
-  return <p ref={ref} data-nc-turn="you">{text}</p>;
+  const ref = useSendMotion();
+  return <p ref={sending ? ref : undefined} data-nc-turn="you">{text}</p>;
 }

@@ -80,8 +80,14 @@ The outbox explicitly supplies `sendingMessageId` for local outgoing entry
 motion. One pane-level shared spring targets that entry, rather than installing
 animation lifecycles on every stored message. `DraftMessage` uses the same
 presentation while the first conversation is being created. The motion changes
-opacity and a spacing-token translation, leaves text unscaled, and releases on
-settlement, unmount or reduced motion. Its completion does not settle delivery.
+opacity and a spacing-token translation and leaves text unscaled. Its native
+arrival continues independently of the sending flag while the same physical
+surface exists. It releases on its own completion, actual node removal, unmount
+or reduced motion; its completion does not settle delivery. Canonical history
+may replace an optimistic row or adopt a draft into a different conversation;
+removing that surface cancels its effect without keeping a false message or
+restarting entry motion on the persisted replacement. Concurrent new outgoing
+surfaces each get their own arrival under the one pane-level resource owner.
 Local Sending feedback describes the pending request; Running requires the
 existing run query or kernel activity. Stop remains available during a send to
 an already running conversation. No DOM windowing or delayed network dispatch
