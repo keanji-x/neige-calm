@@ -82,7 +82,7 @@ it('shows counts in both views and keeps task titles and times in the list', asy
     kind: 'timed', ...span, timezone: 'Asia/Shanghai',
   } }, version: 1, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1, occurrences: [span] };
   render(<CalendarTasks date="2026-10-02" timezone="Asia/Shanghai" trackCountOn={(date) => date === '2026-10-02' ? 3 : 0} enabled pending={false}
-    onDateChange={() => undefined} onWindowChange={() => undefined} onRetry={() => undefined} onSettings={() => undefined}
+    onDateChange={() => undefined} onWindowChange={() => undefined} onRetry={() => undefined} onReload={() => undefined} onSettings={() => undefined}
     onOpenTrack={() => undefined} onSave={() => Promise.resolve()} month={ready([entry])} day={ready([entry])} />);
   await expect.element(page.getByLabelText('1 tasks', { exact: true })).toBeVisible();
   await expect.element(page.getByRole('button', { name: /^Review approach,/ })).not.toBeInTheDocument();
@@ -101,7 +101,7 @@ it('counts a task ending just after midnight on the next day', async () => {
   const entry: CalendarListedEntry = { id: 'precision', version: 1, cancelled: false, source_track_id: null, created_by: 'agent', created_at: 1, updated_at: 1,
     task: { title: 'Midnight review', description: '', schedule: { kind: 'timed', ...span, timezone: 'Asia/Shanghai' } }, occurrences: [span] };
   const props = { date: '2026-10-02', timezone: 'Asia/Shanghai', enabled: true, pending: false, onDateChange: () => undefined,
-    onWindowChange: () => undefined, onRetry: () => undefined, onSettings: () => undefined, onOpenTrack: () => undefined, onSave: () => Promise.resolve() };
+    onWindowChange: () => undefined, onRetry: () => undefined, onReload: () => undefined, onSettings: () => undefined, onOpenTrack: () => undefined, onSave: () => Promise.resolve() };
   const view = render(<CalendarTasks {...props} month={ready([entry])} day={ready([entry])} />);
   await expect.element(page.getByRole('link', { name: /October 3, 2026, 1 tasks/ })).toBeVisible();
   const exactSpan = { ...span, end: '2026-10-03T00:00:00+08:00' };
@@ -117,7 +117,7 @@ it('counts a weekly entry on each projected occurrence in Week and Month and sho
     occurrences: ['02', '05', '07', '09', '12', '14', '16', '19', '21', '23', '26', '28', '30'].map(at) };
   const today: CalendarListedEntry = { ...weekly, occurrences: [at('02')] };
   render(<CalendarTasks date="2026-10-02" timezone="Asia/Shanghai" enabled pending={false} onDateChange={() => undefined} onWindowChange={() => undefined}
-    onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={() => Promise.resolve()} month={ready([weekly])} day={ready([today])} />);
+    onRetry={() => undefined} onReload={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={() => Promise.resolve()} month={ready([weekly])} day={ready([today])} />);
   // Wednesday September 30 precedes the series' first date.
   await expect.element(page.getByRole('link', { name: /September 30, 2026, 0 tasks/ })).toBeVisible();
   await expect.element(page.getByRole('link', { name: /October 2, 2026, selected, 1 tasks/ })).toBeVisible();

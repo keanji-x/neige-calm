@@ -8,7 +8,7 @@ import type { CalendarListedEntry } from '../../../../core/domain/calendar.ts';
 afterEach(cleanup);
 const entry: CalendarListedEntry = { id: 'one', task: { title: 'Research', description: 'Compare options', schedule: { kind: 'all_day', date: '2026-10-02' } }, version: 3, cancelled: false, source_track_id: 'source', created_by: 'agent', created_at: 1, updated_at: 1, occurrences: [] };
 function props(overrides: Partial<CalendarTasksProps> = {}): CalendarTasksProps {
-  return { date: '2026-10-02', timezone: 'Asia/Shanghai', month: { entries: [], loading: false, error: null }, day: { entries: [], loading: false, error: null }, enabled: true, pending: false, onDateChange: vi.fn(), onWindowChange: vi.fn(), onRetry: vi.fn(), onSettings: vi.fn(), onOpenTrack: vi.fn(), onSave: vi.fn(() => Promise.resolve()), ...overrides };
+  return { date: '2026-10-02', timezone: 'Asia/Shanghai', month: { entries: [], loading: false, error: null }, day: { entries: [], loading: false, error: null }, enabled: true, pending: false, onDateChange: vi.fn(), onWindowChange: vi.fn(), onRetry: vi.fn(), onReload: vi.fn(), onSettings: vi.fn(), onOpenTrack: vi.fn(), onSave: vi.fn(() => Promise.resolve()), ...overrides };
 }
 it('opens a minimal form and resends the same draft after response loss', async () => {
   const onSave = vi.fn().mockRejectedValueOnce(new Error('Response lost')).mockResolvedValueOnce(undefined);

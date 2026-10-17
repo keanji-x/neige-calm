@@ -22,13 +22,12 @@ export type CalendarTasksProps = Readonly<{
   date: string; timezone: string; month: CalendarEntriesView; day: CalendarEntriesView;
   enabled: boolean; pending: boolean;
   onDateChange(date: string): void; onWindowChange(window: CalendarWindow): void;
-  onRetry(): void; onSettings(): void;
+  onRetry(): void; onReload(): void; onSettings(): void;
   onOpenTrack(id: string): void; onSave(write: CalendarEdit): Promise<void>;
 }>;
-export function CalendarTasks({ date, timezone, trackCountOn, month, day, enabled, pending, onDateChange, onWindowChange, onRetry, onSettings, onOpenTrack, onSave }: CalendarTasksProps) {
+export function CalendarTasks({ date, timezone, trackCountOn, month, day, enabled, pending, onDateChange, onWindowChange, onRetry, onReload, onSettings, onOpenTrack, onSave }: CalendarTasksProps) {
   const [mode, setMode] = useState('week');
   const gridControls = useRef<CalendarGridHandle>(null);
-  const [attempt, setAttempt] = useState(0);
   const [grid, setGrid] = useState<GridState>({ kind: 'loading' });
   useEffect(() => {
     let cancelled = false;
@@ -38,7 +37,7 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
       () => { if (!cancelled) setGrid({ kind: 'failed' }); },
     );
     return () => { cancelled = true; };
-  }, [attempt, setGrid]);
+  }, [setGrid]);
   const [editing, setEditing] = useState<Readonly<{ entry: CalendarListedEntry | null; date: string }> | null>(null);
   const dateLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T12:00:00Z`));
   const open = (entry: CalendarListedEntry) => setEditing({ entry, date });
@@ -53,7 +52,8 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
     {grid.kind === 'ready' && <grid.Grid trackCountOn={trackCountOn} date={date} timezone={timezone} mode={mode} controls={gridControls} entries={enabled ? month.entries ?? [] : []}
       onDateChange={onDateChange} onWindowChange={onWindowChange} />}
     {grid.kind === 'failed' && <Banner status="error" title="The calendar grid could not load."
-      endContent={<Button label="Retry calendar grid" variant="ghost" onClick={() => setAttempt(value => value + 1)} />} />}
+      description="You can still use this day's tasks. Save your work first. Reloading clears unsaved changes."
+      endContent={<Button label="Reload page" variant="ghost" isDisabled={editing !== null || pending} onClick={onReload} />} />}
     {month.error && <Banner status="error" title={month.error} endContent={<Button label="Retry" variant="ghost" onClick={onRetry} />} />}
     {(grid.kind === 'loading' || (grid.kind === 'ready' && month.loading)) && <p role="status" className={styles.empty}>Loading calendar…</p>}
     {!month.loading && !month.error && !enabled && <p className={styles.empty}>Calendar is temporarily unavailable.<br /><Button label="Open plugin settings" variant="ghost" onClick={onSettings} /></p>}

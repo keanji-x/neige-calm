@@ -12,14 +12,24 @@ view choices call the grid's narrow handle in the original event, using the publ
 FullCalendar changeView API; there is no post-commit effect replaying the command. Its real
 `datesSet` callback remains the only source of the month query window.
 
-An effect owns each module attempt and ignores completion after retry/unmount.
-A failed grid has its own retry; day reads and the task editor keep their existing
-error and write policies. Retry invokes the same public dynamic import again;
-a persistent deployment/module failure may still fail and remains visible.
-The browser owns module reuse; there is no feature cache or timer. Loading code
-and reading month data share one grid status, while day reads remain separate.
+One mounted effect requests the grid module and ignores completion after unmount.
+A failed native import can stay rejected in the current document even after the
+network recovers. The error therefore offers **Reload page**, through the app's
+required document-reload capability, rather than repeating the import. It explains
+that unsaved changes are cleared. Reload is disabled while a Calendar editor is
+open or a task write is pending; day tasks, New task, and their existing error/write
+policies remain usable. Reload is explicit and does not promise that a persistent
+server/deployment failure will recover. There is no cache busting, automatic
+refresh, feature cache or timer. Loading code and reading month data share one
+grid status, while day reads remain separate.
 
 Tests: `app/router/calendar-loading.browser.test.tsx` holds/rejects only the
 loader and resolves it to the real grid; `calendar.browser.test.tsx` covers actual
 range/navigation behavior; `calendar-writes.test.tsx` and this feature's
 `public.test.tsx` retain task draft, revision and recovery coverage.
+
+`grid-reload.test.tsx` keeps module rejection persistent and verifies explicit
+reload dispatch and editor/write protection. The native loading test no longer
+models recovery by resolving a second mocked import. Real production verification
+must fail the actual chunk, restore its serving path, and use Reload page to prove
+a new document requests the same module URL.

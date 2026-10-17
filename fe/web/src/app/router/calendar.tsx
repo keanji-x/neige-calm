@@ -64,7 +64,7 @@ export function TodayCalendarTasks({ date, onDateChange, trackCountOn, transport
     month={{ entries: month.data, loading: plugins.isPending || (enabled && month.isPending), error: monthError === null ? null : readErrorText(monthError, 'Could not load the calendar.') }}
     day={{ entries: day.data, loading: enabled && day.isPending, error: enabled && day.error !== null ? readErrorText(day.error, 'Could not load this day.') : null }}
     onDateChange={onDateChange} onWindowChange={(next) => setWindow((current) => current?.from === next.from && current.until === next.until ? current : next)}
-    onSettings={onSettings} onOpenTrack={onOpenTrack}
+    onSettings={onSettings} onOpenTrack={onOpenTrack} onReload={() => globalThis.location.reload()}
     onRetry={() => { void plugins.refetch(); if (enabled) { if (window !== null) void month.refetch(); void day.refetch(); } }}
     onSave={save} />;
 }

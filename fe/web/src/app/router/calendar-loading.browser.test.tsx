@@ -71,22 +71,19 @@ it('keeps day tasks and the live editor available while the actual grid module w
   } finally { cleanup(); view.client.clear(); }
 });
 
-it('retries only the failed grid while preserving disabled-plugin navigation and later focus', async () => {
-  const first = deferred(); const second = deferred();
-  vi.mocked(loadCalendarGrid).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+it('preserves disabled-plugin navigation and later focus when the grid arrives', async () => {
+  const loading = deferred();
+  vi.mocked(loadCalendarGrid).mockReturnValue(loading.promise);
   const view = mount(false);
   try {
     await screen.findByText('Calendar is temporarily unavailable.');
     expect(screen.getByRole('button', { name: 'New task' }).hasAttribute('disabled')).toBe(true);
     expect(loadCalendarGrid).toHaveBeenCalledOnce();
-    // The selected month request must survive both failed and delayed module attempts.
+    // The selected month request survives delayed module availability.
     await page.getByRole('radio', { name: 'Month', exact: true }).click();
-    await act(async () => { first.reject(new Error('Chunk unavailable')); await Promise.resolve(); });
-    await page.getByRole('button', { name: 'Retry calendar grid', exact: true }).click();
-    expect(loadCalendarGrid).toHaveBeenCalledTimes(2);
     act(() => { view.changeDate('2026-11-03'); });
     const outside = screen.getByRole('button', { name: 'Outside choice' }); outside.focus();
-    await act(async () => { second.resolve(await import('../../features/calendar/calendar-view.tsx')); });
+    await act(async () => { loading.resolve(await import('../../features/calendar/calendar-view.tsx')); });
     await expect.element(page.getByRole('link', { name: /November 3, 2026, selected/ })).toBeVisible();
     await expect.element(page.getByRole('link', { name: /November 30, 2026/ })).toBeVisible();
     expect(document.activeElement).toBe(outside);
@@ -97,24 +94,45 @@ it('retries only the failed grid while preserving disabled-plugin navigation and
 });
 
 
-it('keeps New task usable after a grid failure and ignores a late retry after leaving', async () => {
-  const first = deferred(); const second = deferred();
-  vi.mocked(loadCalendarGrid).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+it('keeps day tasks and editing usable after persistent failure and explains the page reload', async () => {
+  const failed = deferred();
+  vi.mocked(loadCalendarGrid).mockReturnValue(failed.promise);
   const view = mount();
   try {
     await screen.findByText('No tasks for this day.');
-    await act(async () => { first.reject(new Error('Module unavailable')); await Promise.resolve(); });
+    await act(async () => { failed.reject(new Error('Module unavailable')); await Promise.resolve(); });
     expect(screen.queryByText('Loading calendar…')).toBeNull();
+    const reload = screen.getByRole<HTMLButtonElement>('button', { name: 'Reload page' });
+    expect(screen.getByText(/Reloading clears unsaved changes/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Retry calendar grid' })).toBeNull();
     await page.getByRole('button', { name: 'New task', exact: true }).click();
     await page.getByRole('textbox', { name: 'Task title' }).fill('The editor remains usable');
-    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Task title' }).value).toBe('The editor remains usable');
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await page.getByRole('button', { name: 'Retry calendar grid', exact: true }).click();
-    expect(loadCalendarGrid).toHaveBeenCalledTimes(2);
+    const title = screen.getByRole<HTMLInputElement>('textbox', { name: 'Task title' });
+    title.setSelectionRange(2, 7);
+    expect(reload.disabled).toBe(true);
+    act(() => { view.changeDate('2026-11-03'); });
+    expect(screen.getByRole('textbox', { name: 'Task title' })).toBe(title);
+    expect(title.value).toBe('The editor remains usable');
+    expect(document.activeElement).toBe(title);
+    expect([title.selectionStart, title.selectionEnd]).toEqual([2, 7]);
+    await page.getByRole('button', { name: 'Create task', exact: true }).click();
+    await waitFor(() => expect(view.requests.some(request => request.method === 'POST')).toBe(true));
+    expect(view.requests.find(request => request.method === 'POST')?.body).toMatchObject({ task: { title: 'The editor remains usable', schedule: { kind: 'all_day', date: '2026-10-02' } } });
+    await waitFor(() => expect(reload.disabled).toBe(false));
+    expect(loadCalendarGrid).toHaveBeenCalledOnce();
+    expect(screen.getByText('The calendar grid could not load.')).toBeDefined();
+  } finally { cleanup(); view.client.clear(); }
+});
+
+it('ignores a late grid load after leaving without stealing focus', async () => {
+  const loading = deferred(); vi.mocked(loadCalendarGrid).mockReturnValue(loading.promise);
+  const view = mount();
+  try {
+    await screen.findByText('No tasks for this day.');
     view.unmount();
     render(<button type="button">New surface</button>);
     const next = screen.getByRole('button', { name: 'New surface' }); next.focus();
-    await act(async () => { second.resolve(await import('../../features/calendar/calendar-view.tsx')); });
+    await act(async () => { loading.resolve(await import('../../features/calendar/calendar-view.tsx')); });
     expect(document.activeElement).toBe(next);
     expect(screen.queryByLabelText('Calendar tasks')).toBeNull();
     expect(view.requests.some(request => request.method === 'POST')).toBe(false);
