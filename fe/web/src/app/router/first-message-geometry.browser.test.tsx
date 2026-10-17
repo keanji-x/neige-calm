@@ -83,7 +83,7 @@ it.each([1280, 390])('keeps the last ordinary deleted queue row in place until i
   const fixture = renderDailyFixture({ reply: request => {
     if (request.method === 'DELETE' && request.path.endsWith('/planner/input/ordinary-last')) {
       pending = [];
-      return ok({ card_id: 'daily-planner', entry_id: 'ordinary-last', rev: 0, text: null });
+      return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', entry_id: 'ordinary-last', rev: 0, text: null });
     }
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
