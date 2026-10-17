@@ -41,16 +41,17 @@ retain their original scope/key/text and settle through the Registry, including
 unknown-result rereads and refused-before-dispatch restoration. Navigation
 destinations remain chosen by the route through its injected signals.
 
-`pane-lifecycle.ts` owns the mounted pane's draft retention cleanup, delayed
-adoption, requested-open consumption, scoped Escape interruption and one-shot
-side-draft auto-send. The router invokes each Hook at its original position;
-Registry remains the owner of cross-mount drafts and open requests. Adoption and
+`pane-lifecycle.ts` owns the mounted pane's draft retention cleanup, selected-target
+resolution, requested-open consumption, scoped Escape interruption and one-shot
+side-draft auto-send. Main and side panels resolve their existing view target here
+before deriving parent/child ownership and presentation gates. Registry remains
+the owner of cross-mount drafts and open requests. Adoption and
 open requests wait until their row belongs to this pane, inline panes do not
 consume a shared open request, and auto-send consumes its intent before delivery.
 Escape belongs to the focused conversation region and yields to source panels,
 composer menus and native overlays. Cleanup removes only undispatched drafts.
 
-Pane still observes capabilities and holds selection/layout/focus. Those remaining
+Pane still observes capabilities and holds layout/focus. Those remaining
 responsibilities are tracked in #2083; loaded DOM and streaming display work remain
 under #2235.
 
@@ -82,7 +83,8 @@ The existing parking contract stops restoration when the user moves elsewhere.
 Draft adoption probes current field/parking ownership through a UI-only handle
 bound to that draft key. It never requests focus from cleanup, a capability read's
 completion or a late result in another view. A selected adopted draft resolves its
-real row directly; there is no intermediate closed drawer. Normalizing the target
+real row directly for both panel ownership and rendering; there is no intermediate
+closed drawer or second selection state. Normalizing the target
 is conditional on that draft still being selected, while Registry adoption and
 the created row remain authoritative even after the user closes or switches.
 

@@ -1,7 +1,7 @@
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
-import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
+import { useConversationDraftRetention, useConversationPaneTarget, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
 import { useConversationStore } from '../conversations/store.ts';
 import type { ConversationCreationSource, ConversationRouteIntent, PlannerConversationScope } from '../conversations/contracts.ts';
@@ -116,7 +116,7 @@ import { ConversationSurface } from './mobile-conversation-surface.tsx';
 import { plannerConversationRow } from '../conversations/planner-row.ts';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import { RecipesRoute } from './recipes-route.tsx';
-import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, type UiPreferences } from '../providers/ui-preferences.tsx';
+import { createUiPreferences, UiPreferencesProvider, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { ReadReceiptsProvider, useReadReceipt, useReadReceipts } from '../providers/read-receipts.tsx';
 import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, MobileConversationProvider, useMobileConversationOwner, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost } from '../shell/public.tsx';
@@ -322,7 +322,7 @@ function useConversationPanel(
   const registry = useConversationRegistry();
   const compact = useCompactViewport();
   const [sideError, setSideError] = useState<string | null>(null);
-  const mainTarget = useConversationViewTarget(source.scopeId);
+  const mainTarget = useConversationPaneTarget(source.scopeId, source.rows);
   const parentId = mainTarget[0]?.kind === 'row' ? mainTarget[0].id : null;
   const lastMainRow = useRef<string | null>(null);
   useEffect(() => { if (parentId !== null) lastMainRow.current = parentId; }, [parentId]);
@@ -333,7 +333,7 @@ function useConversationPanel(
   const capabilities = useQuery({ queryKey: ['server-version'],
     queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized), enabled: parentId !== null && !compact, retry: false });
   const sideSlot = `${source.scopeId}:side:${parentId ?? ''}`;
-  const sideTarget = useConversationViewTarget(sideSlot);
+  const sideTarget = useConversationPaneTarget(sideSlot, source.rows);
   const sideDraft = registry.draftOf(sideSlot);
   const childId = sideTarget[0]?.kind === 'row' ? sideTarget[0].id : null;
   const child = source.rows.find((row) => row.id === childId);
@@ -375,7 +375,7 @@ function useConversationPane(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
-  target: ReturnType<typeof useConversationViewTarget>,
+  target: ReturnType<typeof useConversationPaneTarget>,
   options?: { reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
@@ -384,16 +384,11 @@ function useConversationPane(
   const [openTarget, setOpenTarget] = target;
   const registry = useConversationRegistry();
   const sourceScopeId = options?.slotId ?? source.scopeId;
-  const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
-  // Adoption already wrote the real row. Resolve that selected draft directly,
-  // so the surface never closes and reopens between the two representations.
-  const adoptedRowId = openTarget?.kind === 'draft' && source.rows.some(row => row.id === adoptedDraftId)
-    ? adoptedDraftId : null;
   /* The conversation whose composer this route was asked to put the caret in. Held
        here because the request is cleared in the same commit that opens the row;
        dropped when the drawer closes. */
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
-  const openRowId = options?.enabled === false ? null : openTarget?.kind === 'row' ? openTarget.id : adoptedRowId;
+  const openRowId = options?.enabled === false ? null : openTarget?.kind === 'row' ? openTarget.id : null;
   const compactViewport = useCompactViewport();
   const compactComposer = options?.reportComposer !== undefined && compactViewport && options?.enabled !== false && options?.inline !== true;
   const dockRowId = compactComposer ? options?.reportComposer?.conversationId ?? null : null;
@@ -500,9 +495,6 @@ function useConversationPane(
   }, [editNewConversationComposer, sourceScopeId]);
 
   useConversationDraftRetention({ discardUnsentDraft, sourceScopeId });
-
-  useConversationDraftAdoption({ adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget,
-    selected: options?.enabled !== false && openTarget?.kind === 'draft' });
 
   const { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
     registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel,
