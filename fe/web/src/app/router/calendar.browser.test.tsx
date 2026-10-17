@@ -1,6 +1,6 @@
 import { render, cleanup } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, onTestFinished } from 'vitest';
 import '../../styles/entry.css';
 import { useState } from '../../ui/state/public.ts';
 import { CalendarTasks, type CalendarEntriesView } from '../../features/calendar/public.tsx';
@@ -13,6 +13,10 @@ afterEach(async () => {
 const ready = (entries: CalendarListedEntry[]): CalendarEntriesView => ({ entries, loading: false, error: null });
 
 it('queries the visible month and selected day separately through the real adapter', async () => {
+  const errors: string[] = [];
+  const noteError = (event: ErrorEvent) => { errors.push(event.message); };
+  window.addEventListener('error', noteError);
+  onTestFinished(() => { window.removeEventListener('error', noteError); });
   await page.viewport(1440, 1000);
   const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query');
   const { TodayCalendarTasks } = await import('./calendar.tsx');
@@ -67,6 +71,7 @@ it('queries the visible month and selected day separately through the real adapt
   expect(writes[1].body).toMatchObject({ expected_version: 1, cancelled: true });
   await expect.element(page.getByRole('button', { name: /Browser commitment.*All day/ })).not.toBeInTheDocument();
   expect(requests.length).toBeLessThan(30);
+  expect(errors).not.toContain('ResizeObserver loop completed with undelivered notifications.');
   client.clear();
 });
 

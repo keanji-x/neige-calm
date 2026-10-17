@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, type Ref } from 'react';
 import { Icon } from '../../ui/icon/public.tsx';
 import FullCalendar, { type CalendarRef } from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/react/daygrid';
@@ -7,9 +7,12 @@ import themePlugin from '@fullcalendar/react/themes/monarch';
 import { calendarDate, calendarEntryIncludesDate, type CalendarListedEntry, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
-export function TaskCalendar({ date, timezone, entries, mode, trackCountOn, onDateChange, onWindowChange }: Readonly<{
+export type CalendarGridHandle = Readonly<{ changeMode: (mode: string) => void }>;
+
+export function TaskCalendar({ date, timezone, entries, mode, controls, trackCountOn, onDateChange, onWindowChange }: Readonly<{
   trackCountOn?: (date: string) => number | null;
   mode: string;
+  controls: Ref<CalendarGridHandle>;
   date: string; timezone: string; entries: readonly CalendarListedEntry[];
   onDateChange(date: string): void; onWindowChange(window: CalendarWindow): void;
 }>) {
@@ -19,11 +22,9 @@ export function TaskCalendar({ date, timezone, entries, mode, trackCountOn, onDa
     const api = calendar.current?.getApi();
     if (api && calendarDate(api.getDate().getTime(), timezone) !== date) api.gotoDate(date);
   }, [date, timezone]);
-  useEffect(() => {
-    const api = calendar.current?.getApi();
-    const view = mode === 'week' ? 'dayGridWeek' : 'dayGridMonth';
-    if (api && api.view.type !== view) api.changeView(view);
-  }, [mode]);
+  useImperativeHandle(controls, () => ({
+    changeMode: value => { calendar.current?.getApi().changeView(value === 'week' ? 'dayGridWeek' : 'dayGridMonth'); },
+  }), []);
   const choose = (day: string) => onDateChange(day);
   const countsOn = (value: Date) => {
     const day = calendarDate(value.getTime(), timezone);

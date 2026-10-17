@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { PanelModule } from '../../ui/panel-card/public.tsx';
 import { Button } from '@astryxdesign/core/Button';
@@ -10,6 +10,7 @@ import { ListText } from '../../ui/list-typography/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { calendarDate, calendarOccurrenceOn, type CalendarListedEntry, type CalendarEdit, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import { CalendarEditor, WeeklyEntryDetails } from './editor.tsx';
+import type { CalendarGridHandle } from './calendar-view.tsx';
 import { loadCalendarGrid } from './grid-loader.ts';
 import styles from './calendar.module.css';
 
@@ -26,6 +27,7 @@ export type CalendarTasksProps = Readonly<{
 }>;
 export function CalendarTasks({ date, timezone, trackCountOn, month, day, enabled, pending, onDateChange, onWindowChange, onRetry, onSettings, onOpenTrack, onSave }: CalendarTasksProps) {
   const [mode, setMode] = useState('week');
+  const gridControls = useRef<CalendarGridHandle>(null);
   const [attempt, setAttempt] = useState(0);
   const [grid, setGrid] = useState<GridState>({ kind: 'loading' });
   useEffect(() => {
@@ -44,11 +46,11 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
   const weekly = schedule?.kind === 'weekly' ? schedule : null;
   return <>
     <PanelModule title="Calendar" icon="calendar" className={styles.calendarModule} grow action={<span className={styles.viewControl}><SegmentedControl label="Calendar view" size="sm" value={mode}
-      onChange={setMode}>
+      onChange={value => { setMode(value); gridControls.current?.changeMode(value); }}>
       <SegmentedControlItem value="week" label="Week" />
       <SegmentedControlItem value="month" label="Month" />
     </SegmentedControl></span>}><section className={styles.calendar} aria-label="Calendar tasks">
-    {grid.kind === 'ready' && <grid.Grid trackCountOn={trackCountOn} date={date} timezone={timezone} mode={mode} entries={enabled ? month.entries ?? [] : []}
+    {grid.kind === 'ready' && <grid.Grid trackCountOn={trackCountOn} date={date} timezone={timezone} mode={mode} controls={gridControls} entries={enabled ? month.entries ?? [] : []}
       onDateChange={onDateChange} onWindowChange={onWindowChange} />}
     {grid.kind === 'failed' && <Banner status="error" title="The calendar grid could not load."
       endContent={<Button label="Retry calendar grid" variant="ghost" onClick={() => setAttempt(value => value + 1)} />} />}

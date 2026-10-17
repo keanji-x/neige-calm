@@ -7,7 +7,9 @@ remain in the app's Calendar adapter. These controls do not wait for grid code.
 Only `calendar-view.tsx` imports FullCalendar. `grid-loader.ts` requests that
 module when the Calendar feature mounts, independently of plugin availability:
 date/Track navigation still works with the task plugin disabled. The latest
-selected date, timezone and retained view mode reach the mounted grid. Its real
+selected date, timezone and retained view mode reach the mounted grid. Once ready,
+view choices call the grid's narrow handle in the original event, using the public
+FullCalendar changeView API; there is no post-commit effect replaying the command. Its real
 `datesSet` callback remains the only source of the month query window.
 
 An effect owns each module attempt and ignores completion after retry/unmount.
