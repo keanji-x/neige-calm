@@ -6,16 +6,36 @@ use crate::error::Result;
 use crate::harness::HarnessSnapshot;
 use crate::harness::queue::input_segments_for_entries;
 use crate::session_projection_repo::WorkerSessionProjectionRepo;
-use calm_truth::conversation_title::first_user_title;
+use crate::session_projection_repo::{CardId, WorkerSessionProjection};
+use calm_truth::conversation_title::{ConversationTitleSource, first_user_title};
 
-pub(crate) async fn titles<R: RepoRead + WorkerSessionProjectionRepo + ?Sized>(
+/// The metadata owner's two batch reads. Implementations delegate eligibility and source
+/// selection to the existing repositories; ordering belongs to `titles`.
+#[async_trait::async_trait]
+pub(crate) trait TitleRead: Send + Sync {
+    async fn sources(&self, ids: &[String]) -> Result<Vec<ConversationTitleSource>>;
+    async fn pending(&self, ids: &[String]) -> Result<HashMap<CardId, WorkerSessionProjection>>;
+}
+
+#[async_trait::async_trait]
+impl<R: RepoRead + WorkerSessionProjectionRepo + ?Sized> TitleRead for R {
+    async fn sources(&self, ids: &[String]) -> Result<Vec<ConversationTitleSource>> {
+        Ok(self.conversation_title_sources(ids).await?)
+    }
+
+    async fn pending(&self, ids: &[String]) -> Result<HashMap<CardId, WorkerSessionProjection>> {
+        Ok(self.session_projection_projectable_for_cards(ids).await?)
+    }
+}
+
+pub(crate) async fn titles<R: TitleRead + ?Sized>(
     repo: &R,
     card_ids: &[String],
 ) -> Result<HashMap<String, Option<String>>> {
     if card_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let sources = repo.conversation_title_sources(card_ids).await?;
+    let sources = repo.sources(card_ids).await?;
     let pending_ids: Vec<_> = sources
         .iter()
         .filter(|source| source.input.is_none())
@@ -24,8 +44,7 @@ pub(crate) async fn titles<R: RepoRead + WorkerSessionProjectionRepo + ?Sized>(
     let runtimes = if pending_ids.is_empty() {
         HashMap::new()
     } else {
-        repo.session_projection_projectable_for_cards(&pending_ids)
-            .await?
+        repo.pending(&pending_ids).await?
     };
     Ok(sources
         .into_iter()
@@ -48,3 +67,6 @@ pub(crate) async fn titles<R: RepoRead + WorkerSessionProjectionRepo + ?Sized>(
         })
         .collect())
 }
+
+#[cfg(test)]
+mod tests;
