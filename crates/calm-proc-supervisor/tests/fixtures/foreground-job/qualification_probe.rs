@@ -1,7 +1,10 @@
 //! Real qualified APIs and executor consumer, confined to this disposable child namespace.
 use calm_session::control::{IoMode, execution::*};
 use std::{
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+    os::{
+        fd::AsFd,
+        unix::{ffi::OsStrExt, fs::MetadataExt},
+    },
     path::Path,
     time::Duration,
 };
@@ -14,7 +17,17 @@ pub(super) fn run(root: &Path, source: &Path, helper: &Path) -> anyhow::Result<(
     let original = HeldSourceObjects::open(root, true)?;
     let original_qualified = original.qualify_local()?;
     let original_identity = original.live_identity()?;
+    let original_pair = qualify_directory_pair(original.root(), original.root())?;
     super::bind_alias::enter_private_namespace()?;
+    anyhow::ensure!(
+        matches!(
+            original_pair.revalidate(),
+            Err(ObjectQualificationFailure::Unknown(
+                ObjectQualificationUnknown::NamespaceChanged
+            ))
+        ),
+        "one-shot pair survived an actual namespace change"
+    );
     let namespace_changed_unknown = matches!(
         original_qualified.revalidate(),
         Err(ObjectQualificationFailure::Unknown(
@@ -58,7 +71,7 @@ async fn executor_boundary(
         registry,
         receiver,
     ));
-    let mut client = RegisteredExecutorConnection::connect(&socket, secret).await?;
+    let mut client = RegisteredExecutorConnection::connect(&socket, secret.clone()).await?;
     let workspace = WorkspaceId::try_from(ExecutionId::fresh()?.as_str().to_owned())
         .map_err(anyhow::Error::msg)?;
     let binding = WorkspaceBindingId::fresh()?;
@@ -207,6 +220,56 @@ async fn executor_boundary(
     }
     let bound = HeldSourceObjects::open(&target, false)?;
     let qualified = bound.qualify_local()?;
+    anyhow::ensure!(
+        matches!(
+            qualify_directory_pair(held.root(), bound.root()),
+            Err(ObjectQualificationFailure::Unsupported(
+                ObjectQualificationUnsupported::DirectoryMountBoundary { .. }
+            ))
+        ),
+        "one-shot pair accepted a real bind boundary"
+    );
+    // The actual endpoint must independently enforce the same actual-FD profile/mount boundary.
+    let mut raw = tokio::net::UnixStream::connect(&socket).await?;
+    calm_session::write_frame(
+        &mut raw,
+        &calm_session::control::ControlMsg::Execution(Box::new(ExecutionRequest::Handshake(
+            ExecutionHandshake {
+                required_contract: EXECUTION_ENVELOPE_VERSION,
+                client_secret: secret,
+                mode: ExecutionProtocolMode::RegisteredV3,
+            },
+        ))),
+    )
+    .await?;
+    let _: calm_session::control::ControlReply = calm_session::read_frame(&mut raw).await?;
+    let transferred = TransferredDirectoryRelationRequest {
+        executor_boot: client.executor_boot().clone(),
+        nonce: TransferNonce::fresh()?,
+        facts: DirectoryPairFacts {
+            mount_namespace: held.shape().mount_namespace,
+            ancestor: held.shape().objects[0].clone(),
+            subject: bound.shape().objects[0].clone(),
+        },
+    };
+    rights::send(
+        &raw,
+        &calm_session::control::ControlMsg::Execution(Box::new(
+            ExecutionRequest::ObserveTransferredDirectories(Box::new(transferred)),
+        )),
+        &[held.root().as_fd(), bound.root().as_fd()],
+    )
+    .await?;
+    let (reply, files) = rights::receive::<calm_session::control::ControlReply>(&raw).await?;
+    anyhow::ensure!(
+        files.is_empty(),
+        "one-shot refusal exported unexpected rights"
+    );
+    anyhow::ensure!(
+        matches!(reply, calm_session::control::ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::ObjectQualificationFailed { failure: ObjectQualificationFailure::Unsupported(ObjectQualificationUnsupported::DirectoryMountBoundary { .. }) })),
+        "one-shot endpoint accepted a cross-mount pair"
+    );
+
     anyhow::ensure!(
         unsafe {
             libc::mount(

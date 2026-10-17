@@ -145,12 +145,15 @@ impl Executor {
             registration: source.receipt.id.clone(),
             incarnation: source.receipt.transfer.incarnation.clone(),
         };
-        self.observe_pair(
+        let outcome = self.observe_pair(
             [ancestor, subject],
             [origin(&request.ancestor), origin(&request.subject)],
             facts,
             request.nonce.clone(),
-        )
+        );
+        // A registered observer's lease covers concrete helper wait, independently of map removal.
+        drop(roots);
+        outcome
     }
 
     // The one helper mechanism for both retained registrations and one-shot qualified FD pairs.

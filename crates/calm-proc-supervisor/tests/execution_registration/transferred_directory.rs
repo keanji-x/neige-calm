@@ -172,3 +172,114 @@ async fn execution_transferred_directories_observe_retained_objects_after_actual
     assert!(after.revalidate_objects().is_err());
     assert!(qualify_directory_pair(&ancestor, &subject).is_err());
 }
+
+#[tokio::test]
+async fn execution_transferred_directories_server_qualifies_actual_unregistered_fds() {
+    use calm_session::control::{ControlMsg, ControlReply};
+    use std::os::fd::AsFd;
+    use workspace::execution::objects::{
+        DirectoryPairFacts, HeldSourceObjects, ObjectQualificationFailure,
+        ObjectQualificationUnsupported,
+    };
+    let harness = Harness::start().await;
+    let tmpfs = tempfile::tempdir_in("/dev/shm").unwrap();
+    let held = HeldSourceObjects::open(tmpfs.path(), false).unwrap();
+    let (stream, boot) = raw_connection(&harness).await;
+    let request = TransferredDirectoryRelationRequest {
+        executor_boot: boot,
+        nonce: TransferNonce::fresh().unwrap(),
+        facts: DirectoryPairFacts {
+            mount_namespace: held.shape().mount_namespace,
+            ancestor: held.shape().objects[0].clone(),
+            subject: held.shape().objects[0].clone(),
+        },
+    };
+    rights::send(
+        &stream,
+        &ControlMsg::Execution(Box::new(ExecutionRequest::ObserveTransferredDirectories(
+            Box::new(request),
+        ))),
+        &[held.root().as_fd(), held.root().as_fd()],
+    )
+    .await
+    .unwrap();
+    let (reply, files) = rights::receive::<ControlReply>(&stream).await.unwrap();
+    assert!(files.is_empty());
+    assert!(
+        matches!(reply, ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::ObjectQualificationFailed { failure: ObjectQualificationFailure::Unsupported(ObjectQualificationUnsupported::Filesystem { magic: 0x01021994, .. }) })),
+        "bare received facts bypassed actual server filesystem qualification"
+    );
+}
+
+#[tokio::test]
+async fn execution_transferred_directories_timeout_and_failure_keep_exact_native_ownership() {
+    use std::{path::Path, time::Duration};
+    use workspace::execution::objects::DirectoryRelationUnknown;
+    for (program, expected) in [
+        (
+            Path::new(env!("CARGO_BIN_EXE_proc-supervisor-foreground-job")),
+            DirectoryRelationUnknown::Timeout,
+        ),
+        (
+            Path::new(env!("CARGO_BIN_EXE_proc-supervisor-ready-sleeper")),
+            DirectoryRelationUnknown::HelperExited,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("control.sock");
+        let secret = CapabilityToken::fresh().unwrap();
+        let registry = calm_proc_supervisor::ProcRegistry::new()
+            .with_executor(calm_proc_supervisor::execution::ExecutorConfig {
+                journal_directory: temp.path().join("journal"),
+                helper_program: program.to_owned(),
+                kernel_client_secret: secret.clone(),
+            })
+            .unwrap();
+        let listener = calm_proc_supervisor::bind_control_listener(&socket).unwrap();
+        let (shutdown, receive) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(calm_proc_supervisor::serve_with_listener(
+            listener,
+            socket.clone(),
+            registry,
+            receive,
+        ));
+        let directory = File::open(temp.path()).unwrap();
+        let mut client = RegisteredExecutorConnection::connect(&socket, secret)
+            .await
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        let observation = client
+            .observe_transferred_directories(
+                qualify_directory_pair(&directory, &directory).unwrap(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("controlled helper failure did not return its typed uncertainty: {error}")
+            });
+        assert_eq!(
+            observation.outcome(),
+            &DirectoryRelationOutcome::Unknown(expected)
+        );
+        assert!(started.elapsed() < Duration::from_secs(8));
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // This controlled stall/exit completed exact collection; outer RPC timeout alone would not.
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_ALL,
+                    0,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert!(client.registrations().is_empty());
+        let _ = shutdown.send(());
+        server.await.unwrap().unwrap();
+    }
+}
