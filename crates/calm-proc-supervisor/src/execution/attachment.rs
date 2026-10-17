@@ -26,39 +26,39 @@ impl Executor {
             "registration lease retired; immutable history cannot restore live objects"
         );
         let key = registration_key(&registration);
-        if let Some(previous) = self.registration_facts.lock().map_err(poison)?.get(&key) {
-            anyhow::ensure!(
-                registration_successor(previous, &registration),
-                "stale/conflicting registration or binding version"
-            );
-        }
-        let mut directory_changed = false;
-        for known in self.registration_facts.lock().map_err(poison)?.values() {
-            if registration_resource(known) == registration_resource(&registration) {
+        let mut source_changed = false;
+        {
+            let known = self.registration_facts.lock().map_err(poison)?;
+            if let Some(previous) = known.get(&key) {
                 anyhow::ensure!(
-                    !older_runtime(&registration, known),
+                    source_successor(previous, &transfer),
+                    "stale/conflicting binding or source recovery version"
+                );
+            }
+            let resource = registration_resource(&registration);
+            let current_version = known
+                .values()
+                .filter(|previous| registration_resource(&previous.registration) == resource)
+                .map(|previous| source_recovery_version(&previous.registration))
+                .max();
+            for previous in known.values() {
+                if registration_resource(&previous.registration) != resource {
+                    continue;
+                }
+                anyhow::ensure!(
+                    !older_runtime(&registration, &previous.registration),
                     "resource generation/epoch regressed"
                 );
-                if !same_directory(known, &registration) {
+                // Older bindings retain audit fences, not a permanent veto on a recovered source.
+                if Some(source_recovery_version(&previous.registration)) == current_version
+                    && !same_source(previous, &transfer)
+                {
                     anyhow::ensure!(
-                        directory_recovery_version(known, &registration),
-                        "directory replacement needs explicit recovery version"
+                        directory_recovery_version(&previous.registration, &registration),
+                        "object incarnation/layout replacement needs explicit recovery version"
                     );
-                    directory_changed = true;
+                    source_changed = true;
                 }
-            }
-        }
-        for previous in self.registrations.lock().map_err(poison)?.values() {
-            if registration_resource(&previous.transfer.registration)
-                == registration_resource(&registration)
-                && (previous.transfer.incarnation != transfer.incarnation
-                    || previous.transfer.shape != transfer.shape)
-            {
-                anyhow::ensure!(
-                    directory_recovery_version(&previous.transfer.registration, &registration),
-                    "object incarnation/layout replacement needs explicit recovery version"
-                );
-                directory_changed = true;
             }
         }
         let receipt = {
@@ -110,20 +110,22 @@ impl Executor {
             if scope_resource(&record.request.identity.scope)
                 == registration_resource(&root.registration)
                 && !record.durably_settled()
-                && (directory_changed
+                && (source_changed
                     || !same_runtime(&record.request.identity.scope, &root.registration))
             {
                 anyhow::bail!("resource still occupied by an old execution/ticket");
             }
         }
+        // Reserve validated source facts before IO: a failed fsync may already have published
+        // this immutable receipt. Exact retries keep the claim, without creating a live lease.
+        self.registration_facts
+            .lock()
+            .map_err(poison)?
+            .insert(key.clone(), root.receipt.transfer.clone());
         self.store.write(
             &format!("{}.registration", root.receipt.id.as_str()),
             &root.receipt,
         )?;
-        self.registration_facts
-            .lock()
-            .map_err(poison)?
-            .insert(key.clone(), root.registration.clone());
         let receipt = root.receipt.clone();
         self.live_objects
             .lock()

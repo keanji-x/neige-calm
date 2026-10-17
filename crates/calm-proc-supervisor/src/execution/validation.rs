@@ -45,24 +45,36 @@ pub(super) fn directory_recovery_version(
     next: &ExecutionRegistration,
 ) -> bool {
     match (previous, next) {
-        (
-            ExecutionRegistration::Worktree { generation, .. },
-            ExecutionRegistration::Worktree {
-                generation: next, ..
-            },
-        ) => next > generation,
-        (
-            ExecutionRegistration::ExternalDir {
-                registration_version,
-                ..
-            },
-            ExecutionRegistration::ExternalDir {
-                registration_version: next,
-                ..
-            },
-        ) => next > registration_version,
+        (ExecutionRegistration::Worktree { .. }, ExecutionRegistration::Worktree { .. })
+        | (ExecutionRegistration::ExternalDir { .. }, ExecutionRegistration::ExternalDir { .. }) => {
+            source_recovery_version(next) > source_recovery_version(previous)
+        }
         _ => false,
     }
+}
+
+pub(super) fn source_recovery_version(registration: &ExecutionRegistration) -> u64 {
+    match registration {
+        ExecutionRegistration::Worktree { generation, .. } => *generation,
+        ExecutionRegistration::ExternalDir {
+            registration_version,
+            ..
+        } => *registration_version,
+    }
+}
+
+/// Source continuity excludes exchange/boot IDs and per-operation grants, which may differ.
+pub(super) fn same_source(previous: &AttachRegistration, next: &AttachRegistration) -> bool {
+    same_directory(&previous.registration, &next.registration)
+        && previous.incarnation == next.incarnation
+        && previous.shape == next.shape
+}
+
+/// One source-successor rule for loaded receipt history and new per-binding attachments.
+pub(super) fn source_successor(previous: &AttachRegistration, next: &AttachRegistration) -> bool {
+    registration_successor(&previous.registration, &next.registration)
+        && (same_source(previous, next)
+            || directory_recovery_version(&previous.registration, &next.registration))
 }
 
 /// A per-binding lifecycle projection; accepted per-operation grants are deliberately absent.

@@ -58,7 +58,8 @@ pub struct Executor {
     legacy_persistence: StdMutex<()>,
     gates: StdMutex<HashMap<ResourceKey, Arc<Mutex<()>>>>,
     registrations: StdMutex<HashMap<String, ObjectRegistrationReceipt>>,
-    registration_facts: StdMutex<HashMap<String, ExecutionRegistration>>,
+    // Latest per-binding source facts across boots; these never restore a live native lease.
+    registration_facts: StdMutex<HashMap<String, AttachRegistration>>,
     transfers: StdMutex<HashMap<TransferNonce, ObjectRegistrationReceipt>>,
     live_objects: StdMutex<HashMap<ObjectRegistrationId, Arc<RegisteredRoot>>>,
     retired: StdMutex<HashMap<ObjectRegistrationId, ObjectRegistrationReceipt>>,
@@ -158,7 +159,7 @@ impl Executor {
                 );
             }
         }
-        let mut registration_facts = HashMap::new();
+        let mut registration_facts = HashMap::<String, AttachRegistration>::new();
         let mut transfers = HashMap::new();
         // Serialized receipts retain audit/version facts only. No descriptor survives this boot.
         for receipt in store.registrations()? {
@@ -170,16 +171,16 @@ impl Executor {
             let registration = &receipt.transfer.registration;
             let key = registration_key(registration);
             if let Some(previous) = registration_facts.get(&key) {
-                if registration_successor(previous, registration) {
-                    registration_facts.insert(key, registration.clone());
+                if source_successor(previous, &receipt.transfer) {
+                    registration_facts.insert(key, receipt.transfer.clone());
                 } else {
                     anyhow::ensure!(
-                        registration_successor(registration, previous),
-                        "conflicting persisted registrations"
+                        source_successor(&receipt.transfer, previous),
+                        "conflicting persisted source registrations"
                     );
                 }
             } else {
-                registration_facts.insert(key, registration.clone());
+                registration_facts.insert(key, receipt.transfer.clone());
             }
             anyhow::ensure!(
                 transfers
@@ -355,9 +356,9 @@ impl Executor {
             "binding closed or source/version changed"
         );
         for known in self.registration_facts.lock().map_err(poison)?.values() {
-            if registration_resource(known) == scope_resource(&identity.scope) {
+            if registration_resource(&known.registration) == scope_resource(&identity.scope) {
                 anyhow::ensure!(
-                    !older_runtime(&root.registration, known),
+                    !older_runtime(&root.registration, &known.registration),
                     "runtime advanced through another binding"
                 );
             }
