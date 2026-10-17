@@ -278,7 +278,7 @@ pub(in crate::operation) async fn write_phase_and_tx_output(
     Ok(result.rows_affected() > 0)
 }
 
-async fn read_output_tx(tx: &mut Tx<'_>, id: &str) -> Result<Option<TxOutput>> {
+pub(super) async fn read_output_tx(tx: &mut Tx<'_>, id: &str) -> Result<Option<TxOutput>> {
     let text: Option<String> =
         sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?1")
             .bind(id)
@@ -294,7 +294,7 @@ async fn read_output_tx(tx: &mut Tx<'_>, id: &str) -> Result<Option<TxOutput>> {
 /// its original output, or the output it returned after its own checkpoint.
 /// A third committed value is never overwritten. Events are skipped by serde;
 /// only the already-released terminal launch field has independent ownership.
-pub(super) async fn settlement_output_matches_tx(
+async fn settlement_output_matches_tx(
     tx: &mut Tx<'_>,
     op: &Operation,
     output: &TxOutput,

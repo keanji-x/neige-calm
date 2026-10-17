@@ -391,12 +391,7 @@ impl OperationRuntime {
         let state = adapter
             .plan_compensation(PhaseTag::Parked, reason, &output, &op)
             .await?;
-        if self
-            .repo
-            .set_compensating(&op, &state, &output)
-            .await?
-            .is_none()
-        {
+        if self.repo.set_compensating(&op, &state).await?.is_none() {
             log_lost_lease(&op, PhaseTag::Compensating);
             return Ok(false);
         }
@@ -795,12 +790,7 @@ impl OperationRuntime {
         let state = adapter
             .plan_compensation(from_phase, &reason, &output, &op)
             .await?;
-        if self
-            .repo
-            .set_compensating(&op, &state, &output)
-            .await?
-            .is_none()
-        {
+        if self.repo.set_compensating(&op, &state).await?.is_none() {
             log_lost_lease(&op, PhaseTag::Compensating);
         }
         Ok(())

@@ -375,14 +375,14 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
     let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
     let op = parked_operation(&repo, now_ms() + 10_000).await;
     let claimed = repo.claim_parked(&op.id).await.unwrap().unwrap();
-    let output = required_output(&claimed).unwrap().clone();
+    required_output(&claimed).unwrap();
     let state = CompensationStateVersioned {
         version: 1,
         from_phase: PhaseTag::Parked,
         reason: "cancel".into(),
         steps: Vec::new(),
     };
-    repo.set_compensating(&claimed, &state, &output)
+    repo.set_compensating(&claimed, &state)
         .await
         .unwrap()
         .expect("claim flips to compensating");

@@ -963,7 +963,6 @@ pub trait OperationRepo: Send + Sync {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        output: &TxOutput,
     ) -> Result<Option<Operation>>;
     async fn update_compensation_state(
         &self,

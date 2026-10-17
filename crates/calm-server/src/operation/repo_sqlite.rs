@@ -12,8 +12,8 @@ use crate::model::{new_id, now_ms};
 use super::{
     CompensationStateVersioned, OPERATION_LEASE_MS, Operation, OperationId, OperationKey,
     OperationOutcome, OperationRepo, OperationResult, ParkedCompletion, ParkedOutcome, Phase,
-    PhaseTag, ProviderAdapter, SpawnArtifacts, Tx, TxOutput, idempotency_payload_conflict,
-    operation_result_from, required_lease_owner, required_output,
+    PhaseTag, ProviderAdapter, SpawnArtifacts, TxOutput, idempotency_payload_conflict,
+    operation_result_from, required_lease_owner,
 };
 
 mod writes;
@@ -25,7 +25,7 @@ pub(crate) use writes::{
     checkpoint_app_server_interact_tx, complete_parked_tx, require_live_claim_tx,
     require_original_operation_tx,
 };
-use writes::{has_live_claim_tx, settlement_output_matches_tx};
+use writes::{has_live_claim_tx, read_output_tx};
 
 #[cfg(test)]
 #[path = "claim_tests.rs"]
@@ -396,48 +396,35 @@ impl OperationRepo for SqlxOperationRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        output: &TxOutput,
     ) -> Result<Option<Operation>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        if !has_live_claim_tx(&mut tx, op).await?
-            || !settlement_output_matches_tx(&mut tx, op, output).await?
-        {
+        if !has_live_claim_tx(&mut tx, op).await? {
             return Ok(None);
         }
-        let text = serde_json::to_string(state)?;
-        let mut output_for_db = output.clone();
-        output_for_db.post_commit_events.clear();
+        // Compensation owns its plan and phase. Domain output remains the
+        // owner's last committed checkpoint, including when a later checkpoint
+        // failed after an external effect already happened.
+        if read_output_tx(&mut tx, &op.id).await?.is_none() {
+            return Err(CalmError::Internal(format!(
+                "operation {} has no committed output for compensation",
+                op.id
+            )));
+        }
         let result = sqlx::query(
             r#"UPDATE operations
                SET phase = 'compensating',
                    phase_detail_json = ?1,
                    compensation_state = ?2,
-                   tx_output_json = CASE
-                       WHEN json_type(tx_output_json, '$.data.terminal_launch') = 'object'
-                       THEN json_set(?3, '$.data.terminal_launch', json_extract(tx_output_json, '$.data.terminal_launch'))
-                       ELSE ?3 END,
-                   target_type = ?4,
-                   target_id = ?5,
-                   target_json = ?6,
-                   last_error = ?7,
+                   last_error = ?3,
                    lease_owner = NULL,
                    lease_until_ms = NULL,
-                   updated_at_ms = ?8
-               WHERE id = ?9
-                 AND lease_owner = ?10"#,
+                   updated_at_ms = ?4
+               WHERE id = ?5 AND lease_owner = ?6"#,
         )
         .bind(serde_json::to_string(&json!({
-            "from_phase": state.from_phase,
-            "reason": state.reason,
+            "from_phase": state.from_phase, "reason": state.reason,
         }))?)
-        .bind(text)
-        .bind(serde_json::to_string(&output_for_db)?)
-        .bind(&output.target_type)
-        .bind(&output.target_id)
-        .bind(serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))?)
+        .bind(serde_json::to_string(state)?)
         .bind(&state.reason)
         .bind(now_ms())
         .bind(&op.id)

@@ -1,4 +1,4 @@
-use super::super::AppServerInteractKind;
+use super::super::{AppServerInteractKind, Tx};
 use super::*;
 
 async fn claimed_operation() -> (crate::db::sqlite::SqlxRepo, SqlxOperationRepo, Operation) {
@@ -91,9 +91,8 @@ fn interaction(thread: &str) -> AppServerInteractKind {
 async fn expired_claim_rejects_compensation_and_failure_writers() {
     let (db, repo, op) = claimed_operation().await;
     expire(&db, &op).await;
-    let output = op.tx_output.as_ref().unwrap();
     assert!(
-        repo.set_compensating(&op, &compensation(), output)
+        repo.set_compensating(&op, &compensation())
             .await
             .unwrap()
             .is_none()
@@ -286,12 +285,6 @@ async fn stale_same_claim_output_cannot_overwrite_a_committed_checkpoint() {
             .unwrap()
             .is_none()
     );
-    assert!(
-        repo.set_compensating(&op, &compensation(), &stale)
-            .await
-            .unwrap()
-            .is_none()
-    );
     let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
     assert_eq!(
         stored.phase,
@@ -327,6 +320,59 @@ async fn phase_only_settlement_preserves_a_provider_checkpoint() {
 }
 
 #[tokio::test]
+async fn failed_later_checkpoint_can_compensate_without_replacing_committed_output() {
+    let (db, repo, op) = claimed_operation().await;
+    let first = TxOutput::new("unknown", None, json!({"checkpoint": 1}));
+    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    checkpoint_app_server_interact_tx(
+        &mut tx,
+        &op,
+        interaction("first"),
+        op.tx_output.as_ref().unwrap(),
+        &first,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // A native effect may already have happened before its later checkpoint
+    // fails. The failed writer must still enter compensation using the last
+    // committed output, while its plan retains the actual cleanup arguments.
+    let mut later = first.clone();
+    later.result = json!({"checkpoint": 2});
+    later.data = json!({"cleanup_ticket": "already-issued-effect"});
+    sqlx::query("CREATE TRIGGER reject_later_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN json_extract(NEW.tx_output_json,'$.result.checkpoint')=2 BEGIN SELECT RAISE(ABORT,'forced later checkpoint failure'); END")
+        .execute(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let error =
+        checkpoint_app_server_interact_tx(&mut tx, &op, interaction("later"), &first, &later)
+            .await
+            .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("forced later checkpoint failure"),
+        "{error}"
+    );
+    tx.rollback().await.unwrap();
+    let mut state = compensation();
+    state.steps.push(super::super::CompensationStep::new(
+        "cleanup_issued_effect",
+        json!({"ticket": later.data["cleanup_ticket"]}),
+    ));
+    let compensating =
+        repo.set_compensating(&op, &state).await.unwrap().expect(
+            "failed checkpoint must not strand a still-owned operation before compensation",
+        );
+    assert_eq!(compensating.phase, Phase::Compensating);
+    assert_eq!(compensating.tx_output.unwrap().result, first.result);
+    assert_eq!(
+        compensating.compensation_state.unwrap()["steps"][0]["args"]["ticket"],
+        "already-issued-effect"
+    );
+}
+
+#[tokio::test]
 async fn settlement_retains_released_terminal_launch_owner_bytes() {
     let (db, repo, op) = claimed_operation().await;
     let state = json!({"version":1,"state":"requested","terminal_id":"original-terminal","supervisor_sock":"/original.sock"});
@@ -334,10 +380,8 @@ async fn settlement_retains_released_terminal_launch_owner_bytes() {
         .bind(serde_json::to_string(&json!({"terminal_launch":state})).unwrap())
         .bind(&op.id).execute(db.pool()).await.unwrap();
     let op = repo.get_operation(&op.id).await.unwrap().unwrap();
-    let mut output = op.tx_output.clone().unwrap();
-    output.data = json!({"terminal_launch":{"state":"not_requested","version":1}});
     let settled = repo
-        .set_compensating(&op, &compensation(), &output)
+        .set_compensating(&op, &compensation())
         .await
         .unwrap()
         .unwrap();
