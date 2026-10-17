@@ -44,7 +44,7 @@ struct Boot {
     track_id: TrackId,
     planner_card_id: CardId,
     worker_card_id: CardId,
-    runtime_id: String,
+    worker_session_id: String,
     harness: PlannerHarness,
     harness_registry: HarnessRegistry,
     codex: Arc<CodexClient>,
@@ -449,7 +449,7 @@ async fn worker_codex_stop_hook_reaches_planner_harness_observation_queue() {
     }
 
     assert_ne!(boot.worker_card_id, boot.planner_card_id);
-    assert!(boot.harness_registry.get(&boot.runtime_id).is_some());
+    assert!(boot.harness_registry.get(&boot.worker_session_id).is_some());
     boot.harness.shutdown().await.unwrap();
 }
 
