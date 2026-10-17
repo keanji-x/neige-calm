@@ -11,7 +11,7 @@ pub(crate) use native_turns::{CodexHarnessBinding, NativeInput, NativeSteer};
 use native_turns::{NativeTurns, SourceRetirement};
 #[cfg(all(test, feature = "fixtures"))]
 pub(crate) mod native_owner_tests;
-pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
+pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport, NativePromptAdmission};
 mod thread_release;
 
 use std::collections::HashSet;
@@ -1103,6 +1103,7 @@ impl SharedCodexAppServer {
             approvals,
             client_user_message_id,
             NativeInput::Legacy,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await
         .into_outcome()
@@ -1254,6 +1255,7 @@ impl SharedCodexAppServer {
             items,
             client_user_message_id,
             NativeSteer::Legacy,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await
         .into_outcome()

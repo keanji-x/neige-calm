@@ -170,6 +170,7 @@ fn start(daemon: &Arc<SharedCodexAppServer>) -> JoinHandle<CodexPromptReport> {
                 ),
                 Some("client"),
                 NativeInput::Legacy,
+                &|| Box::pin(async { Ok(()) }),
             )
             .await
     })

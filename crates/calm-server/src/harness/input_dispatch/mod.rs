@@ -21,8 +21,9 @@ use serde_json::Value;
 use crate::auth::HumanInputSource;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::conversation::{
-    begin_input_attempt_tx, current_input_carrier_tx, record_input_attempt_fact_tx,
-    release_submission_tx, submission_identity_tx, submission_plan_tx,
+    RuntimeExecutionFence, begin_input_attempt_tx, current_input_carrier_tx,
+    record_input_attempt_fact_tx, release_submission_tx, submission_identity_tx,
+    submission_plan_tx,
 };
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
@@ -40,6 +41,62 @@ struct PreparedInputDispatch {
     proof: SubmissionDispatchProof,
     thread_id: String,
     items: Vec<InputItem>,
+    source: HumanInputSource,
+    card: String,
+    worker: String,
+    fence: RuntimeExecutionFence,
+}
+
+impl PreparedInputDispatch {
+    /// A committed marker is a fact, not authority across a native gate. This
+    /// owner retains the real issuer only for this one invocation.
+    async fn admit(&self, repo: &dyn Repo) -> Result<()> {
+        let (card, worker, source, expected, attempt, logical, thread) = (
+            self.card.clone(),
+            self.worker.clone(),
+            self.source.clone(),
+            self.fence.clone(),
+            self.proof.attempt().clone(),
+            self.logical_turn_id.clone(),
+            self.thread_id.clone(),
+        );
+        write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move {
+                let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
+                if RuntimeExecutionFence::from_carrier(&carrier) != expected {
+                    return Err(CalmError::Conflict("native input execution changed".into()));
+                }
+                let stored = submission_plan_tx(tx, &attempt.submission_id).await?;
+                let identity = submission_identity_tx(tx, &attempt.submission_id).await?;
+                let (execution, runtime) =
+                    crate::conversation_inputs::authorize_human_execution_tx(
+                        tx,
+                        &source,
+                        &carrier,
+                        &stored.plan,
+                    )
+                    .await?;
+                if identity.card_id != card
+                    || identity.logical_turn_id != logical
+                    || identity.execution != execution
+                    || runtime.thread_id.as_deref() != Some(thread.as_str())
+                    || !carrier
+                        .checkpoint()
+                        .attempt(&attempt.submission_id)
+                        .is_some_and(|actual| {
+                            actual.attempt == attempt
+                                && matches!(actual.delivery, InputDeliveryFact::CrossingUnknown)
+                        })
+                {
+                    return Err(CalmError::Conflict(
+                        "native input no longer owns its original crossing".into(),
+                    ));
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
 }
 
 #[derive(Clone)]
@@ -65,7 +122,7 @@ pub(crate) async fn initial(
     permission: PlannerPermissionMode,
     rewind: Option<&BackendRewind>,
 ) -> Result<CommittedInputReport> {
-    let prepared = prepare(
+    let mut prepared = prepare(
         repo,
         source,
         card_id,
@@ -76,16 +133,18 @@ pub(crate) async fn initial(
         rewind,
     )
     .await?;
+    let items = std::mem::take(&mut prepared.items);
     let report = backend
         .dispatch_input(
             &prepared.logical_turn_id,
             prepared.proof.attempt(),
             &prepared.thread_id,
             &prepared.proof,
-            prepared.items,
+            items,
             selection,
             permission,
             rewind,
+            &|| Box::pin(prepared.admit(repo)),
         )
         .await;
     settle(
@@ -112,7 +171,7 @@ pub(crate) async fn supplemental(
             "this provider does not support supplemental input".into(),
         ));
     }
-    let prepared = prepare(
+    let mut prepared = prepare(
         repo,
         source,
         card_id,
@@ -125,6 +184,7 @@ pub(crate) async fn supplemental(
         None,
     )
     .await?;
+    let items = std::mem::take(&mut prepared.items);
     let report = backend
         .dispatch_supplemental(
             &prepared.logical_turn_id,
@@ -132,7 +192,8 @@ pub(crate) async fn supplemental(
             &prepared.thread_id,
             expected_native_turn_id,
             &prepared.proof,
-            prepared.items,
+            items,
+            &|| Box::pin(prepared.admit(repo)),
         )
         .await;
     settle(
@@ -267,6 +328,10 @@ async fn prepare(
                 proof,
                 thread_id,
                 items,
+                source,
+                card: card_id,
+                worker: worker_session_id,
+                fence: RuntimeExecutionFence::from_carrier(&carrier),
             })
         })
     })

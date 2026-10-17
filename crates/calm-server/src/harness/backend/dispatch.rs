@@ -5,7 +5,7 @@ use calm_types::conversation::{InputAttempt, LogicalTurnId, SubmissionDispatchPr
 
 impl PlannerBackend {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn dispatch_input(
+    pub(crate) async fn dispatch_input<'a>(
         &self,
         logical_turn_id: &LogicalTurnId,
         attempt: &InputAttempt,
@@ -15,6 +15,7 @@ impl PlannerBackend {
         selection: &TurnModelSelection,
         permission: PlannerPermissionMode,
         rewind: Option<&BackendRewind>,
+        admission: &crate::shared_codex_appserver::NativePromptAdmission<'a>,
     ) -> InputAttemptReport {
         let correlation = AttemptCorrelation::new(attempt, self.provider(), thread_id);
         let rewind_observation = rewind_observation(self, thread_id, rewind);
@@ -64,6 +65,7 @@ impl PlannerBackend {
                             logical_turn_id,
                             proof,
                         ),
+                        admission,
                     )
                     .await;
                 codex_report(
@@ -74,6 +76,14 @@ impl PlannerBackend {
                 )
             }
             Arm::Claude(session) => {
+                if let Err(error) = admission().await {
+                    return not_dispatched(
+                        correlation,
+                        NonDispatchBasis::LocalPreflight,
+                        error.into(),
+                        rewind_observation,
+                    );
+                }
                 if rewind.is_some() {
                     return not_dispatched(
                         correlation,
@@ -115,6 +125,14 @@ impl PlannerBackend {
                 }
             }
             Arm::Acp(session) => {
+                if let Err(error) = admission().await {
+                    return not_dispatched(
+                        correlation,
+                        NonDispatchBasis::LocalPreflight,
+                        error.into(),
+                        rewind_observation,
+                    );
+                }
                 if rewind.is_some() {
                     return not_dispatched(
                         correlation,
@@ -160,7 +178,7 @@ impl PlannerBackend {
         }
     }
 
-    pub(crate) async fn dispatch_supplemental(
+    pub(crate) async fn dispatch_supplemental<'a>(
         &self,
         logical_turn_id: &LogicalTurnId,
         attempt: &InputAttempt,
@@ -168,6 +186,7 @@ impl PlannerBackend {
         expected_turn_id: &str,
         proof: &SubmissionDispatchProof,
         items: Vec<InputItem>,
+        admission: &crate::shared_codex_appserver::NativePromptAdmission<'a>,
     ) -> InputAttemptReport {
         let correlation = AttemptCorrelation::new(attempt, self.provider(), thread_id);
         if proof.attempt() != attempt || expected_turn_id.is_empty() {
@@ -191,6 +210,7 @@ impl PlannerBackend {
                             binding: owner.binding.clone(),
                             logical_turn_id: logical_turn_id.clone(),
                         },
+                        admission,
                     )
                     .await;
                 codex_report(

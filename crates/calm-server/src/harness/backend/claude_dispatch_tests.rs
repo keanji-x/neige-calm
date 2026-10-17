@@ -92,6 +92,7 @@ async fn dispatch(backend: &PlannerBackend, thread: &str, text: String) -> Input
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await
 }
@@ -170,6 +171,7 @@ async fn claude_legacy_rewind_remains_unknown_without_cli_effects() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             Some(&foreign),
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(matches!(report.rewind(), RewindObservation::Unknown(_)));
@@ -378,6 +380,7 @@ async fn claude_permission_held_driver_does_not_block_qualification_or_its_own_a
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Ask,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     let target = end_target(&owner, report.outcome().as_ref().unwrap());

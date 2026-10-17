@@ -115,6 +115,7 @@ async fn acp_v2_journal_contains_only_original_proof_and_replay_never_resends() 
             &selection,
             PlannerPermissionMode::Never,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
     };
     let report = send().await;
@@ -165,6 +166,7 @@ async fn acp_v2_receipt_rejects_another_attempt_without_new_prompt() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(report.outcome().is_ok());
@@ -185,6 +187,7 @@ async fn acp_v2_receipt_rejects_another_attempt_without_new_prompt() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
@@ -235,6 +238,7 @@ async fn acp_legacy_proof_is_preserved_and_cannot_authorize_v2_replay() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
@@ -322,6 +326,7 @@ async fn dispatch_report(
             &TurnModelSelection::inherit(),
             mode,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await
 }

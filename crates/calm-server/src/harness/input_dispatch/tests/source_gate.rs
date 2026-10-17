@@ -3,8 +3,7 @@ use super::*;
 use crate::shared_codex_appserver::native_owner_tests::{connect, request, send};
 use serde_json::json;
 
-#[tokio::test]
-async fn revoked_source_cannot_cross_after_waiting_for_the_actual_native_client() {
+async fn input_gate_case(erase_private_body: bool) {
     let mut fixture = Fixture::new().await;
     fixture.daemon = SharedCodexAppServer::new_stub(fixture.repo.clone());
     let card = fixture.repo.card_get(&fixture.card).await.unwrap().unwrap();
@@ -37,9 +36,23 @@ async fn revoked_source_cannot_cross_after_waiting_for_the_actual_native_client(
     .await
     .expect("the real input owner must commit its marker before native access");
     eprintln!("stage: original marker committed; real native core gate held");
-    fixture.auth.sessions.remove(&fixture.session).unwrap();
-    assert!(fixture.source.current_principal().is_err());
-    eprintln!("stage: actual request issuer revoked before releasing native gate");
+    if erase_private_body {
+        let mut tx = begin_immediate_tx(fixture.repo.pool()).await.unwrap();
+        erase_message_revisions_tx(
+            &mut tx,
+            &fixture.message.message_id,
+            &PrivateHistoryOperationId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(fixture.source.current_principal().is_ok());
+        eprintln!("stage: actual private body erased before releasing native gate");
+    } else {
+        fixture.auth.sessions.remove(&fixture.session).unwrap();
+        assert!(fixture.source.current_principal().is_err());
+        eprintln!("stage: actual request issuer revoked before releasing native gate");
+    }
     drop(gate);
     let unexpected = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::select! {
@@ -67,6 +80,29 @@ async fn revoked_source_cannot_cross_after_waiting_for_the_actual_native_client(
     tx.rollback().await.unwrap();
     assert_eq!(
         unexpected, None,
-        "the native RPC owner must revalidate the live issuer after waiting for its client"
+        "the native RPC owner must revalidate the live issuer and payload after waiting for its client"
     );
+    let checkpoint = fixture.checkpoint().await;
+    assert!(checkpoint.active.is_none());
+    assert_eq!(checkpoint.pending.len(), 1);
+    assert_eq!(
+        checkpoint.pending[0].input_ref(),
+        AcceptedInputRef::Human {
+            message: fixture.message.clone()
+        }
+    );
+    assert!(matches!(
+        checkpoint.attempt(&fixture.submission).unwrap().delivery,
+        InputDeliveryFact::NotDispatched { .. }
+    ));
+}
+
+#[tokio::test]
+async fn revoked_source_cannot_cross_after_waiting_for_the_actual_native_client() {
+    input_gate_case(false).await;
+}
+
+#[tokio::test]
+async fn privately_erased_body_cannot_cross_after_waiting_for_the_actual_native_client() {
+    input_gate_case(true).await;
 }

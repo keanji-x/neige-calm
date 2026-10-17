@@ -1,6 +1,12 @@
 //! Native prompt evidence, before the conversation owner attaches its durable attempt.
 use super::*;
+use futures_util::future::BoxFuture;
 use provider::codex::{RequestCrossing, RpcAttemptFailure};
+
+/// The effect owner invokes current caller admission after its native gate.
+/// This invocation callback is never retained in the native execution registry.
+pub(crate) type NativePromptAdmission<'a> =
+    dyn Fn() -> BoxFuture<'a, Result<()>> + Send + Sync + 'a;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CodexPromptDelivery {
@@ -93,7 +99,7 @@ enum PromptSource<'a> {
 }
 
 impl SharedCodexAppServer {
-    pub(crate) async fn turn_start_report(
+    pub(crate) async fn turn_start_report<'a>(
         &self,
         thread_id: &str,
         items: Vec<InputItem>,
@@ -101,6 +107,7 @@ impl SharedCodexAppServer {
         approvals: TurnApprovals,
         client_id: Option<&str>,
         input: NativeInput,
+        admission: &NativePromptAdmission<'a>,
     ) -> CodexPromptReport {
         if let Err(error) = self.require_authentication() {
             return CodexPromptReport::failure(thread_id, client_id, error, false);
@@ -121,6 +128,9 @@ impl SharedCodexAppServer {
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
+            if let Err(error) = admission().await {
+                return CodexPromptReport::failure(thread_id, client_id, error, false);
+            }
             if fake.reject_turn_start.load(Ordering::SeqCst) {
                 return CodexPromptReport::failure(
                     thread_id,
@@ -181,6 +191,10 @@ impl SharedCodexAppServer {
             Ok(client) => client,
             Err(error) => return CodexPromptReport::failure(thread_id, client_id, error, false),
         };
+        if let Err(error) = admission().await {
+            // This unique request has neither a native ticket nor a send yet.
+            return CodexPromptReport::failure(thread_id, client_id, error, false);
+        }
         let ticket = match self.native_turns.begin(&client, thread_id, input) {
             Ok(ticket) => ticket,
             Err(error) => return CodexPromptReport::failure(thread_id, client_id, error, false),
@@ -240,19 +254,23 @@ impl SharedCodexAppServer {
         Ok(turn_id.to_owned())
     }
 
-    pub(crate) async fn turn_steer_report(
+    pub(crate) async fn turn_steer_report<'a>(
         &self,
         thread_id: &str,
         expected_turn_id: &str,
         items: Vec<InputItem>,
         client_id: Option<&str>,
         input: NativeSteer,
+        admission: &NativePromptAdmission<'a>,
     ) -> CodexPromptReport {
         if let Err(error) = self.require_authentication() {
             return CodexPromptReport::failure(thread_id, client_id, error, false);
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
+            if let Err(error) = admission().await {
+                return CodexPromptReport::failure(thread_id, client_id, error, false);
+            }
             fake.steered_turns
                 .lock()
                 .expect("fake shared codex steered turns mutex poisoned")
@@ -318,6 +336,10 @@ impl SharedCodexAppServer {
             Ok(client) => client,
             Err(error) => return CodexPromptReport::failure(thread_id, client_id, error, false),
         };
+        if let Err(error) = admission().await {
+            // This unique request has neither a native ticket nor a send yet.
+            return CodexPromptReport::failure(thread_id, client_id, error, false);
+        }
         let ticket =
             match self
                 .native_turns

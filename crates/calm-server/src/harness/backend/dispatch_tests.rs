@@ -48,6 +48,7 @@ async fn initial(backend: &PlannerBackend, proof: &SubmissionDispatchProof) -> I
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             None,
+            &|| Box::pin(async { Ok(()) }),
         )
         .await
 }
@@ -114,6 +115,7 @@ async fn supplemental_acceptance_is_scoped_to_original_attempt_and_native_turn()
             "native-turn",
             &proof,
             items(),
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     let InputDelivery::Accepted(receipt) = report.delivery() else {
@@ -130,6 +132,7 @@ async fn supplemental_acceptance_is_scoped_to_original_attempt_and_native_turn()
             "native-turn",
             &proof,
             items(),
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(matches!(report.delivery(), InputDelivery::Unknown(_)));
@@ -168,6 +171,7 @@ async fn missing_rewind_target_stays_unknown_and_does_not_issue_prompt() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             Some(&plan),
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(matches!(report.delivery(), InputDelivery::NotDispatched(_)));
@@ -212,6 +216,7 @@ async fn unqualified_native_revert_never_releases_a_replacement_prompt() {
                 &TurnModelSelection::inherit(),
                 PlannerPermissionMode::Never,
                 Some(&plan),
+                &|| Box::pin(async { Ok(()) }),
             )
             .await;
         assert!(matches!(report.delivery(), InputDelivery::NotDispatched(_)));
@@ -250,6 +255,7 @@ async fn confirmed_rewind_is_not_repeated_by_prompt_dispatch() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             Some(&plan),
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(matches!(report.delivery(), InputDelivery::Accepted(_)));
@@ -302,6 +308,7 @@ async fn rewind_evidence_cannot_move_to_another_thread_or_upgrade_legacy() {
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
             Some(&plan),
+            &|| Box::pin(async { Ok(()) }),
         )
         .await;
     assert!(matches!(report.delivery(), InputDelivery::NotDispatched(_)));

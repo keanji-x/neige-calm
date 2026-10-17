@@ -153,7 +153,8 @@ async fn native_end_waits_for_decided_nondispatch_to_settle_and_release_suppleme
             &prepared.thread_id,
             "original",
             &prepared.proof,
-            prepared.items,
+            prepared.items.clone(),
+            &|| Box::pin(prepared.admit(fx.repo.as_ref())),
         ),
     )
     .await

@@ -45,6 +45,7 @@ impl Fixture {
                     &TurnModelSelection::inherit(),
                     PlannerPermissionMode::Never,
                     None,
+                    &|| Box::pin(async { Ok(()) }),
                 )
                 .await
         })
@@ -204,6 +205,7 @@ async fn codex_supplemental_inflight_blocks_observation_but_never_replaces_initi
                 "initial",
                 &sent,
                 vec![],
+                &|| Box::pin(async { Ok(()) }),
             )
             .await
     });

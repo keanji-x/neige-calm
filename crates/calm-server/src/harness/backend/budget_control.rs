@@ -64,6 +64,7 @@ impl PlannerBackend {
                 }],
                 Some(notice.client_id()),
                 crate::shared_codex_appserver::NativeSteer::BudgetControl,
+                &|| Box::pin(async { Ok(()) }),
             )
             .await;
         let delivery = match native.delivery() {
