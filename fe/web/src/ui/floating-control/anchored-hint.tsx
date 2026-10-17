@@ -10,12 +10,13 @@ export function supportsAnchoredHints(): boolean {
 }
 
 /** A nonmodal description of an existing control; its native action stays with the caller. */
-export function AnchoredHint({ open, title, description, onSkip, children, reserveSpace = false, placement = 'bottom', footer }: Readonly<{
+export function AnchoredHint({ open, title, description, onSkip, children, reserveSpace = false, placement = 'bottom', footer, detail }: Readonly<{
   open: boolean;
   /** Reserve the hint’s measured height below the control in a form row. */
   reserveSpace?: boolean;
   placement?: 'top' | 'bottom';
   footer?: ReactNode;
+  detail?: ReactNode;
   title: string;
   description: string;
   onSkip: () => void;
@@ -66,6 +67,7 @@ export function AnchoredHint({ open, title, description, onSkip, children, reser
         fill="var(--paper)" className={styles.arrow} aria-hidden="true" />
       <strong className={styles.title}>{title}</strong>
       <p className={styles.description}>{description}</p>
+      {detail}
       {footer ?? <Button label="跳过引导" size="sm" variant="ghost" onClick={() => {
         control.current?.focus({ preventScroll: true });
         onSkip();

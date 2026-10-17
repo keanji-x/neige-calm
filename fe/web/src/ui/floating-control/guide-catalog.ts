@@ -3,6 +3,8 @@ import { z } from 'zod';
 export type GuideStep = Readonly<{
   id: string; target: string; title: string; description: string;
   advance: 'next' | 'activate';
+  outcome?: string;
+  example?: Readonly<{ label: string; summary: string; text: string }>;
 }>;
 export type GuideTour = Readonly<{ id: string; title: string; priority: number; exclusive: boolean; requires: readonly string[]; steps: readonly GuideStep[] }>;
 export type GuideCatalog = Readonly<{ version: number; tours: readonly GuideTour[] }>;
@@ -17,6 +19,8 @@ export function parseGuideCatalog(input: unknown): GuideCatalog {
       steps: z.array(z.object({
         id: identifier, target: identifier, title: z.string().min(1),
         description: z.string().min(1), advance: z.enum(['next', 'activate']),
+        outcome: z.string().min(1).optional(),
+        example: z.object({ label: z.string().min(1), summary: z.string().min(1), text: z.string().min(1) }).strict().optional(),
       }).strict()).min(1),
     }).strict()).min(1),
   }).strict().superRefine((catalog, context) => {

@@ -13,3 +13,13 @@ it('rejects duplicate identities and executable configuration', () => {
   expect(() => parseGuideCatalog({ version: 1, tours: [{ ...tour, steps: [step, step] }] })).toThrow(/Duplicate/);
   expect(() => parseGuideCatalog({ version: 1, tours: [{ ...tour, steps: [{ ...step, script: 'run()' }] }] })).toThrow();
 });
+
+it('accepts plain-text outcomes and complete examples but rejects executable or incomplete examples', () => {
+  const step = { id: 'step', target: 'draft', title: 'Write', description: 'Try a request', advance: 'next',
+    outcome: 'Review the draft before sending.', example: { label: 'Fill example', summary: 'A local page', text: 'Create a local page.' } };
+  const input = { version: 1, tours: [{ id: 'tour', title: 'First task', priority: 1, exclusive: true, requires: [], steps: [step] }] };
+  expect(parseGuideCatalog(input).tours[0].steps[0].example?.text).toBe('Create a local page.');
+  for (const example of [{ label: 'Fill' }, { ...step.example, action: 'submit()' }]) {
+    expect(() => parseGuideCatalog({ ...input, tours: [{ ...input.tours[0], steps: [{ ...step, example }] }] })).toThrow();
+  }
+});

@@ -22,4 +22,7 @@
   .progress { display: block; margin-block-end: var(--space-2); color: var(--text-3); font: var(--type-label); }
   .actions { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
   .arrow { pointer-events: none; }
+  .example { padding: var(--space-2); margin-block-end: var(--space-2); border-radius: var(--radius-sm); background: var(--surface-code); }
+  .example p { margin-block: var(--space-1) var(--space-2); }
+  .outcome { margin-block: 0 var(--space-3); color: var(--text-3); font: var(--type-label); }
 }

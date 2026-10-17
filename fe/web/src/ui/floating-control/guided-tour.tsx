@@ -111,8 +111,12 @@ function BoundGuideControl({ anchor, onElement, describedBy, children }: Readonl
 }
 
 /** The hint remains inside the target's own Dialog/form ancestry. Group nearby controls with one target. */
-export function GuideAnchor({ id, disabled = false, reserveSpace = false, placement = 'bottom', children }: Readonly<{
+export function GuideAnchor({ id, disabled = false, reserveSpace = false, placement = 'bottom', onExample, canAdvance = true, children }: Readonly<{
   id: string; disabled?: boolean; reserveSpace?: boolean; placement?: 'top' | 'bottom';
+  /** The target owner may insert a repository-authored example into its empty draft. Never submits. */
+  onExample?: (text: string) => void;
+  /** Local readiness of this explanation's native control; never changes the product's own validation. */
+  canAdvance?: boolean;
   children: (anchor: RefCallback<HTMLElement>, describedBy: string | undefined) => ReactNode;
 }>) {
   const guide = useContext(GuideContext);
@@ -127,11 +131,13 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
   const active = guide !== null && guide.current !== null && guide.current.element === element && guide.current.step.target === id && !disabled;
   const advance = guide?.current?.step.advance;
   const next = guide?.next;
+  const step = active ? guide.current.step : null;
+  const example = step?.example;
   useEffect(() => {
-    if (!active || element === null || advance !== 'activate' || next === undefined) return;
+    if (!active || !canAdvance || element === null || advance !== 'activate' || next === undefined) return;
     element.addEventListener('click', next);
     return () => element.removeEventListener('click', next);
-  }, [active, element, advance, next]);
+  }, [active, canAdvance, element, advance, next]);
   const act = (action: (() => void) | undefined) => {
     element?.focus({ preventScroll: true });
     action?.();
@@ -139,12 +145,21 @@ export function GuideAnchor({ id, disabled = false, reserveSpace = false, placem
   return <AnchoredHint open={active} title={active ? guide.current.step.title : ''}
     description={active ? guide.current.step.description : ''} reserveSpace={reserveSpace} placement={placement}
     onSkip={() => guide?.skip()}
+    detail={step === null ? undefined : <>
+      {example !== undefined && <div className={styles.example}>
+        <span className={styles.title}>可以先试这个</span>
+        <p>{example.summary}</p>
+        {onExample !== undefined && <Button type="button" label={example.label} size="sm" variant="secondary"
+          onClick={() => { element?.focus({ preventScroll: true }); onExample(example.text); }} />}
+      </div>}
+      {step.outcome !== undefined && <p className={styles.outcome}>接下来：{step.outcome}</p>}
+    </>}
     footer={active ? <>
       <span className={styles.progress}>{guide.current.tour} · {guide.current.index + 1}/{guide.current.count}</span>
       <div className={styles.actions}>
         <Button label="跳过引导" size="sm" variant="ghost" onClick={() => act(guide.skip)} />
         {guide.previous !== undefined && <Button label="上一步" size="sm" variant="ghost" onClick={() => act(guide.previous)} />}
-        <Button label={guide.current.index + 1 === guide.current.count ? '知道了' : '下一步'} size="sm" variant="secondary" onClick={() => act(guide.next)} />
+        <Button type="button" label={guide.current.index + 1 === guide.current.count ? '知道了' : '下一步'} isDisabled={!canAdvance} size="sm" variant="secondary" onClick={() => act(guide.next)} />
       </div>
     </> : undefined}>
     {(anchor, describedBy) => <BoundGuideControl anchor={anchor} onElement={setElement} describedBy={describedBy}>{children}</BoundGuideControl>}

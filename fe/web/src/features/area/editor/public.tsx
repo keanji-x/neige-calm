@@ -56,7 +56,9 @@ export function AreaEditorForm({
   listDirectory, nameInputRef, submitLabel, onCancel, onSubmit,
 }: AreaEditorFormProps) {
   const folderId = `${useId()}-default-folder`;
-  const guiding = useGuideTargetActive('area-defaults');
+  const guidingFolder = useGuideTargetActive('area-defaults');
+  const guidingTemplate = useGuideTargetActive('area-template');
+  const guiding = guidingFolder || guidingTemplate;
   const [name, setName] = useState(initial.name);
   const [templateId, setTemplateId] = useState(initial.defaultTemplateId ?? NO_TEMPLATE_ID);
   const [cwd, setCwd] = useState(initial.defaultCwd ?? '');
@@ -112,7 +114,9 @@ export function AreaEditorForm({
   return (
     <VStack as="form" gap={3} className={styles.form} onSubmit={submit}>
       {error !== null && <Banner status="error" title={error} data-nc-area-editor-error />}
-      <TextInput
+      <GuideAnchor id="area-name" reserveSpace canAdvance={normalizedName !== ''} disabled={initial.name !== '' || browsing || submitting || locked}
+        onExample={name.trim() !== '' ? undefined : (text) => { setName(text); nameInputRef.current?.focus(); }}>
+      {(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1}><TextInput
         {...NATIVE_REQUIRED_INPUT_PROPS}
         ref={nameInputRef}
         label="Name"
@@ -120,10 +124,11 @@ export function AreaEditorForm({
         onChange={setName}
         width="100%"
         isDisabled={submitting || locked}
-      />
+      /></div>}</GuideAnchor>
       <HStack gap={1} align="center" className={`${styles.controlRow} ${guiding ? styles.guided : ''}`}>
         <HStack gap={1} align="center" className={styles.pills}>
-          <TemplatePill
+          <GuideAnchor id="area-template" reserveSpace canAdvance={templateId !== NO_TEMPLATE_ID} disabled={browsing || submitting || locked}>
+          {(anchor, describedBy) => <span ref={anchor} aria-describedby={describedBy} tabIndex={-1}><TemplatePill
             templates={templates}
             templatesLoaded={templatesLoaded}
             value={templateId}
@@ -131,7 +136,7 @@ export function AreaEditorForm({
             placement="below"
             controlLabel="Default template"
             isDisabled={submitting || locked}
-          />
+          /></span>}</GuideAnchor>
           <GuideAnchor id="area-defaults" reserveSpace disabled={browsing || submitting || locked}>
           {(anchor, describedBy) => <FolderPill
             buttonId={folderId}
@@ -148,7 +153,8 @@ export function AreaEditorForm({
         </HStack>
         <HStack gap={1} justify="end" className={styles.actions}>
           <Button type="button" variant="ghost" label={cancelLabel} isDisabled={submitting} onClick={onCancel} />
-          <Button
+          <GuideAnchor id="area-create" disabled={normalizedName === '' || browsing || submitting || locked} placement="top">
+          {(anchor, describedBy) => <Button ref={anchor} aria-describedby={describedBy}
             type="submit"
             variant="primary"
             label={submitting ? 'Saving…' : submitLabel}
@@ -157,7 +163,7 @@ export function AreaEditorForm({
             tooltip={submitting
               ? 'Saving in progress'
               : normalizedName === '' ? 'Enter a name to save' : submitLabel}
-          />
+          />}</GuideAnchor>
         </HStack>
       </HStack>
       {templateNotice !== null && <p className={styles.notice} role="status">{templateNotice}</p>}

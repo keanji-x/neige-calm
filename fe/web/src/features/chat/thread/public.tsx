@@ -655,7 +655,11 @@ export function ChatComposer({
   ) : undefined;
 
   return (
-    <GuideAnchor id="conversation-input" placement="top">{(anchor, describedBy) => <div
+    <GuideAnchor id="conversation-input" placement="top"
+      onExample={disabled || sendWaiting || stopShown || editing !== undefined || draft.trim() !== '' ? undefined : (text) => {
+        setDraft(text);
+        messageInputRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus();
+      }}>{(anchor, describedBy) => <div
       ref={(node) => { rootRef.current = node; anchor(node); }} aria-describedby={describedBy}
       className={`${styles.composer} ${layout === 'mobile' ? mobileStyles.composer : ''}`}
       data-nc-composer=""

@@ -261,7 +261,11 @@ export function NewTrackForm({
           An Area groups a project&apos;s work; a Track keeps one request, its conversation and report.
         </p>
 
-        <GuideAnchor id="track-request" disabled={browsing || submitting}>
+        <GuideAnchor id="track-request" disabled={browsing || submitting || locked} canAdvance={!isBlankForKernel(message)}
+          onExample={message.trim() !== '' ? undefined : (text) => {
+            setMessage(text);
+            composerHostRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus();
+          }}>
         {(anchor, describedBy) => <div
           ref={(node) => { composerHostRef.current = node; anchor(node); }} aria-describedby={describedBy} tabIndex={-1}
           className={styles.composer}
@@ -317,7 +321,8 @@ export function NewTrackForm({
             /* Model and Create stay together at the trailing edge. */
             sendActions={modelControls === undefined ? undefined : <span className={styles.modelControls}>{modelControls}</span>}
             sendButton={(
-              <Button
+              <GuideAnchor id="track-send" disabled={browsing || submitting || locked || submitBlocked || !valid} placement="top">
+              {(anchor, describedBy) => <Button ref={anchor} aria-describedby={describedBy}
                 type="button"
                 className={styles.send}
                 variant="primary"
@@ -326,7 +331,7 @@ export function NewTrackForm({
                 label={submitting ? 'Creating…' : 'Create track'}
                 isDisabled={submitting || submitBlocked || !valid}
                 onClick={() => submit(message)}
-              />
+              />}</GuideAnchor>
             )}
           />
         </div>}</GuideAnchor>
