@@ -264,6 +264,7 @@ async fn wake(fx: &Fixture, source: crate::auth::HumanInputSource) -> Result<()>
         route.planner_start_adapter.clone(),
         source,
         route.workspace_root.clone(),
+        route.events.clone(),
     )
     .await
 }
@@ -616,6 +617,7 @@ async fn retained_source_revoked_at_real_native_gate_cannot_begin_rpc_or_retry_u
             route.planner_start_adapter.clone(),
             live_source,
             route.workspace_root.clone(),
+            route.events.clone(),
         )
         .await
     });

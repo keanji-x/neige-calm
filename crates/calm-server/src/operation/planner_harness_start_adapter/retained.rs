@@ -6,6 +6,8 @@ use crate::db::sqlite::conversation::{self, RuntimeExecutionFence};
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
 use calm_types::conversation::MessageRevisionRef;
 
+mod recovery;
+
 #[derive(Clone)]
 pub(super) enum StartInvocation {
     Registered,
@@ -112,6 +114,7 @@ impl PlannerHarnessStartAdapter {
         card_id: &CardId,
         source: HumanInputSource,
         workspace_root: PathBuf,
+        events: &crate::event::EventBus,
     ) -> Result<()> {
         let mut bound = self.as_ref().clone();
         bound.invocation = StartInvocation::Retained {
@@ -158,9 +161,10 @@ impl PlannerHarnessStartAdapter {
                     .execute_with_adapter(self.clone(), Arc::new(bound.clone()), key, payload)
                     .await?;
             } else {
-                return Err(CalmError::Conflict(
-                    "retained native thread awaits current-source exact recovery".into(),
-                ));
+                // The existing lifecycle order is card -> operation drive. This
+                // recovery creates no operation and cannot re-enter the driver.
+                let _operations = runtime.lock_for_track_delete().await;
+                bound.recover_retained(&wire, events).await?;
             }
         }
         // Re-read all current scope after native/handle awaits. This binds only
@@ -443,7 +447,7 @@ impl PlannerHarnessStartAdapter {
     pub(super) async fn retained_spawn(
         &self,
         wire: &RetainedPayload,
-        ctx: &SpawnCtx,
+        events: &crate::event::EventBus,
     ) -> Result<SpawnOutcome> {
         let target = self.retained_target(wire).await?;
         let thread = target
@@ -496,7 +500,7 @@ impl PlannerHarnessStartAdapter {
             card_id: CardId::from(wire.card_id.clone()),
             thread_id: Some(thread),
             repo: self.repo.clone(),
-            events: ctx.events.clone(),
+            events: events.clone(),
             card_role_cache: self.card_role_cache.clone(),
             track_area_cache: self.track_area_cache.clone(),
             backend,

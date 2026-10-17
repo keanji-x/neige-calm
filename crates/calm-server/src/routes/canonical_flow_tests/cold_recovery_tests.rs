@@ -1,8 +1,50 @@
 use super::*;
+use axum::extract::FromRef;
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Scenario {
+    Resume,
+    Append,
+    RevokeGate,
+    RevokeRead,
+    RemoteActive,
+    RemoteSystemError,
+    HistoricalRefusal,
+}
+
+#[tokio::test]
+async fn production_http_cold_recovery_preserves_appended_pending() {
+    original_input_flow(true, Some(Scenario::Append)).await;
+}
+
+#[tokio::test]
+async fn production_http_cold_recovery_rechecks_source_after_native_gate() {
+    original_input_flow(true, Some(Scenario::RevokeGate)).await;
+}
+
+#[tokio::test]
+async fn production_http_cold_recovery_rechecks_source_before_token_and_resume() {
+    original_input_flow(true, Some(Scenario::RevokeRead)).await;
+}
 
 #[tokio::test]
 async fn production_http_cold_recovery_resumes_original_thread_for_new_input() {
-    original_input_flow(true, true).await;
+    original_input_flow(true, Some(Scenario::Resume)).await;
+}
+
+#[tokio::test]
+async fn production_http_cold_recovery_holds_remote_active_without_new_input_crossing() {
+    original_input_flow(true, Some(Scenario::RemoteActive)).await;
+}
+
+#[tokio::test]
+async fn production_http_cold_recovery_holds_remote_system_error() {
+    original_input_flow(true, Some(Scenario::RemoteSystemError)).await;
+}
+
+#[tokio::test]
+async fn historical_recovery_entry_cannot_resume_canonical_storage() {
+    original_input_flow(true, Some(Scenario::HistoricalRefusal)).await;
 }
 
 pub(super) async fn second_turn(
@@ -10,14 +52,50 @@ pub(super) async fn second_turn(
     state: &AppState,
     app: &axum::Router,
     cookie: &str,
-    track: &str,
-    card: &str,
-    worker: &str,
+    identity: (&str, &str, &str),
+    scenario: Scenario,
 ) {
+    let (track, card, worker) = identity;
     eprintln!(
         "stage: original execution completed, database reopened, original receipt/carrier verified"
     );
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
+    let gate = if scenario == Scenario::RevokeGate {
+        Some(
+            crate::shared_codex_appserver::native_owner_tests::hold_connected_client_gate(
+                &state.shared_codex_appserver,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    if scenario == Scenario::HistoricalRefusal {
+        let row = fixture
+            .repo
+            .session_projection_active_for_card(&card.to_owned())
+            .await
+            .unwrap()
+            .unwrap();
+        let restore = state
+            .shared_codex_appserver
+            .resume_active_conversation(&row, THREAD);
+        tokio::pin!(restore);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut restore => assert!(matches!(result, Err(crate::error::CalmError::Conflict(_)))),
+                call = request(&mut peer) => panic!("historical entry emitted RPC for canonical storage: {}", call["method"]),
+            }
+        }).await.expect("historical entry must reject canonical storage before native I/O");
+        assert_eq!(fixture.counts(card).await, (1, 1, 1, 1, 1));
+        return;
+    }
+    let old_token: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(worker)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
     let input = post(
         app,
         cookie,
@@ -34,6 +112,30 @@ pub(super) async fn second_turn(
     eprintln!(
         "stage: new HTTP input committed on original worker; pending1, original attempt1, no new active"
     );
+    if scenario == Scenario::RevokeGate {
+        // The retained owner's initial SQL finishes before entering the
+        // recovery transport. That transport holds transition before waiting
+        // for the Core we hold; its first admission is AFTER connected_client.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let transition = state
+                    .shared_codex_appserver
+                    .lock_transition_serial_for_test();
+                tokio::pin!(transition);
+                if futures_util::poll!(&mut transition).is_pending() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual recovery reached the native owner behind held Core");
+        post(app, cookie, "/api/auth/logout", "logout", json!({})).await;
+        drop(gate);
+        assert_recovery_held(fixture, state, &mut peer, track, card, worker, old_token).await;
+        return;
+    }
+    drop(gate);
     let mut reads = 0;
     let mut resumes = 0;
     let call = tokio::time::timeout(Duration::from_secs(5), async {
@@ -43,8 +145,20 @@ pub(super) async fn second_turn(
             let result = match call["method"].as_str().unwrap() {
                 "thread/read" => {
                     reads += 1;
+                    if scenario == Scenario::Append {
+                        post(
+                            app,
+                            cookie,
+                            &format!("/api/cards/{card}/planner/input"),
+                            "tail",
+                            json!({"text":"Keep this newer pending input"}),
+                        )
+                        .await;
+                    } else if scenario == Scenario::RevokeRead {
+                        post(app, cookie, "/api/auth/logout", "logout", json!({})).await;
+                    }
                     assert_eq!(call["params"]["threadId"], THREAD);
-                    json!({"thread":{"id":THREAD,"status":{"type":"notLoaded"},"turns":[]}})
+                    json!({"thread":{"id":THREAD,"status":{"type": match scenario { Scenario::RemoteActive => "active", Scenario::RemoteSystemError => "systemError", _ => "notLoaded" }},"turns":[]}})
                 }
                 "thread/resume" => {
                     resumes += 1;
@@ -52,14 +166,22 @@ pub(super) async fn second_turn(
                     json!({"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}})
                 }
                 "config/read" => json!({"config":{}}),
-                "turn/start" => break call,
+                "turn/start" => break Some(call),
                 method => panic!("cold recovery must not mint a new thread: {method}"),
             };
             send(&mut peer, json!({"id":call["id"],"result":result})).await;
+            if matches!(scenario, Scenario::RevokeRead | Scenario::RemoteActive | Scenario::RemoteSystemError) && reads == 1 {
+                return None;
+            }
         }
     })
     .await
     .expect("new authenticated input must resume the original cold thread");
+    let Some(call) = call else {
+        assert_eq!((reads, resumes), (1, 0));
+        assert_recovery_held(fixture, state, &mut peer, track, card, worker, old_token).await;
+        return;
+    };
     assert_eq!((reads, resumes), (1, 1));
     assert_eq!(call["params"]["threadId"], THREAD);
     let body = call["params"]["input"].to_string();
@@ -71,7 +193,10 @@ pub(super) async fn second_turn(
     let crossing = fixture.carrier(track).await;
     assert_eq!((crossing.0.as_str(), crossing.1.as_str()), (card, worker));
     assert_eq!(crossing.2.canonical_inputs.attempts.len(), 2);
-    assert!(crossing.2.canonical_inputs.pending.is_empty());
+    assert_eq!(
+        crossing.2.canonical_inputs.pending.len(),
+        usize::from(scenario == Scenario::Append)
+    );
     send(
         &mut peer,
         json!({"id":call["id"],"result":{"turn":{"id":"cold-second-turn"}}}),
@@ -88,18 +213,32 @@ pub(super) async fn second_turn(
     fixture
         .wait_phase(track, HarnessPhaseTag::TurnRunning)
         .await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        &mut peer,
-        THREAD,
-        "turn/completed",
-        json!({"id":"cold-second-turn","status":"completed"}),
-    )
-    .await;
-    fixture
-        .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+    if scenario != Scenario::Append {
+        notify_thread(
+            &state.shared_codex_appserver,
+            &mut peer,
+            THREAD,
+            "turn/completed",
+            json!({"id":"cold-second-turn","status":"completed"}),
+        )
         .await;
-    assert_eq!(fixture.counts(card).await, (2, 2, 1, 2, 1));
+        fixture
+            .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+            .await;
+        assert_eq!(fixture.counts(card).await, (2, 2, 1, 2, 1));
+    } else {
+        assert_eq!(fixture.counts(card).await, (3, 3, 1, 2, 1));
+        assert_eq!(
+            fixture
+                .carrier(track)
+                .await
+                .2
+                .canonical_inputs
+                .pending
+                .len(),
+            1
+        );
+    }
     let handle = state
         .harness
         .remove(worker)
@@ -113,4 +252,38 @@ pub(super) async fn second_turn(
             stopping.await.unwrap().unwrap();
         }
     }
+}
+
+async fn assert_recovery_held(
+    fixture: &Fixture,
+    state: &AppState,
+    peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,
+    track: &str,
+    card: &str,
+    worker: &str,
+    old_token: Option<String>,
+) {
+    let route = crate::state::RouteState::from_ref(state);
+    let settled = crate::per_card_lock::lock_card(&route.planner_recovery_locks, card);
+    tokio::pin!(settled);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _guard = &mut settled => {},
+            call = request(peer) => panic!("held recovery emitted another private RPC: {}", call["method"]),
+        }
+    }).await.expect("the real recovery owner must release its card fence");
+    let after = fixture.carrier(track).await;
+    assert_eq!((after.0.as_str(), after.1.as_str()), (card, worker));
+    assert_eq!(after.2.canonical_inputs.pending.len(), 1);
+    assert_eq!(after.2.canonical_inputs.attempts.len(), 1);
+    assert!(after.2.canonical_inputs.active.is_none());
+    let token: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(worker)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(token, old_token);
+    assert_eq!(fixture.counts(card).await, (2, 2, 1, 1, 1));
+    assert!(state.harness.get(&worker.to_owned()).is_none());
 }

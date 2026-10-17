@@ -55,6 +55,7 @@ impl CardStartFence {
         adapter: Arc<super::planner_harness_start_adapter::PlannerHarnessStartAdapter>,
         source: crate::auth::HumanInputSource,
         workspace_root: std::path::PathBuf,
+        events: crate::event::EventBus,
     ) -> Result<()> {
         tokio::spawn(async move {
             let result = adapter
@@ -63,6 +64,7 @@ impl CardStartFence {
                     &self.card_id,
                     source,
                     workspace_root,
+                    &events,
                 )
                 .await;
             drop(self);
@@ -150,6 +152,7 @@ pub(crate) fn wake_canonical_human(
                 state.planner_start_adapter.clone(),
                 source,
                 state.workspace_root.clone(),
+                state.events.clone(),
             )
             .await
         {
