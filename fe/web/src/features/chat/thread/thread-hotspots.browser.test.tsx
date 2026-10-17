@@ -84,7 +84,9 @@ it('updates the exchange rail without rereading unchanged history or disturbing 
   reads = 0;
   await scrollTo('you-200');
   expect(document.querySelector('[data-nc-rail-track] [aria-current="true"]')?.getAttribute('aria-label')).toContain('Question 200');
-  expect([...document.querySelectorAll('[data-nc-entry]')]).toEqual(entries);
+  const currentEntries = [...document.querySelectorAll('[data-nc-entry]')];
+  expect(currentEntries).toHaveLength(entries.length);
+  for (const [index, entry] of currentEntries.entries()) expect(entry).toBe(entries[index]);
   expect(selection.toString()).toBe(selectedText);
   expect(selection.anchorNode).toBe(question);
   expect(selection.focusNode).toBe(answer);
