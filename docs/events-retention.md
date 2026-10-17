@@ -10,7 +10,8 @@ causing `database is locked` stalls and slow cold WS replay.
 Hourly background pass that deletes rows matching ALL of:
 
 * **exact-kind allowlist** — `claude.hook`, `codex.hook`,
-  `harness.phase.changed`, `harness.item.added`, `overlay.set`. Everything
+  `harness.phase.changed`, `harness.item.added`, `harness.queue.changed`,
+  `overlay.set`. Everything
   else (all `card.*` / `track.*` / `area.*` / `terminal.*` structural kinds,
   and `overlay.deleted` tombstones) is permanent by construction;
 * **age horizon** on `at` — default 30 days (floored at 1 day, see Knobs);
@@ -28,9 +29,27 @@ below the watermark receive `_snapshot_required` instead of a replay with
 interior holes — the `MIN(id)` check alone can't detect those, because
 structural events are permanent and the earliest id never advances.
 
-Deletes run in small batches (default 5000 rows) inside `BEGIN IMMEDIATE`
-transactions with a ~100ms yield in between, so writer-lock hold stays in
-the milliseconds even on a first pass over a bloated DB.
+Overlay history grouping and schema interpretation run outside SQLite's writer.
+The pass captures the overlay append frontier before discovery, then refreshes
+only newly appended overlay rows before each deletion batch. Scan pages accumulate
+actual old candidates across sparse protected history; they do not repeat full
+history discovery. Under `BEGIN IMMEDIATE`, each batch checks the current overlay
+frontier and exact latest witnesses, rechecks candidate kind/age, and atomically
+updates the watermark from actual deleted IDs. Unrelated event appends do not
+invalidate overlay observations. Plain transient kinds retain their bounded DELETE.
+
+Deletes remain bounded by the configured batch (default 5000), with a ~100ms yield
+between full candidate batches. This bounds row work, not milliseconds: witness
+reads, large payloads and storage contention still have costs. Three consecutive
+overlay append races or a missing latest witness defer the remaining overlay work
+to a later pass; prior committed batches and their counts/watermark remain valid.
+Newly healed quads can conservatively retain previously skipped rows until that
+next pass. Malformed rows and unsupported-latest quads remain protected.
+
+This incremental protocol relies on the production event owner's immutable
+AUTOINCREMENT appends. Dev replay `/dev/reset` can reset IDs and is booted through
+the separate replay `NoBackgroundTasks` path; do not run this pruner concurrently
+with a manual replay reset. The protocol does not claim an ID-reset/ABA fence.
 
 ## What you lose after the horizon
 
@@ -130,9 +149,9 @@ off-peak, never during active use.
   is the seam; additional rules keyed on an actor prefix slot in without
   touching the pass loop.
 * **Postgres note** — storage is SQLite-only today
-  (`crates/calm-truth/src/db/sqlite.rs`). The DELETE predicate ports as-is
-  to a future PG backend, where autovacuum makes the space-reclaim section
-  moot.
+  (`crates/calm-truth/src/db/sqlite.rs`). A future PG backend needs its own
+  query implementation preserving the same retention and replay contracts;
+  its autovacuum also changes the space-reclaim procedure.
 * **WS replay safety** — two triggers in `run_replay`
   (`crates/calm-server/src/ws/events.rs`): a cursor below
   `events_earliest_id - 1` (head of the log gone — slice 1 protocol) OR a
