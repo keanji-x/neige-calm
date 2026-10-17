@@ -197,5 +197,23 @@ async fn initial_input_receipt_observation_waits_for_the_entire_issuance_command
         .create_conversation(&track, "held-issue", "held inside real turn start")
         .await;
     assert_eq!(replay["initialInput"], created["initialInput"]);
+    assert_eq!(
+        confirmed["entryRev"],
+        created["initialInput"]["receipt"]["entryRev"]
+    );
+    // A receipt requesting a higher baseline must not be certified by this
+    // genuinely confirmed lower source. It remains known acceptance, unconfirmed presence.
+    let key = derive_track_conversation_operation_key_for_test(&track, "held-issue");
+    let minimum = confirmed["entryRev"]
+        .as_u64()
+        .unwrap()
+        .checked_add(1)
+        .unwrap();
+    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json, '$.data.initial_input_receipt.entryRev', ?2) WHERE idempotency_key=?1")
+        .bind(key).bind(i64::try_from(minimum).unwrap()).execute(b.repo.pool()).await.unwrap();
+    let (status, lower) = b.request("GET", &uri, Some("held-issue"), None).await;
+    assert_eq!(status, StatusCode::OK, "{lower}");
+    assert_eq!(lower["kind"], "unavailable", "{lower}");
+    assert_eq!(lower["receipt"]["entryRev"], minimum);
     b.shutdown_harnesses().await;
 }

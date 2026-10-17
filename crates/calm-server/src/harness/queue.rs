@@ -85,10 +85,15 @@ impl QueueEntry {
     /// The entry is re-entering the queue after a client was told it had left; the bump lets the
     /// client tell the page after the restore from the page before. Only the completion sweep calls
     /// this — a steer codex refused restores WITHOUT a bump, or the client's retry would go `stale`.
-    pub fn bump_rev_for_restore(&mut self) {
+    pub fn bump_rev_for_restore(&mut self) -> bool {
         if let Self::User { rev, .. } = self {
-            *rev = rev.saturating_add(1);
+            let Some(next) = rev.checked_add(1) else {
+                return false;
+            };
+            *rev = next;
+            return true;
         }
+        false
     }
 
     /// The one place a [`QueueEntryId`] is minted. `attachments` is required so a test cannot
@@ -399,6 +404,8 @@ pub enum MutationRefused {
         entry_id: QueueEntryId,
         count: usize,
     },
+    /// No rewrite or steer may consume the last revision without capacity for a restore.
+    RevisionExhausted { entry_id: QueueEntryId },
 }
 
 /// The domain answer to a mutation, distinct from the transport `Result` around it ("the
@@ -450,6 +457,15 @@ pub fn apply_mutation(
 ) -> MutationResult {
     let entry_id = mutation.entry_id();
     let index = locate_entry(queue, entry_id, mutation.if_entry_rev())?;
+    if matches!(
+        mutation,
+        QueueMutation::Edit { .. } | QueueMutation::Steer { .. }
+    ) && queue[index].user_view().unwrap().rev == u32::MAX
+    {
+        return Err(MutationRefused::RevisionExhausted {
+            entry_id: entry_id.clone(),
+        });
+    }
 
     let (change, rev, text, removed) = match mutation {
         QueueMutation::Edit { text: new_text, .. } => {
@@ -460,7 +476,7 @@ pub fn apply_mutation(
             // The entry keeps its `message_ids`: an edit changes what the instance SAYS, not which
             // instance it is. Same rule as a fold: the body changed, so other clients' in-flight writes
             // against the old rev get a 409.
-            *rev = rev.saturating_add(1);
+            *rev += 1;
             (
                 HarnessQueueChange::Edited,
                 *rev,
@@ -570,11 +586,11 @@ pub fn try_fold_tail(
                 .filter(|incoming| !attachments.iter().any(|held| held.id == incoming.id))
                 .cloned()
                 .collect::<Vec<_>>();
-            if attachments.len() + merged.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+            if *rev == u32::MAX || attachments.len() + merged.len() > MAX_ATTACHMENTS_PER_MESSAGE {
                 false
             } else if fold_user_text(text, new_text, max_folded_user_chars) {
                 attachments.extend(merged);
-                *rev = rev.saturating_add(1);
+                *rev += 1;
                 true
             } else {
                 false
@@ -1210,3 +1226,6 @@ mod tests {
 
 #[cfg(test)]
 mod report_edit_fold_tests;
+
+#[cfg(test)]
+mod revision_tests;

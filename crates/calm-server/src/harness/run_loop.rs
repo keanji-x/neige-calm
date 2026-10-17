@@ -1863,7 +1863,12 @@ async fn restore_steered_entries_codex_dropped(
     // One rev up before it goes back, so the client hiding the entry can tell the restored page
     // from the one it read before the steer.
     for entry in &mut restored {
-        entry.bump_rev_for_restore();
+        // Accepted steers reserve this increment in apply_mutation. A retained
+        // historical edge must still preserve its input if that proof is absent.
+        if !entry.bump_rev_for_restore() && entry.user_view().is_some() {
+            tracing::error!(card_id = %inner.card_id, entry_id = ?entry.id(),
+                "restored input has no revision capacity; preserving its unchanged body");
+        }
     }
     rebuffer_head(inner, restored).await;
     ids

@@ -1321,7 +1321,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             .await?;
                             let taken_from = harvested.taken_from;
                             // The journal is written INSIDE this transaction, onto the checkpoint; a post-commit merge would leave a crash window with stamped rows and no record.
-                            let mut journal = read_harvested_from_journal(&checkpoint_output)
+                            let mut journal = read_harvested_from_journal(&checkpoint_output)?
                                 .into_iter()
                                 .map(|entry| HarvestedFrom {
                                     worker_session_id: entry.worker_session_id,
@@ -1714,7 +1714,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             // Only messages whose ids are still on this runtime's queue come back, so nothing ends up in two places.
             "fail_runtime" => {
                 let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
-                let journal = read_harvested_from_journal(_output);
+                let journal = read_harvested_from_journal(_output)?;
                 // For the log line only; a missing value is not this step's concern.
                 let card_id = _output
                     .data
@@ -1970,26 +1970,40 @@ async fn return_harvested_queues_and_fail_tx(
             });
         }
         // Idempotent against the SOURCE row too: a retired runtime can re-buffer a batch onto its own row after the harvest took it, and pushing it again would deliver the instance twice.
-        let already_on_source: std::collections::HashSet<String> = source_entries
-            .iter()
-            .flat_map(|entry| entry.message_ids().iter().cloned())
-            .collect();
         for message in &returning {
-            if message
-                .ids
-                .iter()
-                .any(|id| already_on_source.contains(id.as_str()))
-            {
+            let mut already_on_source = false;
+            for index in 0..source_entries.len() {
+                if !source_entries[index]
+                    .message_ids()
+                    .iter()
+                    .any(|id| message.ids.contains(id))
+                {
+                    continue;
+                }
+                already_on_source = true;
+                source_entries[index] = versioned_compensation_entry(
+                    source_entries[index].clone(),
+                    message,
+                    &source_entries,
+                    &successor_entries,
+                )?;
+            }
+            if already_on_source {
                 // Already back where it belongs; still counts as returned, so it is pruned from the failing runtime below.
                 returned_any_ids.extend(message.ids.iter().cloned());
                 continue;
             }
             // The entry goes back under the id it left with, so a give-back returns the same addressable instance rather than a renamed copy.
-            source_entries.push(QueueEntry::user_message_moved(
-                message.text.clone(),
-                message.ids.clone(),
-                message.entry_ref.clone(),
-            ));
+            source_entries.push(versioned_compensation_entry(
+                QueueEntry::user_message_moved(
+                    message.text.clone(),
+                    message.ids.clone(),
+                    message.entry_ref.clone(),
+                ),
+                message,
+                &source_entries,
+                &successor_entries,
+            )?);
             returned_any_ids.extend(message.ids.iter().cloned());
         }
         source.set_pending_entries(source_entries);
@@ -2043,6 +2057,45 @@ async fn return_harvested_queues_and_fail_tx(
         .map_err(CalmError::from)
 }
 
+/// A live successor can accept an edit before its start fails. Returning the
+/// captured body is then a later write, including when the source kept its copy.
+/// Derive the floor only from actual same-id entries and this captured record;
+/// legacy input stays unversioned. Failure rolls back the whole give-back tx.
+fn versioned_compensation_entry(
+    mut restored: QueueEntry,
+    captured: &HarvestedMessage,
+    source: &[QueueEntry],
+    successor: &[QueueEntry],
+) -> Result<QueueEntry> {
+    let QueueEntry::User { id, rev, .. } = &mut restored else {
+        return Ok(restored);
+    };
+    let latest = source
+        .iter()
+        .chain(successor)
+        .filter_map(QueueEntry::user_view)
+        .filter(|known| known.id == id)
+        .map(|known| known.rev)
+        .chain(
+            captured
+                .entry_ref
+                .iter()
+                .filter(|known| known.id == id.as_str())
+                .map(|known| known.rev),
+        )
+        .max()
+        .unwrap_or(*rev);
+    if latest > *rev {
+        *rev = latest.checked_add(1).ok_or_else(|| {
+            CalmError::Conflict(
+                "returned input has no later revision available; retained queues were not changed"
+                    .into(),
+            )
+        })?;
+    }
+    Ok(restored)
+}
+
 /// Whether a give-back source still carries the harvest stamp of the take being undone.
 async fn source_still_stamped_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -2085,45 +2138,73 @@ struct HarvestedFromJournalEntry {
     messages: Vec<HarvestedMessage>,
 }
 
-fn read_harvested_from_journal(output: &TxOutput) -> Vec<HarvestedFromJournalEntry> {
+fn harvested_entry_ref(message: &Value) -> Result<Option<crate::model::HarnessQueueEntryRef>> {
+    let invalid = || {
+        CalmError::Conflict(
+            "harvested queue identity/revision is invalid; retained input was not changed".into(),
+        )
+    };
+    let id = match message.get("entry_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(id)) if !id.is_empty() => Some(id.as_str()),
+        Some(_) => return Err(invalid()),
+    };
+    match message.get("entry_rev") {
+        // Released journals did not carry revision proof. Preserve their words and
+        // transfer ids as legacy input, never as a new revision-zero send.
+        None => Ok(None),
+        Some(Value::Null) if message.get("entry_id") == Some(&Value::Null) => Ok(None),
+        Some(value) => {
+            let id = id.ok_or_else(invalid)?;
+            let rev = value
+                .as_u64()
+                .and_then(|rev| u32::try_from(rev).ok())
+                .ok_or_else(invalid)?;
+            Ok(Some(crate::model::HarnessQueueEntryRef {
+                id: id.to_string(),
+                rev,
+            }))
+        }
+    }
+}
+
+fn read_harvested_from_journal(output: &TxOutput) -> Result<Vec<HarvestedFromJournalEntry>> {
     let Some(Value::Array(entries)) = output.data.get("harvested_from") else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     entries
         .iter()
         .filter_map(|entry| {
-            let worker_session_id = entry.get("worker_session_id")?.as_str()?.to_string();
-            let messages = entry
-                .get("messages")?
-                .as_array()?
+            Some((
+                entry.get("worker_session_id")?.as_str()?.to_string(),
+                entry.get("messages")?.as_array()?,
+            ))
+        })
+        .map(|(worker_session_id, messages)| {
+            let messages = messages
                 .iter()
-                .filter_map(|m| {
-                    Some(HarvestedMessage {
-                        // Old journals can name an id without its revision. That is
-                        // unknown version evidence, never a manufactured revision zero.
-                        entry_ref: m
-                            .get("entry_id")
-                            .and_then(Value::as_str)
-                            .zip(
-                                m.get("entry_rev")
-                                    .and_then(Value::as_u64)
-                                    .and_then(|rev| u32::try_from(rev).ok()),
-                            )
-                            .map(|(id, rev)| crate::model::HarnessQueueEntryRef {
-                                id: id.to_string(),
-                                rev,
-                            }),
-                        text: m.get("text")?.as_str()?.to_string(),
-                        ids: m
+                .filter_map(|message| {
+                    // Existing historical text/transfer-id decoding remains unchanged.
+                    Some((
+                        message,
+                        message.get("text")?.as_str()?.to_string(),
+                        message
                             .get("ids")?
                             .as_array()?
                             .iter()
                             .filter_map(|id| id.as_str().map(str::to_owned))
                             .collect(),
+                    ))
+                })
+                .map(|(message, text, ids)| {
+                    Ok(HarvestedMessage {
+                        entry_ref: harvested_entry_ref(message)?,
+                        text,
+                        ids,
                     })
                 })
-                .collect();
-            Some(HarvestedFromJournalEntry {
+                .collect::<Result<Vec<_>>>()?;
+            Ok(HarvestedFromJournalEntry {
                 worker_session_id,
                 messages,
             })
@@ -3258,3 +3339,9 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod versioned_input_tests;
+
+#[cfg(test)]
+mod compensation_revision_tests;
