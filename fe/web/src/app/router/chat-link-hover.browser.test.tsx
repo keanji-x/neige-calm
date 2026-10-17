@@ -18,7 +18,7 @@ import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
-async function setup({ streaming = false } = {}) {
+async function setup({ streaming = false, historySuffix = '' } = {}) {
   await page.viewport(1440, 900);
   const requests: ApiRequest[] = [];
   const evidence = createEvidencePreviewTransport();
@@ -31,7 +31,7 @@ async function setup({ streaming = false } = {}) {
   function history(cardId = card.id) {
     return [{ id: 1, worker_session_id: 'chat-runtime', card_id: cardId,
       track_id: track.id, thread_id: 'chat-thread', turn_id: 'stored', turn_error_text: null, item_uuid: 'reply',
-      item_type: 'agentMessage', method: 'item/completed', params: JSON.stringify({ item: { id: 'reply', type: 'agentMessage', text } }),
+      item_type: 'agentMessage', method: 'item/completed', params: JSON.stringify({ item: { id: 'reply', type: 'agentMessage', text: text + historySuffix } }),
       created_at_ms: 1 }];
   }
   const transport: ApiTransportPort = { async send(request) {
@@ -72,8 +72,8 @@ async function setup({ streaming = false } = {}) {
   return { requests, router, client, stale, switchTo: (id: string) => {
     observing = true;
     registry.requestOpen(id);
-  }, append: async () => {
-    live.text += '\n\nNew incremental [Live file](./live.md).';
+  }, append: async (text = '\n\nNew incremental [Live file](./live.md).') => {
+    live.text += text;
     await client.refetchQueries({ queryKey: queryKeys.harnessLive(card.id) });
   } };
 }
@@ -103,6 +103,32 @@ it('previews chat evidence through the production router in the conversation tra
   await page.getByRole('button', { name: 'Chat source', exact: true }).click();
   await expect.element(page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true })).toBeVisible();
   await expect.poll(() => page.getByRole('dialog', { name: 'Preview: Chat file' }).query()).toBeNull();
+});
+
+it.each(['history', 'incremental'])('rejects malformed navigation hrefs without losing the %s reply', async mode => {
+  // These pass through the real Astryx parser and sanitizer in Reply. The first
+  // throws in URL parsing; the second would normalize into an application path.
+  const malformed = '\n\n[Invalid authority](/\\[) · [Reinterpreted path](/next\\today)\n\nReply survives.';
+  const { append, requests, router } = await setup({ streaming: mode === 'incremental',
+    historySuffix: mode === 'history' ? malformed : '' });
+  if (mode === 'incremental') {
+    await expect.element(page.getByText('Streaming reply starts.', { exact: true })).toBeVisible();
+    await append(malformed);
+  }
+  await expect.element(page.getByText('Reply survives.', { exact: true })).toBeVisible();
+  for (const label of ['Invalid authority', 'Reinterpreted path']) {
+    expect(document.querySelector('[data-nc-thread]')?.textContent).toContain(label);
+    expect(page.getByRole('link', { name: label, exact: true }).query()).toBeNull();
+    expect(page.getByRole('button', { name: label, exact: true }).query()).toBeNull();
+  }
+  expect(document.querySelector('[data-nc-thread]')?.textContent).toContain('Chat source');
+  expect(page.getByText('Something went wrong!', { exact: true }).query()).toBeNull();
+  expect(router.history.location.pathname).toBe(`${APP_BASEPATH}/track/link-preview`);
+  expect(requests.filter(request => request.path.includes('/workspace/readfile'))).toHaveLength(0);
+  await page.getByRole('button', { name: 'Chat file', exact: true }).hover();
+  await expect.element(page.getByRole('heading', { name: 'Chat file contents', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Today', exact: true }).click();
+  await expect.poll(() => router.state.location.pathname).toBe('/');
 });
 
 it('renders incremental links and keeps external loading explicit', async () => {

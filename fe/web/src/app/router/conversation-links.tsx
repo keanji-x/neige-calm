@@ -38,9 +38,15 @@ export function useConversationLinks({ transport, unauthorized, conversationId, 
   const renderLink = useMemo(() => ({ href, children }: { href: string; children: ReactNode }) => {
     // The router owns the application namespace; rejected workspace paths never become anchors.
     const base = (router.options.basepath ?? '').replace(/\/$/, '');
-    const url = href.startsWith('/') && !href.startsWith('//') ? new URL(href, window.location.origin) : null;
-    if (url !== null && url.origin === window.location.origin && (url.pathname === base || url.pathname.startsWith(`${base}/`))) {
-      return <button type="button" onClick={() => { void router.navigate({ href: url.pathname + url.search + url.hash }); }}>{children}</button>;
+    if (href.startsWith('/') && !href.startsWith('//')) {
+      // URL treats backslashes as separators; do not reinterpret Markdown as app navigation.
+      if (href.includes('\\')) return children;
+      let url: URL;
+      try { url = new URL(href, window.location.origin); }
+      catch { return children; }
+      if (url.origin === window.location.origin && (url.pathname === base || url.pathname.startsWith(`${base}/`))) {
+        return <button type="button" onClick={() => { void router.navigate({ href: url.pathname + url.search + url.hash }); }}>{children}</button>;
+      }
     }
     if (/^(mailto:|tel:|#)/i.test(href)) return <a href={href}>{children}</a>;
     return <ReportTextLink href={href} referenceRepository={null} label={linkLabel(children) || href} fileRoot={root ?? undefined}
