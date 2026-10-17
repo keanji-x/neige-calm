@@ -371,3 +371,66 @@ async fn terminal_delete_rollback_retains_screen_and_retries_release_after_resta
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn terminal_delete_retains_rows_until_actual_registration_borrower_releases()
+-> anyhow::Result<()> {
+    use calm_session::control::execution::{
+        EXECUTION_ENVELOPE_VERSION, ExecutionHandshake, ExecutionProtocolMode,
+        ExportAcknowledgement, rights,
+    };
+    use calm_session::control::{ControlMsg, ControlReply};
+    use calm_session::{read_frame, write_frame};
+    let mut fixture = Fixture::start_in(Storage::Disk).await?;
+    let mut server = HttpServer::start(fixture.app.clone()).await?;
+    let result = async {
+        let cookie = login(&server).await?;
+        let (status, _, card) = server.post(format!("/api/tracks/{}/terminal-cards", fixture.track), cookie.clone(), fixture.request_body()).await?;
+        ensure!(status == 201, "original create failed: {status} {card}");
+        let terminal = fixture.sql.terminal_get_by_card(card["id"].as_str().context("missing card")?).await?.context("missing terminal")?;
+        ensure!(fixture.state.terminal_renderer.get(&terminal.id).context("missing renderer")?
+            .wait_exit_persisted_for_test(Duration::from_secs(5)).await, "original never completed");
+        let json: String = sqlx::query_scalar("SELECT o.execution_request_json FROM operations o JOIN terminals t ON t.launch_operation_id=o.id WHERE t.id=?1")
+            .bind(&terminal.id).fetch_one(fixture.sql.pool()).await?;
+        let transfer: AttachRegistration = serde_json::from_value(serde_json::from_str::<Value>(&json)?["registration"].clone())?;
+        let secret = serde_json::from_slice(&std::fs::read(fixture._root.path().join("kernel-key.json"))?)?;
+        let mut stream = tokio::net::UnixStream::connect(fixture._sockets.path().join("control.sock")).await?;
+        write_frame(&mut stream, &ControlMsg::Execution(Box::new(ExecutionRequest::Handshake(ExecutionHandshake {
+            required_contract: EXECUTION_ENVELOPE_VERSION, client_secret: secret,
+            mode: ExecutionProtocolMode::RegisteredV3,
+        })))).await?;
+        let _: ControlReply = read_frame(&mut stream).await?;
+        let nonce = TransferNonce::fresh()?;
+        rights::send(&stream, &ControlMsg::Execution(Box::new(ExecutionRequest::Export(ExportRegistration {
+            executor_boot: transfer.executor_boot.clone(), registration: transfer.registration_id.clone(), nonce: nonce.clone(),
+        }))), &[]).await?;
+        let (reply, objects) = rights::receive::<ControlReply>(&stream).await?;
+        ensure!(matches!(reply, ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::Exported { receipt, .. } if receipt.transfer == transfer)) && !objects.is_empty(),
+            "actual reverse Export did not retain the original source lease");
+        let (status, body) = delete(&server, &cookie, format!("/api/cards/{}", terminal.card_id)).await?;
+        ensure!(status == 409 && body.contains("in-flight export"),
+            "DELETE crossed the actual Retire refusal: {status} {body}");
+        ensure!(fixture.sql.terminal_get(&terminal.id).await?.is_some(), "Retire refusal lost its Terminal owner");
+        ensure!(fixture.state.terminal_renderer.get(&terminal.id).context("Retire refusal lost product history")?
+            .handle.model_view.lock().unwrap().capture(0)?.0.text.iter().any(|line| line.contains("terminal-vertical-complete")),
+            "Retire refusal discarded the completed screen");
+        rights::send(&stream, &ControlMsg::Execution(Box::new(ExecutionRequest::ExportAck(ExportAcknowledgement {
+            executor_boot: transfer.executor_boot.clone(), registration: transfer.registration_id.clone(), nonce,
+        }))), &[]).await?;
+        let (reply, _) = rights::receive::<ControlReply>(&stream).await?;
+        ensure!(matches!(reply, ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::ExportAcknowledged)), "actual export ACK failed");
+        drop(objects); drop(stream);
+        let (status, body) = delete(&server, &cookie, format!("/api/cards/{}", terminal.card_id)).await?;
+        ensure!(status == 204, "exact final release did not retry: {status} {body}");
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    let server_result = server.stop().await;
+    fixture.stop().await;
+    result?;
+    server_result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\n",
+        "release retry reissued the process"
+    );
+    Ok(())
+}

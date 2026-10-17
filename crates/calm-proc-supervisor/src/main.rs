@@ -4,27 +4,31 @@ use clap::Parser;
 use std::path::PathBuf;
 use tokio::sync::oneshot;
 
-#[derive(Debug, Parser)]
-#[command(name = "calm-proc-supervisor", version)]
 #[allow(
     unexpected_cfgs,
     reason = "This entry point is also built by calm-server under its fixtures feature."
 )]
-struct Args {
-    /// Control Unix socket path. In production callers should use
-    /// $CALM_DATA_DIR/proc-supervisor.sock.
-    #[arg(long)]
-    control_sock: PathBuf,
-    /// Durable executor journal, outside workspace-private storage.
-    #[arg(long, requires = "kernel_client_key_file")]
-    execution_state_dir: Option<PathBuf>,
-    /// Kernel-owned JSON capability file; never inherited by launched execution.
-    #[arg(long, requires = "execution_state_dir")]
-    kernel_client_key_file: Option<PathBuf>,
-    #[cfg(any(feature = "test-support", feature = "fixtures"))]
-    #[arg(long, hide = true)]
-    test_output_reader_release: Option<PathBuf>,
+mod arguments {
+    use super::*;
+    #[derive(Debug, Parser)]
+    #[command(name = "calm-proc-supervisor", version)]
+    pub(super) struct Args {
+        /// Control Unix socket path. In production callers should use
+        /// $CALM_DATA_DIR/proc-supervisor.sock.
+        #[arg(long)]
+        pub(super) control_sock: PathBuf,
+        /// Durable executor journal, outside workspace-private storage.
+        #[arg(long, requires = "kernel_client_key_file")]
+        pub(super) execution_state_dir: Option<PathBuf>,
+        /// Kernel-owned JSON capability file; never inherited by launched execution.
+        #[arg(long, requires = "execution_state_dir")]
+        pub(super) kernel_client_key_file: Option<PathBuf>,
+        #[cfg(any(feature = "test-support", feature = "fixtures"))]
+        #[arg(long, hide = true)]
+        pub(super) test_output_reader_release: Option<PathBuf>,
+    }
 }
+use arguments::Args;
 
 fn main() -> anyhow::Result<()> {
     let helper_args: Vec<String> = std::env::args().collect();
