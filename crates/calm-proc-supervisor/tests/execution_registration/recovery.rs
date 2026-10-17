@@ -212,7 +212,7 @@ async fn active_source_replacement(replacement_kind: Replacement) {
     );
     assert!(
         attached.is_err(),
-        "restart accepted a new source incarnation without recovery: {attached:?}; actual new execution: {escaped:?}; payload marker: {}",
+        "source recovery bypass: {attached:?}; fork: {escaped:?}; marker: {}",
         marker.exists()
     );
     assert!(!marker.exists());
