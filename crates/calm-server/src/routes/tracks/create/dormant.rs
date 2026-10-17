@@ -72,7 +72,6 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                         "Human Track creation does not accept System targets".into(),
                     ));
                 }
-                let binding = track_create_idempotency_get_tx(tx, &area_id, &raw_key).await?;
                 if let Some(stored) = human_track_creation_get_tx(tx, &area_id, &raw_key).await? {
                     if stored.source_user_id != principal.user_id
                         || stored.create_request_sha256 != create_sha
@@ -88,7 +87,11 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                         "Human Track acceptance already committed".into(),
                     ));
                 }
-                if binding.is_some() || prior_start_attempt_tx(tx, &area_id, &raw_key).await? {
+                if track_create_idempotency_get_tx(tx, &area_id, &raw_key)
+                    .await?
+                    .is_some()
+                    || prior_start_attempt_tx(tx, &area_id, &raw_key).await?
+                {
                     return Err(CalmError::IdempotencyKeyReused(
                         "a historical creation/start cannot be adopted as a fresh Human acceptance"
                             .into(),
