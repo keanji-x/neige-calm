@@ -38,7 +38,7 @@ import {
   type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
-import type { ReplyImageFiles } from './reply.tsx';
+import type { ReplyImageFiles, ReplyLinkRenderer } from './reply.tsx';
 import { MessageEntry } from './message-entry.tsx';
 import styles from './thread.module.css';
 import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
@@ -93,9 +93,11 @@ export type ChatThreadProps = Readonly<{
   runningAnchor?: RunningTurnAnchor | null;
   /** Local reply images use the open conversation's workspace, never the browser's URL base. */
   imageFiles?: ReplyImageFiles | null;
+  /** App supplies only href/children rendering; chat owns no destination policy. */
+  renderLink?: ReplyLinkRenderer;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -266,7 +268,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
         attachments={turn.attachments} opens={opensExchange(turns, index)}
         gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(gapClock, turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}
-        working={showLive && last} imageFiles={imageFiles} />
+        working={showLive && last} imageFiles={imageFiles} renderLink={renderLink} />
     );
   };
 
@@ -280,7 +282,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   return (
     <div className={`${styles.threadFrame} ${empty ? styles.emptyFrame : ''}`} ref={frameRef}>
       <ExchangeNavigation turns={turns} frameRef={frameRef} seam={railSeam} navigate={scrollFollower.navigate} />
-      <div className={`${styles.thread} ${empty ? styles.empty : ''} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-thread-empty={empty ? '' : undefined} ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
+      <div className={`${styles.thread} ${empty ? styles.empty : ''} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-link-reading="" data-nc-thread-empty={empty ? '' : undefined} ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
         {empty && <>
           <p className={styles.emptyLead}>{compactViewport ? (live ? '正在整理你的想法' : '聊聊你想做什么') : (live ? 'The agent is working.' : 'Nothing said yet.')}</p>
           <p className={styles.emptyHint}>{compactViewport ? (live ? '回复会显示在这里。' : '从一个问题或想法开始。') : (live ? 'Messages will appear here.' : 'Write below and it starts here.')}</p>

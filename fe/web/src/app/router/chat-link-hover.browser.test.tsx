@@ -1,0 +1,151 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createMemoryHistory, RouterProvider, type AnyRoute } from '@tanstack/react-router';
+import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { trackReportLinkUrl } from '../../../../core/domain/report.ts';
+import { createEvidencePreviewTransport } from '../shell/link-preview-data.ts';
+import { createAppRouter, APP_BASEPATH } from './public.tsx';
+import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { ThemeProvider } from '../theme/public.tsx';
+import { cleanup, render } from '@testing-library/react';
+import { page } from 'vitest/browser';
+import { afterEach, expect, it } from 'vitest';
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
+import { queryKeys } from '../providers/queries.ts';
+import { Profiler } from 'react';
+import { useConversationRegistry, type ConversationRegistry } from '../conversations/public.tsx';
+import '../../styles/entry.css';
+
+afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
+
+async function setup({ streaming = false } = {}) {
+  await page.viewport(1440, 900);
+  const requests: ApiRequest[] = [];
+  const evidence = createEvidencePreviewTransport();
+  const track = { id: 'link-preview', area_id: 'examples', title: 'Chat preview', sort: 1,
+    cwd: '/preview', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
+  const card = { id: 'chat-card', track_id: track.id, kind: 'codex', title: 'Link chat', sort: 1,
+    payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
+  const live = { text: 'Streaming reply starts.' };
+  const text = '[**Chat source**](neige://source/src_0971fbde#q1) · [Chat report](' + trackReportLinkUrl('reference-demo') + ') · [Chat file](./notes.md) · [Chat website](https://example.com) · [Today](/next/) · [Legacy Today](/next/today) · [Outside](/etc/passwd) · [Escape](../../secret.txt) · [Email](mailto:reader@example.com) · [Phone](tel:+123) · [Section](#part)';
+  function history(cardId = card.id) {
+    return [{ id: 1, worker_session_id: 'chat-runtime', card_id: cardId,
+      track_id: track.id, thread_id: 'chat-thread', turn_id: 'stored', turn_error_text: null, item_uuid: 'reply',
+      item_type: 'agentMessage', method: 'item/completed', params: JSON.stringify({ item: { id: 'reply', type: 'agentMessage', text } }),
+      created_at_ms: 1 }];
+  }
+  const transport: ApiTransportPort = { async send(request) {
+    requests.push(request);
+    if (request.path.includes('/sources/') || request.path === '/api/tracks/reference-demo') return evidence.send(request);
+    let body: unknown = [];
+    if (request.path === '/api/areas') body = [{ id: 'examples', name: 'Examples', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
+    if (request.path === '/api/areas/examples/tracks') body = [track];
+    if (request.path === '/api/tracks/link-preview') body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card, { ...card, id: 'chat-b', title: 'Other chat', payload: { harness_profile: 'assistant', planner_provider: 'codex' } }], overlays: [] };
+    if (request.path === '/api/tracks/link-preview/conversations') body = [{ id: 'chat-b', trackId: track.id, title: 'Other chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null }];
+    if (request.path === '/api/settings') body = {};
+    if (request.path.endsWith('/planner/run')) body = { card_id: request.path.split('/')[3], worker_session_id: 'chat-runtime', phase: streaming ? 'issuing_turn' : 'idle',
+      model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
+      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
+    if (request.path.includes('/harness/items')) body = history(request.path.includes('/chat-b/') ? 'chat-b' : card.id);
+    if (request.path.endsWith('/harness/live')) body = { turn_id: 'live-turn', items: [{ item_id: 'live-reply', text: live.text }] };
+    if (request.path.includes('/workspace/readfile')) body = { path: new URL(request.path, 'http://fixture').searchParams.get('path'), text: '# Chat file contents', size: 20, truncated: false };
+    return { status: 200, statusText: 'OK', body };
+  } };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
+    unauthorized: createUnauthorizedChannel({ enqueue: task => task() }), onSignOut: () => {} });
+  let registry: ConversationRegistry;
+  const stale: string[] = [];
+  let observing = false;
+  function Probe() { registry = useConversationRegistry(); return null; }
+  for (const route of (router.routeTree.children ?? []) as readonly AnyRoute[]) {
+    const Component = route.options.component;
+    if (Component !== undefined) route.update({ component: () => <><Component /><Probe /></> });
+  }
+  router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/link-preview?panel=conversations`] }) });
+  const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  render(<Profiler id="source-isolation" onRender={() => {
+    if (observing && document.getElementById('conversation-chat-card') === null
+      && page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true }).query() !== null) stale.push('source survived switch');
+  }}><QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></Profiler>, { container: root });
+  await page.getByRole('button', { name: /^Conversation Link chat/ }).click();
+  return { requests, router, client, stale, switchTo: (id: string) => {
+    observing = true;
+    registry.requestOpen(id);
+  }, append: async () => {
+    live.text += '\n\nNew incremental [Live file](./live.md).';
+    await client.refetchQueries({ queryKey: queryKeys.harnessLive(card.id) });
+  } };
+}
+
+it('previews chat evidence through the production router in the conversation track', async () => {
+  const { requests } = await setup();
+  await expect.element(page.getByRole('button', { name: 'Chat source', exact: true })).toBeVisible();
+  expect(requests.filter(request => request.path.includes('/sources/') || request.path.includes('/workspace/readfile') || request.path === '/api/tracks/reference-demo')).toHaveLength(0);
+  await page.getByRole('button', { name: 'Chat source', exact: true }).hover();
+  await expect.element(page.getByRole('heading', { name: '来源正文预览 · 示例摘要', exact: true })).toBeVisible();
+  const reading = document.querySelector('[data-nc-thread]')!.getBoundingClientRect();
+  const preview = page.getByRole('dialog', { name: 'Preview: Chat source' }).element().getBoundingClientRect();
+  expect(preview.right <= reading.left || preview.left >= reading.right).toBe(true);
+  expect(requests.filter(request => request.path.includes('/sources/')).map(request => request.path))
+    .toEqual(['/api/tracks/link-preview/sources/src_0971fbde']);
+  await page.getByRole('button', { name: 'Chat report', exact: true }).hover();
+  await expect.element(page.getByRole('button', { name: '另一报告的来源', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '另一报告的来源', exact: true }).hover();
+  await expect.element(page.getByRole('heading', { name: '另一报告保存的来源 · 示例', exact: true })).toBeVisible();
+  expect(requests.some(request => request.path === '/api/tracks/reference-demo/sources/src_0971fbde')).toBe(true);
+  await page.getByRole('button', { name: '另一报告的来源', exact: true }).click();
+  await expect.element(page.getByRole('complementary', { name: '另一报告保存的来源 · 示例', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭来源', exact: true }).click();
+  await page.getByRole('button', { name: 'Chat file', exact: true }).hover();
+  await expect.element(page.getByRole('heading', { name: 'Chat file contents', exact: true })).toBeVisible();
+  expect(requests.some(request => request.path === '/api/tracks/link-preview/workspace/readfile?path=notes.md')).toBe(true);
+  await page.getByRole('button', { name: 'Chat source', exact: true }).click();
+  await expect.element(page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true })).toBeVisible();
+  await expect.poll(() => page.getByRole('dialog', { name: 'Preview: Chat file' }).query()).toBeNull();
+});
+
+it('renders incremental links and keeps external loading explicit', async () => {
+  const { append, requests } = await setup({ streaming: true });
+  await expect.element(page.getByRole('button', { name: 'Chat file', exact: true })).toBeVisible();
+  await expect.element(page.getByText('Streaming reply starts.', { exact: true })).toBeVisible();
+  await append();
+  expect(requests.some(request => request.path === '/api/cards/chat-card/harness/live')).toBe(true);
+  await page.getByRole('button', { name: 'Live file', exact: true }).hover();
+  await expect.element(page.getByRole('heading', { name: 'Chat file contents', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Chat website', exact: true }).hover();
+  await expect.element(page.getByRole('button', { name: 'Load webpage', exact: true })).toBeVisible();
+  expect(document.querySelector('iframe[src="https://example.com/"]')).toBeNull();
+  await page.getByRole('button', { name: 'Load webpage', exact: true }).click();
+  await expect.poll(() => document.querySelector('iframe[src="https://example.com/"]')).not.toBeNull();
+});
+
+it.each([['Today', '/'], ['Legacy Today', '/today']])('preserves application navigation without admitting rejected workspace paths: %s', async (label, path) => {
+  const { router } = await setup();
+  await expect.element(page.getByRole('button', { name: 'Today', exact: true })).toBeVisible();
+  for (const text of ['Outside', 'Escape']) {
+    expect(document.querySelector('[data-nc-thread]')?.textContent).toContain(text);
+    expect(page.getByRole('link', { name: text, exact: true }).query()).toBeNull();
+    expect(page.getByRole('button', { name: text, exact: true }).query()).toBeNull();
+  }
+  expect(page.getByRole('link', { name: 'Email', exact: true }).element().getAttribute('href')).toBe('mailto:reader@example.com');
+  expect(page.getByRole('link', { name: 'Phone', exact: true }).element().getAttribute('href')).toBe('tel:+123');
+  expect(page.getByRole('link', { name: 'Section', exact: true }).element().getAttribute('href')).toBe('#part');
+  // /next/today retains the existing router's treatment, even though main moved Today to /next/.
+  await page.getByRole('button', { name: label, exact: true }).click();
+  await expect.poll(() => router.state.location.pathname).toBe(path);
+  expect(router.history.location.pathname).toBe(`${APP_BASEPATH}${path}`);
+});
+
+it('clears source selection synchronously across same-Track A to B to A', async () => {
+  const { switchTo, stale } = await setup();
+  await page.getByRole('button', { name: 'Chat source', exact: true }).click();
+  await expect.element(page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true })).toBeVisible();
+  switchTo('chat-b');
+  await expect.poll(() => document.getElementById('conversation-chat-b')?.querySelector('[data-nc-thread]') ?? null).not.toBeNull();
+  expect(page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true }).query()).toBeNull();
+  switchTo('chat-card');
+  await expect.poll(() => document.getElementById('conversation-chat-card')?.querySelector('[data-nc-thread]') ?? null).not.toBeNull();
+  expect(page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true }).query()).toBeNull();
+  expect(stale).toEqual([]);
+});
