@@ -12,6 +12,8 @@ use support::mcp::{
 fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
         "neige_area_ls",
+        "neige_catalog_cat",
+        "neige_catalog_ls",
         "neige_link_ls",
         "neige_mail_send",
         "neige_preview_add",

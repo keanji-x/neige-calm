@@ -77,7 +77,8 @@ never replace the key merely because delivery disconnected.
 
 The text is self-contained (at most 32768 characters): current user intent,
 selected summary, necessary verbatim excerpts labelled historical data, source,
-project/directory/session/message/part IDs, read_at, digest, coverage/omissions,
+project/directory/session/message/part IDs, the result timestamp at `/read_at`,
+digest, coverage/omissions,
 origin Track and capture receipts. Revise oversized text with the user; never
 silently truncate. The target cannot assume it can read origin source URIs.
 Further evidence requires an explicit mail request to the origin Planner.

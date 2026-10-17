@@ -30,6 +30,17 @@ const DEV: &str = "dev";
 const SMALL_CHANGE: &str = "small-change";
 const INVESTIGATION: &str = "investigation";
 const INVESTMENT_RESEARCH: &str = "investment-research";
+const HISTORY_REBUILD: &str = "opencode-history-rebuild";
+
+/// Independent public roster contract, shared by picker and create tests.
+/// Growth updates this table once; recipe bytes come from the named source, not roster lookup.
+pub(crate) const TEMPLATE_ANCHORS: &[(&str, &str, &[&str])] = &[
+    (DEV, "Development", &[]),
+    (SMALL_CHANGE, "Small change", &[]),
+    (INVESTIGATION, "Investigation", &[]),
+    (INVESTMENT_RESEARCH, "Investment research", &[]),
+    (HISTORY_REBUILD, "Rebuild from OpenCode history", &[]),
+];
 
 struct Boot {
     app: axum::Router,
@@ -71,6 +82,11 @@ async fn boot() -> Boot {
     ));
     plugin_host.reconcile_builtins().await.unwrap();
     plugin_host.enable("gitforge").await.unwrap();
+    let config = crate::support::opencode_history::write_config(tmp.path(), "http://127.0.0.1:1");
+    repo.plugin_update_user_config("opencodehistory", config)
+        .await
+        .unwrap();
+    plugin_host.enable("opencodehistory").await.unwrap();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -1426,13 +1442,16 @@ async fn both_spellings_together_are_an_unknown_field() {
 fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
     use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
 
-    let recipe = calm_server::templates::TemplateRoster::builtin()
-        .get(key)
-        .unwrap_or_else(|| panic!("`{key}` is not a known template"))
-        .recipe();
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("templates/builtin")
+            .join(format!("{key}.md")),
+    )
+    .unwrap();
+    let (front, recipe_body) = calm_server::templates::front_matter::parse(&source).unwrap();
     let mut body = String::new();
     let mut tasks = Vec::new();
-    for slice in split_body(&recipe.body) {
+    for slice in split_body(recipe_body) {
         match parse_fence(&slice.raw) {
             Some(fence) if fence.kind == KIND_TASK => {
                 let mut payload = fence.payload;
@@ -1444,20 +1463,13 @@ fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
             _ => body.push_str(&slice.raw),
         }
     }
-    (recipe.summary, body, tasks)
+    (front.title, body, tasks)
 }
 
 /// Listed templates use the production Dev binding and explicit Issue inputs.
 #[tokio::test]
 async fn listed_template_keys_create_their_exact_recipes() {
-    // key, roster title, ordered task keys. Hand-written on purpose — this is
-    // the one table in this file that must NOT be derived from production.
-    let anchors: [(&str, &str, &[&str]); 4] = [
-        (DEV, "Development", &[]),
-        (SMALL_CHANGE, "Small change", &[]),
-        (INVESTIGATION, "Investigation", &[]),
-        (INVESTMENT_RESEARCH, "Investment research", &[]),
-    ];
+    let anchors = TEMPLATE_ANCHORS;
     assert_eq!(
         anchors.len(),
         calm_server::templates::TemplateRoster::builtin()
@@ -1476,7 +1488,7 @@ async fn listed_template_keys_create_their_exact_recipes() {
         "the picker and the hand-written roster must describe the same set"
     );
 
-    for (key, title, expected_task_keys) in anchors {
+    for &(key, title, expected_task_keys) in anchors {
         // Road 1 — the picker read.
         let listed = listed_template(&listing, key);
         assert_eq!(listed["title"], title, "{key}: picker title");
@@ -1585,5 +1597,40 @@ async fn dev_create_without_issue_preserves_binding_and_optional_input() {
                 .body
                 .contains("semantics whenever merge_policy is absent")
         );
+    }
+}
+
+#[tokio::test]
+async fn optional_history_template_reports_setup_and_ready_through_owner_lifecycle() {
+    let boot = boot().await;
+    for enabled in [false, true] {
+        if enabled {
+            boot.state.plugin.enable("opencodehistory").await.unwrap();
+        } else {
+            boot.state.plugin.disable("opencodehistory").await.unwrap();
+        }
+        let (_, listing) = get(boot.app.clone(), "/api/track-templates").await;
+        let availability = &listed_template(&listing, HISTORY_REBUILD)["availability"];
+        if enabled {
+            assert_eq!(availability, &json!({"status":"ready"}));
+        } else {
+            assert_eq!(
+                availability,
+                &json!({"status":"requires_plugin", "plugin_id":"opencodehistory", "plugin_name":"OpenCode history"})
+            );
+            let before = db_snapshot(&boot.repo).await;
+            let (status, body) = post(
+                boot.app.clone(),
+                "/api/tracks",
+                create_body(
+                    &boot.area_id,
+                    "disabled history",
+                    json!({"template_id":HISTORY_REBUILD}),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(db_snapshot(&boot.repo).await, before);
+        }
     }
 }

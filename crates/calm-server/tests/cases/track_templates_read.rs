@@ -212,13 +212,10 @@ async fn lists_every_template_with_its_kernel_title() {
         .collect();
     assert_eq!(
         ids,
-        vec![
-            DEV,
-            SMALL_CHANGE,
-            INVESTIGATION,
-            INVESTMENT_RESEARCH,
-            "opencode-history-rebuild"
-        ],
+        super::track_template_tracks::TEMPLATE_ANCHORS
+            .iter()
+            .map(|entry| entry.0)
+            .collect::<Vec<_>>(),
         "the read must expose exactly the kernel's template keys, in order"
     );
     assert_eq!(row(&body, DEV)["title"], "Development");
