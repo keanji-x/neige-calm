@@ -18,6 +18,7 @@ function mount({ persistSent = false, running = false }: { persistSent?: boolean
   let posts = 0;
   let answers = 0;
   let storedText: string | null = null;
+  let canonicalReads = 0;
   let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; lastTurnCompletedAt: null } | null = null;
   const responseAt = (index: number) => {
     if (replies[index] === undefined) {
@@ -43,13 +44,19 @@ function mount({ persistSent = false, running = false }: { persistSent?: boolean
       phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
       manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
     if (request.path.endsWith('/harness/live')) return ok({ turn_id: 'running-turn', items: [] });
-    if (request.path.includes('/second-planner/harness/items')) return ok([{
+    if (request.path.includes('/second-planner/harness/items')) {
+      if (storedText !== null) canonicalReads++;
+      return ok([{
       id: 1, worker_session_id: 'runtime', card_id: 'second-planner', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: 'Stored history remains still.' } }), created_at_ms: 1,
     }, ...(storedText === null ? [] : [userRow('second-planner', storedText)])]);
+    }
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
-    if (created !== null && request.path.includes(`/${created.id}/harness/items`)) return ok([userRow(created.id, text)]);
+    if (created !== null && request.path.includes(`/${created.id}/harness/items`)) {
+      canonicalReads++;
+      return ok([userRow(created.id, text)]);
+    }
     if (request.method === 'POST' && (request.path.endsWith('/planner/input') || request.path.endsWith('/conversations'))) {
       return responseAt(posts++).promise.then(result => {
         if (result !== undefined) return result;
@@ -68,7 +75,7 @@ function mount({ persistSent = false, running = false }: { persistSent?: boolean
     }
     return undefined;
   } });
-  return { ...view, answer: (result?: ApiTransportResponse) => responseAt(answers++).resolve(result) };
+  return { ...view, canonicalReads: () => canonicalReads, answer: (result?: ApiTransportResponse) => responseAt(answers++).resolve(result) };
 }
 async function open(view: ReturnType<typeof mount>, draft = false) {
   if (draft) {
@@ -113,8 +120,10 @@ it.each([false, true])('keeps text readable when a fast answer replaces the echo
     act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
     expectReadableMessage();
     await act(async () => { view.answer(); await Promise.resolve(); });
+    await waitFor(() => expect(view.canonicalReads()).toBeGreaterThan(0));
+    await waitFor(() => expect(view.client.isFetching()).toBe(0));
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
-    expectReadableMessage();
+    await waitFor(expectReadableMessage);
     expect(screen.queryByText('Sending…')).toBeNull();
     expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1);
   } finally { cleanup(); view.answer(); view.client.clear(); }
