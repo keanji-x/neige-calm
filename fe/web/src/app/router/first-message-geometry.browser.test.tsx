@@ -125,8 +125,12 @@ it.each([1280, 390])('keeps the last ordinary deleted queue row in place until i
   } finally { cleanup(); fixture.client.clear(); }
 });
 
-it.each([1280, 390])('keeps one first bubble in place through provisional withdrawal and same-revision retry (%ipx)', async width => {
-  await page.viewport(width, 900); await commands.emulateReducedMotion(false);
+it.each([
+  { width: 1280, reduced: false, label: '1280px' },
+  { width: 390, reduced: false, label: '390px' },
+  { width: 390, reduced: true, label: '390px, reduced motion' },
+])('keeps one first bubble in place through provisional withdrawal and same-revision retry ($label)', async ({ width, reduced }) => {
+  await page.viewport(width, 900); await commands.emulateReducedMotion(reduced);
   const commits: number[] = []; let capture = false;
   const nodes = () => [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE);
   const fixture = renderFirstMessageFixture({ mobile: width === 390, harvestedInput: false, holdHistory: true, holdRun: true,
@@ -136,7 +140,12 @@ it.each([1280, 390])('keeps one first bubble in place through provisional withdr
     const scroller = bubble.closest<HTMLElement>('[data-nc-drawer-scroll]');
     if (scroller === null) throw new Error('No actual first-input scroller');
     const box = bubble.getBoundingClientRect();
-    return { top: box.top - scroller.getBoundingClientRect().top + scroller.scrollTop, left: box.left, width: box.width, height: box.height };
+    const queue = bubble.closest('[data-nc-pending-queue]');
+    const first = bubble.closest('[data-nc-thread]')?.firstElementChild;
+    const firstQueueStyle = queue !== null && first?.contains(queue) ? getComputedStyle(first) : null;
+    const firstQueueMargin = firstQueueStyle === null ? null : parseFloat(firstQueueStyle.marginBlockStart);
+    return { top: box.top - scroller.getBoundingClientRect().top + scroller.scrollTop, left: box.left, width: box.width, height: box.height,
+      firstQueueMargin, firstQueueTransition: firstQueueStyle?.transitionProperty ?? null };
   };
   const frames: Array<ReturnType<typeof geometry>> = []; const frameCounts: number[] = []; let frame: number | null = null;
   const sample = () => { const count = nodes().length; frameCounts.push(count); if (count === 1) frames.push(geometry()); frame = requestAnimationFrame(sample); };
@@ -172,6 +181,9 @@ it.each([1280, 390])('keeps one first bubble in place through provisional withdr
     geometry(); await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     expect(commits.length).toBeGreaterThan(0); expect(new Set(commits)).toEqual(new Set([1]));
     expect(frames.length).toBeGreaterThan(1); expect(new Set(frameCounts)).toEqual(new Set([1]));
+    expect(frames.some(sample => sample.firstQueueMargin !== null)).toBe(true);
+    if (reduced) expect(new Set(frames.filter(sample => sample.firstQueueMargin !== null).map(sample => sample.firstQueueTransition))).toEqual(new Set(['none']));
+    for (const sample of frames) if (sample.firstQueueMargin !== null) expect(sample.firstQueueMargin, JSON.stringify(frames)).toBeLessThanOrEqual(1);
     for (const sample of [...frames, geometry()]) for (const key of ['top', 'left', 'width', 'height'] as const) {
       expect(Math.abs(sample[key] - before[key])).toBeLessThanOrEqual(1);
     }
