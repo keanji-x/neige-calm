@@ -437,6 +437,12 @@ pub struct HarnessInputOrigin {
     /// `null` when no event did, e.g. a user message or the Track goal seed.
     #[schema(required = true, nullable = true)]
     pub event_id: Option<i64>,
+    /// Actual addressable input behind this segment. Older and non-addressable inputs
+    /// have none. A batch's native client id is never a substitute for this identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    #[ts(optional, type = "string")]
+    pub queue_entry_id: Option<crate::harness::snapshot::QueueEntryId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]

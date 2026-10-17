@@ -1,5 +1,5 @@
 import {
-  isConversationMessage, isOptimisticConversationTurn, mergeTranscript, reconcileUserEchoes,
+  isConversationMessage, isOptimisticConversationTurn, isUserConversationTurn, mergeTranscript,
   type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry, type PendingQueueEntry,
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
@@ -66,28 +66,20 @@ export function withoutQueuedEntry(ops: readonly SendOp[], entryId: string): rea
   return kept.length === ops.length ? ops : kept;
 }
 
-/**
- * The ops a persisted user row now stands for, each with that row's id: one row each, oldest op first, only rows
- * that did not exist before that op's press (`serverHighWaterBefore`), and never a `spent` row, one that already
- * retired an op. Over its lifetime a row stands for one op: equal words cannot tell two sends apart (#2068).
- *
- * This is how server state carries a send: the entry id a 200 answers is not visible in every read.
- * A drain takes the whole queue as one batch under the *first* entry's id
- * (crates/calm-server/src/harness/run_loop.rs `maybe_issue_turn`, the `projection_client_id` slot),
- * and `input_segments` carry no entry id, so the second and later entries of a batch lose theirs. The
- * id is therefore used only while the queue page lists it; after the drain the row is matched here.
- */
+/** Match only an accepted input's exact identity within the requested card.
+ * A native batch alias and equal text never identify an individual historical send.
+ * Unknown historical authors remain unknown even when their input ID retires an echo. */
 export function matchSendOps(
-  serverTurns: readonly ConversationMessage[], ops: readonly SendOp[], spent: readonly string[],
+  serverTurns: readonly ConversationMessage[], ops: readonly SendOp[], spent: readonly string[], cardId: string,
 ): ReadonlyMap<string, string> {
-  const available = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you' && !spent.includes(turn.id));
+  const available = serverTurns.filter((turn): turn is ConversationTurn => isUserConversationTurn(turn) && !spent.includes(turn.id));
   const matched = new Map<string, string>();
   for (const op of [...ops].sort((left, right) => left.echo.atMs - right.echo.atMs)) {
     const match = available.findIndex((turn) => {
+      if (op.echo.entryId === null) return false;
       if (turn.human !== undefined) return op.echo.entryId === turn.human.messageId
         && op.echo.authorUserId === turn.human.userId;
-      const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
-      return sequence > op.echo.serverHighWaterBefore && reconcileUserEchoes([turn], [op.echo]).length === 0;
+      return turn.legacyInput?.cardId === cardId && turn.legacyInput.entryId === op.echo.entryId;
     });
     if (match < 0) continue;
     matched.set(op.key, available[match].id);
@@ -179,7 +171,8 @@ export function outboxView(input: Parameters<typeof outboxFacts>[0] & Readonly<{
  * One conversation's thread: server state plus its outbox. An op's message is drawn here unless the
  * queue region draws its claimed entry, or a newer persisted row already stands for it.
  */
-export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed }: {
+export function outboxFacts({ cardId, serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed }: {
+  cardId: string;
   /** The transcript as read, rows the queue region lists already removed. */
   serverEntries: readonly TranscriptEntry[];
   /** Every persisted message, queue-listed ones included. */
@@ -191,7 +184,7 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
   spent: readonly string[];
   landed: LandedReads;
 }): OutboxFacts {
-  const matched = matchSendOps(serverTurns, ops, spent);
+  const matched = matchSendOps(serverTurns, ops, spent, cardId);
   const live = ops.filter((op) => op.phase !== 'failed' && !matched.has(op.key));
   const failed = ops.findLast((op): op is FailedSendOp => op.phase === 'failed') ?? null;
   /* A spent unknown send whose message a read shows is drawn once, by the server; it keeps its Try again. */
@@ -223,11 +216,11 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
 
 /** A conversation's remembered entries with the confirmed messages no read has shown yet. */
 export function withConfirmedSends(
-  entries: readonly TranscriptEntry[], ops: readonly SendOp[], spent: readonly string[],
+  entries: readonly TranscriptEntry[], ops: readonly SendOp[], spent: readonly string[], cardId: string,
 ): readonly TranscriptEntry[] {
   const confirmed = ops.filter((op) => op.phase === 'confirmed');
   if (confirmed.length === 0) return entries;
-  const matched = matchSendOps(entries.filter(isConversationMessage), confirmed, spent);
+  const matched = matchSendOps(entries.filter(isConversationMessage), confirmed, spent, cardId);
   return mergeTranscript(withoutReplacedTurns(entries, confirmed), confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo));
 }
 

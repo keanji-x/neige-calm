@@ -107,6 +107,8 @@ export type ConversationTurn = Readonly<{
   author: TurnAuthor;
   /** Present only for actual canonical Human identity; native user echoes have none. */
   human?: Readonly<{ userId: string; displayName: string; messageId: string; revision: number }>;
+  /** Actual legacy input correlation; it never identifies an author or grants edit permission. */
+  legacyInput?: Readonly<{ cardId: string; threadId: string; entryId: string }>;
   displayPosition?: number;
   /** Verbatim. Line breaks are the author's and are preserved on render. */
   text: string;
@@ -176,7 +178,7 @@ export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.objec
   /* Defaulted rather than required: older segments have no such key, and a row that fails to decode disappears. */
   attachments: z.array(plannerAttachmentSchema).optional().default([]),
   /* Absent on segments recorded before the kernel named each segment's observation and event. */
-  origin: z.object({ observation: z.string(), event_id: z.number().nullable() }).optional(),
+  origin: z.object({ observation: z.string(), event_id: z.number().nullable(), queue_entry_id: z.string().optional() }).optional(),
 });
 
 export const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
@@ -986,7 +988,10 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
       const id = segments.length === 1
         ? String(item.id) : `${item.id}:${index}`;
       if (segment.presentation === 'user') {
-        return [{ id, author: 'you' as const, text, atMs, attachments }];
+        const entryId = segment.origin?.queue_entry_id;
+        return [{ id, author: 'you' as const, text, atMs, attachments,
+          ...(entryId === undefined ? {} : { legacyInput: { cardId: item.card_id, threadId: item.thread_id, entryId } }),
+        }];
       }
       return [{
         id, author: 'system' as const,

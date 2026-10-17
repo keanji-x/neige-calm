@@ -44,7 +44,7 @@ export function useRunReads(nextRead: () => number): RunReads {
 function rememberSent(
   entry: RememberedConversation, ops: readonly SendOp[], spent: readonly string[], text: string, atMs: number,
 ): RememberedConversation {
-  const shown = withConfirmedSends(entry.turns, ops, spent);
+  const shown = withConfirmedSends(entry.turns, ops, spent, entry.conversation.id);
   return {
     conversation: {
       ...entry.conversation,
@@ -99,8 +99,8 @@ export function useConversationOutbox({
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
   const facts = useMemo(
-    () => outboxFactsWithRemovedInputs({ serverEntries, serverTurns, queuedEntryIds, stalled, ops: observedOps, spent, landed }, removedMessages),
-    [serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed, removedMessages],
+    () => outboxFactsWithRemovedInputs({ cardId, serverEntries, serverTurns, queuedEntryIds, stalled, ops: observedOps, spent, landed }, removedMessages),
+    [cardId, serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed, removedMessages],
   );
   const view = useMemo(() => withOutboxLiveReplies(facts, liveReplies), [facts, liveReplies]);
   const { retire } = view;

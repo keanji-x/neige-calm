@@ -399,7 +399,7 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         json!([
             budget,
             {"presentation": "user", "text": "User says:\nhello from the queue", "attachments": [],
-             "origin": {"observation": "user_message", "event_id": null}}
+             "origin": {"observation": "user_message", "event_id": null, "queue_entry_id": entry_id}}
         ])
     );
     let params: Value = serde_json::from_str(projection["params"].as_str().unwrap()).unwrap();
@@ -709,7 +709,10 @@ async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
             .contains("typed after the restart")),
         "the sentence rides in the recovered batch's row: {segments:?}"
     );
-    let user = segments.iter().find(|segment| segment["presentation"] == "user").unwrap();
+    let user = segments
+        .iter()
+        .find(|segment| segment["presentation"] == "user")
+        .unwrap();
     assert_eq!(
         user["origin"]["queue_entry_id"], sentence_id,
         "the segment names its own entry, never the recovered batch alias"

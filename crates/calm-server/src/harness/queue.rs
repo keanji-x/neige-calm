@@ -640,6 +640,9 @@ pub fn input_segments_for_entries(
         .iter()
         .map(|entry| {
             let mut segment = entry.observation().input_segment(entry.envelope_id());
+            if let Some(origin) = &mut segment.origin {
+                origin.queue_entry_id = entry.id().cloned();
+            }
             segment.attachments = entry
                 .attachments()
                 .iter()

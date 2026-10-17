@@ -237,6 +237,7 @@ async fn transcript_route_returns_strict_structured_input_segments() {
             origin: Some(HarnessInputOrigin {
                 observation: "report_edited".into(),
                 event_id: Some(17),
+                queue_entry_id: None,
             }),
         },
         // Stored before #2206: no `origin` key at all.

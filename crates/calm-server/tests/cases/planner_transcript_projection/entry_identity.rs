@@ -4,10 +4,17 @@ use super::*;
 #[tokio::test]
 async fn batched_equal_messages_keep_each_entry_identity_through_the_native_echo() {
     let entries = QueueEntry::entries_from_observations_for_test(vec![
-        Observation::UserMessage { text: "same words".into() },
-        Observation::UserMessage { text: "same words".into() },
+        Observation::UserMessage {
+            text: "same words".into(),
+        },
+        Observation::UserMessage {
+            text: "same words".into(),
+        },
     ]);
-    let ids = entries.iter().map(|entry| entry.id().unwrap().to_string()).collect::<Vec<_>>();
+    let ids = entries
+        .iter()
+        .map(|entry| entry.id().unwrap().to_string())
+        .collect::<Vec<_>>();
     assert_ne!(ids[0], ids[1]);
     let boot = boot(entries, false).await;
     wait_for_turn_start(&boot).await;
@@ -15,7 +22,10 @@ async fn batched_equal_messages_keep_each_entry_identity_through_the_native_echo
     let projection = &rows[0];
     assert_eq!(projection["item_uuid"], ids[0]);
     let segments = projection["input_segments"].as_array().unwrap();
-    let users = segments.iter().filter(|segment| segment["presentation"] == "user").collect::<Vec<_>>();
+    let users = segments
+        .iter()
+        .filter(|segment| segment["presentation"] == "user")
+        .collect::<Vec<_>>();
     assert_eq!(users.len(), 2);
     assert_eq!(users[0]["text"], users[1]["text"]);
     assert_eq!(users[0]["origin"]["queue_entry_id"], ids[0]);
@@ -34,8 +44,16 @@ async fn batched_equal_messages_keep_each_entry_identity_through_the_native_echo
     let deadline = Instant::now() + Duration::from_secs(2);
     let upgraded = loop {
         let rows = get_items(&boot).await;
-        if rows.iter().any(|row| row["item_uuid"] == "native-batch-echo") { break rows; }
-        assert!(Instant::now() < deadline, "native echo did not upgrade the projection");
+        if rows
+            .iter()
+            .any(|row| row["item_uuid"] == "native-batch-echo")
+        {
+            break rows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native echo did not upgrade the projection"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
     assert_eq!(upgraded.len(), 1);
