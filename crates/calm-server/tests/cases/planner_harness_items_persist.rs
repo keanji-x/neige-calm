@@ -960,7 +960,12 @@ async fn recovered_pending_timeout_retains_its_cause_until_the_exact_target_sett
     wait_for_notification_receiver(&daemon).await;
     harness.persist_snapshot().await.unwrap();
     assert!(
-        harness.snapshot().await.unwrap().interruption_intent.is_some(),
+        harness
+            .snapshot()
+            .await
+            .unwrap()
+            .interruption_intent
+            .is_some(),
         "recovery persistence must retain the outstanding timeout intent"
     );
     daemon.emit_notification_for_test(Notification::TurnStarted {
@@ -984,7 +989,12 @@ async fn recovered_pending_timeout_retains_its_cause_until_the_exact_target_sett
         Some("This turn exceeded its execution time limit and was interrupted.")
     );
     assert!(
-        harness.snapshot().await.unwrap().interruption_intent.is_none(),
+        harness
+            .snapshot()
+            .await
+            .unwrap()
+            .interruption_intent
+            .is_none(),
         "settled intent cannot leak into the next turn"
     );
     harness.shutdown().await.unwrap();

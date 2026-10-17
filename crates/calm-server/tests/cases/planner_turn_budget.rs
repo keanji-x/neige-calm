@@ -147,7 +147,15 @@ async fn planner_turn_budget_corrupt_storage_leaves_input_queued_until_reset() {
     assert_eq!(status, 200);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(boot.daemon.started_turns_for_test().is_empty());
-    assert_eq!(boot.harness.snapshot().await.unwrap().pending_entries().len(), 1);
+    assert_eq!(
+        boot.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .len(),
+        1
+    );
     assert!(
         boot.harness
             .issuance_block()
@@ -336,7 +344,14 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
             })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while boot.harness.snapshot().await.unwrap().pending_entries().is_empty() {
+        while boot
+            .harness
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .is_empty()
+        {
             assert!(
                 Instant::now() < deadline,
                 "ingress must stage the observation"
@@ -410,7 +425,12 @@ async fn planner_turn_budget_claude_initial_warning_only() {
     let stack = Stack::boot(&root).await;
     assert_eq!(
         frozen,
-        stack.harness(&session.id).snapshot().await.unwrap().turn_budget
+        stack
+            .harness(&session.id)
+            .snapshot()
+            .await
+            .unwrap()
+            .turn_budget
     );
     stack.shutdown().await;
 }

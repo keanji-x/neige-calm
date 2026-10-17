@@ -982,7 +982,12 @@ impl Fx {
 }
 
 pub(super) async fn observations(handle: &PlannerHarness) -> Vec<Observation> {
-    handle.snapshot().await.unwrap().pending_observations().to_vec()
+    handle
+        .snapshot()
+        .await
+        .unwrap()
+        .pending_observations()
+        .to_vec()
 }
 
 /// Wait until the harness holds `n` pending observations (or fail with what it holds).

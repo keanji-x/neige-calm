@@ -453,7 +453,8 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
 
     let recovered = rehydrated
         .snapshot()
-        .await.unwrap()
+        .await
+        .unwrap()
         .token_usage
         .expect("token usage must survive the rebuild");
     assert_eq!(

@@ -632,7 +632,14 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batc
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(get_items(&boot).await.len(), 1);
     let deadline = Instant::now() + Duration::from_secs(2);
-    while boot.harness.snapshot().await.unwrap().projection_client_id.is_some() {
+    while boot
+        .harness
+        .snapshot()
+        .await
+        .unwrap()
+        .projection_client_id
+        .is_some()
+    {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for the issuance outcome to clear the key"
@@ -759,7 +766,14 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
 
     release.notify_one();
     let deadline = Instant::now() + Duration::from_secs(2);
-    while boot.harness.snapshot().await.unwrap().projection_client_id.is_some() {
+    while boot
+        .harness
+        .snapshot()
+        .await
+        .unwrap()
+        .projection_client_id
+        .is_some()
+    {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for the issuance outcome to clear the key"

@@ -431,7 +431,10 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
         fx.stored().await.pending_entries(),
         before.pending_entries()
     );
-    assert_eq!(fx.harness.snapshot().await.unwrap().phase, HarnessPhaseTag::Idle);
+    assert_eq!(
+        fx.harness.snapshot().await.unwrap().phase,
+        HarnessPhaseTag::Idle
+    );
     let after_debounce = *fx.harness.inner.debounce.lock().await;
     assert_eq!(after_debounce.first_pending_at, debounce.first_pending_at);
     assert_eq!(after_debounce.last_pending_at, debounce.last_pending_at);

@@ -517,7 +517,12 @@ async fn a_queue_within_the_cap_announces_no_drop() {
     let boot = boot_with(idle_snapshot(entries)).await;
 
     assert_eq!(
-        boot.harness.snapshot().await.unwrap().pending_entries().len(),
+        boot.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .len(),
         MAX_PENDING_QUEUE_LEN,
         "a queue exactly at the cap is not truncated"
     );

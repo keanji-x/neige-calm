@@ -582,7 +582,15 @@ async fn an_interrupt_issued_before_its_turn_start_drains_still_streams_the_turn
     release.notify_one();
     // `turn/start` returned, so its `turn/started` is queued ahead of the frames below.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while boot.harness.snapshot().await.unwrap().last_turn_id.as_deref() != Some(turn.as_str()) {
+    while boot
+        .harness
+        .snapshot()
+        .await
+        .unwrap()
+        .last_turn_id
+        .as_deref()
+        != Some(turn.as_str())
+    {
         assert!(Instant::now() < deadline, "turn/start never returned");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

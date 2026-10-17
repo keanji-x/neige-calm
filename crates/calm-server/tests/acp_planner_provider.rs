@@ -420,7 +420,8 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
     let queued = stack
         .harness(&runtime.id)
         .snapshot()
-        .await.unwrap()
+        .await
+        .unwrap()
         .pending_entries();
     assert!(queued.iter().all(|entry|!matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="original operational input")));
     assert!(queued.iter().any(|entry|matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="later input")));
@@ -590,7 +591,8 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
     let issued = stack
         .harness(&runtime.id)
         .snapshot()
-        .await.unwrap()
+        .await
+        .unwrap()
         .last_turn_id
         .unwrap();
     // Crash replay uses the operation's original Idle snapshot while boot has

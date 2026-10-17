@@ -5,6 +5,7 @@ use super::*;
 
 impl PlannerHarness {
     pub(crate) async fn hibernate_if_idle(&self) -> Result<bool> {
+        self.inner.historical_queue()?;
         let _durable = tokio::time::timeout(
             Duration::from_secs(5),
             self.inner.durable_observation.lock(),

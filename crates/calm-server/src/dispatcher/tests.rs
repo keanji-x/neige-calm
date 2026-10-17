@@ -3907,7 +3907,8 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         );
         handle
             .snapshot()
-            .await.unwrap()
+            .await
+            .unwrap()
             .pending_observations()
             .into_iter()
             .filter(|observation| {

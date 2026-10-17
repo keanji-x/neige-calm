@@ -394,7 +394,12 @@ async fn an_unresolvable_default_defers_the_turn_and_recovers_when_it_becomes_re
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        boot.harness.snapshot().await.unwrap().pending_entries().len(),
+        boot.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .len(),
         1,
         "the refused turn must leave the person's message queued, not drop it"
     );

@@ -540,17 +540,31 @@ impl PlannerHarness {
         source: crate::auth::HumanInputSource,
     ) -> Result<()> {
         if self.inner.inputs.canonical().is_none() {
-            return Err(CalmError::Conflict("historical runtime cannot consume canonical input".into()));
+            return Err(CalmError::Conflict(
+                "historical runtime cannot consume canonical input".into(),
+            ));
         }
         let (observed, answer) = oneshot::channel();
         let sender = match &self.inner.observations {
             ObservationIngress::Running(sender) => sender,
             #[cfg(feature = "fixtures")]
-            ObservationIngress::Unstarted(_) => return Err(CalmError::Conflict("canonical runtime is not running".into())),
+            ObservationIngress::Unstarted(_) => {
+                return Err(CalmError::Conflict(
+                    "canonical runtime is not running".into(),
+                ));
+            }
         };
-        sender.send(HarnessObservationCommand::CanonicalSource { input, source, observed })
-            .await.map_err(|_| CalmError::Conflict("canonical runtime is closed".into()))?;
-        answer.await.map_err(|_| CalmError::Conflict("canonical runtime is closed".into()))?
+        sender
+            .send(HarnessObservationCommand::CanonicalSource {
+                input,
+                source,
+                observed,
+            })
+            .await
+            .map_err(|_| CalmError::Conflict("canonical runtime is closed".into()))?;
+        answer
+            .await
+            .map_err(|_| CalmError::Conflict("canonical runtime is closed".into()))?
     }
     pub fn track_id(&self) -> &TrackId {
         &self.inner.track_id
@@ -649,6 +663,7 @@ impl PlannerHarness {
     }
 
     fn observe_delivery(&self, delivery: HarnessObservationDelivery) -> Result<()> {
+        self.inner.historical_queue()?;
         let closed = self
             .inner
             .observations_closed
@@ -689,6 +704,7 @@ impl PlannerHarness {
         entries: Vec<QueueEntry>,
         key: SendKey,
     ) -> Result<DurableAck> {
+        self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
@@ -737,6 +753,7 @@ impl PlannerHarness {
         mutation: QueueMutation,
         actor: ActorId,
     ) -> Result<MutationResult> {
+        self.inner.historical_queue()?;
         // Deliberately NOT taking `durable_observation`.
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
@@ -775,6 +792,7 @@ impl PlannerHarness {
         if_entry_rev: u32,
         actor: ActorId,
     ) -> Result<SteerResult> {
+        self.inner.historical_queue()?;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "planner harness is shutting down; refusing to steer".into(),
@@ -805,6 +823,7 @@ impl PlannerHarness {
     }
 
     pub async fn compact(&self) -> Result<()> {
+        self.inner.historical_queue()?;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "the conversation is shutting down".into(),
@@ -828,6 +847,7 @@ impl PlannerHarness {
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
+        self.inner.historical_queue()?;
         issue_interrupt(&self.inner, reason).await
     }
 
@@ -841,6 +861,7 @@ impl PlannerHarness {
         attachments: Vec<BoundAttachment>,
         key: SendKey,
     ) -> Result<DurableAck> {
+        self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::PlannerTurnNotReplaceable(
@@ -878,6 +899,7 @@ impl PlannerHarness {
     /// Stop only this failed loop, without interrupting or sealing its provider
     /// thread. Recovery probes that exact thread before granting authority again.
     pub(crate) async fn quiesce_system_error_for_recovery(&self) -> Result<()> {
+        self.inner.historical_queue()?;
         let _durable = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Ok(());
@@ -4457,7 +4479,9 @@ async fn persist_snapshot_inner(
     }
     if inner.inputs.canonical().is_some() {
         if send.is_some() || last_seen_head_override.is_some() {
-            return Err(CalmError::Conflict("historical snapshot mutation cannot change canonical input".into()));
+            return Err(CalmError::Conflict(
+                "historical snapshot mutation cannot change canonical input".into(),
+            ));
         }
         // Every canonical mutation has already committed through its fact/frame
         // owner. Never serialize the historical cache over that current frame.
