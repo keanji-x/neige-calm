@@ -107,7 +107,7 @@ it.each([false, true])('keeps keyboard search reachable in an oversized real fil
   rendered.rerender(scene(true, 'terminal', withSibling));
   await paint();
   const terminal = document.querySelector<HTMLElement>('[data-nc-card-id="terminal"]')!;
-  const terminalSurface = terminal.querySelector('.term')!;
+  const terminalSurface = terminal.querySelector('[data-nc-terminal-card]')!;
   expect(terminalSurface.getBoundingClientRect().height).toBe(terminal.getBoundingClientRect().height);
   const clip = board.getBoundingClientRect();
   expect(terminalSurface.getBoundingClientRect().top).toBeGreaterThanOrEqual(clip.top - 1);
