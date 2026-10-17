@@ -1,5 +1,7 @@
 use super::*;
 
+mod recovery_serialization;
+
 struct LegacyCompensationHarness {
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     route_repo: Arc<dyn crate::db::RouteRepo>,
