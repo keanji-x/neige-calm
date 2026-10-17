@@ -4,6 +4,7 @@
 //! takes both, and a parked or unreadable worker takes nothing.
 use super::task_terminal::{Worker, stop, worker_running};
 use super::terminal_support::{Harness, human_takeover};
+use super::worker_message_lifecycle::{assert_waited, dispatched_after_wait};
 use super::worker_message_ready::prompt_submitted;
 use calm_server::db::prelude::*;
 use calm_server::model::now_ms;
@@ -309,12 +310,12 @@ async fn message_to_dispatched_attempt_is_refused() {
     h.interaction()
         .set_message_start_wait(Duration::from_millis(300));
     let reply = message(&h, json!({"attempt_id":f.worker.task}), "early", "x").await;
-    let text = format!(
-        "attempt {} is dispatched; its worker is starting and takes no input yet. Send again on a \
-         later wake",
-        f.worker.task
+    assert_waited(
+        &reply,
+        Duration::from_millis(300),
+        "task_running",
+        |waited| dispatched_after_wait(&f.worker.task, waited),
     );
-    assert_refusal(&reply, -32403, Some("worker_starting"), &text);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(reads(&f.log).is_empty());
     stop(&h, &f.worker).await;

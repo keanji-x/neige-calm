@@ -84,6 +84,9 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
   const [manipulating, setManipulating] = useState<Manipulation>(null);
   const positionStrategy = useMemo(() => Object.freeze({ ...transformStrategy, calcStyle: motionPositionStyle }), []);
   const [stored, setStored] = useState<StoredPositions>(EMPTY_POSITIONS);
+  const [boardHeight, setBoardHeight] = useState(0);
+  const activeViewportHeight = items.some(item => item.card.id === activeCardId
+    && host.registry.get(item.card.type)?.viewport === 'board') ? boardHeight : 0;
 
   const sized = useMemo(() => items.map((item) => ({
     id: item.card.id,
@@ -148,6 +151,23 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
     }
   }, []);
 
+  // Only the host knows the available viewport. Publish geometry without changing
+  // RGL dimensions or involving individual renderers in ancestor scrolling.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (container === null) return;
+    const measure = () => {
+      if (container.clientHeight > 0) {
+        container.style.setProperty('--nc-board-block-size', `${container.clientHeight}px`);
+        setBoardHeight(container.clientHeight);
+      }
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => { observer.disconnect(); };
+  }, [containerRef]);
+
   /* RGL applies its placement after the parent commit and persists a frame later, so an immediate scroll is overwritten; two frames lands after both. Only the board's own scrollport moves. */
   useLayoutEffect(() => {
     if (!visible || !mounted || activeCardId === null) return;
@@ -173,7 +193,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
       cancelAnimationFrame(firstFrame);
       if (secondFrame !== null) cancelAnimationFrame(secondFrame);
     };
-  }, [activeCardId, containerRef, mounted, visible]);
+  }, [activeCardId, activeViewportHeight, containerRef, mounted, visible]);
 
   return (
     <div ref={containerRef} className="track-grid-wrap" data-nc-card-board="">
@@ -205,6 +225,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
               className="track-card"
               data-nc-card-cell=""
               data-nc-card-id={item.card.id}
+              data-nc-card-viewport={host.registry.get(item.card.type)?.viewport}
             >
               <BoardCell
                 host={host}

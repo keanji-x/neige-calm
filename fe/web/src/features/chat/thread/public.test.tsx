@@ -455,6 +455,43 @@ describe('ChatThread', () => {
     pane.remove();
   });
 
+  it('follows only a fresh positive submission request, then yields to reader navigation', () => {
+    const { pane, writes, scrollTo, grow } = followPane();
+    const scene = (request: number, sending = false) => <ChatThread canContinue={false} cards={{}} stalled={false}
+      conversation={conversation()} turns={exchangeTurns(3)} submissionRequest={request} sending={sending} />;
+    const { rerender } = render(scene(4), { container: pane });
+    scrollTo(100);
+    rerender(scene(4, true));
+    rerender(scene(0));
+    expect(pane.scrollTop).toBe(100);
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
+    grow();
+    rerender(scene(5, true));
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT + 100]);
+    scrollTo(120);
+    grow();
+    rerender(scene(5));
+    expect(pane.scrollTop).toBe(120);
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT + 100]);
+    pane.remove();
+  });
+
+  it('snapshots the submission baseline when the same thread instance changes conversation', () => {
+    const { pane, writes, scrollTo } = followPane();
+    const scene = (id: string, request: number) => <ChatThread canContinue={false} cards={{}} stalled={false}
+      conversation={conversation({ id })} turns={exchangeTurns(3)} submissionRequest={request} />;
+    const { rerender } = render(scene('first', 1), { container: pane });
+    scrollTo(100);
+    rerender(scene('second', 7));
+    /* One attachment for each conversation, with no extra jump on the old pane. */
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT]);
+    scrollTo(120);
+    rerender(scene('second', 7));
+    expect(pane.scrollTop).toBe(120);
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT]);
+    pane.remove();
+  });
+
   it.each([true, false])('follows a new pause only when the reader is at the end (%s)', (atEnd) => {
     const { pane, writes, scrollTo, grow } = followPane();
     const turns = exchangeTurns(3);

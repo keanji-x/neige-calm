@@ -80,6 +80,9 @@ export function useConversationEscape({ open, store }: Readonly<{
       /* Native overlays own their first Escape; let their standard dismissal stack run. */
       if (typeof HTMLElement.prototype.showPopover === 'function'
         && document.querySelector('[popover]:popover-open') !== null) return;
+      /* An active composer edit owns Escape before runtime interruption. */
+      const composer = target.closest('[data-nc-composer]');
+      if (composer !== null && composer.querySelector('[data-nc-edit-bar]') !== null) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       store.interrupt();

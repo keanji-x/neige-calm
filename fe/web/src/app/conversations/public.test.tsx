@@ -36,7 +36,7 @@ it('[#2068] says an Edit’s images did not all fit beside the images the compos
   const held = images('draft', 3);
   act(() => { registry().editComposer(CONVERSATION, () => ({ text: '', attachments: held })); });
   const turn = images('turn', MAX_ATTACHMENTS_PER_MESSAGE);
-  act(() => { registry().beginEdit(CONVERSATION, { turnId: 'turn', outcomeId: 'outcome', refill: { text: 'Prompt', attachments: turn } }); });
+  act(() => { registry().beginEdit(CONVERSATION, { kind: 'turn', turnId: 'turn', outcomeId: 'outcome', refill: { text: 'Prompt', attachments: turn } }); });
   expect(registry().composerOf(CONVERSATION).attachments)
     .toEqual([...held, ...turn.slice(0, MAX_ATTACHMENTS_PER_MESSAGE - held.length)]);
   expect(registry().uploadOf(CONVERSATION).refusal).toBe(TOO_MANY_IMAGES);
@@ -45,7 +45,7 @@ it('[#2068] says an Edit’s images did not all fit beside the images the compos
 it('says nothing when an Edit’s images all fit beside the composer’s own', () => {
   const registry = mountRegistry();
   act(() => { registry().editComposer(CONVERSATION, () => ({ text: '', attachments: images('draft', 3) })); });
-  act(() => { registry().beginEdit(CONVERSATION, { turnId: 'turn', outcomeId: 'outcome',
+  act(() => { registry().beginEdit(CONVERSATION, { kind: 'turn', turnId: 'turn', outcomeId: 'outcome',
     refill: { text: 'Prompt', attachments: images('turn', MAX_ATTACHMENTS_PER_MESSAGE - 3) } }); });
   expect(registry().composerOf(CONVERSATION).attachments).toHaveLength(MAX_ATTACHMENTS_PER_MESSAGE);
   expect(registry().uploadOf(CONVERSATION).refusal).toBeNull();
@@ -55,7 +55,7 @@ const op = (key: string, phase: 'confirmed' | 'failed'): SendOp => {
   const echo = { id: `echo-${key}`, author: 'you', text: key, atMs: 1, attachments: [], serverHighWaterBefore: 0, queued: false,
     entryId: null } as const;
   return phase === 'confirmed'
-    ? { key, echo, fromComposer: true, replaces: null, phase }
+    ? { key, echo, fromComposer: true, replaces: null, phase, queueRevision: null }
     : { key, echo, fromComposer: true, replaces: null, phase, delivery: 'rejected', message: 'Not this time' };
 };
 
@@ -69,4 +69,54 @@ it('[#2068] forgets the rows that retired a send once the outbox empties by a Di
   act(() => { registry().editOutbox(CONVERSATION, (current) => current.filter((held) => held.key !== 'failed')); });
   expect(registry().outboxOf(CONVERSATION)).toEqual([]);
   expect(registry().spentRowsOf(CONVERSATION)).toEqual([]);
+});
+
+const queuedInput = Object.freeze({ entry_id: 'middle', text: 'Middle queued input', rev: 2, queued_at_ms: 10 });
+
+it('reuses composer refill and cancel for queued edits, preserving words changed by the reader', () => {
+  const registry = mountRegistry();
+  const edit = { kind: 'queued', entry: queuedInput, refill: { text: queuedInput.text, attachments: [] } } as const;
+  act(() => { registry().beginEdit(CONVERSATION, edit); });
+  expect(registry().composerOf(CONVERSATION).text).toBe(queuedInput.text);
+  act(() => { registry().cancelEdit(CONVERSATION); });
+  expect(registry().composerOf(CONVERSATION).text).toBe('');
+  act(() => { registry().beginEdit(CONVERSATION, edit); });
+  act(() => { registry().editComposer(CONVERSATION, () => ({ text: 'Keep these unsaved words', attachments: [] })); });
+  act(() => { registry().cancelEdit(CONVERSATION); });
+  expect(registry().editOf(CONVERSATION)).toBeNull();
+  expect(registry().composerOf(CONVERSATION).text).toBe('Keep these unsaved words');
+});
+
+it('keeps a queued draft through stale receipts and fences an older edit completion', () => {
+  const registry = mountRegistry();
+  act(() => { registry().beginEdit(CONVERSATION, { kind: 'queued', entry: queuedInput,
+    refill: { text: queuedInput.text, attachments: [] } }); });
+  const original = registry().editOf(CONVERSATION);
+  if (original?.kind !== 'queued') throw new Error('Expected the queued edit');
+  const submitted = { text: 'My revised middle input', attachments: [] };
+  act(() => { registry().editComposer(CONVERSATION, () => submitted); });
+  act(() => { registry().settleQueuedEdit(CONVERSATION, original, submitted, { kind: 'stale', text: 'Changed elsewhere', rev: 9 }); });
+  const current = registry().editOf(CONVERSATION);
+  expect(current).toMatchObject({ kind: 'queued', entry: { rev: 9 } });
+  expect(registry().composerOf(CONVERSATION)).toBe(submitted);
+  act(() => { registry().settleQueuedEdit(CONVERSATION, original, submitted, { kind: 'done', entry: { ...queuedInput, text: submitted.text, rev: 3 } }); });
+  expect(registry().editOf(CONVERSATION)).toBe(current);
+  expect(registry().composerOf(CONVERSATION)).toBe(submitted);
+});
+
+it('settles a queued edit only in its originating conversation and preserves any newer draft', () => {
+  const registry = mountRegistry();
+  act(() => { registry().beginEdit(CONVERSATION, { kind: 'queued', entry: queuedInput,
+    refill: { text: queuedInput.text, attachments: [] } }); });
+  const edit = registry().editOf(CONVERSATION);
+  if (edit?.kind !== 'queued') throw new Error('Expected the queued edit');
+  const submitted = { text: 'Saved text', attachments: [] };
+  act(() => {
+    registry().editComposer(CONVERSATION, () => ({ text: 'A newer draft', attachments: [] }));
+    registry().editComposer('another-conversation', () => ({ text: 'Other conversation draft', attachments: [] }));
+  });
+  act(() => { registry().settleQueuedEdit(CONVERSATION, edit, submitted, { kind: 'done', entry: { ...queuedInput, text: submitted.text, rev: 3 } }); });
+  expect(registry().editOf(CONVERSATION)).toBeNull();
+  expect(registry().composerOf(CONVERSATION).text).toBe('A newer draft');
+  expect(registry().composerOf('another-conversation').text).toBe('Other conversation draft');
 });

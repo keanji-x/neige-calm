@@ -15,16 +15,8 @@ impl TerminalInteraction {
         };
         let captured = async {
             // Pin the physical client and its execution binding to the action that already ran.
-            let resolved = Self::resolve_target(
-                self.repo.as_ref(),
-                identity,
-                &Target::Terminal(client.binding.terminal_id.clone()),
-            )
-            .await?;
-            ensure!(
-                resolved.binding == client.binding,
-                "action terminal binding changed before observation"
-            );
+            let resolved =
+                Self::check_binding(self.repo.as_ref(), identity, &client.binding, false).await?;
             ensure!(
                 self.renderer
                     .get(&client.binding.terminal_id)

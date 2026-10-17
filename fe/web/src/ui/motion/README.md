@@ -21,3 +21,9 @@ The library trajectory is sampled once at 10ms rendering precision and played th
 ## Verification
 
 Unit trajectory contracts verify proportional response and analytical velocity continuity without copying the solver. Production browser tests cover real long-message refill/focus, unscaled text, native interpolation, dynamic retargeting, queued finish, reversal, paired seam disposal and reduced motion. The jsdom-only native Animation stub supplies platform controls without simulating physics or paint; actual browser behavior remains authoritative.
+
+
+`CollapsePresence` retains one departing flow item until its shared spring settles.
+It animates a clipped grid track and opacity, preserving text size and keyed children.
+Consumers own collection order, revision handling, focus recovery and final removal;
+reappearance reverses the same item, while reduced motion settles without waiting.

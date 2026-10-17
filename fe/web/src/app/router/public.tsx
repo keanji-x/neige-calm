@@ -1,3 +1,4 @@
+import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
@@ -133,7 +134,7 @@ import {
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
-import { PendingQueue, PlannerAskDrawer } from '../../features/planner/public.ts';
+import { PlannerAskDrawer } from '../../features/planner/public.ts';
 import { openAsksOf, type OpenAsk } from '../../../../core/domain/ask.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 
@@ -452,7 +453,9 @@ function useConversationPane(
     if (shownComposer.current === conversationId) setComposerFocusRequest((count) => count + 1);
   }, []);
   const edit = useConversationEdit({ conversationId: composerId, transcript: composerId === null ? [] : store.turnsOf(composerId),
-    historyReady: store.historyReady, focusComposer });
+    historyReady: store.historyReady, focusComposer, changeComposer: setComposerText,
+    queue: { entries: store.pendingQueue, ready: store.runReady && store.runError === null,
+      busy: store.queueWriteOut || attachments.busy, save: store.editQueuedEntry } });
   /* The one readiness every response action and the continue guidance share. */
   const canContinue = store.runReady && store.runError === null && store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
@@ -527,6 +530,7 @@ function useConversationPane(
   const interrupt = useCommittedCallback(existingId, store.interrupt);
   const compact = useCommittedCallback(existingId, store.compact);
   const deleteQueuedEntry = useCommittedCallback(existingId, store.deleteQueuedEntry);
+  const editQueuedEntry = useCommittedCallback(existingId, edit.startQueued);
   const steerQueuedEntry = useCommittedCallback(existingId, (entry: PendingQueueEntry) => {
     const steer = store.steerQueuedEntry;
     if (steer === undefined) return Promise.reject(new Error('Steering is no longer available in this view.'));
@@ -534,10 +538,18 @@ function useConversationPane(
   });
   const setModel = useCommittedCallback(existingId, store.setModel);
   const setPermissionMode = useCommittedCallback(existingId, store.setPermissionMode);
+  const [submission, setSubmission] = useState<Readonly<{ conversationId: string; request: number }> | null>(null);
+  /* Only a new admitted op asks the shown thread to follow. Retries retain their
+     key and reading place; pending work on mount is not a fresh local press. */
+  const submitMessage: typeof store.send = (...args) => {
+    const sent = store.send(...args);
+    if (sent !== null) setSubmission((previous) => ({ conversationId: args[0], request: (previous?.request ?? 0) + 1 }));
+    return sent;
+  };
   const sendText = useCommittedCallback(existingId, (text: string) => open !== null
-    && store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null);
+    && (edit.queued !== null ? edit.saveQueued(text) : submitMessage(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null));
   const regenerateMessage = useCommittedCallback(existingId, async (message: ConversationTurn) => {
-    if (open !== null) await store.send(open.id, message.text, message.attachments ?? [], false, null);
+    if (open !== null) await submitMessage(open.id, message.text, message.attachments ?? [], false, null);
   });
   const editMessage = useCommittedCallback(existingId, edit.start);
   const sideQuestion = useCommittedCallback(existingId, (question: string) => {
@@ -560,6 +572,14 @@ function useConversationPane(
     error: attachmentError, atCapacity, attach, remove: removeAttachment }),
   [attachmentItems, attachmentIds, attachmentBusy, attachmentError, atCapacity, attach, removeAttachment]);
   const canSteer = store.steerQueuedEntry !== undefined;
+  const refocusQueuedComposer = useCommittedCallback(existingId, () => { if (existingId !== null) focusComposer(existingId); });
+  const pendingMessages = useMemo(() => <PendingQueue key={existingId}
+    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow}
+    busy={store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
+    canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
+    savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onSteer={canSteer ? steerQueuedEntry : undefined} />,
+  [existingId, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.sending, store.queueWriteOut,
+    deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
     compact: compact,
@@ -567,55 +587,43 @@ function useConversationPane(
     manualCompactSupported: store.manualCompactSupported,
     attachmentsSupported: store.attachmentsSupported,
     contextUsage: store.contextUsage,
-    deleteQueuedEntry: deleteQueuedEntry,
     historyReady: store.historyReady,
     interrupt: interrupt,
     model: store.model,
     modelCatalog: store.modelCatalog,
-    pendingQueue: store.pendingQueue,
-    pendingQueueOverflow: store.pendingQueueOverflow,
     permissionMode: store.permissionMode,
-    queueWriteOut: store.queueWriteOut,
     sendBlocked: store.sendBlocked,
     sending: store.sending,
     setModel: setModel,
     setPermissionMode: setPermissionMode,
-    steerQueuedEntry: canSteer ? steerQueuedEntry : undefined,
     stopping: store.stopping,
     working: store.working
-  }), [compact, store.compacting, store.manualCompactSupported, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.permissionMode, store.queueWriteOut, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working, canSteer, steerQueuedEntry]);
-  const { replacing, bar: editingBar } = edit;
+  }), [compact, store.compacting, store.manualCompactSupported, store.attachmentsSupported, store.contextUsage, store.historyReady, interrupt, store.model, store.modelCatalog, store.permissionMode, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working]);
+  const { bar: editingBar } = edit;
+  const replacing = edit.replacing || edit.queuedSaving;
+  const editingQueue = edit.queued !== null;
+  const changeComposer = edit.onComposerChange;
   const composerNode = useMemo(() => existingId === null ? null : (
             <ChatComposer layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
                                when the drawer closes. */
               focusOnMount={composerFocusFor === existingId}
               focusRequest={composerFocusRequest}
-              draft={{ text: composer.text, onChange: setComposerText }}
+              draft={{ text: composer.text, onChange: changeComposer }}
               disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
               onCompact={composerView.manualCompactSupported && composerView.historyReady && editingBar === undefined ? composerView.compact : undefined}
-              sendWaiting={composerView.sending} {...(editingBar === undefined ? {} : { editing: editingBar })}
+              sendWaiting={composerView.sending || edit.queuedSaving} {...(editingBar === undefined ? {} : { editing: editingBar })}
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
               showSideCommand={(options?.showSideCommand ?? true) && sideSourceReady}
               onSideConversation={!hasSideConversation || !composerView.historyReady ? undefined : sideQuestion}
               onSend={sendText}
-              allowEmptyText={composerAttachments.items.length > 0}
-              onFiles={!composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
+              allowEmptyText={!editingQueue && composerAttachments.items.length > 0}
+              onFiles={editingQueue || !composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
                 for (const file of files) void composerAttachments.attach(file);
               }}
-              /* The queue lives inside the composer, above the field: these messages have
-                               not reached the model, so they are not part of the conversation behind it. */
+              /* Questions and attachments belong to the composer; waiting messages follow the running status. */
               drawer={(
                 <>
-                  <PendingQueue
-                    /* Its write lock and refusal are the shown conversation's, never carried into the next one. */
-                    key={existingId}
-                    entries={composerView.pendingQueue}
-                    overflow={composerView.pendingQueueOverflow}
-                    busy={composerView.sending || composerView.queueWriteOut}
-                    onDelete={composerView.deleteQueuedEntry}
-                    onSteer={composerView.steerQueuedEntry}
-                  />
                   {/* Above the images: those belong to the message being written, so they stay next to its field. */}
                   <PlannerAskDrawer key={`asks-${existingId}`} asks={plannerAsks} onAnswer={answerAsk} />
                   <PlannerAttachmentDrawer attachments={composerAttachments} />
@@ -625,7 +633,7 @@ function useConversationPane(
               sendAdornment={compactComposer ? undefined : <ContextRing usage={composerView.contextUsage} />}
               /* `stopping` keeps Stop shown while the interrupt is in flight; `interrupt()`
                                already refuses a second one. */
-              onStop={!composerView.compacting && (composerView.working || composerView.stopping) ? composerView.interrupt : undefined}
+              onStop={!editingQueue && !composerView.compacting && (composerView.working || composerView.stopping) ? composerView.interrupt : undefined}
               onNewConversation={options?.inline === true ? undefined : newConversation}
               mentionTrigger={mentionTrigger}
               /* The kernel reads the selection when it hands a batch to codex, so a change
@@ -642,7 +650,7 @@ function useConversationPane(
                       available: composerView.attachmentsSupported,
                       reason: ATTACHED_WORKSPACE_REASON,
                     }}
-                    disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
+                    disabled={editingQueue || composerView.sendBlocked || !composerView.historyReady || replacing}
                   />
                   <ModelPill
                     /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
@@ -666,8 +674,8 @@ function useConversationPane(
                 </HStack>
               )}
             />
-  ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, setComposerText, composerView,
-    replacing, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion, sideSourceReady,
+  ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, changeComposer, composerView,
+    replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
@@ -772,6 +780,8 @@ function useConversationPane(
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
+            {edit.queueFailure !== null && <QueueWriteNotice outcome={edit.queueFailure} />}
+            {edit.queuedMissing && <ChatFooterNotice tone="neutral">This message is not available for editing. Cancel editing to keep your draft in the composer.</ChatFooterNotice>}
             {edit.notice !== null && <ChatFooterNotice tone={edit.notice.tone}>{edit.notice.lines.map((line) =>
               edit.notice?.tone === 'error' ? <ChatFooterError key={line} message={line} /> : <span key={line}>{line}</span>)}</ChatFooterNotice>}
             {store.restart.strip !== null && <ChatFooterNotice tone={store.restart.strip.tone}>
@@ -821,12 +831,12 @@ function useConversationPane(
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
             {threadPresented && (
-              <ChatThread readingView={threadReadingView}
-                key={open.id}
+              <ChatThread readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
                 conversation={open}
                 imageFiles={imageFiles}
                 turns={store.turnsOf(open.id)} editing={edit.marked}
                 sending={store.sending}
+                submissionRequest={submission?.conversationId === open.id ? submission.request : 0}
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.working}
                 cards={source.cards}
@@ -879,7 +889,7 @@ function useConversationPane(
   });
   const sendFromDock = useCommittedCallback(dockViewId, (text: string) => {
     if (dockRowId !== null) {
-      if (store.send(dockRowId, text, composer.attachments, true, edit.replacesIn(dockRowId)) !== null) {
+      if (submitMessage(dockRowId, text, composer.attachments, true, edit.replacesIn(dockRowId)) !== null) {
         setOpenTarget({ kind: 'row', id: dockRowId });
       }
     } else if (startWithMessage(text)) setNewConversationText('');

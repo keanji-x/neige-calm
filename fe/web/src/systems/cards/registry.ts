@@ -66,6 +66,8 @@ export interface CardEntry<Card extends { readonly id: string; readonly type: st
   readonly type: Card['type'];
   readonly component: ComponentType<CardComponentProps<Card>>;
   readonly defaultSize: CardSize;
+  /** Opt into a sticky surface bounded by the board scrollport; the user's grid cell stays unchanged. */
+  readonly viewport?: 'board';
   readonly claim?: CardKindClaim;
   readonly title?: (card: Card) => string;
   readonly accessibleName?: (card: Card) => string;

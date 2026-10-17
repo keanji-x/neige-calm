@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Divider } from '@astryxdesign/core/Divider';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
-import { IconButton } from '@astryxdesign/core/IconButton';
+import { MessageActions } from './message-actions.tsx';
 import type { ConversationMetaClock } from '../../../../../core/domain/conversation-meta.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { restoreDrawerFocus } from '../../../ui/drawer/restore-focus.ts';
@@ -42,14 +42,6 @@ function useFencedAction(key: string | null) {
   return { feedback: result?.view === view ? result : null, perform };
 }
 
-function ActionIcon({ kind }: { kind: 'copy' | 'copied' | 'edit' | 'regenerate' }) {
-  return <svg className={styles.icon} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-    {kind === 'copied' ? <path d="m5 12 4 4L19 6" /> : kind === 'copy' ? <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>
-      : kind === 'edit' ? <><path d="m16 3 5 5-12 12-6 1 1-6L16 3Z" /><path d="m14 5 5 5" /></>
-        : <><path d="M20 7v5h-5" /><path d="M4 17v-5h5" /><path d="M6 7a7 7 0 0 1 12-1l2 3M18 17a7 7 0 0 1-12 1l-2-3" /></>}
-  </svg>;
-}
 
 function elapsedText(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -111,22 +103,20 @@ export function ThreadStatusNotice({ heading, children, clock, sending = false, 
           : <Collapsible defaultIsOpen={false} isOpen={detailsExpanded} onOpenChange={onDetailsExpandedChange} chevronPosition="start" trigger={title}>{children}</Collapsible>}
         {sending && <div className={styles.label}>Sending…</div>}
       </div>
-      <div className={styles.actions} role="group" aria-label="Response actions">
-        <IconButton label={copyAction === null ? 'Copy response (not available yet)' : feedback === null || feedback.kind === 'pending' ? 'Copy response'
-          : feedback.kind === 'done' ? 'Copied response' : 'Could not copy response'}
-          icon={<ActionIcon kind={feedback?.kind === 'done' ? 'copied' : 'copy'} />} className={styles.action}
-          variant="ghost" size="sm" isDisabled={copyAction === null || feedback?.kind === 'pending'}
-          onClick={() => { if (copyAction !== null) void copy.perform(copyAction.run); }} />
-        <IconButton label={editAction === null ? 'Edit message (not available now)' : 'Edit message'}
-          tooltip="Edit this message. Files are not reverted."
-          icon={<ActionIcon kind="edit" />}
-          className={styles.action} variant="ghost" size="sm" isDisabled={editAction === null}
-          onClick={() => { editAction?.run(); }} />
-        <IconButton label={regenerateAction === null ? 'Regenerate response (not available now)' : 'Regenerate response'}
-          tooltip="Send the original prompt again in this conversation; keep existing history." icon={<ActionIcon kind="regenerate" />}
-          className={styles.action} variant="ghost" size="sm" isDisabled={regenerateAction === null || regenerate.feedback?.kind === 'pending'}
-          onClick={() => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run); }} />
-      </div>
+      <MessageActions actions={[
+        { id: 'copy', kind: feedback?.kind === 'done' ? 'copied' : 'copy',
+          label: copyAction === null ? 'Copy response (not available yet)' : feedback === null || feedback.kind === 'pending' ? 'Copy response'
+            : feedback.kind === 'done' ? 'Copied response' : 'Could not copy response',
+          disabled: copyAction === null || feedback?.kind === 'pending',
+          run: () => { if (copyAction !== null) void copy.perform(copyAction.run); } },
+        { id: 'edit', kind: 'edit', label: editAction === null ? 'Edit message (not available now)' : 'Edit message',
+          tooltip: 'Edit this message. Files are not reverted.', disabled: editAction === null,
+          run: () => { editAction?.run(); } },
+        { id: 'regenerate', kind: 'regenerate', label: regenerateAction === null ? 'Regenerate response (not available now)' : 'Regenerate response',
+          tooltip: 'Send the original prompt again in this conversation; keep existing history.',
+          disabled: regenerateAction === null || regenerate.feedback?.kind === 'pending',
+          run: () => { if (regenerateAction !== null) void regenerate.perform(regenerateAction.run); } },
+      ]} />
     </div>
   </div>;
 }

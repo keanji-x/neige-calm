@@ -46,6 +46,7 @@ export const FILE_VIEWER_CARD_ENTRY = Object.freeze({
   type: 'file-viewer',
   component: (props: CardComponentProps<FileViewerCard>) => FileViewerCardView(props),
   headless: false,
+  viewport: 'board',
   defaultSize: Object.freeze({ w: 6, h: 12, minW: 4, minH: 6 }),
   claim: Object.freeze({ mode: 'exact', kind: 'file-viewer' } as const),
   title: (card: FileViewerCard) => card.title ?? 'file',

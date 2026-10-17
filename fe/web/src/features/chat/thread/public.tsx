@@ -2,7 +2,6 @@ import { useThreadReadingView, type ThreadReadingView } from './reading-view.tsx
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 import { floatingControlClassName, floatingControlMaterialClassName } from '../../../ui/floating-control/public.ts';
 import mobileStyles from './mobile-composer.module.css';
-import { markdownExcerpt } from '../../../../../core/markdown/public.ts';
 // The conversation itself: a transcript and the box you write into. The unit is the
 // exchange — one thing you said and everything that came back.
 
@@ -24,8 +23,7 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { LoadingIndicator } from '../../../ui/activity-indicator/loading-indicator.tsx';
-import { EdgeNavigator } from '../../../ui/edge-navigation/public.tsx';
-import { observeResize } from '../../../ui/edge-navigation/resize.ts';
+import { ExchangeNavigation } from './exchange-navigation.tsx';
 import { createScrollFollower } from '../../../ui/drawer/follow-scroll.ts';
 import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
@@ -62,10 +60,14 @@ export type ChatThreadProps = Readonly<{
   conversation: Conversation;
   /** Messages and the actions between them, in the order they happened. */
   turns: readonly TranscriptEntry[];
+  /** Waiting inputs follow the current status without interleaving with its reply. */
+  pendingMessages?: ReactNode;
   /** Current work confirmed by the run query while the activity overlay catches up. */
   pending?: boolean;
   /** Local dispatch is pending, independently of model execution and the displayed message. */
   sending?: boolean;
+  /** Monotonic fresh local send request; `0` means none. Changes reveal it; mount and conversation changes only establish the baseline. */
+  submissionRequest?: number;
   /** The kernel's per-card verdicts for this conversation's track; a caller with no overlay passes `{}`. */
   cards: Readonly<Record<string, CardActivity>>;
   /** The drawer's local wedge fact. A wedged planner's kernel verdict is still `working`, so a thread that did not know it was stuck would spin beside "This conversation is stuck". */
@@ -93,7 +95,7 @@ export type ChatThreadProps = Readonly<{
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pending = false, sending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -129,7 +131,6 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);
-  const exchanges = useMemo(() => exchangesOf(turns), [turns]);
   const edited = useMemo(() => editing === null ? new Set<string>() : editedTurnMessageIds(turns, editing), [editing, turns]);
   /* Drawn by block, not by entry: a quiet-sync fold is one line. The index map keeps `opensExchange`, `opensAfterGap` and the live-mark rule reading positions in `turns`. */
   const blocks = useMemo(() => foldQuietSyncs(turns), [turns]);
@@ -171,21 +172,23 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   /* The rail is portalled into the drawer's seam (`.drawer` is `overflow: hidden`, so a descendant cannot reach it). Held in state because a portal needs the node at render time. */
   const [railSeam, setRailSeam] = useState<HTMLElement | null>(null);
   const [scrollOverlay, setScrollOverlay] = useState<HTMLElement | null>(null);
-  /* The frame is not rendered on an empty transcript, so the first turn arriving is the one edge that creates it under a live component. */
+  /* Keep one frame across the empty-to-streaming boundary so queued edits retain their owner. */
   const hasTranscript = turns.length > 0;
   useLayoutEffect(() => {
     setRailSeam(drawerSeamAround(frameRef.current));
     setScrollOverlay(frameRef.current?.closest('[data-nc-drawer]')?.querySelector<HTMLElement>('[data-nc-chat-scroll-overlay]') ?? null);
   }, [hasTranscript, compactViewport]);
-  const railShown = exchanges.length > 0 && railSeam !== null;
-  const [active, setActive] = useState<string | null>(null);
-  /** Re-derive the lit dot from the painted boxes; a no-op before the rail effect has installed it. */
-  const readActive = useRef<() => void>(() => {});
   /** Whether the reader is parked at the end of the transcript — the only state in which a newly appended turn may move the pane. */
   const [scrolledUp, setScrolledUp] = useState(false);
   const [scrollFollower] = useState(() => createScrollFollower({
     bottomSlack: FOLLOW_BOTTOM_SLACK_PX, onAwayChange: setScrolledUp,
   }));
+  const observedSubmission = useRef({ conversationId: conversation.id, request: submissionRequest });
+  useLayoutEffect(() => {
+    const before = observedSubmission.current;
+    observedSubmission.current = { conversationId: conversation.id, request: submissionRequest };
+    if (before.conversationId === conversation.id && submissionRequest > 0 && before.request !== submissionRequest) scrollFollower.followToEnd();
+  }, [scrollFollower, conversation.id, submissionRequest]);
   /** The turn at the end of the transcript as of this render — what the follow
    *  effect below both depends on and decides by. */
   const newestId = lastTurn?.id;
@@ -215,54 +218,6 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     followedLength.current = newestLength;
     if (arrived) scrollFollower.followGrowth();
   }, [scrollFollower, newestId, newestLength, noticeKind]);
-
-  /* The lit dot is the last exchange whose opening marker sits at or above an edge: the pane's top while a pane-height of scroll remains, sliding to the bottom as it runs out (a hard switch jumped the mark by a pane's worth). Evaluated on every scroll rather than by an observer. `read()` stops at a zero-height pane, and that guard lives only there so a pane mounted at zero height still gets its listeners. */
-  const exchangeKey = JSON.stringify(exchanges.map((exchange) => exchange.id));
-  useEffect(() => {
-    const frame = frameRef.current;
-    if (!railShown || frame === null) return;
-    const scroller = frame.closest<HTMLElement>('[data-nc-drawer-scroll]');
-    if (scroller === null) return;
-    const markers = [...frame.querySelectorAll<HTMLElement>('[data-nc-exchange]')];
-    if (markers.length === 0) return;
-
-    const read = () => {
-      if (scroller.clientHeight === 0) return;
-      const pane = scroller.getBoundingClientRect();
-      /* How far the pane can still travel, and so how far the edge has slid — capped by how far the pane has actually scrolled. */
-      const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      const slid = Math.min(scroller.scrollTop, Math.max(0, pane.height - remaining));
-      const edge = Math.min(pane.bottom, pane.top + ACTIVE_MARKER_SLACK_PX + slid);
-      // Exchange markers follow the transcript's vertical flow. Find the last
-      // one at/before the edge without measuring the whole preceding history.
-      let low = 0; let high = markers.length;
-      while (low < high) {
-        const middle = Math.floor((low + high) / 2);
-        if (markers[middle].getBoundingClientRect().top <= edge) low = middle + 1;
-        else high = middle;
-      }
-      const current = markers[Math.max(0, low - 1)];
-      const id = current?.dataset.ncExchange;
-      if (id !== undefined) setActive(id);
-    };
-    readActive.current = read;
-
-    let queued: number | null = null;
-    const onScroll = () => {
-      if (queued !== null) return;
-      queued = requestAnimationFrame(() => { queued = null; read(); });
-    };
-    /* A resize moves every marker relative to the pane's edges without emitting a `scroll`. */
-    const unobserve = observeResize(scroller, read);
-    scroller.addEventListener('scroll', onScroll, { passive: true });
-    read();
-    return () => {
-      readActive.current = () => {};
-      unobserve();
-      scroller.removeEventListener('scroll', onScroll);
-      if (queued !== null) cancelAnimationFrame(queued);
-    };
-  }, [railShown, exchangeKey]);
 
   /* A run of calls, one or more, keyed by `key`: Astryx draws one call inline and two or more as a group. `runLive` is the live tail's alone — a run the conversation has moved past must not look like it resumed. */
   const renderRun = (activities: readonly ConversationActivity[], key: string, runLive: boolean): ReactNode => (
@@ -315,16 +270,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     );
   };
 
-  if (turns.length === 0 && noticeKind === null) {
-    return (
-      <div className={styles.empty} data-nc-thread-empty="">
-        <p className={styles.emptyLead}>{compactViewport ? (live ? '正在整理你的想法' : '聊聊你想做什么') : (live ? 'The agent is working.' : 'Nothing said yet.')}</p>
-        <p className={styles.emptyHint}>{compactViewport ? (live ? '回复会显示在这里。' : '从一个问题或想法开始。') : (live ? 'Messages will appear here.' : 'Write below and it starts here.')}</p>
-        {live && <ActivityIndicator state="working" motion="thinking" />}
-        {currentMeta}
-      </div>
-    );
-  }
+  const empty = turns.length === 0 && noticeKind === null;
 
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
     {scrollOverlay === null && <div className={styles.scrollBlur} aria-hidden="true" />}
@@ -332,28 +278,14 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   </div>;
 
   return (
-    <div className={styles.threadFrame} ref={frameRef}>
-      {railShown && railSeam !== null && createPortal(
-        <EdgeNavigator
-          className={styles.edgeNavigation}
-          label="Jump to an exchange"
-          items={exchanges.map((item, index) => ({ id: item.id, title: item.text.trim() === '' ? `Exchange ${index + 1}` : item.text, readExcerpt: () => item.reply === null ? '' : markdownExcerpt(item.reply),
-            label: `Jump to exchange ${index + 1}${railLabel(item.text) === '' ? '' : `: ${railLabel(item.text)}`}`,
-          }))}
-          activeId={active}
-          onSelect={(id) => {
-            /* The lookup comes first: a marker that is not there leaves the mark untouched. */
-            const target = exchangePosition(frameRef.current, id);
-            if (target === null) return;
-            scrollFollower.navigate(target);
-            /* The mark moves on the press, then the rule re-reads the boxes: a write the engine clamps to the current offset fires no `scroll`, so nothing else would correct the press. */
-            setActive(id);
-            readActive.current();
-          }}
-        />,
-        railSeam,
-      )}
-      <div className={`${styles.thread} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
+    <div className={`${styles.threadFrame} ${empty ? styles.emptyFrame : ''}`} ref={frameRef}>
+      <ExchangeNavigation turns={turns} frameRef={frameRef} seam={railSeam} navigate={scrollFollower.navigate} />
+      <div className={`${styles.thread} ${empty ? styles.empty : ''} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-thread-empty={empty ? '' : undefined} ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
+        {empty && <>
+          <p className={styles.emptyLead}>{compactViewport ? (live ? '正在整理你的想法' : '聊聊你想做什么') : (live ? 'The agent is working.' : 'Nothing said yet.')}</p>
+          <p className={styles.emptyHint}>{compactViewport ? (live ? '回复会显示在这里。' : '从一个问题或想法开始。') : (live ? 'Messages will appear here.' : 'Write below and it starts here.')}</p>
+          {live && <ActivityIndicator state="working" motion="thinking" />}
+        </>}
         {transcriptGroups.map(({ entry: turn, activities, key }) => {
           const block = quietBlocks.get(turn.id);
           if (block !== undefined) {
@@ -371,12 +303,13 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
           return renderEntry(turn, key);
         })}
         {/* A reply that has not arrived yet still gets a place to arrive in; the placeholder keeps the one mark visible unless the tail carries it. */}
-        {live && !tailCarriesLiveMark && (
+        {live && !empty && !tailCarriesLiveMark && (
           <p className={styles.reply}><ActivityIndicator state="working" motion="thinking" /></p>
         )}
         {/* The drawer's one accessible "in motion" fact: every indicator is decorative. It sits after the placeholder because the stylesheet spaces `.thread`'s children by adjacency (`.exchange + *`). */}
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
         {currentMeta}
+        <div key="pending-messages" className={styles.pendingMessages}>{pendingMessages}</div>
         <div ref={endRef} aria-hidden="true" />
       </div>
       {scrolledUp && (scrollOverlay !== null ? createPortal(scrollControls, scrollOverlay)
@@ -386,13 +319,6 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
 
 });
 
-/** One thing you said and everything that came back — as far as the rail needs
- *  it: something to point at, and the words to call it by. */
-type Exchange = Readonly<{ id: string; text: string; reply: string | null }>;
-
-/** How far below the pane's top a marker may still count as "scrolled past": absorbs the subpixel gap between the scroll asked for and the one the engine performs, at both ends. */
-const ACTIVE_MARKER_SLACK_PX = 4;
-
 /** How far from the bottom still counts as reading the newest turn: 2.6 lines of the reply's 24.75px line box. */
 const FOLLOW_BOTTOM_SLACK_PX = 64;
 
@@ -400,43 +326,7 @@ const FOLLOW_BOTTOM_SLACK_PX = 64;
 
 
 
-function exchangesOf(turns: readonly TranscriptEntry[]): readonly Exchange[] {
-  const found: Exchange[] = [];
-  let open: { id: string; text: string; reply: string | null } | null = null;
-  for (const [index, turn] of turns.entries()) {
-    if (turn.author === 'you' && opensExchange(turns, index)) {
-      if (open !== null) found.push(open);
-      open = { id: turn.id, text: turn.text, reply: null };
-    } else if (open !== null && open.reply === null && turn.author === 'agent') {
-      open.reply = turn.text;
-    }
-  }
-  if (open !== null) found.push(open);
-  return found;
-}
 
-/** How much of a prompt a name may carry: enough to tell two questions apart, short enough for a screen reader. */
-const RAIL_LABEL_MAX = 60;
-
-/** The prompt as a button may carry it, or `''` where there is nothing to
- *  carry — the ordinal that names it either way is the caller's. */
-function railLabel(text: string): string {
-  /* Line breaks are the author's and the transcript keeps them; a button's name
-     is a single line, so they collapse here and only here. */
-  const line = text.replace(/\s+/g, ' ').trim();
-  return line.length <= RAIL_LABEL_MAX ? line : `${line.slice(0, RAIL_LABEL_MAX - 1)}…`;
-}
-
-/** Resolve before releasing follow intent: an absent exchange is a no-op. */
-function exchangePosition(frame: HTMLElement | null, id: string): (() => void) | null {
-  if (frame === null) return null;
-  const marker = [...frame.querySelectorAll<HTMLElement>('[data-nc-exchange]')]
-    .find((candidate) => candidate.dataset.ncExchange === id);
-  if (marker === undefined) return null;
-  const scroller = marker.closest<HTMLElement>('[data-nc-drawer-scroll]');
-  if (scroller === null) return null;
-  return () => { scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top; };
-}
 
 /** A duration is printed only when the reader felt it; most `item/completed` are a 12ms read. */
 const ACTIVITY_DURATION_FLOOR_MS = 1_000;
@@ -505,7 +395,7 @@ export function ChatComposer({
   /** A local send waits for its answer. Show a busy Send while preserving an existing Stop. */
   sendWaiting?: boolean;
   /** Edit mode: a bar names the message being replaced, ✕ or Esc leaves the mode, and Send is "Replace message". */
-  editing?: Readonly<{ preview: string; onCancel: () => void }>;
+  editing?: Readonly<{ preview: string; onCancel: () => void; submitLabel?: string; canSubmit?: boolean }>;
   /** Put the caret in the field as this composer mounts. Read once, at mount; the composer has no `key` on the router's path, so raising the flag again on a mounted composer does nothing — one mount per intent is the caller's job. */
   focusOnMount?: boolean;
   /** Each new value asks once for the caret, on a mounted composer (an Edit's refill); the same wait as after a send. */
@@ -621,7 +511,7 @@ export function ChatComposer({
   const submit = (value: string) => {
     const text = value.trim();
     /* `allowEmptyText` is the caller saying the message carries an image. */
-    if ((text === '' && !allowEmptyText) || disabled) return;
+    if ((text === '' && !allowEmptyText) || disabled || editing?.canSubmit === false) return;
     const question = onSideConversation === undefined ? null : sideQuestion(text);
     if (question !== null) {
       if (onSideConversation?.(question) === false) {
@@ -688,7 +578,7 @@ export function ChatComposer({
           return;
         }
         if (route === 'menu' || event.key !== 'Enter' || event.shiftKey) return;
-        if (disabled) {
+        if (disabled || editing?.canSubmit === false) {
           event.preventDefault();
           event.stopPropagation();
           return;
@@ -739,7 +629,7 @@ export function ChatComposer({
             <>{sendAdornment}{sendDoor}</>
           )}
           input={(
-            <div ref={messageInputRef} className={layout === 'mobile' ? mobileStyles.input : undefined}><ChatComposerInput
+            <div ref={messageInputRef} className={layout === 'mobile' ? mobileStyles.input : styles.input}><ChatComposerInput
               /* Longer drafts scroll inside the editor, leaving room for a shared pane's recovery strip and Send. */
               maxRows={3}
               onFiles={disabled ? undefined : onFiles}
@@ -760,8 +650,8 @@ export function ChatComposer({
               <span className={styles.sendWait}><LoadingIndicator active={sendWaiting && !stopShown} /></span>
             </span>
           } />
-            : <Button label={sendWaiting ? 'Sending…' : 'Replace message'} variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
-              isLoading={sendWaiting} isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)}
+            : <Button label={sendWaiting ? 'Sending…' : editing.submitLabel ?? 'Replace message'} variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
+              isLoading={sendWaiting} isDisabled={disabled || editing.canSubmit === false || (draft.trim() === '' && !allowEmptyText)}
               onClick={() => { submit(draft); }} />}
         />
       </SizeMotion>
