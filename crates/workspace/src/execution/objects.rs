@@ -6,7 +6,7 @@ pub use containment::{
     ContainmentKind, ContainmentUnknown, ContainmentUnsupported, DirectoryContainment,
     PositiveContainment,
 };
-use qualification::NamespaceContext;
+pub(crate) use qualification::NamespaceContext;
 pub use qualification::{
     LocalObjectProfile, ObjectQualificationFailure, ObjectQualificationStage,
     ObjectQualificationUnknown, ObjectQualificationUnsupported, QualifiedCwd,
@@ -413,20 +413,23 @@ fn read_link(file: &File) -> io::Result<Vec<u8>> {
 }
 fn fact(file: &File, role: ObjectRole) -> io::Result<ObjectFact> {
     let stat = file.metadata()?;
-    let info = std::fs::read_to_string(format!("/proc/thread-self/fdinfo/{}", file.as_raw_fd()))?;
-    let mount = info
-        .lines()
-        .find_map(|line| line.strip_prefix("mnt_id:"))
-        .ok_or_else(|| io::Error::other("mount identity unavailable"))?
-        .trim()
-        .parse()
-        .map_err(io::Error::other)?;
     Ok(ObjectFact {
         role,
         device: stat.dev(),
         inode: stat.ino(),
-        mount,
+        mount: fd_mount_id(file)?,
     })
+}
+
+/// Current descriptor fact only; this is not local-profile qualification.
+pub(crate) fn fd_mount_id(file: &File) -> io::Result<u64> {
+    let info = std::fs::read_to_string(format!("/proc/thread-self/fdinfo/{}", file.as_raw_fd()))?;
+    info.lines()
+        .find_map(|line| line.strip_prefix("mnt_id:"))
+        .ok_or_else(|| io::Error::other("mount identity unavailable"))?
+        .trim()
+        .parse()
+        .map_err(io::Error::other)
 }
 fn namespace() -> io::Result<u64> {
     Ok(qualification::namespace_file()?.metadata()?.ino())

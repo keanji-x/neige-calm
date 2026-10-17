@@ -85,7 +85,7 @@ fn unknown_io(stage: ObjectQualificationStage, error: io::Error) -> ObjectQualif
 }
 
 /// A passive retained current namespace. It is never transferred as an arbitrary join target.
-pub(super) struct NamespaceContext {
+pub(crate) struct NamespaceContext {
     file: File,
 }
 

@@ -6,6 +6,7 @@ pub mod error;
 pub mod execution;
 pub mod git;
 pub mod identity;
+pub mod input_observation;
 pub mod materialize;
 mod metadata_lock;
 pub mod recycle;
