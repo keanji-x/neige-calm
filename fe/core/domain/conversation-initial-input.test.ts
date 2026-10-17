@@ -131,8 +131,8 @@ it('binds local writes by entry identity and stored revision, preserving same-te
   expect(lateEdit[0]).toBe(removed[0]);
   const op = removed[0];
   if (op.phase !== 'initial-accepted') throw new Error('Expected retained displacement');
-  const entry = { entry_id: receipt.entryId, text: 'A restored actual queue entry', queued_at_ms: 100, rev: 2 };
-  expect(initialInputQueueView([{ ...entry, rev: 1 }], op, observed(queued()), 21).entries).toEqual([]);
+  const entry = { entry_id: receipt.entryId, text: 'A restored actual queue entry', queued_at_ms: 100, rev: 3 };
+  expect(initialInputQueueView([{ ...entry, rev: 2 }], op, observed(queued()), 21).entries).toEqual([]);
   expect(initialInputQueueView([entry], op, observed(queued()), 21).entries).toEqual([entry]);
 });
 
@@ -204,4 +204,44 @@ it('transfers display ownership only from an admitted exact raw source and retai
   expect(removed[0]).toMatchObject({ sourceWitness: source.inputSource, localWrite: { text: null } });
   expect(view(undefined, 1000, { ops: removed, serverEntries: [source], serverTurns: [source] }).transcript).toEqual([]);
   expect(initialInputNeedsObservation(accepted)).toBe(true);
+});
+
+
+it('uses actual PATCH body and revision only for an existing cached queue row, letting an actual newer revision or queue absence win', () => {
+  const old = { entry_id: receipt.entryId, text: accepted.submitted.text, rev: 0, queued_at_ms: receipt.queuedAtMs };
+  const saved = { card_id: 'card', entry_id: receipt.entryId, rev: 1, text: 'Actual stored revised body' };
+  const op = acknowledgeQueueMutation([accepted], saved)[0];
+  if (op.phase !== 'initial-accepted') throw new Error('Expected acceptance');
+  const queuedView = initialInputQueueView([old], op, observed(queued()), 0);
+  expect(queuedView.entries).toEqual([{ ...old, text: saved.text, rev: saved.rev }]);
+  expect([...queuedView.hiddenIds]).toEqual([]);
+  expect(initialInputQueueView([], op, observed(queued()), 1000).entries).toEqual([]);
+  const newer = { ...old, text: 'Actual later revision', rev: 2 };
+  expect(initialInputQueueView([newer], op, observed(queued()), 1000).entries).toEqual([newer]);
+  expect(initialInputEcho(op)).toMatchObject({ text: saved.text, queueEntryId: receipt.entryId });
+  expect(initialInputEcho(op).inputSource).toBeUndefined();
+  expect(withConfirmedSends([], [op], [])).toEqual([initialInputEcho(op)]);
+});
+
+it('hands off only the current actual ACK body and ends creation observation through same-body and restored-original edits', () => {
+  const originalSource = { id: '7:0', author: 'you' as const, text: accepted.submitted.text, atMs: 2,
+    queueEntryId: receipt.entryId, inputSource: { itemId: 7, segmentIndex: 0, turnId: 'old-provider-turn' } };
+  const witnessed = withInitialInputSources([accepted], [originalSource]);
+  const same = acknowledgeQueueMutation(witnessed, { card_id: 'card', entry_id: receipt.entryId, rev: 1, text: accepted.submitted.text });
+  expect(same[0]).toMatchObject({ sourceWitness: originalSource.inputSource });
+  const plainSame = acknowledgeQueueMutation([accepted], { card_id: 'card', entry_id: receipt.entryId, rev: 1, text: accepted.submitted.text })[0];
+  if (plainSame.phase !== 'initial-accepted') throw new Error('Expected acceptance');
+  expect(initialInputNeedsObservation(plainSame)).toBe(false);
+  const edited = acknowledgeQueueMutation(same, { card_id: 'card', entry_id: receipt.entryId, rev: 2, text: 'Actual revised body' });
+  expect(edited[0]).toMatchObject({ sourceWitness: null });
+  expect(withInitialInputSources(edited, [originalSource])).toBe(edited);
+  expect(withConfirmedSends([originalSource], edited, []).map(entry => 'text' in entry ? entry.text : entry.author)).toEqual([accepted.submitted.text, 'Actual revised body']);
+  const editedSource = { ...originalSource, id: '8:0', text: 'Actual revised body', inputSource: { itemId: 8, segmentIndex: 0, turnId: null } };
+  const handed = withInitialInputSources(edited, [originalSource, editedSource]);
+  expect(handed[0]).toMatchObject({ sourceWitness: editedSource.inputSource });
+  expect(withConfirmedSends([], handed, [])).toEqual([]);
+  const restored = acknowledgeQueueMutation(handed, { card_id: 'card', entry_id: receipt.entryId, rev: 3, text: accepted.submitted.text })[0];
+  if (restored.phase !== 'initial-accepted') throw new Error('Expected acceptance');
+  expect(restored.sourceWitness).toBeNull(); expect(initialInputNeedsObservation(restored)).toBe(false);
+  expect(initialInputEcho(restored).text).toBe(accepted.submitted.text);
 });

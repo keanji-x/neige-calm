@@ -164,3 +164,18 @@ Initial-input inspection describes current source certainty, not permission to
 send. A declared accepted creation and healthy ordinary history/run paths keep
 the composer usable while inspection is unavailable. The existing stalled,
 failed-send, in-flight and ordinary reconciliation gates still own admission.
+
+
+An actual PATCH ACK owns the revised readable body without altering the original
+submission or receipt. The queue fold overlays its stored text/revision only on
+an existing same-entry cached row; a real run omission never appends a queue row.
+Until an actual same-entry raw source carries that acknowledged body, the existing
+plain accepted display keeps it readable, with no queued caption or inputSource.
+Only a changed actual ACK begins a new body handoff by clearing its prior source
+witness; same-body ACKs preserve ownership and page misses never reset it. Every
+actual local queue-write ACK ends original creation inspection, including edits
+that restore the original text. DELETE reports the removed revision and fences
+that revision and all older ones; only a strictly newer real queue entry restores
+its controls. The initial queue fold accounts for its hidden entries before ordinary
+local tombstones filter rows. Ordinary deletion/steer keeps the existing departing
+row spring unless an actual displayed carrier already accounts for that identity.

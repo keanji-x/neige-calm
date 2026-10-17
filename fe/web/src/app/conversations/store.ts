@@ -94,15 +94,14 @@ export function useConversationStore(
        up is shown again (`tombstoneHides`). */
   const [forgotten, setForgotten] = useState<ReadonlyMap<string, number>>(() => new Map());
   const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
-  const visibleQueue = useMemo(
-    () => (forgotten.size === 0
-      ? servedQueue
-      : servedQueue.filter((entry) => !tombstoneHides(forgotten.get(forgottenKey(cardId, entry.entry_id)), entry.rev))),
-    [servedQueue, forgotten, cardId],
+  // Let the initial-input owner account for its suppressed rows before ordinary local tombstones filter the queue.
+  const initialQueue = useMemo(() => initialInputQueueView(servedQueue, acceptedInitial, initialObservation.data, landedRun),
+    [servedQueue, acceptedInitial, initialObservation.data, landedRun]);
+  const pendingQueue = useMemo(
+    () => forgotten.size === 0 ? initialQueue.entries : initialQueue.entries.filter(entry =>
+      !tombstoneHides(forgotten.get(forgottenKey(cardId, entry.entry_id)), entry.rev)),
+    [initialQueue.entries, forgotten, cardId],
   );
-  const initialQueue = useMemo(() => initialInputQueueView(visibleQueue, acceptedInitial, initialObservation.data, landedRun),
-    [visibleQueue, acceptedInitial, initialObservation.data, landedRun]);
-  const pendingQueue = initialQueue.entries;
   useEffect(() => {
     if (forgotten.size === 0) return;
     /* Retired when the owning page says the entry is gone or lists it at a higher rev;
@@ -195,9 +194,8 @@ export function useConversationStore(
   [view.transcript, pendingQueue, view.shown, placements, view.failed, stalled, queueOps]);
   const reconciledQueueIds = useMemo(() => new Set([
     ...initialQueue.hiddenIds,
-    ...[...forgotten.keys()].filter(key => key.startsWith(`${cardId}\u0000`)).map(key => key.slice(cardId.length + 1)),
     ...presentation.transcript.flatMap(entry => entry.author === 'you' && entry.queueEntryId != null ? [entry.queueEntryId] : []),
-  ]), [cardId, forgotten, initialQueue.hiddenIds, presentation.transcript]);
+  ]), [initialQueue.hiddenIds, presentation.transcript]);
   /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
      server has answered it, and only until a read shows it in its place. */
   const turns = useMemo(

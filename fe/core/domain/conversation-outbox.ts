@@ -44,15 +44,15 @@ export type SendOp = Readonly<{
 export type AcceptedInitialInput = Readonly<{
   phase: 'initial-accepted'; key: string; trackId: string; submitted: SubmittedConversationInput;
   receipt: ConversationInitialInputReceipt;
-  /** Latest actual local PATCH/DELETE ACK; one terminal fact, retained for this registry lifecycle. */
+  /** Latest actual local PATCH/DELETE ACK; one current-body fact retained for this registry lifecycle. */
   localWrite: PlannerInputMutation | null;
-  /** One exact raw source actually handed to display; page misses cannot reclaim its ownership. */
+  /** One exact raw source handed the current readable body; only a changed ACK can begin a new handoff. */
   sourceWitness: NonNullable<ConversationTurn['inputSource']> | null;
 }>;
 export type ObservedInitialInput = Readonly<{ observation: ConversationInitialInputObservation; afterRead: number }>;
 
 export function initialInputEcho(op: AcceptedInitialInput): ConversationTurn {
-  return { id: `initial-${op.key}`, author: 'you', text: op.submitted.text, atMs: op.submitted.atMs, queueEntryId: op.receipt.entryId };
+  return { id: `initial-${op.key}`, author: 'you', text: op.localWrite?.text ?? op.submitted.text, atMs: op.submitted.atMs, queueEntryId: op.receipt.entryId };
 }
 
 export type ConversationOutboxOp = SendOp | AcceptedInitialInput;
@@ -93,7 +93,8 @@ export function withoutQueuedEntry(ops: readonly ConversationOutboxOp[], entryId
 /** Import only the actual acknowledged entry identity; keep the original receipt/body immutable. */
 export function acknowledgeQueueMutation(ops: readonly ConversationOutboxOp[], result: PlannerInputMutation): readonly ConversationOutboxOp[] {
   return ops.map(op => op.phase !== 'initial-accepted' || op.receipt.entryId !== result.entry_id
-    || (op.localWrite !== null && op.localWrite.rev > result.rev) ? op : { ...op, localWrite: result });
+    || (op.localWrite !== null && op.localWrite.rev > result.rev) ? op : { ...op, localWrite: result,
+      sourceWitness: result.text !== null && result.text !== (op.localWrite?.text ?? op.submitted.text) ? null : op.sourceWitness });
 }
 
 function locallyDisplaced(op: AcceptedInitialInput): boolean {
@@ -101,14 +102,20 @@ function locallyDisplaced(op: AcceptedInitialInput): boolean {
   return result !== null && (result.text === null || sha256Hex(result.text) !== op.receipt.textSha256);
 }
 
-/** The creation observer ends at positive display handoff or an actual local terminal write. */
+/** The creation observer ends at positive display handoff or any actual local queue-write ACK. */
 export function initialInputNeedsObservation(op: AcceptedInitialInput): boolean {
-  return op.sourceWitness === null && !locallyDisplaced(op);
+  return op.sourceWitness === null && op.localWrite === null;
 }
 
 function initialInputSource(op: AcceptedInitialInput, entries: readonly TranscriptEntry[]): ConversationTurn | undefined {
   return entries.find((entry): entry is ConversationTurn => entry.author === 'you'
-    && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined);
+    && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined
+    && (op.localWrite?.text == null || entry.text === op.localWrite.text));
+}
+
+/** Only the current acknowledged body can draw until its own actual source takes ownership. */
+function drawsInitialInput(op: AcceptedInitialInput, observed?: ObservedInitialInput): boolean {
+  return op.sourceWitness === null && (op.localWrite !== null ? op.localWrite.text !== null : !initialInputDisplaced(op, observed));
 }
 
 /** Import only sources that the authoritative display fold has actually admitted. */
@@ -146,7 +153,8 @@ export function matchSendOps(
   for (const op of ops) {
     const entryId = op.phase === 'initial-accepted' ? op.receipt.entryId : op.echo.entryId;
     if (entryId === null) continue;
-    const row = rows.find((turn) => turn.queueEntryId === entryId && (op.phase === 'initial-accepted' ? turn.inputSource !== undefined : afterSend(turn, op)));
+    const row = op.phase === 'initial-accepted' ? initialInputSource(op, rows)
+      : rows.find((turn) => turn.queueEntryId === entryId && afterSend(turn, op));
     if (row === undefined) continue;
     matched.set(op.key, row.id);
     exactRows.add(row.id);
@@ -214,17 +222,22 @@ export function initialInputQueueView(entries: readonly PendingQueueEntry[], op:
   const hiddenIds = new Set<string>();
   const observation = observed?.observation;
   if (op === undefined) return { entries, hiddenIds };
-  const shown = entries.filter((entry) => {
-    if (entry.entry_id !== op.receipt.entryId) return true;
+  let changed = false;
+  const shown = entries.flatMap((entry) => {
+    if (entry.entry_id !== op.receipt.entryId) return [entry];
     const local = op.localWrite;
-    const hideLocal = local !== null && (entry.rev < local.rev
-      || (local.text !== null && entry.rev === local.rev && sha256Hex(entry.text) !== sha256Hex(local.text)));
+    // DELETE reports the removed revision; only a strictly newer entry can restore it.
+    const hideLocal = local?.text === null && queueTombstoneHides(local.rev, entry.rev);
     const hideObserved = initialInputNeedsObservation(op) && !predatesLocalWrite(op, observed) && observed !== undefined && observation !== undefined && observation.kind !== 'unavailable'
       && runRead <= observed.afterRead && (observation.kind !== 'queued' || entry.rev < observation.rev || sha256Hex(entry.text) !== observation.textSha256);
-    if (hideLocal || hideObserved) hiddenIds.add(entry.entry_id);
-    return !hideLocal && !hideObserved;
+    if (hideLocal || hideObserved) { changed = true; hiddenIds.add(entry.entry_id); return []; }
+    // An actual PATCH owns this cached row's current body; never append a row absent from the run.
+    if (local !== null && local.text !== null && entry.rev <= local.rev && (entry.rev !== local.rev || entry.text !== local.text)) {
+      changed = true; return [{ ...entry, text: local.text, rev: local.rev }];
+    }
+    return [entry];
   });
-  return { entries: hiddenIds.size === 0 ? entries : shown, hiddenIds };
+  return { entries: changed ? shown : entries, hiddenIds };
 }
 
 function initialInputRetirement(op: AcceptedInitialInput, observed: ObservedInitialInput | undefined, landed: LandedReads): { row: string | null } | null {
@@ -327,7 +340,7 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
     return retired === null ? [] : [{ key: op.key, row: retired.row }];
   });
   const initialLive = initial.filter((op) => !initialRetire.some(({ key }) => key === op.key));
-  const initialVisible = initialLive.filter((op) => op.sourceWitness === null && !initialInputDisplaced(op, initialInput?.get(op.key)));
+  const initialVisible = initialLive.filter((op) => drawsInitialInput(op, initialInput?.get(op.key)));
   const initialDrawn = initialVisible.filter((op) => !queuedEntryIds.has(op.receipt.entryId)
     && initialInputSource(op, displayedEntries) === undefined).map(initialInputEcho);
   const checkingInitialInput = initialVisible.some((op) => {
@@ -375,7 +388,7 @@ export function withConfirmedSends(
   const current = entries.filter(entry => !initial.some(op => localWriteHidesSource(op, entry)));
   const matched = matchSendOps(current.filter(isConversationMessage), [...confirmed, ...initial], spent);
   return mergeTranscript(withoutReplacedTurns(current, confirmed), [...confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo),
-    ...initial.filter((op) => op.sourceWitness === null && !locallyDisplaced(op) && !matched.has(op.key)).map(initialInputEcho)]);
+    ...initial.filter((op) => drawsInitialInput(op) && !matched.has(op.key)).map(initialInputEcho)]);
 }
 
 /**

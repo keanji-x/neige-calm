@@ -2,6 +2,7 @@ import '../../styles/entry.css';
 import { act, cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { commands, page, userEvent } from 'vitest/browser';
+import { queryKeys } from '../providers/queries.ts';
 import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-continuity-fixture.tsx';
 
 afterEach(async () => {
@@ -220,5 +221,58 @@ it.each([1280, 390])('keeps one accepted fallback when a real queue update arriv
     const count = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE).length;
     await page.screenshot({ path: `../../../../test-results/first-message-fallback-before-canonical-${width}.png` });
     expect(count).toBe(1);
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+
+it.each([1280, 390])('keeps an acknowledged first edit readable with real post-write reads held (%ipx)', async width => {
+  await page.viewport(width, 900); await commands.emulateReducedMotion(false);
+  const edited = 'An acknowledged first edit must stay readable while reads are held.';
+  const copies = (text: string) => [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === text);
+  let sawEdited = false; const commits: number[] = [];
+  const fixture = renderFirstMessageFixture({ mobile: width === 390, holdHistory: true, holdRun: true, harvestedInput: false, onCommit: () => {
+    const count = copies(edited).length; if (count > 0) sawEdited = true; if (sawEdited) commits.push(count);
+  } });
+  try {
+    if (width === 390) {
+      await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
+      await page.getByRole('button', { name: '发起新对话', exact: true }).click();
+    } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    const field = page.getByRole('combobox', { name: 'Message' });
+    await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+    fixture.queueOriginal(); fixture.project(FIRST_MESSAGE, true); fixture.observe('queued'); fixture.answerCreate();
+    await expect.poll(() => fixture.historyCount()).toBe(2); await expect.poll(() => fixture.runCount()).toBe(2);
+    act(() => { fixture.releaseHistory(1); fixture.releaseRun(1); });
+    await expect.poll(() => document.querySelector('[data-nc-thread]')).not.toBeNull();
+    await expect.element(page.getByRole('button', { name: 'Edit queued message' })).toBeEnabled();
+    fixture.observe('unavailable');
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.initialInput('daily', fixture.createdId()!) }); });
+    await page.getByRole('button', { name: 'Edit queued message' }).click();
+    await field.fill(edited); await page.getByRole('button', { name: 'Save queued message', exact: true }).click();
+    await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.localWrite?.text === edited)).toBe(true);
+    await expect.poll(() => fixture.historyCount()).toBe(3); await expect.poll(() => fixture.runCount()).toBe(3);
+    expect(copies(FIRST_MESSAGE)).toHaveLength(0); expect(copies(edited)).toHaveLength(1);
+    const box = copies(edited)[0].getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(50); expect(box.height).toBeGreaterThan(10);
+    expect(box.left).toBeGreaterThanOrEqual(0); expect(box.right).toBeLessThanOrEqual(width);
+    expect(box.top).toBeGreaterThanOrEqual(0); expect(box.bottom).toBeLessThanOrEqual(900);
+    expect(document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(edited);
+    await page.screenshot({ path: `../../../../test-results/first-edit-ack-held-${width}.png` });
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    fixture.clearQueue();
+    let runRead: Promise<void> | null = null;
+    act(() => { runRead = fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
+    await expect.poll(() => fixture.runCount()).toBe(4);
+    await act(async () => { fixture.releaseRun(3); await runRead; });
+    await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
+    expect(copies(edited)).toHaveLength(1); expect(copies(FIRST_MESSAGE)).toHaveLength(0);
+    fixture.project(edited, true);
+    let historyRead: Promise<void> | null = null;
+    act(() => { historyRead = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
+    await expect.poll(() => fixture.historyCount()).toBe(4);
+    await act(async () => { fixture.releaseHistory(3); await historyRead; });
+    await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.sourceWitness?.itemId === 7)).toBe(true);
+    expect(copies(edited)).toHaveLength(1); expect(copies(FIRST_MESSAGE)).toHaveLength(0);
+    expect(commits.length).toBeGreaterThan(0); expect(new Set(commits)).toEqual(new Set([1]));
   } finally { cleanup(); fixture.client.clear(); }
 });

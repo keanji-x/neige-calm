@@ -26,6 +26,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
   const heldCreate = new Promise<void>(resolve => { replyCreate = resolve; });
   const heldInspect = new Promise<void>(resolve => { replyInspect = resolve; });
   let failHistory = false;
+  let failRun = false;
   const heldHistory: (() => void)[] = [];
   const heldRun: (() => void)[] = [];
   const heldList: (() => void)[] = [];
@@ -99,7 +100,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         const entry = pending.find(entry => entry.entry_id === 'first-entry');
         if (entry === undefined) throw new Error('No actual first entry to delete.');
         pending = pending.filter(candidate => candidate.entry_id !== entry.entry_id);
-        return ok({ card_id: created?.id, entry_id: entry.entry_id, rev: entry.rev + 1, text: null });
+        return ok({ card_id: created?.id, worker_session_id: 'runtime', entry_id: entry.entry_id, rev: entry.rev, text: null });
       }
       if (request.method === 'PATCH' && request.path.endsWith('/planner/input/first-entry')) {
         const entry = pending.find(entry => entry.entry_id === 'first-entry');
@@ -116,6 +117,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         return ok({ card_id: created?.id, entry_id: entry.entry_id, steered: true, turn_id: 'running-first-input' });
       }
       if (request.path.endsWith('/planner/run')) {
+        if (failRun && created !== null && request.path.includes(`/${created.id}/`)) return { status: 500, statusText: 'Error', body: { error: 'Run unavailable.' } };
         const result = ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime',
         phase: options.running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
         manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false, running_turn: options.running ? { turn_id: 'running-first-input', elapsed_ms: 1 } : null, pending, pending_overflow: 0 });
@@ -147,6 +149,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         : { kind, receipt: binding, reason: 'runtime-unavailable' };
       replyInspect?.();
     },
+    failRun: () => { failRun = true; },
     failHistory: () => { failHistory = true; },
     recoverHistory: () => { failHistory = false; },
     historyCount: () => heldHistory.length,
