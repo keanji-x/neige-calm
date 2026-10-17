@@ -47,6 +47,50 @@ it('finds the active exchange without measuring every earlier marker on scroll',
   expect(reads).toBeLessThanOrEqual(64);
 });
 
+it('updates the exchange rail without rereading unchanged history or disturbing native selection', async () => {
+  await page.viewport(1400, 900);
+  const history = turns(450);
+  let reads = 0;
+  const text = history[0].text;
+  Object.defineProperty(history[0], 'text', { get: () => { reads++; return text; }, enumerable: true });
+  render(<div style={{ height: 600, width: 900, position: 'relative' }}>
+    <Drawer open title="Hotspots" onClose={() => {}}><ChatThread conversation={conversation}
+      turns={history} cards={{}} stalled={false} canContinue={false} /></Drawer>
+  </div>);
+  await frames();
+  const scroller = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  const scrollTo = async (id: string) => {
+    const marker = [...document.querySelectorAll<HTMLElement>('[data-nc-exchange]')]
+      .find(candidate => candidate.dataset.ncExchange === id)!;
+    act(() => {
+      fireEvent.wheel(scroller, { deltaY: -1 });
+      scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      fireEvent.scroll(scroller);
+    });
+    await frames();
+  };
+  // Settle the independent transition from following to reading earlier text.
+  await scrollTo('you-100');
+  const entries = [...document.querySelectorAll('[data-nc-entry]')];
+  expect(entries).toHaveLength(900);
+  const question = document.createTreeWalker(entries[0], NodeFilter.SHOW_TEXT).nextNode()!;
+  const answer = document.createTreeWalker(entries[1], NodeFilter.SHOW_TEXT).nextNode()!;
+  const range = document.createRange();
+  range.setStart(question, 0); range.setEnd(answer, 5);
+  const selection = window.getSelection()!;
+  selection.removeAllRanges(); selection.addRange(range);
+  const selectedText = selection.toString();
+  expect(selectedText).toContain('Question 0');
+  reads = 0;
+  await scrollTo('you-200');
+  expect(document.querySelector('[data-nc-rail-track] [aria-current="true"]')?.getAttribute('aria-label')).toContain('Question 200');
+  expect([...document.querySelectorAll('[data-nc-entry]')]).toEqual(entries);
+  expect(selection.toString()).toBe(selectedText);
+  expect(selection.anchorNode).toBe(question);
+  expect(selection.focusNode).toBe(answer);
+  expect(reads).toBe(0);
+});
+
 it('formats compact timestamps without creating a locale formatter for each reply', async () => {
   await page.viewport(390, 900);
   const history = turns(64);
