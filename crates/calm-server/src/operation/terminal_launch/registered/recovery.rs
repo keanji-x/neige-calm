@@ -79,15 +79,32 @@ pub(crate) async fn lookup_tx(tx: &mut Tx<'_>, terminal_id: &str) -> Result<Orig
     })
 }
 
+pub(super) async fn read_original(
+    client: &mut RegisteredExecutorConnection,
+    request: &PrepareExecution,
+) -> Result<ExecutionReply> {
+    let reply = client
+        .request(ExecutionRequest::Query(consume(request)))
+        .await?;
+    if let ExecutionReply::Receipt {
+        receipt: Some(receipt),
+        ..
+    } = &reply
+        && receipt.identity != request.identity
+    {
+        return Err(CalmError::Conflict(
+            "original Terminal receipt identity changed".into(),
+        ));
+    }
+    Ok(reply)
+}
+
 async fn query(
     config: &RegisteredExecutorConfig,
     original: &OriginalRegisteredLaunch,
 ) -> Result<(ExecutionReceipt, ExecutionState)> {
     let mut client = config.connect().await?;
-    match client
-        .request(ExecutionRequest::Query(consume(&original.original.request)))
-        .await?
-    {
+    match read_original(&mut client, &original.original.request).await? {
         ExecutionReply::Receipt {
             receipt: Some(receipt),
             state,

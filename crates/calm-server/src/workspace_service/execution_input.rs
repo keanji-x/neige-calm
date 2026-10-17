@@ -169,21 +169,9 @@ impl WorkspaceExecutionInput {
                 )
             }
             Self::ExternalDirectory { .. } => {
-                let directory_id = ExternalDirectoryId::fresh()?;
-                (
-                    ExecutionScope::ExternalDir {
-                        directory_id: directory_id.clone(),
-                        registration_version: 1,
-                        cwd: WorkspaceCwd::root(),
-                    },
-                    ExecutionRegistration::ExternalDir {
-                        directory_id,
-                        root,
-                        registration_version: 1,
-                        admission_open: true,
-                        authority,
-                    },
-                )
+                return Err(CalmError::Conflict(
+                    "registered execution requires a selected owned workspace".into(),
+                ));
             }
         })
     }

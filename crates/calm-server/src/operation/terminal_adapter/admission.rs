@@ -78,6 +78,20 @@ impl OperationAdmission for TerminalAdmission<'_> {
                 "Terminal has no original declared cwd".into(),
             ));
         }
+        let contract = match self.transport {
+            TerminalExecutionTransport::Legacy => TerminalExecutionContract::Legacy,
+            TerminalExecutionTransport::Registered(_) => {
+                if !matches!(input, WorkspaceExecutionInput::SelectedWorktree { .. }) {
+                    return Err(CalmError::Conflict(
+                        "registered Terminal requires the track's selected owned workspace".into(),
+                    ));
+                }
+                // Acceptance never upgrades an explicit/borrowed directory by
+                // path equality. The actual owner contract must qualify too.
+                input.open()?.validate()?;
+                TerminalExecutionContract::Registered
+            }
+        };
         let authority = ExecutionAuthority {
             grant_id: ExecutionGrantId::fresh()?,
             authorization_binding: AuthorizationBindingId::fresh()?,
@@ -89,10 +103,7 @@ impl OperationAdmission for TerminalAdmission<'_> {
             track_id: track.id.to_string(),
             area_id: track.area_id.to_string(),
             input,
-            contract: match self.transport {
-                TerminalExecutionTransport::Legacy => TerminalExecutionContract::Legacy,
-                TerminalExecutionTransport::Registered(_) => TerminalExecutionContract::Registered,
-            },
+            contract,
         };
         sqlx::query("INSERT INTO operation_execution_grants(operation_id,original_payload_hash,grant_id,grant_json) VALUES (?1,?2,?3,?4)")
             .bind(&original.id).bind(&original.payload_hash).bind(grant.authority.grant_id.as_str())

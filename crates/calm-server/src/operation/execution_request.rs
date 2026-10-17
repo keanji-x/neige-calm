@@ -15,6 +15,8 @@ use crate::{
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OriginalExecutionRequest {
+    /// Workspace-owned continuity anchor, separate from this operation's lease.
+    pub(crate) source_anchor: AttachRegistration,
     pub(crate) registration: AttachRegistration,
     pub(crate) request: PrepareExecution,
 }

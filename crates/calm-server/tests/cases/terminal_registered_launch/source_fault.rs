@@ -243,6 +243,9 @@ async fn terminal_second_launch_interruption_has_no_unrecorded_live_registration
         let anchor: String = sqlx::query_scalar("SELECT registration_intent_json FROM workspace_execution_sources")
             .fetch_one(fixture.sql.pool()).await?;
         let anchor: AttachRegistration = serde_json::from_str(&anchor)?;
+        let interrupted_operation: String = sqlx::query_scalar(
+            "SELECT id FROM operations WHERE kind='terminal-create' AND idempotency_key=?1")
+            .bind(KEY).fetch_one(fixture.sql.pool()).await?;
         let requests: Vec<String> = sqlx::query_scalar("SELECT execution_request_json FROM operations WHERE execution_request_json IS NOT NULL")
             .fetch_all(fixture.sql.pool()).await?;
         let mut owned = vec![anchor.registration_id];
@@ -278,6 +281,11 @@ async fn terminal_second_launch_interruption_has_no_unrecorded_live_registration
                 fixture.request_body(), Some(KEY.into()),
             ).await?;
             ensure!(status == 201, "second original launch did not resume: {status} {card}");
+            let original: String = sqlx::query_scalar(
+                "SELECT o.id FROM operations o JOIN terminals t ON t.launch_operation_id=o.id WHERE t.card_id=?1")
+                .bind(card["id"].as_str().context("missing recovered card")?)
+                .fetch_one(fixture.sql.pool()).await?;
+            ensure!(original == interrupted_operation, "second recovery replaced its original operation");
             tokio::time::timeout(Duration::from_secs(5), async {
                 while std::fs::read_to_string(&fixture.count).ok().as_deref() != Some("executed\nexecuted\n") {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -289,5 +297,10 @@ async fn terminal_second_launch_interruption_has_no_unrecorded_live_registration
         resumed_result
     }.await;
     fixture.stop().await;
-    result
+    result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\nexecuted\n",
+        "interrupted second launch issued extra process effects"
+    );
+    Ok(())
 }

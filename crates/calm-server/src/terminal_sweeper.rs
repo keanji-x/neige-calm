@@ -456,7 +456,7 @@ pub async fn reap_terminal_artifacts(state: &AppState, term: &Terminal) -> Resul
 
 enum OriginalCleanup {
     Legacy,
-    RegisteredSettled,
+    Registered,
 }
 
 async fn quiesce_original_registered(
@@ -467,9 +467,10 @@ async fn quiesce_original_registered(
     use crate::operation::terminal_launch::registered::{self, OriginalLaunch};
     match registered::lookup(repo, &term.id).await? {
         OriginalLaunch::Legacy => Ok(OriginalCleanup::Legacy),
-        OriginalLaunch::AwaitingOriginalRequest => Err(crate::error::CalmError::Conflict(
-            "original registered Terminal has not completed its launch reservation".into(),
-        )),
+        // The sole launch owner commits its write-once private request before
+        // any per-operation Attach/Prepare/Launch. With no request, no such
+        // effect was issued. A shared anchor remains workspace-owned.
+        OriginalLaunch::AwaitingOriginalRequest => Ok(OriginalCleanup::Registered),
         OriginalLaunch::Registered(original) => {
             let renderer = renderer.ok_or_else(|| {
                 crate::error::CalmError::Conflict(
@@ -477,7 +478,7 @@ async fn quiesce_original_registered(
                 )
             })?;
             renderer.stop_original_registered(&original).await?;
-            Ok(OriginalCleanup::RegisteredSettled)
+            Ok(OriginalCleanup::Registered)
         }
     }
 }
@@ -489,7 +490,7 @@ pub async fn reap_terminal_artifacts_with_renderer(
 ) -> Result<()> {
     if matches!(
         quiesce_original_registered(renderer, repo, term).await?,
-        OriginalCleanup::RegisteredSettled
+        OriginalCleanup::Registered
     ) {
         if let Some(renderer) = renderer {
             renderer.remove_hook_settings(term.card_id.as_str());
@@ -554,7 +555,7 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
 ) -> crate::error::Result<()> {
     if matches!(
         quiesce_original_registered(renderer, repo, term).await?,
-        OriginalCleanup::RegisteredSettled
+        OriginalCleanup::Registered
     ) {
         return Ok(());
     }

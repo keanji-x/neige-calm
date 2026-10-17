@@ -173,50 +173,47 @@ pub(crate) async fn launch(
     };
     let (original, source) = match existing {
         Some(original) => {
-            match client.request(ExecutionRequest::Query(consume(&original.request))).await? {
-                ExecutionReply::Receipt {receipt: Some(receipt), ..} if receipt.identity == original.request.identity => {
+            match recovery::read_original(&mut client, &original.request).await? {
+                ExecutionReply::Receipt {
+                    state: ExecutionState::Unknown { .. },
+                    ..
+                } => {
+                    return Err(CalmError::Conflict(
+                        "original Terminal execution is Unknown; retained for recovery".into(),
+                    ));
+                }
+                ExecutionReply::Receipt {
+                    receipt: Some(receipt),
+                    ..
+                } => {
                     return Ok(std::sync::Arc::new(RegisteredExecution {
                         _retention: ExecutionInputRetention::OriginalControlOnly,
-                        control: crate::terminal_executor_client::ExecutionControlHandle::new(config.clone(), original.request, receipt),
-                        repo: ctx.repo.clone(), operation_id: op.id.clone(), original_payload_hash: op.payload_hash.clone(),
+                        control: crate::terminal_executor_client::ExecutionControlHandle::new(
+                            config.clone(),
+                            original.request,
+                            receipt,
+                        ),
+                        repo: ctx.repo.clone(),
+                        operation_id: op.id.clone(),
+                        original_payload_hash: op.payload_hash.clone(),
                         render_history: RenderHistory::UnprovenReattachment,
                     }));
                 }
-                ExecutionReply::Receipt {state: ExecutionState::Prepared | ExecutionState::Forking, receipt: None} => {},
-                _ => return Err(CalmError::Conflict("original execution is unresolved or has no child permission; reconcile original ticket".into())),
+                // A refusal is not NoChild. Only the exact original Prepare
+                // below can decide whether this accepted intent may continue.
+                _ => {}
             }
-            let mut tx = begin_immediate_tx(&pool).await?;
-            require_live_claim_tx(&mut tx, op).await?;
-            grant.require_current_tx(&mut tx).await?;
-            tx.commit().await?;
-            // Exact original journal lookup must happen before any path open.
-            // Export obtains actual retained objects, never an inode resurrection.
-            if client.executor_boot() != &original.request.identity.executor_boot {
-                return Err(CalmError::Conflict(
-                    "WorkspaceRecoveryRequired: executor restarted without original live source"
-                        .into(),
-                ));
-            }
-            let exported = client
-                .export(ExportRegistration {
-                    executor_boot: client.executor_boot().clone(),
-                    registration: original.registration.registration_id.clone(),
-                    nonce: TransferNonce::fresh()?,
-                })
-                .await?;
-            let RegistrationExport::Held {
-                receipt,
-                objects: held,
-            } = exported
-            else {
-                return Err(CalmError::Conflict("original request's held source is Unwitnessed; its identity cannot be replaced".into()));
-            };
-            if receipt.transfer != original.registration {
-                return Err(CalmError::Conflict(
-                    "exported source differs from original launch".into(),
-                ));
-            }
-            (original, OpenedExecutionInput::transferred(held))
+            admit_new_crossing(op, grant, &pool).await?;
+            let held = crate::workspace_service::execution_sources::restore_registered_source(
+                &pool,
+                op,
+                &grant.input,
+                &original.source_anchor,
+                &original.registration,
+                &mut client,
+            )
+            .await?;
+            (original, held)
         }
         None => {
             let prepared = crate::workspace_service::execution_sources::prepare_registered_source(
@@ -225,20 +222,17 @@ pub(crate) async fn launch(
                 &grant.input,
                 &grant.authority,
                 &mut client,
+                || admit_new_crossing(op, grant, &pool),
             )
             .await?;
             let source = prepared.held;
             let scope = prepared.scope;
             let transfer = prepared.registration;
-            // Retain the actual source at the executor before promising an
-            // immutable one-shot request. Recheck the same owning admission
-            // after preparation awaits; source facts do not grant execution.
-            admit_new_crossing(op, grant, &pool).await?;
-            client.attach(transfer.clone(), &source.objects).await?;
             #[cfg(feature = "fixtures")]
             crate::test_seams::crash_point("terminal-source-attached-before-request");
             let incarnation = transfer.incarnation.clone();
             let original = OriginalExecutionRequest {
+                source_anchor: prepared.anchor,
                 request: PrepareExecution {
                     identity: ExecutionIdentity {
                         execution_id: ExecutionId::fresh()?,
@@ -268,6 +262,14 @@ pub(crate) async fn launch(
             (original, source)
         }
     };
+    // Per-operation effects are strictly after the original write-once intent.
+    // A service crash can replay this exact transfer from the retained anchor.
+    admit_new_crossing(op, grant, &pool).await?;
+    client
+        .attach(original.registration.clone(), &source.objects)
+        .await?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::crash_point("terminal-operation-attached-before-prepare");
     // Every new effect uses the same kernel claim and current owning authority;
     // original settled receipt reads will use the executor's exact ticket.
     admit_new_crossing(op, grant, &pool).await?;

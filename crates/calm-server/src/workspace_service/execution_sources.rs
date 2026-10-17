@@ -15,6 +15,12 @@ pub(crate) struct PreparedSource {
     pub(crate) held: OpenedExecutionInput,
     pub(crate) scope: ExecutionScope,
     pub(crate) registration: AttachRegistration,
+    pub(crate) anchor: AttachRegistration,
+}
+
+struct SourceAnchor {
+    held: OpenedExecutionInput,
+    registration: AttachRegistration,
 }
 
 fn scope_of(registration: &ExecutionRegistration) -> ExecutionScope {
@@ -81,36 +87,56 @@ async fn open(input: &WorkspaceExecutionInput) -> Result<OpenedExecutionInput> {
 /// The caller owns the accepted execution/environment/Area decision. This
 /// owner supplies physical registration facts and current logical selection;
 /// neither this result nor its serialized association is a Ready/SourceProof.
-pub(crate) async fn prepare_registered_source(
+pub(crate) async fn prepare_registered_source<F, Fut>(
     pool: &SqlitePool,
     original: &Operation,
     input: &WorkspaceExecutionInput,
     authority: &ExecutionAuthority,
     client: &mut RegisteredExecutorConnection,
-) -> Result<PreparedSource> {
+    mut authorize: F,
+) -> Result<PreparedSource>
+where
+    F: FnMut() -> Fut + Send,
+    Fut: std::future::Future<Output = Result<()>> + Send,
+{
+    let anchor = reserve_source_anchor(pool, original, input, authority, client).await?;
+    // Only this workspace-owned anchor may precede an operation's immutable
+    // request. Its exact intent is already in the workspace association.
+    authorize().await?;
+    client
+        .attach(anchor.registration.clone(), &anchor.held.objects)
+        .await?;
+    let registration = transfer(
+        client,
+        authority,
+        anchor.registration.registration.clone(),
+        anchor.registration.incarnation.clone(),
+        &anchor.held,
+    )?;
+    Ok(PreparedSource {
+        scope: scope_of(&registration.registration),
+        held: anchor.held,
+        registration,
+        anchor: anchor.registration,
+    })
+}
+
+async fn reserve_source_anchor(
+    pool: &SqlitePool,
+    original: &Operation,
+    input: &WorkspaceExecutionInput,
+    authority: &ExecutionAuthority,
+    client: &mut RegisteredExecutorConnection,
+) -> Result<SourceAnchor> {
     let WorkspaceExecutionInput::SelectedWorktree {
         workspace_id,
         selection_version,
         ..
     } = input
     else {
-        let mut tx = begin_immediate_tx(pool).await?;
-        require_live_claim_tx(&mut tx, original).await?;
-        tx.commit().await?;
-        let held = open(input).await?;
-        let (_, registration) = input.fresh_registration(&held.objects, authority.clone())?;
-        let transfer = transfer(
-            client,
-            authority,
-            registration,
-            SourceObjectIncarnation::ExternalDir(ExternalDirectoryIncarnationId::fresh()?),
-            &held,
-        )?;
-        return Ok(PreparedSource {
-            scope: scope_of(&transfer.registration),
-            held,
-            registration: transfer,
-        });
+        return Err(CalmError::Conflict(
+            "registered source requires a selected owned workspace".into(),
+        ));
     };
     // This short writer read/reservation is scoped to the exact original
     // selection. No operation history scan or domain-specific codec is needed.
@@ -160,17 +186,9 @@ pub(crate) async fn prepare_registered_source(
                     }
                     let held = OpenedExecutionInput::transferred(objects);
                     held.validate()?;
-                    let registration = transfer(
-                        client,
-                        authority,
-                        previous.registration,
-                        previous.incarnation,
-                        &held,
-                    )?;
-                    return Ok(PreparedSource {
-                        scope: scope_of(&registration.registration),
+                    return Ok(SourceAnchor {
                         held,
-                        registration,
+                        registration: previous,
                     });
                 }
                 RegistrationExport::Unwitnessed => {}
@@ -233,11 +251,7 @@ pub(crate) async fn prepare_registered_source(
         tx.commit().await?;
         #[cfg(feature = "fixtures")]
         crate::test_seams::crash_point("workspace-source-intent-committed");
-        return Ok(PreparedSource {
-            scope: scope_of(&registration.registration),
-            held,
-            registration,
-        });
+        return Ok(SourceAnchor { held, registration });
     }
     let held = open(input).await?;
     let (_, registration) = input.fresh_registration(&held.objects, authority.clone())?;
@@ -262,9 +276,82 @@ pub(crate) async fn prepare_registered_source(
     tx.commit().await?;
     #[cfg(feature = "fixtures")]
     crate::test_seams::crash_point("workspace-source-intent-committed");
-    Ok(PreparedSource {
-        scope: scope_of(&registration.registration),
-        held,
-        registration,
-    })
+    Ok(SourceAnchor { held, registration })
+}
+
+/// Continue only an operation's already-recorded transfer, using its recorded
+/// workspace anchor's actual FDs. Neither a missing lease nor a new boot opens
+/// a path under the old immutable identity.
+pub(crate) async fn restore_registered_source(
+    pool: &SqlitePool,
+    original: &Operation,
+    input: &WorkspaceExecutionInput,
+    anchor: &AttachRegistration,
+    registration: &AttachRegistration,
+    client: &mut RegisteredExecutorConnection,
+) -> Result<OpenedExecutionInput> {
+    let WorkspaceExecutionInput::SelectedWorktree {
+        workspace_id,
+        selection_version,
+        ..
+    } = input
+    else {
+        return Err(CalmError::Conflict(
+            "original registered input is not selected".into(),
+        ));
+    };
+    let mut tx = begin_immediate_tx(pool).await?;
+    require_live_claim_tx(&mut tx, original).await?;
+    input.require_current_tx(&mut tx).await?;
+    let json: String = sqlx::query_scalar(
+        "SELECT registration_intent_json FROM workspace_execution_sources WHERE workspace_id=?1 AND selection_version=?2")
+        .bind(workspace_id.as_str()).bind(selection_version).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    if serde_json::from_str::<AttachRegistration>(&json)? != *anchor
+        || client.executor_boot() != &anchor.executor_boot
+        || registration.executor_boot != anchor.executor_boot
+        || registration.incarnation != anchor.incarnation
+        || registration.shape != anchor.shape
+    {
+        return Err(CalmError::Conflict(
+            "original workspace anchor changed or is Unwitnessed".into(),
+        ));
+    }
+    let mut source = registration.registration.clone();
+    match (&mut source, &anchor.registration) {
+        (
+            ExecutionRegistration::Worktree { authority, .. },
+            ExecutionRegistration::Worktree {
+                authority: original,
+                ..
+            },
+        ) => *authority = original.clone(),
+        _ => {
+            return Err(CalmError::Conflict(
+                "original source is not an owned worktree".into(),
+            ));
+        }
+    }
+    if source != anchor.registration {
+        return Err(CalmError::Conflict(
+            "original operation transfer differs from its anchor".into(),
+        ));
+    }
+    let exported = client
+        .export(ExportRegistration {
+            executor_boot: anchor.executor_boot.clone(),
+            registration: anchor.registration_id.clone(),
+            nonce: TransferNonce::fresh()?,
+        })
+        .await?;
+    match exported {
+        RegistrationExport::Held { receipt, objects } if receipt.transfer == *anchor => {
+            let held = OpenedExecutionInput::transferred(objects);
+            held.validate()?;
+            Ok(held)
+        }
+        _ => Err(CalmError::Conflict(
+            "original workspace anchor has no actual retained objects".into(),
+        )),
+    }
 }

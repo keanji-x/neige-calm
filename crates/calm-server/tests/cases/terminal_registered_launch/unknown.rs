@@ -91,6 +91,30 @@ async fn exercise(
             status != 201,
             "old Unknown execution allowed a new completed launch: {body}"
         );
+        // A rejected new source has never reserved a per-operation request.
+        // Compensation can remove that kernel-owned intent without making an
+        // absence claim about the original Unknown execution.
+        let refused: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT execution_request_json,phase FROM operations WHERE kind='terminal-create' AND idempotency_key=?1",
+        ).bind(key).fetch_optional(fixture.sql.pool()).await?;
+        if attempted_body.get("cwd").is_some() {
+            ensure!(
+                refused.is_none(),
+                "explicit registered cwd reached operation insertion"
+            );
+        } else {
+            ensure!(
+                matches!(refused, Some((None, ref phase)) if phase == "failed"),
+                "refused source retained an issued request or failed compensation: {refused:?} {body}"
+            );
+        }
+        let terminals: i64 = sqlx::query_scalar("SELECT count(*) FROM terminals")
+            .fetch_one(fixture.sql.pool())
+            .await?;
+        ensure!(
+            terminals == 1,
+            "refused never-issued launch leaked its Terminal row"
+        );
     }
     // Original result replay needs its authenticated accessor, not a new source
     // lease or permission to replace the execution under another executor boot.
