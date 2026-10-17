@@ -99,3 +99,9 @@ The Send arrow and waiting ring remain mounted in one grid slot. Dispatch only
 changes visibility and pauses or runs the ring, avoiding glyph resource mounts
 during the send commit. The ring shares the UI
 indicator's reduced-motion contract and carries no model activity marker.
+
+`OutgoingMessage` owns the user-text bubble and canonical sent-mention pills.
+Both `MessageEntry` and the app's retained first draft consume that visual entry;
+a draft needs only its text and viewport, with no invented message ID, timestamp
+or delivery fact. Attachments, exchange grouping and queue explanations remain in
+`MessageEntry`, and dispatch/recovery remain in the app's existing owners.

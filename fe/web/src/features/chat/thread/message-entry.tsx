@@ -1,8 +1,7 @@
 import mobileStyles from './mobile-composer.module.css';
 import { memo } from 'react';
-import { Badge } from '@astryxdesign/core/Badge';
 import type { ConversationTurn } from '../../../../../core/domain/conversation.ts';
-import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
+import { OutgoingMessage } from './outgoing-message.tsx';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Reply, type ReplyImageFiles } from './reply.tsx';
 import styles from './thread.module.css';
@@ -44,19 +43,7 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
       )}
       {author === 'you' ? (
         <>
-          {/* The caption is outside the message; persisted references recover their display pills. */}
-          <p
-            className={`${styles.said} ${mobile ? mobileStyles.said : ''}`}
-            data-nc-turn="you"
-            {...(queued ? { 'data-nc-queued': '' } : {})}
-            {...(edited ? { 'data-nc-editing': '' } : {})}
-            {...(replacement ? { 'data-nc-replacement': '' } : {})}
-          >{sentMentionParts(text).map((part, index) => part.label === null ? part.text : (
-            <span key={index} data-nc-sent-mention="" title={part.text}>
-              <Badge className={styles.mentionPill}
-                label={<span className={styles.mentionLabel}>{part.label}</span>} />
-            </span>
-          ))}</p>
+          <OutgoingMessage text={text} mobile={mobile} queued={queued} edited={edited} replacement={replacement} />
           {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
           {(attachments ?? []).length > 0 && (
             <ul className={styles.attachments} data-nc-turn-attachments="" {...(edited ? { 'data-nc-editing': '' } : {})}>

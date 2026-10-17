@@ -1,3 +1,4 @@
+import '../../styles/entry.css';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { commands, page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
@@ -5,7 +6,6 @@ import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
-import '../../styles/entry.css';
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const text = 'A message submitted while its request stays pending.';
@@ -13,7 +13,7 @@ const field = () => screen.getByRole('combobox', { name: 'Message' });
 const outgoing = () => document.querySelector<HTMLElement>('[data-nc-turn="you"]')!;
 const surface = () => outgoing().closest<HTMLElement>('[data-nc-entry]') ?? outgoing();
 
-function mount({ persistSent = false, running = false }: { persistSent?: boolean; running?: boolean } = {}) {
+function mount({ persistSent = false, running = false, message = text }: { persistSent?: boolean; running?: boolean; message?: string } = {}) {
   const replies: { promise: Promise<ApiTransportResponse | undefined>; resolve: (value: ApiTransportResponse | undefined) => void }[] = [];
   let posts = 0;
   let answers = 0;
@@ -55,7 +55,7 @@ function mount({ persistSent = false, running = false }: { persistSent?: boolean
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
     if (created !== null && request.path.includes(`/${created.id}/harness/items`)) {
       canonicalReads++;
-      return ok([userRow(created.id, text)]);
+      return ok([userRow(created.id, message)]);
     }
     if (request.method === 'POST' && (request.path.endsWith('/planner/input') || request.path.endsWith('/conversations'))) {
       return responseAt(posts++).promise.then(result => {
@@ -77,9 +77,12 @@ function mount({ persistSent = false, running = false }: { persistSent?: boolean
   } });
   return { ...view, canonicalReads: () => canonicalReads, answer: (result?: ApiTransportResponse) => responseAt(answers++).resolve(result) };
 }
-async function open(view: ReturnType<typeof mount>, draft = false) {
+async function open(view: ReturnType<typeof mount>, draft = false, message = text, compact = false) {
   if (draft) {
-    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    if (compact) {
+      fireEvent.click(await screen.findByRole('button', { name: 'Open conversation history' }));
+      fireEvent.click(await screen.findByRole('button', { name: '发起新对话' }));
+    } else fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
     await waitFor(() => expect(view.client.getQueryData(['server-version'])).toMatchObject({ assistantProviders: true }));
     await waitFor(() => expect(view.client.getQueryData(['managed-providers'])).toHaveLength(1));
   } else {
@@ -87,7 +90,7 @@ async function open(view: ReturnType<typeof mount>, draft = false) {
     await screen.findByText('Stored history remains still.', {}, { timeout: 5000 });
   }
   await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
-  await act(async () => { field().textContent = text; fireEvent.input(field()); await Promise.resolve(); });
+  await act(async () => { field().textContent = message; fireEvent.input(field()); await Promise.resolve(); });
 }
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await commands.emulateReducedMotion(false); });
 
@@ -190,5 +193,64 @@ it('provides the same immediate message and pending feedback under reduced motio
     await act(async () => { view.answer(); await Promise.resolve(); });
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
     expectReadableMessage();
+  } finally { cleanup(); view.answer(); view.client.clear(); }
+});
+
+
+it.each([1400, 390])('keeps the first message bubble and mentions consistent through refusal and adoption at %ipx', async width => {
+  await page.viewport(width, 900);
+  await commands.emulateReducedMotion(width === 390);
+  const message = 'Please read @`area/reports/Release notes.md` before continuing.\nKeep these words together.';
+  const view = mount({ persistSent: true, message });
+  const appearance = () => {
+    const bubble = outgoing();
+    const style = getComputedStyle(bubble);
+    return { padding: style.padding, borderRadius: style.borderRadius, background: style.backgroundColor,
+      fontSize: style.fontSize, lineHeight: style.lineHeight, whiteSpace: style.whiteSpace, maxWidth: style.maxWidth };
+  };
+  const position = () => {
+    const bubble = outgoing().getBoundingClientRect();
+    const scroller = outgoing().closest<HTMLElement>('[data-nc-drawer-scroll]')!;
+    const pane = scroller.getBoundingClientRect();
+    return { top: bubble.top - pane.top + scroller.scrollTop, right: bubble.right - pane.right,
+      width: bubble.width, height: bubble.height };
+  };
+  try {
+    await open(view, true, message, width === 390);
+    act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
+    // Real bubble geometry and native presentation, not a CSS-module name oracle.
+    const before = appearance();
+    expect(parseFloat(before.padding)).toBeGreaterThan(0);
+    expect(before.whiteSpace).toBe('pre-wrap');
+    const container = outgoing().parentElement!;
+    const parent = container.getBoundingClientRect();
+    const containerStyle = getComputedStyle(container);
+    const contentRight = parent.right - parseFloat(containerStyle.paddingRight) - parseFloat(containerStyle.borderRightWidth);
+    const bubble = outgoing().getBoundingClientRect();
+    expect(Math.abs(contentRight - bubble.right)).toBeLessThan(1);
+    expect(bubble.width).toBeLessThan(parent.width);
+    expect(outgoing().querySelector('[data-nc-sent-mention]')?.getAttribute('title')).toBe('@`area/reports/Release notes.md`');
+    const visible = outgoing().textContent;
+    const beforePosition = position();
+    await act(async () => { view.answer({ status: 429, statusText: 'Too Many Requests', body: { code: 'rate_limited', error: 'Wait before retrying.' } }); await Promise.resolve(); });
+    await screen.findByRole('button', { name: 'Try again' });
+    expect(appearance()).toEqual(before);
+    expect(outgoing().textContent).toBe(visible);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await act(async () => { view.answer(); await Promise.resolve(); });
+    await waitFor(() => expect(view.canonicalReads()).toBeGreaterThan(0));
+    await waitFor(() => expect(view.client.isFetching()).toBe(0));
+    await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
+    await waitFor(() => expect(outgoing().textContent).toBe(visible));
+    expect(appearance()).toEqual(before);
+    expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1);
+    expect(outgoing().querySelectorAll('[data-nc-sent-mention]')).toHaveLength(1);
+    const afterPosition = position();
+    expect(afterPosition.top).toBeCloseTo(beforePosition.top, 0);
+    expect(afterPosition.right).toBeCloseTo(beforePosition.right, 0);
+    expect(afterPosition.width).toBeCloseTo(beforePosition.width, 0);
+    expect(afterPosition.height).toBeCloseTo(beforePosition.height, 0);
+    expect(getComputedStyle(outgoing()).opacity).toBe('1');
+    expect(getComputedStyle(outgoing()).transform).toBe('none');
   } finally { cleanup(); view.answer(); view.client.clear(); }
 });

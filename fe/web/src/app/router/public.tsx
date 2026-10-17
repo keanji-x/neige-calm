@@ -57,6 +57,7 @@ import {
   type CardCreatePort, type CardDraft, type KeyedCardBody,
 } from '../../features/track/new-card/create.ts';
 import { ChatList } from '../../features/chat/list/public.tsx';
+import { OutgoingMessage } from '../../features/chat/thread/outgoing-message.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
 } from '../../features/chat/thread/public.tsx';
@@ -788,7 +789,7 @@ function useConversationPane(
         {draftOpen && (draft?.text == null
           ? <p>Nothing said yet. What you write starts the conversation.</p>
           : <>
-            <p data-nc-turn="you">{draft.text}</p>
+            <OutgoingMessage text={draft.text} mobile={compactViewport} />
             {creating && <p role="status">Sending…</p>}
           </>)}
         {open !== null && (
