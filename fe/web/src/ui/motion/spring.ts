@@ -1,7 +1,8 @@
 import { calcGeneratorDuration, spring } from 'motion';
 
-// One shared response frequency. Critical damping and normalized mass are derived conventions.
+// One shared response frequency and lightly underdamped response, with normalized mass.
 const RESPONSE = 20;
+const DAMPING_RATIO = 0.72;
 // Rendering precision, independent of component distance or animation feel.
 const SAMPLE_MS = 10;
 
@@ -20,7 +21,7 @@ export type PointPlayback = Playback<SpringPoint>;
 /** Motion owns the equation, analytical velocity and stopping criteria. */
 export function springTrajectory(from: number, to: number, velocity: number) {
   if (![from, to, velocity].every(Number.isFinite)) throw new Error('Invalid spring state');
-  const generator = spring({ stiffness: RESPONSE ** 2, damping: 2 * RESPONSE, mass: 1, keyframes: [from, to], velocity });
+  const generator = spring({ stiffness: RESPONSE ** 2, damping: 2 * RESPONSE * DAMPING_RATIO, mass: 1, keyframes: [from, to], velocity });
   const resolveVelocity = generator.velocity;
   if (resolveVelocity === undefined) throw new Error('Motion spring has no velocity contract');
   const duration = calcGeneratorDuration(generator);

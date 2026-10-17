@@ -1,4 +1,10 @@
 // @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { createPortal } from 'react-dom';
+import { QueryClient } from '@tanstack/react-query';
+import { createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { Button } from '@astryxdesign/core';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IDB_DB_NAME } from '../../../../core/keys/storage.ts';
@@ -24,7 +30,7 @@ vi.mock('../providers/queries.ts', async (importOriginal) => {
   return { ...actual, logoutOperation: vi.fn(() => ({ method: 'POST', path: '/logout' })), runOperation: vi.fn() };
 });
 
-afterEach(() => { vi.clearAllMocks(); mocks.cursorClear.mockReset(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.cursorClear.mockReset(); });
 
 describe('production app mount', () => {
   it('clears every session artifact after logout completion and then reloads the browser', async () => {
@@ -105,4 +111,31 @@ describe('production app mount', () => {
     const [first, second] = vi.mocked(createAppRouter).mock.calls.map((call) => call[0]?.cards.registry);
     expect(first).not.toBe(second);
   });
+});
+
+it('installs one depth adapter through ProductionApp for native, Astryx and portal login actions', async () => {
+  const client = new QueryClient();
+  const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });
+  const transport = { send: () => Promise.resolve({ status: 401, statusText: 'Unauthorized', body: {} }) };
+  const view = render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client}
+    runtime={{ fetchVersion: vi.fn(), reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'test', storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } }}
+    cursorStore={{ clear: vi.fn() }} router={createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() })}
+    renderLogin={() => <><button>Native login</button><Button label="Astryx login">Astryx login</Button>{createPortal(<button>Portal login</button>, document.body)}</>}
+    renderError={() => <p>Error</p>} />);
+  await screen.findByRole('button', { name: 'Native login' });
+  for (const name of ['Native login', 'Astryx login', 'Portal login']) {
+    const button = screen.getByRole('button', { name });
+    const animate = vi.spyOn(button, 'animate');
+    fireEvent.keyDown(button, { key: ' ' });
+    expect(animate).toHaveBeenCalledOnce();
+    fireEvent.keyUp(button, { key: ' ' });
+    expect(animate).toHaveBeenCalledTimes(2);
+    animate.mockRestore();
+  }
+  const button = screen.getByRole('button', { name: 'Native login' });
+  const animate = vi.spyOn(button, 'animate');
+  fireEvent.keyDown(button, { key: 'Enter' });
+  const owned = animate.mock.results[0].value as Animation; view.unmount();
+  expect(owned.playState).toBe('idle');
+  animate.mockRestore();
 });

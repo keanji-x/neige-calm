@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { page } from 'vitest/browser';
+import { commands, page } from 'vitest/browser';
 import '../../../styles/entry.css';
 import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
+import { scrollGeometry } from '../../../ui/drawer/scroll-geometry.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import { ChatThread } from './public.tsx';
 
@@ -18,7 +19,7 @@ async function frames(count = 4) {
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
   });
 }
-afterEach(async () => { cleanup(); vi.restoreAllMocks(); await page.viewport(1280, 800); });
+afterEach(async () => { cleanup(); vi.restoreAllMocks(); await commands.emulateReducedMotion(false); await page.viewport(1280, 800); });
 
 it('finds the active exchange without measuring every earlier marker on scroll', async () => {
   await page.viewport(1400, 900);
@@ -26,10 +27,11 @@ it('finds the active exchange without measuring every earlier marker on scroll',
     <Drawer open title="Hotspots" onClose={() => {}}><ChatThread conversation={conversation}
       turns={turns(256)} cards={{}} stalled={false} canContinue={false} /></Drawer>
   </div>);
+  for (const animation of document.querySelector<HTMLElement>('[data-nc-drawer]')!.getAnimations()) { animation.pause(); animation.currentTime = 0; }
   await frames();
   const scroller = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
   const marker = document.querySelector<HTMLElement>('[data-nc-exchange="you-200"]')!;
-  const top = scroller.scrollTop + marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  const top = scroller.scrollTop + scrollGeometry(scroller).y(marker.getBoundingClientRect().top);
   let reads = 0;
   const native = Reflect.get(HTMLElement.prototype, 'getBoundingClientRect');
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -57,6 +59,7 @@ it('updates the exchange rail without rereading unchanged history or disturbing 
     <Drawer open title="Hotspots" onClose={() => {}}><ChatThread conversation={conversation}
       turns={history} cards={{}} stalled={false} canContinue={false} /></Drawer>
   </div>);
+  for (const animation of document.querySelector<HTMLElement>('[data-nc-drawer]')!.getAnimations()) { animation.pause(); animation.currentTime = 0; }
   await frames();
   const scroller = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
   const scrollTo = async (id: string) => {
@@ -64,7 +67,7 @@ it('updates the exchange rail without rereading unchanged history or disturbing 
       .find(candidate => candidate.dataset.ncExchange === id)!;
     act(() => {
       fireEvent.wheel(scroller, { deltaY: -1 });
-      scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTop += scrollGeometry(scroller).y(marker.getBoundingClientRect().top);
       fireEvent.scroll(scroller);
     });
     await frames();
@@ -82,7 +85,8 @@ it('updates the exchange rail without rereading unchanged history or disturbing 
   const selectedText = selection.toString();
   expect(selectedText).toContain('Question 0');
   reads = 0;
-  await scrollTo('you-200');
+  act(() => { document.querySelector<HTMLElement>('[data-nc-rail-track] [aria-label="Jump to exchange 201: Question 200"]')!.click(); });
+  await frames();
   expect(document.querySelector('[data-nc-rail-track] [aria-current="true"]')?.getAttribute('aria-label')).toContain('Question 200');
   const currentEntries = [...document.querySelectorAll('[data-nc-entry]')];
   expect(currentEntries).toHaveLength(entries.length);
@@ -91,6 +95,79 @@ it('updates the exchange rail without rereading unchanged history or disturbing 
   expect(selection.anchorNode).toBe(question);
   expect(selection.focusNode).toBe(answer);
   expect(reads).toBe(0);
+});
+
+it.each(['entry 0', 'entry 40', 'entry 100', 'reversal', 'rest', 'reduced'])(
+  'aligns real rail jumps at %s', async phase => {
+  await page.viewport(1400, 900);
+  if (phase === 'reduced') await commands.emulateReducedMotion(true);
+  const history = turns(450);
+  const content = (open: boolean) => <div style={{ height: 600, width: 900, position: 'relative' }}>
+    <Drawer open={open} title="Hotspots" onClose={() => {}}><ChatThread conversation={conversation}
+      turns={history} cards={{}} stalled={false} canContinue={false} /></Drawer>
+  </div>;
+  const view = render(content(true));
+  const panel = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+  const sample = (time: number) => {
+    for (const surface of [panel, document.querySelector<HTMLElement>('[data-nc-drawer-seam]')!]) {
+      for (const animation of surface.getAnimations()) { animation.pause(); animation.currentTime = time; }
+    }
+  };
+  if (phase === 'rest') {
+    await expect.poll(() => panel.getAnimations().length).toBe(0);
+  } else if (phase === 'reversal') {
+    sample(40);
+    view.rerender(content(false)); sample(40);
+    view.rerender(content(true)); sample(40);
+  } else if (phase.startsWith('entry')) sample(Number(phase.split(' ')[1]));
+  await frames();
+  const scroller = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  const markers = [...scroller.querySelectorAll<HTMLElement>('[data-nc-exchange]')];
+  const rail = document.querySelector<HTMLElement>('[data-nc-rail-track]')!;
+  const dots = [...rail.querySelectorAll<HTMLElement>('button')];
+  for (const index of [100, 200, 448, 449, 0, 200]) {
+    const marker = markers.find(candidate => candidate.dataset.ncExchange === `you-${index}`)!;
+    const dot = dots.find(candidate => candidate.getAttribute('aria-label') === `Jump to exchange ${index + 1}: Question ${index}`)!;
+    act(() => { dot.click(); });
+    await frames();
+    const pane = scroller.getBoundingClientRect();
+    const target = marker.getBoundingClientRect();
+    // A target near the tail clamps to the scroll extent, but remains visible.
+    const remaining = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
+    if (remaining > 1) expect(Math.abs(target.top - pane.top)).toBeLessThanOrEqual(1);
+    else { expect(target.top).toBeGreaterThanOrEqual(pane.top); expect(target.top).toBeLessThan(pane.bottom); }
+    expect(document.querySelector('[data-nc-rail-track] [aria-current="true"]')?.getAttribute('aria-label')).toBe(remaining <= 1 ? 'Jump to exchange 450: Question 449' : `Jump to exchange ${index + 1}: Question ${index}`);
+    const track = dot.closest<HTMLElement>('[data-nc-rail-track]')!.getBoundingClientRect();
+    expect(dot.getBoundingClientRect().top).toBeGreaterThanOrEqual(track.top - 1);
+    expect(dot.getBoundingClientRect().bottom).toBeLessThanOrEqual(track.bottom + 1);
+  }
+});
+
+it('keeps the sliding active edge in layout pixels near the end during entry', async () => {
+  await page.viewport(1400, 900);
+  render(<div style={{ height: 600, width: 900, position: 'relative' }}>
+    <Drawer open title="Hotspots" onClose={() => {}}><ChatThread conversation={conversation}
+      turns={turns(450)} cards={{}} stalled={false} canContinue={false} /></Drawer>
+  </div>);
+  for (const animation of document.querySelector<HTMLElement>('[data-nc-drawer]')!.getAnimations()) {
+    animation.pause(); animation.currentTime = 0;
+  }
+  await frames();
+  const pane = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  const marker = document.querySelector<HTMLElement>('[data-nc-exchange="you-445"]')!;
+  act(() => { fireEvent.wheel(pane, { deltaY: -1 }); pane.scrollTop = 0; });
+  const position = scrollGeometry(pane).y(marker.getBoundingClientRect().top);
+  const maximum = pane.scrollHeight - pane.clientHeight;
+  // Put this marker immediately above the declared sliding edge: as scroll
+  // advances one pixel, that edge advances two through the final pane-height.
+  act(() => {
+    pane.scrollTop = Math.ceil((position + maximum - pane.clientHeight - 4) / 2);
+    fireEvent.scroll(pane);
+  });
+  expect(maximum - pane.scrollTop).toBeGreaterThan(100);
+  expect(maximum - pane.scrollTop).toBeLessThan(pane.clientHeight);
+  await frames();
+  expect(document.querySelector('[data-nc-rail-track] [aria-current="true"]')?.getAttribute('aria-label')).toBe('Jump to exchange 446: Question 445');
 });
 
 it('formats compact timestamps without creating a locale formatter for each reply', async () => {

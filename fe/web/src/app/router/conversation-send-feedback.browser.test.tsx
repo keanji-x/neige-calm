@@ -217,6 +217,9 @@ it.each([1400, 390])('keeps the first message bubble and mentions consistent thr
   };
   try {
     await open(view, true, message, width === 390);
+    // Compare resting bubble layout, not two frames of the parent's entry projection.
+    const drawer = screen.getByRole('button', { name: 'Close conversation' }).closest<HTMLElement>('[data-nc-drawer]')!;
+    await expect.poll(() => drawer.getAnimations().length).toBe(0);
     act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
     // Real bubble geometry and native presentation, not a CSS-module name oracle.
     const before = appearance();
