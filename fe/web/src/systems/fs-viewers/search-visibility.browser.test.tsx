@@ -11,7 +11,7 @@ async function editorPaint() {
   await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
 }
 
-it.each([false, true])('keeps file search visible and clickable while the editor scrolls (truncated: %s)', async truncated => {
+async function exerciseSearch(truncated: boolean, width = truncated ? 580 : 660) {
   await page.viewport(1000, 750);
   const values = new Map<string, unknown>();
   const slots: ViewerSlots = {
@@ -21,10 +21,10 @@ it.each([false, true])('keeps file search visible and clickable while the editor
     },
     set: (key, value) => { values.set(key, value); },
   };
-  const text = Array.from({ length: 300 }, (_, index) => `line ${index} ${[0, 140, 298].includes(index) ? 'needle' : 'ordinary'} ${'.'.repeat(100)}`).join('\n');
+  const text = Array.from({ length: 300 }, (_, index) => `export const row${String(index).padStart(5, '0')} = "${[0, 140, 298].includes(index) ? 'needle' : 'ordinary'}"; // ${'.'.repeat(100)}`).join('\n');
   // FileViewer's real card is a shrinking flex column. Keep that production
   // frame; a plain fixed-height parent does not exercise its layout contract.
-  render(<div className="fv-card" style={{ height: truncated ? 360 : 480, width: truncated ? 580 : 660 }}>
+  render(<div className="fv-card" style={{ height: truncated ? 360 : 480, width }}>
     <FileViewer path="/repo" theme="light" slots={slots} files={{
       listDirectory: () => Promise.resolve({ path: '/repo', parent: '/', entries: [{ name: 'large.txt', is_dir: false }, { name: 'other.txt', is_dir: false }] }),
       readFile: path => Promise.resolve({ path, size: text.length, text: path.endsWith('large.txt') ? text : 'Different file', truncated }),
@@ -39,6 +39,11 @@ it.each([false, true])('keeps file search visible and clickable while the editor
     const wrap = screen.getByRole('search').parentElement;
     if (wrap === null) throw new Error('File search frame missing');
     const clip = wrap.getBoundingClientRect();
+    const editorClip = view.scrollDOM.getBoundingClientRect();
+    const toolbar = screen.getByRole('search').getBoundingClientRect();
+    const warning = screen.queryByText('Showing the first 2 MiB of this file.');
+    if (warning !== null) expect(warning.getBoundingClientRect().bottom).toBeLessThanOrEqual(toolbar.top);
+    expect(toolbar.bottom).toBeLessThanOrEqual(editorClip.top);
     expect(wrap.scrollTop).toBe(0);
     for (const control of [screen.getByRole('searchbox', { name: 'Search in file' }),
       screen.getByRole('button', { name: 'Next match' }), screen.getByRole('button', { name: 'Previous match' }), screen.getByRole('button', { name: 'Close search' })]) {
@@ -57,12 +62,16 @@ it.each([false, true])('keeps file search visible and clickable while the editor
     const range = document.createRange();
     range.setStart(from.node, from.offset); range.setEnd(to.node, to.offset);
     expect(range.toString()).toBe('needle');
-    const match = range.getBoundingClientRect();
-    const editorClip = view.scrollDOM.getBoundingClientRect();
-    expect(match.top).toBeGreaterThanOrEqual(Math.max(0, editorClip.top, clip.top));
-    expect(match.bottom).toBeLessThanOrEqual(Math.min(innerHeight, editorClip.bottom, clip.bottom));
-    expect(match.left).toBeGreaterThanOrEqual(Math.max(0, editorClip.left, clip.left));
-    expect(match.right).toBeLessThanOrEqual(Math.min(innerWidth, editorClip.right, clip.right));
+    const fragments = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+    expect(fragments.length).toBeGreaterThan(0);
+    for (const match of fragments) {
+      expect(match.top).toBeGreaterThanOrEqual(Math.max(0, editorClip.top, clip.top));
+      expect(match.bottom).toBeLessThanOrEqual(Math.min(innerHeight, editorClip.bottom, clip.bottom));
+      expect(match.left).toBeGreaterThanOrEqual(Math.max(0, editorClip.left, clip.left));
+      expect(match.right).toBeLessThanOrEqual(Math.min(innerWidth, editorClip.right, clip.right));
+      const matchHit = document.elementFromPoint((match.left + match.right) / 2, (match.top + match.bottom) / 2);
+      expect(matchHit !== null && view.contentDOM.contains(matchHit)).toBe(true);
+    }
   };
   content.focus();
   await userEvent.keyboard('/');
@@ -93,4 +102,12 @@ it.each([false, true])('keeps file search visible and clickable while the editor
   await page.getByRole('button', { name: /other\.txt/ }).click();
   await screen.findByText('Different file');
   expect(screen.queryByRole('search')).toBeNull();
+}
+
+it.each([false, true])('keeps file search visible and clickable while the editor scrolls (truncated: %s)', async truncated => {
+  await exerciseSearch(truncated);
+});
+
+it('keeps search controls and the current match usable in a compact file card', async () => {
+  await exerciseSearch(false, 360);
 });

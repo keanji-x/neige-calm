@@ -53,7 +53,7 @@ function emptyPanel() {
   dom.setAttribute('aria-hidden', 'true');
   return {
     dom,
-    // Match the React bar's top edge. A hidden bottom panel would otherwise
+    // Our search row precedes the editor. Its hidden placeholder must not
     // reserve a phantom bottom margin when the editor reveals a match.
     top: true,
     mount() { dom.parentElement?.classList.add('fv-code-search-panels-empty'); },
@@ -169,7 +169,7 @@ export function CodePane({
     <CodeMirror
       value={text}
       // Bound the vendor host as this pane's flex item; height sizes only its
-      // editor. The editor must scroll without moving the overlaid find bar.
+      // editor. The editor scrolls independently of the stationary search row.
       style={{ flex: 1, minHeight: 0 }}
       height="100%"
       theme={theme === 'dark' ? githubDark : githubLight}
