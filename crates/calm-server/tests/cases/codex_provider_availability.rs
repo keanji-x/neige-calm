@@ -288,7 +288,13 @@ async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model()
         },
     );
     let backend: calm_server::harness::backend::PlannerBackend =
-        boot.state.shared_codex_appserver.clone().into();
+        calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            "auth-reader-card",
+            "auth-reader-track",
+            "auth-reader-runtime",
+        )
+        .unwrap();
     let failure = backend
         .turn_start(
             "auth-reader-thread",

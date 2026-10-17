@@ -48,3 +48,25 @@ async fn turn_not_found_is_a_refusal() {
     assert!(matches!(error, Error::Refused(_)), "{error}");
     answer.await.unwrap();
 }
+
+/// A JSON-RPC success envelope alone is not a receipt for this thread's cut.
+#[tokio::test]
+async fn thread_revert_requires_matching_native_thread_receipt() {
+    for result in [
+        Value::Null,
+        json!({}),
+        json!({"thread": {}}),
+        json!({"thread": {"id": ""}}),
+        json!({"thread": {"id": "another-thread"}}),
+    ] {
+        let (client, _notifications, peer) = CodexAppServer::connect_pair_for_test().await;
+        let answer = tokio::spawn(answer_once(peer, json!({"result": result.clone()})));
+        let outcome = client.thread_revert("thread-1", "turn-2").await;
+        let request = answer.await.unwrap();
+        assert_eq!(request["method"], "thread/revert");
+        assert!(
+            outcome.is_err(),
+            "unqualified revert was accepted: {result}"
+        );
+    }
+}

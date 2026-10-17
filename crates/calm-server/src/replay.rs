@@ -245,6 +245,7 @@ pub async fn force_planner_phase(
 
     use crate::db::write_in_tx_typed;
     use crate::error::CalmError;
+    use crate::harness::profile::HarnessProfileExt;
     use crate::harness::{HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
     use crate::model::{CardRole, new_id, now_ms};
     use crate::per_card_lock::lock_card;

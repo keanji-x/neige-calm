@@ -36,17 +36,24 @@ pub(crate) fn first_message_digest(text: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// The existing bounded start-retry namespace, shared with pure acceptance's
+/// refusal to adopt any historical start attempt. No suffix is stripped.
+pub(crate) fn operation_key_attempts(base: &str) -> impl Iterator<Item = String> + '_ {
+    (1..=MAX_OPERATION_KEY_ATTEMPTS).map(move |attempt| {
+        if attempt == 1 {
+            base.to_string()
+        } else {
+            format!("{base}#{attempt}")
+        }
+    })
+}
+
 /// A terminally `Failed` predecessor is stepped over with a `#N` suffix; `Stuck` is
 /// not, because its compensation may not have finished and the card may still exist.
 pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Result<String> {
     // Reads absence as "nothing has happened under this key yet", so this is only
     // correct while keyed `operations` rows are permanent.
-    for attempt in 1..=MAX_OPERATION_KEY_ATTEMPTS {
-        let key = if attempt == 1 {
-            base.to_string()
-        } else {
-            format!("{base}#{attempt}")
-        };
+    for key in operation_key_attempts(base) {
         let existing = s
             .operation_runtime
             .find_by_kind_and_idempotency(PLANNER_HARNESS_START, &key)

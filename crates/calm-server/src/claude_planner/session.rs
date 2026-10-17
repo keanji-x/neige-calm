@@ -39,7 +39,10 @@ use crate::harness::planner_event::PlannerEvent;
 use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
+use calm_types::conversation::SubmissionDispatchProof;
 use calm_types::worker::WorkerSessionId;
+
+mod execution_end;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 pub const STOP_TIMER: Duration = Duration::from_secs(10);
@@ -97,6 +100,7 @@ pub(crate) struct Shared {
     state: Mutex<State>,
     /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
     issue: tokio::sync::Mutex<()>,
+    driver: tokio::sync::Mutex<Option<execution_end::DriverSlot>>,
     /// Set once the harness holding this session is installed in the registry (§5.1 item 2), to
     /// the channel that harness reads its paused requests from (#2348); before that `turn_start`
     /// refuses, so an install-race loser never mints or spawns.
@@ -177,15 +181,29 @@ pub(super) enum SpawnInput<'a> {
         /// A rewind's pending cut, applied by this spawn.
         truncation: Option<&'a ResumeTruncation>,
     },
+    CanonicalTurn {
+        logical_turn_id: &'a calm_types::conversation::LogicalTurnId,
+        items: Vec<InputItem>,
+        proof: &'a SubmissionDispatchProof,
+    },
     Compaction,
 }
 
 /// Why a spawn did not start, and whether its user line may have reached the CLI. Every failure
 /// before the line is written submitted nothing; a failed write may have delivered part or all of
 /// it.
-pub(super) struct SpawnFailure {
+pub(crate) struct SpawnFailure {
     pub(super) failure: crate::harness::backend::TurnStartFailure,
     pub(super) line_sent: bool,
+}
+
+impl SpawnFailure {
+    pub(crate) fn write_attempted(&self) -> bool {
+        self.line_sent
+    }
+    pub(crate) fn into_failure(self) -> crate::harness::backend::TurnStartFailure {
+        self.failure
+    }
 }
 
 impl From<crate::harness::backend::TurnStartFailure> for SpawnFailure {
@@ -239,6 +257,7 @@ impl ClaudePlannerSession {
                 events,
                 state: Mutex::new(state),
                 issue: tokio::sync::Mutex::new(()),
+                driver: tokio::sync::Mutex::new(None),
                 installed: OnceLock::new(),
                 #[cfg(feature = "fixtures")]
                 hooks: Mutex::new(TestHooks::default()),
@@ -307,14 +326,32 @@ impl ClaudePlannerSession {
         client_id: &str,
         truncation: Option<&ResumeTruncation>,
     ) -> Result<String, crate::harness::backend::TurnStartFailure> {
-        let input = SpawnInput::Turn {
-            items,
-            client_id,
-            truncation,
-        };
-        self.start_spawn(thread, input, selection, mode)
+        self.turn_start_attempt(thread, items, selection, mode, client_id, truncation)
             .await
             .map_err(|spawn| spawn.failure)
+    }
+
+    /// A successful local write is not a native replay receipt.
+    pub(crate) async fn turn_start_attempt(
+        &self,
+        thread: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        mode: PlannerPermissionMode,
+        client_id: &str,
+        truncation: Option<&ResumeTruncation>,
+    ) -> Result<String, SpawnFailure> {
+        self.start_spawn(
+            thread,
+            SpawnInput::Turn {
+                items,
+                client_id,
+                truncation,
+            },
+            selection,
+            mode,
+        )
+        .await
     }
 
     /// The submission contract for either kind of spawn; see the module docs.
@@ -326,7 +363,7 @@ impl ClaudePlannerSession {
         mode: PlannerPermissionMode,
     ) -> Result<String, SpawnFailure> {
         let purpose = match &input {
-            SpawnInput::Turn { .. } => SpawnPurpose::Turn,
+            SpawnInput::Turn { .. } | SpawnInput::CanonicalTurn { .. } => SpawnPurpose::Turn,
             SpawnInput::Compaction => SpawnPurpose::Compaction,
         };
         let shared = &self.shared;
@@ -357,6 +394,7 @@ impl ClaudePlannerSession {
                 state.settle_after_stop,
             )
         };
+        execution_end::join_driver(shared).await?;
         if purpose == SpawnPurpose::Compaction && start == SessionStart::New {
             return Err(CalmError::BadRequest(
                 "this Claude conversation has no session to compact yet".into(),
@@ -413,7 +451,7 @@ impl ClaudePlannerSession {
         };
         stop(&host.instance, &params.worker_session_id).await?;
 
-        let (line, client_id, items, truncation) = match input {
+        let (line, client_id, items, truncation, input_proof) = match input {
             SpawnInput::Turn {
                 items,
                 client_id,
@@ -425,13 +463,44 @@ impl ClaudePlannerSession {
                         .map_err(|e| CalmError::BadRequest(e.to_string()))?,
                     user_line_content(&items).await?,
                 );
-                (line, client_id.to_string(), items, truncation)
+                (
+                    line,
+                    client_id.to_string(),
+                    items,
+                    truncation,
+                    execution_end::DriverInput::Legacy,
+                )
+            }
+            SpawnInput::CanonicalTurn {
+                items,
+                proof,
+                logical_turn_id,
+            } => {
+                let client = proof.attempt().submission_id.as_str();
+                let line = UserLine::new(
+                    thread_uuid,
+                    client_line_uuid(client).map_err(|e| CalmError::BadRequest(e.to_string()))?,
+                    user_line_content(&items).await?,
+                );
+                (
+                    line,
+                    client.into(),
+                    items,
+                    None,
+                    execution_end::DriverInput::canonical(logical_turn_id, proof),
+                )
             }
             // No client sent this line: its uuid is fresh, and nothing of it is stored.
             SpawnInput::Compaction => {
                 let uuid = Uuid::new_v4();
                 let line = UserLine::compact(thread_uuid, uuid);
-                (line, uuid.simple().to_string(), Vec::new(), None)
+                (
+                    line,
+                    uuid.simple().to_string(),
+                    Vec::new(),
+                    None,
+                    execution_end::DriverInput::Legacy,
+                )
             }
         };
         let line = serde_json::to_string(&line).map_err(CalmError::from)?;
@@ -535,7 +604,8 @@ impl ClaudePlannerSession {
                 .events
                 .send(translator.turn_started(crate::model::now_ms()));
         }
-        tokio::spawn(drive(
+        let mut driver_slot = shared.driver.lock().await;
+        let driver = tokio::spawn(drive(
             Arc::clone(shared),
             TurnRun {
                 child,
@@ -549,7 +619,14 @@ impl ClaudePlannerSession {
                 bind: !row_bound,
                 version: config.claude_version.clone(),
                 approvals: Approvals::for_spawn(mode, held, &turn_id),
+                canonical: matches!(&input_proof, execution_end::DriverInput::Canonical(_)),
             },
+        ));
+        *driver_slot = Some(execution_end::DriverSlot::new(
+            thread.into(),
+            turn_id.clone(),
+            input_proof,
+            driver,
         ));
         Ok(turn_id)
     }
@@ -632,43 +709,6 @@ impl ClaudePlannerSession {
             }
             None => Ok(()),
         }
-    }
-
-    /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and stop the marker
-    /// whether or not a turn runs. The `stop` result is returned for strict callers. A session that
-    /// was never installed (an install-race loser) minted and spawned nothing, so it signals nothing:
-    /// its id may belong to the winner's live turn.
-    pub async fn shutdown(&self) -> Result<()> {
-        let shared = &self.shared;
-        shared.state().shutting_down = true;
-        let _issue = shared.issue.lock().await;
-        if shared.installed.get().is_none() {
-            return Ok(());
-        }
-        let slot = shared
-            .state()
-            .active
-            .as_ref()
-            .map(|active| Arc::clone(&active.slot));
-        if let Some(slot) = &slot {
-            slot.record(TerminalCause::Interrupted);
-            slot.arm_stop(tokio::time::Instant::now());
-        }
-        let params = &shared.params;
-        let stopped = stop(&params.host.instance, &params.worker_session_id).await;
-        if let Some(slot) = slot {
-            let mut settled = slot.settled.subscribe();
-            if tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, settled.wait_for(|done| *done))
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    worker_session_id = %params.worker_session_id,
-                    "claude planner: the running turn did not settle during shutdown"
-                );
-            }
-        }
-        stopped
     }
 
     /// Fixtures only: how many user lines this session has tried to write, observed on the

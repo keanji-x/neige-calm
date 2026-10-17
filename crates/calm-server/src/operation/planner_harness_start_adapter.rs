@@ -249,6 +249,7 @@ pub(crate) struct BoundTemplate {
 }
 
 pub use crate::harness::profile::HarnessProfile;
+use crate::harness::profile::HarnessProfileExt;
 
 /// Whether a conversation create prepends the activity briefing. A ruling per caller, not a property of the track: `POST /api/today/summary`
 /// carries the day's counts itself and must not be briefed twice.
@@ -1540,8 +1541,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             backend,
             live_replies: self.harness_registry.live_replies().clone(),
             config: HarnessConfig::default(),
-            snapshot,
-        });
+            snapshot: (snapshot).try_into()?,
+        })
+        .await?;
         if !reservation.install(handle.clone()) {
             // Superseded by a concurrent `reserve_replacing`: shut down the handle we just built (never leak its run loop) and fail the op.
             handle.shutdown().await?;

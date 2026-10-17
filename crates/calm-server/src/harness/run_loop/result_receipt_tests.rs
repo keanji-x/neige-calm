@@ -124,7 +124,15 @@ async fn deep_completion_and_same_batch_user_reach_transport() {
         assert!(text.contains("deep-report-marker"));
         assert!(text.contains("same-batch-user-marker"));
         assert!(fx.stored().await.pending_entries().is_empty());
-        assert!(fx.harness.inner.pending_queue.lock().await.is_empty());
+        assert!(
+            fx.harness
+                .inner
+                .historical_queue()
+                .unwrap()
+                .lock()
+                .await
+                .is_empty()
+        );
         if depth == 124 {
             assert!(text.contains(UNAVAILABLE));
         } else {
@@ -446,7 +454,9 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
             backend: inner.backend.clone(),
             live_replies: crate::harness::LiveReplies::for_test(),
             config: inner.config,
-            snapshot,
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         8,
     );

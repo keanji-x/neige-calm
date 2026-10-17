@@ -62,7 +62,7 @@ async fn harness_drops_foreign_thread_notifications() {
         .await
         .unwrap();
     let thread_b = "thread-harness-b".to_string();
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_b.clone());
@@ -70,7 +70,7 @@ async fn harness_drops_foreign_thread_notifications() {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -91,7 +91,14 @@ async fn harness_drops_foreign_thread_notifications() {
     let events = EventBus::new();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_b.clone()),
@@ -99,11 +106,15 @@ async fn harness_drops_foreign_thread_notifications() {
         events,
         card_role_cache: CardRoleCache::new(),
         track_area_cache: TrackAreaCache::new(),
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     daemon.emit_notification_for_test(Notification::TurnStarted {
         thread_id: "thread-legacy-a".into(),
@@ -181,7 +192,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     tx.commit().await.unwrap();
 
     let thread_id = "thread-harness-route".to_string();
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -189,7 +200,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -213,7 +224,14 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     let registry = HarnessRegistry::new();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            track.id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: track.id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -221,16 +239,20 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         events: events.clone(),
         card_role_cache: CardRoleCache::new(),
         track_area_cache: TrackAreaCache::new(),
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
-    registry.insert(runtime_id.clone(), harness.clone());
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
+    registry.insert(worker_session_id.clone(), harness.clone());
     let codex = Arc::new(CodexClient::new_stub());
     let _dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo_dyn.clone(),
@@ -278,7 +300,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let snapshot = harness.snapshot().await;
+        let snapshot = harness.snapshot().await.unwrap();
         if snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
@@ -347,7 +369,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     tx.commit().await.unwrap();
 
     let thread_id = "thread-harness-full".to_string();
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -355,7 +377,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -380,7 +402,14 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
     let (harness, mut observations) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
-            worker_session_id: runtime_id.clone(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                daemon.clone(),
+                card.id.as_ref(),
+                track.id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
             track_id: track.id.clone(),
             card_id: card.id.clone(),
             thread_id: Some(thread_id),
@@ -388,10 +417,12 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
             events: events.clone(),
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
-            backend: daemon.clone().into(),
+
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot,
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         1,
     );
@@ -400,7 +431,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
             text: "queue filler".into(),
         })
         .unwrap();
-    registry.insert(runtime_id, harness.clone());
+    registry.insert(worker_session_id, harness.clone());
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo_dyn.clone(),
         events,

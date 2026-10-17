@@ -118,7 +118,7 @@ async fn assistant_provider_codex_failed_carrier_send_preserves_thread_and_queue
         .unwrap();
     let handle = b.state.harness.remove(&runtime.id).unwrap();
     handle.shutdown().await.unwrap();
-    let mut snapshot = handle.snapshot().await;
+    let mut snapshot = handle.snapshot().await.unwrap();
     let entry = QueueEntry::user_message("retained input".into(), None, Vec::new());
     snapshot.set_pending_entries(vec![entry.clone()]);
     snapshot.phase = HarnessPhaseTag::Wedged;

@@ -408,7 +408,7 @@ impl Stack {
     /// Wait for the current turn's phase to be committed, not just visible in memory.
     pub async fn wait_phase(&self, worker_session_id: &str, phase: &str) {
         for _ in 0..400 {
-            let snapshot = self.harness(worker_session_id).snapshot().await;
+            let snapshot = self.harness(worker_session_id).snapshot().await.unwrap();
             if serde_json::to_value(snapshot.phase).unwrap() == phase {
                 let persisted = self
                     .repo()

@@ -8,6 +8,7 @@ mod codex_selection;
 pub mod compact_outcome;
 pub mod config;
 pub mod held_requests;
+pub(crate) mod input_dispatch;
 pub(crate) mod instructions;
 pub(crate) mod issuance;
 pub mod live_replies;
@@ -59,8 +60,8 @@ pub use observation::{HookKind, Observation};
 pub use queue::{QueueEntry, QueueEntryId};
 pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
 pub use run_loop::{
-    MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams, SendKey, SteerApplied,
-    SteerRefused, SteerResult,
+    HarnessRuntimeSnapshot, MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams, SendKey,
+    SteerApplied, SteerRefused, SteerResult,
 };
 pub use snapshot::{
     HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, QueueEntryMeta, is_harness_snapshot_value,
@@ -358,8 +359,9 @@ pub async fn spawn_recovered_harness(
         backend,
         live_replies: registry.live_replies().clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into()?,
+    })
+    .await?;
     Ok(match install_or_shutdown(reservation, handle).await? {
         Some(handle) => RecoveryOutcome::Installed(handle),
         None => RecoveryOutcome::Skipped,
@@ -794,15 +796,24 @@ mod tests {
         );
         let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone());
         let registry = HarnessRegistry::new();
-        let runtime_id = "rt-install-failure".to_string();
+        let worker_session_id = "rt-install-failure".to_string();
 
-        let reservation = registry.try_reserve(runtime_id.clone()).expect("vacant");
+        let reservation = registry
+            .try_reserve(worker_session_id.clone())
+            .expect("vacant");
         // Concurrent replace lands between reserve and install.
-        let (winner, previous_live) = registry.reserve_replacing(runtime_id.clone());
+        let (winner, previous_live) = registry.reserve_replacing(worker_session_id.clone());
         assert!(previous_live.is_none());
 
         let handle = PlannerHarness::run(PlannerHarnessParams {
-            worker_session_id: runtime_id.clone(),
+            backend: crate::harness::backend::PlannerBackend::codex(
+                daemon,
+                "card-install-failure",
+                "track-install-failure",
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from("track-install-failure".to_string()),
             card_id: CardId::from("card-install-failure".to_string()),
             thread_id: None,
@@ -810,11 +821,15 @@ mod tests {
             events: EventBus::new(),
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
-            backend: daemon.into(),
+
             live_replies: registry.live_replies().clone(),
             config: HarnessConfig::default(),
-            snapshot: HarnessSnapshot::initial(0, vec![]),
-        });
+            snapshot: (HarnessSnapshot::initial(0, vec![]))
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
         let installed = install_or_shutdown(reservation, handle.clone())
             .await
             .unwrap();
@@ -836,9 +851,9 @@ mod tests {
         .await
         .expect("shut-down harness must stop accepting observations");
         // The newer claim was untouched throughout.
-        assert!(registry.get(&runtime_id).is_none());
+        assert!(registry.get(&worker_session_id).is_none());
         drop(winner);
-        assert!(registry.try_reserve(runtime_id).is_some());
+        assert!(registry.try_reserve(worker_session_id).is_some());
     }
 
     use crate::card_role_cache::CardRoleCache;
@@ -1221,7 +1236,7 @@ mod tests {
             );
         }
 
-        let after_issue = handle.snapshot().await;
+        let after_issue = handle.snapshot().await.unwrap();
         assert!(after_issue.pending_entries().is_empty());
         assert_eq!(after_issue.push_watermark, last_id);
         assert_eq!(

@@ -1292,14 +1292,14 @@ async fn force_new_thread_kills_old_pty_immediately() {
     let card_id = new_id();
     seed_planner_card(&repo, &role_cache, &track, &card_id).await;
 
-    let old_runtime_id = new_id();
+    let old_worker_session_id = new_id();
     let old_thread_id = "thread-force-reset-old-pty".to_string();
     let old_snapshot = HarnessSnapshot::initial(0, vec![]);
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: old_runtime_id.clone(),
+            id: old_worker_session_id.clone(),
             card_id: card_id.clone(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -1319,7 +1319,14 @@ async fn force_new_thread_kills_old_pty_immediately() {
 
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: old_runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            state.shared_codex_appserver.clone(),
+            card_id.as_ref(),
+            track.id.as_ref(),
+            old_worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: old_worker_session_id.clone(),
         track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),
         thread_id: Some(old_thread_id.clone()),
@@ -1327,17 +1334,23 @@ async fn force_new_thread_kills_old_pty_immediately() {
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: state.track_area_cache.clone(),
-        backend: state.shared_codex_appserver.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: old_snapshot,
-    });
-    state.harness.insert(old_runtime_id.clone(), old_harness);
-    assert!(state.harness.get(&old_runtime_id).is_some());
+        snapshot: (old_snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
+    state
+        .harness
+        .insert(old_worker_session_id.clone(), old_harness);
+    assert!(state.harness.get(&old_worker_session_id).is_some());
 
     state
         .shared_codex_appserver
@@ -1385,7 +1398,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
         "replacement harness must not spawn in this failure pin"
     );
     assert!(
-        state.harness.get(&old_runtime_id).is_none(),
+        state.harness.get(&old_worker_session_id).is_none(),
         "force_new_thread must remove the old PTY handle before replacement spawn"
     );
 }
@@ -1397,14 +1410,14 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
     let card_id = new_id();
     seed_planner_card(&repo, &role_cache, &track, &card_id).await;
 
-    let old_runtime_id = new_id();
+    let old_worker_session_id = new_id();
     let old_thread_id = "thread-existing-planner-runtime".to_string();
     let old_snapshot = HarnessSnapshot::initial(0, vec![]);
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: old_runtime_id.clone(),
+            id: old_worker_session_id.clone(),
             card_id: card_id.clone(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -1423,7 +1436,14 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
     tx.commit().await.unwrap();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: old_runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            state.shared_codex_appserver.clone(),
+            card_id.as_ref(),
+            track.id.as_ref(),
+            old_worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: old_worker_session_id.clone(),
         track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),
         thread_id: Some(old_thread_id.clone()),
@@ -1431,16 +1451,22 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
         events: state.events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: state.track_area_cache.clone(),
-        backend: state.shared_codex_appserver.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: old_snapshot,
-    });
-    state.harness.insert(old_runtime_id.clone(), old_harness);
+        snapshot: (old_snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
+    state
+        .harness
+        .insert(old_worker_session_id.clone(), old_harness);
 
     let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
         actor: calm_server::ids::ActorId::User,
@@ -1475,13 +1501,13 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
         .await
         .unwrap()
         .expect("new active runtime");
-    assert_ne!(active.id, old_runtime_id);
+    assert_ne!(active.id, old_worker_session_id);
     assert_eq!(active.kind, WorkerSessionKind::SharedPlanner);
     assert_eq!(active.status, WorkerSessionState::Idle);
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let old = session_projection_by_id_tx(&mut tx, &old_runtime_id)
+    let old = session_projection_by_id_tx(&mut tx, &old_worker_session_id)
         .await
         .unwrap()
         .expect("old runtime");
@@ -1489,7 +1515,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
     assert_eq!(old.status, WorkerSessionState::Superseded);
     assert_eq!(old.thread_id.as_deref(), Some(old_thread_id.as_str()));
     assert!(
-        state.harness.get(&old_runtime_id).is_none(),
+        state.harness.get(&old_worker_session_id).is_none(),
         "old harness handle must be shut down after supersede"
     );
 

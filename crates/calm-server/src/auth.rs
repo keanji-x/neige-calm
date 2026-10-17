@@ -2,9 +2,13 @@
 //! Cookies are HttpOnly and SameSite=Strict; paired-device grants can survive restart.
 //! `dev_autologin` promotes every request to the owner without a cookie; production must never enable it.
 
+mod input_source;
 pub mod login_throttle;
 mod session;
 
+pub(crate) use input_source::HumanInputSource;
+#[cfg(all(test, feature = "fixtures"))]
+pub(crate) use input_source::tests::authenticated_source;
 pub(crate) use session::SessionBackend;
 pub use session::{Session, SessionAuthority, SessionIdentity, SessionStore};
 
@@ -240,18 +244,7 @@ fn session_cookies(headers: &HeaderMap) -> impl Iterator<Item = &str> {
 
 /// `None` when there is no valid session AND dev_autologin is off; the caller decides whether to 401.
 pub(crate) fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal> {
-    if state.config.dev_autologin {
-        // Dev mode: a stable synthetic session id so whoami / logout behave consistently; nothing is written to the store.
-        return Some(Principal::from_identity(
-            SessionIdentity::owner(&state.config),
-            "dev-autologin".to_string(),
-        ));
-    }
-    let session = session_cookies(headers).find_map(|id| state.sessions.get(id))?;
-    Some(Principal::from_identity(
-        session.identity,
-        session.session_id,
-    ))
+    input_source::resolve(state, headers).map(|request| request.principal)
 }
 
 /// #1780: `SameSite=Strict` still attaches the cookie to pages on another port of the same host,
@@ -323,13 +316,14 @@ pub async fn require_session(
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response> {
-    let Some(principal) = resolve_principal(&auth, &headers) else {
+    let Some(authenticated) = input_source::resolve(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
     if checks_origin(request.method()) {
         check_origin(&auth, &headers)?;
     }
-    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(authenticated.principal);
+    request.extensions_mut().insert(authenticated.input_source);
     Ok(next.run(request).await)
 }
 
@@ -340,11 +334,12 @@ pub async fn require_session_ws(
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response> {
-    let Some(principal) = resolve_principal(&auth, &headers) else {
+    let Some(authenticated) = input_source::resolve(&auth, &headers) else {
         return Err(CalmError::Unauthorized);
     };
     check_origin(&auth, &headers)?;
-    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(authenticated.principal);
+    request.extensions_mut().insert(authenticated.input_source);
     Ok(next.run(request).await)
 }
 

@@ -106,7 +106,7 @@ async fn boot() -> Boot {
 
 /// Install a real `PlannerHarness` under the track's live planner-harness runtime and return that runtime id; `run_unstarted_for_test` spawns no run loop.
 async fn install_live_harness(b: &Boot, track_id: &str) -> String {
-    let runtime_id: String = sqlx::query_scalar(
+    let worker_session_id: String = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE track_id=?1 \
          AND state IN ('starting','running','idle','turn_pending') ORDER BY id LIMIT 1",
     )
@@ -115,14 +115,21 @@ async fn install_live_harness(b: &Boot, track_id: &str) -> String {
     .await
     .unwrap();
     let card_id: String = sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id=?1")
-        .bind(&runtime_id)
+        .bind(&worker_session_id)
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
     let repo: Arc<dyn Repo> = b.repo.clone();
     let (harness, _observations) = calm_server::harness::PlannerHarness::run_unstarted_for_test(
         calm_server::harness::PlannerHarnessParams {
-            worker_session_id: runtime_id.clone(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                b.shared_codex.clone(),
+                card_id.as_ref(),
+                track_id,
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
             track_id: track_id.to_string().into(),
             card_id: card_id.into(),
             thread_id: None,
@@ -130,19 +137,21 @@ async fn install_live_harness(b: &Boot, track_id: &str) -> String {
             events: calm_server::event::EventBus::new(),
             card_role_cache: b.roles.clone(),
             track_area_cache: b.tracks.clone(),
-            backend: b.shared_codex.clone().into(),
+
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: Default::default(),
-            snapshot: calm_server::harness::HarnessSnapshot::initial(0, Vec::new()),
+            snapshot: (calm_server::harness::HarnessSnapshot::initial(0, Vec::new()))
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         8,
     );
-    b.harness.insert(runtime_id.clone(), harness);
+    b.harness.insert(worker_session_id.clone(), harness);
     assert!(
-        b.harness.get(&runtime_id).is_some(),
-        "premise: the registry now holds a live harness for {runtime_id}"
+        b.harness.get(&worker_session_id).is_some(),
+        "premise: the registry now holds a live harness for {worker_session_id}"
     );
-    runtime_id
+    worker_session_id
 }
 
 fn theme() -> Value {

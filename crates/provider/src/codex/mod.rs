@@ -14,16 +14,21 @@ pub use authentication::is_sign_in_failure;
 mod types;
 pub use types::*;
 mod client_transport;
+mod request_attempt;
+use request_attempt::RpcResponseError;
+pub use request_attempt::{RequestCrossing, RpcAttemptFailure, RpcRemoteError};
 #[cfg(test)]
 mod server_request_tests;
 mod server_requests;
 pub mod tool_names;
-use client_transport::{PendingRequest, TransportAbort};
+use client_transport::TransportAbort;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+#[cfg(test)]
+use futures_util::SinkExt;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
@@ -86,14 +91,8 @@ fn notification_stream_closed() -> Error {
 }
 
 /// In-flight request registry: JSON-RPC id -> sender for its response.
-type Pending = Arc<StdMutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, RpcError>>>>>;
-
-/// A JSON-RPC error object as returned by the server (`-32600` etc.).
-#[derive(Debug, Clone, Deserialize)]
-struct RpcError {
-    code: i64,
-    message: String,
-}
+type Pending =
+    Arc<StdMutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, RpcResponseError>>>>>;
 
 /// The write half, behind a `Mutex` so concurrent requests cannot interleave WS frames.
 type WsSink = Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<UnixStream>, Message>>>;
@@ -108,6 +107,8 @@ pub struct CodexAppServer {
     request_timeout: Duration,
     /// Kept so dropping the client aborts the reader task.
     reader: tokio::task::JoinHandle<()>,
+    /// Observes the original consumer without keeping the channel open.
+    notifications: mpsc::WeakUnboundedSender<Notification>,
 }
 
 impl Drop for CodexAppServer {
@@ -201,6 +202,18 @@ fn turn_steer_params(
 }
 
 impl CodexAppServer {
+    /// Local transport-reader lifetime only; this does not prove a remote turn ended.
+    pub fn reader_finished(&self) -> bool {
+        self.reader.is_finished()
+    }
+
+    /// The original notification consumer is gone. This is not remote quiescence.
+    pub fn notification_stream_closed(&self) -> bool {
+        self.notifications
+            .upgrade()
+            .is_none_or(|sender| sender.is_closed())
+    }
+
     /// Test-only: a fully-constructed [`CodexAppServer`] over an in-process `UnixStream::pair` handshake; the returned server end must be kept alive or the connection closes.
     #[cfg(test)]
     pub(crate) async fn connect_pair_for_test()
@@ -227,6 +240,7 @@ impl CodexAppServer {
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+        let notifications = notif_tx.downgrade();
         let reader = tokio::spawn(reader_loop(
             read,
             pending.clone(),
@@ -242,6 +256,7 @@ impl CodexAppServer {
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             reader,
+            notifications,
         };
         (client, NotificationStream { rx: notif_rx }, server)
     }
@@ -320,6 +335,7 @@ impl CodexAppServer {
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         // Unbounded: notification delivery must never block the reader's response routing.
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+        let notifications = notif_tx.downgrade();
 
         let reader = tokio::spawn(reader_loop(
             read,
@@ -339,6 +355,7 @@ impl CodexAppServer {
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             reader,
+            notifications,
         };
         Ok((client, NotificationStream { rx: notif_rx }))
     }
@@ -474,7 +491,28 @@ impl CodexAppServer {
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnStartResult> {
-        self.request(
+        self.turn_start_attempt(
+            thread_id,
+            input,
+            selection,
+            approvals,
+            client_user_message_id,
+        )
+        .await
+        .map_err(RpcAttemptFailure::into_legacy_error)
+    }
+
+    /// Prompt consumers retain whether this request entered the transport. A
+    /// successful RPC still requires the owning adapter to validate its turn ID.
+    pub async fn turn_start_attempt(
+        &self,
+        thread_id: &str,
+        input: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        approvals: TurnApprovals,
+        client_user_message_id: Option<&str>,
+    ) -> std::result::Result<TurnStartResult, RpcAttemptFailure> {
+        self.request_attempt(
             "turn/start",
             turn_start_params(
                 thread_id,
@@ -528,7 +566,21 @@ impl CodexAppServer {
         input: Vec<InputItem>,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnSteerResult> {
-        self.request(
+        self.turn_steer_attempt(thread_id, expected_turn_id, input, client_user_message_id)
+            .await
+            .map_err(RpcAttemptFailure::into_legacy_error)
+    }
+
+    /// A remote error, timeout or failed send is not proof that the supplemental
+    /// input was not taken. The caller keeps exact request/turn correlation.
+    pub async fn turn_steer_attempt(
+        &self,
+        thread_id: &str,
+        expected_turn_id: &str,
+        input: Vec<InputItem>,
+        client_user_message_id: Option<&str>,
+    ) -> std::result::Result<TurnSteerResult, RpcAttemptFailure> {
+        self.request_attempt(
             "turn/steer",
             turn_steer_params(thread_id, expected_turn_id, &input, client_user_message_id),
         )
@@ -548,15 +600,15 @@ impl CodexAppServer {
 
     /// `thread/revert {threadId, beforeTurnId}` — replace the thread's durable history with the
     /// prefix before `before_turn_id`. Local file changes are not reverted. The vendored protocol
-    /// calls this `thread/rollback`, which the pinned binary rejects. Its response body
-    /// (`{thread, …Cursor}`) is not read.
+    /// calls this `thread/rollback`, which the pinned binary rejects. The successful
+    /// `{thread, …Cursor}` result must report this exact thread before the cut is confirmed.
     pub async fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<()> {
-        self.request::<Value>(
+        self.request::<ThreadRevertResult>(
             "thread/revert",
             json!({ "threadId": thread_id, "beforeTurnId": before_turn_id }),
         )
-        .await?;
-        Ok(())
+        .await?
+        .confirm_thread(thread_id)
     }
 
     /// `turn/interrupt` — cancel a running turn.
@@ -596,81 +648,26 @@ impl CodexAppServer {
         }
     }
 
-    /// Core round-trip. A JSON-RPC `error` frame maps to [`Error::Refused`]; transport failures and a dead reader map to [`Error::Transport`].
+    /// Result-only callers explicitly use the same evidence-aware RPC core.
     async fn request<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
     ) -> Result<T> {
-        let deadline = tokio::time::Instant::now() + self.request_timeout;
-        self.request_until(method, params, deadline).await
+        self.request_attempt(method, params)
+            .await
+            .map_err(RpcAttemptFailure::into_legacy_error)
     }
 
-    /// [`Self::request`] with an explicit absolute deadline. Cancellation removes the pending entry; if it interrupts an incomplete send the owned socket is shut down unflushed and the outcome stays unknown.
     async fn request_until<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
         deadline: tokio::time::Instant,
     ) -> Result<T> {
-        // An already-spent budget is answered without touching the wire: writing the frame would put a request on the daemon whose answer we already decided to ignore.
-        if tokio::time::Instant::now() >= deadline {
-            return Err(Error::Transport(format!(
-                "request {method} skipped: the caller's budget was already spent"
-            )));
-        }
-
-        self.transport.check()?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
-        let _pending = PendingRequest::new(self.pending.clone(), id);
-
-        let frame = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        let text = serde_json::to_string(&frame)?;
-
-        // Write under the sink lock so concurrent requests don't interleave WS frames.
-        {
-            let mut sink = self.sink.lock().await;
-            // Created after the lock: cancellation closes the owned socket BEFORE releasing the sink.
-            let mut sending = self.transport.sending()?;
-            if let Err(e) = sink.send(Message::Text(text)).await {
-                // Drop the now-unanswerable pending entry.
-                self.pending.lock().unwrap().remove(&id);
-                return Err(Error::Transport(format!("send {method}: {e}")));
-            }
-            sending.complete();
-        }
-
-        tracing::trace!(id, method, "codex app-server: request sent");
-
-        // On elapse remove our own pending entry so the map does not leak the never-fired oneshot. This timer is not a turn lifecycle criterion.
-        let outcome = match tokio::time::timeout_at(deadline, rx).await {
-            Ok(received) => received,
-            Err(_elapsed) => {
-                self.pending.lock().unwrap().remove(&id);
-                return Err(Error::Transport(format!("request {method} timed out")));
-            }
-        };
-
-        match outcome {
-            Ok(Ok(value)) => serde_json::from_value(value)
-                .map_err(|e| Error::Transport(format!("decode {method} result: {e}"))),
-            // The one place codex's own refusal is still distinguishable from everything else that can go wrong.
-            Ok(Err(rpc)) => Err(Error::Refused(format!(
-                "{method} failed: {} (code {})",
-                rpc.message, rpc.code
-            ))),
-            // Sender dropped without sending: the reader task ended before our response arrived.
-            Err(_) => Err(Error::Transport(format!(
-                "{method}: connection closed before response"
-            ))),
-        }
+        self.request_attempt_until(method, params, deadline)
+            .await
+            .map_err(RpcAttemptFailure::into_legacy_error)
     }
 }
 
@@ -733,13 +730,12 @@ async fn reader_loop(
             let sender = { pending.lock().unwrap().remove(&id) };
             if let Some(sender) = sender {
                 let payload = if let Some(err) = obj.get("error") {
-                    match serde_json::from_value::<RpcError>(err.clone()) {
-                        Ok(rpc) => Err(rpc),
-                        Err(_) => Err(RpcError {
-                            code: 0,
-                            message: format!("malformed error frame: {err}"),
-                        }),
-                    }
+                    Err(
+                        match serde_json::from_value::<RpcRemoteError>(err.clone()) {
+                            Ok(rpc) => RpcResponseError::Remote(rpc),
+                            Err(_) => RpcResponseError::Malformed(err.clone()),
+                        },
+                    )
                 } else {
                     Ok(obj.get("result").cloned().unwrap_or(Value::Null))
                 };

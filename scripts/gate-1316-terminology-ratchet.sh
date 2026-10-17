@@ -62,6 +62,15 @@
 # #2617 bounded exception: spec/crates 501 -> 503 comes solely from two struct literals of the
 # existing `event_spec` payload field (the event-free rerun payload and the approval gate's test
 # payload); no new domain term.
+# #2671 bounded compatibility references: spec/crates 503 -> 508 adds five uses of
+# the existing serialized HarnessProfile::Planner value `spec`: the conversation
+# schema CHECK, three SQL fixtures, and the serialization compatibility test.
+# Moving the existing serde rename from server to calm-types is net zero.
+# #2671 bounded transcript references: harness_item/crates 288 -> 298 adds six
+# references to the existing physical harness_items table (one FK, two storage
+# reads and three adapter test SQL statements), plus four calls to the existing
+# authoritative harness_item_insert API in real relationship fixtures. No new
+# protocol name, wrapper, scan rule or growing file/test inventory is introduced.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

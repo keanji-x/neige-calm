@@ -254,6 +254,13 @@ async fn boot_inner(
     let state = state.with_shared_codex_appserver(daemon.clone());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon,
+            planner_card.id.as_ref(),
+            planner_card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: worker_session_id.clone(),
         track_id: planner_card.track_id.clone(),
         card_id: planner_card.id.clone(),
@@ -262,7 +269,7 @@ async fn boot_inner(
         events,
         card_role_cache: role_cache,
         track_area_cache,
-        backend: daemon.into(),
+
         // The registry the harness is installed in, as production wires it: `GET harness/live` reads it.
         live_replies: state.harness.live_replies().clone(),
         config: HarnessConfig {
@@ -273,8 +280,12 @@ async fn boot_inner(
             transient_silence_budget: Duration::from_secs(5),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     // A user message hard-fires past the debounce windows and would be drained by the first 50ms tick;
     // pausing issuance makes the in-queue assertions deterministic.
     if issuance == Issuance::Paused {

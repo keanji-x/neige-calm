@@ -1,3 +1,4 @@
+use crate::planner_turn_budget::PlannerTurnBudgetExt;
 use std::collections::{HashSet, VecDeque};
 #[cfg(feature = "fixtures")]
 use std::sync::atomic::AtomicU64;
@@ -35,7 +36,7 @@ use crate::harness::queue::{
 };
 use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegments, TurnBase};
 use crate::harness::state::{HarnessState, IssuingKind, RunningTurn, run_status_for};
-use crate::harness::token_usage::TokenUsage;
+use crate::harness::token_usage::{TokenUsage, TokenUsageExt};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::planner_attachments::bind::BoundAttachment;
@@ -44,6 +45,11 @@ use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::{DeletionThreadSeals, ThreadSeals};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
+
+mod canonical;
+mod input_contract;
+pub use input_contract::HarnessRuntimeSnapshot;
+use input_contract::{LoadedRuntimeSnapshot, RuntimeInputs, RuntimeSnapshotKind};
 
 /// Fixtures-only: park a runtime immediately before it turns its pending queue into a turn.
 /// Parked one statement before `inner.issuance` is taken, because `shutdown_inner` takes that
@@ -168,7 +174,7 @@ pub struct PlannerHarnessParams {
     /// The server's one registry: [`crate::harness::HarnessRegistry::live_replies`].
     pub live_replies: Arc<LiveReplies>,
     pub config: HarnessConfig,
-    pub snapshot: HarnessSnapshot,
+    pub snapshot: HarnessRuntimeSnapshot,
 }
 
 pub(super) struct Inner {
@@ -190,7 +196,7 @@ pub(super) struct Inner {
         Option<crate::harness::compact_outcome::CompactOutcome>,
         bool,
     )>,
-    pending_queue: Mutex<VecDeque<QueueEntry>>,
+    inputs: RuntimeInputs,
     recent_hook_keys: Mutex<VecDeque<String>>,
     recent_hook_key_set: Mutex<HashSet<String>>,
     push_watermark: Mutex<i64>,
@@ -284,6 +290,12 @@ struct SteeredEntry {
     row_id: Option<i64>,
 }
 
+impl Inner {
+    fn historical_queue(&self) -> Result<&Mutex<VecDeque<QueueEntry>>> {
+        self.inputs.historical_queue()
+    }
+}
+
 pub(super) struct IssueTurnHandle<'a> {
     backend: &'a PlannerBackend,
 }
@@ -329,6 +341,11 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    CanonicalSource {
+        input: calm_types::conversation::MessageRevisionRef,
+        source: crate::auth::HumanInputSource,
+        observed: oneshot::Sender<Result<()>>,
+    },
     Hibernate {
         done: oneshot::Sender<Result<bool>>,
     },
@@ -429,16 +446,20 @@ struct DurableUserMessageCheckpoint {
     debounce: DebounceState,
 }
 
-async fn checkpoint_durable_user_message(inner: &Inner) -> DurableUserMessageCheckpoint {
-    DurableUserMessageCheckpoint {
-        pending_queue: inner.pending_queue.lock().await.clone(),
+async fn checkpoint_durable_user_message(inner: &Inner) -> Result<DurableUserMessageCheckpoint> {
+    Ok(DurableUserMessageCheckpoint {
+        pending_queue: inner.historical_queue()?.lock().await.clone(),
         debounce: *inner.debounce.lock().await,
-    }
+    })
 }
 
-async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMessageCheckpoint) {
-    *inner.pending_queue.lock().await = checkpoint.pending_queue;
+async fn restore_durable_user_message(
+    inner: &Inner,
+    checkpoint: DurableUserMessageCheckpoint,
+) -> Result<()> {
+    *inner.historical_queue()?.lock().await = checkpoint.pending_queue;
     *inner.debounce.lock().await = checkpoint.debounce;
+    Ok(())
 }
 
 /// Offer a durable send's entries to the in-memory queue, behind a checkpoint the caller restores
@@ -448,7 +469,7 @@ async fn stage_durable_entries(
     inner: &Arc<Inner>,
     deliveries: Vec<HarnessObservationDelivery>,
 ) -> Result<(DurableAck, DurableUserMessageCheckpoint)> {
-    let checkpoint = checkpoint_durable_user_message(inner).await;
+    let checkpoint = checkpoint_durable_user_message(inner).await?;
     let mut ack = DurableAck { entry_id: None };
     for delivery in deliveries {
         let user_authored = delivery.entry.is_user_authored();
@@ -459,9 +480,14 @@ async fn stage_durable_entries(
                 }
             }
             EnqueueOutcome::Rejected => {
-                restore_durable_user_message(inner, checkpoint).await;
+                restore_durable_user_message(inner, checkpoint).await?;
                 return Err(CalmError::ServiceUnavailable(
                     "planner harness pending queue full, retry shortly".into(),
+                ));
+            }
+            EnqueueOutcome::Unsupported => {
+                return Err(CalmError::Conflict(
+                    "canonical input must be accepted by its conversation owner".into(),
                 ));
             }
         }
@@ -497,6 +523,7 @@ impl SendKey {
 
 /// Result of offering one entry to the pending queue.
 enum EnqueueOutcome {
+    Unsupported,
     /// The queue was full of hard-fire entries and nothing could be evicted.
     Rejected,
     Accepted {
@@ -505,6 +532,40 @@ enum EnqueueOutcome {
 }
 
 impl PlannerHarness {
+    /// Supply only the live source of an already committed exact revision.
+    /// Acceptance is owned by the conversation transaction, independently of wake.
+    pub(crate) async fn observe_canonical_source(
+        &self,
+        input: calm_types::conversation::MessageRevisionRef,
+        source: crate::auth::HumanInputSource,
+    ) -> Result<()> {
+        if self.inner.inputs.canonical().is_none() {
+            return Err(CalmError::Conflict(
+                "historical runtime cannot consume canonical input".into(),
+            ));
+        }
+        let (observed, answer) = oneshot::channel();
+        let sender = match &self.inner.observations {
+            ObservationIngress::Running(sender) => sender,
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => {
+                return Err(CalmError::Conflict(
+                    "canonical runtime is not running".into(),
+                ));
+            }
+        };
+        sender
+            .send(HarnessObservationCommand::CanonicalSource {
+                input,
+                source,
+                observed,
+            })
+            .await
+            .map_err(|_| CalmError::Conflict("canonical runtime is closed".into()))?;
+        answer
+            .await
+            .map_err(|_| CalmError::Conflict("canonical runtime is closed".into()))?
+    }
     pub fn track_id(&self) -> &TrackId {
         &self.inner.track_id
     }
@@ -520,14 +581,22 @@ impl PlannerHarness {
         self.inner.held_request_sender.clone()
     }
 
-    pub fn run(params: PlannerHarnessParams) -> Self {
-        params.snapshot.assert_known_schema();
+    pub async fn run(params: PlannerHarnessParams) -> Result<Self> {
+        let loaded = match &params.snapshot.kind {
+            RuntimeSnapshotKind::Historical(snapshot) => {
+                LoadedRuntimeSnapshot::Historical(snapshot.clone())
+            }
+            RuntimeSnapshotKind::Canonical => {
+                LoadedRuntimeSnapshot::Canonical(canonical::load_current(&params).await?)
+            }
+        };
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let events = params.backend.subscribe_events();
         let (held_tx, held_rx) = held_requests::channel();
         let (inner, announce_dropped_first) = inner_from_params(
             params,
+            loaded,
             ObservationIngress::Running(obs_tx),
             shutdown_tx,
             held_tx,
@@ -554,7 +623,7 @@ impl PlannerHarness {
         tokio::spawn(async move {
             let _ = task.await;
         });
-        handle
+        Ok(handle)
     }
 
     #[cfg(feature = "fixtures")]
@@ -562,7 +631,10 @@ impl PlannerHarness {
         params: PlannerHarnessParams,
         observation_buffer: usize,
     ) -> (Self, mpsc::Receiver<HarnessObservationDelivery>) {
-        params.snapshot.assert_known_schema();
+        let RuntimeSnapshotKind::Historical(snapshot) = &params.snapshot.kind else {
+            panic!("the unstarted historical fixture cannot stand in for a canonical runtime");
+        };
+        let loaded = LoadedRuntimeSnapshot::Historical(snapshot.clone());
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
         // No run loop on this path to flush the drop announcements early; the `persist_snapshot_inner`
@@ -570,6 +642,7 @@ impl PlannerHarness {
         let (held_tx, _held_rx) = held_requests::channel();
         let (inner, _announce_dropped_first) = inner_from_params(
             params,
+            loaded,
             ObservationIngress::Unstarted(obs_tx),
             shutdown_tx,
             held_tx,
@@ -590,6 +663,7 @@ impl PlannerHarness {
     }
 
     fn observe_delivery(&self, delivery: HarnessObservationDelivery) -> Result<()> {
+        self.inner.historical_queue()?;
         let closed = self
             .inner
             .observations_closed
@@ -630,6 +704,7 @@ impl PlannerHarness {
         entries: Vec<QueueEntry>,
         key: SendKey,
     ) -> Result<DurableAck> {
+        self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
@@ -663,7 +738,7 @@ impl PlannerHarness {
                     persist_snapshot_for_durable_send(&self.inner, &key, ack.entry_id.as_ref())
                         .await
                 {
-                    restore_durable_user_message(&self.inner, checkpoint).await;
+                    restore_durable_user_message(&self.inner, checkpoint).await?;
                     return Err(error);
                 }
                 Ok(ack)
@@ -678,6 +753,7 @@ impl PlannerHarness {
         mutation: QueueMutation,
         actor: ActorId,
     ) -> Result<MutationResult> {
+        self.inner.historical_queue()?;
         // Deliberately NOT taking `durable_observation`.
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
@@ -716,6 +792,7 @@ impl PlannerHarness {
         if_entry_rev: u32,
         actor: ActorId,
     ) -> Result<SteerResult> {
+        self.inner.historical_queue()?;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "planner harness is shutting down; refusing to steer".into(),
@@ -746,6 +823,7 @@ impl PlannerHarness {
     }
 
     pub async fn compact(&self) -> Result<()> {
+        self.inner.historical_queue()?;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::Conflict(
                 "the conversation is shutting down".into(),
@@ -769,6 +847,7 @@ impl PlannerHarness {
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
+        self.inner.historical_queue()?;
         issue_interrupt(&self.inner, reason).await
     }
 
@@ -782,6 +861,7 @@ impl PlannerHarness {
         attachments: Vec<BoundAttachment>,
         key: SendKey,
     ) -> Result<DurableAck> {
+        self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Err(CalmError::PlannerTurnNotReplaceable(
@@ -819,6 +899,7 @@ impl PlannerHarness {
     /// Stop only this failed loop, without interrupting or sealing its provider
     /// thread. Recovery probes that exact thread before granting authority again.
     pub(crate) async fn quiesce_system_error_for_recovery(&self) -> Result<()> {
+        self.inner.historical_queue()?;
         let _durable = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
             return Ok(());
@@ -901,16 +982,32 @@ impl PlannerHarness {
         Ok(())
     }
 
-    pub async fn snapshot(&self) -> HarnessSnapshot {
+    pub async fn snapshot(&self) -> Result<HarnessSnapshot> {
         snapshot_for(&self.inner).await
+    }
+
+    /// Runtime metadata has one representation and carries no human body queue.
+    /// A canonical read uses only its committed projection, never an empty V1.
+    pub async fn runtime_header(
+        &self,
+    ) -> Result<calm_types::harness::snapshot::HarnessRuntimeHeader> {
+        match &self.inner.inputs {
+            RuntimeInputs::Canonical(inputs) => Ok(inputs.committed().await.snapshot.header),
+            RuntimeInputs::Historical(_) => Ok(snapshot_for(&self.inner).await?.runtime_header()),
+        }
     }
 
     /// The snapshot and the running turn, both derived from ONE read of the state, so a running
     /// turn is never paired with a different phase.
-    pub async fn snapshot_with_running_turn(&self) -> (HarnessSnapshot, Option<RunningTurn>) {
+    pub async fn snapshot_with_running_turn(
+        &self,
+    ) -> Result<(HarnessSnapshot, Option<RunningTurn>)> {
         let state = self.inner.state.lock().await.clone();
         let running_turn = state.running_turn(Instant::now());
-        (snapshot_from_state(&self.inner, &state).await, running_turn)
+        Ok((
+            snapshot_from_state(&self.inner, &state).await?,
+            running_turn,
+        ))
     }
 
     /// Called by the registry when this handle becomes its `Live` slot (#1791 §5.1 item 2).
@@ -975,13 +1072,23 @@ impl PlannerHarness {
     }
 
     pub async fn pending_len_for_test(&self) -> usize {
-        self.inner.pending_queue.lock().await.len()
+        match &self.inner.inputs {
+            RuntimeInputs::Historical(queue) => queue.lock().await.len(),
+            RuntimeInputs::Canonical(inputs) => inputs
+                .committed()
+                .await
+                .snapshot
+                .canonical_inputs
+                .pending
+                .len(),
+        }
     }
 
     #[cfg(feature = "fixtures")]
     pub async fn pending_queue_for_test(&self) -> Vec<Observation> {
         self.inner
-            .pending_queue
+            .historical_queue()
+            .expect("historical queue fixture")
             .lock()
             .await
             .iter()
@@ -992,7 +1099,8 @@ impl PlannerHarness {
     #[cfg(feature = "fixtures")]
     pub async fn pending_entries_for_test(&self) -> Vec<QueueEntry> {
         self.inner
-            .pending_queue
+            .historical_queue()
+            .expect("historical queue fixture")
             .lock()
             .await
             .iter()
@@ -1193,20 +1301,60 @@ fn map_observation_send_error<T>(e: mpsc::error::TrySendError<T>) -> CalmError {
 
 fn inner_from_params(
     params: PlannerHarnessParams,
+    loaded: LoadedRuntimeSnapshot,
     observations: ObservationIngress,
     shutdown: broadcast::Sender<()>,
     held_request_sender: HeldRequestSender,
 ) -> (Arc<Inner>, bool) {
-    let mut snapshot = params.snapshot;
-    let dropped_on_load = truncate_snapshot_pending_queue(&mut snapshot);
+    let (
+        header,
+        inputs,
+        dropped_on_load,
+        debounce,
+        recent_hook_keys,
+        recent_hook_key_set,
+        projection_client_id,
+        legacy_issued_input_segments,
+    ) = match loaded {
+        LoadedRuntimeSnapshot::Historical(mut snapshot) => {
+            let dropped = truncate_snapshot_pending_queue(&mut snapshot);
+            let queue = snapshot
+                .pending_entries()
+                .into_iter()
+                .collect::<VecDeque<_>>();
+            let debounce = debounce_from_initial_queue(&queue);
+            let (keys, key_set) = recent_hook_keys_from_pending_queue(&queue);
+            snapshot.restore_context_feedback();
+            (
+                snapshot.runtime_header(),
+                RuntimeInputs::Historical(Mutex::new(queue)),
+                dropped,
+                debounce,
+                keys,
+                key_set,
+                snapshot.projection_client_id,
+                snapshot.issued_input_segments,
+            )
+        }
+        LoadedRuntimeSnapshot::Canonical(frame) => (
+            frame.snapshot.header.clone(),
+            RuntimeInputs::Canonical(canonical::CanonicalInputs::new(frame)),
+            Vec::new(),
+            DebounceState::default(),
+            VecDeque::new(),
+            HashSet::new(),
+            None,
+            None,
+        ),
+    };
     let announce_first = !dropped_on_load.is_empty();
-    let pending_queue: VecDeque<_> = snapshot.pending_entries().into_iter().collect();
-    let debounce = debounce_from_initial_queue(&pending_queue);
-    snapshot.restore_context_feedback();
-    let state = state_from_snapshot(&snapshot);
-    let last_phase = snapshot.phase;
-    let (recent_hook_keys, recent_hook_key_set) =
-        recent_hook_keys_from_pending_queue(&pending_queue);
+    let state = state_from_runtime_header(&header, &inputs);
+    let last_phase = header.phase;
+    let thread_id = if inputs.canonical().is_some() {
+        header.last_thread_id.clone()
+    } else {
+        params.thread_id.or(header.last_thread_id.clone())
+    };
     let live_claim = params
         .live_replies
         .claim(&params.card_id, &params.worker_session_id);
@@ -1214,7 +1362,7 @@ fn inner_from_params(
         worker_session_id: params.worker_session_id,
         track_id: params.track_id,
         card_id: params.card_id,
-        thread_id: RwLock::new(params.thread_id.or(snapshot.last_thread_id.clone())),
+        thread_id: RwLock::new(thread_id),
         repo: params.repo,
         events: params.events,
         card_role_cache: params.card_role_cache,
@@ -1225,40 +1373,40 @@ fn inner_from_params(
         state: Mutex::new(state),
         last_phase: Mutex::new(last_phase),
         last_context_feedback: Mutex::new((
-            snapshot.compact_outcome.clone(),
-            snapshot.context_usage_invalidated,
+            header.compact_outcome.clone(),
+            header.context_usage_invalidated,
         )),
-        pending_queue: Mutex::new(pending_queue),
+        inputs,
         recent_hook_keys: Mutex::new(recent_hook_keys),
         recent_hook_key_set: Mutex::new(recent_hook_key_set),
-        push_watermark: Mutex::new(snapshot.push_watermark),
-        last_turn_id: Mutex::new(snapshot.last_turn_id),
+        push_watermark: Mutex::new(header.push_watermark),
+        last_turn_id: Mutex::new(header.last_turn_id),
         issued_turn_id: Mutex::new(None),
-        interruption_intent: Mutex::new(snapshot.interruption_intent),
-        issued_turn_head: Mutex::new(snapshot.issued_turn_head),
-        projection_client_id: Mutex::new(snapshot.projection_client_id),
-        legacy_issued_input_segments: Mutex::new(snapshot.issued_input_segments),
-        last_report_body_sha256: Mutex::new(snapshot.last_report_body_sha256),
-        last_seen_head: Mutex::new(snapshot.last_seen_head),
+        interruption_intent: Mutex::new(header.interruption_intent),
+        issued_turn_head: Mutex::new(header.issued_turn_head),
+        projection_client_id: Mutex::new(projection_client_id),
+        legacy_issued_input_segments: Mutex::new(legacy_issued_input_segments),
+        last_report_body_sha256: Mutex::new(header.last_report_body_sha256),
+        last_seen_head: Mutex::new(header.last_seen_head),
         // Round-trips through the snapshot: codex only re-pushes it on the next model response, so a
         // resumed-but-idle thread would otherwise read as having no context usage.
-        token_usage: Mutex::new(snapshot.token_usage),
+        token_usage: Mutex::new(header.token_usage),
         maintenance_turns: Mutex::new(
-            snapshot
+            header
                 .compact_outcome
                 .as_ref()
                 .and_then(|outcome| outcome.turn_id.clone())
                 .into_iter()
                 .collect(),
         ),
-        compact_outcome: Mutex::new(snapshot.compact_outcome),
-        context_usage_invalidation: Mutex::new(snapshot.context_usage_invalidated.then_some(
+        compact_outcome: Mutex::new(header.compact_outcome),
+        context_usage_invalidation: Mutex::new(header.context_usage_invalidated.then_some(
             compact_command::UsageInvalidation {
-                user_turn_id: snapshot.context_usage_invalidated_turn,
+                user_turn_id: header.context_usage_invalidated_turn,
             },
         )),
-        pending_rewind: Mutex::new(snapshot.pending_rewind),
-        last_turn_base: Mutex::new(snapshot.last_turn_base),
+        pending_rewind: Mutex::new(header.pending_rewind.map(BackendRewind::from_persisted)),
+        last_turn_base: Mutex::new(header.last_turn_base.map(Into::into)),
         rewound_turns: Mutex::new(HashSet::new()),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
@@ -1281,7 +1429,7 @@ fn inner_from_params(
         held_request_sender,
         watchdog_held_since: Mutex::new(None),
         abort_handle: StdMutex::new(None),
-        turn_budget: Mutex::new(snapshot.turn_budget),
+        turn_budget: Mutex::new(header.turn_budget),
         config: params.config,
     });
     (inner, announce_first)
@@ -1381,6 +1529,18 @@ async fn run_loop(
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
+                    HarnessObservationCommand::CanonicalSource { input, source, observed } => {
+                        let result = match inner.inputs.canonical() {
+                            Some(inputs) if !inner.shutting_down.load(Ordering::SeqCst) => {
+                                match source.current_principal() {
+                                    Ok(_) => { inputs.observe_source(input, source).await; Ok(()) }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            _ => Err(CalmError::Conflict("canonical runtime is closed".into())),
+                        };
+                        let _ = observed.send(result);
+                    }
                     HarnessObservationCommand::Hibernate { done } => {
                         let result = hibernation::quiesce(&inner, observations.is_empty(), Some(&done)).await;
                         #[cfg(feature = "fixtures")]
@@ -1413,8 +1573,10 @@ async fn run_loop(
                                 match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref()).await {
                                     Ok(()) => Ok(ack),
                                     Err(error) => {
-                                        restore_durable_user_message(&inner, checkpoint).await;
-                                        Err(error)
+                                        match restore_durable_user_message(&inner, checkpoint).await {
+                                            Ok(()) => Err(error),
+                                            Err(restore_error) => Err(restore_error),
+                                        }
                                     }
                                 }
                             }
@@ -1457,6 +1619,12 @@ async fn run_loop(
                 }
             }
             _ = tick.tick() => {
+                if inner.inputs.canonical().is_some() {
+                    if let Err(error) = canonical::tick(&inner).await {
+                        tracing::warn!(%error, "canonical harness tick did not advance");
+                    }
+                    continue;
+                }
                 if let Err(e) = watchdog_tick(&inner).await {
                     tracing::warn!(error = %e, "planner harness watchdog tick failed");
                 }
@@ -1508,7 +1676,7 @@ async fn handle_queue_mutation(
         ));
     }
     let (outcome, checkpoint) = {
-        let mut queue = inner.pending_queue.lock().await;
+        let mut queue = inner.historical_queue()?.lock().await;
         let before = queue.clone();
         (apply_mutation(&mut queue, mutation), before)
     };
@@ -1525,7 +1693,7 @@ async fn handle_queue_mutation(
 
     if let Err(error) = persist_snapshot(inner).await {
         // Memory is rolled back to the exact queue the mutation started from.
-        *inner.pending_queue.lock().await = checkpoint;
+        *inner.historical_queue()?.lock().await = checkpoint;
         return Err(error);
     }
 
@@ -1585,7 +1753,7 @@ async fn handle_steer(
         _ => None,
     };
     let (applied, turn_id) = {
-        let mut queue = inner.pending_queue.lock().await;
+        let mut queue = inner.historical_queue()?.lock().await;
         let Some(turn_id) = turn_id else {
             return Ok(Err(match locate_entry(&queue, entry_id, if_entry_rev) {
                 Err(refused) => SteerRefused::Queue(refused),
@@ -1609,7 +1777,7 @@ async fn handle_steer(
 
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         // Unreachable in practice (`TurnRunning` is only entered from a `turn/started` on this thread).
-        rebuffer_head(inner, vec![entry]).await;
+        rebuffer_head(inner, vec![entry]).await?;
         return Ok(Err(SteerRefused::NoRunningTurn { phase }));
     };
     let segments = input_segments_for_entries(&inner.card_id, std::slice::from_ref(&entry));
@@ -1724,7 +1892,7 @@ async fn handle_steer(
 
     // Refused, unreachable, or timed out: the sentence goes back. No row was written and the
     // on-disk snapshot never stopped listing the entry, so a persist failure is a warning.
-    rebuffer_head(inner, vec![entry]).await;
+    rebuffer_head(inner, vec![entry]).await?;
     if let Err(persist_error) = persist_snapshot(inner).await {
         tracing::warn!(
             worker_session_id = %inner.worker_session_id,
@@ -1772,11 +1940,11 @@ async fn handle_steer(
 async fn restore_steered_entries_codex_dropped(
     inner: &Arc<Inner>,
     turn_id: &str,
-) -> Vec<QueueEntryId> {
+) -> Result<Vec<QueueEntryId>> {
     budget::settle_projection(inner).await;
     let steered = std::mem::take(&mut *inner.steered_into_running_turn.lock().await);
     if steered.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut restored = Vec::new();
     for steered in steered {
@@ -1847,7 +2015,7 @@ async fn restore_steered_entries_codex_dropped(
         restored.push(steered.entry);
     }
     if restored.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let ids = restored
         .iter()
@@ -1858,8 +2026,8 @@ async fn restore_steered_entries_codex_dropped(
     for entry in &mut restored {
         entry.bump_rev_for_restore();
     }
-    rebuffer_head(inner, restored).await;
-    ids
+    rebuffer_head(inner, restored).await?;
+    Ok(ids)
 }
 
 async fn announce_restored_entries(inner: &Arc<Inner>, ids: Vec<QueueEntryId>) {
@@ -2003,7 +2171,10 @@ async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
 }
 
 async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
-    let mut queue = inner.pending_queue.lock().await;
+    let Ok(queue) = inner.historical_queue() else {
+        return EnqueueOutcome::Unsupported;
+    };
+    let mut queue = queue.lock().await;
     // Adjacent, contiguous report edits of the same track fold on every enqueue, so the planner
     // reads ONE diff; user text keeps its own slot until the cap forces a fold.
     if let FoldOutcome::Folded { entry_id } = try_fold_report_edit_tail(&mut queue, &entry) {
@@ -2069,6 +2240,9 @@ async fn on_notification(
     let PlannerEvent { thread_id, kind } = event;
     if thread_id != *inner.thread_id.read().await {
         return Ok(());
+    }
+    if inner.inputs.canonical().is_some() {
+        return canonical::on_notification(inner, live, kind).await;
     }
 
     let maintenance_item = match &kind {
@@ -2280,7 +2454,7 @@ async fn on_notification(
                 live_reply::settle(inner, live, &turn_id, &turn).await;
                 let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
                 // The Stop path is the one that drops steered input; the sweep runs before the phase persist.
-                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await?;
                 persist_snapshot_stamping_issued_head(inner).await?;
                 announce_restored_entries(inner, restored).await;
                 return Ok(());
@@ -2295,7 +2469,7 @@ async fn on_notification(
                 held::end_turn(inner).await;
                 live_reply::settle(inner, live, &turn_id, &turn).await;
                 let item = persist_turn_outcome(inner, &turn_id, &turn).await;
-                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+                let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await?;
                 persist_failed_system_error_snapshot(inner).await?;
                 announce_restored_entries(inner, restored).await;
                 if let Some(item_id) = item {
@@ -2332,7 +2506,7 @@ async fn on_notification(
             live_reply::settle(inner, live, &turn_id, &turn).await;
             let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
             // A turn can end without a model request after the steer on this branch too; same sweep.
-            let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
+            let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await?;
             persist_snapshot_stamping_issued_head(inner).await?;
             announce_restored_entries(inner, restored).await;
             return Ok(());
@@ -2391,7 +2565,7 @@ async fn on_notification(
             *inner.interrupt_deadline.lock().await = None;
             held::end_turn(inner).await;
             clear_interruption_intent(inner, &aborted_turn_id).await;
-            let restored = restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await;
+            let restored = restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await?;
             persist_snapshot_stamping_issued_head(inner).await?;
             announce_restored_entries(inner, restored).await;
             return Ok(());
@@ -2693,7 +2867,7 @@ fn item_turn_id(params: &Value) -> Option<&str> {
 
 /// Live codex sends `userMessage`; the kernel stores `item.type` verbatim and tests have used snake case.
 pub(super) fn is_user_message_type(item_type: Option<&str>) -> bool {
-    matches!(item_type, Some("userMessage" | "user_message"))
+    calm_types::harness::is_native_user_message_type(item_type)
 }
 
 /// One transcript row for a codex `item/*` notification. `input_segments` is NULL for every
@@ -2978,7 +3152,7 @@ async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
             observation: Observation::WorktreeCommitted { track_id, .. }, ..
         } if track_id == &inner.track_id)
     };
-    if !inner.pending_queue.lock().await.iter().any(is_commit) {
+    if !inner.historical_queue()?.lock().await.iter().any(is_commit) {
         return Ok(());
     }
     if !inner
@@ -2989,9 +3163,9 @@ async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
     {
         return Ok(());
     }
-    let checkpoint = checkpoint_durable_user_message(inner).await;
+    let checkpoint = checkpoint_durable_user_message(inner).await?;
     let consumed = {
-        let mut queue = inner.pending_queue.lock().await;
+        let mut queue = inner.historical_queue()?.lock().await;
         let before = queue.len();
         queue.retain(|entry| !is_commit(entry));
         let mut debounce = inner.debounce.lock().await;
@@ -3004,7 +3178,7 @@ async fn consume_completed_worktree_commits(inner: &Arc<Inner>) -> Result<()> {
     // Persist consumption even when no turn remains to write a later snapshot.
     // A failed write must leave the original queue available for retry.
     if let Err(error) = persist_snapshot(inner).await {
-        restore_durable_user_message(inner, checkpoint).await;
+        restore_durable_user_message(inner, checkpoint).await?;
         return Err(error);
     }
     tracing::debug!(
@@ -3101,7 +3275,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Most ticks find the queue empty; bail before any logging so the 50ms
     // tick cadence does not flood the log with one entry line per tick.
     let (queue_len, only_report_edits, report_edits_carry_diffs) = {
-        let queue = inner.pending_queue.lock().await;
+        let queue = inner.historical_queue()?.lock().await;
         (
             queue.len(),
             queue_is_only_report_edits(&queue),
@@ -3338,7 +3512,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // was still accepting results. Re-evaluate at delivery, after that turn
     // can have marked Done; enqueue-time filtering would miss this case.
     consume_completed_worktree_commits(inner).await?;
-    if inner.pending_queue.lock().await.is_empty() {
+    if inner.historical_queue()?.lock().await.is_empty() {
         return Ok(());
     }
 
@@ -3392,7 +3566,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // so the snapshot written next carries it and a restart re-drains the batch under the SAME key.
     let client_id = {
         let from_queue = inner
-            .pending_queue
+            .historical_queue()?
             .lock()
             .await
             .iter()
@@ -3402,7 +3576,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let key = slot
             .clone()
             .or(from_queue)
-            .unwrap_or_else(QueueEntryId::mint);
+            .unwrap_or_else(crate::harness::queue::mint_entry_id);
         *slot = Some(key.clone());
         key
     };
@@ -3417,7 +3591,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     persist_snapshot(inner).await?;
 
     let drained = {
-        let mut queue = inner.pending_queue.lock().await;
+        let mut queue = inner.historical_queue()?.lock().await;
         queue.drain(..).collect::<Vec<_>>()
     };
     if drained.is_empty() {
@@ -3460,7 +3634,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
-        rebuffer_head(inner, drained).await;
+        rebuffer_head(inner, drained).await?;
         *inner.state.lock().await = HarnessState::PendingThreadStart;
         *inner.issued_turn_id.lock().await = None;
         persist_snapshot(inner).await?;
@@ -3508,7 +3682,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // The two arms differ in what waiting is worth, so they differ in how long we wait and in
             // whether the reader is told.
             apply_refusal(inner, &failure).await;
-            rebuffer_head(inner, drained).await;
+            rebuffer_head(inner, drained).await?;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             *inner.state.lock().await = prior_turn
@@ -3638,7 +3812,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                     "planner harness could not delete the projection of a re-buffered batch"
                 );
             }
-            rebuffer_head(inner, drained).await;
+            rebuffer_head(inner, drained).await?;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             *inner.state.lock().await = prior_turn
@@ -3845,8 +4019,8 @@ fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> S
     }
 }
 
-async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
-    let mut queue = inner.pending_queue.lock().await;
+async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) -> Result<()> {
+    let mut queue = inner.historical_queue()?.lock().await;
     // A re-buffered batch keeps the ids it was drained with: the same instances going back.
     for entry in drained.into_iter().rev() {
         queue.push_front(entry);
@@ -3857,6 +4031,7 @@ async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
         last_pending_at: Some(now),
         hard_fire: true,
     };
+    Ok(())
 }
 
 async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
@@ -4055,13 +4230,19 @@ async fn issue_interrupt_for_turn(
     Ok(())
 }
 
-async fn snapshot_for(inner: &Arc<Inner>) -> HarnessSnapshot {
+async fn snapshot_for(inner: &Arc<Inner>) -> Result<HarnessSnapshot> {
     let state = inner.state.lock().await.clone();
     snapshot_from_state(inner, &state).await
 }
 
-async fn snapshot_from_state(inner: &Arc<Inner>, state: &HarnessState) -> HarnessSnapshot {
-    let entries = inner.pending_queue.lock().await.iter().cloned().collect();
+async fn snapshot_from_state(inner: &Arc<Inner>, state: &HarnessState) -> Result<HarnessSnapshot> {
+    let entries = inner
+        .historical_queue()?
+        .lock()
+        .await
+        .iter()
+        .cloned()
+        .collect();
     let push_watermark = *inner.push_watermark.lock().await;
     let last_thread_id = inner.thread_id.read().await.clone();
     let last_turn_id = inner.last_turn_id.lock().await.clone();
@@ -4092,7 +4273,7 @@ async fn snapshot_from_state(inner: &Arc<Inner>, state: &HarnessState) -> Harnes
     snapshot.interruption_intent = inner.interruption_intent.lock().await.clone();
     snapshot.pending_rewind = inner.pending_rewind.lock().await.clone();
     snapshot.last_turn_base = inner.last_turn_base.lock().await.clone();
-    snapshot
+    Ok(snapshot)
 }
 
 /// Is this runtime still the row the card is being driven from? A pool read of one row by id —
@@ -4121,7 +4302,7 @@ async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
     {
         return Ok(());
     }
-    let snapshot = snapshot_for(inner).await;
+    let snapshot = snapshot_for(inner).await?;
     let worker_session_id = inner.worker_session_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let now = crate::model::now_ms();
@@ -4211,7 +4392,7 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -
 }
 
 async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> {
-    let snapshot = serde_json::to_value(snapshot_for(inner).await)?;
+    let snapshot = serde_json::to_value(snapshot_for(inner).await?)?;
     let card = inner.card_id.to_string();
     let id = inner.worker_session_id.clone();
     let written =
@@ -4296,10 +4477,20 @@ async fn persist_snapshot_inner(
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
     }
+    if inner.inputs.canonical().is_some() {
+        if send.is_some() || last_seen_head_override.is_some() {
+            return Err(CalmError::Conflict(
+                "historical snapshot mutation cannot change canonical input".into(),
+            ));
+        }
+        // Every canonical mutation has already committed through its fact/frame
+        // owner. Never serialize the historical cache over that current frame.
+        return Ok(true);
+    }
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
     flush_dropped_announcements(inner).await?;
-    let mut snapshot = snapshot_for(inner).await;
+    let mut snapshot = snapshot_for(inner).await?;
     if let Some(head) = last_seen_head_override {
         snapshot.last_seen_head = Some(head);
         snapshot.issued_turn_head = None;
@@ -4401,14 +4592,24 @@ async fn persist_snapshot_inner(
     Ok(written)
 }
 
-fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
+fn state_from_runtime_header(
+    snapshot: &calm_types::harness::snapshot::HarnessRuntimeHeader,
+    inputs: &RuntimeInputs,
+) -> HarnessState {
     let now = Instant::now();
     match snapshot.phase {
         HarnessPhaseTag::PendingThreadStart => HarnessState::PendingThreadStart,
         HarnessPhaseTag::Idle => HarnessState::Idle,
         HarnessPhaseTag::Compacting => HarnessState::Wedged { since: now, reason: "Context compaction was interrupted by a server restart; reset the conversation to continue.".into() },
         HarnessPhaseTag::IssuingTurn => {
-            if snapshot.last_turn_id.is_some() {
+            if inputs.canonical().is_some() {
+                // An unresolved canonical invocation is still issuing. Neither
+                // a missing native ID nor restart makes it a completed turn.
+                HarnessState::Issuing {
+                    since: now,
+                    kind: IssuingKind::TurnStart,
+                }
+            } else if snapshot.last_turn_id.is_some() {
                 HarnessState::Resumed { resumed_at: now }
             } else {
                 HarnessState::TurnCompleted {
@@ -4419,11 +4620,14 @@ fn state_from_snapshot(snapshot: &HarnessSnapshot) -> HarnessState {
         HarnessPhaseTag::IssuingInterrupt | HarnessPhaseTag::TurnRunning => {
             HarnessState::Resumed { resumed_at: now }
         }
-        HarnessPhaseTag::TurnCompleted => HarnessState::TurnCompleted {
-            last_turn_id: snapshot
-                .last_turn_id
-                .clone()
-                .unwrap_or_else(|| "unknown-turn".into()),
+        HarnessPhaseTag::TurnCompleted => {
+            let last_turn_id = if inputs.canonical().is_some() {
+                snapshot.last_turn_id.clone()
+                    .expect("canonical load checks the completed turn identity")
+            } else {
+                snapshot.last_turn_id.clone().unwrap_or_else(|| "unknown-turn".into())
+            };
+            HarnessState::TurnCompleted { last_turn_id }
         },
         HarnessPhaseTag::Resumed => HarnessState::Resumed { resumed_at: now },
         HarnessPhaseTag::Wedged => HarnessState::Wedged {

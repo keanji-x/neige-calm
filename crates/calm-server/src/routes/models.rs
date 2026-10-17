@@ -14,6 +14,7 @@ use utoipa::{IntoParams, ToSchema};
 use crate::claude_planner::models::{ClaudeCatalog, ClaudeModel};
 use crate::codex_appserver::{CodexConfig, CodexModel};
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::harness::profile::HarnessProfileExt;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState};
 

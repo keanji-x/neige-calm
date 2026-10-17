@@ -107,6 +107,13 @@ async fn idle_harness(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            track.id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id,
         track_id: track.id.clone(),
         card_id: card.id,
@@ -115,11 +122,15 @@ async fn idle_harness(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     (harness, daemon, track.id)
 }
 
@@ -148,7 +159,7 @@ async fn wait_queued(harness: &PlannerHarness, entries: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let armed = harness.debounce_timestamps_set_for_test().await == (true, true);
-        let queued = harness.snapshot().await.pending_len();
+        let queued = harness.snapshot().await.unwrap().pending_len();
         if armed && queued == entries {
             return;
         }
@@ -213,7 +224,7 @@ async fn an_edit_session_that_never_goes_quiet_issues_at_max_wait() {
         harness.observe(report_edit(&track_id, version)).unwrap();
         wait_last_pending_refreshed(&harness).await;
         assert_eq!(
-            harness.snapshot().await.pending_len(),
+            harness.snapshot().await.unwrap().pending_len(),
             1,
             "every contiguous save folds into the held entry"
         );
@@ -298,7 +309,7 @@ async fn a_user_message_during_the_wait_issues_at_once() {
     wait_for_turn_start(&daemon, "a user message is hard-fire and must not wait").await;
     assert_eq!(daemon.turn_start_count_for_test(), 1);
     assert_eq!(
-        harness.snapshot().await.pending_len(),
+        harness.snapshot().await.unwrap().pending_len(),
         0,
         "the queued report edit rode along with the user message"
     );

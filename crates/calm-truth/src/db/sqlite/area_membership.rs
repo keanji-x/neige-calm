@@ -117,14 +117,23 @@ pub async fn area_require_access(
             "system Area requires deployment authority".into(),
         ));
     }
+    require_member_access(area_member_role(connection, area_id, user_id).await?, access)?;
+    Ok(area)
+}
+
+/// A current stored fact, not permission to execute using another authority.
+pub async fn area_member_role(
+    connection: &mut SqliteConnection,
+    area_id: &str,
+    user_id: &str,
+) -> Result<Option<AreaMemberRole>> {
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM area_members WHERE area_id=?1 AND user_id=?2")
             .bind(area_id)
             .bind(user_id)
             .fetch_optional(connection)
             .await?;
-    require_member_access(decode_member_role(role)?, access)?;
-    Ok(area)
+    decode_member_role(role)
 }
 
 pub async fn area_get(connection: &mut SqliteConnection, area_id: &str) -> Result<Area> {

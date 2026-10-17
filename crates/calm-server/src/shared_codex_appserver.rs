@@ -3,7 +3,14 @@
 
 #[cfg(target_os = "macos")]
 mod macos_process;
+mod native_turns;
 mod preserving_recovery;
+mod prompt_attempt;
+pub(crate) use native_turns::{CodexHarnessBinding, NativeInput, NativeSteer};
+use native_turns::{NativeTurns, SourceRetirement};
+#[cfg(all(test, feature = "fixtures"))]
+pub(crate) mod native_owner_tests;
+pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
 mod thread_release;
 
 use std::collections::HashSet;
@@ -34,6 +41,7 @@ use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
 use crate::db::{Repo, SharedCodexDaemonUpdate, write_in_tx_typed};
 use crate::error::{CalmError, Result};
+use crate::harness::profile::HarnessProfileExt;
 use crate::mcp_server::transport;
 use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_card_token};
 use crate::model::{CardRole, now_ms};
@@ -439,7 +447,7 @@ pub struct SharedCodexAppServer {
     /// Attribution can be forgotten before unsubscribe succeeds. Keep the
     /// hibernation obligation independently until release or successful wake.
     hibernating_releases: DashMap<String, ()>,
-    active_turns: Arc<DashMap<String, String>>,
+    native_turns: Arc<NativeTurns>,
     /// The server's one deletion-seal registry, built here and shared through [`Self::thread_seals`].
     /// A late turn/start response or notification on a sealed thread is interrupted instead of
     /// becoming active after the owning workspace has been recycled.
@@ -572,6 +580,7 @@ pub struct FakeSharedCodexAppServer {
     reverted_threads: std::sync::Mutex<Vec<(String, String, u64)>>,
     /// Answer `thread/revert` with codex's `turn not found`, as a wrong or reverted turn gets.
     revert_turn_not_found: AtomicBool,
+    revert_result: std::sync::Mutex<Option<serde_json::Value>>,
     /// How many `config/mcpServer/reload` calls this fake answered as sent.
     mcp_server_reloads: AtomicU64,
     /// How many `config/mcpServer/reload` calls reached this fake, whatever the answer.
@@ -630,6 +639,7 @@ impl FakeSharedCodexAppServer {
             turn_steer_return_hook: std::sync::Mutex::new(None),
             reverted_threads: std::sync::Mutex::new(Vec::new()),
             revert_turn_not_found: AtomicBool::new(false),
+            revert_result: std::sync::Mutex::new(None),
             mcp_server_reloads: AtomicU64::new(0),
             mcp_server_reload_attempts: AtomicU64::new(0),
             mcp_server_reload_answer: std::sync::Mutex::new(FakeMcpServerReload::Sent),
@@ -684,7 +694,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             hibernating_releases: DashMap::new(),
-            active_turns: Arc::new(DashMap::new()),
+            native_turns: Arc::new(NativeTurns::default()),
             thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             start_timeout: Duration::from_secs(120),
@@ -751,7 +761,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             hibernating_releases: DashMap::new(),
-            active_turns: Arc::new(DashMap::new()),
+            native_turns: Arc::new(NativeTurns::default()),
             thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(
                 Duration::from_millis(cfg.shared_codex_appserver_restart_initial_delay_ms),
@@ -1050,101 +1060,16 @@ impl SharedCodexAppServer {
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
-        self.require_authentication()?;
-        if self.thread_seals.is_sealed(thread_id) {
-            return Err(CalmError::Conflict(format!(
-                "thread {thread_id} is sealed because its track is being deleted"
-            )));
-        }
-        if !self.thread_cache.contains_key(thread_id) {
-            tracing::warn!(
-                target = "shared_codex_daemon::mapping_miss",
-                %thread_id,
-                method = "turn/start",
-                "turn/start for thread missing shared daemon card mapping"
-            );
-        }
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            if fake.reject_turn_start.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexRefused(
-                    "turn/start failed: unknown model (code -32602)".into(),
-                ));
-            }
-            if fake.fail_turn_start.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "forced turn/start failure for test".into(),
-                ));
-            }
-            fake.started_turns
-                .lock()
-                .expect("fake shared codex started turns mutex poisoned")
-                .push((thread_id.to_string(), items.clone()));
-            fake.started_turn_selections
-                .lock()
-                .expect("fake shared codex turn selections mutex poisoned")
-                .push((thread_id.to_string(), selection.clone()));
-            fake.started_turn_client_ids
-                .lock()
-                .expect("fake shared codex turn client ids mutex poisoned")
-                .push(client_user_message_id.map(ToOwned::to_owned));
-            fake.started_turn_approvals
-                .lock()
-                .expect("fake shared codex turn approvals mutex poisoned")
-                .push(approvals);
-            // Counted after the records above, so `turn_start_count_for_test` never runs ahead of them.
-            let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
-            let turn_id = format!("fake-turn-{n:04}");
-            let hook = fake
-                .turn_start_return_hook
-                .lock()
-                .expect("fake shared codex turn-start hook mutex poisoned")
-                .take();
-            if let Some(hook) = hook {
-                hook.entered.notify_one();
-                hook.release.notified().await;
-            }
-            self.active_turns
-                .insert(thread_id.to_string(), turn_id.clone());
-            let _ = self.notifications.send(Notification::TurnStarted {
-                thread_id: thread_id.to_string(),
-                turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
-            });
-            if self.thread_seals.is_sealed(thread_id) {
-                self.turn_interrupt(thread_id, &turn_id).await?;
-                self.active_turns
-                    .remove_if(thread_id, |_, active| active == &turn_id);
-                return Err(CalmError::Conflict(format!(
-                    "thread {thread_id} was sealed while turn/start was in flight"
-                )));
-            }
-            return Ok(turn_id);
-        }
-        let client = self.authenticated_client().await?;
-        let turn = client
-            .turn_start_with_client_id(
-                thread_id,
-                items,
-                selection,
-                approvals,
-                client_user_message_id,
-            )
-            .await?;
-        let turn_id = turn
-            .turn_id()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))?;
-        self.active_turns
-            .insert(thread_id.to_string(), turn_id.clone());
-        if self.thread_seals.is_sealed(thread_id) {
-            self.turn_interrupt(thread_id, &turn_id).await?;
-            self.active_turns
-                .remove_if(thread_id, |_, active| active == &turn_id);
-            return Err(CalmError::Conflict(format!(
-                "thread {thread_id} was sealed while turn/start was in flight"
-            )));
-        }
-        Ok(turn_id)
+        self.turn_start_report(
+            thread_id,
+            items,
+            selection,
+            approvals,
+            client_user_message_id,
+            NativeInput::Legacy,
+        )
+        .await
+        .into_outcome()
     }
 
     /// Whether a live app-server connection exists right now. Awaits the core lock rather than
@@ -1322,12 +1247,12 @@ impl SharedCodexAppServer {
 
     /// Drop the active-turn bookkeeping for threads a committed delete has sealed and quiesced;
     /// the caller forgets their seals in [`ThreadSeals::forget_deleted`]. Deliberately takes no
-    /// guard: every other writer of this map uses `DashMap`'s per-entry locking only, and taking
+    /// guard: the native owner uses its own short lock only, and taking
     /// the start serial across a respawn self-deadlocks.
     pub fn forget_turn_state_for_deleted_threads(&self, thread_ids: &[String]) -> usize {
         let mut dropped = 0_usize;
         for thread_id in thread_ids {
-            if self.active_turns.remove(thread_id).is_some() {
+            if self.native_turns.remove(thread_id).is_some() {
                 dropped += 1;
             }
         }
@@ -1365,7 +1290,7 @@ impl SharedCodexAppServer {
 
     /// `turn/steer` — hand `items` to the turn running on `thread_id`; codex refuses when
     /// `expected_turn_id` is not the active turn (`CalmError::CodexRefused`). No seal check and
-    /// no `active_turns` write: a steer creates no turn.
+    /// no `native_turns` write: a steer creates no turn.
     pub async fn turn_steer(
         &self,
         thread_id: &str,
@@ -1373,58 +1298,15 @@ impl SharedCodexAppServer {
         items: Vec<InputItem>,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
-        self.require_authentication()?;
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            fake.steered_turns
-                .lock()
-                .expect("fake shared codex steered turns mutex poisoned")
-                .push((
-                    thread_id.to_string(),
-                    expected_turn_id.to_string(),
-                    items.clone(),
-                    client_user_message_id.map(ToOwned::to_owned),
-                ));
-            let hook = fake
-                .turn_steer_return_hook
-                .lock()
-                .expect("fake shared codex turn-steer hook mutex poisoned")
-                .take();
-            if let Some(hook) = hook {
-                hook.entered.notify_one();
-                hook.release.notified().await;
-            }
-            let scripted = fake
-                .reject_turn_steer
-                .lock()
-                .expect("fake shared codex reject-steer mutex poisoned")
-                .clone();
-            if let Some(message) = scripted {
-                return Err(CalmError::CodexRefused(message));
-            }
-            if fake.fail_turn_steer.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "request turn/steer timed out".into(),
-                ));
-            }
-            return match self.active_turn_id_for_thread(thread_id) {
-                None => Err(CalmError::CodexRefused(
-                    "turn/steer failed: no active turn to steer (code -32600)".into(),
-                )),
-                Some(active) if active != expected_turn_id => {
-                    Err(CalmError::CodexRefused(format!(
-                        "turn/steer failed: expected active turn id `{expected_turn_id}` but \
-                         found `{active}` (code -32600)"
-                    )))
-                }
-                Some(active) => Ok(active),
-            };
-        }
-        let client = self.authenticated_client().await?;
-        let steered = client
-            .turn_steer(thread_id, expected_turn_id, items, client_user_message_id)
-            .await?;
-        Ok(steered.turn_id)
+        self.turn_steer_report(
+            thread_id,
+            expected_turn_id,
+            items,
+            client_user_message_id,
+            NativeSteer::Legacy,
+        )
+        .await
+        .into_outcome()
     }
 
     /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
@@ -1452,24 +1334,34 @@ impl SharedCodexAppServer {
                         "thread/revert failed: turn not found: {before_turn_id} (code -32600)"
                     )))
                 } else {
-                    Ok(serde_json::json!({ "thread": { "id": thread_id } }))
+                    Ok(fake
+                        .revert_result
+                        .lock()
+                        .expect("fake revert result")
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({ "thread": { "id": thread_id } })))
                 }
             });
         #[cfg(not(feature = "fixtures"))]
         let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> = None;
         match fake_answer {
             Some(answer) => {
-                answer?;
+                serde_json::from_value::<provider::codex::ThreadRevertResult>(answer?)?
+                    .confirm_thread(thread_id)?;
             }
             None => {
-                self.authenticated_client()
-                    .await?
-                    .thread_revert(thread_id, before_turn_id)
-                    .await?
+                let client = self.authenticated_client().await?;
+                client.thread_revert(thread_id, before_turn_id).await?;
+                self.native_turns.retire_from_source(
+                    &Arc::downgrade(&client),
+                    thread_id,
+                    before_turn_id,
+                );
+                return Ok(());
             }
         }
-        self.active_turns
-            .remove_if(thread_id, |_, active| active == before_turn_id);
+        self.native_turns
+            .retire_if(thread_id, |_, active| active == before_turn_id);
         Ok(())
     }
 
@@ -1546,34 +1438,104 @@ impl SharedCodexAppServer {
                     "fixture: turn/interrupt failed".into(),
                 ));
             }
-            self.active_turns
-                .remove_if(thread_id, |_, active| active == turn_id);
+            self.native_turns
+                .acknowledge_control_for_fixture(thread_id, turn_id);
             return Ok(());
         }
         let client = self.connected_client().await?;
-        client
-            .turn_interrupt(thread_id, turn_id)
-            .await
-            .map_err(Into::into)
+        client.turn_interrupt(thread_id, turn_id).await?;
+        self.native_turns.acknowledge_control_from_source(
+            &Arc::downgrade(&client),
+            thread_id,
+            turn_id,
+        );
+        Ok(())
     }
 
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
-        self.active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
+        self.native_turns.active(thread_id)
     }
 
     pub async fn interrupt_active_turn(&self, thread_id: &str) -> Result<()> {
-        let Some(turn_id) = self
-            .active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
-        else {
-            return Ok(());
+        // One bounded snapshot of the actual owner: at most known A and candidate B.
+        // Never reread a replacement connection to send an old target's control.
+        let snapshot = self.current_interrupt_snapshot(thread_id).await?;
+        let mut failure = None;
+        for turn_id in &snapshot.turns {
+            let result = self
+                .interrupt_native_source(snapshot.source.as_ref(), thread_id, turn_id)
+                .await;
+            if let Err(error) = result
+                && failure.is_none()
+            {
+                failure = Some(error);
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        let remaining =
+            self.interrupt_snapshot_from_original(snapshot.source.as_ref(), thread_id)?;
+        if remaining.unresolved || !remaining.turns.is_empty() {
+            return Err(CalmError::Conflict(
+                "Codex native activity remains unresolved after interrupt".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn current_interrupt_snapshot(
+        &self,
+        thread_id: &str,
+    ) -> Result<native_turns::InterruptSnapshot> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return Ok(self.native_turns.interrupt_snapshot(thread_id));
+        }
+        // An empty in-process cache says nothing about a persisted thread on a
+        // daemon awaiting hot takeover. Require the actual Running connection.
+        let core = self.core.lock().await;
+        let SupervisorState::Running { client, .. } = &core.state else {
+            return Err(CalmError::Conflict(
+                "Codex native source is unavailable for interrupt".into(),
+            ));
         };
-        self.turn_interrupt(thread_id, &turn_id).await?;
-        self.active_turns
-            .remove_if(thread_id, |_, active| active == &turn_id);
+        self.native_turns.interrupt_snapshot_for(client, thread_id)
+    }
+
+    fn interrupt_snapshot_from_original(
+        &self,
+        source: Option<&Arc<CodexAppServer>>,
+        thread_id: &str,
+    ) -> Result<native_turns::InterruptSnapshot> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return Ok(self.native_turns.interrupt_snapshot(thread_id));
+        }
+        let source = source
+            .ok_or_else(|| CalmError::Conflict("Codex interrupt source is missing".into()))?;
+        self.native_turns.interrupt_snapshot_for(source, thread_id)
+    }
+
+    async fn interrupt_native_source(
+        &self,
+        source: Option<&Arc<CodexAppServer>>,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<()> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return self.turn_interrupt(thread_id, turn_id).await;
+        }
+        let client = source.ok_or_else(|| {
+            CalmError::Conflict("Codex native source is no longer connected".into())
+        })?;
+        client.turn_interrupt(thread_id, turn_id).await?;
+        self.native_turns.acknowledge_control_from_source(
+            &Arc::downgrade(client),
+            thread_id,
+            turn_id,
+        );
         Ok(())
     }
 
@@ -1980,7 +1942,7 @@ impl SharedCodexAppServer {
                     process_start_time: start_time,
                     started_at,
                 };
-                self.install_client(client.clone(), notifications).await?;
+                drop(self.install_client(client.clone(), notifications).await?);
                 let watcher_self = Arc::downgrade(self);
                 let watcher_runtime = runtime.clone();
                 let handle = tokio::spawn(async move {
@@ -2097,6 +2059,7 @@ impl SharedCodexAppServer {
                 }
                 core.attempts = core.attempts.saturating_add(1);
                 let attempts = core.attempts;
+                self.native_turns.invalidate();
                 let prev_pid = match &core.state {
                     SupervisorState::Running { runtime, .. } => Some(runtime.pid),
                     _ => None,
@@ -2376,6 +2339,7 @@ impl SharedCodexAppServer {
     ) {
         let generation = {
             let mut core = self.core.lock().await;
+            self.native_turns.invalidate();
             core.state = SupervisorState::Failed {
                 last_error,
                 class,
@@ -2611,7 +2575,7 @@ impl SharedCodexAppServer {
             );
         }
         let client = Arc::new(client);
-        self.install_client(client.clone(), notifications).await?;
+        drop(self.install_client(client.clone(), notifications).await?);
         let child = spawn_guard.disarm();
         let watcher_self = Arc::downgrade(self);
         let handle = tokio::spawn(async move {
@@ -2866,6 +2830,7 @@ impl SharedCodexAppServer {
                 .flatten()
             {
                 Some(status) => {
+                    self.native_turns.invalidate();
                     *child = None;
                     Some((status, runtime.clone(), generation))
                 }
@@ -3018,6 +2983,7 @@ impl SharedCodexAppServer {
         let socket_path = self.sock.clone();
         {
             let mut core = self.core.lock().await;
+            self.native_turns.invalidate();
             core.state = SupervisorState::Starting {
                 backoff_until: None,
                 socket_path: socket_path.clone(),
@@ -3030,6 +2996,7 @@ impl SharedCodexAppServer {
                     core.attempts = 0;
                     // A new Running incarnation is installed: bump the generation (wrapping; equality-only consumers).
                     core.generation = core.generation.wrapping_add(1);
+                    self.native_turns.publish(&launched.client);
                     core.state = SupervisorState::Running {
                         child: launched.child,
                         client: launched.client,
@@ -3049,6 +3016,7 @@ impl SharedCodexAppServer {
                 let class = classify_spawn_failure(&err);
                 let generation = {
                     let mut core = self.core.lock().await;
+                    self.native_turns.invalidate();
                     core.state = SupervisorState::Failed {
                         last_error: err.to_string(),
                         class,
@@ -3204,7 +3172,7 @@ impl SharedCodexAppServer {
         self: &Arc<Self>,
         client: Arc<CodexAppServer>,
         mut notifications: crate::codex_appserver::NotificationStream,
-    ) -> Result<()> {
+    ) -> Result<JoinHandle<()>> {
         self.start_authentication_monitor();
         // Stamp the daemon (re)connect wall-clock; common path for both fresh-spawn and hot-takeover.
         self.daemon_connected_at_ms
@@ -3218,14 +3186,26 @@ impl SharedCodexAppServer {
         let pending = self.pending_codex_threads_handle.clone();
         let repo = self.repo.clone();
         let thread_cache = self.thread_cache.clone();
-        let active_turns = self.active_turns.clone();
+        let native_turns = self.native_turns.clone();
         let thread_seals = self.thread_seals.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
         let forgotten_threads = self.forgotten_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
-        tokio::spawn(async move {
+        // Construct outside the async body so an unpolled abort also retires
+        // this exact owner; the Weak client cannot keep its reader alive.
+        let retirement = SourceRetirement::new(native_turns.clone(), client.clone());
+        let forwarder = tokio::spawn(async move {
+            let _retirement = retirement;
             while let Some(notification) = notifications.recv().await {
                 authentication.observe_from_connection(authentication_epoch, &notification);
+                // Modeled native events require the actual installed source even
+                // when malformed frames omit their thread. Unscoped Other frames
+                // remain diagnostics; they cannot carry a native END/receipt.
+                let native_scoped = !matches!(&notification,
+                    Notification::Other { params, .. } if other_thread_id(params).is_none());
+                if native_scoped && !native_turns.is_current_source(&client) {
+                    continue;
+                }
                 if let Some(thread_id) = thread_started_id(&notification) {
                     match handle_thread_started_notification(
                         pending.as_ref(),
@@ -3250,44 +3230,58 @@ impl SharedCodexAppServer {
                         }
                     }
                 }
-                if let Some((thread_id, turn_id)) =
-                    track_active_turn(&active_turns, &thread_seals, &notification)
+                if !native_turns.observe(&client, &notification) && native_scoped {
+                    continue;
+                }
+                if let Notification::TurnStarted { thread_id, turn } = &notification
+                    && let Some(turn_id) =
+                        turn_id(turn).filter(|_| thread_seals.is_sealed(thread_id))
                 {
-                    let Some(client) = client.upgrade() else {
+                    let Some(connection) = client.upgrade() else {
                         break;
                     };
-                    let active_turns = active_turns.clone();
+                    let source = client.clone();
+                    let native_turns = native_turns.clone();
+                    let thread_id = thread_id.clone();
+                    let turn_id = turn_id.to_owned();
                     tokio::spawn(async move {
-                        match client.turn_interrupt(&thread_id, &turn_id).await {
-                            Ok(()) => {
-                                active_turns.remove_if(&thread_id, |_, active| active == &turn_id);
-                            }
-                            Err(error) => {
-                                // Keep the id in `active_turns`: deletion's
-                                // strict quiesce can retry and must not mistake
-                                // a failed best-effort interrupt for absence.
-                                tracing::warn!(
-                                    thread_id,
-                                    turn_id,
-                                    error = %error,
-                                    "failed to interrupt late turn on deletion-sealed thread"
-                                );
-                            }
+                        match connection.turn_interrupt(&thread_id, &turn_id).await {
+                            Ok(()) => native_turns
+                                .acknowledge_control_from_source(&source, &thread_id, &turn_id),
+                            Err(error) => tracing::warn!(thread_id, turn_id, error=%error,
+                                    "failed to interrupt late turn on deletion-sealed thread"),
                         }
                     });
                 }
-                if let Some(thread_id) = turn_completed_thread_id(&notification) {
-                    kernel_initiated_threads.lock().await.remove(thread_id);
+                let completed_thread = turn_completed_thread_id(&notification).map(str::to_owned);
+                let mut completion_markers = if completed_thread.is_some() {
+                    Some(kernel_initiated_threads.lock().await)
+                } else {
+                    None
+                };
+                // All prerequisite waits are over. Bookkeeping and publication
+                // share one final source decision under the actual native owner.
+                let publish = || {
+                    if let (Some(thread), Some(markers)) =
+                        (completed_thread.as_ref(), completion_markers.as_mut())
+                    {
+                        markers.remove(thread);
+                    }
+                    let _ = tx.send(notification);
+                };
+                if native_scoped {
+                    native_turns.publish_from_current_source(&client, publish);
+                } else {
+                    publish();
                 }
-                let _ = tx.send(notification);
             }
         });
-        Ok(())
+        Ok(forwarder)
     }
 
     async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
         self.thread_cache.clear();
-        self.active_turns.clear();
+        self.native_turns.clear();
 
         let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
         for (card_id, thread_id) in active_threads {
@@ -3457,9 +3451,7 @@ impl SharedCodexAppServer {
 
     #[cfg(feature = "fixtures")]
     pub fn active_turn_for_test(&self, thread_id: &str) -> Option<String> {
-        self.active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
+        self.native_turns.active(thread_id)
     }
 
     /// Every `thread/revert` the fake was asked: thread, `beforeTurnId`, `turn/start`s before it.
@@ -3483,10 +3475,21 @@ impl SharedCodexAppServer {
             .store(not_found, Ordering::SeqCst);
     }
 
+    #[cfg(feature = "fixtures")]
+    pub fn answer_revert_result_for_test(&self, result: serde_json::Value) {
+        *self
+            .fake
+            .as_ref()
+            .expect("fake daemon")
+            .revert_result
+            .lock()
+            .expect("fake revert result") = Some(result);
+    }
+
     /// What a `turn/completed` does to the cache, for a test that injects the completion itself.
     #[cfg(feature = "fixtures")]
     pub fn clear_active_turn_for_test(&self, thread_id: &str) {
-        self.active_turns.remove(thread_id);
+        self.native_turns.remove(thread_id);
     }
 
     /// Script `thread/read`'s `thread.path` for `thread_id`; `None` is codex's `null`.
@@ -3818,7 +3821,7 @@ impl SharedCodexAppServer {
 
     #[cfg(feature = "fixtures")]
     pub fn set_active_turn_for_test(&self, thread_id: &str, turn_id: &str) {
-        self.active_turns
+        self.native_turns
             .insert(thread_id.to_string(), turn_id.to_string());
     }
 
@@ -4256,45 +4259,6 @@ pub(crate) fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
         .get("turn")
         .and_then(turn_id)
         .or_else(|| params.get("turnId").and_then(serde_json::Value::as_str))
-}
-
-fn track_active_turn(
-    active_turns: &DashMap<String, String>,
-    thread_seals: &ThreadSeals,
-    notification: &Notification,
-) -> Option<(String, String)> {
-    match notification {
-        Notification::TurnStarted { thread_id, turn } => {
-            if let Some(turn_id) = turn_id(turn) {
-                if thread_seals.is_sealed(thread_id) {
-                    active_turns.insert(thread_id.clone(), turn_id.to_string());
-                    return Some((thread_id.clone(), turn_id.to_string()));
-                }
-                active_turns.insert(thread_id.clone(), turn_id.to_string());
-                if thread_seals.is_sealed(thread_id) {
-                    return Some((thread_id.clone(), turn_id.to_string()));
-                }
-            }
-        }
-        Notification::TurnCompleted { thread_id, turn } => {
-            if let Some(turn_id) = turn_id(turn) {
-                active_turns.remove_if(thread_id, |_, active| active == turn_id);
-            } else {
-                active_turns.remove(thread_id);
-            }
-        }
-        Notification::Other { method, params } if method == "turn/aborted" => {
-            if let Some(thread_id) = other_thread_id(params) {
-                if let Some(turn_id) = other_turn_id(params) {
-                    active_turns.remove_if(thread_id, |_, active| active == turn_id);
-                } else {
-                    active_turns.remove(thread_id);
-                }
-            }
-        }
-        _ => {}
-    }
-    None
 }
 
 enum ThreadStartedHandling {

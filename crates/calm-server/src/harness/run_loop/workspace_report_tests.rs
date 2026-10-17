@@ -65,7 +65,7 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
         .await
         .unwrap();
         assert_eq!(
-            fx.harness.snapshot().await.phase,
+            fx.harness.snapshot().await.unwrap().phase,
             HarnessPhaseTag::TurnRunning
         );
         on_notification(
@@ -81,7 +81,7 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
         .await
         .unwrap();
         assert_eq!(
-            fx.harness.snapshot().await.phase,
+            fx.harness.snapshot().await.unwrap().phase,
             HarnessPhaseTag::TurnCompleted
         );
         sqlx::query(

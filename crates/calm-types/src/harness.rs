@@ -1,4 +1,7 @@
-//! Harness vocabulary shared across crates: the phase tag and persisted header constants.
+pub mod budget;
+pub mod snapshot;
+
+// Harness vocabulary shared across crates: phase tags and persisted header constants.
 
 /// Persisted harness header and failure vocabulary used by the codec and transactional recovery guards.
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
@@ -11,6 +14,24 @@ pub const HARNESS_INTERRUPT_TIMEOUT_MESSAGE: &str =
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
+
+/// Persisted start-operation profile vocabulary. Admission and shape checks stay
+/// in the server; moving this IO-free enum does not change its serialized names.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessProfile {
+    #[default]
+    #[serde(rename = "spec")]
+    Planner,
+    PlainChat,
+    Assistant,
+}
+
+/// Provider-native input vocabulary; both spellings occur in persisted rows.
+/// Attribution is decided from the accepted source, never inferred from text.
+pub fn is_native_user_message_type(item_type: Option<&str>) -> bool {
+    matches!(item_type, Some("userMessage" | "user_message"))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]

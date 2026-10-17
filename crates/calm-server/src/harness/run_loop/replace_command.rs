@@ -67,7 +67,7 @@ pub(super) async fn handle_replace(
         ));
     }
     // An empty queue is also what lets the message below be accepted whole: no fold, no eviction.
-    if !inner.pending_queue.lock().await.is_empty()
+    if !inner.historical_queue()?.lock().await.is_empty()
         || inner.projection_client_id.lock().await.is_some()
     {
         return Err(refused(
@@ -118,7 +118,7 @@ pub(super) async fn handle_replace(
         },
         None => HarnessState::Idle,
     };
-    let mut snapshot = snapshot_for(inner).await;
+    let mut snapshot = snapshot_for(inner).await?;
     snapshot.phase = HarnessPhaseTag::from(&state);
     snapshot.last_turn_id = plan.previous_turn_id.clone();
     snapshot.pending_rewind = Some(prepared.clone());
@@ -166,7 +166,7 @@ pub(super) async fn handle_replace(
         Err(error) => Err(error.into()),
     };
     if let Err(error) = committed {
-        restore_durable_user_message(inner, checkpoint).await;
+        restore_durable_user_message(inner, checkpoint).await?;
         return Err(error);
     }
 
