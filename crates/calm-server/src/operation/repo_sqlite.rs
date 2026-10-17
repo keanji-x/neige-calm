@@ -11,10 +11,13 @@ use crate::model::{new_id, now_ms};
 
 use super::{
     CompensationStateVersioned, OPERATION_LEASE_MS, Operation, OperationId, OperationKey,
-    OperationOutcome, OperationRepo, OperationResult, ParkedCompletion, ParkedOutcome, Phase,
-    PhaseTag, ProviderAdapter, SpawnArtifacts, TxOutput, idempotency_payload_conflict,
-    operation_result_from, required_lease_owner,
+    OperationOutcome, OperationRepo, OperationResult, Phase, PhaseTag, ProviderAdapter,
+    SpawnArtifacts, TxOutput, idempotency_payload_conflict, operation_result_from,
+    required_lease_owner,
 };
+
+#[cfg(any(test, feature = "fixtures"))]
+use super::{ParkedCompletion, ParkedOutcome};
 
 mod writes;
 
