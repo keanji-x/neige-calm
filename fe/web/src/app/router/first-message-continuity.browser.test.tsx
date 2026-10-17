@@ -44,7 +44,7 @@ it.each([{ width: 1280, reduce: false }, { width: 390, reduce: false }, { width:
       expect(box.left).toBeGreaterThanOrEqual(0); expect(box.right).toBeLessThanOrEqual(width);
       expect(box.top).toBeGreaterThanOrEqual(0); expect(box.bottom).toBeLessThanOrEqual(900);
       await page.screenshot({ path: `../../../../test-results/first-message-preview-${width}-${reduce}.png` });
-      fixture.project(); fixture.observe('projected');
+      fixture.project(0); fixture.observe('projected');
       await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', fixture.createdId()] }); });
       expect(occurrences()).toHaveLength(1);
       for (let frame = 0; frame < 2; frame++) {
@@ -93,7 +93,7 @@ it.each([1280, 390])('keeps the first bubble in place through native admission w
     await expect.element(page.getByText('Checking the first message’s current status.', { exact: true })).not.toBeInTheDocument();
     await expect.element(page.getByRole('button', { name: 'Status unconfirmed', expanded: false })).toBeVisible();
     await page.screenshot({ path: `../../../../test-results/first-message-native-accepted-held-${width}.png` });
-    fixture.project(); fixture.observe('projected');
+    fixture.project(0); fixture.observe('projected');
     await expect.poll(() => fixture.historyCount()).toBeGreaterThan(1);
     await expect.poll(() => fixture.runCount()).toBeGreaterThan(1);
     await act(async () => {
@@ -156,7 +156,7 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
     if (cardId === null) throw new Error('No actual created conversation');
     fixture.observe('unavailable');
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['conversation-initial-input', 'daily', cardId] }); });
-    fixture.clearQueue(); fixture.project(canonical);
+    fixture.clearQueue(); fixture.project(edited ? 1 : 0, canonical);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
     await expect.poll(() => [...document.querySelectorAll('[data-nc-entry] [data-nc-turn="you"]')]
@@ -181,13 +181,13 @@ it.each([{ width: 1280, steer: false }, { width: 390, steer: false }, { width: 1
         await page.getByRole('button', { name: '发起新对话', exact: true }).click();
       } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
       await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
-      if (!steer) fixture.project(FIRST_MESSAGE, true);
+      if (!steer) fixture.project(0, FIRST_MESSAGE, true);
       fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
       await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
       const cardId = fixture.createdId();
       if (cardId === null) throw new Error('No actual created conversation');
-      await expect.poll(() => fixture.client.getQueriesData<{ observation: { kind: string } }>({ queryKey: ['conversation-initial-input', 'daily', cardId] })
-        .some(([, value]) => value?.observation.kind === 'queued')).toBe(true);
+      await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted'
+        && op.inputFact?.kind === 'queue' && op.inputFact.rev === 0)).toBe(true);
       fixture.observe('unavailable');
       await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['conversation-initial-input', 'daily', cardId] }); });
       await page.getByRole('button', { name: steer ? 'Say it now' : 'Delete this message', exact: true }).click();
@@ -240,7 +240,7 @@ it.each([1280, 390])('keeps an acknowledged first edit readable with real post-w
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
     const field = page.getByRole('combobox', { name: 'Message' });
     await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
-    fixture.queueOriginal(); fixture.project(FIRST_MESSAGE, true); fixture.observe('queued'); fixture.answerCreate();
+    fixture.queueOriginal(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('queued'); fixture.answerCreate();
     await expect.poll(() => fixture.historyCount()).toBe(2); await expect.poll(() => fixture.runCount()).toBe(2);
     act(() => { fixture.releaseHistory(1); fixture.releaseRun(1); });
     await expect.poll(() => document.querySelector('[data-nc-thread]')).not.toBeNull();
@@ -266,7 +266,7 @@ it.each([1280, 390])('keeps an acknowledged first edit readable with real post-w
     await act(async () => { fixture.releaseRun(3); await runRead; });
     await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
     expect(copies(edited)).toHaveLength(1); expect(copies(FIRST_MESSAGE)).toHaveLength(0);
-    fixture.project(edited, true);
+    fixture.project(1, edited, true);
     let historyRead: Promise<void> | null = null;
     act(() => { historyRead = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
     await expect.poll(() => fixture.historyCount()).toBe(4);
@@ -276,3 +276,65 @@ it.each([1280, 390])('keeps an acknowledged first edit readable with real post-w
     expect(commits.length).toBeGreaterThan(0); expect(new Set(commits)).toEqual(new Set([1]));
   } finally { cleanup(); fixture.client.clear(); }
 });
+
+
+it.each([{ width: 1280, restore: true }, { width: 390, restore: true }, { width: 1280, restore: false }, { width: 390, restore: false }])(
+  'keeps one latest known input through real version changes and source handoff ($width px, restore=$restore)', async ({ width, restore }) => {
+    await page.viewport(width, 900); await commands.emulateReducedMotion(false);
+    const external = 'A real externally changed source before the restoring local write.';
+    const acknowledged = 'The earlier acknowledged body before a later queue version.';
+    const latest = restore ? FIRST_MESSAGE : 'The later actual queue version must remain the only current body.';
+    const copies = (text: string) => [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === text);
+    let sawLatest = false; const commits: number[] = []; let hasAck = () => false;
+    const fixture = renderFirstMessageFixture({ mobile: width === 390, holdHistory: true, holdRun: true, harvestedInput: false, onCommit: () => {
+      const count = copies(latest).length; if (hasAck() && count > 0) sawLatest = true; if (sawLatest) commits.push(count);
+    } });
+    hasAck = () => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.localWrite !== null);
+    try {
+      if (width === 390) {
+        await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
+        await page.getByRole('button', { name: '发起新对话', exact: true }).click();
+      } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+      const field = page.getByRole('combobox', { name: 'Message' });
+      await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+      if (restore) { fixture.project(1, external, true); fixture.observe('unavailable'); }
+      else { fixture.queueOriginal(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('queued'); }
+      fixture.answerCreate();
+      const initial = restore ? 1 : 2;
+      await expect.poll(() => fixture.historyCount()).toBe(initial); await expect.poll(() => fixture.runCount()).toBe(initial);
+      act(() => { fixture.releaseHistory(initial - 1); fixture.releaseRun(initial - 1); });
+      const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+      const readRun = async () => {
+        const next = fixture.runCount(); let read: Promise<void> | null = null;
+        act(() => { read = fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
+        await expect.poll(() => fixture.runCount()).toBe(next + 1);
+        await act(async () => { fixture.releaseRun(next); await read; });
+      };
+      if (restore) {
+        await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.sourceWitness !== null)).toBe(true);
+        fixture.queueAtRevision(external, 1); await readRun();
+      }
+      await expect.element(page.getByRole('button', { name: 'Edit queued message' })).toBeEnabled();
+      const beforeWrite = fixture.runCount();
+      await page.getByRole('button', { name: 'Edit queued message' }).click(); await field.fill(restore ? FIRST_MESSAGE : acknowledged);
+      await page.getByRole('button', { name: 'Save queued message', exact: true }).click();
+      await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.localWrite?.text === (restore ? FIRST_MESSAGE : acknowledged))).toBe(true);
+      await expect.poll(() => fixture.runCount()).toBe(beforeWrite + 1);
+      if (!restore) { fixture.queueAtRevision(latest, 2); await readRun(); await expect.poll(() => copies(latest).length).toBe(1); }
+      fixture.clearQueue(); await readRun();
+      await expect.poll(() => copies(latest).length).toBe(1);
+      await expect.poll(() => copies(latest)[0]?.closest('[data-nc-pending-queue]')).toBeNull();
+      expect(copies(restore ? external : acknowledged)).toHaveLength(0);
+      const box = copies(latest)[0].getBoundingClientRect();
+      expect(box.width).toBeGreaterThan(50); expect(box.height).toBeGreaterThan(10);
+      expect(box.left).toBeGreaterThanOrEqual(0); expect(box.right).toBeLessThanOrEqual(width);
+      expect(box.top).toBeGreaterThanOrEqual(0); expect(box.bottom).toBeLessThanOrEqual(900);
+      fixture.project(2, latest, true); const nextHistory = fixture.historyCount(); let historyRead: Promise<void> | null = null;
+      act(() => { historyRead = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
+      await expect.poll(() => fixture.historyCount()).toBe(nextHistory + 1);
+      await act(async () => { fixture.releaseHistory(nextHistory); await historyRead; });
+      await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.sourceWitness?.itemId === 7)).toBe(true);
+      expect(copies(latest)).toHaveLength(1); expect(commits.length).toBeGreaterThan(0); expect(new Set(commits)).toEqual(new Set([1]));
+    } finally { cleanup(); fixture.client.clear(); }
+  },
+);

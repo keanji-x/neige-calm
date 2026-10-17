@@ -118,7 +118,7 @@ export type ConversationTurn = Readonly<{
   /** Exact input provenance, including a known acceptance receipt; only inputSource names raw stored source. */
   queueEntryId?: string | null;
   /** Canonical structured-input source; rendered ids remain the renderer's separate identity. */
-  inputSource?: Readonly<{ itemId: number; segmentIndex: number; turnId: string | null }>;
+  inputSource?: Readonly<{ itemId: number; segmentIndex: number; turnId: string | null; entryRev: number | null }>;
 }>;
 
 /**
@@ -180,8 +180,8 @@ export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.objec
   attachments: z.array(plannerAttachmentSchema).optional().default([]),
   /* Absent on segments recorded before the kernel named each segment's observation and event. */
   origin: z.object({ observation: z.string(), event_id: z.number().nullable(),
-    // Historical origin objects omitted this metadata; current producers emit required nullable identity.
-    queue_entry_id: z.string().nullable().optional().transform((value) => value ?? null) }).optional(),
+    // A null pair is legacy/unknown; an unreleased bare ID cannot certify a source version.
+    queue_entry: z.object({ id: z.string().min(1), rev: z.number().int().nonnegative() }).nullable() }).optional(),
 });
 
 const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
@@ -655,7 +655,7 @@ const plannerInputStaleSchema = z.object({ text: z.string(), rev: z.number(), en
  */
 export type PlannerQueueWriteOutcome =
   | Readonly<{ kind: 'done' }>
-  | Readonly<{ kind: 'stale'; text: string; rev: number }>
+  | Readonly<{ kind: 'stale'; entryId: string; text: string; rev: number }>
   | Readonly<{ kind: 'gone' }>
   | Readonly<{ kind: 'not_running' }>
   | Readonly<{ kind: 'unanswered' }>
@@ -688,7 +688,7 @@ export function plannerQueueWriteFailure(
 ): Exclude<PlannerQueueWriteOutcome, { kind: 'done' }> {
   const kind = classifyFailure(failure, PLANNER_QUEUE_WRITE_FAILURES);
   const stale = kind === 'stale' && failure?.kind === 'http' ? plannerInputStaleSchema.safeParse(failure.body) : null;
-  if (stale?.success === true) return { kind: 'stale', text: stale.data.text, rev: stale.data.rev };
+  if (stale?.success === true) return { kind: 'stale', entryId: stale.data.entry_id, text: stale.data.text, rev: stale.data.rev };
   if (kind === 'failed' || kind === 'stale') {
     return { kind: 'failed', message: failure?.kind === 'http' && failure.message !== '' ? failureReason(failure) : fallback };
   }
@@ -993,8 +993,8 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
         ? String(item.id) : `${item.id}:${index}`;
       if (segment.presentation === 'user') {
         return [{ id, author: 'you' as const, text, atMs, attachments,
-          inputSource: { itemId: item.id, segmentIndex: index, turnId: item.turn_id },
-          ...(segment.origin?.queue_entry_id === undefined ? {} : { queueEntryId: segment.origin.queue_entry_id }) }];
+          inputSource: { itemId: item.id, segmentIndex: index, turnId: item.turn_id, entryRev: segment.origin?.queue_entry?.rev ?? null },
+          ...(segment.origin === undefined ? {} : { queueEntryId: segment.origin.queue_entry?.id ?? null }) }];
       }
       return [{
         id, author: 'system' as const,

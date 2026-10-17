@@ -7,7 +7,7 @@ import { queryKeys } from '../providers/queries.ts';
 import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { focusManager } from '@tanstack/react-query';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); document.getElementById('root')?.remove(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); document.getElementById('root')?.remove(); });
 const words = () => [...document.querySelectorAll('[data-nc-turn="you"]')].filter(element => element.textContent === FIRST_MESSAGE);
 const creates = (fixture: ReturnType<typeof renderFirstMessageFixture>) => fixture.requests.filter(request => request.method === 'POST'
   && request.path.endsWith('/conversations'));
@@ -41,7 +41,7 @@ it('keeps exactly one first sentence through accepted adoption, newer empty read
     expect(screen.queryByText('Sending…')).toBeNull();
     expect(screen.queryByText('Running')).toBeNull();
     expect(screen.getByText('Checking the first message’s current status.')).toBeTruthy();
-    fixture.project();
+    fixture.project(0);
     fixture.observe('projected');
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', fixture.createdId()] }); });
     expect(words()).toHaveLength(1);
@@ -67,7 +67,7 @@ it.each(['projected'] as const)('retires provisional words on coherent %s eviden
     await sendFirst();
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.inspectionCount()).toBeGreaterThan(0));
-    fixture.observe(kind);
+    fixture.project(0); fixture.advanceHistoryWindow(); fixture.observe(kind);
     await waitFor(() => expect(words()).toHaveLength(0));
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
@@ -101,7 +101,7 @@ it('retains words through a pre-observation history reply and a failed post-obse
     await sendFirst();
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1));
-    fixture.failHistory();
+    fixture.project(0); fixture.advanceHistoryWindow(); fixture.failHistory();
     fixture.observe('projected');
     await waitFor(() => expect(fixture.historyCount()).toBe(2));
     // Later failed inspections retain this coherent boundary without scheduling a new source pair.
@@ -153,62 +153,55 @@ it('adopts an explicitly unavailable historical receipt using canonical history 
   } finally { cleanup(); fixture.client.clear(); }
 });
 
-it.each(['changed'] as const)('keeps coherent %s authoritative over an older cached exact carrier through retirement and reopen', async kind => {
+it('keeps a positively changed queue body across the declared source pair and route remount without reviving cached original words', async () => {
   const fixture = renderFirstMessageFixture({ holdHistory: true });
+  const changed = 'Changed by another client.';
   try {
-    await sendFirst();
-    fixture.project();
-    act(() => { fixture.answerCreate(); });
+    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1));
-    fixture.observe(kind);
-    fixture.clearHistory();
-    act(() => { fixture.releaseHistory(0); });
+    fixture.queueEdited(changed); fixture.clearHistory(); fixture.observe('changed');
     await waitFor(() => expect(fixture.historyCount()).toBe(2));
-    await waitFor(() => expect(words()).toHaveLength(0));
-    expect(fixture.outbox()).toHaveLength(1);
-    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', fixture.createdId()] }); });
+    act(() => { fixture.releaseHistory(0); });
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 1, text: changed } }]));
     expect(words()).toHaveLength(0);
-    const inspectionKey = queryKeys.initialInput('daily', fixture.createdId()!);
-    const boundary = () => fixture.client.getQueriesData<ObservedInitialInput>({ queryKey: inspectionKey })
-      .map(([, data]) => data?.afterRead).find(read => read !== undefined) ?? 0;
-    const beforeReopen = boundary();
-    const name = screen.getByRole('button', { name: 'Close conversation' }).closest('[role="complementary"]')?.querySelector('h2')?.textContent;
-    if (name == null) throw new Error('No actual conversation title');
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-    fireEvent.click(await screen.findByRole('button', { name: `Conversation ${name}` }));
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    const key = queryKeys.initialInput('daily', cardId);
+    await waitFor(() => expect(fixture.client.getQueriesData({ queryKey: key })).toEqual([]));
+    const inspections = fixture.inspectionCount();
+    act(() => { fixture.releaseHistory(1); });
+    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.harnessItems(cardId))?.fetchStatus).toBe('idle'));
+    await act(async () => { await fixture.router.navigate({ to: '/settings' }); });
+    await act(async () => { await fixture.router.navigate({ to: '/track/daily' }); });
+    await screen.findByRole('combobox', { name: 'Message' });
     expect(words()).toHaveLength(0);
-    // Reopen inspects again; release the source pair belonging to that new actual boundary.
-    await waitFor(() => expect(boundary()).toBeGreaterThan(beforeReopen));
-    act(() => { for (let index = 1; index < fixture.historyCount(); index++) fixture.releaseHistory(index); });
-    await waitFor(() => expect(fixture.outbox()).toEqual([]));
-    expect(words()).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
-    expect(words()).toHaveLength(0);
+    expect([...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === changed)).toHaveLength(1);
+    expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 1, text: changed } }]);
+    expect(fixture.inspectionCount()).toBe(inspections);
   } finally { cleanup(); fixture.client.clear(); }
 });
 
-it.each(['changed', 'projected'] as const)('hides stale cached queue text and actions after coherent %s, allowing a later real restored queue page', async kind => {
+it.each(['changed', 'projected'] as const)('ignores a canceled creation %s reply after real queue ownership and keeps a later actual revision editable', async kind => {
   const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
   const pending = () => document.querySelector('[data-nc-pending-entry="first-entry"]');
   try {
-    await sendFirst();
-    fixture.queueOriginal();
-    act(() => { fixture.answerCreate(); });
-    await waitFor(() => expect(fixture.historyCount()).toBe(1));
-    await waitFor(() => expect(fixture.runCount()).toBe(1));
+    await sendFirst(); fixture.queueOriginal(); fixture.holdNextInspection(); act(() => { fixture.answerCreate(); });
+    await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
+    if (kind === 'changed') fixture.queueEdited('Changed by another client.');
+    else { fixture.clearQueue(); fixture.project(0); }
+    fixture.observe(kind); await waitFor(() => expect(fixture.heldInspectionCount()).toBe(1));
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
-    await waitFor(() => expect(pending()).not.toBeNull());
-    fixture.observe(kind);
-    await waitFor(() => expect(fixture.runCount()).toBeGreaterThan(1));
-    await waitFor(() => expect(pending()).toBeNull());
-    if (kind !== 'projected') expect(words()).toHaveLength(0);
-    expect(fixture.outbox()).toHaveLength(1);
-    // This later run is real current source, even though it restores the same entry after the observation.
-    act(() => { fixture.releaseRun(fixture.runCount() - 1); });
-    await waitFor(() => expect(pending()).not.toBeNull());
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 0, text: FIRST_MESSAGE } }]));
     expect(pending()?.textContent).toContain(FIRST_MESSAGE);
-    expect(pending()?.querySelector('button')).not.toBeNull();
+    act(() => { fixture.releaseInspection(0); });
+    expect(pending()?.textContent).toContain(FIRST_MESSAGE);
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    fixture.queueAtRevision('A later actual restored queue body.', 2);
+    let reread: Promise<void> | null = null;
+    act(() => { reread = fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
+    await waitFor(() => expect(fixture.runCount()).toBe(2));
+    await act(async () => { fixture.releaseRun(1); await reread; });
+    await waitFor(() => expect(pending()?.textContent).toContain('A later actual restored queue body.'));
+    expect(pending()?.querySelector('button')).not.toBeNull(); expect(words()).toHaveLength(0);
   } finally { cleanup(); fixture.client.clear(); }
 });
 
@@ -224,13 +217,10 @@ it('shows newer edited canonical words over an older queued observation when cur
     if (cardId === null) throw new Error('No actual created conversation');
     const observed = () => fixture.client.getQueriesData<ObservedInitialInput>({ queryKey: queryKeys.initialInput('daily', cardId) })
       .map(([, data]) => data).find(data => data !== undefined);
-    await waitFor(() => expect(observed()?.observation.kind).toBe('queued'));
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 0 } }]));
     fixture.observe('unavailable');
-    await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.initialInput('daily', cardId) }); });
-    await screen.findByText('The first message’s current status could not be checked.');
-    expect(observed()?.observation.kind).toBe('queued');
     fixture.clearQueue();
-    fixture.project(edited);
+    fixture.project(1, edited);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
     expect([...document.querySelectorAll('[data-nc-turn="you"]')].map(element => element.textContent)).toContain(edited);
@@ -278,27 +268,16 @@ it('keeps recovered receipt adoption and its row when an older list read answers
 it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply must not replace.'])('preserves handed-off canonical ownership when a canceled delayed queued inspection answers (%s)', async edited => {
   const commits: number[] = []; let capture = false;
   const fixture = renderFirstMessageFixture({ onCommit: () => { const count = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === edited).length; if (count > 0) capture = true; if (capture) commits.push(count); } });
-  let delayedRead: Promise<void> | null = null;
   const shownWords = () => [...document.querySelectorAll('[data-nc-turn="you"]')].map(element => element.textContent);
   try {
     await sendFirst();
-    fixture.queueOriginal();
+    fixture.project(1, edited); fixture.holdNextInspection(); fixture.observe('queued');
     act(() => { fixture.answerCreate(); });
-    fixture.observe('queued');
-    const cardId = fixture.createdId();
-    if (cardId === null) throw new Error('No actual created conversation');
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
     const inspectionKey = queryKeys.initialInput('daily', cardId);
     const observed = () => fixture.client.getQueriesData<ObservedInitialInput>({ queryKey: inspectionKey })
       .map(([, data]) => data).find(data => data !== undefined);
-    await waitFor(() => expect(observed()?.observation.kind).toBe('queued'));
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.plannerRun(cardId))?.fetchStatus).toBe('idle'));
-    fixture.holdNextInspection();
-    act(() => { delayedRead = fixture.client.invalidateQueries({ queryKey: inspectionKey }); });
     await waitFor(() => expect(fixture.heldInspectionCount()).toBe(1));
-    fixture.clearQueue();
-    fixture.project(edited);
-    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
-    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
     await waitFor(() => expect(shownWords()).toContain(edited));
     expect(words()).toHaveLength(edited === FIRST_MESSAGE ? 1 : 0);
     const canonical = [...document.querySelectorAll('[data-nc-turn="you"]')].find(node => node.textContent === edited);
@@ -308,7 +287,7 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
     const beforeRelease = sourceReads();
     // The held response already captured the unchanged queued result; only later requests see unavailable.
     fixture.observe('unavailable');
-    await act(async () => { fixture.releaseInspection(0); await delayedRead; });
+    act(() => { fixture.releaseInspection(0); });
     expect(observed()).toBeUndefined();
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: inspectionKey }); });
     expect(fixture.client.getQueriesData({ queryKey: inspectionKey })).toEqual([]);
@@ -321,35 +300,27 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
   } finally { cleanup(); fixture.client.clear(); }
 });
 
-it('preserves a newer queued revision after a delayed original queued observation and unavailable inspection', async () => {
-  const fixture = renderFirstMessageFixture();
+it('preserves a newer actual queued revision after a canceled original queued observation', async () => {
+  const fixture = renderFirstMessageFixture({ holdRun: true });
   const edited = 'A newer real queued revision from another client.';
   const pending = () => document.querySelector('[data-nc-pending-entry="first-entry"]');
-  let delayedRead: Promise<void> | null = null;
   try {
-    await sendFirst();
-    fixture.queueOriginal();
+    await sendFirst(); fixture.queueOriginal(); fixture.holdNextInspection(); fixture.observe('queued');
     act(() => { fixture.answerCreate(); });
-    fixture.observe('queued');
-    const cardId = fixture.createdId();
-    if (cardId === null) throw new Error('No actual created conversation');
-    const inspectionKey = queryKeys.initialInput('daily', cardId);
-    await waitFor(() => expect(pending()?.textContent).toContain(FIRST_MESSAGE));
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.plannerRun(cardId))?.fetchStatus).toBe('idle'));
-    fixture.holdNextInspection();
-    act(() => { delayedRead = fixture.client.invalidateQueries({ queryKey: inspectionKey }); });
     await waitFor(() => expect(fixture.heldInspectionCount()).toBe(1));
-    fixture.queueEdited(edited);
-    await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
+    await waitFor(() => expect(fixture.runCount()).toBe(1));
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    act(() => { fixture.releaseRun(0); });
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 0 } }]));
+    fixture.queueEdited(edited); let read: Promise<void> | null = null;
+    act(() => { read = fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
+    await waitFor(() => expect(fixture.runCount()).toBe(2));
+    await act(async () => { fixture.releaseRun(1); await read; });
     await waitFor(() => expect(pending()?.textContent).toContain(edited));
-    fixture.observe('unavailable');
-    await act(async () => { fixture.releaseInspection(0); await delayedRead; });
-    await act(async () => { await fixture.client.invalidateQueries({ queryKey: inspectionKey }); });
-    await screen.findByText('The first message’s current status could not be checked.');
-    await waitFor(() => expect(pending()?.textContent).toContain(edited));
-    expect(pending()?.querySelector('button')).not.toBeNull();
+    act(() => { fixture.releaseInspection(0); });
+    expect(pending()?.textContent).toContain(edited); expect(pending()?.querySelector('button')).not.toBeNull();
     expect(words()).toHaveLength(0);
-    expect(fixture.outbox()).toMatchObject([{ phase: 'initial-accepted' }]);
+    expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 1, text: edited } }]);
   } finally { cleanup(); fixture.client.clear(); }
 });
 
@@ -361,7 +332,7 @@ it('lets slow dependent reads finish across polling intervals and hand off witho
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1));
     await waitFor(() => expect(fixture.runCount()).toBe(1));
-    fixture.project();
+    fixture.project(0);
     fixture.observe('projected');
     await waitFor(() => expect(fixture.historyCount()).toBe(2));
     await waitFor(() => expect(fixture.runCount()).toBe(2));
@@ -431,32 +402,26 @@ it('keeps the real first-input queue readable through parked thread admission', 
 
 it.each(['unavailable', 'held'] as const)('does not revive the original first-input copy after a real Delete acknowledgement while inspection is %s', async inspection => {
   const fixture = renderFirstMessageFixture();
-  let inspecting: Promise<void> | null = null;
   try {
     await sendFirst(); fixture.queueOriginal();
-    act(() => { fixture.answerCreate(); }); fixture.observe('queued');
+    if (inspection === 'held') fixture.holdNextInspection();
+    fixture.observe(inspection === 'held' ? 'queued' : 'unavailable'); act(() => { fixture.answerCreate(); });
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
     const key = queryKeys.initialInput('daily', cardId);
-    await waitFor(() => expect(fixture.client.getQueriesData<ObservedInitialInput>({ queryKey: key })
-      .some(([, result]) => result?.observation.kind === 'queued')).toBe(true));
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 0 } }]));
     await waitFor(() => {
       const remove = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
       expect(remove.disabled || remove.getAttribute('aria-disabled') === 'true').toBe(false);
     });
-    if (inspection === 'held') {
-      fixture.holdNextInspection();
-      act(() => { inspecting = fixture.client.invalidateQueries({ queryKey: key }); });
-      await waitFor(() => expect(fixture.heldInspectionCount()).toBe(1));
-    }
-    fixture.observe('unavailable');
-    if (inspection === 'unavailable') await act(async () => { await fixture.client.invalidateQueries({ queryKey: key }); });
+    if (inspection === 'held') await waitFor(() => expect(fixture.heldInspectionCount()).toBe(1));
+    expect(fixture.client.getQueriesData({ queryKey: key })).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
     await waitFor(() => expect(fixture.requests.filter(request => request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry'))).toHaveLength(1));
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull());
     expect([...document.querySelectorAll('[data-nc-entry] [data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE)).toHaveLength(0);
     expect(words()).toHaveLength(0);
-    if (inspection === 'held') await act(async () => { fixture.releaseInspection(0); await inspecting; });
+    if (inspection === 'held') act(() => { fixture.releaseInspection(0); });
     expect(words()).toHaveLength(0);
   } finally { cleanup(); fixture.client.clear(); }
 });
@@ -465,7 +430,7 @@ it.each(['unavailable', 'held'] as const)('does not revive the original first-in
 it('keeps acknowledged deletion nondrawing over cached sources and retains its terminal fact after fresh page misses', async () => {
   const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
   try {
-    await sendFirst(); fixture.project(FIRST_MESSAGE, true); fixture.queueOriginal();
+    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => expect(fixture.historyCount()).toBe(2));
     await waitFor(() => expect(fixture.runCount()).toBe(2));
@@ -542,7 +507,7 @@ it.each([false, true])('preserves actual queued edit acceptance without reviving
     fireEvent.keyDown(field, { key: 'Enter' });
     await waitFor(() => expect(fixture.requests.filter(request => request.method === 'PATCH' && request.path.endsWith('/planner/input/first-entry'))).toHaveLength(1));
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(revised));
-    fixture.clearQueue(); fixture.project(revised, true);
+    fixture.clearQueue(); fixture.project(1, revised, true);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
     expect([...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === revised)).toHaveLength(1);
@@ -578,10 +543,13 @@ it('starts an actual post-ACK history read when Delete is accepted before the fi
 
 
 it('keeps a real Delete acknowledgement stronger than freshly reread old unbound provisional input', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal('cancelAnimationFrame', () => undefined);
   const fixture = renderFirstMessageFixture();
   focusManager.setFocused(true);
   try {
-    await sendFirst(); fixture.project(FIRST_MESSAGE, true); fixture.queueOriginal();
+    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => {
       const remove = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
@@ -600,7 +568,7 @@ it('keeps a real Delete acknowledgement stronger than freshly reread old unbound
     expect(fixture.outbox()).toHaveLength(1);
     await waitFor(() => expect(fixture.client.isFetching({ queryKey: queryKeys.initialInput('daily', cardId) })).toBe(0));
     const inspections = fixture.inspectionCount();
-    await act(async () => { await new Promise(resolve => { setTimeout(resolve, 2200); }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2200); });
     expect(fixture.inspectionCount()).toBe(inspections);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.initialInput('daily', cardId) }); });
     expect(fixture.inspectionCount()).toBe(inspections);
@@ -612,7 +580,7 @@ it('keeps a real Delete acknowledgement stronger than freshly reread old unbound
     fireEvent.click(await screen.findByRole('button', { name: `Conversation ${name}` }));
     await screen.findByRole('combobox', { name: 'Message' });
     expect(words()).toHaveLength(0);
-  } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); }
+  } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); vi.useRealTimers(); }
 });
 
 
@@ -642,7 +610,7 @@ it('keeps exactly one accepted fallback when the real queue disappears before ca
 it.each([false, true])('admits one ordinary keyed input with healthy real reads while initial inspection is unavailable (provisional: %s)', async provisional => {
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst(); fixture.project(FIRST_MESSAGE, provisional); fixture.observe('unavailable');
+    await sendFirst(); fixture.project(0, FIRST_MESSAGE, provisional); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7 } }]));
     const field = screen.getByRole('combobox', { name: 'Message' });
@@ -662,7 +630,7 @@ it.each([false, true])('admits one ordinary keyed input with healthy real reads 
 it('ends the creation observer once actual unbound source owns display while history and run retain refresh', async () => {
   const fixture = renderFirstMessageFixture(); focusManager.setFocused(true);
   try {
-    await sendFirst(); fixture.project(FIRST_MESSAGE, true); fixture.observe('unavailable');
+    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: null } }]));
     const cardId = fixture.createdId();
@@ -686,7 +654,7 @@ it('ends the creation observer once actual unbound source owns display while his
 it('never reclaims first-input display after its real unbound source moves outside the later history window and reopens', async () => {
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst(); fixture.project(FIRST_MESSAGE, true); fixture.observe('unavailable');
+    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: null } }]));
     await waitFor(() => expect(words()).toHaveLength(1));
@@ -709,20 +677,29 @@ it('never reclaims first-input display after its real unbound source moves outsi
   } finally { cleanup(); fixture.client.clear(); }
 });
 
-it('keeps periodic inspection for unresolved first input with no actual source', async () => {
+it('keeps periodic projected lookup reconciliation while actual source history remains unavailable', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal('cancelAnimationFrame', () => undefined);
   const fixture = renderFirstMessageFixture(); focusManager.setFocused(true);
   try {
-    await sendFirst(); fixture.observe('queued'); act(() => { fixture.answerCreate(); });
+    await sendFirst(); fixture.project(0); fixture.failHistory(); fixture.observe('projected'); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.inspectionCount()).toBe(1));
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    await waitFor(() => expect(fixture.client.isFetching({ queryKey: queryKeys.harnessItems(cardId) })).toBe(0));
+    expect(fixture.client.getQueryState(queryKeys.harnessItems(cardId))?.status).toBe('error');
     const before = fixture.inspectionCount();
-    await act(async () => { await new Promise(resolve => { setTimeout(resolve, 2200); }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2200); });
     expect(fixture.inspectionCount()).toBeGreaterThan(before);
     expect(words()).toHaveLength(1);
-  } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); }
+  } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); vi.useRealTimers(); }
 });
 
 
 it('admits exactly one keyed ordinary send with healthy no-source reads and pauses periodic inspection after an unavailable result', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal('cancelAnimationFrame', () => undefined);
   const fixture = renderFirstMessageFixture(); focusManager.setFocused(true);
   try {
     await sendFirst(); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
@@ -731,7 +708,7 @@ it('admits exactly one keyed ordinary send with healthy no-source reads and paus
     await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
     expect(fixture.outbox()).toMatchObject([{ sourceWitness: null }]);
     const inspections = fixture.inspectionCount();
-    await act(async () => { await new Promise(resolve => { setTimeout(resolve, 2200); }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2200); });
     expect(fixture.inspectionCount()).toBe(inspections);
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
@@ -743,5 +720,5 @@ it('admits exactly one keyed ordinary send with healthy no-source reads and paus
     expect(input?.headers?.['Idempotency-Key']).toEqual(expect.any(String));
     expect(input?.headers?.['Idempotency-Key']).not.toBe(creates(fixture)[0].headers?.['Idempotency-Key']);
     expect(words()).toHaveLength(1); expect(creates(fixture)).toHaveLength(1);
-  } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); }
+  } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); vi.useRealTimers(); }
 });

@@ -13,7 +13,7 @@ async function queuedFirst() {
   const field = await screen.findByRole('combobox', { name: 'Message' });
   await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
   await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
-  fixture.queueOriginal(); fixture.project(FIRST_MESSAGE, true); fixture.observe('queued');
+  fixture.queueOriginal(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('queued');
   act(() => { fixture.answerCreate(); });
   await waitFor(() => expect(fixture.historyCount()).toBe(2));
   await waitFor(() => expect(fixture.runCount()).toBe(2));
@@ -96,12 +96,91 @@ it('hands the actual edited ACK body from queue to plain accepted display while 
     expect(screen.queryByRole('button', { name: 'Edit queued message' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete this message' })).toBeNull();
     expect(fixture.outbox()).toMatchObject([{ submitted: { text: FIRST_MESSAGE }, sourceWitness: null }]);
-    fixture.project(edited, true);
+    fixture.project(1, edited, true);
     let historyRead: Promise<void> | null = null;
     act(() => { historyRead = fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
     await waitFor(() => expect(fixture.historyCount()).toBe(4));
     await act(async () => { fixture.releaseHistory(3); await historyRead; });
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: null } }]));
     expect(copies(FIRST_MESSAGE)).toHaveLength(0); expect(copies(edited)).toHaveLength(1);
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+
+async function readHeldRun(fixture: ReturnType<typeof renderFirstMessageFixture>, cardId: string) {
+  const next = fixture.runCount(); let read: Promise<void> | null = null;
+  act(() => { read = fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
+  await waitFor(() => expect(fixture.runCount()).toBe(next + 1));
+  await act(async () => { fixture.releaseRun(next); await read; });
+}
+
+async function saveQueuedBody(fixture: ReturnType<typeof renderFirstMessageFixture>, text: string, rev: number) {
+  const before = fixture.runCount();
+  await waitFor(() => {
+    const edit = screen.getByRole<HTMLButtonElement>('button', { name: 'Edit queued message' });
+    expect(edit.disabled || edit.getAttribute('aria-disabled') === 'true').toBe(false);
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
+  const field = screen.getByRole('combobox', { name: 'Message' });
+  act(() => { field.textContent = text; fireEvent.input(field); }); fireEvent.keyDown(field, { key: 'Enter' });
+  await waitFor(() => expect(fixture.outbox()).toMatchObject([{ localWrite: { text, rev } }]));
+  await waitFor(() => expect(fixture.runCount()).toBe(before + 1));
+}
+
+it('keeps an actual PATCH restoring submitted words after a different external unbound source already owned display', async () => {
+  const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
+  const external = 'An external revision that was actually shown before the local edit.';
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    const field = await screen.findByRole('combobox', { name: 'Message' });
+    await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
+    await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+    fixture.project(1, external, true); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
+    await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
+    act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
+    const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ localWrite: null, sourceWitness: { itemId: 7, turnId: null } }]));
+    expect(copies(external)).toHaveLength(1);
+    fixture.queueAtRevision(external, 1); await readHeldRun(fixture, cardId);
+    await saveQueuedBody(fixture, FIRST_MESSAGE, 2);
+    fixture.clearQueue(); await readHeldRun(fixture, cardId);
+    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
+    expect(copies(FIRST_MESSAGE)).toHaveLength(1); expect(copies(external)).toHaveLength(0);
+    expect(copies(FIRST_MESSAGE)[0].closest('[data-nc-pending-queue]')).toBeNull();
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+it('keeps a later actual queue revision after a local ACK when the run then omits it before held history lands', async () => {
+  const { fixture, cardId } = await queuedFirst();
+  const acknowledged = 'The first locally acknowledged revised body.';
+  const later = 'A later actual queue revision must retain display ownership.';
+  try {
+    await saveQueuedBody(fixture, acknowledged, 1);
+    fixture.queueAtRevision(later, 2); await readHeldRun(fixture, cardId);
+    await waitFor(() => expect(copies(later)).toHaveLength(1));
+    expect(copies(acknowledged)).toHaveLength(0);
+    fixture.clearQueue(); await readHeldRun(fixture, cardId);
+    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
+    expect(copies(later)).toHaveLength(1); expect(copies(acknowledged)).toHaveLength(0);
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+
+it('retains a real identity-bearing CAS revision hint as queue knowledge without turning the refused edit into an ACK', async () => {
+  const { fixture, cardId } = await queuedFirst();
+  const acknowledged = 'The actual locally stored earlier edit.';
+  const latest = 'The actual newer body returned by the stale revision response.';
+  try {
+    await saveQueuedBody(fixture, acknowledged, 1);
+    fixture.queueAtRevision(latest, 2);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
+    const field = screen.getByRole('combobox', { name: 'Message' });
+    act(() => { field.textContent = 'Refused local proposal'; fireEvent.input(field); }); fireEvent.keyDown(field, { key: 'Enter' });
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ localWrite: { rev: 1, text: acknowledged }, inputFact: { rev: 2, text: latest } }]));
+    expect(fixture.requests.findLast(request => request.method === 'PATCH')?.body).toEqual({ text: 'Refused local proposal', if_entry_rev: 1 });
+    fixture.clearQueue(); await readHeldRun(fixture, cardId);
+    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
+    expect(copies(latest)).toHaveLength(1); expect(copies(acknowledged)).toHaveLength(0);
+    expect(fixture.outbox()).toMatchObject([{ localWrite: { rev: 1, text: acknowledged } }]);
   } finally { cleanup(); fixture.client.clear(); }
 });

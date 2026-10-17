@@ -293,7 +293,7 @@ it('uses acknowledged operation state even when an accepted legacy receipt has n
 
 it('retires an edited queued send against the revised transcript text without leaving a phantom input', () => {
   const sent = op('edited', CONFIRMED, { text: 'old middle text', queued: true, entryId: 'middle' });
-  const edited = synchronizeQueuedSends([sent], [{ entry_id: 'middle', text: 'new middle text', rev: 1, queued_at_ms: 10 }]);
+  const edited = synchronizeQueuedSends([sent], { displayed: [{ entry_id: 'middle', text: 'new middle text', rev: 1, queued_at_ms: 10 }], reported: [] });
   const shown = view(edited, [row('5', 'new middle text')]);
   expect(shown.retire).toEqual([{ key: sent.key, row: '5' }]);
   expect(shown.transcript).toEqual([row('5', 'new middle text')]);
@@ -302,8 +302,8 @@ it('retires an edited queued send against the revised transcript text without le
 
 it('does not roll a successful queue edit back to an older cached queue revision', () => {
   const sent = op('edited', CONFIRMED, { text: 'before', queued: true, entryId: 'middle' });
-  const fresh = synchronizeQueuedSends([sent], [{ entry_id: 'middle', text: 'after', rev: 2, queued_at_ms: 10 }]);
-  const stale = synchronizeQueuedSends(fresh, [{ entry_id: 'middle', text: 'before', rev: 1, queued_at_ms: 10 }]);
+  const fresh = synchronizeQueuedSends([sent], { displayed: [{ entry_id: 'middle', text: 'after', rev: 2, queued_at_ms: 10 }], reported: [] });
+  const stale = synchronizeQueuedSends(fresh, { displayed: [{ entry_id: 'middle', text: 'before', rev: 1, queued_at_ms: 10 }], reported: [] });
   expect(stale).toBe(fresh);
   expect(stale[0].echo.text).toBe('after');
 });
@@ -311,14 +311,14 @@ it('does not roll a successful queue edit back to an older cached queue revision
 it('updates only the confirmed queue identity when equal messages coexist', () => {
   const confirmed = op('known', CONFIRMED, { queued: true, entryId: 'known' });
   const unconfirmed = op('unknown', SENDING, { queued: true });
-  const shown = synchronizeQueuedSends([confirmed, unconfirmed], [{ entry_id: 'known', text: 'edited', rev: 1, queued_at_ms: 10 }]);
+  const shown = synchronizeQueuedSends([confirmed, unconfirmed], { displayed: [{ entry_id: 'known', text: 'edited', rev: 1, queued_at_ms: 10 }], reported: [] });
   expect(shown[0].echo.text).toBe('edited'); expect(shown[1]).toBe(unconfirmed);
 });
 
 it('keeps accepted first-input evidence outside ordinary queue placement and send delivery helpers', () => {
   const initial: import('./conversation-outbox.js').AcceptedInitialInput = {
-    phase: 'initial-accepted', localWrite: null, sourceWitness: null, key: 'create', trackId: 'track', submitted: { text: 'first input', atMs: 1 },
-    receipt: { version: 'initial-input-v1', entryId: 'first-entry', queuedAtMs: 2,
+    phase: 'initial-accepted', localWrite: null, inputFact: null, sourceWitness: null, key: 'create', trackId: 'track', submitted: { text: 'first input', atMs: 1 },
+    receipt: { version: 'initial-input-v1', entryId: 'first-entry', entryRev: 0, queuedAtMs: 2,
       textSha256: 'a'.repeat(64), initialRuntimeId: 'runtime' },
   };
   const first: ConversationTurn = { id: 'initial-create', author: 'you', text: initial.submitted.text, atMs: 1 };
@@ -330,6 +330,6 @@ it('keeps accepted first-input evidence outside ordinary queue placement and sen
   expect(shown.transcript).toEqual([first]);
   expect(shown.queue).toEqual([]);
   expect(shown.sending).toEqual([{ ...later.echo, delivery: 'sending' }]);
-  expect(synchronizeQueuedSends(operations, [{ entry_id: 'first-entry', text: 'edited first input', rev: 1, queued_at_ms: 2 }])[0]).toBe(initial);
+  expect(synchronizeQueuedSends(operations, { displayed: [{ entry_id: 'first-entry', text: 'edited first input', rev: 1, queued_at_ms: 2 }], reported: [] })[0]).toBe(initial);
   expect(rememberQueuePlacements(new Map(), operations, []).has('first-entry')).toBe(false);
 });

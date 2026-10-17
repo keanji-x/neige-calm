@@ -46,14 +46,14 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
       if (request.method === 'POST') {
         const id = trackConversationCardId(track.id, request.headers?.['Idempotency-Key'] ?? '');
         const created: typeof parent = { ...parent, id, title: 'Side discussion', sourceCardId: parent.id, updatedAt: 3 };
-        rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } }; status = 201;
+        rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } }; status = 201;
       } else body = rows;
     }
     if (request.path.endsWith('/initial-input')) {
       const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
         && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
       if (post === undefined) throw new Error('No original creation request');
-      const receipt = initialReceiptFor(post, 'first-entry');
+      const receipt = initialReceiptFor(post, 'first-entry', 0);
       body = { kind: 'queued', receipt, runtimeId: 'runtime', entryId: receipt.entryId, rev: 0,
         text: (post.body as { text: string }).text, textSha256: receipt.textSha256 };
     }

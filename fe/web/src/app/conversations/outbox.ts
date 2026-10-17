@@ -9,7 +9,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  acknowledgeQueueMutation, initialInputNeedsObservation, withInitialInputSources, outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp, type ObservedInitialInput,
+  acknowledgeQueueMutation, initialInputNeedsObservation, withInitialInputSources, outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp, type ObservedInitialInput, type ReportedInput,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
@@ -74,7 +74,7 @@ function rememberSent(
  */
 export function useConversationOutbox({
   cardId, transport, send, serverEntries, serverTurns, liveReplies, queuedEntries, stalled, landed,
-  queuesInput, highWater, pressed, initialInput,
+  queuesInput, highWater, pressed, initialInput, reportedInput,
 }: {
   cardId: string;
   transport: ApiTransportPort;
@@ -94,6 +94,8 @@ export function useConversationOutbox({
   /** A send of the conversation shown went out. */
   pressed: () => void;
   initialInput: ReadonlyMap<string, ObservedInitialInput>;
+  /** Real served queue/validated read or hint facts, kept distinct from the projected queue. */
+  reportedInput: readonly ReportedInput[];
 }) {
   const registry = useConversationRegistry();
   const client = useQueryClient();
@@ -101,7 +103,7 @@ export function useConversationOutbox({
   const ops = registry.outboxOf(cardId);
   const spent = registry.spentRowsOf(cardId);
   const queuedEntryIds = useMemo(() => new Set(queuedEntries.map(entry => entry.entry_id)), [queuedEntries]);
-  const observedOps = useMemo(() => synchronizeQueuedSends(ops, queuedEntries), [ops, queuedEntries]);
+  const observedOps = useMemo(() => synchronizeQueuedSends(ops, { displayed: queuedEntries, reported: reportedInput }), [ops, queuedEntries, reportedInput]);
   /** The card shown now; a send's own `cardId` is the one it was pressed in. */
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
@@ -111,9 +113,9 @@ export function useConversationOutbox({
   );
   const sourcedOps = useMemo(() => withInitialInputSources(observedOps, facts.entries), [observedOps, facts.entries]);
   useEffect(() => {
-    if (sourcedOps !== ops) editOutbox(cardId, current => withInitialInputSources(synchronizeQueuedSends(current, queuedEntries), facts.entries));
+    if (sourcedOps !== ops) editOutbox(cardId, current => withInitialInputSources(synchronizeQueuedSends(current, { displayed: queuedEntries, reported: reportedInput }), facts.entries));
     releaseSettledInitialQueries(client, cardId, sourcedOps);
-  }, [cardId, client, editOutbox, sourcedOps, ops, queuedEntries, facts.entries]);
+  }, [cardId, client, editOutbox, sourcedOps, ops, queuedEntries, reportedInput, facts.entries]);
   const view = useMemo(() => withOutboxLiveReplies(facts, liveReplies), [facts, liveReplies]);
   const { retire } = view;
   /* Retiring by key is safe only because a `confirmed` or `replayed` op, the only ones retired, never changes phase
@@ -129,7 +131,7 @@ export function useConversationOutbox({
 
   const acknowledgeQueuedWrite = (result: PlannerInputMutation, edited: readonly PendingQueueEntry[] = []) => {
     editOutbox(cardId, current => acknowledgeQueueMutation(synchronizeQueuedSends(
-      result.text === null ? withoutQueuedEntry(current, result.entry_id) : current, edited), result));
+      result.text === null ? withoutQueuedEntry(current, result.entry_id) : current, { displayed: edited, reported: [] }), result));
     releaseSettledInitialQueries(client, cardId, registry.outboxOf(cardId));
   };
 
@@ -284,6 +286,7 @@ export function useConversationOutbox({
       if (dismissed?.fromComposer === true) releaseComposerImages(cardId, dismissed.echo.attachments ?? []);
     },
     /** A queued entry this client deleted: the confirmed send that claimed it will never be shown by a read. */
+    observeQueuedInput: (fact: ReportedInput) => { editOutbox(cardId, current => synchronizeQueuedSends(current, { displayed: [], reported: [fact] })); },
     forgetQueuedEntry: acknowledgeQueuedWrite,
     acknowledgeQueuedEdit: (entry: PendingQueueEntry, saved: PlannerInputMutation & { text: string }) => acknowledgeQueuedWrite(saved, [{ ...entry, text: saved.text, rev: saved.rev }]),
   };

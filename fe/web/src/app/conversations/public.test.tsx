@@ -97,7 +97,7 @@ it('keeps a queued draft through stale receipts and fences an older edit complet
   if (original?.kind !== 'queued') throw new Error('Expected the queued edit');
   const submitted = { text: 'My revised middle input', attachments: [] };
   act(() => { registry().editComposer(CONVERSATION, () => submitted); });
-  act(() => { registry().settleQueuedEdit(CONVERSATION, original, submitted, { kind: 'stale', text: 'Changed elsewhere', rev: 9 }); });
+  act(() => { registry().settleQueuedEdit(CONVERSATION, original, submitted, { kind: 'stale', entryId: original.entry.entry_id, text: 'Changed elsewhere', rev: 9 }); });
   const current = registry().editOf(CONVERSATION);
   expect(current).toMatchObject({ kind: 'queued', entry: { rev: 9 } });
   expect(registry().composerOf(CONVERSATION)).toBe(submitted);
@@ -129,7 +129,7 @@ it('keeps accepted first-input display separate from stored canonical history an
   const from = { scopeId: 'track', key: 'create-key' };
   const conversation: Conversation = { id: CONVERSATION, trackId: 'track', kind: 'track-assistant', provider: 'codex', title: null,
     state: 'idle', updatedAt: 100 };
-  const result = { conversation, initialInput: { kind: 'known', receipt: { version: 'initial-input-v1', entryId: 'first-entry',
+  const result = { conversation, initialInput: { kind: 'known', receipt: { version: 'initial-input-v1', entryId: 'first-entry', entryRev: 0,
     queuedAtMs: 100, textSha256: sha256Hex(submitted.text), initialRuntimeId: 'runtime' } } } as const;
   act(() => {
     registry().remember(conversation, []);
@@ -156,7 +156,7 @@ it('ignores a late acceptance after a valid rekey without touching a newer draft
   act(() => { registry().editDraft(from, current => ({ ...current, key: 'new-key', submitted: null })); });
   act(() => { expect(registry().acceptDraft(from, {
     conversation: { id: CONVERSATION, trackId: 'track', kind: 'track-assistant', provider: 'codex', title: null, state: 'idle', updatedAt: 1 },
-    initialInput: { kind: 'known', receipt: { version: 'initial-input-v1', entryId: 'old-entry', queuedAtMs: 10,
+    initialInput: { kind: 'known', receipt: { version: 'initial-input-v1', entryId: 'old-entry', entryRev: 0, queuedAtMs: 10,
       textSha256: sha256Hex(submitted.text), initialRuntimeId: 'runtime' } },
   }, submitted)).toBe(false); });
   expect(registry().draftOf(from.scopeId)).toMatchObject({ key: 'new-key', text: 'new words', submitted: null });

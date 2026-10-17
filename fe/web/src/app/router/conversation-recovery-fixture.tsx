@@ -63,7 +63,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
         const key = request.headers?.['Idempotency-Key'];
         if (key === undefined) throw new Error('A create must carry its original key.');
         created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, lastTurnCompletedAt: null };
-        return { status: 201, statusText: 'Created', body: { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } } };
+        return { status: 201, statusText: 'Created', body: { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } };
       }
       return ok({ card_id: 'second-planner', worker_session_id: 'runtime' });
     }
@@ -71,7 +71,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
       const post = view.requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
         && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
       if (post === undefined) throw new Error('No original creation request');
-      return ok({ kind: 'projected', receipt: initialReceiptFor(post, 'first-entry'), runtimeId: 'runtime', itemId: 2, segmentIndex: 0 });
+      return ok({ kind: 'projected', entryRev: 0, receipt: initialReceiptFor(post, 'first-entry', 0), runtimeId: 'runtime', itemId: 2, segmentIndex: 0 });
     }
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
     if (request.path.endsWith('/planner/run')) return read(() => ({ card_id: created?.id ?? 'second-planner', worker_session_id: 'runtime', phase: 'idle',
@@ -79,7 +79,9 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
       compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
     if (request.path.includes('/harness/items')) {
       const cardId = created?.id ?? 'second-planner';
-      return read(() => created !== null ? [row(cardId, true)] : [row(cardId), ...(sent && storeMessage ? [row(cardId, true)] : [])]);
+      return read(() => created !== null ? [{ ...row(cardId, true), turn_id: 'accepted-initial-turn', input_segments: [{
+        presentation: 'user', text: sentText, attachments: [], origin: { observation: 'user_message', event_id: null, queue_entry: { id: 'first-entry', rev: 0 } },
+      }] }] : [row(cardId), ...(sent && storeMessage ? [row(cardId, true)] : [])]);
     }
     return undefined;
   } });

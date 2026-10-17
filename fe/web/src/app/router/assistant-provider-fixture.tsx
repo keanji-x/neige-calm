@@ -67,7 +67,7 @@ export function renderAssistantProviderFixture(options: {
           trackId: track.id, provider: input.provider, title: 'Created Assistant', kind: 'track-assistant',
           state: null, updatedAt: 3, lastTurnCompletedAt: null,
           ...(input.side === undefined ? {} : { sourceCardId: input.side.source_card_id }) };
-        rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } }; status = 201;
+        rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } }; status = 201;
         if (options.landFirstCreate && attempts === 1) return { status: 503, statusText: 'Unavailable', body: { code: 'service_unavailable', error: 'Unconfirmed' } };
       } else body = options.hideLanded ? [] : rows;
     }
@@ -75,7 +75,7 @@ export function renderAssistantProviderFixture(options: {
       const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
         && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
       if (post === undefined) throw new Error('No original creation request');
-      const receipt = initialReceiptFor(post, 'first-entry');
+      const receipt = initialReceiptFor(post, 'first-entry', 0);
       body = { kind: 'queued', receipt, runtimeId: 'runtime', entryId: receipt.entryId, rev: 0,
         text: (post.body as { text: string }).text, textSha256: receipt.textSha256 };
     }

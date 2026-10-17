@@ -35,6 +35,13 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
   let holdNextInspection = false;
   let pending: PendingQueueEntry[] = [];
   let registry: ConversationRegistry | null = null;
+  const staleRevision = (request: ApiRequest, entry: PendingQueueEntry): ApiTransportResponse | null => {
+    const revision = (request.body as { if_entry_rev: unknown }).if_entry_rev;
+    if (typeof revision !== 'number') throw new Error('Queue write lacks its declared revision.');
+    return revision === entry.rev ? null : { status: 409, statusText: 'Conflict', body: {
+      code: 'planner_input_stale', error: 'Entry changed.', entry_id: entry.entry_id, text: entry.text, rev: entry.rev,
+    } };
+  };
   function RegistryProbe() {
     const current = useConversationRegistry();
     useLayoutEffect(() => { registry = current; });
@@ -59,7 +66,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
           await heldCreate;
           if (options.loseReply) throw new Error('The create reply was lost.');
           return { status: 201, statusText: 'Created', body: { ...created, initialInput: options.legacy ? { kind: 'legacy-unavailable' }
-            : { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } } };
+            : { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } };
         }
         const result = ok(created === null ? [] : [created]);
         if (holdNextList) {
@@ -99,6 +106,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
       if (request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry')) {
         const entry = pending.find(entry => entry.entry_id === 'first-entry');
         if (entry === undefined) throw new Error('No actual first entry to delete.');
+        const refused = staleRevision(request, entry); if (refused !== null) return refused;
         pending = pending.filter(candidate => candidate.entry_id !== entry.entry_id);
         return ok({ card_id: created?.id, worker_session_id: 'runtime', entry_id: entry.entry_id, rev: entry.rev, text: null });
       }
@@ -106,6 +114,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         const entry = pending.find(entry => entry.entry_id === 'first-entry');
         const text = (request.body as { text?: unknown }).text;
         if (entry === undefined || typeof text !== 'string') throw new Error('No actual queued edit.');
+        const refused = staleRevision(request, entry); if (refused !== null) return refused;
         const saved = { ...entry, text, rev: entry.rev + 1 };
         pending = pending.map(candidate => candidate.entry_id === entry.entry_id ? saved : candidate);
         return ok({ card_id: created?.id, entry_id: saved.entry_id, rev: saved.rev, text: saved.text });
@@ -113,6 +122,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
       if (request.method === 'POST' && request.path.endsWith('/planner/input/first-entry/steer')) {
         const entry = pending.find(entry => entry.entry_id === 'first-entry');
         if (entry === undefined) throw new Error('No actual first entry to steer.');
+        const refused = staleRevision(request, entry); if (refused !== null) return refused;
         pending = pending.filter(candidate => candidate.entry_id !== entry.entry_id);
         return ok({ card_id: created?.id, entry_id: entry.entry_id, steered: true, turn_id: 'running-first-input' });
       }
@@ -131,7 +141,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
   });
   const receipt = () => {
     if (original === null) throw new Error('No request dispatched');
-    return initialReceiptFor(original, 'first-entry');
+    return initialReceiptFor(original, 'first-entry', 0);
   };
   return { ...view,
     createdId: () => created?.id ?? null,
@@ -142,10 +152,17 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
     answerCreate: () => { replyCreate?.(); },
     observe: (kind: 'queued' | 'changed' | 'projected' | 'unavailable') => {
       const binding = receipt();
+      if (kind === 'projected') {
+        const source = [...history, ...earlierHistory].find(row => row.id === 7);
+        const ref = source?.input_segments?.find(segment => segment.origin?.queue_entry?.id === 'first-entry')?.origin?.queue_entry;
+        if (ref == null || source?.turn_id == null) throw new Error('Projected response requires an actual versioned provider-bound source.');
+        observation = { kind, receipt: binding, runtimeId: 'runtime', entryRev: ref.rev, itemId: 7,
+          segmentIndex: options.harvestedInput === false ? 0 : 1 };
+        replyInspect?.(); return;
+      }
       observation = kind === 'queued' || kind === 'changed' ? { kind: 'queued', receipt: binding, runtimeId: 'runtime', entryId: binding.entryId,
         rev: kind === 'changed' ? 1 : 0, text: kind === 'changed' ? 'Changed by another client.' : FIRST_MESSAGE,
         textSha256: kind === 'changed' ? sha256Hex('Changed by another client.') : binding.textSha256 }
-        : kind === 'projected' ? { kind, receipt: binding, runtimeId: 'runtime', itemId: 7, segmentIndex: options.harvestedInput === false ? 0 : 1 }
         : { kind, receipt: binding, reason: 'runtime-unavailable' };
       replyInspect?.();
     },
@@ -166,20 +183,21 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
     outbox: () => created === null ? [] : registry?.outboxOf(created.id) ?? [],
     queueOriginal: () => { pending = [{ entry_id: 'first-entry', text: FIRST_MESSAGE, queued_at_ms: 100, rev: 0 }]; },
     queueEdited: (text: string) => { pending = [{ entry_id: 'first-entry', text, queued_at_ms: 100, rev: 1 }]; },
+    queueAtRevision: (text: string, rev: number) => { pending = [{ entry_id: 'first-entry', text, queued_at_ms: 100, rev }]; },
     clearQueue: () => { pending = []; },
     runCount: () => heldRun.length,
     releaseRun: (index: number) => { heldRun[index](); },
     holdNextList: () => { holdNextList = true; },
     listCount: () => heldList.length,
     releaseList: (index: number) => { heldList[index](); },
-    project: (text = FIRST_MESSAGE, provisional = false) => {
+    project: (entryRev: number, text = FIRST_MESSAGE, provisional = false) => {
       if (created === null) throw new Error('No canonical conversation');
       history = [{ id: 7, card_id: created.id, worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread', turn_id: provisional ? null : 'accepted-first-turn',
         item_uuid: options.harvestedInput === false ? 'first-entry' : 'harvested-entry', item_type: 'userMessage', method: 'item/completed', params: provisional ? JSON.stringify({ _projection: true }) : '{}', created_at_ms: 8, turn_error_text: null,
         input_segments: [
           ...(options.harvestedInput === false ? [] : [{ presentation: 'user' as const, text: 'Harvested before first input', attachments: [],
-            origin: { observation: 'user', event_id: null, queue_entry_id: 'harvested-entry' } }]),
-          { presentation: 'user', text, attachments: [], origin: { observation: 'user', event_id: null, queue_entry_id: 'first-entry' } },
+            origin: { observation: 'user', event_id: null, queue_entry: { id: 'harvested-entry', rev: 0 } } }]),
+          { presentation: 'user', text, attachments: [], origin: { observation: 'user', event_id: null, queue_entry: { id: 'first-entry', rev: entryRev } } },
         ] }];
     },
   };

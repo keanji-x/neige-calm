@@ -122,7 +122,7 @@ function projectionRow(id: number, clientId: string, text: string) {
       _projection: true,
     }),
     input_segments: [{ presentation: 'user', text: `User says:\n${text}`, attachments: [],
-      origin: { observation: 'user', event_id: null, queue_entry_id: clientId } }],
+      origin: { observation: 'user', event_id: null, queue_entry: { id: clientId, rev: 0 } } }],
   };
 }
 
@@ -150,7 +150,7 @@ const inputAccepted = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 
 const runIdle = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
 
 function created(body: Row, request: ApiRequest): ApiTransportResponse {
-  return { status: 201, statusText: 'Created', body: { ...body, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'entry-0001') } } };
+  return { status: 201, statusText: 'Created', body: { ...body, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'entry-0001', 0) } } };
 }
 
 function failure(status: number, code: string, error: string): ApiTransportResponse {
@@ -200,7 +200,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
         const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
           && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
         if (post === undefined) throw new Error('No creation journal for this key');
-        const receipt = initialReceiptFor(post, 'entry-0001');
+        const receipt = initialReceiptFor(post, 'entry-0001', 0);
         return ok({ kind: 'queued', receipt, runtimeId: 'runtime', entryId: receipt.entryId, rev: 0,
           text: (post.body as { text: string }).text, textSha256: receipt.textSha256 });
       }
@@ -3191,8 +3191,12 @@ describe('track conversations', () => {
         persisted = [projectionRow(1, 'entry-0001', 'start this thread')];
         return created(row, request);
       }
-      if (request.path.endsWith('/initial-input')) return ok({ kind: 'projected', runtimeId: 'r', itemId: 1, segmentIndex: 0,
-        receipt: initialReceiptFor(creates(requests, CONVERSATIONS)[0], 'entry-0001') });
+      if (request.path.endsWith('/initial-input')) {
+        const receipt = initialReceiptFor(creates(requests, CONVERSATIONS)[0], 'entry-0001', 0);
+        return typeof persisted[0]?.turn_id === 'string'
+          ? ok({ kind: 'projected', entryRev: 0, runtimeId: 'r', itemId: 1, segmentIndex: 0, receipt })
+          : ok({ kind: 'unavailable', reason: 'runtime-unavailable', receipt });
+      }
       if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
       if (request.path.includes(HISTORY_PATH)) return ok([...persisted]);
       if (request.path.endsWith('/planner/run')) return runIdle();
@@ -3238,7 +3242,7 @@ describe('track conversations', () => {
         return created(row, request);
       }
       if (request.path.endsWith('/initial-input')) return ok({ kind: 'unavailable', reason: 'runtime-unavailable',
-        receipt: initialReceiptFor(creates(requests, CONVERSATIONS)[0], 'entry-0001') });
+        receipt: initialReceiptFor(creates(requests, CONVERSATIONS)[0], 'entry-0001', 0) });
       if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
       if (request.path.includes(HISTORY_PATH)) return ok([...persisted]);
       if (request.path.endsWith('/planner/input')) return inputAccepted();

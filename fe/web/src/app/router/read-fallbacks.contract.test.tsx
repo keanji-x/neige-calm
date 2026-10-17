@@ -248,7 +248,7 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path.endsWith('/initial-input') && revealLanding) {
         const original = creates[0];
         if (original === undefined) throw new Error('No dispatched original create.');
-        return ok({ kind: 'unavailable', reason: 'runtime-unavailable', receipt: initialReceiptFor(original, 'entry-0001') });
+        return ok({ kind: 'unavailable', reason: 'runtime-unavailable', receipt: initialReceiptFor(original, 'entry-0001', 0) });
       }
       if (request.path === '/api/tracks/w1/conversations' && revealLanding) {
         return ok([{
@@ -271,7 +271,7 @@ describe('degraded workspace reads stay usable', () => {
             _projection: true,
           }),
           input_segments: [{ presentation: 'user', text: 'User says:\nOriginal uncertain intent', attachments: [],
-            origin: { observation: 'user', event_id: null, queue_entry_id: 'entry-0001' } }],
+            origin: { observation: 'user', event_id: null, queue_entry: { id: 'entry-0001', rev: 0 } } }],
           created_at_ms: 1,
         }]);
       }

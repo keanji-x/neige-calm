@@ -58,7 +58,7 @@ describe('PendingQueue', () => {
 
   it('retries against the revision the server reported, not the stale one', async () => {
     const onDelete = vi.fn<PendingQueueProps['onDelete']>()
-      .mockResolvedValueOnce({ kind: 'stale', text: 'theirs', rev: 9 })
+      .mockResolvedValueOnce({ kind: 'stale', entryId: 'e1', text: 'theirs', rev: 9 })
       .mockResolvedValueOnce({ kind: 'done' });
     renderQueue({ entries: [entry({ rev: 3 })], onDelete });
     await userEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
@@ -73,7 +73,7 @@ describe('PendingQueue', () => {
 
   it('shows a refusal on its own row and not on any other', async () => {
     const onDelete = vi.fn<PendingQueueProps['onDelete']>()
-      .mockResolvedValue({ kind: 'stale', text: 'theirs', rev: 9 });
+      .mockResolvedValue({ kind: 'stale', entryId: 'e2', text: 'theirs', rev: 9 });
     renderQueue({
       entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })],
       onDelete,

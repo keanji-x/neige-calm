@@ -171,11 +171,46 @@ submission or receipt. The queue fold overlays its stored text/revision only on
 an existing same-entry cached row; a real run omission never appends a queue row.
 Until an actual same-entry raw source carries that acknowledged body, the existing
 plain accepted display keeps it readable, with no queued caption or inputSource.
-Only a changed actual ACK begins a new body handoff by clearing its prior source
-witness; same-body ACKs preserve ownership and page misses never reset it. Every
+An actual advancing revision begins a new handoff by clearing its prior source
+witness, even when its body repeats earlier words. Older and repeated facts preserve
+current ownership; page misses never reset it. Every
 actual local queue-write ACK ends original creation inspection, including edits
 that restore the original text. DELETE reports the removed revision and fences
 that revision and all older ones; only a strictly newer real queue entry restores
 its controls. The initial queue fold accounts for its hidden entries before ordinary
 local tombstones filter rows. Ordinary deletion/steer keeps the existing departing
 row spring unless an actual displayed carrier already accounts for that identity.
+
+
+The accepted outbox record retains one nullable `inputFact { kind, rev, text }` from an
+actual same-entry served queue, a validated queued inspection, an identity-bearing
+CAS stale response, or a raw source carrying the declared paired entry id/revision.
+The source provenance records a version without claiming queue presence. The latest actual local PATCH/DELETE ACK stays separately in
+`localWrite`; a read is never converted into an acknowledgement. One core
+`currentInitialInput` selector chooses the highest reported revision, with ACKs
+winning ties (including a DELETE's unchanged removed revision). The immutable receipt
+provides the actual initial `entryRev` and submitted body before later facts exist.
+Observations below that revision or with a different immutable receipt are rejected. Missing queue
+rows and unloaded history pages never erase a positive current body.
+
+The existing queue-sync owner receives explicit `displayed` and `reported` sources.
+Ordinary sends keep their existing displayed-queue synchronization; accepted inputs
+consume only real reported facts. ACK overlays cannot report themselves as reads.
+The same fact importer drives the selected queue projection and the existing registry
+sync effect. It clears current source ownership only when effective known authority,
+revision or body advances; an older incoming fact may be retained as proof without
+reclaiming display, and repeated same-version/body facts are unchanged. Source matching,
+unbound-source suppression, cached-row overlays and plain readable copies all use
+that one current version. A raw point can witness only its declared entry revision,
+regardless of equal words. Legacy sources explicitly retain an unknown revision;
+no zero revision or old wire-field compatibility is invented. No queue caption or provider delivery is inferred from it.
+
+A first positive queue fact also ends the creation-only observation lease, leaving
+normal run/history/event owners responsible for later revisions. A queued inspection
+starts its declared normal source pair before releasing the exact creation lease;
+those independent normal reads continue. Unresolved no-source inspection retains
+its existing event/focus/manual recovery and interval policy; unavailable/error
+responses pause periodic retries. A source read failure after a projected observation
+still leaves genuine reconciliation polling active. The record retains at most one
+observed input fact, one latest actual ACK and one source witness for the existing registry
+lifetime; no controller, journal, timer or unbounded list is added.

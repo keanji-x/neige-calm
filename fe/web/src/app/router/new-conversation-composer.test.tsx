@@ -60,7 +60,7 @@ function renderApp(managed = false) {
           trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, lastTurnCompletedAt: null,
         };
         minted.set(trackId, [...rows, row]);
-        return Promise.resolve({ status: 201, statusText: 'Created', body: { ...row, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry') } } });
+        return Promise.resolve({ status: 201, statusText: 'Created', body: { ...row, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } });
       }
       if (request.path === '/api/today/launchpad') {
         return Promise.resolve(ok({ track_id: 'lp', report_has_noninitial_content: false }));

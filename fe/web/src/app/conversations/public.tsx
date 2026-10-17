@@ -477,7 +477,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       const { receipt } = result.initialInput;
       if (!receiptMatchesSubmission(receipt, submitted)) throw new Error('The first-message receipt does not match the submitted message.');
       editOutbox(result.conversation.id, (ops) => ops.some((op) => op.key === from.key) ? ops
-        : [...ops, { phase: 'initial-accepted', localWrite: null, sourceWitness: null, key: from.key, trackId: result.conversation.trackId, receipt, submitted }]);
+        : [...ops, { phase: 'initial-accepted', localWrite: null, inputFact: null, sourceWitness: null, key: from.key, trackId: result.conversation.trackId, receipt, submitted }]);
     }
     moveDraftTo({ kind: 'adopt', from, conversationId: result.conversation.id });
     return true;
