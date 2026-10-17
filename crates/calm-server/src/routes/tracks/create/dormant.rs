@@ -1,13 +1,14 @@
 //! Human-only first-input acceptance. This private DB composition never starts
-//! or wakes a provider; a later execution needs its own actual current source.
-use super::super::TrackInit;
+//! or wakes a provider; later execution needs its own owning authorization.
+use super::super::CreateTrackRequest;
+use super::creation_plan::HumanTrackCreationPlan;
 use super::*;
 use crate::auth::HumanInputSource;
 use crate::db::sqlite::conversation::{
-    HumanTrackCreationAck, HumanTrackCreationRecord, current_input_carrier_tx,
+    HumanTrackCreationAcceptance, HumanTrackCreationAck, current_input_carrier_tx,
     human_track_creation_get_tx, human_track_creation_insert_tx,
 };
-use crate::db::sqlite::{TrackCreateBinding, track_create_idempotency_get_tx};
+use crate::db::sqlite::track_create_idempotency_get_tx;
 use crate::harness::profile::{HarnessProfile, PlannerBinding};
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
 use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
@@ -38,20 +39,13 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     s: RouteState,
     source: HumanInputSource,
     headers: HeaderMap,
-    p: NewTrack,
-    mut options: CreateTrackOptions,
-    shape: CreateRequestShape,
-    text: String,
+    request: CreateTrackRequest,
 ) -> Result<HumanTrackCreationResult> {
-    let raw_key = track_create_key(&headers)?.ok_or_else(|| {
-        CalmError::BadRequest(
-            "Idempotency-Key header is required when first input is accepted".into(),
-        )
-    })?;
-    validate_first_message(&text)?;
-    let create_sha = create_request_digest(&shape)?;
-    let first_sha = first_message_digest(&text);
-    let area_id = p.area_id.to_string();
+    let plan = HumanTrackCreationPlan::prepare(request, &headers, s.workspace_root.clone())?;
+    let raw_key = plan.key().to_owned();
+    let create_sha = plan.create_sha().to_owned();
+    let first_sha = plan.first_sha().to_owned();
+    let area_id = plan.area_id().to_owned();
     let write = s.write.clone();
     let templates = s.templates;
     // Like keyed Area creation, the event owner rolls a read-only replay back.
@@ -88,7 +82,6 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                             "this key names another original Human creation".into(),
                         ));
                     }
-                    require_original_binding(binding.as_ref(), &stored)?;
                     require_surviving_allocation_tx(tx, &area_id, &stored.acknowledgement).await?;
                     let _ = replay_tx.send(stored.acknowledgement);
                     return Err(CalmError::Conflict(
@@ -101,28 +94,22 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                             .into(),
                     ));
                 }
-                validate_prepared_blank(&p, &options, &shape)?;
-                options.idempotency_claim = Some(TrackCreateIdempotencyClaim {
-                    key: raw_key.clone(),
-                    create_request_sha256: create_sha.clone(),
-                    first_message_sha256: Some(first_sha.clone()),
-                });
+                let (p, options, text) = plan.into_allocation()?;
                 let provider = options.planner_provider.clone();
                 let planner = crate::model::new_id();
                 let report = crate::model::new_id();
                 // Audit attribution is not permission. The actual live source and
                 // current organization decision above authorize content acceptance.
-                let ((track, created), events) =
-                    super::super::allocation::allocate_track_structure_tx(
-                        tx,
-                        ActorId::User,
-                        p,
-                        options,
-                        (planner.clone(), report.clone()),
-                        super::super::allocation::TrackAllocationOwners { write, templates },
-                        Arc::new(OnceLock::new()),
-                    )
-                    .await?;
+                let ((_, created), events) = super::super::allocation::allocate_track_structure_tx(
+                    tx,
+                    ActorId::User,
+                    p,
+                    options,
+                    (planner.clone(), report.clone()),
+                    super::super::allocation::TrackAllocationOwners { write, templates },
+                    Arc::new(OnceLock::new()),
+                )
+                .await?;
                 if !created {
                     return Err(CalmError::Conflict(
                         "Human acceptance requires its fresh allocation".into(),
@@ -183,23 +170,18 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                         "Human creation returned another input class".into(),
                     ));
                 };
-                let stored = HumanTrackCreationRecord {
-                    source_user_id: current.user_id,
-                    create_request_sha256: create_sha,
-                    first_message_sha256: first_sha,
-                    acknowledgement: HumanTrackCreationAck::V1 {
-                        track_id: track.id.to_string(),
-                        planner_card_id: planner,
-                        report_card_id: report,
+                let stored = human_track_creation_insert_tx(
+                    tx,
+                    &area_id,
+                    &raw_key,
+                    &HumanTrackCreationAcceptance {
+                        source_user_id: current.user_id,
                         origin_runtime_id: runtime,
                         first_message: message,
                         presentation_sequence: accepted.presentation_sequence,
                     },
-                };
-                let actual_binding =
-                    track_create_idempotency_get_tx(tx, &area_id, &raw_key).await?;
-                require_original_binding(actual_binding.as_ref(), &stored)?;
-                human_track_creation_insert_tx(tx, &area_id, &raw_key, &stored).await?;
+                )
+                .await?;
                 Ok((stored.acknowledgement, events))
             })
         },
@@ -221,77 +203,6 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
             .map_err(|_| error),
         Err(error) => Err(error),
     }
-}
-
-fn validate_prepared_blank(
-    p: &NewTrack,
-    options: &CreateTrackOptions,
-    shape: &CreateRequestShape,
-) -> Result<()> {
-    if options.admin
-        || options.managed_identity.is_some()
-        || options.creator.is_some()
-        || options.creation_message.is_some()
-        || !matches!(options.init, TrackInit::Blank)
-        || p.template_id.is_some()
-        || p.plugin_scope.is_some()
-        || p.template_input.is_some()
-        || shape.admin
-        || shape.template_id.is_some()
-        || shape.recipe_id.is_some()
-        || shape.fork_report_from.is_some()
-        || shape.template_input.is_some()
-        || shape.allow_cross_area_cwd.is_some()
-    {
-        return Err(CalmError::BadRequest(
-            "dormant Human acceptance supports only a new blank keyed Track Planner".into(),
-        ));
-    }
-    if p.area_id.as_str() != options.body_area_id
-        || shape.title != p.title
-        || shape.sort != p.sort
-        || serde_json::to_value(shape.theme)? != serde_json::to_value(p.theme)?
-        || shape.attach_folder != p.attach_folder
-        || shape.planner_provider != options.planner_provider
-        || shape.model != options.model
-        || shape.reasoning_effort != options.reasoning_effort
-    {
-        return Err(CalmError::Conflict(
-            "prepared allocation differs from its original request".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn require_original_binding(
-    binding: Option<&TrackCreateBinding>,
-    record: &HumanTrackCreationRecord,
-) -> Result<()> {
-    let HumanTrackCreationAck::V1 {
-        track_id,
-        planner_card_id,
-        report_card_id,
-        ..
-    } = &record.acknowledgement;
-    let Some(binding) = binding else {
-        return Err(CalmError::Conflict(
-            "original creation binding is missing".into(),
-        ));
-    };
-    if &binding.track_id != track_id
-        || &binding.planner_card_id != planner_card_id
-        || &binding.report_card_id != report_card_id
-        || binding.request_fingerprint
-            != (TrackCreateRequestFingerprint::V1 {
-                create_request_sha256: record.create_request_sha256.clone(),
-                first_message_sha256: record.first_message_sha256.clone(),
-            })
-    {
-        return Err(CalmError::Conflict(
-            "original creation binding changed".into(),
-        ));
-    }
-    Ok(())
 }
 
 async fn require_surviving_allocation_tx(

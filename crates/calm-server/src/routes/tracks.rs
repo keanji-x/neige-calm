@@ -834,22 +834,7 @@ pub(crate) async fn create_track(
         request.area_id.as_str(),
         // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
         // must not depend on `admit_template`, so a replay whose template left the roster still replays.
-        create::CreateRequestShape {
-            admin,
-            planner_provider: request.planner_provider.clone(),
-            model: request.model.clone(),
-            reasoning_effort: request.reasoning_effort.clone(),
-            title: request.title.clone(),
-            sort: request.sort,
-            cwd: request.cwd.clone(),
-            template_id: request.template_id.clone(),
-            recipe_id: request.recipe_id.clone(),
-            template_input: request.template_input.clone(),
-            attach_folder: request.attach_folder,
-            allow_cross_area_cwd: request.allow_cross_area_cwd.clone(),
-            theme: request.theme,
-            fork_report_from: request.fork_report_from.clone(),
-        },
+        create::CreateRequestShape::from_request(&request),
     )
     .await?;
     // The arm decision comes BEFORE the create path's request validation: the resuming arms

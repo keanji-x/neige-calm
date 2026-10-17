@@ -235,29 +235,37 @@ CREATE TABLE conversation_migration_aliases (
     PRIMARY KEY(card_id,source_locator)
 );
 
--- Human first-input acceptance is independent of native startup. Keep this
--- permanent source/key/ack identity when resources are explicitly deleted.
+-- Human first-input acceptance extends the permanent original create binding.
+-- Resource identities and raw fingerprints have one source, not a copied ACK.
 CREATE TABLE conversation_human_track_creations (
     area_id TEXT NOT NULL,
     idempotency_key TEXT NOT NULL CHECK(length(idempotency_key)>0 AND length(idempotency_key)<=128),
     source_user_id TEXT NOT NULL REFERENCES application_users(id) ON DELETE RESTRICT,
-    create_request_sha256 TEXT NOT NULL CHECK(length(create_request_sha256)=64 AND create_request_sha256 NOT GLOB '*[^0-9a-f]*'),
-    first_message_sha256 TEXT NOT NULL CHECK(length(first_message_sha256)=64 AND first_message_sha256 NOT GLOB '*[^0-9a-f]*'),
     ack_version INTEGER NOT NULL CHECK(ack_version=1),
-    track_id TEXT NOT NULL,
-    planner_card_id TEXT NOT NULL,
-    report_card_id TEXT NOT NULL,
     origin_runtime_id TEXT NOT NULL CHECK(length(origin_runtime_id)=32 AND origin_runtime_id NOT GLOB '*[^0-9a-f]*'),
     message_id TEXT NOT NULL CHECK(length(message_id)=32 AND message_id NOT GLOB '*[^0-9a-f]*'),
     message_revision INTEGER NOT NULL CHECK(message_revision=1),
     presentation_sequence INTEGER NOT NULL CHECK(presentation_sequence>0),
-    created_at_ms INTEGER NOT NULL,
     PRIMARY KEY(area_id,idempotency_key),
-    UNIQUE(track_id),
-    UNIQUE(planner_card_id),
     UNIQUE(origin_runtime_id),
-    UNIQUE(message_id)
+    UNIQUE(message_id),
+    -- No reference to deletable Track/Card/runtime/revision rows. The original
+    -- key and ACK survive their deletion. RESTRICT also rejects REPLACE of the
+    -- parent binding, independently of recursive DELETE-trigger configuration.
+    FOREIGN KEY(area_id,idempotency_key)
+        REFERENCES track_create_idempotency(area_id,idempotency_key)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
 );
+CREATE TRIGGER canonical_track_creation_binding_immutable
+BEFORE UPDATE ON track_create_idempotency
+WHEN EXISTS (
+    SELECT 1 FROM conversation_human_track_creations c
+    WHERE (c.area_id=OLD.area_id AND c.idempotency_key=OLD.idempotency_key)
+       OR (c.area_id=NEW.area_id AND c.idempotency_key=NEW.idempotency_key)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Canonical creation binding is immutable');
+END;
 CREATE TRIGGER conversation_human_track_creation_fact_scope
 BEFORE INSERT ON conversation_human_track_creations
 WHEN NOT EXISTS (
@@ -270,9 +278,7 @@ WHEN NOT EXISTS (
     JOIN conversation_message_revisions mr ON mr.message_id=m.id AND mr.revision=NEW.message_revision
     JOIN conversation_presentations p ON p.card_id=c.id AND p.source_kind='human_message' AND p.message_id=m.id
     WHERE b.area_id=NEW.area_id AND b.idempotency_key=NEW.idempotency_key
-      AND b.track_id=NEW.track_id AND b.planner_card_id=NEW.planner_card_id AND b.report_card_id=NEW.report_card_id
       AND b.request_fingerprint_version=1
-      AND b.create_request_sha256=NEW.create_request_sha256 AND b.first_message_sha256=NEW.first_message_sha256
       AND ws.id=NEW.origin_runtime_id AND ws.mode='resumable' AND ws.contract='planner' AND ws.state='idle'
       AND ws.thread_id IS NULL AND ws.agent_session_id IS NULL AND ws.active_turn_id IS NULL
       AND ws.mcp_token_hash IS NULL
@@ -291,6 +297,16 @@ WHEN NOT EXISTS (
       AND m.author_kind='authenticated_human' AND m.author_user_id=NEW.source_user_id AND m.current_revision=1
       AND m.withdrawn_at_ms IS NULL AND json_extract(mr.payload_json,'$.state')='present'
       AND p.sequence=NEW.presentation_sequence
+      -- Preserve the original one-creation-per-resource relation and refuse
+      -- INSERT OR REPLACE even when recursive DELETE triggers are disabled.
+      AND NOT EXISTS (
+          SELECT 1 FROM conversation_human_track_creations old
+          JOIN track_create_idempotency original
+            ON original.area_id=old.area_id AND original.idempotency_key=old.idempotency_key
+          WHERE (old.area_id=NEW.area_id AND old.idempotency_key=NEW.idempotency_key)
+             OR original.track_id=b.track_id OR original.planner_card_id=b.planner_card_id
+             OR old.origin_runtime_id=NEW.origin_runtime_id OR old.message_id=NEW.message_id
+      )
 )
 BEGIN
     SELECT RAISE(ABORT, 'Human creation acceptance must bind its actual dormant allocation and first input');

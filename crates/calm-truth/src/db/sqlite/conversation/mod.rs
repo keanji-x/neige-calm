@@ -22,8 +22,8 @@ pub use claims::{
     ClaimedSubmission, claim_initial_submission_tx, claim_supplemental_submission_tx,
 };
 pub use creation::{
-    HumanTrackCreationAck, HumanTrackCreationRecord, human_track_creation_get_tx,
-    human_track_creation_insert_tx,
+    HumanTrackCreationAcceptance, HumanTrackCreationAck, HumanTrackCreationRecord,
+    human_track_creation_get_tx, human_track_creation_insert_tx,
 };
 pub use messages::{
     StoredMessage, StoredMessageRevision, append_unclaimed_human_revision_tx,

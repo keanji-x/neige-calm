@@ -23,6 +23,7 @@ use crate::state::RouteState;
 
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
+mod creation_plan;
 mod delivery;
 pub(super) mod dormant;
 use delivery::{SubmitArm, start_planner_harness_with_first_message};

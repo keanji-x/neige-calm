@@ -6,12 +6,15 @@ use crate::db::prelude::*;
 use crate::db::sqlite::conversation::*;
 use crate::db::sqlite::{SqlxRepo, area_membership, begin_immediate_tx};
 use crate::model::{NewArea, RequestTheme};
-use crate::routes::tracks::FolderClaim;
+use crate::routes::tracks::CreateTrackRequest;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::AppState;
 use axum::extract::FromRef;
 use calm_types::conversation::*;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
+
+mod binding_tests;
+mod plan_tests;
 
 const FIRST: &str = "original accepted human body, never a start envelope";
 
@@ -55,7 +58,8 @@ impl Fixture {
         );
         let source = actual_source(&auth, &session).await;
         let root = temp.path().join("never-materialized-root");
-        let route = RouteState::from_ref(&state);
+        let mut route = RouteState::from_ref(&state);
+        route.workspace_root = root.clone();
         Self {
             _temp: temp,
             repo,
@@ -70,55 +74,22 @@ impl Fixture {
     }
 
     async fn accept(&self, key: &str, text: &str) -> Result<HumanTrackCreationResult> {
-        let (p, options, shape) = self.prepared();
         let mut headers = HeaderMap::new();
         headers.insert("idempotency-key", key.parse().unwrap());
         accept_dormant_human_track(
             self.route.clone(),
             self.source.clone(),
             headers,
-            p,
-            options,
-            shape,
-            text.into(),
+            self.request(text),
         )
         .await
     }
 
-    fn prepared(&self) -> (NewTrack, CreateTrackOptions, CreateRequestShape) {
-        let cwd = self.root.to_string_lossy().into_owned();
-        let p = NewTrack {
+    fn request(&self, text: &str) -> CreateTrackRequest {
+        CreateTrackRequest {
+            admin: false,
             area_id: self.area.clone().into(),
             title: "new blank Track".into(),
-            sort: None,
-            cwd: cwd.clone(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        };
-        let options = CreateTrackOptions {
-            admin: false,
-            managed_identity: None,
-            creator: None,
-            creation_message: None,
-            planner_provider: AgentProvider::Codex,
-            model: None,
-            reasoning_effort: None,
-            folder_claim: FolderClaim::Skip,
-            body_area_id: self.area.clone(),
-            normalized_cwd: cwd,
-            init: TrackInit::Blank,
-            workspace_plan: crate::db::sqlite::TrackWorkspacePlan::ManagedUnder(self.root.clone()),
-            idempotency_claim: None,
-        };
-        let shape = CreateRequestShape {
-            admin: false,
-            planner_provider: AgentProvider::Codex,
-            model: None,
-            reasoning_effort: None,
-            title: p.title.clone(),
             sort: None,
             cwd: None,
             template_id: None,
@@ -126,10 +97,13 @@ impl Fixture {
             template_input: None,
             attach_folder: false,
             allow_cross_area_cwd: None,
-            theme: p.theme,
+            theme: RequestTheme::default_dark(),
             fork_report_from: None,
-        };
-        (p, options, shape)
+            first_message: Some(text.into()),
+            model: None,
+            reasoning_effort: None,
+            planner_provider: AgentProvider::Codex,
+        }
     }
 
     async fn counts(&self) -> (i64, i64, i64, i64, i64, i64) {
@@ -379,20 +353,10 @@ async fn replay_rechecks_current_session_source_and_membership() {
         SessionAuthority::PasswordLogin,
     );
     let alice = actual_source(&fx.auth, &token).await;
-    let (p, options, shape) = fx.prepared();
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "owned".parse().unwrap());
     assert!(matches!(
-        accept_dormant_human_track(
-            fx.route.clone(),
-            alice,
-            headers,
-            p,
-            options,
-            shape,
-            FIRST.into()
-        )
-        .await,
+        accept_dormant_human_track(fx.route.clone(), alice, headers, fx.request(FIRST)).await,
         Err(CalmError::IdempotencyKeyReused(_))
     ));
     let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
@@ -522,8 +486,6 @@ async fn separate_database_owners_race_to_the_same_original_ack() {
     route_b.write =
         crate::state::WriteContext::new(b.card_role_cache().clone(), b.track_area_cache().clone());
     route_b.events = crate::event::EventBus::new();
-    let (p_a, o_a, s_a) = fx.prepared();
-    let (p_b, o_b, s_b) = fx.prepared();
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "same-race".parse().unwrap());
     let (left, right) = tokio::join!(
@@ -531,20 +493,9 @@ async fn separate_database_owners_race_to_the_same_original_ack() {
             route_a,
             fx.source.clone(),
             headers.clone(),
-            p_a,
-            o_a,
-            s_a,
-            FIRST.into()
+            fx.request(FIRST)
         ),
-        accept_dormant_human_track(
-            route_b,
-            fx.source.clone(),
-            headers,
-            p_b,
-            o_b,
-            s_b,
-            FIRST.into()
-        ),
+        accept_dormant_human_track(route_b, fx.source.clone(), headers, fx.request(FIRST)),
     );
     let (left, right) = (left.unwrap(), right.unwrap());
     assert_eq!(left.ack, right.ack);
@@ -589,21 +540,13 @@ async fn a_shared_area_member_can_accept_content_without_an_execution_grant() {
         SessionAuthority::PasswordLogin,
     );
     let source = actual_source(&fx.auth, &token).await;
-    let (p, options, shape) = fx.prepared();
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "member-content".parse().unwrap());
-    let ack = accept_dormant_human_track(
-        fx.route.clone(),
-        source.clone(),
-        headers,
-        p,
-        options,
-        shape,
-        FIRST.into(),
-    )
-    .await
-    .unwrap()
-    .ack;
+    let ack =
+        accept_dormant_human_track(fx.route.clone(), source.clone(), headers, fx.request(FIRST))
+            .await
+            .unwrap()
+            .ack;
     let (_, card, _, runtime, message) = ids(&ack);
     let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
     let stored = message_tx(&mut tx, &message.message_id).await.unwrap();
@@ -642,12 +585,15 @@ async fn a_shared_area_member_can_accept_content_without_an_execution_grant() {
 #[tokio::test]
 async fn historical_resource_binding_cannot_be_adopted_as_first_human_acceptance() {
     let fx = Fixture::new().await;
-    let (p, mut options, shape) = fx.prepared();
-    options.idempotency_claim = Some(TrackCreateIdempotencyClaim {
-        key: "historical".into(),
-        create_request_sha256: create_request_digest(&shape).unwrap(),
-        first_message_sha256: Some(first_message_digest(FIRST)),
-    });
+    let mut headers = HeaderMap::new();
+    headers.insert("idempotency-key", "historical".parse().unwrap());
+    let plan = HumanTrackCreationPlan::prepare(
+        fx.request(FIRST),
+        &headers,
+        fx.route.workspace_root.clone(),
+    )
+    .unwrap();
+    let (p, options, _) = plan.into_allocation().unwrap();
     let write = fx.route.write.clone();
     let templates = fx.route.templates;
     crate::db::write_with_actor_events_typed(
@@ -713,22 +659,12 @@ async fn a_historical_retry_slot_without_a_binding_is_not_a_v2_vacant_key() {
 async fn original_create_shape_and_original_first_text_remain_separate_fingerprints() {
     let fx = Fixture::new().await;
     fx.accept("frozen", FIRST).await.unwrap();
-    let (mut p, options, mut shape) = fx.prepared();
-    p.title = "different original shape".into();
-    shape.title = p.title.clone();
+    let mut request = fx.request(FIRST);
+    request.title = "different original shape".into();
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "frozen".parse().unwrap());
     assert!(matches!(
-        accept_dormant_human_track(
-            fx.route.clone(),
-            fx.source.clone(),
-            headers,
-            p,
-            options,
-            shape,
-            FIRST.into()
-        )
-        .await,
+        accept_dormant_human_track(fx.route.clone(), fx.source.clone(), headers, request).await,
         Err(CalmError::IdempotencyKeyReused(_))
     ));
     assert!(matches!(
@@ -748,22 +684,12 @@ async fn system_target_is_not_reclassified_as_human_creation() {
     .await
     .unwrap();
     let before = fx.counts().await;
-    let (mut p, mut options, shape) = fx.prepared();
-    p.area_id = system.area_id.clone();
-    options.body_area_id = system.area_id.to_string();
+    let mut request = fx.request(FIRST);
+    request.area_id = system.area_id.clone();
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "system".parse().unwrap());
     assert!(matches!(
-        accept_dormant_human_track(
-            fx.route.clone(),
-            fx.source.clone(),
-            headers,
-            p,
-            options,
-            shape,
-            FIRST.into()
-        )
-        .await,
+        accept_dormant_human_track(fx.route.clone(), fx.source.clone(), headers, request).await,
         Err(CalmError::Forbidden(_))
     ));
     assert_eq!(fx.counts().await, before);
