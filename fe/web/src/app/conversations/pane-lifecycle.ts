@@ -22,7 +22,7 @@ export function useConversationPaneTarget(sourceScopeId: string, rows: readonly 
   const registry = useConversationRegistry();
   const [target, setOpenTarget] = useConversationViewTarget(sourceScopeId);
   const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
-  const adoptedRow = rows.find(row => row.id === adoptedDraftId);
+  const adoptedRow = adoptedDraftId === null ? undefined : rows.find(row => row.id === adoptedDraftId);
   /* Adoption: the reducer moves a matching `{ scopeId, key }` from `held` to
        `adopted`; if the create settles while unmounted, the outcome waits here. */
   useEffect(() => {
