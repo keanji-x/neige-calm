@@ -4376,6 +4376,16 @@
               }
             }
           },
+          "403": {
+            "description": "Deployment owner required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "503": {
             "description": "GitHub unavailable or inaccessible",
             "content": {

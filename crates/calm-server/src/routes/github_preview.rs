@@ -1,6 +1,7 @@
 //! Protected, read-only GitHub citations. Policy and the credential boundary live in github_preview.
 use crate::extract::{Json, Query};
 use crate::{
+    auth::Principal,
     error::{ErrorBody, Result},
     github_preview::{GitHubPreview, PreviewQuery},
     state::AppState,
@@ -19,8 +20,12 @@ pub fn router() -> Router<AppState> {
 #[utoipa::path(get, path = "/api/github/preview", operation_id = "read_github_preview", tag = "github", params(PreviewQuery),
     responses((status = 200, description = "Issue or PR summary", body = GitHubPreview),
         (status = 400, description = "Invalid GitHub reference", body = ErrorBody),
+        (status = 403, description = "Deployment owner required", body = ErrorBody),
         (status = 503, description = "GitHub unavailable or inaccessible", body = ErrorBody)))]
-pub(crate) async fn read(Query(query): Query<PreviewQuery>) -> Result<Response> {
-    let summary = crate::github_preview::read(query).await?;
+pub(crate) async fn read(
+    principal: Principal,
+    Query(query): Query<PreviewQuery>,
+) -> Result<Response> {
+    let summary = crate::github_preview::read(&principal, query).await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(summary)).into_response())
 }

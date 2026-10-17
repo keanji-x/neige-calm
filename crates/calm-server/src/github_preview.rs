@@ -1,5 +1,6 @@
 //! GitHub-only summaries, using the operator's CLI identity without executing repository code.
 use crate::{
+    auth::Principal,
     error::{CalmError, Result},
     plugin_host::child_process::{inherited_env, run_bounded},
 };
@@ -86,7 +87,8 @@ fn unavailable() -> CalmError {
     CalmError::ServiceUnavailable("GitHub preview unavailable. Check server GitHub sign-in, repository access, and rate limits.".into())
 }
 
-pub async fn read(query: PreviewQuery) -> Result<GitHubPreview> {
+pub async fn read(principal: &Principal, query: PreviewQuery) -> Result<GitHubPreview> {
+    crate::organization_access::require_deployment_owner(principal)?;
     let endpoint = query.endpoint()?;
     static READS: OnceLock<Semaphore> = OnceLock::new();
     let _permit = READS

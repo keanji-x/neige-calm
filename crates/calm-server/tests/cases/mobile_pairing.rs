@@ -829,3 +829,6 @@ async fn private_tailnet_disable_closes_active_websocket_and_revokes_session() {
 
 #[path = "mobile_pairing/restart.rs"]
 mod restart;
+
+#[path = "mobile_pairing/github_preview.rs"]
+mod github_preview;
