@@ -81,13 +81,13 @@ it('keeps category headers glyph-free and reserves the disclosure glyph for Area
   }
 });
 
-it('indents Area tracks beyond the Area label and preserves the selected inset', async () => {
+it('aligns Area tracks with the Area label and fills the selected row', async () => {
   await scene(true);
   const group = page.getByRole('group', { name: 'area Work', exact: true });
   const areaTitle = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element().querySelector('[title]')!;
   const selected = group.getByRole('button', { name: /^Track Build frontend/ }).element();
-  expect(selected.querySelector('[title]')!.getBoundingClientRect().left).toBeGreaterThan(areaTitle.getBoundingClientRect().left);
-  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeGreaterThan(0);
+  expect(textBounds(selected.querySelector('[title]')!).left).toBeCloseTo(textBounds(areaTitle).left, 1);
+  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBe(0);
   expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeCloseTo(
     textBounds(selected.querySelector('[title]')!).left - textBounds(areaTitle).left, 1);
   expect(selected.getAttribute('aria-current')).toBe('page');
@@ -108,7 +108,7 @@ it.each(['light', 'dark'])('uses the same rail background bounds for hover and s
     };
     await page.getByRole('button', { name: 'Go to Today' }).hover();
     const expected = bounds(selected.element());
-    expect(parseFloat(expected[0])).toBeGreaterThan(0);
+    expect(parseFloat(expected[0])).toBe(0);
     for (const row of [idle, selected]) {
       await row.hover();
       expect(bounds(row.element())).toEqual(expected);
@@ -159,7 +159,7 @@ it.each(['rail', 'panel'] as const)('centres both activity sizes in the %s actio
   }
 });
 
-it.each(['light', 'dark'] as const)('preserves hierarchy and leading status when sizing tokens change in %s mode', async (theme) => {
+it.each(['light', 'dark'] as const)('preserves label alignment and leading status when sizing tokens change in %s mode', async (theme) => {
   await scene(true);
   document.documentElement.dataset.theme = theme;
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
@@ -169,7 +169,7 @@ it.each(['light', 'dark'] as const)('preserves hierarchy and leading status when
   const area = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element();
   for (const row of group.getByRole('button', { name: /^Track / }).elements()) {
     expect(row.querySelector('[title]')!.getBoundingClientRect().left)
-      .toBeGreaterThan(area.querySelector('[title]')!.getBoundingClientRect().left);
+      .toBeCloseTo(area.querySelector('[title]')!.getBoundingClientRect().left, 1);
   }
   for (const marker of document.querySelectorAll('[data-nc-activity]')) {
     const title = marker.parentElement!.parentElement!.querySelector('[title]')!;
@@ -197,7 +197,7 @@ it('keeps long rail labels within the shared columns without horizontal scrollin
     const row = group.getByRole('button', { name: /^Track / });
     await row.first().hover();
     const caption = row.first().element().querySelector<HTMLElement>('[title]')!;
-    expect(caption.getBoundingClientRect().left).toBeGreaterThan(areaTitle.getBoundingClientRect().left);
+    expect(caption.getBoundingClientRect().left).toBeCloseTo(areaTitle.getBoundingClientRect().left, 1);
     const menu = group.getByRole('button', { name: `Actions for track ${title}`, exact: true }).first();
     expect(caption.getBoundingClientRect().right).toBeLessThanOrEqual(menu.element().getBoundingClientRect().left);
     expect(rail.scrollWidth).toBe(rail.clientWidth);

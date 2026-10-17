@@ -100,7 +100,7 @@ export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = 
   const pendingRevealRef = useRef(false);
   const limited = limitAreaTracks(tracks, AREA_TRACK_LIMIT, activeTrackId);
   const rows = showAll ? tracks : limited.rows;
-  const entryPresentation: NavigationEntrySpec = { kind: 'entry', depth: group.level === 'area' ? 1 : 0 };
+  const entryPresentation: NavigationEntrySpec = { kind: 'entry', depth: 0 };
   const revealPresentation = navigationRowPresentation(entryPresentation);
   useEffect(() => {
     if (!pendingRevealRef.current) return;
