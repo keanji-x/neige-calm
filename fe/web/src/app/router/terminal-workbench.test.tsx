@@ -117,6 +117,7 @@ it('routes an ordinary card URL into the same dock and keeps it out of the board
   expect((screen.getByRole<HTMLSelectElement>('combobox', { name: 'Terminal session' })).value).toBe('second');
   expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="second"]')).toBeNull();
   expect(fixture.posts()).toHaveLength(0);
+  expect(fixture.router.state.location.search).toHaveProperty('card', 'second');
 });
 
 it('creates an extra terminal only on explicit New, and never overrides a newer selection', async () => {
@@ -252,4 +253,36 @@ it('retains visible list-refresh fallbacks without attaching hidden unvisited te
   expect(document.querySelector('[data-nc-card-dock][data-nc-card-id="third"]')).toBe(third);
   expect(mount).toHaveBeenCalledTimes(3);
   expect(fixture.posts()).toHaveLength(0);
+});
+
+
+it('keeps the Track conversation final frame during desktop close', async () => {
+  setupWorkbench();
+  fireEvent.click(await screen.findByRole('button', { name: /^New conversation$/u }));
+  const drawer = await screen.findByRole('complementary', { name: 'Untitled' });
+  expect(drawer.textContent).toContain('Nothing said yet.');
+  fireEvent.click(screen.getByRole('button', { name: /^Close conversation$/u }));
+  expect(drawer.hasAttribute('data-nc-drawer')).toBe(true);
+  expect(drawer.hidden).toBe(false);
+  expect(drawer.textContent).toContain('Nothing said yet.');
+  expect(within(drawer).getByRole('heading', { name: 'Untitled' })).toBeTruthy();
+});
+
+
+it.each(['starting', 'exited'] as const)('cold-opens a %s terminal from its URL while secondary reads are held', async status => {
+  let release!: () => void;
+  const secondaryReads = new Promise<void>(resolve => { release = resolve; });
+  const fixture = setupWorkbench({ initialCard: 'cold', secondaryReads, cards: [{ ...terminalCard('cold'),
+    runtime: { worker_session_id: 'run-1', kind: 'terminal', status },
+  }] });
+  try {
+    await screen.findByText(status === 'exited' ? 'Session exited.' : 'Starting terminal…');
+    expect(fixture.router.state.location.search).toHaveProperty('card', 'cold');
+    expect(fixture.client.getQueryData(queryKeys.trackConversations('workbench'))).toBeUndefined();
+    await userEvent.click(screen.getByRole('button', { name: 'Hide terminal' }));
+    await waitFor(() => expect(fixture.router.state.location.search).not.toHaveProperty('card'));
+    await act(async () => { release(); await Promise.resolve(); });
+    expect(screen.queryByRole('button', { name: 'Hide terminal' })).toBeNull();
+    expect(document.querySelector('[data-nc-terminal-card]')).not.toBeNull();
+  } finally { release(); }
 });

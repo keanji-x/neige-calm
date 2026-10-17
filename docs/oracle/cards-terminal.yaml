@@ -22,7 +22,7 @@
     SnapshotRequired 必须清空本地终端并等待随后下发的 RenderSnapshot
   why: >
     daemon 已决定恢复方式，客户端不能自行请求或重连制造第二条恢复路径
-  source: fe/web/src/systems/terminal/xterm-view.tsx:550-553
+  source: fe/web/src/systems/terminal/xterm-view.tsx:563-566
   authoritative_test: NONE
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -38,7 +38,7 @@
     JSON 线格以普通 number array 传输，写入 xterm 前转换成 Uint8Array
   why: >
     JSON 不能承载二进制，xterm.write 需要 Uint8Array
-  source: fe/web/src/systems/terminal/xterm-view.tsx:506-512,533-538
+  source: fe/web/src/systems/terminal/xterm-view.tsx:491-498,521-525,539-546
   authoritative_test: NONE
   owner_slice: systems/terminal/protocol
   intentional_omission: false

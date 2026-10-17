@@ -38,9 +38,10 @@ export function createTerminalWorkbenchSessions() {
 }
 
 /** Track owns selection and the held create intent; app injects transport and key/theme policy. */
-export function useTerminalWorkbench({ trackId, cards, create, request, session, ordinaryCardOpen }: {
+export function useTerminalWorkbench({ trackId, cards, create, request, session, ordinaryCardOpen, onHide }: {
   trackId: string;
   ordinaryCardOpen: boolean;
+  onHide: () => void;
   session: TerminalWorkbenchSession;
   cards: readonly CardWire[];
   create: (body: NewTerminalCardBody, key: string) => Promise<CardWire>;
@@ -112,14 +113,14 @@ export function useTerminalWorkbench({ trackId, cards, create, request, session,
     if (candidate !== undefined) select(candidate);
     else createOne();
   };
-  const hide = () => { session.epoch += 1; setOpen(false); setFocus(false); opener.current?.focus({ preventScroll: true }); };
+  const hide = () => { session.epoch += 1; setOpen(false); setFocus(false); onHide(); opener.current?.focus({ preventScroll: true }); };
   // Deletion chooses another existing option but never implicitly creates a replacement.
   const selectedId = terminals.some(card => card.id === session.selected) ? session.selected : terminals[0]?.id ?? null;
   // Every displayed selection, including list/deletion fallback, enters the retained set
   // before its host mounts. Unvisited terminals remain unattached.
   if (open && selectedId !== null && !visited.includes(selectedId)) setVisited([...visited, selectedId]);
   return { open, ordinaryHost, selectedId, cardIds: new Set(terminals.map(card => card.id)), visited, pending: session.pending !== null, error: session.error, focus, reveal, hide, select,
-    suspend: () => { session.epoch += 1; setOpen(false); setFocus(false); }, blur: () => setFocus(false), retry: createOne, newSession: () => { session.epoch += 1; setOpen(true); createOne(); } };
+    suspend: () => { session.epoch += 1; setOpen(false); setFocus(false); onHide(); }, blur: () => setFocus(false), retry: createOne, newSession: () => { session.epoch += 1; setOpen(true); createOne(); } };
 }
 
 export type TerminalWorkbench = ReturnType<typeof useTerminalWorkbench>;

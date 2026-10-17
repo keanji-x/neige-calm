@@ -439,10 +439,13 @@ it('keeps the default closed companion unmounted without a retention opt-in', ()
   expect(screen.queryByText('Main resource')).toBeNull();
 });
 
-it('updates retained closed content when its owner releases it without removing the companion', () => {
+it('retains only the companion while a closed primary has no DOM, marker or id', () => {
   const companion = () => <p>Retained companion</p>;
-  const view = render(<Drawer open retain title="Main" onClose={vi.fn()} companion={companion}><p>Transferred content</p></Drawer>);
-  view.rerender(<Drawer open={false} retain title="Main" onClose={vi.fn()} companion={companion} companionVisible={false}>{null}</Drawer>);
+  const view = render(<Drawer open={false} retainCompanion id="main-pane" title="Main" onClose={vi.fn()} companion={companion}><p>Transferred content</p></Drawer>);
+  view.rerender(<Drawer open={false} retainCompanion id="main-pane" title="Main" onClose={vi.fn()} companion={companion} companionVisible={false}>{null}</Drawer>);
   expect(screen.queryByText('Transferred content')).toBeNull();
   expect(screen.getByText('Retained companion')).toBeTruthy();
+  expect(document.getElementById('main-pane')).toBeNull();
+  expect(document.querySelector('[data-nc-drawer-scroll]')).toBeNull();
+  expect(document.querySelector('[data-nc-drawer]')).toBeNull();
 });

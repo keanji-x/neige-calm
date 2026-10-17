@@ -15,7 +15,7 @@ export function terminalCard(id: string, trackId = 'workbench'): CardWire {
 }
 
 /** HTTP boundary fixture; production router, mutations, card registry and lifecycle remain real. */
-export function setupWorkbench({ cards: initial = [] as CardWire[], defer = false, lost = false, daily = false, failure = null as null | 'definite' | 'unknown' } = {}) {
+export function setupWorkbench({ cards: initial = [] as CardWire[], defer = false, lost = false, daily = false, failure = null as null | 'definite' | 'unknown', initialCard = null as string | null, secondaryReads = null as Promise<void> | null } = {}) {
   const requests: ApiRequest[] = [];
   const cards = [...initial];
   const releases: (() => void)[] = [];
@@ -39,6 +39,7 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
     if (path === '/api/settings') return ok({});
     if (path === '/api/tracks/other') return ok({ track: { ...track, id: 'other', title: 'Other track' }, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
     if (path === '/api/tracks/workbench') return ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [...cards], overlays: [] });
+    if (secondaryReads !== null && ['/api/tracks/workbench/report', '/api/tracks/workbench/conversations', '/api/tracks/workbench/backlinks'].includes(path)) await secondaryReads;
     if (path === '/api/tracks/workbench/report') return ok({ taskDiagnostics: [] });
     if (path === '/api/tracks/workbench/conversations') return ok(rows);
     if (path === '/api/tracks/workbench/terminal-cards' && method === 'POST') {
@@ -62,7 +63,7 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
   const runtime = { ...booted, host: { ...booted.host } };
   const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: runtime,
     unauthorized: createUnauthorizedChannel({ enqueue: task => task() }), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}${daily ? '/' : '/track/workbench'}`] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}${daily ? '/' : '/track/workbench'}${initialCard === null ? '' : `?card=${encodeURIComponent(initialCard)}`}`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);
   const view = render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
   return { ...view, requests, releases, router, client, runtime, cards, posts: () => requests.filter(request => request.method === 'POST' && request.path.endsWith('/terminal-cards')) };

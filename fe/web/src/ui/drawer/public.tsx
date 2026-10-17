@@ -27,10 +27,10 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null, retain = false, companionVisible: suppliedCompanionVisible }: {
+export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null, retainCompanion = false, companionVisible: suppliedCompanionVisible }: {
   open: boolean;
-  /** Opt-in retained DOM; closed content is hidden and inert. Default still unmounts. */
-  retain?: boolean;
+  /** Keep only the independent companion slot mounted when both panes are closed. */
+  retainCompanion?: boolean;
   companionVisible?: boolean;
   id?: string;
   /** An independent second card displayed below this one, or switched on compact screens. */
@@ -91,14 +91,14 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   }, []);
 
 
-  /* Default retracting panels show their last frame. Retained slots follow current props so an owner can release transferred content. A ref must never cause a render. */
+  /* Retracting panels show their last frame. Resource retention belongs only to the independent companion slot. A ref must never cause a render. */
   const lastFrame = useRef<{
     title: string; mobileBackLabel?: string; children: ReactNode; footer?: ReactNode;
   }>(
     { title, mobileBackLabel, children, footer },
   );
-  if (open || retain) lastFrame.current = { title, mobileBackLabel, children, footer };
-  const frame = open || retain ? { title, mobileBackLabel, children, footer } : lastFrame.current;
+  if (open) lastFrame.current = { title, mobileBackLabel, children, footer };
+  const frame = open ? { title, mobileBackLabel, children, footer } : lastFrame.current;
 
   /* The retraction starts during render, not in an effect: an effect cost a frame in which the early return unmounted the drawer and then remounted it, replaying the enter animation. */
   if (open !== wasOpen.current) {
@@ -160,7 +160,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   }, [open, closing]);
 
   /* Compact pages and reduced motion skip the exit transition, so closing never waits for one the stylesheet does not play. */
-  if (!open && !closing && !retain && !companionVisible) return null;
+  if (!open && !closing && !(retainCompanion && companion !== undefined) && !companionVisible) return null;
   /* `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by; a CSS Module class cannot be named across modules. It stays on during the closing animation. */
   const card = (
     <>
@@ -227,7 +227,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   if (companion === undefined && !stacked) return <LayerDepthProvider>{card}</LayerDepthProvider>;
   return (
     <div hidden={!open && !closing && !companionVisible} ref={hostRef} className={styles.stack} data-nc-drawer-stack="">
-      <div className={styles.cell} hidden={!open && !closing}><LayerDepthProvider>{card}</LayerDepthProvider></div>
+      <div className={styles.cell} hidden={!open && !closing}><LayerDepthProvider>{open || closing ? card : null}</LayerDepthProvider></div>
       <div className={styles.cell} hidden={!companionVisible}>{companion?.(ownResizeGroup)}</div>
       {open && width !== undefined && parentResizeGroup === null
         && <ResizeEdge resize={width} panelRef={hostRef} scrollRef={scrollRef} group={resizeGroup} />}

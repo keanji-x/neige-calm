@@ -343,9 +343,9 @@ function useConversationPanel(
   const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
     .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, retain: options?.terminal !== undefined, inline: true, slotId: sideSlot, enabled: belongsToParent });
+    { ...options, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retain: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
+    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
       companionVisible: (!compact && options?.terminal?.workbench.open === true) || (belongsToParent && side.isOpen),
       companion: options?.terminal !== undefined
         ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={!compact}
@@ -383,7 +383,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationPaneTarget>,
-  options?: { onTerminal?: () => void; retain?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
+  options?: { onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -699,7 +699,7 @@ function useConversationPane(
         stacked={options?.stacked}
         companion={options?.companion}
         companionVisible={options?.companionVisible}
-        retain={options?.retain}
+        retainCompanion={options?.retainCompanion}
         closeLabel={options?.inline === true ? 'Close side conversation' : 'Close conversation'}
         open={open !== null || draftOpen}
         /* A draft has no name yet, and naming it after the words being typed
@@ -1102,6 +1102,7 @@ function TrackRouteBody({
   const trackViews = useTrackViews();
   if (trackViews === null) throw new Error('Terminal workbench requires TrackViewProvider');
   const workbench = useTerminalWorkbench({ session: trackViews.terminals.forTrack(track.id), trackId: track.id, cards, ordinaryCardOpen: requestedCardId !== null,
+    onHide: () => { if (requestedCardId !== null && cards.some(card => card.id === requestedCardId && card.kind === 'terminal')) goSameTrack(track.id, { card: undefined }, { replace: true }); },
     create: (body, key) => trackMutations.createTerminal(track.id, body, key),
     request: () => ({ key: mintIdempotencyKey(), body: { theme: readHostThemeRgb() } }),
   });
@@ -1227,11 +1228,15 @@ function TrackRouteBody({
     // return surface and block anchor describe where the reader is.
     goSameTrack(track.id, { card: undefined }, { replace: true });
   }, [goSameTrack, knownCard, requestedCardId, track.id]);
+  // A card URL is an open intent, including on reload while secondary reads are pending.
+  // Admit it once per desktop visit; ordinary rerenders must not reopen a hidden view.
+  const admittedTerminalRoute = useRef<string | null>(null);
   useEffect(() => {
-    if (compactViewport || requestedCardId === null || !workbench.cardIds.has(requestedCardId)) return;
+    if (compactViewport || requestedCardId === null) { admittedTerminalRoute.current = null; return; }
+    if (!workbench.cardIds.has(requestedCardId) || admittedTerminalRoute.current === requestedCardId) return;
+    admittedTerminalRoute.current = requestedCardId;
     workbench.reveal(requestedCardId);
-    goSameTrack(track.id, { card: undefined }, { replace: true });
-  }, [compactViewport, requestedCardId, cards, goSameTrack, track.id, workbench]);
+  }, [compactViewport, requestedCardId, workbench]);
   /* `?panel=` is a compact concept: above the breakpoint `TrackPage` would put
    * `inert` on the desktop panel. Corrected here with `replace`, and the
    * injection below is gated on the viewport too, because on a cold start this

@@ -120,3 +120,29 @@ it.each(['Hide terminal', 'Discussion'])('retains an unvisited survivor and its 
   expect(sockets).toHaveLength(2);
   expect(fixture.posts()).toHaveLength(0);
 });
+
+
+it('keeps the final conversation frame through exit, removes its DOM, and transfers one body to the native sheet', async () => {
+  await page.viewport(1512, 950);
+  setupWorkbench();
+  await page.getByRole('button', { name: /^New conversation$/u }).click();
+  const drawer = screen.getByRole('complementary', { name: 'Untitled' });
+  await waitFor(() => expect(drawer.getAnimations()).toHaveLength(0));
+  fireEvent.click(screen.getByRole('button', { name: /^Close conversation$/u }));
+  expect(drawer.hasAttribute('data-nc-drawer')).toBe(true);
+  expect(drawer.textContent).toContain('Nothing said yet.');
+  expect(drawer.querySelector('h2')?.textContent).toBe('Untitled');
+  await waitFor(() => expect(drawer.isConnected).toBe(false));
+  expect(document.querySelector('[data-nc-drawer]')).toBeNull();
+  expect(document.querySelector('[data-nc-drawer-scroll]')).toBeNull();
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  await expect.element(page.getByRole('complementary', { name: 'Main discussion' })).toBeVisible();
+  await page.viewport(390, 844);
+  await expect.element(page.getByRole('dialog')).toBeVisible();
+  await waitFor(() => expect(document.querySelectorAll('[data-nc-drawer-scroll]')).toHaveLength(1));
+  expect(document.querySelectorAll('#conversation-parent')).toHaveLength(1);
+  expect(document.querySelector('[data-nc-drawer-scroll]')?.closest('dialog')).not.toBeNull();
+  await page.viewport(1512, 950);
+  await expect.element(page.getByRole('complementary', { name: 'Main discussion' })).toBeVisible();
+  await waitFor(() => expect(document.querySelectorAll('[data-nc-drawer-scroll]')).toHaveLength(1));
+});

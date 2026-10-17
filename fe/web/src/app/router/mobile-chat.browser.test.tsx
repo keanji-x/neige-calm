@@ -1,5 +1,5 @@
 import '../../styles/entry.css';
-import { cleanup } from '@testing-library/react';
+import { cleanup, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -219,6 +219,8 @@ it('keeps the message viewport above a growing multiline composer', async () => 
   await field.fill('First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line');
   await expect.poll(() => footer.getBoundingClientRect().height).toBeGreaterThan(initialHeight);
   const messages = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  expect(messages.closest('dialog')).toBe(screen.getByRole('dialog'));
+  expect(document.querySelectorAll('[data-nc-drawer-scroll]')).toHaveLength(1);
   await expect.poll(() => messages.getBoundingClientRect().bottom - footer.getBoundingClientRect().bottom).toBeLessThanOrEqual(1);
   await expect.poll(() => Number.parseFloat(getComputedStyle(messages).paddingBottom)).toBeGreaterThanOrEqual(footer.getBoundingClientRect().height);
   expect(Math.round(footer.getBoundingClientRect().bottom)).toBe(844);
