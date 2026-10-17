@@ -5,6 +5,17 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { parseArgs } from 'node:util';
 import { preview } from 'vite';
 
+/** @typedef {import('./track-profile-types.d.ts').BrowserScope} BrowserScope */
+/** @typedef {import('./track-profile-types.d.ts').Probe} Probe */
+/** @typedef {import('./track-profile-types.d.ts').Capture} Capture */
+
+/** @param {unknown} error */
+function errorCode(error) {
+  return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+}
+/** @param {unknown} error @returns {import('./track-profile-types.d.ts').Failure} */
+function failureOf(error) { return { message: String(error), stack: error instanceof Error ? error.stack ?? null : null }; }
+
 const { values } = parseArgs({ strict: true, options: {
   build: { type: 'string' }, output: { type: 'string' }, label: { type: 'string', default: 'track' },
   count: { type: 'string', default: '300' }, width: { type: 'string', default: '1400' },
@@ -16,6 +27,7 @@ if (values.help) {
   process.stdout.write('Usage: node tools/preview/track-profile.mjs --build DIR [--count 300] [--width 1400] [--label LABEL] [--detail-delay-ms 1000] [--scenario returns|rapid] [--reduced-motion] [--cpu] [--output NEW_DIR]\n');
   process.exit(0);
 }
+/** @param {string} name @param {string} value @param {number} minimum @param {number} maximum */
 function integer(name, value, minimum, maximum) {
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum || Number(value) > maximum) {
     throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
@@ -30,15 +42,16 @@ const width = integer('--width', values.width, 320, 3840);
 const detailDelayMs = integer('--detail-delay-ms', values['detail-delay-ms'], 0, 30000);
 const fe = resolve(import.meta.dirname, '../..');
 const outDir = await realpath(resolve(values.build));
+/** @param {string} path @returns {Promise<string>} */
 async function canonicalDestination(path) {
   let ancestor = resolve(path);
   const segments = [];
   for (;;) {
     try { return resolve(await realpath(ancestor), ...segments); }
     catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+      if (errorCode(error) !== 'ENOENT') throw error;
       const entry = await lstat(ancestor).catch(cause => {
-        if (cause.code === 'ENOENT') return null;
+        if (errorCode(cause) === 'ENOENT') return null;
         throw cause;
       });
       if (entry?.isSymbolicLink()) {
@@ -59,8 +72,9 @@ if (buildRelativeOutput !== '..' && !buildRelativeOutput.startsWith(`..${sep}`) 
 }
 await mkdir(dirname(output), { recursive: true });
 await mkdir(output); // Refuse overwriting any previous successful or failed capture.
+/** @param {string} directory @returns {Promise<import('./track-profile-types.d.ts').BuildInput>} */
 async function readBuild(directory) {
-  const metadata = JSON.parse(await readFile(join(directory, 'profile-build.json'), 'utf8'));
+  const metadata = /** @type {import('./track-profile-types.d.ts').BuildMetadata} */ (JSON.parse(await readFile(join(directory, 'profile-build.json'), 'utf8')));
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(metadata.commit)
     || typeof metadata.workingTreeDirty !== 'boolean' || typeof metadata.reactProfiling !== 'boolean'
     || metadata.sourceMaps !== true || typeof metadata.outDir !== 'string'
@@ -71,9 +85,10 @@ async function readBuild(directory) {
     const bytes = await readFile(path);
     hashes.push({ path: relative(directory, path), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
     if (!path.endsWith('.map')) continue;
-    const map = JSON.parse(bytes.toString());
-    for (let index = 0; index < (map.sources?.length ?? 0); index++) {
-      const source = map.sources[index].replaceAll('\\', '/');
+    const map = /** @type {import('./track-profile-types.d.ts').SourceMapInput} */ (JSON.parse(bytes.toString()));
+    const sources = map.sources ?? [];
+    for (let index = 0; index < sources.length; index++) {
+      const source = sources[index].replaceAll('\\', '/');
       if (!source.endsWith('/web/src/app/providers/public.tsx') && source !== 'web/src/app/providers/public.tsx') continue;
       const text = map.sourcesContent?.[index];
       const match = typeof text === 'string' && /^export const WEB_COMPAT_VERSION = (\d+);$/m.exec(text);
@@ -86,6 +101,7 @@ async function readBuild(directory) {
   }
   return { metadata, hashes, inputs, compatVersion: inputs[0].version };
 }
+/** @param {string} directory @returns {Promise<string[]>} */
 async function buildFiles(directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -95,6 +111,7 @@ async function buildFiles(directory) {
   }
   return files.sort();
 }
+/** @type {import('./track-profile-types.d.ts').BuildInput} */
 let buildInput;
 try { buildInput = await readBuild(outDir); }
 catch (error) {
@@ -117,31 +134,52 @@ const tracks = [
   { id: 'large', area_id: area.id, title: 'Large track', sort: 1, cwd: '/workspace', pinned_at: null, closed_at: null, admin_granted_at: null, created_at: 1, updated_at: 2 },
 ];
 const fixture = tracks.map(track => ({ id: track.id, title: track.title, count: track.id === 'large' ? count : 2 }));
+/** @param {string} id @param {number} size */
 function reportCard(id, size) {
   return { id: `report-${id}`, track_id: id, kind: 'track-report', title: null, sort: 0,
     payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: Array.from({ length: size }, (_, index) => ({
       id: `block-${index}`, kind: 'prose', rev: 1, payload: { markdown: `# ${index === 0 ? `Report ${id}` : `Section ${index}`}\n\n${`Evidence for item ${index}: **result ${index * 17}**, a [reference](https://example.invalid/${index}) and independent report text for case ${index}. `.repeat(5)}` },
     })) }, deletable: false, created_at: 1, updated_at: 2 };
 }
-const details = new Map(tracks.map(track => [track.id, { track, can_reopen: false, can_admin: true, can_close: true,
-  cards: [reportCard(track.id, fixture.find(item => item.id === track.id).count)], overlays: [] }]));
+const details = new Map(tracks.map(track => {
+  const item = fixture.find(item => item.id === track.id);
+  if (item === undefined) throw new Error(`Missing fixture for ${track.id}`);
+  return [track.id, { track, can_reopen: false, can_admin: true, can_close: true,
+    cards: [reportCard(track.id, item.count)], overlays: [] }];
+}));
+/** @type {import('./track-profile-types.d.ts').RecordedRequest[]} */
 const requests = [];
+/** @type {import('./track-profile-types.d.ts').Failure[]} */
 const pageErrors = [];
+/** @type {{ url: string; status: number }[]} */
 const assetErrors = [];
+/** @type {import('./track-profile-types.d.ts').Failure[]} */
 const failures = [];
+/** @type {import('./track-profile-types.d.ts').Step[]} */
 const steps = [];
+/** @type {import('@playwright/test').Browser | undefined} */
 let browser;
+/** @type {import('@playwright/test').BrowserContext | undefined} */
 let context;
+/** @type {import('@playwright/test').Page | undefined} */
 let page;
+/** @type {import('vite').PreviewServer | undefined} */
 let server;
+/** @type {import('@playwright/test').CDPSession | undefined} */
 let cpu;
+/** @type {string | undefined} */
 let baseUrl;
+/** @type {string | undefined} */
 let browserVersion;
+/** @type {Capture | undefined} */
 let captured;
 let closing = false;
+/** @type {Map<ReturnType<typeof setTimeout>, () => void>} */
 const delayedReads = new Map();
 let complete = false;
+/** @type {Error | null} */
 let interrupted = null;
+/** @param {string} signal */
 const interrupt = signal => {
   interrupted = new Error(`Capture interrupted by ${signal}`);
   void browser?.close().catch(error => { failures.push({ message: String(error) }); });
@@ -172,6 +210,7 @@ try {
     const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
     const recorded = { method: request.method(), path: path + url.search, hostAt: Date.now(), handled: true };
     requests.push(recorded);
+    /** @type {unknown} */
     let body;
     if (path === '/api/auth/whoami') body = { userId: 'profile-user', displayName: 'Profile', role: 'owner', sessionId: 'profile-session' };
     else if (path === '/api/version') body = { assistantProviders: true, conversationCreateModel: true, conversationSide: true,
@@ -180,8 +219,8 @@ try {
     else if (path === '/api/areas') body = [area];
     else if (path === `/api/areas/${area.id}/tracks`) body = tracks;
     else if (path === '/api/tracks/small' || path === '/api/tracks/large') {
-      const id = path.split('/').at(-1);
-      if (id === 'large' && detailDelayMs > 0) await new Promise(resolve => {
+      const id = path.slice('/api/tracks/'.length);
+      if (id === 'large' && detailDelayMs > 0) await new Promise(/** @param {(value?: undefined) => void} resolve */ resolve => {
         const timer = setTimeout(() => { delayedReads.delete(timer); resolve(); }, detailDelayMs);
         delayedReads.set(timer, resolve);
       });
@@ -207,23 +246,25 @@ try {
   });
   await page.routeWebSocket('**/api/events', () => {});
   await page.addInitScript(({ fixture }) => {
-    const { document, performance, requestAnimationFrame, setTimeout, MutationObserver, PerformanceObserver, Worker } = globalThis;
+    const scope = /** @type {BrowserScope} */ (globalThis);
+    const { document, performance, requestAnimationFrame, setTimeout, MutationObserver, PerformanceObserver, Worker } = scope;
+    /** @type {Probe} */
     const probe = { recording: false, clicks: [], snapshots: [], frames: [], tasks: [], workers: [], pulses: [], state: null };
-    globalThis.__ncTrackProfile = probe;
+    scope.__ncTrackProfile = probe;
     const at = () => performance.now();
-    const active = () => fixture.find(item => globalThis.location.pathname.endsWith(`/track/${item.id}`));
+    const active = () => fixture.find(item => scope.location.pathname.endsWith(`/track/${item.id}`));
     const inspect = () => {
       const target = active();
       const trackPage = document.querySelector('[data-nc-track-page]');
       const report = document.querySelector('[data-nc-report]');
       const title = trackPage?.querySelector('h1')?.textContent
         || document.querySelector('[data-nc-workspace-header] [data-nc-page-title]')?.textContent || null;
-      const statuses = [...document.querySelectorAll('[role="status"]')].map(node => node.textContent);
+      const statuses = Array.from(document.querySelectorAll('[role="status"]')).map(node => node.textContent);
       const neutral = statuses.includes('Loading track…');
       const firstHeading = report?.querySelector('h2')?.textContent ?? null;
       const headings = report?.querySelectorAll('h2').length ?? 0;
       const region = document.querySelector('section[aria-label="Track report"]');
-      const result = { route: globalThis.location.pathname, target: target?.id ?? null,
+      const result = { route: scope.location.pathname, target: target?.id ?? null,
         shell: target !== undefined && (neutral || title?.includes(target.title) === true),
         title, neutral, statuses, report: report !== null, firstHeading, headings,
         busy: region?.getAttribute('aria-busy') ?? null,
@@ -238,7 +279,7 @@ try {
       if (probe.recording) probe.tasks.push(...list.getEntries().map(entry => ({ start: entry.startTime, duration: entry.duration })));
     }).observe({ type: 'longtask', buffered: false });
     document.addEventListener('click', event => {
-      const button = event.target instanceof globalThis.Element ? event.target.closest('button') : null;
+      const button = event.target instanceof scope.Element ? event.target.closest('button') : null;
       const label = button?.getAttribute('aria-label');
       const selected = fixture.find(item => label === `Track ${item.title}` || label === item.title);
       if (selected === undefined || !probe.recording) return;
@@ -247,8 +288,11 @@ try {
       setTimeout(() => { probe.pulses.push({ clickAt: clicked, at: at() }); }, 0);
       requestAnimationFrame(time => { probe.pulses.push({ clickAt: clicked, frameAt: time, at: at() }); });
     }, true);
+    /** @type {number | null} */
     let previous = null;
+    /** @type {number | null} */
     let previousObserved = null;
+    /** @param {number} time */
     const frame = time => {
       const observedAt = at();
       if (probe.recording) probe.frames.push({ at: observedAt, frameAt: time, gap: previous === null ? null : time - previous,
@@ -260,23 +304,30 @@ try {
     };
     requestAnimationFrame(frame);
     let workerSequence = 0;
-    globalThis.Worker = class extends Worker {
-      constructor(...args) {
-        super(...args);
+    /** @param {unknown} value */
+    const messageType = value => typeof value === 'object' && value !== null && 'type' in value && typeof value.type === 'string' ? value.type : null;
+    scope.Worker = class extends Worker {
+      /** @param {string | URL} url @param {WorkerOptions} [options] */
+      constructor(url, options) {
+        super(url, options);
         this.profileId = ++workerSequence;
-        if (probe.recording) probe.workers.push({ kind: 'create', id: this.profileId, at: at(), url: String(args[0]) });
+        if (probe.recording) probe.workers.push({ kind: 'create', id: this.profileId, at: at(), url: String(url) });
+        /** @param {MessageEvent<unknown>} event */
         this.profileReply = event => {
-          if (probe.recording) probe.workers.push({ kind: 'reply', id: this.profileId, at: at(), type: event.data?.type ?? null });
+          if (probe.recording) probe.workers.push({ kind: 'reply', id: this.profileId, at: at(), type: messageType(event.data) });
         };
+        /** @param {ErrorEvent} event */
         this.profileError = event => {
           if (probe.recording) probe.workers.push({ kind: 'error', id: this.profileId, at: at(), message: event.message });
         };
         this.addEventListener('message', this.profileReply);
         this.addEventListener('error', this.profileError);
       }
-      postMessage(...args) {
-        if (probe.recording) probe.workers.push({ kind: 'post', id: this.profileId, at: at(), type: args[0]?.type ?? null });
-        super.postMessage(...args);
+      /** @param {unknown} message @param {Transferable[] | StructuredSerializeOptions} [options] */
+      postMessage(message, options) {
+        if (probe.recording) probe.workers.push({ kind: 'post', id: this.profileId, at: at(), type: messageType(message) });
+        if (Array.isArray(options)) super.postMessage(message, options);
+        else super.postMessage(message, options);
       }
       terminate() {
         if (probe.recording) probe.workers.push({ kind: 'terminate', id: this.profileId, at: at() });
@@ -287,7 +338,10 @@ try {
     };
   }, { fixture });
   await page.goto(`${baseUrl}/next/track/small`);
-  await page.waitForFunction(() => globalThis.__ncTrackProfile.state?.full === true);
+  await page.waitForFunction(() => {
+    const scope = /** @type {BrowserScope} */ (globalThis);
+    return scope.__ncTrackProfile.state?.full === true;
+  });
   await page.waitForTimeout(500);
   if (values.cpu) {
     cpu = await context.newCDPSession(page);
@@ -295,30 +349,42 @@ try {
     await cpu.send('Profiler.setSamplingInterval', { interval: 1000 });
     await cpu.send('Profiler.start');
   }
-  await page.evaluate(() => { globalThis.__ncTrackProfile.recording = true; });
+  await page.evaluate(() => {
+    const scope = /** @type {BrowserScope} */ (globalThis);
+    scope.__ncTrackProfile.recording = true;
+  });
+  const activePage = page;
 
+  /** @param {string} id */
   async function navigationControl(id) {
     const item = fixture.find(item => item.id === id);
-    const desktop = page.getByRole('button', { name: `Track ${item.title}`, exact: true });
+    if (item === undefined) throw new Error(`Unknown Track fixture: ${id}`);
+    const desktop = activePage.getByRole('button', { name: `Track ${item.title}`, exact: true });
     if (await desktop.isVisible()) return desktop;
-    await page.getByRole('button', { name: 'Open workspace', exact: true }).click();
-    await page.getByRole('button', { name: area.name, exact: true }).click();
-    return page.getByRole('button', { name: item.title, exact: true });
+    await activePage.getByRole('button', { name: 'Open workspace', exact: true }).click();
+    await activePage.getByRole('button', { name: area.name, exact: true }).click();
+    return activePage.getByRole('button', { name: item.title, exact: true });
   }
+  /** @param {import('@playwright/test').Locator} control */
   async function clickControl(control) {
     const box = await control.boundingBox();
     if (box === null) throw new Error('Selected Track navigation control is not visible');
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await activePage.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   }
+  /** @param {string} id */
   async function waitForTrack(id) {
-    await page.waitForFunction(target => globalThis.__ncTrackProfile.state?.target === target && globalThis.__ncTrackProfile.state?.full === true, id);
+    await activePage.waitForFunction(target => {
+      const scope = /** @type {BrowserScope} */ (globalThis);
+      return scope.__ncTrackProfile.state?.target === target && scope.__ncTrackProfile.state.full;
+    }, id);
   }
   if (values.scenario === 'returns') {
     for (const [index, id] of ['large', 'small', 'large', 'small', 'large'].entries()) {
-      steps.push({ step: index, target: id, attemptedAt: Date.now(), complete: false });
+      const step = { step: index, target: id, attemptedAt: Date.now(), complete: false };
+      steps.push(step);
       await clickControl(await navigationControl(id));
       await waitForTrack(id);
-      steps.at(-1).complete = true;
+      step.complete = true;
       await page.waitForTimeout(500);
     }
   } else {
@@ -329,20 +395,23 @@ try {
     if (largeBox === null || smallBox === null) throw new Error('Rapid navigation controls have no geometry');
     for (const [index, id] of ['large', 'small', 'large'].entries()) {
       const box = id === 'large' ? largeBox : smallBox;
-      steps.push({ step: index, target: id, attemptedAt: Date.now(), complete: false });
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      const step = { step: index, target: id, attemptedAt: Date.now(), complete: false };
+      steps.push(step);
+      await activePage.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
       if (index < 2) await new Promise(resolve => setTimeout(resolve, 20));
-      else { await waitForTrack(id); steps.at(-1).complete = true; }
+      else { await waitForTrack(id); step.complete = true; }
     }
     await page.waitForTimeout(500 + detailDelayMs);
-    steps[0].superseded = true; steps[1].superseded = true;
+    for (const step of steps.slice(0, 2)) step.superseded = true;
   }
   captured = await page.evaluate(() => {
-    const probe = globalThis.__ncTrackProfile; probe.recording = false;
-    return { ...probe, timeOrigin: globalThis.performance.timeOrigin, resources: globalThis.performance.getEntriesByType('resource').map(entry => ({
-      url: entry.name, initiatorType: entry.initiatorType, start: entry.startTime, requestStart: entry.requestStart, responseStart: entry.responseStart,
-      responseEnd: entry.responseEnd, duration: entry.duration, transferSize: entry.transferSize,
-    })), elements: globalThis.document.querySelectorAll('*').length };
+    const scope = /** @type {BrowserScope} */ (globalThis);
+    const probe = scope.__ncTrackProfile; probe.recording = false;
+    return { ...probe, timeOrigin: scope.performance.timeOrigin, resources: scope.performance.getEntriesByType('resource').map(value => {
+      const entry = /** @type {PerformanceResourceTiming} */ (value);
+      return { url: entry.name, initiatorType: entry.initiatorType, start: entry.startTime, requestStart: entry.requestStart, responseStart: entry.responseStart,
+        responseEnd: entry.responseEnd, duration: entry.duration, transferSize: entry.transferSize };
+    }), elements: scope.document.querySelectorAll('*').length };
   });
   if (captured.clicks.length !== steps.length || steps.some(step => !step.complete && !step.superseded)) throw new Error('Capture has missing selections or incomplete steps');
   if (pageErrors.length || assetErrors.length || requests.some(request => !request.handled)) throw new Error('Capture has browser, asset or fixture errors');
@@ -350,11 +419,13 @@ try {
   await page.screenshot({ path: join(output, 'track.png') });
   complete = true;
 } catch (error) {
-  failures.push({ message: String(error), stack: error?.stack ?? null });
+  failures.push(failureOf(error));
   if (page !== undefined && !page.isClosed()) {
     try {
-      captured = await page.evaluate(() => ({ ...globalThis.__ncTrackProfile,
-        elements: globalThis.document.querySelectorAll('*').length }));
+      captured = await page.evaluate(() => {
+        const scope = /** @type {BrowserScope} */ (globalThis);
+        return { ...scope.__ncTrackProfile, elements: scope.document.querySelectorAll('*').length };
+      });
       await page.screenshot({ path: join(output, 'failure.png') });
       await writeFile(join(output, 'failure.txt'), await page.locator('body').innerText());
     } catch (captureError) { failures.push({ message: String(captureError) }); }
@@ -368,14 +439,20 @@ try {
   closing = true;
   for (const [timer, finish] of delayedReads) { clearTimeout(timer); finish(); }
   delayedReads.clear();
+  /** @param {string} owner @param {() => unknown | Promise<unknown>} close */
   const cleanup = async (owner, close) => {
     try { await close(); }
     catch (error) { failures.push({ message: `${owner} cleanup failed: ${String(error)}` }); process.exitCode = 1; complete = false; }
   };
   await cleanup('Browser context', () => context?.close());
   await cleanup('Browser', () => browser?.close());
-  await cleanup('Owned preview', () => server === undefined ? undefined
-    : new Promise((resolve, reject) => server.httpServer.close(error => error ? reject(error) : resolve())));
+  await cleanup('Owned preview', () => {
+    if (server === undefined) return;
+    const owned = server;
+    return new Promise(/** @param {(value?: undefined) => void} resolve @param {(reason: Error) => void} reject */ (resolve, reject) => {
+      owned.httpServer.close(error => error ? reject(error) : resolve());
+    });
+  });
   process.removeListener('SIGINT', onInterrupt);
   process.removeListener('SIGTERM', onTerminate);
   await cleanup('Build immutability check', verifyBuild);
