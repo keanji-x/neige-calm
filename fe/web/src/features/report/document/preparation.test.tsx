@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import * as markdown from '../../../../../core/markdown/public.ts';
-import { deriveReportOutline, readTrackReport, type TrackReport } from '../../../../../core/domain/report.ts';
+import { deriveReportOutline, readTrackReport, trackReportLinkUrl, type TrackReport } from '../../../../../core/domain/report.ts';
 import type { CardWire } from '../../../../../core/domain/track.ts';
 import { reportDocumentReferenceRepository } from '../../../../../core/domain/report-references.ts';
 import { createReportPreparationCache, prepareProse, prepareReportDocument } from './preparation.ts';
@@ -70,7 +70,7 @@ it('preserves empty and legacy report handling and fail-soft raw rendering', () 
 });
 
 it('retains current callbacks and file admission when prepared syntax is reused', () => {
-  const prepared = prepareProse('[Track](neige://wave/other#target) and [File](/allowed/info.md)', null);
+  const prepared = prepareProse(`[Track](${trackReportLinkUrl('other')}#target) and [File](/allowed/info.md)`, null);
   const oldTargets: unknown[] = []; const currentTargets: unknown[] = [];
   const view = render(<PreparedProseBlock prepared={prepared} fileRoot="/allowed"
     onOpenLink={target => oldTargets.push(target)} onOpenFileLink={target => oldTargets.push(target)} />);
