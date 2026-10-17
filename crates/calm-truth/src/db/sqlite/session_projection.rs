@@ -112,9 +112,19 @@ pub(super) async fn runtime_get_projectable_for_cards_from_pool(
     if card_ids.is_empty() {
         return Ok(HashMap::new());
     }
+    let mut connection = pool.acquire().await?;
+    runtime_get_projectable_for_cards_on_connection(&mut connection, card_ids).await
+}
 
+pub(super) async fn runtime_get_projectable_for_cards_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    card_ids: &[RuntimeCardId],
+) -> WorkerSessionProjectionResult<HashMap<RuntimeCardId, WorkerSessionProjection>> {
+    if card_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let mut query = projectable_runtimes_for_cards_query(card_ids);
-    let rows = query.build().fetch_all(pool).await?;
+    let rows = query.build().fetch_all(connection).await?;
     projectable_runtimes_for_cards_from_rows(rows)
 }
 

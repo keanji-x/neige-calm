@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use super::SqlxRepo;
 use crate::conversation_title::{ConversationTitleInput, ConversationTitleSource};
 use crate::error::Result;
-use sqlx::Row;
+use sqlx::{Row, SqliteConnection};
 
 // A per-card batch size, never a cap on how far the first visible input can be found.
 const CANDIDATE_BATCH: i64 = 32;
@@ -24,8 +24,8 @@ WHERE c.role IN ('planner', 'assistant')
 ORDER BY c.id, h.id
 "#;
 
-pub(super) async fn sources(
-    repo: &SqlxRepo,
+async fn sources_on_connection(
+    connection: &mut SqliteConnection,
     ids: &[String],
 ) -> Result<Vec<ConversationTitleSource>> {
     let mut active: BTreeMap<String, i64> = ids.iter().map(|id| (id.clone(), 0)).collect();
@@ -40,7 +40,7 @@ pub(super) async fn sources(
         let rows = sqlx::query(SOURCES)
             .bind(serde_json::to_string(&requests)?)
             .bind(CANDIDATE_BATCH)
-            .fetch_all(repo.pool())
+            .fetch_all(&mut *connection)
             .await?;
         let mut progress: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         for row in rows {
@@ -81,6 +81,27 @@ pub(super) async fn sources(
     Ok(sources.into_values().collect())
 }
 
+pub(super) async fn context(
+    repo: &SqlxRepo,
+    ids: &[String],
+) -> Result<crate::conversation_title::ConversationTitleContext> {
+    if ids.is_empty() {
+        return Ok(crate::conversation_title::ConversationTitleContext {
+            sources: Vec::new(),
+            runtimes: Default::default(),
+        });
+    }
+    // A deferred read transaction pins the snapshot on the first candidate SELECT.
+    // Keep every candidate batch and the runtime query on this connection.
+    let mut tx = repo.pool().begin().await?;
+    let sources = sources_on_connection(&mut tx, ids).await?;
+    let runtimes =
+        super::session_projection::runtime_get_projectable_for_cards_on_connection(&mut tx, ids)
+            .await?;
+    tx.commit().await?;
+    Ok(crate::conversation_title::ConversationTitleContext { sources, runtimes })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::session_conversation_tests::card;
@@ -88,7 +109,7 @@ mod tests {
     use crate::db::{RepoOutOfDomain, RepoRead};
     use serde_json::json;
 
-    async fn insert(
+    pub(super) async fn insert(
         repo: &SqlxRepo,
         card: &str,
         track: &str,
@@ -143,9 +164,10 @@ mod tests {
         }
         insert(&repo, &b, &other_track, None, "User says:\nOther card").await;
         let values = repo
-            .conversation_title_sources(&[a.clone(), b.clone(), empty.clone(), "missing".into()])
+            .conversation_title_context(&[a.clone(), b.clone(), empty.clone(), "missing".into()])
             .await
-            .unwrap();
+            .unwrap()
+            .sources;
         assert_eq!(values.len(), 3);
         let title = |id: &str| {
             values
@@ -166,7 +188,10 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                sources(&repo, std::slice::from_ref(&b)).await.unwrap()[0]
+                repo.conversation_title_context(std::slice::from_ref(&b))
+                    .await
+                    .unwrap()
+                    .sources[0]
                     .input
                     .as_ref()
                     .unwrap()
@@ -210,12 +235,21 @@ mod tests {
                 .any(|line| line.contains("SCAN candidate") || line.starts_with("SCAN h")),
             "{details:?}"
         );
-        sqlx::query("DELETE FROM harness_items WHERE id=?1")
-            .bind(first)
-            .execute(repo.pool())
+        let mut tx = repo.pool().begin().await.unwrap();
+        assert_eq!(
+            super::super::transcript_delete_thread_suffix_tx(
+                &mut tx,
+                &a,
+                "thread",
+                first - 1,
+                first,
+            )
             .await
-            .unwrap();
-        let replaced = sources(&repo, &[a]).await.unwrap();
+            .unwrap(),
+            1
+        );
+        tx.commit().await.unwrap();
+        let replaced = repo.conversation_title_context(&[a]).await.unwrap().sources;
         assert_eq!(
             replaced[0].input.as_ref().unwrap().title(),
             Some("latest page title".into())
@@ -278,7 +312,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batch.len(), CANDIDATE_BATCH as usize);
-        let value = sources(&repo, &[a]).await.unwrap();
+        let value = repo.conversation_title_context(&[a]).await.unwrap().sources;
         assert!(value[0].input.is_some());
         assert_eq!(
             value[0].input.as_ref().unwrap().title(),
@@ -286,3 +320,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests;

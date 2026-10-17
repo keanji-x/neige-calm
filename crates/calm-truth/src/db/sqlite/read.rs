@@ -72,11 +72,11 @@ impl SqlxRepo {
 
 #[async_trait]
 impl RepoRead for SqlxRepo {
-    async fn conversation_title_sources(
+    async fn conversation_title_context(
         &self,
         ids: &[String],
-    ) -> Result<Vec<crate::conversation_title::ConversationTitleSource>> {
-        super::conversation_title::sources(self, ids).await
+    ) -> Result<crate::conversation_title::ConversationTitleContext> {
+        super::conversation_title::context(self, ids).await
     }
 
     async fn track_area_membership(

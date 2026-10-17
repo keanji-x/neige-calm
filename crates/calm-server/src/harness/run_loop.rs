@@ -1767,8 +1767,9 @@ async fn handle_steer(
 }
 
 /// `TurnCompleted` sweep: every steered entry whose transcript row is still a projection was
-/// dropped by codex before it was recorded, so the row is deleted and the entry goes back to
-/// the head one rev up. Runs after the arm's gates and BEFORE the phase persist.
+/// dropped by codex before it was recorded. Rebuffer one rev up and persist pending BEFORE
+/// deleting projections, so the transfer never removes the only durable input source.
+/// Runs after the arm's gates and before its final phase/head-stamping persist.
 async fn restore_steered_entries_codex_dropped(
     inner: &Arc<Inner>,
     turn_id: &str,
@@ -1823,20 +1824,6 @@ async fn restore_steered_entries_codex_dropped(
         if !still_projection {
             continue;
         }
-        if let Err(error) = inner
-            .repo
-            .transcript_projection_delete(inner.card_id.as_str(), entry_id.as_str())
-            .await
-        {
-            tracing::warn!(
-                worker_session_id = %inner.worker_session_id,
-                card_id = %inner.card_id,
-                entry_id = %entry_id,
-                error = %error,
-                "planner harness could not delete the transcript row of a steered entry codex \
-                 dropped"
-            );
-        }
         tracing::warn!(
             worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
@@ -1859,6 +1846,38 @@ async fn restore_steered_entries_codex_dropped(
         entry.bump_rev_for_restore();
     }
     rebuffer_head(inner, restored).await;
+    // A restored steer can be the first visible user input (after a system-only turn).
+    // Keep its projection until pending is durably written, including a no-row result.
+    let pending_durable = match persist_snapshot_inner(inner, None, None).await {
+        Ok(written) => written,
+        Err(error) => {
+            tracing::warn!(
+                worker_session_id = %inner.worker_session_id,
+                card_id = %inner.card_id,
+                error = %error,
+                "planner harness could not persist restored entries; retaining their projections"
+            );
+            false
+        }
+    };
+    if pending_durable {
+        for entry_id in &ids {
+            if let Err(error) = inner
+                .repo
+                .transcript_projection_delete(inner.card_id.as_str(), entry_id.as_str())
+                .await
+            {
+                tracing::warn!(
+                    worker_session_id = %inner.worker_session_id,
+                    card_id = %inner.card_id,
+                    entry_id = %entry_id,
+                    error = %error,
+                    "planner harness could not delete the transcript row of a steered entry codex \
+                     dropped"
+                );
+            }
+        }
+    }
     ids
 }
 
@@ -4709,3 +4728,6 @@ mod turn_origin_tests;
 
 #[cfg(test)]
 mod workspace_report_tests;
+
+#[cfg(test)]
+mod conversation_title_tests;

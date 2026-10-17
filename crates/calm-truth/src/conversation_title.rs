@@ -9,6 +9,17 @@ pub struct ConversationTitleSource {
     pub input: Option<ConversationTitleInput>,
 }
 
+/// Persisted source facts and projectable runtime facts from one storage read snapshot.
+/// Runtime payloads stay opaque here; the harness owner interprets its typed snapshot.
+#[derive(Debug)]
+pub struct ConversationTitleContext {
+    pub sources: Vec<ConversationTitleSource>,
+    pub runtimes: std::collections::HashMap<
+        crate::session_projection_repo::CardId,
+        crate::session_projection_repo::WorkerSessionProjection,
+    >,
+}
+
 #[derive(Debug)]
 pub enum ConversationTitleInput {
     Structured(Vec<HarnessInputSegment>),
