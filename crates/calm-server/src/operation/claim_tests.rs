@@ -341,7 +341,10 @@ async fn failed_later_checkpoint_can_compensate_without_replacing_committed_outp
     let mut later = first.clone();
     later.result = json!({"checkpoint": 2});
     later.data = json!({"cleanup_ticket": "already-issued-effect"});
-    sqlx::query("CREATE TRIGGER reject_later_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN json_extract(NEW.tx_output_json,'$.result.checkpoint')=2 BEGIN SELECT RAISE(ABORT,'forced later checkpoint failure'); END")
+    sqlx::query("CREATE TRIGGER reject_later_checkpoint \
+        BEFORE UPDATE OF tx_output_json ON operations \
+        WHEN json_extract(NEW.tx_output_json,'$.result.checkpoint')=2 \
+        BEGIN SELECT RAISE(ABORT,'forced later checkpoint failure'); END")
         .execute(db.pool()).await.unwrap();
     let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
     let error =

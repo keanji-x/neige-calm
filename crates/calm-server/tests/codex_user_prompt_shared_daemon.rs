@@ -580,7 +580,11 @@ async fn failed_turn_checkpoint_compensates_the_original_shared_turn() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot().await;
-    sqlx::query("CREATE TRIGGER reject_turn_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN NEW.kind='codex-create' AND json_type(NEW.tx_output_json,'$.data.turn_started_at_ms') IS NOT NULL BEGIN SELECT RAISE(ABORT,'forced turn checkpoint failure'); END")
+    sqlx::query("CREATE TRIGGER reject_turn_checkpoint \
+        BEFORE UPDATE OF tx_output_json ON operations \
+        WHEN NEW.kind='codex-create' \
+        AND json_type(NEW.tx_output_json,'$.data.turn_started_at_ms') IS NOT NULL \
+        BEGIN SELECT RAISE(ABORT,'forced turn checkpoint failure'); END")
         .execute(boot.repo.pool()).await.unwrap();
 
     let response = tokio::time::timeout(
