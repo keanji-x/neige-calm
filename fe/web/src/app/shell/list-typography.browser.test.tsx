@@ -9,6 +9,7 @@ import { makeDesktopPainter, paintDesktopPanel } from '../../features/track/page
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { Sidebar } from './sidebar.tsx';
+import { MobileTrackList } from './mobile-track-list.tsx';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
@@ -16,7 +17,7 @@ const receipts = readReceiptsFixture();
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
-function draw() {
+function draw(selected = false) {
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
   const tracks: Track[] = ['Left first', 'Left second'].map((title, i) => ({
@@ -37,16 +38,17 @@ function draw() {
     openableCards: new Set(),
   });
   render(receipts.wrap(<div style={{ display: 'flex', gap: 32 }}>
-    <div style={{ inlineSize: 240 }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}
-      tracks={tracks} currentPath="/" onGo={vi.fn()} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
+    <div style={{ inlineSize: 240, background: 'var(--surface-navigation)' }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}
+      tracks={tracks} currentPath={selected ? '/track/track-0' : '/'} onGo={vi.fn()} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
       onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={vi.fn()} onDeleteTrack={vi.fn()}
       onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} /></div>
     <div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '2' }), view)}
-      <PanelModule title="Conversations"><ChatList showTrack={false} onOpen={vi.fn()} cards={{}}
+      <PanelModule title="Conversations"><ChatList activeId={selected ? 'chat-0' : null} showTrack={false} onOpen={vi.fn()} cards={{}}
         conversations={['Chat first', 'Chat second'].map((title, i) => ({ provider: 'codex' as const, id: `chat-${i}`, trackId: 'track-0', title,
           kind: 'track-assistant', state: 'idle', updatedAt: 1 }))} /></PanelModule>
     </PanelCard></div>
   </div>));
+  return { tracks };
 }
 function element(node: HTMLElement | null) {
   expect(node).not.toBeNull();
@@ -110,4 +112,36 @@ it('uses configured sidebar density without changing the panel row rhythm', asyn
   ];
   for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 32 : 28, 0);
 
+});
+
+// The same selected state must paint identically over navigation and card surfaces.
+it.each(['light', 'dark'])('shares opaque selection colours across both lists (%s)', async theme => {
+  document.documentElement.dataset.theme = theme;
+  await page.viewport(1280, 900);
+  const { tracks } = draw(true);
+  const mobileView = render(<MobileTrackList tracks={tracks} currentTrackId={tracks[0].id}
+    onOpenTrack={vi.fn()} isUnread={() => false} />);
+  const mobile = element(mobileView.container.querySelector<HTMLElement>('[aria-current="page"]'));
+  const mobileRow = mobile.closest('li')!;
+  const rail = element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]'));
+  const chat = element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]'));
+  const probe = render(<div />).container.firstElementChild as HTMLDivElement;
+  const expected = (token: string) => { probe.style.background = `var(${token})`; return getComputedStyle(probe).backgroundColor; };
+  const paint = (node: HTMLElement, pseudo?: string) => getComputedStyle(node, pseudo).backgroundColor;
+  await page.elementLocator(document.body).hover();
+  const selected = expected('--selection-bg');
+  await expect.poll(() => paint(rail, '::before')).toBe(selected);
+  await expect.poll(() => paint(chat)).toBe(selected);
+  expect(paint(mobileRow)).toBe(selected);
+  expect(selected).not.toBe('rgba(0, 0, 0, 0)');
+  expect(selected).not.toMatch(/rgba\(|\//);
+  const selectedHover = expected('--selection-hover-bg');
+  await page.elementLocator(rail).hover();
+  await expect.poll(() => paint(rail, '::before')).toBe(selectedHover);
+  await page.elementLocator(chat).hover();
+  await expect.poll(() => paint(chat)).toBe(selectedHover);
+  expect(getComputedStyle(chat).backgroundImage).toBe('none');
+  await page.elementLocator(mobile).hover();
+  await expect.poll(() => paint(mobileRow)).toBe(selectedHover);
+  expect(paint(mobile)).toBe('rgba(0, 0, 0, 0)');
 });

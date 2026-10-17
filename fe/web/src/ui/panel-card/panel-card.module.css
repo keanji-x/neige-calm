@@ -94,7 +94,7 @@
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     margin-inline-end: calc(var(--space-1) * -1);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-3);
     cursor: pointer;
   }

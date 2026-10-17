@@ -6,7 +6,7 @@
   }
   /*
    * §7.6's drawer, now shaped as **a card**: absolutely positioned inside the
-   * main region, on the trailing panel's track, `--z-overlay`, `--shadow-float`.
+   * main region, on the trailing panel's track, `--z-overlay`, with a restrained local shadow.
    *
    * **Four corners, because there are four sides of page.** §7.6 asked for
    * `--radius-lg` on the inline-start corners only, and an earlier round
@@ -82,15 +82,10 @@
    * spending the report's left whitespace so its reading column stays centred
    * beside the conversation rather than disappearing underneath it.
    *
-   * `--shadow-float` is one of §6.5's four exemptions (menu / popover / dialog /
-   * toast, "抽屉按弹出算"). It is the only thing in the app that overlays
-   * unrelated content, which is exactly what the exemption is for.
-   *
-   * **No edge line.** The drawer used to carry `border-inline-start: 1px solid
-   * var(--hairline)`, which put a visible hairline down the left of a panel that
-   * already casts a 32px shadow onto the page behind it. Two separators for one
-   * boundary, and the rule here is that if colour can separate, no line is
-   * drawn. The shadow *is* the colour.
+   * The conversation is a persistent reading surface, so its shadow is
+   * narrower and lighter than a transient menu. Reuse the theme's scrim colour
+   * for both modes without changing the global float material. Shadow alone
+   * separates the card from the page; no second edge line is needed.
    */
   .drawer {
     /*
@@ -117,7 +112,7 @@
     overflow: hidden;
     border-radius: var(--nc-card-radius);
     background: var(--surface-card);
-    box-shadow: var(--shadow-float);
+    box-shadow: 0 2px 12px color-mix(in oklab, var(--overlay-scrim) 35%, transparent);
     opacity: 1;
     translate: 0 0;
     transition: none;

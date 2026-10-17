@@ -109,13 +109,13 @@
     color: var(--accent);
   }
 
-  .track:focus-visible {
+  .track:not([aria-current='page']):focus-visible {
     background: var(--overlay-hover-strong);
   }
 
-  @media (hover: hover) and (pointer: fine) { .track:hover { background: var(--overlay-hover-strong); } }
+  @media (hover: hover) and (pointer: fine) { .track:not([aria-current='page']):hover { background: var(--overlay-hover-strong); } }
 
-  .track:active {
+  .track:not([aria-current='page']):active {
     background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
   }
 
@@ -139,7 +139,8 @@
 
   .trackActions { flex: none; min-inline-size: var(--rail-w-collapsed) !important; min-block-size: var(--rail-w-collapsed) !important; color: var(--text-3); }
   .trackActions svg, .trackActions span:has(> svg) { flex: none; inline-size: var(--glyph-lg) !important; block-size: var(--glyph-lg) !important; }
-  .trackRow:has([aria-current='page']) { background: var(--accent-soft); border-radius: var(--radius-md); }
+  .trackRow:has([aria-current='page']) { background: var(--selection-bg); border-radius: var(--radius-md); }
+  .trackRow:has([aria-current='page']):hover { background: var(--selection-hover-bg); }
 
   .trackMeta {
     font-size: var(--font-step-2-size);

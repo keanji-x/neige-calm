@@ -81,9 +81,10 @@
   }
 
   .item[aria-current='page'] {
-    background: var(--accent-soft);
+    background: var(--selection-bg);
     color: var(--accent);
   }
+  .item[aria-current='page']:hover { background: var(--selection-hover-bg); }
 
   .item:active {
     background-image: linear-gradient(var(--overlay-active), var(--overlay-active));

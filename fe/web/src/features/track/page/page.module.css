@@ -102,7 +102,7 @@
     place-items: center;
     inline-size: var(--control-h);
     block-size: var(--control-h);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text);
     cursor: pointer;
   }
@@ -282,7 +282,7 @@
     gap: var(--space-2);
     padding: var(--space-3) calc(var(--control-h-sm) + var(--space-2)) var(--space-3) var(--space-3);
     border-block-start: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
   }
 
   .noticeActionable:hover,
@@ -294,7 +294,7 @@
     position: absolute;
     inset: 0;
     z-index: 1;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     background: none;
     cursor: pointer;
   }
@@ -664,7 +664,7 @@
     inline-size: 100%;
     min-block-size: var(--row-h);
     padding-inline: var(--space-1);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: inherit;
     cursor: pointer;
     text-align: start;
@@ -690,7 +690,7 @@
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     padding: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-3);
     opacity: 0;
     cursor: pointer;
@@ -821,7 +821,7 @@
     inline-size: 100%;
     min-block-size: var(--row-h);
     padding-inline: var(--space-1);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
   }
 
   /*
@@ -956,7 +956,7 @@
     display: flex;
     align-items: center;
     align-self: start;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-2);
     cursor: pointer;
   }
@@ -1281,11 +1281,6 @@
 
     .desktopPanelSurface [data-nc-module] {
       padding-block: var(--space-2);
-    }
-
-    .panel {
-      border-inline-start: 1px solid var(--hairline);
-      padding-inline-start: var(--space-4);
     }
 
     .taskSummary {

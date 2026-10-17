@@ -96,9 +96,10 @@
   }
 
   .segment[aria-pressed="true"] {
-    background: var(--accent-soft);
+    background: var(--selection-bg);
     color: var(--text);
   }
+  .segment[aria-pressed="true"]:hover { background: var(--selection-hover-bg); }
 
   .stage {
     display: flex;

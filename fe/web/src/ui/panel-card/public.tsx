@@ -32,7 +32,7 @@ export function PanelModule({ title, icon, action, children, grow = false, class
         <ListText as="h2" tone="section"
           className={styles.title}
           {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
-        ><span className={styles.iconSlot}>{icon === undefined ? null : <Icon name={icon} size="sm" />}</span>{title}</ListText>
+        >{icon !== undefined && <span className={styles.iconSlot}><Icon name={icon} size="sm" /></span>}{title}</ListText>
         {action}
       </div>
       <div className={styles.body}>{children}</div>

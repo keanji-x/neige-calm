@@ -47,7 +47,7 @@ const TYPE_LINES = GENERATED_TOKEN_CATEGORIES.LeadingToken.filter(name => name.e
 const LEADING = GENERATED_TOKEN_CATEGORIES.LeadingToken.filter(name => !name.endsWith('-line'));
 const TRACKING = GENERATED_TOKEN_CATEGORIES.TrackingToken;
 const RADIUS = [
-  '--radius-sm', '--radius-md', '--radius-lg', '--radius-pill',
+  '--radius-highlight', '--radius-sm', '--radius-md', '--radius-lg', '--radius-pill',
 ] as const;
 const SPACING = GENERATED_TOKEN_CATEGORIES.SpacingToken;
 const MOTION = [
@@ -158,6 +158,7 @@ const INVENTORY = [
   '--overlay-scrim',
   '--panel-w',
   '--paper',
+  '--radius-highlight',
   '--radius-lg',
   '--radius-md',
   '--radius-pill',
@@ -168,6 +169,8 @@ const INVENTORY = [
   '--row-h-lg',
   '--row-h-sm',
   '--rule-h',
+  '--selection-bg',
+  '--selection-hover-bg',
   '--shadow-float',
   '--slot-h',
   '--success',

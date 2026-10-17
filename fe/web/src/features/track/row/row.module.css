@@ -27,7 +27,7 @@
     inline-size: 100%;
     max-inline-size: var(--measure-list);
     padding-block: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     text-align: start;
     cursor: pointer;
     transition: background-color var(--motion-quick) var(--ease-feedback),
@@ -56,7 +56,7 @@
      rule 4, which says a border may never carry importance. The row keeps its
      transparent 1px so dropping the colour changes no geometry. */
   .rowActive {
-    background: var(--accent-soft);
+    background: var(--selection-bg);
   }
 
   /* Label indentation never shifts the global status gutter. Selected fill
@@ -74,15 +74,17 @@
     inset-block: 0;
     inset-inline: var(--navigation-selection-inset, 0px) 0;
     border-radius: inherit;
-    background: var(--accent-soft);
+    background: var(--selection-bg);
     pointer-events: none;
   }
 
-  /* Selected already carries a fill; hovering it uses the faint overlay so the
-     selection does not read as "more selected" under the pointer. */
+  .rowActive.variantRail:hover::before {
+    background: var(--selection-hover-bg);
+  }
+
+  /* Both list surfaces share the same selected and selected-hover paints. */
   .rowActive:hover:not(.variantRail) {
-    background: var(--accent-soft);
-    background-image: linear-gradient(var(--overlay-hover-faint), var(--overlay-hover-faint));
+    background: var(--selection-hover-bg);
   }
 
   /* The leading 6px column. It spans both lines and centres against the row,
@@ -195,7 +197,7 @@
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     padding: 0;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-3);
     opacity: 0;
     cursor: pointer;
@@ -300,7 +302,7 @@
      belong only to the indicator
      vocabulary (`ui/activity-indicator`: warn = waiting on you, error =
      broken, accent = unread, grey = in motion) and to the current location
-     (`--accent-soft`); titles never carry a state colour; area identity does
+     (`--selection-bg`); titles never carry a state colour; area identity does
      not enter the rail. */
   .pinOn {
     color: var(--text-2);

@@ -696,9 +696,9 @@ export function ChatComposer({
     >
       <SizeMotion motionKey={editing !== undefined}>
         <AstryxChatComposer
-          className={layout === 'mobile' ? `${mobileStyles.vendorComposer} ${floatingControlMaterialClassName}` : undefined}
+          className={layout === 'mobile' ? `${mobileStyles.vendorComposer} ${floatingControlMaterialClassName}` : styles.flatComposer}
           density="compact"
-          elevation={layout === 'mobile' ? 'none' : 'low'}
+          elevation="none"
           value={draft}
           onChange={setDraft}
           placeholder={layout === 'mobile' ? '说说你想做什么…' : 'Say something'}

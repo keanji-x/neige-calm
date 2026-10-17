@@ -13,8 +13,7 @@
    * report a report:
    *
    *   **Sections are numbered, and that number is the only accent in the
-   *   document.** `01` in accent mono, the heading, then a hairline running to
-   *   the end of the line. It states what a report is — an ordered account —
+   *   document.** `01` in accent mono beside the heading. It states what a report is — an ordered account —
    *   using the one channel a heading has spare. Ported from the legacy web's
    *   `.report-prose`, which had it and this rewrite had lost.
    *
@@ -175,17 +174,6 @@
     letter-spacing: var(--type-chapter-tracking);
     color: var(--text);
     font: var(--type-chapter);
-  }
-
-  /* The same hairline `.h1` runs to the end of its line. It comes after the
-     count so the row reads `Reference  8 tasks ———`, which keeps the number
-     beside the thing it counts rather than stranded at the far margin. */
-  .referenceHead::after {
-    content: "";
-    flex: 1;
-    align-self: center;
-    block-size: 1px;
-    background: var(--hairline);
   }
 
   /*
@@ -439,14 +427,9 @@
   }
 
   /*
-   * A section. The kernel splits a report at H1, so this is the rank that earns
-   * the number and the rule, and `--space-6 + --space-3` above it is the
-   * largest break in the document — what makes sections read as sections.
-   *
-   * The heading is a flex row: its text, then the trailing rule taking exactly
-   * what the text leaves. No overflow and no clip — which matters now that the
-   * section number is painted outside this box, in the margin, where a clip
-   * would have swallowed it.
+   * A section. The kernel splits a report at H1. Type, numbering and the
+   * larger space above it establish the hierarchy without a trailing rule.
+   * Keep the box unclipped so the section number can live in the margin.
    */
   .h1 {
     position: relative;
@@ -504,14 +487,6 @@
 
   .headingText {
     min-inline-size: 0;
-  }
-
-  .h1::after {
-    content: "";
-    flex: 1;
-    align-self: center;
-    block-size: 1px;
-    background: var(--hairline);
   }
 
   .block > .h1:first-child {
@@ -699,7 +674,6 @@
     .appendix .referenceMarker { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); margin-inline: 0; }
     .appendix .referenceMarker svg { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); }
     .h2 { font-size: var(--font-step-3-size); }
-    .h1::after, .referenceHead::after { display: none; }
   }
 
   /* Inline evidence keeps its intrinsic ratio within the reading column. */

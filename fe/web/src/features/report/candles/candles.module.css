@@ -78,9 +78,10 @@
   }
 
   .range[aria-pressed="true"] {
-    background: var(--accent-soft);
+    background: var(--selection-bg);
     color: var(--text);
   }
+  .range[aria-pressed="true"]:hover { background: var(--selection-hover-bg); }
 
   .svg {
     display: block;

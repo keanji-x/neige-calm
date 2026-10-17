@@ -589,6 +589,14 @@
     anchor-name: --nc-composer-menu;
   }
 
+  /* The desktop well is separated by its fill. Keep the vendor's border
+     geometry, but paint no edge or inset shadow; its keyboard outline remains.
+     The editor identifies the body rather than the optional attachment drawer. */
+  .flatComposer > div:has([contenteditable]):not(#\#):not(#\#) {
+    border-color: transparent;
+    box-shadow: none;
+  }
+
   /*
    * ── The perch does not wear the focus ring ────────────────────────────────
    *

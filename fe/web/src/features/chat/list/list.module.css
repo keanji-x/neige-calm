@@ -37,7 +37,7 @@
     min-block-size: var(--row-h);
     padding-inline-start: var(--space-1);
     padding-inline-end: calc(var(--space-1) + var(--control-h-sm));
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     text-align: start;
     cursor: pointer;
     transition: background-color var(--motion-quick) var(--ease-feedback);
@@ -54,7 +54,11 @@
   /* Fill + weight, no border — §5.1's two channels, same as every other
      selected row in the app. */
   .rowActive {
-    background: var(--accent-soft);
+    background: var(--selection-bg);
+  }
+
+  .rowActive:hover {
+    background: var(--selection-hover-bg);
   }
 
   /* Centred inside the 20px trailing slot the module head's `+` also occupies:

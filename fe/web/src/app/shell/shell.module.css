@@ -328,7 +328,7 @@
     place-items: center;
     inline-size: var(--control-h);
     block-size: var(--control-h);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-3);
     cursor: pointer;
     transition: background-color var(--motion-quick) var(--ease-feedback), color var(--motion-quick) var(--ease-feedback);
@@ -422,7 +422,7 @@
     min-block-size: var(--row-h);
     padding-block: 0;
 
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     text-align: start;
     cursor: pointer;
     transition: background-color var(--motion-quick) var(--ease-feedback),
@@ -485,7 +485,7 @@
     place-items: center;
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-3);
     cursor: pointer;
   }
@@ -512,7 +512,7 @@
   /* The rail's colours belong only to the indicator vocabulary
      (`ui/activity-indicator`: warn = waiting on you, error = broken,
      accent = unread, grey = in motion) and to the current location
-     (`--accent-soft`); titles never carry a state colour; area identity
+     (`--selection-bg`); titles never carry a state colour; area identity
      does not enter the rail. A create action is none of those, so it gets
      the quiet tone at rest and only a fill on hover. */
   .areaNew:hover,
@@ -642,8 +642,8 @@
     min-inline-size: var(--menu-w-min);
     max-inline-size: var(--menu-w-max);
 
-    /* Its items are `--radius-sm`, so the padding is whatever makes
-       4 + padding = `--radius-lg`: 12. */
+    /* Menu items use the shared highlight radius; the inset keeps them
+       comfortably inside the rounded menu surface. */
     padding: var(--space-3);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
@@ -666,7 +666,7 @@
     inline-size: 100%;
     block-size: var(--row-h-sm);
     padding-inline: var(--space-2);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text);
     text-align: start;
     cursor: pointer;
@@ -685,7 +685,7 @@
     place-items: center;
     inline-size: var(--control-h);
     block-size: var(--row-h);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     cursor: pointer;
   }
 

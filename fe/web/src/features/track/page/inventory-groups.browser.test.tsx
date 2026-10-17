@@ -67,7 +67,7 @@ it('keeps task metadata hidden while tool status remains visible', async () => {
   }
 });
 
-it('aligns module titles, status groups and row names, with stable secondary columns', async () => {
+it('aligns text-only headings with row icons and preserves secondary columns', async () => {
   await page.viewport(1200, 900);
   const view = derive({
     cards: [card({ title: 'Review workspace', runtime: { worker_session_id: 'one', kind: 'terminal', status: 'running' } })],
@@ -76,16 +76,18 @@ it('aligns module titles, status groups and row names, with stable secondary col
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '12' }), view)}</PanelCard></div>);
   for (const module of document.querySelectorAll<HTMLElement>('[data-nc-module]')) {
     const heading = module.querySelector<HTMLElement>('h2')!;
-    const iconLeft = heading.querySelector('svg')!.getBoundingClientRect().left;
+    expect(heading.querySelector('svg')).toBeNull();
     const range = document.createRange(); range.selectNodeContents(heading.lastChild!);
     const left = range.getBoundingClientRect().left;
     for (const label of module.querySelectorAll<HTMLElement>('summary > span:first-child')) {
-      expect(label.querySelector('svg')!.getBoundingClientRect().left).toBeCloseTo(iconLeft, 0);
+      expect(label.querySelector('svg')).toBeNull();
       const labelRange = document.createRange(); labelRange.selectNodeContents(label.lastChild!);
       expect(labelRange.getBoundingClientRect().left).toBeCloseTo(left, 0);
     }
     for (const title of module.querySelectorAll<HTMLElement>('details[open] [data-nc-field="title"]')) {
-      expect(title.getBoundingClientRect().left).toBeCloseTo(left, 0);
+      const icon = title.closest('li')!.querySelector('[data-nc-field="kind"] svg')!;
+      expect(icon.getBoundingClientRect().left).toBeCloseTo(left, 0);
+      expect(title.getBoundingClientRect().left - icon.getBoundingClientRect().right).toBeCloseTo(8, 0);
     }
   }
   const tasks = document.querySelector('[data-nc-module="tasks"]')!;

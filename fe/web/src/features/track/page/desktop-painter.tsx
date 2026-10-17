@@ -202,7 +202,6 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
         <PanelModule
           key={parts.key}
           title={parts.title}
-          icon={parts.key === 'cards' ? 'tools' : 'tasks'}
           action={parts.key === 'cards'
             ? deps.cardsAction
             : deps.taskSummary

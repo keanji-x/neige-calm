@@ -12,7 +12,7 @@
     min-inline-size: 0;
     margin-inline: calc(var(--space-2) * -1);
     padding-inline: var(--space-2);
-    border-radius: calc(var(--radius-md) - var(--radius-sm));
+    border-radius: var(--radius-highlight);
   }
   .group[open] {
     padding-block-end: var(--nc-inventory-footer-inset);
@@ -57,7 +57,7 @@
     min-block-size: var(--row-h);
     margin-inline: calc(var(--space-1) * -1);
     padding-inline-start: var(--space-1);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-3);
     cursor: pointer;
     list-style: none;

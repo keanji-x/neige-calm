@@ -16,6 +16,8 @@
 | 正文、次要信息、元信息 | `--text`、`--text-2`、`--text-3` |
 | 内部分隔、控件边缘 | `--hairline`、`--hairline-strong` |
 | 悬停、按下、选中、焦点 | `--overlay-hover`、`--overlay-active`、`--accent-soft`、`--accent` |
+| 导航和列表的选中、选中后悬停底色 | `--selection-bg`、`--selection-hover-bg` |
+| 导航和列表的选中、悬停、按下底色圆角 | `--radius-highlight`（8px） |
 | 等待处理、失败、成功 | `--warn`、`--error`、`--success` |
 | 间距、圆角、行高、控件尺寸 | `--space-*`、`--radius-*`、`--row-h*`、`--control-h*` |
 
@@ -27,6 +29,18 @@
 - 界面沿用既有色系与圆角，通过底色层级区分区域；内部结构使用必要的分隔线。
 - Token 变更由 styles owner 审核，同步公开类型、inventory、两套主题、
   消费方映射和对比度检查。
+
+## 强调色与交互状态
+
+强调色的浅深模式取值与交互派生色统一定义在 `styles/theme.config.json`。
+`--accent` 用于主操作、链接、键盘焦点，`--text-on-accent` 用于实色强调背景上的文字。
+`--accent-soft` 是一般的淡强调色；状态芯片保留独立的前景／背景配对以满足对比度。
+
+导航与列表的持续选中使用 `--selection-bg`，选中后悬停使用 `--selection-hover-bg`。
+这两种颜色由强调色和页面底色派生为不透明色，左右栏即使底色不同也显示同一选中色；
+组件不再自行叠加半透明强调色或计算选中后的悬停颜色。
+普通悬停、按下沿用 `--overlay-hover`、`--overlay-active`，不表示持续选中。
+Astryx 通过 `styles/astryx-theme.css` 映射到同一套强调色和交互反馈。
 
 ## 交互动效
 

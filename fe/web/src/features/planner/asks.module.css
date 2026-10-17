@@ -71,11 +71,12 @@
     background: var(--overlay-hover);
   }
 
-  .optionSelected,
-  .optionSelected:hover {
-    background: var(--accent-soft);
+  .optionSelected {
+    background: var(--selection-bg);
     color: var(--accent);
   }
+
+  .optionSelected:hover { background: var(--selection-hover-bg); }
 
   .optionContent {
     display: flex;

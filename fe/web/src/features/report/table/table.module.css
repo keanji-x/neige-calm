@@ -62,11 +62,11 @@
     text-align: end;
   }
 
-  /* The row the report is actually talking about. `--accent-soft` is the same
+  /* The row the report is actually talking about. `--selection-bg` is the same
      selection language §5.1 gives every list; nothing else in the table is
      coloured, so one row reads as one answer. */
   .highlighted > .cell {
-    background: var(--accent-soft);
+    background: var(--selection-bg);
     color: var(--text);
   }
 }

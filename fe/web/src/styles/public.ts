@@ -8,7 +8,8 @@ export type PositionalColorToken =
 
 export type SurfaceToken =
   | '--surface-rail' | '--surface-card' | '--surface-chip'
-  | '--surface-terminal' | '--surface-code' | '--surface-navigation';
+  | '--surface-terminal' | '--surface-code' | '--surface-navigation'
+  | '--selection-bg' | '--selection-hover-bg';
 
 export type OverlayToken =
   | '--overlay-hover-faint' | '--overlay-hover' | '--overlay-hover-strong' | '--overlay-active';
@@ -32,7 +33,7 @@ export type ColorToken =
 
 
 export type RadiusToken =
-  | '--radius-sm' | '--radius-md' | '--radius-lg' | '--radius-pill';
+  | '--radius-highlight' | '--radius-sm' | '--radius-md' | '--radius-lg' | '--radius-pill';
 
 export type MotionToken =
   | '--motion-instant' | '--motion-quick' | '--motion-snappy'
