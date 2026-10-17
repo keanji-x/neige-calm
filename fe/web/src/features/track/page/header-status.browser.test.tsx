@@ -42,18 +42,18 @@ const plannerNotification = [{
   key: 'ask:1', kind: 'ask' as const, text: 'Merge PR #1811 now, or hold it?', atMs: 1,
 }];
 
-it('shows a visible link icon beside Referenced by in the desktop panel', async () => {
+it('keeps Referenced by readable without a decorative heading icon and retains its source link', async () => {
   await browserPage.viewport(1280, 900);
-  renderPage({ backlinks: <a href="#source">Source report</a> });
-  const heading = browserPage.getByRole('heading', { name: 'Referenced by', exact: true }).element();
-  const icon = heading.querySelector('svg');
-  expect(icon).not.toBeNull();
-  expect(icon!.classList.contains('lucide-link2')).toBe(true);
-  expect(icon!.getAttribute('aria-hidden')).toBe('true');
-  const box = icon!.getBoundingClientRect();
-  expect(box.width).toBe(14);
-  expect(box.height).toBe(14);
-  expect(box.right).toBeLessThan(heading.getBoundingClientRect().right);
+  const follow = vi.fn();
+  renderPage({ backlinks: <a href="#source" onClick={event => { event.preventDefault(); follow(); }}>Source report</a> });
+  const heading = browserPage.getByRole('heading', { name: 'Referenced by', exact: true });
+  await expect.element(heading).toBeVisible();
+  expect(heading.element().querySelector('svg')).toBeNull();
+  const link = browserPage.getByRole('link', { name: 'Source report', exact: true });
+  await expect.element(link).toBeVisible();
+  expect(link.element().getAttribute('href')).toBe('#source');
+  await link.click();
+  expect(follow).toHaveBeenCalledTimes(1);
 });
 
 describe('Track actions menu text geometry', () => {

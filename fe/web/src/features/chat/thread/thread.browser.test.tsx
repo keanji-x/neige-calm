@@ -1,3 +1,4 @@
+import { ChatComposer as SdkComposer, ChatComposerInput as SdkComposerInput } from '@astryxdesign/core/Chat';
 import { withFontRoleProbe } from '../../../../../tools/styles/font-role-fixture.ts';
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -104,6 +105,20 @@ async function openMenu() {
   await typeInto(field(), '/');
   expect(document.querySelector('[role="listbox"]')).not.toBeNull();
 }
+
+it('keeps the public flat composer border and resting material owned by the SDK', async () => {
+  await page.viewport(1400, 900);
+  render(<Card />);
+  const actualRoot = field().closest('[data-density]')!;
+  const reference = render(<SdkComposer density="compact" elevation="none" onSubmit={vi.fn()} input={<SdkComposerInput />} />);
+  const expectedRoot = reference.container.querySelector('[data-density]')!;
+  const actual = getComputedStyle(actualRoot.firstElementChild!);
+  const expected = getComputedStyle(expectedRoot.firstElementChild!);
+  expect(actual.borderTopStyle).toBe(expected.borderTopStyle);
+  expect(actual.borderTopWidth).toBe(expected.borderTopWidth);
+  expect(actual.borderTopColor).toBe(expected.borderTopColor);
+  expect(actual.boxShadow).toBe(expected.boxShadow);
+});
 
 describe('the / command menu, as the engine lays it out', () => {
   it('registers the cascade in the production order', () => {

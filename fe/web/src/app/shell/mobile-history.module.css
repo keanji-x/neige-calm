@@ -13,7 +13,7 @@
   .footerButton { block-size: var(--control-h-touch) !important; }
   .footerButton span:has(> .avatar) { inline-size: var(--space-6) !important; block-size: var(--space-6) !important; }
   .views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
-  .view { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); font-weight: var(--weight-medium); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-block-size: var(--rail-w-collapsed); padding-inline: var(--space-3); border-radius: var(--radius-md); text-align: start; cursor: pointer; }
+  .view { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); font-weight: var(--weight-medium); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-block-size: var(--rail-w-collapsed); padding-inline: var(--space-3); border-radius: var(--radius-highlight); text-align: start; cursor: pointer; }
   .view[aria-pressed='true'] { background: var(--selection-bg); }
   .view[aria-pressed='true']:hover { background: var(--selection-hover-bg); }
   .view:focus-visible { outline: var(--space-px) solid var(--accent); outline-offset: var(--space-1); }
@@ -25,7 +25,7 @@
   .list { flex: 1; min-block-size: 0; overflow: auto; overscroll-behavior: contain; }
   .scope { font-size: var(--font-step-2-size); line-height: var(--font-step-2-line); color: var(--text-2); }
   .group { font-size: var(--font-step-2-size); font-weight: var(--weight-medium); line-height: var(--font-step-2-line); margin-block: var(--space-4) var(--space-2); color: var(--text-3); }
-  .row { display: flex; flex-direction: column; gap: var(--space-1); inline-size: 100%; min-block-size: calc(var(--rail-w-collapsed) + var(--space-4) + var(--space-1) - var(--space-px) * 2); padding: var(--space-3) var(--space-3) calc(var(--space-3) / 2); border-radius: var(--radius-md); text-align: start; cursor: pointer; }
+  .row { display: flex; flex-direction: column; gap: var(--space-1); inline-size: 100%; min-block-size: calc(var(--rail-w-collapsed) + var(--space-4) + var(--space-1) - var(--space-px) * 2); padding: var(--space-3) var(--space-3) calc(var(--space-3) / 2); border-radius: var(--radius-highlight); text-align: start; cursor: pointer; }
   .row + .row { margin-block-start: var(--space-2); }
   .list > section + section .group { margin-block-start: var(--space-5); }
   .row:hover, .row:focus-visible { background: var(--overlay-hover); }
