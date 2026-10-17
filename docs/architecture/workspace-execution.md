@@ -1,8 +1,8 @@
 # Workspace execution（S2a 实施合同）
 
-状态：S2a「registered workspace execution」的重设计，替代 PR #2770（`codex/2666-terminal-vertical`，用户已否决）。第六版
-在第四版的**范围收窄**（S2a 只拥有**执行**，不拥有资源；Planner 决定 S1–S5）与第五版的 F1–F4 之上处理第五轮评审的一个
-局部阻断与非阻断项（处置见 §13），不重开范围。只是设计，不声称已实现；等级 L2。父合同为
+状态：S2a「registered workspace execution」的重设计，替代 PR #2770（`codex/2666-terminal-vertical`，用户已否决）。第七版
+在第四版的**范围收窄**（S2a 只拥有**执行**，不拥有资源；Planner 决定 S1–S5）与第五版的 F1–F4 之上再做一次纯收窄：按
+Legacy 对等删除 typed 终端重启（第六轮评审，处置见 §13），不重开范围。只是设计，不声称已实现；等级 L2。父合同为
 [track-workspace.md](track-workspace.md)；本文只取代 [workspace-launch-admission.md](workspace-launch-admission.md) 的少量
 条款（§9）。英文类型是合同草案。main 的 executor 协议（#2716）仍是执行物理事实与 currentness 的 owner，`Executor` port 是它
 的薄投影（§4）。S2a 不建 typed 资源、不改变 Track worktree 的任何 Legacy 用户、不驱动任何破坏性 source effect。
@@ -63,7 +63,6 @@ pub struct ExecutionIntent {             // 不可变
     pub program: ExecutionSpecification, // main 类型：argv/显式 env/io_mode/replay_bytes
     pub ticket: LaunchTicket,            // { id: LaunchTicketId, secret: CapabilityToken }
     pub tokens: ExecutionControlTokens,  // main 类型：observe/interactive/lifecycle
-    pub replaces: Option<ExecutionId>,   // 显式 alias 交接；不含 slot 版本
 }
 pub struct PrivateSource {               // 执行私有 registration 的冻结输入（§7.1）
     pub root: PathBuf, pub cwd: WorkspaceCwd,     // 消费者给出，与 Legacy 同一选择；cwd 相对 root
@@ -96,6 +95,7 @@ pub trait Executor: Send + Sync {
     async fn revoke(&self, c: &ConsumeExecution) -> Result<Fact, ExecError>;
     async fn inspect(&self, id: &ExecutionId) -> Result<Fact, ExecError>;
     async fn generation(&self) -> Result<Generation, ExecError>; // 等到 Watching 后返回快照
+    fn available(&self) -> bool;         // 不等待：流此刻处于 Watching 且 envelope 为 4
     async fn control(&self, c: ExecutionControl) -> Result<ExecutionReply, ExecError>;
     async fn retire(&self, id: &ExecutionId, lifecycle: &CapabilityToken) -> Result<Fact, ExecError>;
 }
@@ -106,20 +106,22 @@ pub enum Fact {                          // main 的 ExecutionState 原样投影
 }
 pub enum OutputEnd { Open, Complete { final_cursor: u64 }, Incomplete(IncompleteReason) }
 pub enum ExecError { Busy(BusyReason), Refused(String), Transport(TransportLost) }
-pub enum BusyReason { AliasOccupied { owner: ExecutionId }, OutputOpen }
+pub enum BusyReason { OutputOpen }
 impl<S: ExecutionStore, X: Executor> Engine<S, X> {
     pub async fn admit(&self, tx: &mut S::Tx<'_>, intent: ExecutionIntent) -> Result<DriveTicket, AdmitError>;
     pub async fn request(&self, tx: &mut S::Tx<'_>, id: &ExecutionId, d: Desired) -> Result<DriveTicket, StoreError>;
     pub fn drive(&self, ticket: DriveTicket);           // 调用者提交后调用
     pub async fn recover(&self) -> RecoverReport;      // 启动时对 pending() 逐个 drive
     pub async fn wait_settled(&self, id: &ExecutionId) -> Result<(), DriveError>; // 时限 QUIESCE_DEADLINE
+    pub fn available(&self) -> bool;                    // 转发 Executor::available
     // interact(id, WriteStdin|Resize|Signal) 与 output(id, from) 包装 Control，capability 由 inspect 的 receipt 组装
 }
 ```
 
 `admit`/`request` 借用调用者的 SQLx 事务写入，不触发外部副作用，与领域写入一起回滚；调用者提交后把 `DriveTicket` 交给
 `drive`。typed terminal 创建是**新的 operation kind** `terminal-execution-create`（tx-only，在 `prepare_tx` 内 admit，把
-ExecutionId 放进 `TxOutput`）；既有 `terminal-create` kind 与其 `ProviderAdapter` 不变，升级前遗留的行照旧驱动
+ExecutionId 放进 `TxOutput`）。`prepare_tx` 在 admit 之前检查 `Engine::available()`，为假时返回 typed
+`ExecutionUnavailable`，不写卡片或执行行，不回落 Legacy；既有 `terminal-create` kind 与其 `ProviderAdapter` 不变，升级前遗留的行照旧驱动
 （`tx_only.rs:1-6`）。`commit_keyed` 对新提交与 keyed 重放都返回 `OperationResult`（`driver.rs:182-203`），Terminal 调用者
 从中取 ExecutionId，以 `DriveTicket::committed(id)` 立即驱动；不改 `KeyedCommit` 或通用 tx-only。`#[must_use]` 只是 lint
 辅助：提交后经 `?` 提前返回仍可丢弃 ticket，此时行保持 pending、占用谓词失败关闭，由启动时的 `recover()`、删除路径的
@@ -129,7 +131,7 @@ quiesce 或 `terminal_delete_tx` 返回的新 ticket（§7.2–7.3）补上。
 
 | port | wire（`ExecutionRequest`） | 相对 main |
 |---|---|---|
-| `prepare` | `Prepare(PrepareExecution)`，`source: PreparedSource::Private(AttachRegistration)`，root FD 经 SCM_RIGHTS 随同一请求 | main 的 Prepare 只引用已 Attach 的 receipt（保留为 `PreparedSource::Registered`）；新增 `Private`，顺序见 §7.1：先暂存校验、再持久化执行记录、最后发布。`handoff: Option<AliasHandoff>` 改为 `replaces: Option<ExecutionId>` |
+| `prepare` | `Prepare(PrepareExecution)`，`source: PreparedSource::Private(AttachRegistration)`，root FD 经 SCM_RIGHTS 随同一请求 | main 的 Prepare 只引用已 Attach 的 receipt（保留为 `PreparedSource::Registered`）；新增 `Private`，顺序见 §7.1：先暂存校验、再持久化执行记录、最后发布。main 的 `handoff: Option<AliasHandoff>` 与交接代码不变，S2a 总是传 `None`（§7.3） |
 | `launch` / `revoke` | `Launch` / `Revoke(ConsumeExecution{execution_id, ticket_id, ticket})` | 三个请求都先取 ExecutionId gate，记录已知时再取 main 的资源 gate（revoke 仍与 launch 共用资源 gate）；未知 id 的 Revoke 在 id gate 下写 Revoked tombstone 并调用私有释放例程（§7.1），之后同 id 的 Prepare 被拒 |
 | `inspect` | **新** `Inspect(ExecutionId)` → 记录、tombstone 或 Absent | 新增（无 capability 的只读查询，经 client secret 认证） |
 | `generation` | **新** `Watch`：每个 executor 一个流，先回 `Watching{boot}`，之后每个持久化的生命周期转移推送 `Changed` | 新增；无 id、无 seq（§6.3） |
@@ -139,12 +141,14 @@ quiesce 或 `terminal_delete_tx` 返回的新 ticket（§7.2–7.3）补上。
 
 回复新增 typed `ExecutionReply::Busy(BusyReason)`；main 的 `Refused{reason}` 与 `ObjectQualificationFailed{failure}`
 （`mod.rs:671-679`）都映射为 `ExecError::Refused`，engine 不解析字符串。`EXECUTION_ENVELOPE_VERSION` 提升到 4。
+握手拒绝或 executor 缺失（`lib.rs:591-620` 在 `executor: None` 时回复 Refused）由适配器映射为 `Transport`，不是动作的
+`Refused`：行保持 pending、占用谓词失败关闭、重连回到 `Watching` 后重驱，从不走 Refused→revoke→Park。
 
 **细则。** prepare/launch/revoke/retire 与 `Stop` 按 ExecutionId 幂等（Stop 见 §6.4）。Prepare 先按 ExecutionId 分派：已有记录且 transfer 完全相同
 （同 nonce，`attachment.rs:64-73`）是精确重放，返回已记录的事实并保留首次持有的 open description（`:96-106`），丢弃新
 FD，不重新打开或采纳替换后的 root；transfer 不同、或 `directory_id` 已绑定到另一 ExecutionId（记录的私有 transfer 或
-tombstone 的 `directory`）才是 `Refused`。`WriteStdin` 保持 main 的 `StdinProgress{accepted_bytes}` 语义，回复丢失为 `Transport`，不自动重发。两种
-`Busy` 都由后续 `Changed` 结束；fence、boot、摘要或 ticket 不符是 `Refused`；只有 `Transport` 让 engine 重新 `inspect`。
+tombstone 的 `directory`）才是 `Refused`。`WriteStdin` 保持 main 的 `StdinProgress{accepted_bytes}` 语义，回复丢失为 `Transport`，不自动重发。
+`Busy(OutputOpen)` 由后续 `Changed` 结束；fence、boot、摘要或 ticket 不符是 `Refused`；只有 `Transport` 让 engine 重新 `inspect`。
 `Retire` 与未知 id 的 `Revoke` 写同一种不可变 tombstone（不含 token；写入时删除同 id 的 `.execution` 文件，
 `open` 遇两者并存时 tombstone 优先），保留期无界，回收需 kernel 无引用证明（另开
 issue）；executor `open` 加载全部 tombstone，启动成本随历史终端数线性增长，opt-in 期间可接受。
@@ -152,7 +156,7 @@ issue）；executor `open` 加载全部 tombstone，启动成本随历史终端�
 ## 5. 唯一入口
 
 Intent 只经 `Engine::admit`，在接受请求的 operation 事务内写一次（`intent_json`）。Desired 只经存储的唯一 request 语句
-（`Engine::request` 与 `terminal_delete_tx`；Retire 的两个写者是删除单点与重启事务，§7.3），单调：低于当前值的 request 是空操作。prepare/launch/revoke/stop/retire 只由 `drive` 发出；Drained
+（`Engine::request` 与 `terminal_delete_tx`；Retire 只有删除单点一个写者，§7.3），单调：低于当前值的 request 是空操作。prepare/launch/revoke/stop/retire 只由 `drive` 发出；Drained
 只由 executor monitor 写。私有 registration 随 Prepare 建立、由 executor 的唯一释放例程在结算时释放（§7.1）。输出字节与
 终止 cursor 只在 executor 的 `OutputLog`（按 ExecutionId，独立于 `Process`；reader 追加，`retire` 删除）；屏幕在 server
 持有的 calm-session renderer，订阅 `Engine::output`，缺 geometry 历史时 invalidate。`settled_at_ms` 与 secret 清除只由
@@ -164,7 +168,7 @@ Intent 只经 `Engine::admit`，在接受请求的 operation 事务内写一次�
 ### 6.1 谓词与动作表
 
 (1) executor 的 settled 谓词（main `durably_settled`/`permits_handoff`：Revoked、Drained、NoChild 且已持久化）裁决物理释
-放：alias 交接与私有 registration 释放由 executor 自己检查；`Retire` 另要求 `OutputEnd ≠ Open`。(2)
+放：私有 registration 释放（及 main 不变、S2a 不用的 alias 交接）由 executor 自己检查；`Retire` 另要求 `OutputEnd ≠ Open`。(2)
 `next_step(desired, fact) -> Step` 只选动作：
 
 | desired \ fact | Absent | Prepared | Forking/Spawned/Exited | Revoked/NoChild/Drained | Unknown | Retired |
@@ -216,7 +220,7 @@ Legacy 不受影响，typed 创建得到 typed 错误；从不因此拒绝启动
 main `mod.rs:601-621`）并调用私有释放例程 → reap helper（它持有 slave/pipe，`scope_helper.rs:113-120`）→ reader 读到
 EOF，或 PTY master 在全部 slave 关闭后的 `EIO`（Linux 行为，由 E1a 测试固定）→ `OutputLog` fsync → 持久化
 `output: Complete{final_cursor}`。等待 reader 时不持 gate；其他读错误记 `Incomplete(reason)`。slave fd 经 SCM_RIGHTS 逃出
-scope 时 scope 仍 settled（交接可进行），但 `Retire` 回复 `Busy(OutputOpen)`，不按超时伪造 EOF。
+scope 时 scope 仍 settled（占用结束），但 `Retire` 回复 `Busy(OutputOpen)`，不按超时伪造 EOF。
 
 **boot 规则。** journal 持久化宿主 `boot_id`：宿主重启 → 非终态记为 `NoChild{host_rebooted}`；同宿主 executor 重启沿用
 main `open`（Prepared→Revoked、未 fork→NoChild、其余→Unknown）。终态事实与 tombstone 的重放与 executor boot 无关；launch
@@ -224,8 +228,7 @@ main `open`（Prepared→Revoked、未 fork→NoChild、其余→Unknown）。�
 
 **同宿主残留 Unknown。** Unknown 来自一切无法取得正向排空事实的情形：executor 崩溃或被 SIGKILL，以及 main 的
 fork/setup 错误与 fork 成功但 receipt 持久化失败（`launch.rs:120-129`、`:143-150`）。helper 没有 PDEATHSIG，helper 消失也
-不证明子树排空，因此保持失败关闭，没有人工 NoChild 出口。用户可见：残留 Unknown 的终端不能 retire，其重启得到 `Busy(AliasOccupied)`，
-删除路径按 §7.2 有界等待后失败关闭，直到宿主重启；正向同宿主排空是后续 issue。
+不证明子树排空，因此保持失败关闭，没有人工 NoChild 出口。用户可见：残留 Unknown 的终端不能 retire，删除路径按 §7.2 有界等待后失败关闭，直到宿主重启；正向同宿主排空是后续 issue。
 
 ## 7. 私有 registration、资源交互与删除
 
@@ -263,8 +266,9 @@ Legacy 终端会作为原始 `EnsureProc.cwd`（`terminal_renderer/mod.rs:725-73
 ### 7.2 资源交互：与 Legacy 终端对等（S2，F2）
 
 S2a 不给资源新增保证，只让 typed 执行在**既有**路径中得到 Legacy 终端的待遇。**模式在创建时冻结**：终端是 typed 当且仅当
-创建事务为 alias `term:<id>` 写入了 `workspace_executions` 行（S2a 从不删除这些行）。重启沿用该模式；Legacy 创建的终端
-永远不会以 typed 重启；`Config` 只决定新建，engine 不论 `Config` 都驱动已有 typed 行。typed 启动遇到 Legacy 占用的 slot
+创建事务为 alias `term:<id>` 写入了 `workspace_executions` 行（S2a 从不删除这些行）。typed 终端**只运行一次**，同 Legacy
+普通终端：main 对 `kind=terminal` 卡片没有重启入口（重启路由只服务 Claude/Planner 卡片，`claude_restart_adapter.rs:194`
+拒绝非 Claude 卡片），再运行就是新卡片；终端重启是 S2a 之外可能的后续消费者特性（§7.3、§11）。`Config` 只决定新建，engine 不论 `Config` 都驱动已有 typed 行。typed 启动遇到 Legacy 占用的 slot
 （共享 `term:<id>` 命名空间，`terminal_renderer/mod.rs:706`）按模式冻结只能是缺陷，executor 回复 `Refused`，不是 `Busy`。
 
 **占用谓词只报告。** 唯一占用谓词是 calm-truth `workspace_execution.rs` 的 `unsettled_executions(scope)`
@@ -277,7 +281,7 @@ S2a 不给资源新增保证，只让 typed 执行在**既有**路径中得到 L
   在一个事务内对 scope 内全部未结算执行 `request(Stop)`，提交后 `drive` 并 `wait_settled`（`QUIESCE_DEADLINE`）；超时返回
   既有 Conflict，行与 workspace 保留，调用者重试。它位于 Legacy `stop_child`/quiesce 的时点，屏幕保留；预检被拒的删除不
   停止 typed 终端，之后才中止的与 Legacy quiesce 之后中止相同。
-- **Retire 只有两个写者**：删除单点 `terminal_delete_tx`（卡片、Track、Area 与 orphan 删除事务都经它删除终端行）与重启事务。
+- **Retire 只有一个写者**：删除单点 `terminal_delete_tx`（卡片、Track、Area 与 orphan 删除事务都经它删除终端行）。
 
 | 调用者（main） | typed 终端的行为 |
 |---|---|
@@ -286,33 +290,33 @@ S2a 不给资源新增保证，只让 typed 执行在**既有**路径中得到 L
 | Area 删除 `areas.rs:434` / `:590` | 同 Track，scope 为 Area |
 | orphan 回收 `terminal_sweeper.rs:375` / `:407` | 预检后 `quiesce(Terminal)`；`reap_terminal_artifacts` 对 typed 只退订（`terminals.pid` 为 NULL，`:483-495` 的裸 SIGTERM 不会命中）；写事务复查后 `terminal_delete_tx` |
 | settled-worker 回收 `terminal_sweeper.rs:234` | 非删除路径，预检照旧（不含 typed）；IMMEDIATE 认领事务复查 `in_settled_worker_set` 后写 session Exited 并 `request(Stop)`，提交后 drive。行、OutputLog 与屏幕保留，同 Legacy `reap_live_terminal`（`retain_screen=true`）；认领期间 reopen → 认领失败，不 Stop |
-| repoint `tracks.rs:2214`、`:2389`（只 `require_safe_tx`） | 遇未结算 typed 执行拒绝，不停止；已停止（已结算）的 typed 终端不阻塞，下次重启按新选择 |
+| repoint `tracks.rs:2214`、`:2389`（只 `require_safe_tx`） | 遇未结算 typed 执行拒绝，不停止；已停止（已结算）的 typed 终端不阻塞，也不会再运行 |
 | `worktree_clean.rs:21-26` | 谓词非空时跳过该 Track，不请求 Stop/Retire：**Track close 不是 stop**；settled-worker 回收停止并结算后照常清理 |
 | boot reconcile（calm-server `lib.rs:36-90`） | 跳过有 `workspace_executions` 行的终端：不 Probe、不写 exit 与会话（typed 行未 launch 时 Probe 必为 false） |
 
 **消费者投影**（`SqliteExecutionStore` 按 intent 的 operation kind 注册投影，Terminal 注册一个，与执行写入同一事务）。对
-typed 终端每个投影字段只有一个写者：exit 字段只由 `settle`、会话只由创建/重启事务与 `spawned`/`settle` 写（settled-worker
-认领的 Exited 是唯一例外，`settle` 只改仍活跃的会话）；Legacy 的 boot reconcile、attach reader 与 WS ensure 按模式跳过。
+typed 终端每个投影字段只有一个写者：exit 字段只由 `settle`、会话只由创建事务与 `spawned`/`settle` 写（settled-worker
+认领的 Exited 是唯一例外）；Legacy 的 boot reconcile、attach reader 与 WS ensure 按模式跳过。
 
-- **创建与重启**：创建事务写卡片、`WorkerSessionKind::Terminal` 会话（starting）、`terminals` 行（`pid` NULL）与 admit。
-  重启事务在 Retire 旧行、admit 新行的同一事务内把旧执行仍活跃的会话置 exited、新建 starting 会话，并按
-  `terminal_clear_exit_for_spawn`（`out_of_domain.rs:344-350`）的字段清空 exit 与输出，使新 ExecutionId 原子地成为当前执行。
-- **只投给当前执行**（R5-B1）：`spawned`/`settle` 对 `terminals` 与会话的写入在同一 SQL 事务中以 `EXISTS (SELECT 1 FROM
-  workspace_executions WHERE alias = :alias AND execution_id = :id AND desired <> 'retire')` 为条件（即
-  `workspace_executions_current_alias` 命中的行就是本执行）；不成立时只结算本执行自己的 `workspace_executions` 行。被替换
-  的执行迟到的 spawned/settle 因此不触及后继；被删除执行的终端行已在删除事务中随卡片删除。不加跨执行锁，executor 不等待投影。
+- **创建**：创建事务写卡片、`WorkerSessionKind::Terminal` 会话（starting）、`terminals` 行（`pid` NULL）与 admit。每个终端
+  一生只有一个执行，投影无需判断“当前执行”；被删除执行迟到的投影因终端行已在删除事务中随卡片删除而无行可改。唯一需要的
+  守卫是会话状态：因 settled-worker 认领也写会话，`spawned` 与 `settle` 的会话写入各是一条 `UPDATE … WHERE` 当前状态
+  （starting / 仍活跃）的语句，不先读后写。executor 不等待投影。
 - **字段**：`spawned` 把仍为 starting 的会话置 running；`settle` 按 Drained 的 status 写：`Some(c)` → `exit_code = c`；
   `None`（信号终止，每次 Stop 都是，`scope_helper.rs:146-149`）与 NoChild/Revoked → `signal_killed = 1`，同 Legacy
   （`attach_reader.rs:112,124-130`），使 `read.rs:787-812` 保留它、orphan 回收不删被停止的 typed 行；并把仍活跃的会话置
   exited。`pty_output` 不复制：typed 终端的 MCP persisted-exit 读者（`mcp_server/tools/terminal.rs`）经 `Engine::output`
   读 OutputLog 尾部（同 Legacy 8 KiB 尾部语义，保留到 retire）。于是 `SETTLED_WORKER_SESSIONS_SQL`、`terminals_orphaned`
   与 `worktree_clean` 读到与 Legacy 同义的字段。
+- **Prepare 被拒**（如 cwd 已删除）：Legacy 在 spawn 失败时回滚卡片（`terminal_adapter.rs:487-530`），tx-only 的 typed 创建
+  已提交，于是留下一张已退出的终端卡片（Revoked → `signal_killed = 1`），用户删除即可。这是 tx-only 创建的 UX 差异，不是
+  资源问题，不加机制。
 
 破坏性 effect（recycle、teardown、sweep）仍由既有路径在既有时点执行。Legacy 已有的竞态（quiesce 之后、recycle 之前的新
 Legacy launch，删除中仍在 worktree 内运行的 Planner/worker 等）对 typed 终端同样存在，各自另开 issue；quiesce 之后新 admit
 的 typed 执行由写事务的 `require_safe_tx` 拒绝。
 
-### 7.3 删除、回滚与 alias 交接
+### 7.3 删除、回滚与 alias slot
 
 1. 领域事务：`terminal_delete_tx`（calm-truth `card.rs:565`）在同一事务内执行存储的 request 语句（按当前 alias 写
    `Retire`），返回 `#[must_use] TerminalDeleted{retire: Option<ExecutionId>}`；六个生产调用者（`cards.rs:623`、
@@ -323,12 +327,11 @@ Legacy launch，删除中仍在 worktree 内运行的 Planner/worker 等）对 t
 2. 提交后：`drive` → stop → Wait → Settle → retire（删除 OutputLog、写 tombstone `{alias, slot_version, outcome}`、移出热
    记录；每步可重放）→ Finish；renderer 在 Retired 后退订；崩溃后由 `recover` 继续。没有调用者等待 retire。
 
-**终端重启。** 同一事务先 `request(Retire)` 旧执行，再 admit `replaces = Some(旧 id)` 的新执行，并重置该终端的领域字段
-（§7.2 投影）；部分唯一索引保证每 alias 一个当前 intent，两个 id 的驱动并行，旧执行的投影按当前执行条件失效。executor 在 launch 时裁决：slot 空闲 → 版本 1；属于本执行 → 重放；属于另一执行 → 要求
-`replaces.is_some()` 且 owner 已 settled 或已有 tombstone，则版本 +1，否则 `Busy(AliasOccupied{owner})`，按 §6.3 等待；
-Legacy 占用的 slot → `Refused`。executor 不比较 `replaces` 与 owner，不做 slot CAS。tombstone 保留 slot，`open` 从热记录
-与 tombstone 取每 alias 的最高持久化版本重建 alias 表。连续两次重启（A 运行，B 未 fork 即被 C 替换）：B 被 revoke，C 等
-A settled 后取版本 2。
+**alias slot。** S2a 没有交接：每个 `term:<id>` 只有一个执行，main 的 launch 裁决原样适用（`launch.rs:40-76`）：slot
+空闲 → 版本 1；属于本执行 → 重放；属于另一执行或 Legacy → `Refused`（S2a 总是 `handoff: None`，按模式冻结只能是缺陷）。
+tombstone 保留 slot，`open` 从热记录与 tombstone 重建 alias 表，同 main“slot 一经占用不释放”。终端重启若将来成为消费者
+特性，需另行给出路由、tx-only kind、等同卡片修改的 C1 授权、幂等键、renderer 切换到新 ExecutionId 与 alias 交接，届时再
+评审；S2a 不预留这些机制。
 
 ## 8. 按失败说明去除的缺陷类
 
@@ -382,10 +385,11 @@ CREATE INDEX workspace_executions_unsettled
 ```
 
 `pending()` 是 `settled_at_ms IS NULL OR (desired = 'retire' AND secrets_json IS NOT NULL)`：未结算的行，与已结算但仍待
-retire 的行；已结算、未要求 Retire 的 Run/Stop 行 Park，保留 secret 与当前 alias，直到删除或重启写 Retire。结算与
-`desired` 无关（§6.1）；交接在同一事务先 Retire 旧行再插入新行。secret 只经 store port 读取，tombstone 后清除，不进入
+retire 的行；已结算、未要求 Retire 的 Run/Stop 行 Park，保留 secret 与当前 alias，直到删除写 Retire。结算与
+`desired` 无关（§6.1）。secret 只经 store port 读取，tombstone 后清除，不进入
 事件、调试产物或 API。SQL 位于 calm-truth `db/sqlite/workspace_execution.rs`，calm-server 的 `SqliteExecutionStore` 包装
-它，`terminal_delete_tx` 与占用谓词复用同一模块。
+它，`terminal_delete_tx` 与占用谓词复用同一模块；同一模块提供唯一的 Terminal alias helper（Rust 函数与 SQL 片段
+`'term:' || terminals.id`），供 Terminal 消费者、Card/Terminal scope 映射与 boot reconcile 查询共用。
 
 ## 11. 有序切片
 
@@ -393,11 +397,11 @@ retire 的行；已结算、未要求 Retire 的 Run/Stop 行 Park，保留 secr
 
 | # | 结果 | 验收与聚焦测试 |
 |---|---|---|
-| E1a | supervisor 协议，带真实合同：§4 映射表全部改动（`PreparedSource::Private` 暂存→持久化→发布、唯一私有释放例程、`Inspect`、`Watch`/`Changed`、`Retire` 与 tombstone、`ProcessAction::Stop` 与优雅关闭同一例程、`replaces` 交接、id gate → 资源 gate、未知 id revoke、typed `Busy`、`ObjectQualificationFailed`→Refused）；宿主 boot_id；`OutputLog` 与 `Process` 分离及 Drained 顺序；删除 Cleanup 与 `stop_known`；envelope 4；`STOP_GRACE`/`DRAIN_BUDGET` 常量。main 上 server 无 registered executor 生产调用者 | `-p calm-proc-supervisor`：`private_prepare_failure_after_staging_publishes_nothing`（root 在 FD 接收与暂存重开比对之间被替换、journal 写失败、rename 后父目录 fsync 失败三种调度，之后真实 Inspect→未知 id Revoke→tombstone，断言 `live_objects`/`registrations` 为空、tombstone 优先于残留 `.execution` 文件且 executor 重开后仍然如此、迟到 Prepare 被拒）、`private_root_replaced_after_prepare_launch_no_child`（NoChild 后 `release_private` 已运行、`live_objects` 为空）、`private_prepare_kernel_restart_executor_alive_releases_on_settle`、`private_prepare_executor_restart_releases`、`private_registration_released_at_drained_not_retire`、`private_prepare_exact_replay_keeps_original_description`、`private_attach_refuses_directory_of_other_execution`、`drained_persisted_before_output_complete`、`output_complete_after_reader_eof_or_pty_eio`、`retire_waits_output_open`、`handoff_after_retired_previous`、`handoff_after_retire_and_executor_restart`、`double_restart_before_fork`、`revoke_unknown_id_blocks_late_prepare`、`stop_escalates_after_grace`（含代次唤醒下的重复 Stop，KILL 截止不延后）、`graceful_shutdown_term_ignoring_child_persists_drained`、`host_reboot_is_no_child`、`changed_after_every_persisted_transition`；保留 `execution_launch_revoke_share_gate_and_ticket_is_single_use`。变异验证：EOF 前置、交接谓词、Stop 每次重设截止、发布先于持久化（交换步骤 2、3，第一个测试须红；只杀 executor 不算）、优雅关闭退回只发 TERM。可选再拆：输出存储/Drained 顺序/stop 例程/boot_id 一片，其余协议一片 |
-| E1b | `workspace-runtime` crate 的 `execution` 模块：类型、`next_step`、`Engine`、两个 port、最小 fake（脚本化 Fact 序列与调用日志，不复制 journal）、`session_executor`；合同套件在 fake 与 E1a 的真实进程内 executor 上各跑一次 | `-p workspace-runtime`：`next_step` 全表、`absent_stop_unknown_revoke_finishes`、`drained_settles_before_retire`、`drained_between_inspect_and_wait_wakes`、`request_after_park_decision_is_not_lost`、`retire_between_load_and_park_drives`、`handoff_owner_settles_between_busy_and_wait`、`recover_racing_drive_effect_once`、`watch_reconnect_wakes_all_waiters`；`-p calm-proc-supervisor`：`port_contract::executor`。对 Park 握手、“快照先于 inspect/Busy 重试”与 `next_step` 的 Settle/Finish 分支做变异验证，断言 fake 调用日志 |
-| E2a | migration + `SqliteExecutionStore`（无消费者，store 是 migration 的写者）+ executor 生产配置 + boot 调用 `Engine::recover`。neige-app `proc_supervisor_config`（`supervisor.rs:108-123`，现只传 `--control-sock`）增加 `--execution-state-dir <calm data dir>/execution` 与 `--kernel-client-key-file`；neige-app 在 calm data dir 下以 0600 创建该 key 文件，经 typed 配置把同一路径交给 calm-server，并传 `--stop-grace-ms`（§6.4）。被接管的升级前 supervisor 没有 executor 或 envelope 4 时，typed 创建得到 typed 错误，不回落 Legacy；启用需重启 supervisor，这会结束 Legacy PTY（写入升级说明） | `-p calm-server`：SQLite 上 `port_contract::store`，领域写入与 admit 同事务回滚；触发器与索引拒绝改写；Stop 结算与保留 secret 通过 CHECK；`pending` 含已结算待 retire 行；`-p neige-app`：supervisor 参数与 key 文件权限；`-p calm-proc-supervisor`：`stop_grace` 不大于关闭时限时照常启动、不启用 executor，Legacy `EnsureProc` 可用、typed 请求得到 typed 错误 |
-| E2b | opt-in Terminal 消费者 + 占用集成：typed `Config`（默认关闭）；`terminal-execution-create` kind 与 `DriveTicket::committed`；模式冻结；消费者投影；`terminal_delete_tx` 请求 Retire 并返回 `TerminalDeleted`；`unsettled_executions` 接入 `require_safe_tx`；`execution_quiesce::quiesce` 接入四个删除调用者的 Legacy 停止时点；settled-worker 回收的 Stop 分支；`worktree_clean` 跳过；renderer 订阅 `Engine::output`；按模式分支的 Legacy `term:<id>` 入口清单（WS ensure、重启、boot reconcile、`claude_auto_resume`、attach reader 退出写入），防止 Legacy `EnsureProc` 在 typed Launch 前占 slot | `-p calm-server`：§8 六个场景（按改写后的验收）；HTTP 创建、WS 输入/resize/stop、冷启动恢复；`trap '' TERM` shell 的卡片删除与 Track 删除首次即成功；Track 删除对 typed 终端先预检、再 quiesce、后 recycle，预检被拒时 typed 终端仍运行；`terminal_restart_stale_projection_is_ignored`（真实 store 与消费者入口的确定性调度：A 持久化 Drained 后暂停 A 的 `store.settle`，B launch+spawned 完成后放行 A，断言 A 行已结算、B 会话 running、terminals 行无 A 的退出信息；再覆盖 A 迟到的 spawned 与 A→B→C 中 B 未 fork 即 revoke）；被 settled-worker 回收停止的 typed 终端（`signal_killed = 1`）在下一次 orphan tick 后仍在，MCP 读到 OutputLog 尾部；boot reconcile 不改未 launch 的 typed 行；repoint 遇未结算 typed 执行拒绝且不停止；closed Track：settled-worker 回收 Stop typed 终端（行与屏幕保留），认领期间 reopen 则不 Stop，clean 在结算前跳过、结算后清理；Legacy 创建的终端在 `Config` 打开后仍按 Legacy 重启；`Config` 关闭后已有 typed 终端仍被驱动；Legacy 终端测试不改。变异验证：删除 `spawned`/`settle` 投影 SQL 的当前执行条件（单因素），`terminal_restart_stale_projection_is_ignored` 须红 |
-| E3… | 每个后续消费者一片：直接 pipe 进程（同片定义 close-stdin/half-close）、gate、provider 启动；同宿主正向排空 | 每片只增加一个 `ExecutionIntent` 构造点或一个恢复机制及其真实入口测试 |
+| E1a | supervisor 协议，带真实合同：§4 映射表全部改动（`PreparedSource::Private` 暂存→持久化→发布、唯一私有释放例程、`Inspect`、`Watch`/`Changed`、`Retire` 与 tombstone、`ProcessAction::Stop` 与优雅关闭同一例程、id gate → 资源 gate、未知 id revoke、typed `Busy`、`ObjectQualificationFailed`→Refused）；宿主 boot_id；`OutputLog` 与 `Process` 分离及 Drained 顺序；删除 Cleanup 与 `stop_known`；envelope 4；`STOP_GRACE`/`DRAIN_BUDGET` 常量。main 上 server 无 registered executor 生产调用者 | `-p calm-proc-supervisor`：`private_prepare_failure_after_staging_publishes_nothing`（root 在 FD 接收与暂存重开比对之间被替换、journal 写失败、rename 后父目录 fsync 失败三种调度，之后真实 Inspect→未知 id Revoke→tombstone，断言 `live_objects`/`registrations` 为空、tombstone 优先于残留 `.execution` 文件且 executor 重开后仍然如此、迟到 Prepare 被拒）、`private_root_replaced_after_prepare_launch_no_child`（NoChild 后 `release_private` 已运行、`live_objects` 为空）、`private_prepare_kernel_restart_executor_alive_releases_on_settle`、`private_prepare_executor_restart_releases`、`private_registration_released_at_drained_not_retire`、`private_prepare_exact_replay_keeps_original_description`、`private_attach_refuses_directory_of_other_execution`、`drained_persisted_before_output_complete`、`output_complete_after_reader_eof_or_pty_eio`、`retire_waits_output_open`、`revoke_unknown_id_blocks_late_prepare`、`stop_escalates_after_grace`（含代次唤醒下的重复 Stop，KILL 截止不延后）、`graceful_shutdown_term_ignoring_child_persists_drained`、`host_reboot_is_no_child`、`changed_after_every_persisted_transition`；保留 `execution_launch_revoke_share_gate_and_ticket_is_single_use` 与 main 的交接测试（交接代码不变，S2a 无调用者）。变异验证：EOF 前置、Stop 每次重设截止、发布先于持久化（交换步骤 2、3，第一个测试须红；只杀 executor 不算）、优雅关闭退回只发 TERM。可选再拆：输出存储/Drained 顺序/stop 例程/boot_id 一片，其余协议一片 |
+| E1b | `workspace-runtime` crate 的 `execution` 模块：类型、`next_step`、`Engine`、两个 port、最小 fake（脚本化 Fact 序列与调用日志，不复制 journal）、`session_executor`；合同套件在 fake 与 E1a 的真实进程内 executor 上各跑一次 | `-p workspace-runtime`：`next_step` 全表、`absent_stop_unknown_revoke_finishes`、`drained_settles_before_retire`、`drained_between_inspect_and_wait_wakes`、`request_after_park_decision_is_not_lost`、`retire_between_load_and_park_drives`、`recover_racing_drive_effect_once`、`watch_reconnect_wakes_all_waiters`；`-p calm-proc-supervisor`：`port_contract::executor`。对 Park 握手、“快照先于 inspect/Busy 重试”与 `next_step` 的 Settle/Finish 分支做变异验证，断言 fake 调用日志 |
+| E2a | migration + `SqliteExecutionStore`（无消费者，store 是 migration 的写者）+ executor 生产配置 + boot 调用 `Engine::recover`。neige-app `proc_supervisor_config`（`supervisor.rs:108-123`，现只传 `--control-sock`）增加 `--execution-state-dir <calm data dir>/execution` 与 `--kernel-client-key-file`；neige-app 在 calm data dir 下以 0600 创建该 key 文件，经 typed 配置把同一路径交给 calm-server，并传 `--stop-grace-ms`（§6.4）。被接管的升级前 supervisor 没有 executor 或 envelope 4 时，`Engine::available()` 为假，typed 创建在提交前得到 `ExecutionUnavailable`，不写行、不回落 Legacy；启用需重启 supervisor，这会结束 Legacy PTY（写入升级说明） | `-p calm-server`：SQLite 上 `port_contract::store`，领域写入与 admit 同事务回滚；触发器与索引拒绝改写；Stop 结算与保留 secret 通过 CHECK；`pending` 含已结算待 retire 行；`-p neige-app`：supervisor 参数与 key 文件权限；`-p calm-proc-supervisor`：`stop_grace` 不大于关闭时限时照常启动、不启用 executor，Legacy `EnsureProc` 可用、握手拒绝经适配器映射为 `Transport`（不 revoke/Park） |
+| E2b | opt-in Terminal 消费者 + 占用集成：typed `Config`（默认关闭）；`terminal-execution-create` kind 与 `DriveTicket::committed`；模式冻结；消费者投影；`terminal_delete_tx` 请求 Retire 并返回 `TerminalDeleted`；`unsettled_executions` 接入 `require_safe_tx`；`execution_quiesce::quiesce` 接入四个删除调用者的 Legacy 停止时点；settled-worker 回收的 Stop 分支；`worktree_clean` 跳过；renderer 订阅 `Engine::output`；按模式分支的 Legacy `term:<id>` 入口清单（WS ensure、boot reconcile、`claude_auto_resume`、attach reader 退出写入），防止 Legacy `EnsureProc` 在 typed Launch 前占 slot | `-p calm-server`：§8 六个场景（按改写后的验收）；HTTP 创建、WS 输入/resize/stop、冷启动恢复；`trap '' TERM` shell 的卡片删除与 Track 删除首次即成功；Track 删除对 typed 终端先预检、再 quiesce、后 recycle，预检被拒时 typed 终端仍运行；`Config` 打开时对未启用 executor 的 supervisor 发起 typed 创建，得到 `ExecutionUnavailable` 且无卡片与执行行；Prepare 被拒（cwd 已删除）留下已退出的 typed 卡片且可删除；被 settled-worker 回收停止的 typed 终端（`signal_killed = 1`）在下一次 orphan tick 后仍在，MCP 读到 OutputLog 尾部；boot reconcile 不改未 launch 的 typed 行；repoint 遇未结算 typed 执行拒绝且不停止；closed Track：settled-worker 回收 Stop typed 终端（行与屏幕保留），认领期间 reopen 则不 Stop，clean 在结算前跳过、结算后清理；`kind=terminal` 卡片在两种模式下都没有重启路由；`Config` 关闭后已有 typed 终端仍被驱动；Legacy 终端测试不改 |
+| E3… | 每个后续消费者一片：直接 pipe 进程（同片定义 close-stdin/half-close）、gate、provider 启动；同宿主正向排空；可能的终端重启（§7.3 列出的前提，首个需要 alias 交接的消费者再定义交接） | 每片只增加一个 `ExecutionIntent` 构造点或一个恢复机制及其真实入口测试 |
 
 S2a 之外的后续里程碑：**resource cutover**（typed 资源、共享 registration 生命周期、RuntimeSafety closure、Legacy 入口拒
 绝、typed release；该资源再无 Legacy 消费者时进行，执行改引用 `PreparedSource::Registered`，engine 不变）、
@@ -408,25 +412,23 @@ S2a 之外的后续里程碑：**resource cutover**（typed 资源、共享 regi
 - **抽象边界**：动作政策只在 `workspace_runtime::execution`；物理事实、settled 谓词、alias slot、fence 与私有 registration
   归属只在 executor；共享安全谓词只报告占用，生命周期动作只在删除/回收调用者；投影的 currentness 在 Terminal 投影 SQL，不进 engine 或 executor；资源与破坏性 effect 留在既有 server 路径。
 - **重复逻辑**：一个 `next_step` 与驱动任务；executor 一个 stop 例程（删除 `stop_known`）与一个私有释放例程；Cleanup 并入
-  `Retire`；一个占用谓词、一个 scope 级 quiesce、一个代次；每个投影字段对 typed 终端一个写者；时限只由 `STOP_GRACE + DRAIN_BUDGET` 推导。
+  `Retire`；一个占用谓词、一个 scope 级 quiesce、一个代次；每个投影字段对 typed 终端一个写者；Retire 一个写者；时限只由 `STOP_GRACE + DRAIN_BUDGET` 推导。
 - **硬编码假设**：engine 不知道 Terminal；alias/OperationRef/Track 由调用者给出；投影按 operation kind 注册；`Desired`、
-  `Fact`、`BusyReason` 是本层闭合集合；`term:<id>` 映射只在 Terminal 消费者。
+  `Fact`、`BusyReason` 是本层闭合集合；`term:<id>` 映射只有一个 helper（calm-truth `workspace_execution.rs`，§10），Terminal 消费者与 boot reconcile 查询共用。
 - **外部合同事实**：进程与 fence 状态取自 executor 回复，宿主重启取自 `boot_id`，PTY EIO 与 bash 忽略 SIGTERM 由测试固
   定；不从 PID、路径或 dev/inode 推导排空或身份。
-- **永久成本**：一张表、两个索引、一组触发器；合同套件在 fake 与真实实现各跑一次；新增消费者、测试或文件不改名单；新
+- **永久成本**：一张表、两个索引、一组触发器；S2a 不新增交接协议；合同套件在 fake 与真实实现各跑一次；新增消费者、测试或文件不改名单；新
   kind 进入既有 kind 注册表一次。
 
-## 13. 评审处置（第五轮）
+## 13. 评审处置（第六轮）
 
-第四轮及更早的处置见 b5bff6931 的本节（第三轮及更早见 a894efeb8），除下表改动外仍然有效。
+第五轮的处置见 6d511f2fd 的本节（第四轮见 b5bff6931，第三轮及更早见 a894efeb8），除下表改动外仍然有效；codex R5-B1
+的当前执行条件随重启一起删除（其竞态不再可能），claude R5-N8 的“Retire 两个写者”改为一个。codex 第六轮无发现。
 
 | 评审项 | 处置 |
 |---|---|
-| codex R5-B1（旧执行迟到的 spawned/settle 覆盖重启后的终端） | 按其最小修复：重启事务原子地使新 ExecutionId 成为当前执行并重置领域字段；投影 SQL 以当前 alias 行等于本执行为条件，历史执行只结算自己的行（§7.2、§7.3）。E2b `terminal_restart_stale_projection_is_ignored` 与条件删除变异 |
-| codex R5-N1、claude R5-N6 | rename 后 fsync 失败的残留：未知 id 的 tombstone 写入删除同 id `.execution`，`open` 中 tombstone 优先；E1a 注入该调度（§4、§7.1） |
-| codex R5-N2 | Unknown 的来源扩为一切无正向排空事实的情形，仍失败关闭（§6.4） |
-| claude R5-N1 | `None` → `signal_killed = 1`；pty_output 经 `Engine::output`；E2b 测试 orphan tick 不删被停止的 typed 行 |
-| claude R5-N2 | 保持 Legacy 删除顺序：预检 `require_safe` 不含 typed，quiesce 在 Legacy 停止时点，`require_safe_tx` 复查 typed |
-| claude R5-N3 | boot reconcile 跳过 typed 行；每个投影字段一个写者；E2b 列出按模式分支的 Legacy 入口 |
-| claude R5-N4、N5 | Stop 按 ExecutionId 幂等，首个 Stop 固定 KILL 截止（E1a 重复 Stop 用例与变异）；不足的 `stop_grace` 只禁用 executor，supervisor 照常启动 |
-| claude R5-N7、N8、N9 | 替换调度改为 FD 接收与重开比对之间，新增 Prepare 之后替换 → Launch NoChild；Retire 两个写者；`apply_recovery_item` 行号；tombstone 记 `directory`；删除 `execution_unsupported.rs:55` 的桩；quiesce 改为 scope 级 `execution_quiesce::quiesce` |
+| claude R6-B1（typed 终端重启没有 Legacy 对应与入口） | 按其最小修复删除，与 Legacy 普通终端对等：typed 终端只运行一次（§7.2）。删除重启事务（Retire 只剩 `terminal_delete_tx`）、intent 的 `replaces`、E1a 的交接改动与版本 +1（main 的 `handoff` 代码不变，S2a 传 `None`，§7.3）、`BusyReason::AliasOccupied`、重启投影与当前执行条件（剩余守卫是 settled-worker 认领所需的会话状态 `UPDATE … WHERE`，§7.2）、`handoff_after_*`、`double_restart_before_fork`、`handoff_owner_settles_between_busy_and_wait`、`terminal_restart_stale_projection_is_ignored`、Legacy 重启模式测试及对应变异。终端重启记为 S2a 之外可能的后续消费者特性（§7.3、§11 E3） |
+| claude R6-N1 | `Executor::available()`/`Engine::available()`：typed 创建在 admit 前检查，不可用时返回 `ExecutionUnavailable` 且不写行；握手拒绝或 executor 缺失映射为 `Transport`（§4、E2a、E2b） |
+| claude R6-N2 | 记录 tx-only 创建的 UX 差异：Prepare 被拒留下可删除的已退出卡片，不加机制（§7.2、E2b） |
+| claude R6-N3 | calm-truth 一个 Terminal alias helper，消费者、scope 映射与 boot reconcile 共用（§10、§12） |
+| claude R6-N4 | 条件已删除；剩余会话守卫写明为单条 `UPDATE … WHERE`（§7.2） |
