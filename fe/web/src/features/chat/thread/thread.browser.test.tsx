@@ -175,14 +175,17 @@ describe('the / command menu, as the engine lays it out', () => {
   it('turns Send into a spinner on the same round chip while a pressed message waits to go', async () => {
     await page.viewport(1400, 900);
     /* The same composer, disabled as it is while the message waits, showing Send. */
-    const { unmount } = render(<ImageOnlyCard disabled />);
-    const send = document.querySelector<HTMLElement>('button[aria-label="Send"]')!.getBoundingClientRect();
-    unmount();
-    render(<ImageOnlyCard sendWaiting />);
-    const waiting = screen.getByRole('button', { name: 'Sending…' });
+    const view = render(<ImageOnlyCard disabled />);
+    const control = screen.getByRole('button', { name: 'Send' });
+    const send = control.getBoundingClientRect();
+    view.rerender(<ImageOnlyCard sendWaiting />);
+    const waiting = screen.getByRole('button', { name: 'Send' });
+    expect(waiting).toBe(control);
     expect(waiting.hasAttribute('disabled')).toBe(true);
-    expect(waiting.getAttribute('aria-busy')).toBe('true');
-    expect(document.querySelector('button[aria-label="Send"], [data-nc-send-attachment]')).toBeNull();
+    expect(screen.getByRole('group', { name: 'Message composer' }).getAttribute('aria-busy')).toBe('true');
+    expect(document.querySelector('[data-nc-send-attachment]')).toBeNull();
+    await expect.poll(() => waiting.getAnimations({ subtree: true })
+      .some(animation => animation.effect?.getTiming().iterations === Infinity)).toBe(true);
     const box = waiting.getBoundingClientRect();
     expect([box.width, box.height, box.right, box.bottom]).toEqual([send.width, send.height, send.right, send.bottom]);
     expect(parseFloat(getComputedStyle(waiting).borderTopLeftRadius)).toBeGreaterThanOrEqual(box.height / 2);

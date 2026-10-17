@@ -655,6 +655,7 @@ export function ChatComposer({
       /* Named, because focus is parked here during a send and a screen reader announces it; `group` rather than a landmark, and a name that builds on the field's `Message` rather than repeating it. */
       role="group"
       aria-label="Message composer"
+      aria-busy={sendWaiting || undefined}
       onKeyDownCapture={(event) => {
         /* Astryx clears its input after Enter even when its parent refuses
            submission. Keep unsent words while disabled, and
