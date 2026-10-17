@@ -22,13 +22,18 @@ use tower::ServiceExt;
 struct Fixture {
     repo: Arc<SqlxRepo>,
     tmp: TempDir,
+    database_url: String,
     area: String,
 }
 
 impl Fixture {
     async fn new() -> Self {
         let tmp = TempDir::new().unwrap();
-        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let database_url = format!(
+            "sqlite://{}?mode=rwc",
+            tmp.path().join("accepted-inputs.db").display()
+        );
+        let repo = Arc::new(SqlxRepo::open(&database_url).await.unwrap());
         let area = repo
             .area_create(
                 LEGACY_OWNER_USER_ID,
@@ -43,6 +48,7 @@ impl Fixture {
         Self {
             repo,
             tmp,
+            database_url,
             area: area.id.to_string(),
         }
     }
@@ -170,7 +176,7 @@ async fn post(
 
 #[tokio::test]
 async fn unavailable_native_create_accepts_once_and_rebuilt_application_replays_original() {
-    let fixture = Fixture::new().await;
+    let mut fixture = Fixture::new().await;
     let (app, cookie) = fixture.application().await;
     let (status, first) = post(&app, &cookie, "/api/tracks", "first", fixture.create_body()).await;
     assert_eq!(status, StatusCode::CREATED, "{first}");
@@ -191,9 +197,12 @@ async fn unavailable_native_create_accepts_once_and_rebuilt_application_replays_
             .unwrap();
     assert_eq!(author, LEGACY_OWNER_USER_ID);
     drop(app);
+    fixture.repo.pool().close().await;
+    fixture.repo = Arc::new(SqlxRepo::open(&fixture.database_url).await.unwrap());
 
-    // Reconstruct production AppState/registry and log in through the actual
-    // issuer again. This checks accepted facts, not automatic execution recovery.
+    // Open the actual database again, reconstruct production AppState/registry
+    // and log in through the issuer. This checks persisted acceptance, not
+    // automatic native execution recovery after a process crash.
     let (rebuilt, cookie) = fixture.application().await;
     let (status, replay) = post(
         &rebuilt,
