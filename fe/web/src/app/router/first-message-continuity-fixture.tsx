@@ -117,7 +117,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         const refused = staleRevision(request, entry); if (refused !== null) return refused;
         const saved = { ...entry, text, rev: entry.rev + 1 };
         pending = pending.map(candidate => candidate.entry_id === entry.entry_id ? saved : candidate);
-        return ok({ card_id: created?.id, entry_id: saved.entry_id, rev: saved.rev, text: saved.text });
+        return ok({ card_id: created?.id, worker_session_id: 'runtime', entry_id: saved.entry_id, rev: saved.rev, text: saved.text });
       }
       if (request.method === 'POST' && request.path.endsWith('/planner/input/first-entry/steer')) {
         const entry = pending.find(entry => entry.entry_id === 'first-entry');

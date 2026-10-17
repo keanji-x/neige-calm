@@ -62,7 +62,7 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
     await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
     expectGeometry(queued);
-    fixture.project(text);
+    fixture.project(edited ? 1 : 0, text);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
     await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.sourceWitness?.itemId === 7)).toBe(true);
     expectGeometry(queued);
