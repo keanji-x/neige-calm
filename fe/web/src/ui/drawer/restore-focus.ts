@@ -45,7 +45,9 @@ export function usePortalFocusRetention(host: HTMLElement, dialog: HTMLDialogEle
       ? { anchor: selection.anchorNode, anchorOffset: selection.anchorOffset, focus: selection.focusNode, focusOffset: selection.focusOffset } : null };
   }, [host]);
   useEffect(() => {
-    if (!open || !attached) return;
+    // A close ends this move's snapshot; reopening must capture a new caret.
+    if (!open) { retained.current = null; return; }
+    if (!attached) return;
     const restore = () => {
       const snapshot = retained.current;
       if (snapshot === null) return;
@@ -54,13 +56,16 @@ export function usePortalFocusRetention(host: HTMLElement, dialog: HTMLDialogEle
       // selection even after focus has already moved to the desktop destination.
       if (!host.isConnected || (dialog !== null && dialog.open !== native)
         || snapshot.element.closest('[inert], [aria-hidden="true"]') !== null) return;
+      // Consume before focus: synchronous focus handlers may change the DOM.
+      retained.current = null;
       restoreDrawerFocus(snapshot.element);
       if (document.activeElement !== snapshot.element) return;
       const selection = snapshot.selection;
-      if (selection !== null && host.contains(selection.anchor) && host.contains(selection.focus)) {
+      const validBoundary = (node: Node, offset: number) => node.isConnected && host.contains(node)
+        && offset >= 0 && offset <= (node instanceof CharacterData ? node.length : node.childNodes.length);
+      if (selection !== null && validBoundary(selection.anchor, selection.anchorOffset) && validBoundary(selection.focus, selection.focusOffset)) {
         document.getSelection()?.setBaseAndExtent(selection.anchor, selection.anchorOffset, selection.focus, selection.focusOffset);
       }
-      retained.current = null;
     };
     restore();
     if (dialog === null) return;

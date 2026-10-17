@@ -53,6 +53,14 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   const finalFocus = useRef<HTMLElement | null>(null);
   const originalFocus = useRef<HTMLElement | null>(null);
   const focusWasOpen = useRef(false);
+  // Switcher presents in its child layout effect, before this owner's effects.
+  // Capture the opening render while the real trigger still owns focus.
+  if (props.open && !focusWasOpen.current) {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body
+      && !dialog?.contains(active) && !footerHost.contains(active)) originalFocus.current = active;
+  }
+  focusWasOpen.current = props.open;
   const lastFrame = useRef({ title: props.title, contextTitle, children: props.children, footer: props.footer });
   if (props.open) lastFrame.current = { title: props.title, contextTitle, children: props.children, footer: props.footer };
   const frame = lastFrame.current;
@@ -110,11 +118,6 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     return () => { observer.disconnect(); };
   }, [footerHost, footerAttached, mobileSheet]);
   useLayoutEffect(() => {
-    if (props.open && !focusWasOpen.current) {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && active !== document.body && !dialog?.contains(active)) originalFocus.current = active;
-    }
-    focusWasOpen.current = props.open;
     if (!props.open) {
       const dock = document.querySelector<HTMLElement>('[data-nc-chat-dock]');
       const origin = originalFocus.current;

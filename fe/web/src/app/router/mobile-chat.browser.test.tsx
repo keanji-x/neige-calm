@@ -1,6 +1,8 @@
 import '../../styles/entry.css';
-import { cleanup } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { useLayoutEffect, useRef } from 'react';
+import { ConversationSurface } from './mobile-conversation-surface.tsx';
+import { cleanup, render } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
@@ -366,4 +368,92 @@ it('preserves the footer DOM and caret across native and desktop presentations t
   await userEvent.keyboard('{Escape}');
   await expect.poll(() => document.querySelector('dialog[open]')).toBeNull();
   await expect.poll(() => document.activeElement?.hasAttribute('data-nc-chat-dock')).toBe(true);
+});
+
+function RetainedEditor({ native, change, duringFocus }: { native: boolean; change: (editor: HTMLDivElement) => void; duringFocus: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => { if (!native && !duringFocus) change(ref.current!); }, [native, change, duringFocus]);
+  return <div ref={ref} contentEditable suppressContentEditableWarning role="textbox" aria-label="Retained editor"
+    onFocus={() => { if (!native && duringFocus) change(ref.current!); }}><span>abcdef</span><span>uvwxyz</span></div>;
+}
+
+it.each(['normal text', 'normal children', 'shorter anchor', 'shorter focus', 'fewer children', 'detached boundary', 'focus changes text'] as const)(
+  'consumes the portal selection safely: %s', async (scenario) => {
+    await page.viewport(390, 844);
+    const errors: string[] = [];
+    const onError = (event: ErrorEvent) => { errors.push(event.message); event.preventDefault(); };
+    window.addEventListener('error', onError);
+    const change = (editor: HTMLDivElement) => {
+      if (scenario === 'shorter anchor' || scenario === 'focus changes text') (editor.firstChild!.firstChild! as Text).data = 'a';
+      if (scenario === 'shorter focus') (editor.lastChild!.firstChild! as Text).data = 'z';
+      if (scenario === 'fewer children' || scenario === 'detached boundary') editor.lastChild!.remove();
+    };
+    const surface = (native: boolean) => <ConversationSurface open mobileSheet={native} title="Retained conversation" onClose={() => {}}
+      footer={<RetainedEditor native={native} change={change} duringFocus={scenario === 'focus changes text'} />}><p>Messages</p></ConversationSurface>;
+    const view = render(surface(true));
+    try {
+      const editor = await page.getByRole('textbox', { name: 'Retained editor' }).findElement() as HTMLDivElement;
+      const dialog = editor.closest('dialog')!;
+      await expect.poll(() => dialog.open).toBe(true);
+      editor.focus();
+      const children = [...editor.childNodes];
+      const containerBoundary = scenario === 'normal children' || scenario === 'fewer children';
+      const anchor = containerBoundary ? editor : editor.firstChild!.firstChild!;
+      const focus = containerBoundary ? editor : editor.lastChild!.firstChild!;
+      const anchorOffset = containerBoundary ? 2 : 5;
+      const focusOffset = containerBoundary ? 1 : 4;
+      const selection = document.getSelection()!;
+      selection.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+      const restore = vi.spyOn(selection, 'setBaseAndExtent');
+      try {
+        view.rerender(surface(false));
+        await expect.poll(() => dialog.open).toBe(false);
+        await expect.poll(() => document.activeElement).toBe(editor);
+        expect(page.getByRole('textbox', { name: 'Retained editor' }).element()).toBe(editor);
+        if (!containerBoundary) expect(editor.firstChild!.firstChild).toBe(anchor);
+        expect(errors).toEqual([]);
+        if (scenario.startsWith('normal')) {
+          expect(restore).toHaveBeenCalledExactlyOnceWith(anchor, anchorOffset, focus, focusOffset);
+          expect([selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset]).toEqual([anchor, anchorOffset, focus, focusOffset]);
+        } else {
+          expect(restore).not.toHaveBeenCalled();
+          // Make the old boundaries valid again: a consumed snapshot must still
+          // stay discarded rather than resurrecting on a later notification.
+          (children[0].firstChild! as Text).data = 'abcdef';
+          (children[1].firstChild! as Text).data = 'uvwxyz';
+          editor.replaceChildren(...children);
+          dialog.setAttribute('open', ''); dialog.removeAttribute('open');
+          await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+          expect(restore).not.toHaveBeenCalled();
+          expect(errors).toEqual([]);
+        }
+      } finally { restore.mockRestore(); }
+    } finally { window.removeEventListener('error', onError); view.unmount(); }
+  },
+);
+
+it('keeps a rapid native reopen focused inside and restores the opener only after the final exit', async () => {
+  await page.viewport(390, 844);
+  const opener = document.body.appendChild(document.createElement('button'));
+  opener.textContent = 'Surface opener';
+  opener.focus();
+  const surface = (open: boolean) => <ConversationSurface open={open} mobileSheet title="Rapid conversation" onClose={() => {}}
+    footer={<input aria-label="Rapid draft" />}><p>Messages</p></ConversationSurface>;
+  const view = render(surface(true));
+  try {
+    const dialog = page.getByRole('dialog', { name: 'Rapid conversation' }).element() as HTMLDialogElement;
+    const editor = page.getByRole('textbox', { name: 'Rapid draft' }).element() as HTMLInputElement;
+    await expect.poll(() => dialog.open).toBe(true);
+    editor.focus();
+    view.rerender(surface(false));
+    expect(dialog.open).toBe(true);
+    view.rerender(surface(true));
+    editor.focus();
+    await expect.poll(() => dialog.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+    expect(dialog.open).toBe(true);
+    expect(document.activeElement).toBe(editor);
+    view.rerender(surface(false));
+    await expect.poll(() => dialog.open).toBe(false);
+    await expect.poll(() => document.activeElement).toBe(opener);
+  } finally { view.unmount(); opener.remove(); }
 });
