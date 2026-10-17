@@ -59,6 +59,11 @@ use super::{
     checkpoint_app_server_interact_tx,
 };
 
+#[cfg(all(test, feature = "fixtures"))]
+mod canonical_lifecycle_tests;
+mod retained;
+use retained::{RetainedPayload, StartInvocation};
+
 const START_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
     PhaseTag::TxCommitted,
@@ -93,6 +98,7 @@ pub struct PlannerHarnessStartAdapter {
     per_card_mint_locks: PerCardLocks,
     claude_host: Arc<ClaudePlannerHost>,
     acp_host: Arc<crate::acp_planner::config::AcpPlannerHost>,
+    invocation: StartInvocation,
 }
 
 impl PlannerHarnessStartAdapter {
@@ -121,6 +127,7 @@ impl PlannerHarnessStartAdapter {
             per_card_mint_locks: new_per_card_locks(),
             claude_host,
             acp_host,
+            invocation: StartInvocation::Registered,
         }
     }
 
@@ -170,6 +177,31 @@ impl PlannerHarnessStartAdapter {
     #[cfg(test)]
     pub(crate) async fn bound_template(&self, track_id: &str) -> Result<Option<BoundTemplate>> {
         bound_template(self.repo.as_ref(), &self.plugin, track_id).await
+    }
+}
+
+/// One protocol/configuration producer for this start owner; new retained
+/// invocation and historical reset preserve the same MCP/sandbox policy.
+fn codex_start_params(
+    profile: HarnessProfile,
+    cwd: String,
+    developer_instructions: Option<String>,
+    raw_token: String,
+    socket_path: PathBuf,
+) -> SharedThreadStartParams {
+    SharedThreadStartParams {
+        cwd,
+        approval_policy: "never".into(),
+        sandbox_mode: "workspace-write".into(),
+        developer_instructions,
+        config: match profile.mcp_role() {
+            Some(role) => ThreadConfig::McpShell {
+                role,
+                socket_path,
+                raw_token,
+            },
+            None => ThreadConfig::NoMcp,
+        },
     }
 }
 
@@ -517,8 +549,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
     }
 
     async fn validate(&self, input: &Value) -> Result<()> {
+        if let Some(wire) = RetainedPayload::decode(input)? {
+            return self.retained_validate(&wire).await;
+        }
         let decoded = super::assistant_start_wire::StartInput::decode(input)?;
         let payload = decoded.payload;
+        crate::conversation_inputs::require_historical_storage(
+            self.repo.as_ref(),
+            payload.planner_card_id.as_str(),
+        )
+        .await?;
         let track = self
             .repo
             .track_get(&payload.track_id)
@@ -674,11 +714,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         input: &Value,
         _op: &Operation,
     ) -> Result<TxOutput> {
+        if let Some(wire) = RetainedPayload::decode(input)? {
+            return self.retained_prepare(tx, &wire).await;
+        }
         let decoded = super::assistant_start_wire::StartInput::decode(input)?;
         let payload = decoded.payload;
         let card_id = payload.planner_card_id;
         let track_id = payload.track_id;
         let report_card_id = payload.report_card_id;
+        crate::conversation_inputs::require_historical_storage_tx(tx, card_id.as_str()).await?;
         let defer_runtime_start = payload.force_new_thread;
         // The briefing is rendered HERE, inside the mint transaction, and MUST stay ABOVE this transaction's first write: its reads run on a pool
         // connection, and once `tx` holds RESERVED on `events` the shared-lock read deadlocks against it (pinned by `briefing_ordering_survives_contention_in_the_mint_transaction`).
@@ -1083,7 +1127,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
+        if let Some(wire) = RetainedPayload::decode(&op.payload)? {
+            return self.retained_interact(&wire, output, op, ctx).await;
+        }
         let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
+        crate::conversation_inputs::require_historical_storage(
+            self.repo.as_ref(),
+            payload.planner_card_id.as_str(),
+        )
+        .await?;
         let reset_transcript = payload.reset_harness_items;
         let profile = payload.profile;
         // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).
@@ -1173,21 +1225,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
             // The channel-3 `thread/start` config comes from the single shared producer so every spawn path emits the byte-identical shape.
-            let params = SharedThreadStartParams {
+            let params = codex_start_params(
+                profile,
                 cwd,
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
                 developer_instructions,
-                // The assistant needs the same channel-3 MCP credentials as the planner harness; WHICH tools the token can reach is resolved from the card's persisted role, not here.
-                config: match profile.mcp_role() {
-                    Some(role) => ThreadConfig::McpShell {
-                        role,
-                        socket_path: PathBuf::from(&socket_path),
-                        raw_token: raw,
-                    },
-                    None => ThreadConfig::NoMcp,
-                },
-            };
+                raw,
+                PathBuf::from(socket_path),
+            );
             if runtime_deferred {
                 self.daemon
                     .thread_start_mint_for_card(&card_id, params)
@@ -1472,6 +1516,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
+        if let Some(wire) = RetainedPayload::decode(&_op.payload)? {
+            return self.retained_spawn(&wire, ctx).await;
+        }
+        let payload = super::assistant_start_wire::StartInput::decode(&_op.payload)?.payload;
+        crate::conversation_inputs::require_historical_storage(
+            self.repo.as_ref(),
+            payload.planner_card_id.as_str(),
+        )
+        .await?;
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
@@ -1566,7 +1619,22 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         output: &TxOutput,
         op: &Operation,
     ) -> Result<CompensationStateVersioned> {
+        if RetainedPayload::decode(&op.payload)?.is_some() {
+            // Accepted records and native Unknown/known facts survive failure.
+            // No legacy delete/fail/reset/harvest compensation applies.
+            return Ok(CompensationStateVersioned {
+                version: 1,
+                from_phase,
+                reason: "retained activation held".into(),
+                steps: vec![],
+            });
+        }
         let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
+        crate::conversation_inputs::require_historical_storage(
+            self.repo.as_ref(),
+            payload.planner_card_id.as_str(),
+        )
+        .await?;
         let card_id = output.output_string("card_id", "planner harness")?;
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
@@ -1653,6 +1721,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         if step.completed {
             return Ok(());
         }
+        let payload = super::assistant_start_wire::StartInput::decode(&_op.payload)?.payload;
+        crate::conversation_inputs::require_historical_storage(
+            self.repo.as_ref(),
+            payload.planner_card_id.as_str(),
+        )
+        .await?;
         match step.op.as_str() {
             "abort_harness_task" => {
                 let worker_session_id = step.arg_string("runtime_id", "planner harness")?;

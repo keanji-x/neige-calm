@@ -34,6 +34,7 @@ pub async fn claim_initial_submission_tx(
     plan: SubmissionRenderPlan,
     provenance: &ConversationExecutionProvenance,
 ) -> Result<ClaimedSubmission> {
+    carrier.require_execution_current()?;
     if !matches!(
         carrier.phase()?,
         HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted | HarnessPhaseTag::Resumed
@@ -119,6 +120,7 @@ pub async fn claim_supplemental_submission_tx(
     expected_native_turn_id: &str,
     plan: SubmissionRenderPlan,
 ) -> Result<ClaimedSubmission> {
+    carrier.require_execution_current()?;
     require_private_tx(tx, &carrier.card_id).await?;
     if carrier.phase()? != HarnessPhaseTag::TurnRunning
         || carrier

@@ -13,6 +13,7 @@ pub async fn begin_input_attempt_tx(
     attempt: InputAttempt,
     correlation: InputCorrelationFact,
 ) -> Result<()> {
+    carrier.require_execution_current()?;
     let owns: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM conversation_input_submissions WHERE id=?1 AND card_id=?2)",
     )

@@ -29,6 +29,54 @@ pub(crate) async fn authorize_human_resource_tx(
     Ok(())
 }
 
+/// The one current-author/revision rule used by startup and input claims.
+async fn current_human_ref_matches_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    source: &HumanInputSource,
+    carrier: &CurrentInputCarrier,
+    message: &MessageRevisionRef,
+) -> Result<bool> {
+    let principal = source.current_principal()?;
+    let stored = conversation::message_tx(tx, &message.message_id).await?;
+    Ok(stored.card_id == carrier.card_id()
+        && stored.current == *message
+        && stored.withdrawn_at_ms.is_none()
+        && stored.author
+            == (MessageAuthor::AuthenticatedHuman {
+                registered_user_id: principal.user_id,
+            }))
+}
+
+/// Derive transient source associations from the sole committed pending order.
+/// Stop at another source; these refs are neither a queue nor an execution grant.
+pub(crate) async fn human_pending_source_refs_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    source: &HumanInputSource,
+    carrier: &CurrentInputCarrier,
+) -> Result<Vec<MessageRevisionRef>> {
+    let mut refs = vec![];
+    for pending in &carrier.checkpoint().pending {
+        let calm_types::conversation::PendingInput::Human { message, .. } = pending else {
+            break;
+        };
+        if !current_human_ref_matches_tx(tx, source, carrier, message).await?
+            || !matches!(
+                conversation::revision_tx(tx, message).await?.payload,
+                calm_types::conversation::PrivateHistoryPayload::Present { .. }
+            )
+        {
+            break;
+        }
+        refs.push(message.clone());
+    }
+    if refs.is_empty() {
+        return Err(CalmError::Forbidden(
+            "current source cannot resume this exact pending head".into(),
+        ));
+    }
+    Ok(refs)
+}
+
 pub(crate) async fn authorize_human_execution_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source: &HumanInputSource,
@@ -48,15 +96,8 @@ pub(crate) async fn authorize_human_execution_tx(
                 "human execution source cannot authorize machine or legacy input".into(),
             ));
         };
-        let stored = conversation::message_tx(tx, &message.message_id).await?;
-        if stored.card_id != carrier.card_id()
-            || stored.current != *message
-            || stored.withdrawn_at_ms.is_some()
-            || author.registered_user_id != principal.user_id
-            || stored.author
-                != (MessageAuthor::AuthenticatedHuman {
-                    registered_user_id: principal.user_id.clone(),
-                })
+        if author.registered_user_id != principal.user_id
+            || !current_human_ref_matches_tx(tx, source, carrier, message).await?
         {
             return Err(CalmError::Forbidden(
                 "execution source does not own this exact human input".into(),

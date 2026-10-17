@@ -43,6 +43,72 @@ impl SqlxOperationRepo {
         Self { pool }
     }
 
+    async fn claim_drivable(&self, limit: i64, exact_id: Option<&str>) -> Result<Vec<Operation>> {
+        let now = now_ms();
+        let lease_owner = new_id();
+        let lease_until = now + OPERATION_LEASE_MS;
+        // A deferred read→write upgrade on `operations` deadlocks against any IMMEDIATE writer ("database is
+        // deadlocked"); BEGIN IMMEDIATE parks at BEGIN holding nothing.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let ids = sqlx::query(
+            r#"SELECT id
+               FROM operations
+               WHERE phase IN (
+                 'pending',
+                 'tx_committed',
+                 'app_server_interact',
+                 'spawn_started',
+                 'spawn_succeeded',
+                 'compensating'
+               )
+               AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
+               AND (?3 IS NULL OR id = ?3)
+               ORDER BY created_at_ms ASC
+               LIMIT ?2"#,
+        )
+        .bind(now)
+        .bind(limit)
+        .bind(exact_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut claimed = Vec::new();
+        for row in ids {
+            let id: String = row.try_get("id")?;
+            let result = sqlx::query(
+                r#"UPDATE operations
+                   SET lease_owner = ?1,
+                       lease_until_ms = ?2,
+                       updated_at_ms = ?3
+                   WHERE id = ?4
+                     AND phase IN (
+                       'pending',
+                       'tx_committed',
+                       'app_server_interact',
+                     'spawn_started',
+                     'spawn_succeeded',
+                     'compensating'
+                   )
+                     AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
+            )
+            .bind(&lease_owner)
+            .bind(lease_until)
+            .bind(now)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() == 1 {
+                let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
+                    .bind(&id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                claimed.push(operation_from_row(&row)?);
+            }
+        }
+        tx.commit().await?;
+        Ok(claimed)
+    }
+
     async fn claim_operation_for_boot_recovery(&self, op_id: &str) -> Result<Option<Operation>> {
         let now = now_ms();
         let lease_owner = new_id();
@@ -184,67 +250,11 @@ impl OperationRepo for SqlxOperationRepo {
     }
 
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>> {
-        let now = now_ms();
-        let lease_owner = new_id();
-        let lease_until = now + OPERATION_LEASE_MS;
-        // A deferred read→write upgrade on `operations` deadlocks against any IMMEDIATE writer ("database is
-        // deadlocked"); BEGIN IMMEDIATE parks at BEGIN holding nothing.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        let ids = sqlx::query(
-            r#"SELECT id
-               FROM operations
-               WHERE phase IN (
-                 'pending',
-                 'tx_committed',
-                 'app_server_interact',
-                 'spawn_started',
-                 'spawn_succeeded',
-                 'compensating'
-               )
-               AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
-               ORDER BY created_at_ms ASC
-               LIMIT ?2"#,
-        )
-        .bind(now)
-        .bind(limit)
-        .fetch_all(&mut *tx)
-        .await?;
+        self.claim_drivable(limit, None).await
+    }
 
-        let mut claimed = Vec::new();
-        for row in ids {
-            let id: String = row.try_get("id")?;
-            let result = sqlx::query(
-                r#"UPDATE operations
-                   SET lease_owner = ?1,
-                       lease_until_ms = ?2,
-                       updated_at_ms = ?3
-                   WHERE id = ?4
-                     AND phase IN (
-                       'pending',
-                       'tx_committed',
-                       'app_server_interact',
-                     'spawn_started',
-                     'spawn_succeeded',
-                     'compensating'
-                   )
-                     AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
-            )
-            .bind(&lease_owner)
-            .bind(lease_until)
-            .bind(now)
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-            if result.rows_affected() == 1 {
-                let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
-                    .bind(&id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                claimed.push(operation_from_row(&row)?);
-            }
-        }
-        tx.commit().await?;
-        Ok(claimed)
+    async fn claim_drive_operation(&self, op_id: &str) -> Result<Option<Operation>> {
+        Ok(self.claim_drivable(1, Some(op_id)).await?.pop())
     }
 
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>> {

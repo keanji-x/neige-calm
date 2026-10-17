@@ -1466,6 +1466,7 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
 
     let wiring = support::done_delivery::wire(
         sqlx_repo.clone(),
+        plugin_host.clone(),
         events.clone(),
         write.clone(),
         card_role_cache.clone(),
@@ -1655,7 +1656,6 @@ fn track_router_for_fixture(fx: &Fixture) -> axum::Router {
     let state = fx._delivery_wiring.app_state(
         fx.repo.clone(),
         fx.review_ctx.clone(),
-        fx.plugin_host.clone(),
         fx.card_role_cache.clone(),
         fx.track_area_cache.clone(),
         fx._tmp.path().join("workspaces"),
@@ -1680,7 +1680,6 @@ fn app_router_for_fixture(fx: &Fixture) -> axum::Router {
     let state = fx._delivery_wiring.app_state(
         fx.repo.clone(),
         fx.review_ctx.clone(),
-        fx.plugin_host.clone(),
         fx.card_role_cache.clone(),
         fx.track_area_cache.clone(),
         fx._tmp.path().join("workspaces"),

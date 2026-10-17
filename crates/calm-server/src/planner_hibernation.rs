@@ -209,6 +209,11 @@ impl WakeContext {
         &self,
         runtime: crate::session_projection_repo::WorkerSessionProjection,
     ) -> Result<crate::harness::PlannerHarness> {
+        crate::conversation_inputs::require_historical_storage(
+            self.repo.as_ref(),
+            &runtime.card_id,
+        )
+        .await?;
         use crate::session_projection_repo::AgentProvider;
         let s = self;
         match runtime.agent_provider.as_ref() {
