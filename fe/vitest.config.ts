@@ -88,6 +88,12 @@ export default defineConfig({
                 await mkdir('test-results/conversation-switch', { recursive: true });
                 await writeFile(`test-results/conversation-switch/${count}.json`, report);
               },
+              mouseButton: async ({ page, iframe }, selector: string, pressed: boolean) => {
+                if (pressed) {
+                  await iframe.locator(selector).hover();
+                  await page.mouse.down();
+                } else await page.mouse.up();
+              },
               wheelScroll: async ({ page, iframe }, selector: string, deltaY: number, position?: { x: number; y: number }) => {
                 await iframe.locator(selector).hover({ position });
                 await page.mouse.wheel(0, deltaY);

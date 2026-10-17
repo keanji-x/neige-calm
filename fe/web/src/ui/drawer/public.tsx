@@ -1,3 +1,4 @@
+import { presenceDepthFrame } from '../motion/depth.ts';
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -109,10 +110,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   // Compact pages disappear in this commit; no mobile transitionend is owed.
   if (compact && closing) setClosing(false);
 
-  useSpringPresence(panelRef, seamRef, open, open || closing, !compact, () => { setClosing(false); }, value => ({
-    opacity: Math.max(0, Math.min(1, value)),
-    translate: `0 calc(var(--space-3) * ${1 - value})`,
-  }));
+  useSpringPresence(panelRef, seamRef, open, open || closing, !compact, () => { setClosing(false); }, presenceDepthFrame);
 
   // Keep the local escape-layer contract for unmigrated Dialog/file-viewer hosts;
   // native Astryx children still dismiss first through the shared layer stack.

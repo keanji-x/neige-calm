@@ -18,6 +18,7 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { createReadReceiptsKernel, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
+import { DepthFeedback } from '../../ui/motion/depth-feedback.tsx';
 
 afterEach(cleanup);
 
@@ -109,6 +110,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
   });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+    <DepthFeedback />
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
   return router;
@@ -561,10 +563,16 @@ describe('Track mobile presentation', () => {
     expect(getComputedStyle(selector).outlineStyle).toBe('solid');
     expect(getComputedStyle(selector).outlineWidth).toBe('2px');
     await userEvent.keyboard('[Space>]');
-    await expect.poll(() => getComputedStyle(selector).transform).toBe('matrix(0.98, 0, 0, 0.98, 0, 0)');
+    await expect.poll(() => new DOMMatrix(getComputedStyle(selector).transform).a).toBeLessThan(1);
+    expect(new DOMMatrix(getComputedStyle(selector).transform).f).toBeGreaterThan(0);
+    expect(selector.getAnimations()).toHaveLength(1);
+    expect([...selector.querySelectorAll('*')].flatMap(child => child.getAnimations())).toHaveLength(0);
+    expect(document.activeElement).toBe(selector);
     expect(getComputedStyle(selector).backgroundImage).not.toBe('none');
     expect(getComputedStyle(selector).borderRadius).toBe('12px');
     await userEvent.keyboard('[/Space]');
+    await expect.poll(() => selector.getAnimations().length).toBe(0);
+    expect(getComputedStyle(selector).transform).toBe('none');
     const menu = await page.getByRole('menu').findElement();
     const selected = await page.getByRole('menuitem', { name: 'Product', exact: true }).findElement();
     expect(getComputedStyle(menu).borderRadius).toBe('16px');
@@ -580,9 +588,19 @@ describe('Track mobile presentation', () => {
     (hamburger as HTMLElement).focus();
     await userEvent.keyboard('[Space>]');
     expect(hamburger.matches(':active')).toBe(true);
+    await expect.poll(() => new DOMMatrix(getComputedStyle(hamburger).transform).a).toBeLessThan(1);
+    expect(new DOMMatrix(getComputedStyle(hamburger).transform).f).toBeGreaterThan(0);
+    expect(hamburger.getAnimations()).toHaveLength(1);
+    expect([...hamburger.querySelectorAll('*')].flatMap(child => child.getAnimations())).toHaveLength(0);
+    expect(document.activeElement).toBe(hamburger);
+    expect(hamburger.matches(':focus-visible')).toBe(true);
+    expect(getComputedStyle(hamburger).outlineStyle).toBe('solid');
+    expect(getComputedStyle(hamburger).outlineWidth).toBe('2px');
     expect(getComputedStyle(hamburger).backgroundImage).not.toBe('none');
     expect(getComputedStyle(hamburger).borderRadius).toBe('999px');
     await userEvent.keyboard('[/Space]');
+    await expect.poll(() => hamburger.getAnimations().length).toBe(0);
+    expect(getComputedStyle(hamburger).transform).toBe('none');
     await page.getByRole('dialog', { name: '历史对话' }).findElement();
     const settings = await page.getByRole('button', { name: '设置', exact: true }).findElement();
     expect(settings.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);

@@ -134,6 +134,8 @@ it('runs /side through the production router and shows two independent desktop c
   expect(requests.find((request) => request.method === 'POST' && request.path.endsWith('/conversations'))?.body)
     .toMatchObject({ text: 'Explain the tradeoff', side: { source_card_id: 'parent' } });
   await expect.element(side.getByRole('combobox', { name: 'Message' })).toBeEnabled();
+  // Compare resting layout after both independent presence effects are cleaned up.
+  await expect.poll(() => [...host.querySelectorAll('[data-nc-drawer]')].every(card => card.getAnimations().length === 0)).toBe(true);
   const mainBox = (await main.findElement()).getBoundingClientRect();
   const sideBox = (await side.findElement()).getBoundingClientRect();
   const mobileChat = document.querySelector<HTMLElement>('[data-nc-mobile-report-chat]');
