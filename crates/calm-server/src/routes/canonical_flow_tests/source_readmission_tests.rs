@@ -87,6 +87,7 @@ async fn original_claim_readmission(cold: bool) {
     .await
     .unwrap();
     let original = wait_for_claim(&fixture, &track, &mut peer).await;
+    eprintln!("stage: real claim committed; original active and zero attempts verified");
     let original_active = original.canonical_inputs.active.clone().unwrap();
     assert_eq!(original_active.submission_ids.len(), 1);
     let receipt = fixture.receipt(area["id"].as_str().unwrap()).await;
@@ -121,6 +122,7 @@ async fn original_claim_readmission(cold: bool) {
         assert_ne!(next_cookie, cookie);
         (state, app, next_cookie, peer)
     };
+    eprintln!("stage: old issuer revoked; new real login and optional cold boot completed");
     let replay = post(&app, &cookie, "/api/tracks", "first", create).await;
     assert_eq!(replay["id"], created["id"]);
     assert_eq!(fixture.receipt(area["id"].as_str().unwrap()).await, receipt);
@@ -128,7 +130,10 @@ async fn original_claim_readmission(cold: bool) {
         .execute(fixture.repo.pool())
         .await
         .unwrap();
-    let resumed = tokio::time::timeout(Duration::from_secs(5), async {
+    eprintln!("stage: original immutable key replayed; release marker fault and await original native turn");
+    // Bound the outer observation before request()'s own five-second timeout,
+    // so the missing effect still goes through the explicit fixture cleanup.
+    let resumed = tokio::time::timeout(Duration::from_secs(4), async {
         let (mut reads, mut resumes) = (0, 0);
         loop {
             let call = request(&mut peer).await;
