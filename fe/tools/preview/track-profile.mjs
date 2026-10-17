@@ -1,7 +1,7 @@
 import { chromium } from '@playwright/test';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { lstat, mkdir, readFile, readdir, readlink, realpath, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { preview } from 'vite';
 
@@ -30,7 +30,29 @@ const width = integer('--width', values.width, 320, 3840);
 const detailDelayMs = integer('--detail-delay-ms', values['detail-delay-ms'], 0, 30000);
 const fe = resolve(import.meta.dirname, '../..');
 const outDir = await realpath(resolve(values.build));
-const output = resolve(values.output ?? join(fe, 'test-results/track-presentation', `${values.label}-${Date.now()}-${randomUUID().slice(0, 8)}`));
+async function canonicalDestination(path) {
+  let ancestor = resolve(path);
+  const segments = [];
+  for (;;) {
+    try { return resolve(await realpath(ancestor), ...segments); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const entry = await lstat(ancestor).catch(cause => {
+        if (cause.code === 'ENOENT') return null;
+        throw cause;
+      });
+      if (entry?.isSymbolicLink()) {
+        ancestor = resolve(dirname(ancestor), await readlink(ancestor));
+        continue;
+      }
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      segments.unshift(basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+const output = await canonicalDestination(values.output ?? join(fe, 'test-results/track-presentation', `${values.label}-${Date.now()}-${randomUUID().slice(0, 8)}`));
 const buildRelativeOutput = relative(outDir, output);
 if (buildRelativeOutput !== '..' && !buildRelativeOutput.startsWith(`..${sep}`) && !isAbsolute(buildRelativeOutput)) {
   throw new Error('--output must be outside the immutable build directory');

@@ -47,8 +47,9 @@ The explicit build's `profile-build.json` and embedded source maps identify its
 revision, dirty state, React mode and actual `WEB_COMPAT_VERSION`; the probe never
 copies a current version number from another checkout. It hashes all build files
 and verifies they remain unchanged. Missing or conflicting source metadata fails.
-The output directory must be outside the build; `--output NEW_DIR` selects a fresh
-artifact directory and refuses overwriting prior evidence. The default is an ignored,
+The output destination is resolved through existing physical ancestors before any
+write, including symlink ancestors. It must be outside the build. `--output NEW_DIR`
+selects a fresh artifact directory and refuses overwriting prior evidence. The default is an ignored,
 unique directory under `fe/test-results/track-presentation/`.
 
 `report.json` retains every attempted selection, observed shell/pending/report state,
