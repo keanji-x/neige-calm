@@ -106,3 +106,65 @@ it.each([1280, 390])('keeps the first bubble in place through native admission w
     await page.screenshot({ path: `../../../../test-results/first-message-native-canonical-${width}.png` });
   } finally { cleanup(); fixture.client.clear(); }
 });
+
+it.each([1280, 390])('keeps real first-input queue controls readable while history is held (%ipx)', async width => {
+  await page.viewport(width, 900);
+  await commands.emulateReducedMotion(false);
+  const fixture = renderFirstMessageFixture({ mobile: width === 390, holdHistory: true, holdRun: true });
+  try {
+    if (width === 390) {
+      await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
+      await page.getByRole('button', { name: '发起新对话', exact: true }).click();
+    } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE);
+    await userEvent.keyboard('{Enter}');
+    fixture.queueOriginal();
+    fixture.answerCreate();
+    await expect.poll(() => document.querySelector('[data-nc-thread]')).not.toBeNull();
+    await expect.poll(() => fixture.runCount()).toBe(1);
+    act(() => { fixture.releaseRun(0); });
+    await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
+    expect(document.querySelector('[data-nc-pending-entry="first-entry"] [aria-label="Delete this message"]')).not.toBeNull();
+    await expect.element(page.getByRole('button', { name: 'Edit queued message', exact: true })).toBeVisible();
+    await expect.element(page.getByText('Loading conversation…', { exact: true })).not.toBeInTheDocument();
+    const bubble = document.querySelector<HTMLElement>('[data-nc-pending-entry="first-entry"] [data-nc-turn="you"]');
+    expect(bubble).not.toBeNull();
+    const box = bubble!.getBoundingClientRect();
+    expect(box.left).toBeGreaterThanOrEqual(0); expect(box.right).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: `../../../../test-results/first-message-native-queue-held-${width}.png` });
+  } finally { cleanup(); fixture.client.clear(); }
+});
+
+it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width: 1280, edited: true }, { width: 390, edited: true }])(
+  'hands the real first-input queue to one canonical bubble ($width px, edited=$edited)', async ({ width, edited }) => {
+  await page.viewport(width, 900);
+  await commands.emulateReducedMotion(false);
+  const fixture = renderFirstMessageFixture({ mobile: width === 390 });
+  const canonical = edited ? 'Edited canonical first input after the real queue drains.' : FIRST_MESSAGE;
+  const originalWords = () => [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE);
+  try {
+    if (width === 390) {
+      await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
+      await page.getByRole('button', { name: '发起新对话', exact: true }).click();
+    } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE);
+    await userEvent.keyboard('{Enter}');
+    fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
+    await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
+    const cardId = fixture.createdId();
+    if (cardId === null) throw new Error('No actual created conversation');
+    fixture.observe('unavailable');
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['conversation-initial-input', 'daily', cardId] }); });
+    fixture.clearQueue(); fixture.project(canonical);
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
+    await expect.poll(() => [...document.querySelectorAll('[data-nc-entry] [data-nc-turn="you"]')]
+      .filter(node => node.textContent === canonical).length).toBe(1);
+    const drawn = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === canonical);
+    const original = originalWords();
+    await page.screenshot({ path: `../../../../test-results/first-message-native-canonical-handoff-${width}-${edited}.png` });
+    expect(drawn).toHaveLength(1);
+    expect(original).toHaveLength(edited ? 0 : 1);
+    expect(fixture.outbox()).toMatchObject([{ phase: 'initial-accepted' }]);
+  } finally { cleanup(); fixture.client.clear(); }
+});

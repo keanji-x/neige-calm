@@ -314,3 +314,22 @@ it('updates only the confirmed queue identity when equal messages coexist', () =
   const shown = synchronizeQueuedSends([confirmed, unconfirmed], [{ entry_id: 'known', text: 'edited', rev: 1, queued_at_ms: 10 }]);
   expect(shown[0].echo.text).toBe('edited'); expect(shown[1]).toBe(unconfirmed);
 });
+
+it('keeps accepted first-input evidence outside ordinary queue placement and send delivery helpers', () => {
+  const initial: import('./conversation-outbox.js').AcceptedInitialInput = {
+    phase: 'initial-accepted', key: 'create', trackId: 'track', submitted: { text: 'first input', atMs: 1 },
+    receipt: { version: 'initial-input-v1', entryId: 'first-entry', queuedAtMs: 2,
+      textSha256: 'a'.repeat(64), initialRuntimeId: 'runtime' },
+  };
+  const first: ConversationTurn = { id: 'initial-create', author: 'you', text: initial.submitted.text, atMs: 1 };
+  const later = op('later', SENDING, { text: 'later input', queued: true });
+  const operations = [initial, later];
+  const drawn = { ...later.echo, queued: false };
+  const shown = presentPendingMessages([first, drawn], [], [first, later.echo],
+    rememberQueuePlacements(new Map(), operations, []), null, false, operations);
+  expect(shown.transcript).toEqual([first]);
+  expect(shown.queue).toEqual([]);
+  expect(shown.sending).toEqual([{ ...later.echo, delivery: 'sending' }]);
+  expect(synchronizeQueuedSends(operations, [{ entry_id: 'first-entry', text: 'edited first input', rev: 1, queued_at_ms: 2 }])[0]).toBe(initial);
+  expect(rememberQueuePlacements(new Map(), operations, []).has('first-entry')).toBe(false);
+});

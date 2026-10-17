@@ -74,8 +74,8 @@
 # harness_item/crates 288 -> 291 covers the existing transcript repository read
 # and two test-only failure triggers on the frozen transcript table. These are approved wire
 # fields and existing physical names; no excluded file, regex, count rule, or executable policy changes.
-# #2740 frontend consumers: runtime_id/fe 12 -> 38 covers only the declared receipt
-# and observation fields in decoding, receipt equality, and real response fixtures.
+# #2740 frontend consumers: runtime_id/fe 12 -> 39 covers only the declared receipt
+# and observation fields in decoding, receipt equality, real response fixtures, and the mixed-outbox regression.
 # harness_item/fe 106 -> 112 adds four existing wire/derivation references in the identity
 # regression and two existing wire-row type references in the continuity fixture; no new domain name.
 

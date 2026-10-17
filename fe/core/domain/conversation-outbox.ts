@@ -366,7 +366,7 @@ export type QueuePlacement = Readonly<{ kind: 'inline'; revision: number | null 
 
 /** Local admission is display memory only. A new queue revision is new server
  * evidence (including rebuffer), so it must regain its waiting controls. */
-export function rememberQueuePlacements(previous: ReadonlyMap<string, QueuePlacement>, ops: readonly SendOp[], queue: readonly PendingQueueEntry[]) {
+export function rememberQueuePlacements(previous: ReadonlyMap<string, QueuePlacement>, ops: readonly ConversationOutboxOp[], queue: readonly PendingQueueEntry[]) {
   const next = new Map(previous);
   const known = new Set<string>();
   for (const op of ops) {
@@ -390,7 +390,8 @@ export type PendingQueueSend = ConversationTurn & Readonly<{ delivery: 'sending'
 /** Presentation follows the send's admission, not a later phase change. Waiting
  * input never interleaves with a reply that is still streaming. */
 export function presentPendingMessages(entries: readonly TranscriptEntry[], queue: readonly PendingQueueEntry[],
-  echoes: readonly OptimisticConversationTurn[], placements: ReadonlyMap<string, QueuePlacement>, failed: FailedSendOp | null, paused: boolean, operations: readonly SendOp[]) {
+  shown: readonly ConversationTurn[], placements: ReadonlyMap<string, QueuePlacement>, failed: FailedSendOp | null, paused: boolean, operations: readonly ConversationOutboxOp[]) {
+  const echoes = shown.filter(isOptimisticConversationTurn);
   const waiting = queue.filter(entry => {
     const remembered = placements.get(entry.entry_id);
     if (remembered !== undefined) return remembered.kind === 'waiting';
@@ -407,7 +408,7 @@ export function presentPendingMessages(entries: readonly TranscriptEntry[], queu
   return { transcript, queue: waiting,
     sending: waitingEchoes.filter(echo => echo.entryId === null || !waitingIds.has(echo.entryId))
       .map((echo): PendingQueueSend => {
-        const operation = operations.find(operation => operation.echo.id === echo.id);
+        const operation = operations.find((operation): operation is SendOp => isOrdinarySend(operation) && operation.echo.id === echo.id);
         return { ...echo, delivery: failed?.echo.id === echo.id ? 'failed'
           : operation?.phase === 'sending' ? 'sending' : paused ? 'paused'
             : operation?.phase === 'confirmed' ? 'waiting' : 'checking' };
@@ -417,7 +418,7 @@ export function presentPendingMessages(entries: readonly TranscriptEntry[], queu
 
 /** Only the confirmed entry id can correlate a queue edit with a local send.
  * Revision receipts fence stale queue reads after a successful local edit. */
-export function synchronizeQueuedSends(ops: readonly SendOp[], queue: readonly PendingQueueEntry[]): readonly SendOp[] {
+export function synchronizeQueuedSends<Op extends ConversationOutboxOp>(ops: readonly Op[], queue: readonly PendingQueueEntry[]): readonly Op[] {
   if (queue.length === 0) return ops;
   const byId = new Map(queue.map(entry => [entry.entry_id, entry]));
   let changed = false;

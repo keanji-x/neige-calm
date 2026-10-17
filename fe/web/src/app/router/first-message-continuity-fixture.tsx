@@ -14,7 +14,7 @@ export const FIRST_MESSAGE = 'Keep the first sentence readable through adoption.
 
 /** The real router, decoder, outbox, queries and presentation over a controllable serialized server result. */
 export function renderFirstMessageFixture(options: { onCommit?: () => void; capability?: boolean; loseReply?: boolean;
-  incomplete?: boolean; legacy?: boolean; mobile?: boolean; holdHistory?: boolean; holdRun?: boolean; harvestedInput?: boolean } = {}) {
+  incomplete?: boolean; legacy?: boolean; mobile?: boolean; holdHistory?: boolean; holdRun?: boolean; harvestedInput?: boolean; running?: boolean; refuseQueueDelete?: boolean } = {}) {
   let original: ApiRequest | null = null;
   let created: TrackConversationSummary | null = null;
   let history: HarnessItem[] = [];
@@ -84,10 +84,14 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         if (options.holdHistory) return await new Promise<ApiTransportResponse>(resolve => { heldHistory.push(() => { resolve(result); }); });
         return result;
       }
+      if (options.refuseQueueDelete && request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry')) {
+        return { status: 409, statusText: 'Conflict', body: { code: 'planner_input_stale', error: 'Entry changed.',
+          entry_id: 'first-entry', text: 'Changed elsewhere.', rev: 1 } };
+      }
       if (request.path.endsWith('/planner/run')) {
         const result = ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime',
-        phase: 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
-        manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending, pending_overflow: 0 });
+        phase: options.running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
+        manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false, running_turn: options.running ? { turn_id: 'running-first-input', elapsed_ms: 1 } : null, pending, pending_overflow: 0 });
         if (options.holdRun && created !== null && request.path.includes(`/${created.id}/`)) {
           return await new Promise<ApiTransportResponse>(resolve => { heldRun.push(() => { resolve(result); }); });
         }

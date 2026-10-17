@@ -19,7 +19,7 @@ function entry(overrides: Partial<PendingQueueEntry> = {}): PendingQueueEntry {
 function renderQueue(props: Partial<PendingQueueProps> = {}) {
   const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => done);
   const view = render(<PendingQueue
-    entries={[entry()]}
+    entries={[entry()]} reconciledQueueIds={new Set()}
     overflow={0}
     busy={false}
     onDelete={onDelete}
@@ -250,7 +250,7 @@ it.each([false, true])('follows authoritative queue order when a steered entry r
   const first = entry({ entry_id: 'a', text: 'A waiting' });
   const middle = entry({ entry_id: 'b', text: 'B waiting' });
   const last = entry({ entry_id: 'c', text: 'C waiting' });
-  const props = { entries: [first, middle, last], overflow: 0, busy: false, onDelete: () => done,
+  const props = { entries: [first, middle, last], reconciledQueueIds: new Set<string>(), overflow: 0, busy: false, onDelete: () => done,
     onEdit: () => undefined, canEdit: true, editingEntryId: null, savedEntry: null, onFocusComposer: () => undefined };
   const view = render(<PendingQueue {...props} />);
   view.rerender(<PendingQueue {...props} entries={[first, last]} />);
@@ -258,4 +258,21 @@ it.each([false, true])('follows authoritative queue order when a steered entry r
   const returned = { ...middle, text: 'B returned to the head', rev: 1 };
   view.rerender(<PendingQueue {...props} entries={[returned, first, last]} />);
   expect(rows().map(row => row.dataset.ncPendingEntry)).toEqual(['b', 'a', 'c']);
+});
+
+
+it('removes only departed source-accounted copies and preserves active rows and ordinary departure motion', () => {
+  const first = entry({ entry_id: 'first', text: 'Canonical carrier now owns this input' });
+  const second = entry({ entry_id: 'second', text: 'An ordinary deleted input still animates' });
+  const props = { entries: [first, second], reconciledQueueIds: new Set(['first']), overflow: 0, busy: false,
+    onDelete: () => done, onEdit: () => undefined, canEdit: true, editingEntryId: null,
+    savedEntry: null, onFocusComposer: () => undefined };
+  const view = render(<PendingQueue {...props} />);
+  expect(rows()).toHaveLength(2);
+  expect(screen.getAllByRole<HTMLButtonElement>('button', { name: 'Delete this message' }).every(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true')).toBe(true);
+  view.rerender(<PendingQueue {...props} entries={[second]} />);
+  expect(screen.queryByText(first.text)).toBeNull();
+  expect(rows().map(row => row.dataset.ncPendingEntry)).toEqual(['second']);
+  view.rerender(<PendingQueue {...props} entries={[]} />);
+  expect(screen.getByText(second.text).closest('[data-nc-collapse-presence]')?.getAttribute('aria-hidden')).toBe('true');
 });

@@ -25,6 +25,9 @@ export type ConversationStore = Readonly<{
   /** The addressable page of the harness pending queue. */
   pendingQueue: readonly PendingQueueEntry[];
   pendingSends: readonly PendingQueueSend[];
+  /** Departed queue identities accounted for by displayed canonical carriers or coherent absence/supersession.
+   * Never suppresses a live queue entry or grants a projected/delivery claim. */
+  reconciledQueueIds: ReadonlySet<string>;
   editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueEditOutcome>;
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;

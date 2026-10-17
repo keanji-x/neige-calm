@@ -381,3 +381,47 @@ it('lets slow dependent reads finish across polling intervals and hand off witho
     expect(creates(fixture)).toHaveLength(1);
   } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); }
 }, 10_000);
+
+it('keeps the real first-input queue readable through parked thread admission', async () => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let sequence = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+  let sawWords = false;
+  const commits: number[] = [];
+  const fixture = renderFirstMessageFixture({ running: true, refuseQueueDelete: true, onCommit: () => {
+    if (words().length > 0) sawWords = true;
+    if (sawWords) commits.push(words().length);
+  } });
+  try {
+    await sendFirst();
+    fixture.queueOriginal();
+    act(() => { fixture.answerCreate(); });
+    const cardId = fixture.createdId();
+    if (cardId === null) throw new Error('No actual created conversation');
+    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(1));
+    expect(document.querySelector('[data-nc-thread]')).toBeNull();
+    expect(document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
+    expect(screen.queryByText('Loading conversation…')).toBeNull();
+    expect(words()).toHaveLength(1);
+    for (const name of ['Edit queued message', 'Delete this message', 'Say it now']) {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(true); fireEvent.click(action);
+    }
+    expect(fixture.requests.filter(request => request.method !== 'GET' && request.path.includes('/planner/input'))).toHaveLength(0);
+    for (let frame = 0; frame < 2; frame++) {
+      const callbacks = [...frames.values()]; frames.clear();
+      await act(async () => { callbacks.forEach(callback => callback(0)); await Promise.resolve(); });
+    }
+    await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
+    expect(screen.getByRole('button', { name: 'Edit queued message' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
+    expect(words()).toHaveLength(1);
+    expect(new Set(commits)).toEqual(new Set([1]));
+    const remove = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
+    expect(remove.disabled || remove.getAttribute('aria-disabled') === 'true').toBe(false); fireEvent.click(remove);
+    await screen.findByText(/This message changed before your change could be applied/);
+    expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).not.toBeNull();
+    expect(fixture.requests.filter(request => request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry'))).toHaveLength(1);
+  } finally { cleanup(); fixture.client.clear(); }
+});

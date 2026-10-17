@@ -463,12 +463,13 @@ function useConversationPane(
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const openTurns = open === null ? [] : store.turnsOf(open.id);
+  const hasPendingMessages = store.pendingQueue.length > 0 || store.pendingSends.length > 0 || store.pendingQueueOverflow > 0;
   const threadAvailable = open !== null
-    && (store.historyReady || openTurns.length > 0 || store.stalled || store.stopFeedback !== null);
+    && (store.historyReady || openTurns.length > 0 || hasPendingMessages || store.stalled || store.stopFeedback !== null);
   const threadPresented = useContentAdmission(open?.id ?? null, threadAvailable);
   const outgoingPreview = open === null || threadPresented ? undefined : openTurns.findLast((entry): entry is ConversationTurn =>
     entry.author === 'you' && entry.text !== '' && (entry.attachments?.length ?? 0) === 0);
-  const conversationBodyVisible = threadPresented ? openTurns.length > 0 : outgoingPreview !== undefined;
+  const conversationBodyVisible = hasPendingMessages || (threadPresented ? openTurns.length > 0 : outgoingPreview !== undefined);
   const threadStatusUnconfirmed = !store.runReady || store.runError !== null;
   const sideSourceReady = threadPresented && store.historyReady;
   /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
@@ -580,11 +581,11 @@ function useConversationPane(
   const canSteer = store.steerQueuedEntry !== undefined;
   const refocusQueuedComposer = useCommittedCallback(existingId, () => { if (existingId !== null) focusComposer(existingId); });
   const pendingMessages = useMemo(() => <PendingQueue key={existingId}
-    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow}
-    busy={store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
+    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow} reconciledQueueIds={store.reconciledQueueIds}
+    busy={!threadPresented || store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
     canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
     savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onSteer={canSteer ? steerQueuedEntry : undefined} />,
-  [existingId, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.sending, store.queueWriteOut,
+  [existingId, threadPresented, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.reconciledQueueIds, store.sending, store.queueWriteOut,
     deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
@@ -841,6 +842,7 @@ function useConversationPane(
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
             {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage text={outgoingPreview.text} mobile={compactViewport} />}
+            {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
               <ChatThread readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
                 conversation={open}

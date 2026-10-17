@@ -4,7 +4,7 @@ import { harnessInputSegmentSchema, harnessItemToTurns, type ConversationTurn } 
 import { matchSendOps, type SendOp } from './conversation-outbox.js';
 
 const accepted = (key: string, entryId: string): SendOp => ({
-  key, phase: 'confirmed', fromComposer: true, replaces: null,
+  key, phase: 'confirmed', queueRevision: null, fromComposer: true, replaces: null,
   echo: { id: `echo-${key}`, author: 'you', text: 'same', atMs: 2,
     serverHighWaterBefore: 0, queued: true, entryId },
 });
