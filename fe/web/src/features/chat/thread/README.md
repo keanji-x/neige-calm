@@ -18,12 +18,22 @@ the workspace are unavailable; the server also enforces containment when opening
 the file, including symlinks. Network images retain their URL. Failed image loads
 show an unavailable message with the alternative text.
 
-Resolution only affects image nodes. Code examples, ordinary links, copied
-response text, user attachments, and transcript persistence retain their existing
+Image resolution only affects image nodes. `ChatThread.renderLink` is an optional
+`href`/`children` rendering slot passed unchanged to stored and incremental replies.
+The app composes the report document's `ReportTextLink` capability, which delegates
+to the current prepared/inert/reference-aware destination renderer. Chat does not
+classify destinations. Files and sources use the conversation's Track; nested
+reports retain their own Track. Reads remain lazy and external loading explicit.
+Application links stay in the router's namespace; rejected file paths stay inert.
+The app clears the source selection in the switching render, binding it to both
+conversation identity and Track, including a return to a previously opened row.
+`app/router/chat-link-hover.browser.test.tsx` exercises that production composition.
+Code examples, copied response text, user attachments, and transcript persistence retain their existing
 contracts. The image renderer owns sizing so screenshots fit narrow drawers.
 
-Review tier: L1. This consumes the existing workspace read boundary without
-changing authorization, persistence, or server file access.
+Review tier: L2. The app binds transient source selection to the conversation
+and Track isolation boundary; authorization and server file access keep their
+existing owners.
 
 `message-entry.tsx` owns ordinary user/agent message presentation. The transcript
 owner supplies scalar visual fields, attachments, the gap caption, queued/edit/

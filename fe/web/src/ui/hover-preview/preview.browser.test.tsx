@@ -1,11 +1,15 @@
 import { cleanup, render } from '@testing-library/react';
-import { page, userEvent } from 'vitest/browser';
+import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
+import type { ReactNode } from 'react';
+import { useState } from '../state/public.ts';
+import { Dialog } from '@astryxdesign/core/Dialog';
+import { BottomSheet, BottomSheetSwitcher } from '@astryxdesign/core/BottomSheet';
 import { HoverPreview } from './public.tsx';
 
-afterEach(cleanup);
+afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 function mount(onRead = () => {}) {
   return render(<div style={{ padding: 80 }}>
     <HoverPreview title="Long notes" trigger={(activate) => <button onClick={activate}>Long notes</button>}>
@@ -16,7 +20,232 @@ function mount(onRead = () => {}) {
   </div>);
 }
 
+// Native previews require the public shared-dismissal Switcher contract in 0.6.3.
+// Standalone BottomSheet has a separate element Escape handler; it is not a supported host.
+function NativeHost({ children, hasScrim = false, purpose = 'info', onClose = () => {} }: {
+  children: ReactNode; hasScrim?: boolean; purpose?: 'info' | 'form' | 'required'; onClose?: () => void;
+}) {
+  const [open, setOpen] = useState(true);
+  return <><button onClick={() => setOpen(true)}>Reopen host</button>
+    <BottomSheetSwitcher activeSheet={open ? 'reading' : null} onActiveSheetChange={() => { onClose(); setOpen(false); }} hasScrim={hasScrim}>
+      <BottomSheet sheetId="reading" label="Reading host" height="650px" purpose={purpose}><div style={{ padding: 32 }}>{children}</div></BottomSheet>
+    </BottomSheetSwitcher></>;
+}
+
 describe('preview in a real browser', () => {
+  it.each([false, true])('uses the native Layer host inside public BottomSheetSwitcher (scrim=%s)', async hasScrim => {
+    await commands.emulateReducedMotion(hasScrim);
+    await page.viewport(390, 844);
+    const onClose = vi.fn();
+    const onRead = vi.fn();
+    render(<NativeHost onClose={onClose} hasScrim={hasScrim}>
+      <p><HoverPreview title="Hosted notes" trigger={activate => <button onClick={activate}>Hosted notes</button>}>
+        <HoverPreview title="Nested notes" trigger={activate => <button onClick={activate}>Nested notes</button>}>
+          <button onClick={onRead}>Read nested body</button>
+        </HoverPreview>
+        {Array.from({ length: 50 }, (_, i) => <p key={i}>Hosted paragraph {i}</p>)}
+      </HoverPreview></p>
+    </NativeHost>);
+    const trigger = page.getByRole('button', { name: 'Hosted notes', exact: true });
+    await expect.element(trigger).toBeVisible();
+    await expect.poll(() => trigger.element().closest('dialog')?.open).toBe(true);
+    await expect.poll(() => trigger.element().closest('dialog')?.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+    trigger.element().focus();
+    await userEvent.keyboard('{ArrowDown}');
+    const parent = page.getByRole('dialog', { name: 'Preview: Hosted notes' });
+    await expect.element(parent).toBeVisible();
+    const body = parent.getByRole('region', { name: 'Preview content: Hosted notes' }).element() as HTMLElement;
+    await expect.poll(() => document.activeElement).toBe(body);
+    expect(body.closest('[popover]')?.matches(':popover-open')).toBe(true);
+    expect(body.closest('dialog')?.open).toBe(true);
+    const rect = body.getBoundingClientRect();
+    expect(body.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.bottom - 4))).toBe(true);
+    if (hasScrim) expect(getComputedStyle(parent.element()).animationName).toBe('none');
+    const nested = parent.getByRole('button', { name: 'Nested notes', exact: true });
+    await nested.click();
+    await expect.element(page.getByRole('dialog', { name: 'Preview: Nested notes' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    expect(page.getByRole('dialog', { name: 'Preview: Nested notes' }).query()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await nested.click();
+    const read = page.getByRole('button', { name: 'Read nested body' });
+    await read.click();
+    expect(onRead).toHaveBeenCalledOnce();
+    await userEvent.keyboard('{Escape}');
+    expect(page.getByRole('dialog', { name: 'Preview: Nested notes' }).query()).toBeNull();
+    expect(parent.query()).not.toBeNull();
+    expect(document.activeElement).toBe(parent.getByRole('button', { name: 'Nested notes', exact: true }).element());
+    await parent.getByText('Hosted paragraph 0', { exact: true }).wheel({ delta: { y: 240 } });
+    await expect.poll(() => body.scrollTop).toBeGreaterThan(0);
+    body.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(parent.query()).toBeNull();
+    expect(document.activeElement).toBe(trigger.element());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  it.each([false, true])('routes hovered child Escape from both parent focus locations (scrim=%s)', async hasScrim => {
+    await commands.emulateReducedMotion(true);
+    await page.viewport(390, 844);
+    const close = vi.fn();
+    render(<NativeHost hasScrim={hasScrim} onClose={close}>
+      <HoverPreview title="Parent" trigger={activate => <button onClick={activate}>Parent</button>}>
+        <HoverPreview title="Child" trigger={activate => <button onClick={activate}>Child</button>}><button>Read child</button></HoverPreview>
+      </HoverPreview>
+    </NativeHost>);
+    const root = page.getByRole('button', { name: 'Parent', exact: true });
+    await expect.element(root).toBeVisible();
+    const host = root.element().closest('dialog')!;
+    await expect.poll(() => host.getAnimations({ subtree: true }).every(animation => animation.playState !== 'running')).toBe(true);
+    for (const focus of ['content', 'trigger']) {
+      root.element().focus();
+      await userEvent.keyboard('{ArrowDown}');
+      const parent = page.getByRole('region', { name: 'Preview content: Parent' });
+      await expect.element(parent).toBeVisible();
+      if (focus === 'trigger') root.element().focus();
+      else (parent.element() as HTMLElement).focus();
+      const nested = page.getByRole('button', { name: 'Child', exact: true });
+      await nested.hover();
+      const child = page.getByRole('dialog', { name: 'Preview: Child' });
+      await expect.element(child).toBeVisible();
+      await userEvent.keyboard('{Escape}');
+      expect(child.query()).toBeNull();
+      expect(parent.query()).not.toBeNull();
+      expect(close).not.toHaveBeenCalled();
+      await root.hover();
+      await nested.hover();
+      await expect.element(child).toBeVisible();
+      await userEvent.keyboard('{Escape}');
+      expect(child.query()).toBeNull();
+      await userEvent.keyboard('{Escape}');
+      expect(parent.query()).toBeNull();
+      expect(host.open).toBe(true);
+    }
+    await userEvent.keyboard('{Escape}');
+    expect(close).toHaveBeenCalledOnce();
+    await expect.poll(() => host.open).toBe(false);
+    await page.getByRole('button', { name: 'Reopen host' }).click();
+    await expect.poll(() => host.open).toBe(true);
+  });
+
+  it.each(['preventDefault', 'stopPropagation'])('preserves editor consumption before shared dismissal: %s', async mode => {
+    await page.viewport(390, 844);
+    const edit = vi.fn(); const close = vi.fn();
+    render(<NativeHost onClose={close}><HoverPreview title="Editor notes" trigger={activate => <button onClick={activate}>Editor notes</button>}>
+      <input aria-label="Local editor" onKeyDown={event => {
+        if (event.key !== 'Escape') return;
+        edit();
+        if (mode === 'preventDefault') event.preventDefault(); else event.stopPropagation();
+      }} />
+      <HoverPreview title="Editor child" trigger={activate => <button onClick={activate}>Editor child</button>}>Child body</HoverPreview>
+    </HoverPreview></NativeHost>);
+    await page.getByRole('button', { name: 'Editor notes', exact: true }).click();
+    page.getByRole('textbox', { name: 'Local editor' }).element().focus();
+    await page.getByRole('button', { name: 'Editor child', exact: true }).hover();
+    await expect.element(page.getByRole('dialog', { name: 'Preview: Editor child' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    expect(edit).toHaveBeenCalledOnce();
+    expect(document.querySelectorAll('[data-nc-link-preview]')).toHaveLength(2);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it.each(['isComposing', 'keyCode229'])('keeps previews open for IME key flags at child and parent: %s', async mode => {
+    await page.viewport(390, 844);
+    const close = vi.fn();
+    render(<NativeHost onClose={close}><HoverPreview title="IME parent" trigger={activate => <button onClick={activate}>IME parent</button>}>
+      <HoverPreview title="IME child" trigger={activate => <button onClick={activate}>IME child</button>}>Child body</HoverPreview>
+    </HoverPreview></NativeHost>);
+    await page.getByRole('button', { name: 'IME parent', exact: true }).click();
+    await page.getByRole('button', { name: 'IME child', exact: true }).click();
+    for (const name of ['IME child', 'IME parent']) {
+      const content = page.getByRole('region', { name: `Preview content: ${name}` }).element() as HTMLElement;
+      content.focus();
+      // Event flags are a browser contract stimulus, not an OS IME simulation.
+      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true,
+        isComposing: mode === 'isComposing', keyCode: mode === 'keyCode229' ? 229 : 27 });
+      content.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(document.querySelectorAll('[data-nc-link-preview]')).toHaveLength(2);
+    }
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it.each(['info', 'form', 'required'] as const)('gates non-keyboard native cancel by shared topmost and purpose: %s', async purpose => {
+    await page.viewport(390, 844);
+    const close = vi.fn();
+    render(<NativeHost purpose={purpose} onClose={close}><HoverPreview title="Cancel child" trigger={activate => <button onClick={activate}>Cancel child</button>}>Child body</HoverPreview></NativeHost>);
+    const trigger = page.getByRole('button', { name: 'Cancel child', exact: true });
+    const host = trigger.element().closest('dialog')!;
+    await trigger.click();
+    const requestCancel = () => {
+      const event = new Event('cancel', { cancelable: true }); host.dispatchEvent(event); expect(event.defaultPrevented).toBe(true);
+    };
+    requestCancel();
+    expect(close).not.toHaveBeenCalled();
+    expect(page.getByRole('dialog', { name: 'Preview: Cancel child' }).query()).not.toBeNull();
+    await userEvent.keyboard('{Escape}');
+    // Composition belongs to the shared owner for non-keyboard close requests too.
+    trigger.element().dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    requestCancel();
+    expect(close).not.toHaveBeenCalled();
+    trigger.element().dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    requestCancel();
+    if (purpose === 'required') {
+      expect(close).not.toHaveBeenCalled(); expect(host.open).toBe(true);
+    } else {
+      expect(close).toHaveBeenCalledOnce(); await expect.poll(() => host.open).toBe(false);
+    }
+  });
+
+  it.each(['info', 'form', 'required'] as const)('preserves public purpose semantics for Escape, backdrop and swipe: %s', async purpose => {
+    await commands.emulateReducedMotion(true);
+    await page.viewport(390, 844);
+    const close = vi.fn();
+    render(<NativeHost hasScrim purpose={purpose} onClose={close}><button>Host control</button></NativeHost>);
+    const control = page.getByRole('button', { name: 'Host control' });
+    await expect.element(control).toBeVisible();
+    const host = control.element().closest('dialog')!;
+    const reopen = async () => {
+      await expect.poll(() => host.open).toBe(false);
+      await page.getByRole('button', { name: 'Reopen host' }).click();
+      await expect.poll(() => host.open).toBe(true);
+    };
+    control.element().focus();
+    await userEvent.keyboard('{Escape}');
+    expect(close).toHaveBeenCalledTimes(purpose === 'required' ? 0 : 1);
+    if (purpose !== 'required') await reopen();
+    close.mockClear();
+    // The dialog occupies the viewport; this point is above the sheet panel.
+    await userEvent.click(host, { position: { x: 10, y: 10 } });
+    expect(close).toHaveBeenCalledTimes(purpose === 'info' ? 1 : 0);
+    if (purpose === 'info') await reopen();
+    close.mockClear();
+    const handle = host.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+    await userEvent.dragAndDrop(handle, host, { targetPosition: { x: 195, y: 810 } });
+    expect(close).toHaveBeenCalledTimes(purpose === 'info' ? 1 : 0);
+    if (purpose === 'info') await expect.poll(() => host.open).toBe(false);
+    else expect(host.open).toBe(true);
+  });
+
+  it('leaves a foreign public Dialog top layer in charge of Escape', async () => {
+    await page.viewport(390, 844);
+    const close = vi.fn(); const foreignClose = vi.fn();
+    function Content() {
+      const [open, setOpen] = useState(false);
+      return <HoverPreview title="Foreign parent" trigger={activate => <button onClick={activate}>Foreign parent</button>}>
+        <button onClick={() => setOpen(true)}>Open foreign dialog</button>
+        <Dialog isOpen={open} onOpenChange={() => { foreignClose(); setOpen(false); }} aria-label="Foreign dialog"><button>Foreign content</button></Dialog>
+      </HoverPreview>;
+    }
+    render(<NativeHost onClose={close}><Content /></NativeHost>);
+    await page.getByRole('button', { name: 'Foreign parent', exact: true }).click();
+    await page.getByRole('button', { name: 'Open foreign dialog' }).click();
+    await expect.element(page.getByRole('button', { name: 'Foreign content' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    expect(foreignClose).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    expect(page.getByRole('dialog', { name: 'Preview: Foreign parent' }).query()).not.toBeNull();
+  });
+
   it('keeps the link-to-card edge open during slow transfer, supports interaction, then dismisses', async () => {
     await page.viewport(1200, 900);
     const onRead = vi.fn(); mount(onRead);

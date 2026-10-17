@@ -1,4 +1,5 @@
 import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
+import { useConversationLinks } from './conversation-links.tsx';
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
@@ -407,10 +408,11 @@ function useConversationPane(
   });
   const imageRoot = source.workspaceRoot
     ?? (imageTrack.data === undefined ? null : toTrack(imageTrack.data.track).agentCwd);
-  const imageFiles = useMemo(() => imageRoot === null || imageTrackId === null ? null : ({
-    root: imageRoot,
-    files: createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId),
-  }), [imageRoot, imageTrackId, transport, unauthorized]);
+  const conversationFiles = useMemo(() => imageTrackId === null ? null
+    : createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId), [imageTrackId, transport, unauthorized]);
+  const imageFiles = useMemo(() => imageRoot === null || conversationFiles === null ? null : ({
+    root: imageRoot, files: conversationFiles,
+  }), [imageRoot, conversationFiles]);
   const routeIntent: ConversationRouteIntent = {
     rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds,
   };
@@ -461,6 +463,15 @@ function useConversationPane(
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
+  const { openFile: openChatWorkspaceFile } = useTrackFileNavigation();
+  const openChatLink = useCallback((target: ReportLinkTarget) => {
+    go({ name: 'track', trackId: target.trackId, blockId: target.blockId ?? undefined });
+  }, [go]);
+  const openChatFile = useCallback((owner: string, target: ReportFileLinkTarget) => {
+    openChatWorkspaceFile(owner, target.path);
+  }, [openChatWorkspaceFile]);
+  const chatLinks = useConversationLinks({ transport, unauthorized, conversationId: openRowId, trackId: imageTrackId,
+    root: imageRoot, files: conversationFiles, onOpenLink: openChatLink, onOpenFile: openChatFile });
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const threadAvailable = open !== null
     && (store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled || store.stopFeedback !== null);
@@ -834,6 +845,7 @@ function useConversationPane(
               <ChatThread readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
                 conversation={open}
                 imageFiles={imageFiles}
+                renderLink={chatLinks.renderLink}
                 turns={store.turnsOf(open.id)} editing={edit.marked}
                 sending={store.sending}
                 submissionRequest={submission?.conversationId === open.id ? submission.request : 0}
@@ -857,6 +869,7 @@ function useConversationPane(
             )}
           </>
         )}
+        {chatLinks.sourceDrawer}
       </ConversationSurface>
   );
 

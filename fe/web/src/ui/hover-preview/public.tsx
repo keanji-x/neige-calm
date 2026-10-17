@@ -1,6 +1,7 @@
 export { PreviewSummary, PreviewTextLink } from './summary.tsx';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { isImeKeyEvent } from '@astryxdesign/core/utils';
+import { LayerDepthProvider, useLayer, useLayerDismissal } from '@astryxdesign/core/Layer';
 
 import { useState } from '../state/public.ts';
 import { restoreDrawerFocus } from '../drawer/restore-focus.ts';
@@ -39,6 +40,13 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   const [phase, setPhase] = useState<Phase>('closed');
   const [placement, setPlacement] = useState<Placement>({ x: PREVIEW_GAP, y: PREVIEW_GAP, width: PREVIEW_WIDTH, maxHeight: PREVIEW_MAX_HEIGHT, side: 'right' });
   const visible = phase === 'open';
+  const layer = useLayer({ mode: 'context', lazyMount: true });
+  const { show, hide, ref: layerRef } = layer;
+  const captureAnchor = useCallback((element: HTMLSpanElement | null) => {
+    anchor.current = element;
+    layerRef(element);
+  }, [layerRef]);
+  useLayoutEffect(() => { if (visible) show(); else hide(); }, [visible, show, hide]);
   const cancelLeave = useCallback(() => {
     travelling.current = false;
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
@@ -54,6 +62,14 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     cancelLeave();
     setPhase('closed');
   }, [cancelLeave, setPhase]);
+  const dismissLayer = useCallback(() => {
+    close();
+    if (card.current?.contains(document.activeElement)) focusTrigger();
+  }, [close, focusTrigger]);
+  useLayerDismissal({
+    isActive: visible, onDismiss: dismissLayer, getContainer: () => card.current,
+    isPresent: () => card.current?.isConnected ?? false,
+  });
   const dismissForNavigation = useCallback(() => {
     close();
     // Hand the destination a connected opener before it captures return focus.
@@ -68,7 +84,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     if (!visible || element === null) return;
     element.addEventListener(NAVIGATION_DISMISS, dismissForNavigation);
     return () => { element.removeEventListener(NAVIGATION_DISMISS, dismissForNavigation); };
-  }, [visible, dismissForNavigation]);
+  }, [visible, layer.isOpen, dismissForNavigation]);
   const activate = () => { cancelLeave(); setPhase('open'); };
   const focusContent = useCallback(() => {
     body.current?.focus({ preventScroll: true });
@@ -95,10 +111,10 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   }, [phase, engaged]);
 
   useLayoutEffect(() => {
-    if (!visible || !focusOnOpen.current) return;
+    if (!visible || card.current === null || !focusOnOpen.current) return;
     focusOnOpen.current = false;
     focusContent();
-  }, [visible, focusContent]);
+  }, [visible, layer.isOpen, focusContent]);
 
   const reposition = useCallback(() => {
     const triggerElement = anchor.current;
@@ -122,7 +138,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     setPlacement((current) => current.x === next.x && current.y === next.y && current.width === next.width
       && current.maxHeight === next.maxHeight && current.side === next.side ? current : next);
   }, [getReadingSurface, getAvoidSurfaces, setPhase, setPlacement, focusTrigger, cancelLeave]);
-  useLayoutEffect(() => { if (visible) reposition(); }, [visible, reposition]);
+  useLayoutEffect(() => { if (visible) reposition(); }, [visible, layer.isOpen, reposition]);
   useEffect(() => {
     if (!visible || card.current === null || anchor.current === null) return;
     const observer = new ResizeObserver(reposition);
@@ -132,7 +148,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     if (reading != null) observer.observe(reading);
     for (const element of getAvoidSurfaces?.(anchor.current) ?? []) observer.observe(element);
     return () => { observer.disconnect(); };
-  }, [visible, reposition, getReadingSurface, getAvoidSurfaces]);
+  }, [visible, layer.isOpen, reposition, getReadingSurface, getAvoidSurfaces]);
   useEffect(() => {
     if (!visible) return;
     const move = (event: PointerEvent) => {
@@ -155,15 +171,6 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   }, [visible, placement.side, cancelLeave, setPhase]);
   useEffect(() => {
     if (!visible) return;
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      const layers = document.querySelectorAll('[data-nc-escape-layer]');
-      if (layers.item(layers.length - 1) !== card.current) return;
-      event.preventDefault();
-      close();
-      if (card.current?.contains(document.activeElement)) focusTrigger();
-      cancelLeave();
-    };
     const outsidePress = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || anchor.current?.contains(target)) return;
@@ -177,18 +184,16 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
         && !card.current?.contains(event.target)) setPhase('closed');
     };
     window.addEventListener('resize', reposition);
-    document.addEventListener('keydown', escape);
     document.addEventListener('pointerdown', outsidePress, true);
     document.addEventListener('scroll', scroll, true);
     return () => {
       window.removeEventListener('resize', reposition);
-      document.removeEventListener('keydown', escape);
       document.removeEventListener('pointerdown', outsidePress, true);
       document.removeEventListener('scroll', scroll, true);
     };
   }, [visible, reposition, focusTrigger, close, cancelLeave]);
 
-  return <span ref={anchor} className={styles.anchor} role="presentation"
+  return <span ref={captureAnchor} className={styles.anchor} role="presentation"
     onPointerEnter={(event) => { if (event.pointerType !== 'touch') enter(); }}
     onPointerLeave={leave} onFocus={() => { if (!skipFocus.current) enter(); }}
     onBlur={(event) => {
@@ -197,6 +202,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       leave();
     }}
     onKeyDown={(event) => {
+      if (event.defaultPrevented || isImeKeyEvent(event.nativeEvent)) return;
       // React portals bubble through this span; only its actual trigger owns activation.
       if (!(event.target instanceof Node) || !anchor.current?.contains(event.target)) return;
       if (event.key === 'ArrowDown') {
@@ -208,7 +214,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       if (event.key === 'Escape' && phase === 'waiting') { event.preventDefault(); close(); }
     }}>
     {trigger(activate, dismissForNavigation)}
-    {visible && createPortal(<div ref={card} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog"
+    {layer.render(<LayerDepthProvider>{visible && <div ref={card} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog"
       aria-label={`Preview: ${title}`} id={id} data-nc-link-preview=""
       data-nc-escape-layer=""
       style={{ left: placement.x, top: placement.y, width: placement.width, maxHeight: placement.maxHeight }}
@@ -223,6 +229,11 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       <div ref={body} className={styles.body} tabIndex={-1} role="region" aria-label={`Preview content: ${title}`}>
         {typeof children === 'function' ? children(dismissForNavigation) : children}
       </div>
-    </div>, document.body)}
+    </div>}</LayerDepthProvider>, { positioning: 'custom',
+      // Layer owns native presentation and safe hosting; the existing card
+      // owns viewport placement, geometry and all visual styling.
+      style: { position: 'fixed', inset: 0, width: 0, height: 0, margin: 0, padding: 0,
+        border: 0, overflow: 'visible', background: 'transparent' },
+    })}
   </span>;
 }
