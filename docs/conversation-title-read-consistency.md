@@ -3,6 +3,12 @@
 Review tier: L2. The complete repair crosses the title read and restored-input
 persistence boundaries. Two fresh independent reviews remain Planner-owned.
 
+**Delivery is blocked by inherited frontend recovery regressions.** The storage
+fix and #930 guard are green, but r9 gate run 1 stopped at step 7: the complete
+conversation-router target had 185 passes and two failures. The task's explicit
+FE-unchanged boundary prevents silently repairing that separate surface. This is
+a recovery checkpoint, not an all-gates-green merge candidate.
+
 ## Final storage boundary
 
 [The SQLite title owner](../crates/calm-truth/src/db/sqlite/conversation_title.rs)
@@ -233,3 +239,53 @@ From `fe`, it owns `npm run lint && npm run build` and these Vitest commands:
 
 The worker report carries the frozen gate verdict and full log reference. This
 local verification does not claim Planner review convergence or remote CI green.
+
+
+## Final gate block: inherited FE recovery
+
+Run 1 passed API 7/7, truth 15/15, Rust quick (including OpenAPI drift), text,
+all contract groups (195/195, 178/178, 13/13), and FE lint/build including ownership.
+The actual production deferred guard passed in the 178-test group. Step 7 then
+failed two existing product assertions in
+[track-conversation.test.tsx](../fe/web/src/app/router/track-conversation.test.tsx):
+
+- `a fresh session (#2192) > settles a restart on a run read started after its answer, not one still out from before`:
+  line 835 expected one run read before restart, received two.
+- `[F5] says only that delivery is unconfirmed when the retries ran out offline (bundled build)`:
+  line 1484 expected `Delivery is unconfirmed.`, received the history/status-read
+  failure alert and `Reload conversation` instead.
+
+The complete target reported 185 passed / 2 failed (187). Steps 8–15 did not run.
+The independently executed Rust owner, SQLite and restoration focused checks
+remain green worker evidence; they are not claimed as completed gate steps.
+There was no blind gate retry.
+
+One decisive focused rerun from `fe` reproduced exactly the same two failures:
+
+```sh
+./node_modules/.bin/vitest run --project web-dom web/src/app/router/track-conversation.test.tsx -t 'settles a restart on a run read|says only that delivery is unconfirmed'
+```
+
+Vitest reported 2 failed / 2 passed / 183 skipped; no all-green result is claimed.
+Log: `/tmp/title-r9-fe-recovery-red.log`. Both tests use the injected
+`ApiTransportPort` in `setup`/`mountRecovery`, so they never execute the new Rust
+transaction. The FE tree remains byte-identical to the original changing commit.
+
+The inherited r5 rejection branch in
+[queries.ts](../fe/web/src/app/providers/queries.ts) calls `refreshAfterSend`
+for a refused/unknown send as well as success. That helper cancels and invalidates
+run, history and metadata. The dormant fixture consequently starts the observed
+second run read before restart. In the offline fixture,
+[the recovery transport](../fe/web/src/systems/recovery/transport.ts) rejects those
+business reads, and the store exposes their read errors. This matches both actual
+failures. The existing metadata-reconciliation requirement must be preserved while
+resolving this FE lifecycle conflict in new scope; neither assertion was weakened
+or edited here. The separate pre-existing steer projection failure described
+above is still only follow-up evidence and remains unchanged.
+
+Full kernel evidence:
+`runs/7793bd62565c450282032faa12a61fbe:fix-title-safe-transaction-r9/gates/1.log`,
+or `/home/kenji/.local/share/neige-next/data/gate-logs/7793bd62565c450282032faa12a61fbe:fix-title-safe-transaction-r9-r1.log`.
+The final post-gate change is only this truthful documentation update; its text
+gates and links are checked separately. No all-green gate, final CI result, or
+formal-review convergence is claimed.
