@@ -337,7 +337,7 @@ impl OperationRepo for SqlxOperationRepo {
             .find_by_id(&op.id)
             .await?
             .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))?;
-        Ok(super::PrepareAdvance::Committed(next, events))
+        Ok(super::PrepareAdvance::Committed(Box::new(next), events))
     }
 
     async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>> {

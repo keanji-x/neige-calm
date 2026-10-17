@@ -489,7 +489,7 @@ impl OperationRuntime {
                     };
                     match prepared {
                         Ok(super::PrepareAdvance::Committed(next, events)) => {
-                            committed = Some((next, events));
+                            committed = Some((*next, events));
                             break;
                         }
                         Ok(super::PrepareAdvance::Stale) => continue,

@@ -74,7 +74,8 @@ const STATUS_ARGV: [&str; 11] = [
 
 /// One deadline for the external target sample and optional reuse refs digest. A stalled clean
 /// filter or post-index-change hook is bounded and its whole process group is killed. Preparation
-/// releases its read transaction before these commands; the short writer transaction revalidates
+/// ends its SQL-only IMMEDIATE observation transaction before these commands; a second short
+/// writer transaction revalidates
 /// their exact SQL facts before consuming the observation. A timeout is `SampleFailure`
 /// (`Unsampled`), never evidence that the target mismatched.
 pub const SAMPLE_TIMEOUT: Duration = Duration::from_secs(4);

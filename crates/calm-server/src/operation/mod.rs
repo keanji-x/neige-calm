@@ -706,7 +706,7 @@ pub enum PreparedTxResult {
 }
 
 pub enum PrepareAdvance {
-    Committed(Operation, Vec<BroadcastEnvelope>),
+    Committed(Box<Operation>, Vec<BroadcastEnvelope>),
     ClaimLost,
     Stale,
 }
@@ -715,7 +715,7 @@ impl PrepareAdvance {
     /// The committed operation and envelopes, when preparation actually advanced it.
     pub fn committed(self) -> Option<(Operation, Vec<BroadcastEnvelope>)> {
         match self {
-            Self::Committed(op, events) => Some((op, events)),
+            Self::Committed(op, events) => Some((*op, events)),
             Self::ClaimLost | Self::Stale => None,
         }
     }

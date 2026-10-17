@@ -52,7 +52,9 @@ pub(super) async fn collect(
     ctx: &SpawnCtx,
 ) -> Result<Option<Box<dyn PreparedTx>>> {
     let pool = ctx.operation_repo.sqlite_pool();
-    let mut tx = pool.begin().await?;
+    // Keep the repository's IMMEDIATE-only transaction discipline: a short SQL-only snapshot
+    // avoids shared-cache deferred-reader deadlocks, and ends before any Git subprocess.
+    let mut tx = begin_immediate_tx(&pool).await?;
     // Reuse the kernel's exact original-input, phase, owner and expiry predicate before I/O.
     let live = super::super::repo_sqlite::has_live_claim_tx(&mut tx, op).await?;
     if !live {
