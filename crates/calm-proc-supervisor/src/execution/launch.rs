@@ -90,6 +90,17 @@ impl Executor {
         // An exact in-memory reservation survives every pre-fork error, including failed fsync.
         record = self.latch(record)?;
         self.persist(record.clone())?;
+        let output_log = output::OutputLog::open(
+            &self
+                .store
+                .path()
+                .join(format!("{}.output", request.execution_id.as_str())),
+            record.request.specification.replay_bytes,
+        )?;
+        self.outputs
+            .lock()
+            .map_err(poison)?
+            .insert(request.execution_id.clone(), output_log.clone());
         let context = scope_helper::HelperContext {
             execution_id: request.execution_id.clone(),
             executor_boot: self.boot.clone(),
@@ -104,7 +115,7 @@ impl Executor {
         before_final_validation();
         if let Err(error) = root.validate().and_then(|()| cwd.revalidate()) {
             record.phase = Phase::NoChild {
-                slot_version: version,
+                slot_version: Some(version),
                 reason: format!("root identity failed before fork: {error}"),
             };
             record = self.latch(record)?;
@@ -116,6 +127,7 @@ impl Executor {
             cwd.directory(),
             &record.request.specification,
             context,
+            output_log,
         );
         let (process, native, reports) = match result {
             Ok(spawned) => spawned,

@@ -145,6 +145,16 @@ pub enum ProcessAction {
     },
     Signal(ProcSignal),
     Cleanup,
+    /// Idempotent scope TERM followed by KILL after the executor grace period.
+    Stop,
+}
+
+/// Output settlement is independent of process scope settlement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputEnd {
+    Open,
+    Complete { final_cursor: u64 },
+    Incomplete { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +204,7 @@ pub enum ExecutionReply {
         state: ExecutionState,
         cursor: u64,
         output: Vec<u8>,
+        output_end: OutputEnd,
     },
     /// Durable exact-ticket revocation; a spawned process still requires independent drain evidence.
     RevocationAcknowledged {

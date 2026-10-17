@@ -14,6 +14,8 @@ use workspace::execution::ExecutionId;
 #[serde(deny_unknown_fields)]
 pub(super) struct Journal {
     pub version: u32,
+    pub host_boot_id: String,
+    pub output_end: calm_session::control::execution::OutputEnd,
     pub request: PrepareExecution,
     pub phase: Phase,
     pub interactive_revoked: bool,
@@ -49,7 +51,7 @@ pub(super) enum Phase {
         proof: workspace::execution::ScopeDrainProof,
     },
     NoChild {
-        slot_version: u64,
+        slot_version: Option<u64>,
         reason: String,
     },
     Unknown {
@@ -89,8 +91,8 @@ impl Phase {
         match self {
             Self::Reserved { slot_version }
             | Self::Forking { slot_version }
-            | Self::NoChild { slot_version, .. }
             | Self::Unknown { slot_version, .. } => Some(*slot_version),
+            Self::NoChild { slot_version, .. } => *slot_version,
             _ => self.receipt().map(|receipt| receipt.slot_version),
         }
     }

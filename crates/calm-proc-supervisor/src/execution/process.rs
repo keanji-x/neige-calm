@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::Write,
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::process::CommandExt,
@@ -19,38 +19,12 @@ use super::{
 
 pub(super) struct Process {
     pub started: std::sync::atomic::AtomicBool,
+    pub reaped: std::sync::atomic::AtomicBool,
     pub child: Mutex<OwnedChild>,
     pub input: Mutex<File>,
-    pub output: Mutex<Output>,
+    pub stop_deadline: Mutex<Option<tokio::time::Instant>>,
     pub pty: Option<Mutex<File>>,
     pidfd: File,
-}
-
-pub(super) struct Output {
-    bytes: std::collections::VecDeque<u8>,
-    cursor: u64,
-    limit: usize,
-}
-
-impl Output {
-    fn append(&mut self, bytes: &[u8]) {
-        self.cursor += bytes.len() as u64;
-        self.bytes.extend(bytes);
-        while self.bytes.len() > self.limit {
-            self.bytes.pop_front();
-        }
-    }
-    pub fn snapshot(&self, cursor: Option<u64>) -> (u64, Vec<u8>) {
-        let start = self.cursor - self.bytes.len() as u64;
-        let offset = cursor
-            .unwrap_or(start)
-            .saturating_sub(start)
-            .min(self.bytes.len() as u64) as usize;
-        (
-            self.cursor,
-            self.bytes.iter().skip(offset).copied().collect(),
-        )
-    }
 }
 
 impl Process {
@@ -126,8 +100,9 @@ pub(super) fn spawn(
     cwd: &File,
     specification: &ExecutionSpecification,
     context: HelperContext,
+    output_log: Arc<super::output::OutputLog>,
 ) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
-    spawn_with_pin(helper, cwd, specification, context, pin_helper)
+    spawn_with_pin(helper, cwd, specification, context, output_log, pin_helper)
 }
 
 fn spawn_with_pin(
@@ -135,6 +110,7 @@ fn spawn_with_pin(
     cwd: &File,
     specification: &ExecutionSpecification,
     context: HelperContext,
+    output_log: Arc<super::output::OutputLog>,
     pin: impl FnOnce(u32) -> anyhow::Result<File>,
 ) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
     let (configuration, config_writer) = pipe()?;
@@ -227,13 +203,10 @@ fn spawn_with_pin(
     nonblocking(input.as_raw_fd())?;
     let process = Arc::new(Process {
         started: std::sync::atomic::AtomicBool::new(false),
+        reaped: std::sync::atomic::AtomicBool::new(false),
         child: Mutex::new(child),
         input: Mutex::new(input),
-        output: Mutex::new(Output {
-            bytes: Default::default(),
-            cursor: 0,
-            limit: specification.replay_bytes.clamp(1024, 4 * 1024 * 1024),
-        }),
+        stop_deadline: Mutex::new(None),
         pty,
         pidfd,
     });
@@ -241,36 +214,7 @@ fn spawn_with_pin(
         let mut writer = config_writer;
         let _ = writer.write_all(&encoded);
     });
-    let reader_process = process.clone();
-    std::thread::spawn(move || {
-        let mut reader = output;
-        let mut bytes = [0; 8192];
-        loop {
-            match reader.read(&mut bytes) {
-                Ok(0) => break,
-                Ok(count) => {
-                    if let Ok(mut output) = reader_process.output.lock() {
-                        output.append(&bytes[..count]);
-                    } else {
-                        break;
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    let mut descriptor = libc::pollfd {
-                        fd: reader.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    // SAFETY: polls one owned descriptor; a timeout is no exit/drain evidence.
-                    unsafe {
-                        libc::poll(&mut descriptor, 1, 100);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    output_log.read(output, is_pty);
     Ok((process, identity, reports))
 }
 
@@ -423,8 +367,11 @@ mod tests {
             io_mode: IoMode::Pipe,
             replay_bytes: 1024,
         };
+        let temp = tempfile::tempdir().unwrap();
+        let output_log =
+            super::super::output::OutputLog::open(&temp.path().join("output"), 1024).unwrap();
         let mut spawned = None;
-        let result = spawn_with_pin(&helper, &cwd, &specification, context, |pid| {
+        let result = spawn_with_pin(&helper, &cwd, &specification, context, output_log, |pid| {
             spawned = Some(pid);
             Err(std::io::Error::from_raw_os_error(libc::EMFILE).into())
         });

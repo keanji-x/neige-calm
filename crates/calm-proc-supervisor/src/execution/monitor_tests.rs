@@ -49,11 +49,13 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
     };
     // A real successfully spawned child owns its actual Child, pidfd and stdio. /bin/sh rejects
     // the helper envelope and exits; no payload or synthetic copy of process lifetime is involved.
+    let output_log = output::OutputLog::open(&temp.path().join("output"), 1024).unwrap();
     let (process, native, real_reports) = process::spawn(
         &executor.helper_image,
         &File::open("/").unwrap(),
         &specification,
         context.clone(),
+        output_log.clone(),
     )
     .unwrap();
     drop(real_reports);
@@ -77,6 +79,8 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
     executor
         .persist(Journal {
             version: 3,
+            host_boot_id: executor.host_boot_id.clone(),
+            output_end: OutputEnd::Open,
             request: PrepareExecution {
                 identity: identity.clone(),
                 ticket: CapabilityToken::fresh().unwrap(),
@@ -94,6 +98,11 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
         .lock()
         .unwrap()
         .insert(identity.execution_id.clone(), process.clone());
+    executor
+        .outputs
+        .lock()
+        .unwrap()
+        .insert(identity.execution_id.clone(), output_log);
     let (reports, mut writer) = process::pipe().unwrap();
     serde_json::to_writer(
         &mut writer,
@@ -124,6 +133,14 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
         executor.record(&identity.execution_id).unwrap().phase,
         Phase::Drained { .. }
     ));
+    assert_eq!(
+        executor.record(&identity.execution_id).unwrap().output_end,
+        OutputEnd::Open
+    );
+    assert_eq!(
+        executor.store.load().unwrap()[0].output_end,
+        OutputEnd::Open
+    );
     assert!(matches!(
         executor.control(control).await.unwrap(),
         ExecutionReply::ActionComplete
@@ -131,6 +148,13 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
     assert!(
         !executor
             .processes
+            .lock()
+            .unwrap()
+            .contains_key(&identity.execution_id)
+    );
+    assert!(
+        executor
+            .outputs
             .lock()
             .unwrap()
             .contains_key(&identity.execution_id)
