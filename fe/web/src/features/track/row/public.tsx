@@ -10,14 +10,13 @@ import {
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './row.module.css';
-import { navigationRowClass as rowLayout } from '../../../ui/navigation-row/public.ts';
+import { navigationRowClass as rowLayout, navigationRowPresentation, type NavigationEntrySpec } from '../../../ui/navigation-row/public.ts';
 import { TrackActions } from './actions.tsx';
 
 export type TrackRowVariant = 'default' | 'compact' | 'panel' | 'rail';
 
 export type TrackRowProps = Readonly<{
   track: Track;
-  variant?: TrackRowVariant;
   /** Area name, when the surface does not already group by area. */
   areaName?: string;
   /** Agenda rows only: the hour bucket of a `ScheduledEvent`. */
@@ -38,7 +37,7 @@ export type TrackRowProps = Readonly<{
     onSetAreaPinned: (id: string, pinned: boolean) => void;
     onMarkUnread: (id: string) => void;
   }>;
-}>;
+} & ({ variant: 'rail'; presentation: NavigationEntrySpec } | { variant?: Exclude<TrackRowVariant, 'rail'>; presentation?: never })>;
 
 function variantClass(variant: TrackRowVariant): string {
   switch (variant) {
@@ -67,10 +66,10 @@ export function relativeTime(atMs: number, nowMs: number): string {
 }
 
 /** The row is a `<button>` and the pin/delete affordances are siblings, not children: nesting interactive elements is invalid HTML. Sidebar pin actions appear on hover/focus or touch; other variants keep the pinned mark visible. */
-export function TrackRow({
-  track, variant = 'default', areaName, hourLabel, active = false, nowMs,
-  onOpen, onSetPinned, onDelete, actions, unread = false,
-}: TrackRowProps) {
+export function TrackRow(props: TrackRowProps) {
+  const { track, variant = 'default', areaName, hourLabel, active = false, nowMs,
+    onOpen, onSetPinned, onDelete, actions, unread = false } = props;
+  const presentation = props.variant === 'rail' ? navigationRowPresentation(props.presentation) : undefined;
   const descriptionId = useId();
   const pinned = track.pinnedAt !== null;
   const title = trackDisplayTitle(track.title);
@@ -90,7 +89,7 @@ export function TrackRow({
   return (
     <div className={[
       styles.wrapper,
-      variant === 'rail' ? `${styles.wrapperRail} ${rowLayout('row')} ${actions === undefined ? '' : rowLayout('revealActions')}` : '',
+      variant === 'rail' ? `${styles.wrapperRail} ${presentation!.className} ${actions === undefined ? '' : rowLayout('revealActions')}` : '',
       variant === 'panel' ? styles.wrapperPanel : '',
     ].filter(Boolean).join(' ')}>
       <button
@@ -112,7 +111,7 @@ export function TrackRow({
         )}
         <span className={styles.titleRow}>
           {hourLabel !== undefined && <span className={styles.hour}>{hourLabel}</span>}
-          <ListText tone="primary" emphasis={active ? 'selected' : variant === 'default' ? 'medium' : undefined}
+          <ListText tone={presentation?.tone ?? "primary"} emphasis={active ? 'selected' : variant === 'default' ? 'medium' : undefined}
             className={styles.title} title={title} fadeOverflow={variant === 'rail' && actions !== undefined}><TrackTitle track={track} /></ListText>
         </span>
         {!trailingStatus && (

@@ -27,7 +27,7 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
       '&': { fontSize: 'inherit', backgroundColor: 'var(--surface-code)', color: 'var(--text-1)' },
       '.cm-scroller': { overflow: 'auto', maxHeight: '24rem', fontFamily: 'var(--font-code)' },
       '.cm-gutters': { backgroundColor: 'var(--bg)', color: 'var(--text-3)', border: 'none' },
-      '.cm-content': { padding: 'var(--space-6) 0' },
+      '.cm-content': { padding: 'var(--space-3) 0' },
       '&.cm-focused': { outline: '2px solid var(--accent)', outlineOffset: '-2px' },
     }),
     ...(support === null ? [] : [support]),

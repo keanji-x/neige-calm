@@ -17,21 +17,21 @@
   }
 
   .head {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: 1;
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: var(--space-4);
-    padding-block-end: var(--space-3);
+    gap: var(--space-2);
+    padding-block-end: var(--space-2);
     border-block-end: 1px solid var(--hairline);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
     color: var(--text-3);
   }
 
   .symbol {
     font-family: var(--font-mono);
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
     color: var(--text);
   }
 
@@ -40,7 +40,7 @@
   }
 
   .last {
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
     font-variant-numeric: tabular-nums;
     color: var(--text);
   }
@@ -59,15 +59,15 @@
      and stays in the chrome register. */
   .ranges {
     display: flex;
-    gap: var(--space-1);
+    gap: var(--space-half);
     margin-inline-start: auto;
   }
 
   .range {
-    padding-inline: var(--space-3);
+    font-size: var(--font-step-1-size);
+    padding-inline: var(--space-2);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
     color: var(--text-3);
     cursor: pointer;
   }
@@ -86,7 +86,7 @@
     display: block;
     inline-size: 100%;
     block-size: 256px;
-    margin-block: var(--space-5);
+    margin-block: var(--space-3);
   }
 
   /* Up: hollow — transparent body, coloured border. Down: solid. The fill is a
@@ -138,20 +138,20 @@
   }
 
   .legend {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: 1;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-3);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
+    gap: var(--space-2);
     color: var(--text-3);
   }
 
   .legendMa {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-1);
   }
 
   .legendRange {
@@ -186,10 +186,10 @@
   }
 
   .caption {
-    margin-block-start: var(--space-4);
     font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
+    margin-block-start: var(--space-2);
     color: var(--text-3);
   }
 }

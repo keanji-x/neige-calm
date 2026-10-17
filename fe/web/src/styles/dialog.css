@@ -12,7 +12,7 @@
     z-index: var(--z-modal);
     display: grid;
     place-items: center;
-    padding: var(--space-8);
+    padding: var(--space-4);
     background: var(--overlay-scrim);
     animation: dialog-backdrop-enter var(--motion-quick) var(--ease-feedback);
   }
@@ -20,9 +20,9 @@
   .dialog-panel {
     display: flex;
     flex-direction: column;
-    inline-size: min(var(--measure-form), calc(100vw - var(--space-12)));
-    max-block-size: calc(100dvh - var(--space-12));
-    padding: var(--space-8);
+    inline-size: min(var(--measure-form), calc(100vw - var(--space-6)));
+    max-block-size: calc(100dvh - var(--space-6));
+    padding: var(--space-4);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
     background: var(--paper);
@@ -37,36 +37,36 @@
      read it; a centred panel moves on every push. */
   .dialog-overlay-wide {
     align-items: start;
-    padding-block: var(--space-12);
+    padding-block: var(--space-6);
   }
 
   /* `wide` is the child-view form; only the measure changes. */
   .dialog-panel-wide {
-    inline-size: min(var(--measure-page), calc(100vw - var(--space-12)));
+    inline-size: min(var(--measure-page), calc(100vw - var(--space-6)));
   }
 
   .dialog-header {
+    font-weight: var(--weight-semibold);
+    line-height: var(--font-step-2-line);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-4);
+    gap: var(--space-2);
     min-block-size: var(--control-h-lg);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-tight);
     color: var(--text);
   }
 
   .dialog-header > span {
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
   }
 
   .dialog-body {
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-2);
     overflow: auto;
-    font-size: var(--text-base);
-    line-height: var(--leading-snug);
     color: var(--text);
   }
 
@@ -77,8 +77,8 @@
   .confirm-dialog-actions {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-4);
-    margin-block-start: var(--space-8);
+    gap: var(--space-2);
+    margin-block-start: var(--space-4);
   }
 
   /*

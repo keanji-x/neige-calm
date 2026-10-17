@@ -24,3 +24,17 @@ export function withFontRoleProbe(expectedRole: TypographyToken, host: HTMLEleme
     else host.style.removeProperty(expectedRole);
   }
 }
+
+/** Snapshot a role for partial format consumers without replacing their independently owned weight. */
+export function fontRoleSnapshot(expectedRole: TypographyToken, host: HTMLElement): FontSnapshot {
+  const probe = host.ownerDocument.createElement('span');
+  probe.style.font = `var(${expectedRole})`;
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  try {
+    host.append(probe);
+    const font = getComputedStyle(probe);
+    return { fontFamily: font.fontFamily, fontSize: font.fontSize,
+      fontWeight: font.fontWeight, lineHeight: font.lineHeight };
+  } finally { probe.remove(); }
+}

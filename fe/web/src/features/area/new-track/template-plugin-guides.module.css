@@ -2,7 +2,7 @@
   .guides {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-1);
+    gap: var(--space-half);
   }
 
   .lock {

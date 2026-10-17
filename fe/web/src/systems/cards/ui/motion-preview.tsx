@@ -32,11 +32,11 @@ export function CardMotionPreview() {
   const [host] = useState(() => { const registry = createCardRegistry(); registry.register(entry); return createCardHost(registry); });
   const [items, setItems] = useState(initialItems);
   const [generation, setGeneration] = useState(0);
-  return <section aria-label="卡片布局预览" style={{ marginTop: 28 }}>
-    <h2 style={{ fontSize: 22, marginBottom: 16 }}>卡片重排</h2>
+  return <section aria-label="卡片布局预览" style={{ marginTop: 'var(--space-6)' }}>
+    <h2 style={{ font: 'var(--type-interface-heading)', letterSpacing: 'var(--type-interface-heading-tracking)', marginBottom: 'var(--space-4)' }}>卡片重排</h2>
     <p>删除第一张卡片，再试试补位途中拖拽顶部或拉动右下角。点击重置可以重新体验。</p>
     <button type="button" onClick={() => { setItems(initialItems()); setGeneration(value => value + 1); }}>重置卡片</button>
-    <div style={{ display: 'flex', blockSize: 680, marginTop: 16 }}>
+    <div style={{ display: 'flex', blockSize: 680, marginTop: 'var(--space-4)' }}>
       <BoardHost key={generation} host={host} items={items} activeCardId={null} visible
         onRemoveCard={id => { setItems(current => current.filter(item => item.card.id !== id)); }} />
     </div>

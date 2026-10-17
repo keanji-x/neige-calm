@@ -275,12 +275,15 @@ describe('the track closed status in the page header', () => {
       const value = tokens.getPropertyValue(name).trim();
       return value.endsWith('rem') ? `${parseFloat(value) * parseFloat(tokens.fontSize)}px` : value;
     };
-    expect(size([...notice.querySelectorAll('strong')].find((el) => el.textContent === 'Waiting on you')!)).toBe(token('--text-md'));
-    expect(size(row.querySelector('h3')!)).toBe(token('--text-base'));
+    expect(size([...notice.querySelectorAll('strong')].find((el) => el.textContent === 'Waiting on you')!)).toBe(token('--font-step-3-size'));
+    expect(size(row.querySelector('h3')!)).toBe(token('--font-step-2-size'));
     expect(getComputedStyle(row.querySelector('h3')!).fontWeight).toBe(token('--weight-semibold'));
-    expect(size(row.querySelector('code')!)).toBe(token('--text-xs'));
-    expect(size(row.querySelector('time')!)).toBe(token('--text-xs'));
-    expect(size(row.querySelector(':scope > div')!.querySelector('h3')!.nextElementSibling!)).toBe(token('--text-base'));
+    expect(size(row.querySelector('code')!)).toBe(token('--font-step-1-size'));
+    expect(size(row.querySelector('time')!)).toBe(token('--font-step-1-size'));
+    expect(size(row.querySelector(':scope > div')!.querySelector('h3')!.nextElementSibling!)).toBe(token('--font-step-2-size'));
+    expect(parseFloat(size([...notice.querySelectorAll('strong')].find((el) => el.textContent === 'Waiting on you')!)))
+      .toBeGreaterThan(parseFloat(size(row.querySelector('h3')!)));
+    expect(parseFloat(size(row.querySelector('h3')!))).toBeGreaterThan(parseFloat(size(row.querySelector('time')!)));
   });
 
   it('compacts an input notification beside an open conversation drawer', async () => {

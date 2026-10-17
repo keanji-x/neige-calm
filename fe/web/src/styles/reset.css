@@ -53,8 +53,8 @@
      button silently falls back to the UA font stack and size. */
   button, input, select, textarea, optgroup {
     font: inherit;
-    color: inherit;
     letter-spacing: inherit;
+    color: inherit;
   }
 
   button {

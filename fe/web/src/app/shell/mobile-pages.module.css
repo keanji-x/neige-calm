@@ -5,11 +5,11 @@
   }
 
   .groups [role='radio'] {
-    min-block-size: var(--control-h);
-    padding-inline: var(--space-4) !important;
-    border-radius: var(--radius-pill) !important;
-    font-size: var(--text-xs) !important;
+    font-size: var(--font-step-1-size) !important;
     font-weight: var(--weight-normal) !important;
+    min-block-size: var(--control-h);
+    padding-inline: var(--space-2) !important;
+    border-radius: var(--radius-pill) !important;
   }
 
 }

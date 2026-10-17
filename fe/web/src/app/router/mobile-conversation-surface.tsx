@@ -184,7 +184,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
         <button type="button" className={styles.close} aria-label={props.closeLabel ?? 'Close conversation'} onClick={props.onClose}><Icon name="close" /></button>
       </header>
       <div className={styles.messageViewport}>
-        <div className={styles.messages} style={{ paddingBottom: `calc(${footerHeight}px + var(--space-8))`, scrollPaddingBottom: footerHeight }} data-nc-drawer-scroll="">{frame.children}</div>
+        <div className={styles.messages} style={{ paddingBottom: `calc(${footerHeight}px + var(--space-4))`, scrollPaddingBottom: footerHeight }} data-nc-drawer-scroll="">{frame.children}</div>
         <div className={styles.scrollOverlay} style={{ bottom: footerHeight }} data-nc-chat-scroll-overlay="" />
       </div>
     </section>

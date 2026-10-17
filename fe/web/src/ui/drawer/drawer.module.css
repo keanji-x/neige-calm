@@ -1,4 +1,9 @@
 @layer ui {
+  .drawer,
+  .seam,
+  .stack {
+    inset-block: 20px 28px;
+  }
   /*
    * §7.6's drawer, now shaped as **a card**: absolutely positioned inside the
    * main region, on the trailing panel's track, `--z-overlay`, `--shadow-float`.
@@ -93,15 +98,14 @@
      * composer well and user bubble use `--radius-chat` = 8. `features/chat`
      * reads both of these off this element.
      */
-    --nc-card-inset: var(--space-4);
+    --nc-card-inset: var(--space-2);
     --nc-card-radius: var(--radius-lg);
     --radius-chat: calc(var(--nc-card-radius) - var(--nc-card-inset));
 
     position: absolute;
     /* 20 top / 28 bottom. The 20 is bounded by the header band (20.3px of ink
        clearance), not chosen freely — see the note above. */
-    inset-block: var(--space-9) var(--space-11);
-    inset-inline-end: var(--space-10);
+    inset-inline-end: var(--space-5);
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;
@@ -109,7 +113,7 @@
     /* Both page pads, kept even when the conversation's floor is wider than
        what is left of a narrow main region: a card may not slide under the
        rail on the side the page cannot pad. */
-    max-inline-size: calc(100% - var(--space-10) * 2);
+    max-inline-size: calc(100% - var(--space-5) * 2);
     overflow: hidden;
     border-radius: var(--nc-card-radius);
     background: var(--surface-card);
@@ -145,11 +149,11 @@
    * because they have the same parent.
    *
    * **The geometry is the card's own, read off the same declarations.** The
-   * card sits at `inset-inline-end: var(--space-10)` and is at most
-   * `calc(100% - var(--space-10) * 2)` wide, so the trailing `--space-10` of
+   * card sits at `inset-inline-end: var(--space-5)` and is at most
+   * `calc(100% - var(--space-5) * 2)` wide, so the trailing `--space-5` of
    * the region is page at *every* viewport width — there is no window in which
    * this strip closes up. The seam takes exactly that strip
-   * (`inset-inline-end: 0`, `inline-size: var(--space-10)`) and exactly the
+   * (`inset-inline-end: 0`, `inline-size: var(--space-5)`) and exactly the
    * card's block range, so anything mounted here is vertically bounded by the
    * card whether or not it can see it.
    *
@@ -179,9 +183,8 @@
     /* The card's own block range, repeated from `.drawer` rather than derived,
        because a seam that is taller than the card can put ink off the end of
        it and there is nothing else in the layout to stop that. */
-    inset-block: var(--space-9) var(--space-11);
     inset-inline-end: 0;
-    inline-size: var(--space-10);
+    inline-size: var(--space-5);
     z-index: var(--z-overlay);
     /* Same transition, same duration, same easing, same source token as the
        card above — the two enter and leave as one object, and any change to
@@ -251,8 +254,8 @@
     display: flex;
     flex: none;
     align-items: center;
-    gap: var(--space-6);
-    padding: var(--nc-card-inset, var(--space-4));
+    gap: var(--space-3);
+    padding: var(--nc-card-inset, var(--space-2));
     border-block-end: 1px solid var(--hairline);
   }
 
@@ -262,12 +265,14 @@
     margin: 0;
     overflow: hidden;
     font: var(--type-reading);
+    letter-spacing: var(--type-reading-tracking);
     color: var(--text);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .close {
+    line-height: 1;
     flex: none;
     color: var(--text-3);
     display: grid;
@@ -275,7 +280,6 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    line-height: var(--leading-none);
     cursor: pointer;
   }
 
@@ -303,7 +307,7 @@
     inset-block: 0;
     inset-inline-start: 0;
     z-index: 1;
-    inline-size: var(--nc-card-inset, var(--space-4));
+    inline-size: var(--nc-card-inset, var(--space-2));
     cursor: col-resize;
     touch-action: none;
   }
@@ -343,11 +347,11 @@
   .bodyInner {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-2);
     padding:
-      var(--nc-card-inset, var(--space-4))
-      var(--nc-card-inset, var(--space-4))
-      var(--space-6);
+      var(--nc-card-inset, var(--space-2))
+      var(--nc-card-inset, var(--space-2))
+      var(--space-3);
   }
 
   /*
@@ -371,7 +375,7 @@
    */
   .drawerClosing {
     opacity: 0;
-    translate: 0 var(--space-6);
+    translate: 0 var(--space-3);
 
 
     /* It is on its way out; it must not intercept a click meant for the page
@@ -385,7 +389,7 @@
      turned back on and a box on its way out must not keep. */
   .seamClosing {
     opacity: 0;
-    translate: 0 var(--space-6);
+    translate: 0 var(--space-3);
 
   }
 
@@ -398,7 +402,7 @@
      and motion change. */
   @media (width < 60rem) {
     .drawer {
-      --nc-card-inset: var(--space-8);
+      --nc-card-inset: var(--space-4);
       /* The viewport page stays flush; its composer and message surfaces
          retain the same rounded contour as desktop conversation content. */
       --nc-card-radius: var(--radius-lg);
@@ -426,7 +430,7 @@
     }
 
     .bodyInner {
-      padding: var(--space-8);
+      padding: var(--space-4);
     }
 
 
@@ -441,14 +445,13 @@
 
   .stack {
     position: absolute;
-    inset-block: var(--space-9) var(--space-11);
-    inset-inline-end: var(--space-10);
+    inset-inline-end: var(--space-5);
     z-index: var(--z-overlay);
     inline-size: var(--conversation-span, 40cqi);
-    max-inline-size: calc(100% - var(--space-10) * 2);
+    max-inline-size: calc(100% - var(--space-5) * 2);
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-2);
   }
 
   /* The cards carry the overlay rank inside the host. Keep the shared edge
@@ -467,7 +470,7 @@
 
   .cell > .seam {
     inset-block: 0;
-    inset-inline-end: calc(var(--space-10) * -1);
+    inset-inline-end: calc(var(--space-5) * -1);
   }
 
   .cell > .drawer,

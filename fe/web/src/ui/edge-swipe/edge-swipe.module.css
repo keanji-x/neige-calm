@@ -3,7 +3,7 @@
     position: fixed;
     inset-inline-start: 0;
     inset-block: var(--header-primary-h) 0;
-    inline-size: var(--space-8);
+    inline-size: var(--space-4);
     z-index: var(--z-raised);
     touch-action: pan-y;
   }

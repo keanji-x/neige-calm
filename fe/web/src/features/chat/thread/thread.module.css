@@ -1,7 +1,7 @@
 @layer features {
   .edgeNavigation {
     --nc-rail-preview-max-inline-size: calc(
-      min(var(--conversation-span, 22rem), 100cqi - var(--space-10) * 2) - var(--space-6)
+      min(var(--conversation-span, 22rem), 100cqi - var(--space-5) * 2) - var(--space-3)
     );
   }
 
@@ -12,10 +12,10 @@
    * this file was rewritten around. The same agent writes the reply and writes
    * the report; if the drawer answers in interface sans and the document
    * answers in serif, one agent has two voices and the reader has to learn
-   * both. So the reply takes `--font-serif` at `--text-md`, and the cost of
+   * both. So the reply takes `--font-serif` at `--type-reading-size`, and the cost of
    * that is stated in full on the `.reply` rule rather than glossed here.
    *
-   * **What you said stays sans**, at `--text-base`. It is not a second-class
+   * **What you said stays sans**, at `--type-ui-size`. It is not a second-class
    * turn; it is a *different author*. Your words are the ones you typed into
    * the box, and the box is sans (`styles/astryx-theme.css` maps Astryx's
    * `--font-family-body` onto `--font-sans`), so the family says the plain
@@ -24,8 +24,8 @@
    *
    * Who spoke is therefore carried three ways, and each was earned separately:
    *
-   *   what you said   inline-end edge, filled, sans `--text-base`
-   *   what came back  inline-start edge, unfilled, serif `--text-md`
+   *   what you said   inline-end edge, filled, sans `--type-ui-size`
+   *   what came back  inline-start edge, unfilled, serif `--type-reading-size`
    *
    * Side came first and is still the cheapest — it costs no ink, no shape, and
    * no width. A 500-against-400 weight step at 13px was tried before it and was
@@ -83,7 +83,7 @@
   .scrollDockContent {
     position: absolute;
     inset-block-end: 0;
-    inset-inline: calc(-1 * var(--nc-card-inset, var(--space-4)));
+    inset-inline: calc(-1 * var(--nc-card-inset, var(--space-2)));
   }
 
   [data-nc-chat-scroll-overlay] .scrollDockContent { inset-inline: 0; }
@@ -92,8 +92,8 @@
     position: absolute;
     inset-block-end: 0;
     inset-inline: 0;
-    block-size: calc(var(--space-12) * 3);
-    backdrop-filter: blur(var(--space-6));
+    block-size: calc(var(--space-6) * 3);
+    backdrop-filter: blur(var(--space-3));
     -webkit-mask-image: linear-gradient(to bottom, transparent, black);
     mask-image: linear-gradient(to bottom, transparent, black);
     pointer-events: none;
@@ -134,10 +134,10 @@
    * the exchange's own boundaries. A flat list at one distance is what made the
    * first version read as label/text, label/text rather than as a dialogue.
    */
-  .thread > [data-nc-current-meta] { margin-block-start: var(--space-4); }
+  .thread > [data-nc-current-meta] { margin-block-start: var(--space-2); }
 
   .thread > * + * {
-    margin-block-start: var(--space-5);
+    margin-block-start: var(--space-3);
   }
 
   /*
@@ -153,11 +153,11 @@
    * still clears the bubble's own inset while keeping the ratio unmistakable.
    */
   .thread > * + .exchange {
-    margin-block-start: var(--space-12);
+    margin-block-start: var(--space-6);
   }
 
   .thread > .exchange + * {
-    margin-block-start: var(--space-6);
+    margin-block-start: var(--space-3);
   }
 
   /*
@@ -222,19 +222,19 @@
    * the composer well takes: same material, same corner.
    */
   .said {
+    font-size: var(--font-step-2-size);
+    font-weight: var(--weight-normal);
+    line-height: var(--font-step-2-line);
     transition: color var(--motion-quick) var(--ease-feedback), outline-color var(--motion-quick) var(--ease-feedback);
     inline-size: fit-content;
     max-inline-size: 88%;
     min-inline-size: 0;
     margin-inline-start: auto;
-    padding: var(--space-3) var(--space-5);
+    padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-chat, var(--radius-md));
     background: var(--bg);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
     color: var(--text);
   }
 
@@ -311,14 +311,14 @@
    * same way — a green gate is not evidence about this rule.
    */
   .queuedNote {
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-normal);
+    line-height: var(--font-step-1-line);
     inline-size: fit-content;
     max-inline-size: 88%;
-    margin-block-start: var(--space-1);
+    margin-block-start: var(--space-half);
     margin-inline-start: auto;
-    padding-inline: var(--space-2);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    padding-inline: var(--space-1);
     color: var(--text-3);
     text-align: end;
   }
@@ -326,7 +326,7 @@
   /*
    * ── The reply is the report's voice, in the report's family ─────────────
    *
-   * `--font-serif` and `--leading-loose` are taken straight off `.calm-prose`
+   * `--font-serif` and `--type-reading-leading` are taken straight off `.calm-prose`
    * in base.css, which is what `features/report/document` renders authored text
    * with. One agent, one voice: the thing that answers you in the drawer is the
    * thing that writes the document, and for two rounds it said so in two
@@ -344,7 +344,7 @@
    * stays visible behind it, and still stops one type step short of the report
    * because this remains a working conversation rather than published prose.
    *
-   * `--leading-loose` (1.65), the report's, not the `--leading-snug` your turn
+   * `--type-reading-leading`, derived from the reading pair, the report's, not the `--type-ui-leading` your turn
    * uses: yours is usually one line, this is the paragraph that gets read, and
    * a short measure needs the extra leading more than a long one does.
    */
@@ -375,6 +375,8 @@
    * costs.
    */
   .reply {
+    font: var(--type-reading);
+    letter-spacing: var(--type-reading-tracking);
     /*
      * Astryx's namespace, not ours — see the note above.
      *
@@ -386,17 +388,13 @@
      * the report's family — so a reply whose `##` came out sans was the same
      * split voice this file's `.reply` note exists to close, one element deeper.
      */
-    --font-family-body: var(--font-serif);
-    --font-family-heading: var(--font-serif);
-    --text-body-size: var(--text-md);
-    --text-body-leading: var(--leading-loose);
+    --font-family-body: var(--type-reading-family);
+    --font-family-heading: var(--type-reading-family);
+    --text-body-size: var(--type-reading-size);
+    --text-body-leading: var(--type-reading-leading);
 
     min-inline-size: 0;
     overflow-wrap: anywhere;
-    font-family: var(--font-serif);
-    font-size: var(--text-md);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-loose);
     color: var(--text);
   }
 
@@ -404,11 +402,9 @@
      faint: it is a seam in the transcript, not a property of the turn under
      it. */
   .gap {
-    margin-block: var(--space-6) var(--space-4);
-    font-family: var(--font-numeric);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
+    font: var(--type-compact-metadata);
+    letter-spacing: var(--type-compact-metadata-tracking);
+    margin-block: var(--space-3) var(--space-2);
     color: var(--text-4);
     text-align: center;
     font-variant-numeric: tabular-nums;
@@ -418,11 +414,11 @@
    * Their stable label stays in the reading flow and the native disclosure
    * keeps the full observation reachable without turning it into a bubble. */
   .system {
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-normal);
+    line-height: var(--font-step-1-line);
     margin: 0;
     color: var(--text-4);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
   }
 
   .systemSummary {
@@ -442,7 +438,7 @@
 
   .systemDisclosure {
     flex: none;
-    inline-size: var(--space-5);
+    inline-size: 10px;
     transform-origin: center;
   }
 
@@ -458,7 +454,7 @@
   }
 
   .systemDetail {
-    margin: var(--space-3) 0 0;
+    margin: var(--space-2) 0 0;
     overflow-wrap: anywhere;
     color: var(--text-3);
     text-align: start;
@@ -467,40 +463,41 @@
 
   /* Turn outcomes are supporting metadata rather than a speaker's reply. */
   .outcome {
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     margin: 0;
     color: var(--text-4);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
   }
 
   /* A common supporting row for turn outcomes. The state words carry both
      semantics and text-safe semantic colors; the disclosure retains vendor keys. */
   .outcomeNotice {
-    --text-large-size: var(--text-base);
+    --text-large-size: var(--type-ui-size);
+    --text-large-leading: var(--type-ui-leading);
     --font-weight-semibold: var(--weight-normal);
-    --text-body-size: var(--text-base);
-    --text-body-leading: var(--leading-base);
+    --text-body-size: var(--type-ui-size);
+    --text-body-leading: var(--type-ui-leading);
 
-    margin-block: var(--space-6);
+    margin-block: var(--space-3);
     text-align: start;
   }
 
   .outcomeNotice > [role='separator'] {
-    margin-block-end: var(--space-6);
+    margin-block-end: var(--space-3);
   }
 
   .outcomeHeader {
+    font-size: var(--font-step-2-size);
+    font-weight: var(--weight-normal);
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: var(--space-6);
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
+    gap: var(--space-3);
   }
 
   .outcomeStatusLabel {
-    color: var(--warn-text);
     font-weight: var(--weight-normal);
+    color: var(--warn-text);
   }
 
   .outcomeNoticeError .outcomeStatusLabel,
@@ -509,16 +506,16 @@
   }
 
   .outcomeGuidance {
-    min-inline-size: 0;
-    margin-inline-end: var(--space-2);
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     font-weight: var(--weight-normal);
+    min-inline-size: 0;
+    margin-inline-end: var(--space-1);
     color: var(--text-3);
     text-align: start;
   }
 
   .outcomeReason {
-    margin: var(--space-4) 0 0;
+    margin: var(--space-2) 0 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     color: var(--text-2);
@@ -533,9 +530,9 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
     block-size: 100%;
-    padding-block-end: var(--space-12);
+    padding-block-end: var(--space-6);
     text-align: center;
   }
 
@@ -544,16 +541,16 @@
      agent voice here to carry: this is the drawer telling you what the drawer
      is for, which is chrome, and chrome is sans. */
   .emptyLead {
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    line-height: var(--font-step-2-line);
     color: var(--text-2);
   }
 
   .emptyHint {
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    line-height: var(--font-step-2-line);
     color: var(--text-3);
   }
 
@@ -563,7 +560,7 @@
    */
   .composer {
     flex: none;
-    padding: 0 var(--nc-card-inset, var(--space-4)) var(--nc-card-inset, var(--space-4));
+    padding: 0 var(--nc-card-inset, var(--space-2)) var(--nc-card-inset, var(--space-2));
     /* Astryx ChatSendButton is primary/blue; send is a routine control here. */
     --color-accent: var(--text-3);
     /*
@@ -661,16 +658,16 @@
    * sits on Stop's baseline without moving the row.
    */
   .queueSend {
+    font-family: inherit;
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-medium);
+    line-height: 1;
     flex: none;
     block-size: 32px;
-    padding-inline: var(--space-3);
+    padding-inline: var(--space-2);
     border: none;
     border-radius: var(--radius-pill);
     background: var(--surface-chip);
-    font-family: inherit;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-none);
     color: var(--text);
     cursor: pointer;
   }
@@ -709,18 +706,18 @@
   }
 
   .editBar {
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     display: flex;
     flex: 1 1 auto;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-1);
     min-inline-size: 0;
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
   }
 
   .editBarLabel {
-    flex: none;
     font-weight: var(--weight-medium);
+    flex: none;
     color: var(--text-2);
   }
 
@@ -795,8 +792,8 @@
     flex: none;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2) var(--space-4);
-    margin-inline: var(--nc-card-inset, var(--space-4));
+    gap: var(--space-1) var(--space-2);
+    margin-inline: var(--nc-card-inset, var(--space-2));
     /*
      * Two numbers, both measured on a build rather than reasoned about.
      *
@@ -811,7 +808,7 @@
      * edge — small, and enough to read as a red box resting *near* a rounded
      * one. Running the fill behind those corners closes them.
      */
-    padding: var(--space-3) var(--space-5) calc(var(--space-3) + var(--nc-card-radius, var(--radius-lg)));
+    padding: var(--space-2) var(--space-3) calc(var(--space-2) + var(--nc-card-radius, var(--radius-lg)));
     margin-block-end: calc(var(--nc-card-radius, var(--radius-lg)) * -1);
     border-radius: var(--nc-card-radius, var(--radius-lg)) var(--nc-card-radius, var(--radius-lg)) 0 0;
     background: var(--error-soft);
@@ -821,16 +818,16 @@
      It is the smaller half of the strip; the button carries its own geometry
      from base.css. */
   .footerNoticeNeutral {
+    font-size: var(--font-step-1-size);
     background: var(--bg);
     color: var(--text-2);
-    font-size: var(--text-xs);
   }
 
   .footerError {
-    min-inline-size: 0;
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    line-height: var(--font-step-1-line);
+    min-inline-size: 0;
     color: var(--error-text);
   }
 
@@ -961,8 +958,8 @@
     inline-size: auto;
     /* `.composer`'s box is the well plus the card inset it is padded with, so
        both edges come back in by that same inset to land on the well. */
-    inset-inline-start: calc(anchor(left) + var(--nc-card-inset, var(--space-4)));
-    inset-inline-end: calc(anchor(right) + var(--nc-card-inset, var(--space-4)));
+    inset-inline-start: calc(anchor(left) + var(--nc-card-inset, var(--space-2)));
+    inset-inline-end: calc(anchor(right) + var(--nc-card-inset, var(--space-2)));
     inset-block-end: anchor(top);
   }
 
@@ -972,7 +969,7 @@
     /* The floor between glyph and name. The description does not use it — it
        is pushed to the far edge by its own auto margin below, which is what
        lets the first two sit tight together as one thing. */
-    gap: var(--space-2);
+    gap: var(--space-1);
     align-items: baseline;
     min-inline-size: 0;
   }
@@ -1005,21 +1002,21 @@
   }
 
   .commandName {
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
     flex: none;
-    font-size: var(--text-base);
-    line-height: var(--leading-snug);
     color: var(--text);
   }
 
   .commandHint {
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     /* Not `justify-content: space-between` on the row: with three children
        that would space the glyph away from the name too. The description
        claims the free space itself and the command stays one unit. */
     margin-inline-start: auto;
     min-inline-size: 0;
     overflow: hidden;
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
     color: var(--text-3);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1032,8 +1029,8 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: var(--space-3);
-    margin: var(--space-2) 0 0;
+    gap: var(--space-2);
+    margin: var(--space-1) 0 0;
     padding: 0;
     list-style: none;
   }

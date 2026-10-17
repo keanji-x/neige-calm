@@ -1,25 +1,22 @@
-# Navigation row geometry
+# Navigation row regions
 
-Public entry: `navigationRowClass` from `public.ts` returns a typed geometry
-slot class. Its CSS Module stays colocated inside this UI owner. This UI primitive owns only geometry;
-hosts own typography, surfaces, state, labels, actions and hit-target behavior.
-It has no application, Track or Area knowledge.
+`navigationRowPresentation` accepts a required spec: `{ kind: 'caption', depth: 0 }`
+or `{ kind: 'entry', depth: 0 | 1 }`. A frozen kind table selects the actual ListText
+tone: captions use secondary metadata, entries use primary content. Hosts apply that
+tone to their label, not merely the outer container. Domain membership, disclosure,
+menus, state and callbacks remain with their existing hosts.
 
-Apply `row` to the positioning/inheritance root. `leading` anchors the leading
-icon; `content` reserves that icon and one outer action; `twoActions` reserves
-both trailing actions. `inner` and `outer` position sibling controls on the
-same two centre lines. `labelStart` aligns text-only controls and the brand
-with the content column. `chromeOuter` accommodates the larger control token
-without changing its centre. `inlineActions` composes the same two slots in a
-header. Decorative slots must not intercept navigation pointer events.
+The CSS owner defines one status/disclosure slot, one label column and two trailing
+action slots. Depth shifts only the label and selected background by the same
+relationship. Indicators remain on the global leading axis. There are no host font,
+tracking or arbitrary label-offset overrides.
 
-`revealActions` opts a root into reserving its second action slot on hover,
-focus, an expanded descendant menu, or a no-hover pointer. Hosts continue
-owning visibility and action behavior. Interactive siblings stay outside the
-navigation button; no nested buttons or domain policy move into this module.
+`navigationRowClass` remains the geometry-only entry for brand and surrounding
+chrome. Apply `content` to the navigation button and keep controls as siblings.
+`leading`, `inner`, `outer`, `chromeOuter` and `inlineActions` share the same column
+centres. `revealActions` reserves the second action slot on hover, focus, expanded
+menu or touch; hosts retain visibility and hit-target behavior.
 
-All positions derive here from `--control-h-sm`, `--control-h`,
-`--navigation-label-inset` and `--space-2`. Consumers must not independently
-recalculate rail padding or column offsets. Other Track variants keep their
-own layout. Browser regressions compose production hosts, compare actual
-text and glyph bounds, and change the tokens in both themes to catch drift.
+Production browser tests compare actual label Range bounds, complete typography,
+nested selected-fill indentation and global status positions in narrow and wide
+rails, retaining keyboard, menu, hover and touch coverage.

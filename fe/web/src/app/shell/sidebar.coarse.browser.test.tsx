@@ -79,7 +79,7 @@ it('keeps a standalone rail pin reachable without covering leading status on tou
   const track: Track = { id: 'standalone', areaId: 'a', title: 'Standalone rail task with a long title that must stop before its pin control', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY, attention: 'input' };
   render(<ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
-    <div style={{ inlineSize: '15rem' }}><TrackRow track={track} variant="rail" onOpen={vi.fn()} onSetPinned={onSetPinned} /></div>
+    <div style={{ inlineSize: '15rem' }}><TrackRow track={track} variant="rail" presentation={{ kind: 'entry', depth: 0 }} onOpen={vi.fn()} onSetPinned={onSetPinned} /></div>
   </ThemeProvider>);
   const pin = page.getByRole('button', { name: `Pin ${track.title}` });
   const status = document.querySelector('[data-nc-activity="attention"]')!;

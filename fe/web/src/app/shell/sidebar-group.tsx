@@ -13,7 +13,7 @@ import { ListText } from '../../ui/list-typography/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { NavTarget } from '../router/navigation.ts';
 import styles from './shell.module.css';
-import { navigationRowClass as rowLayout } from '../../ui/navigation-row/public.ts';
+import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
 import ownStyles from './area-group.module.css';
 
 export type RowProps = Readonly<{
@@ -50,6 +50,7 @@ type GroupProps = Readonly<{
 export function SidebarGroup({ title, label, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
   children: ReactNode;
 }) {
+  const presentation = navigationRowPresentation(level === 'section' ? { kind: 'caption', depth: 0 } : { kind: 'entry', depth: 0 });
   const disclosure = useCollapsible({ isCollapsible: { isOpen: expanded, onOpenChange: onToggle } });
   const button = <button
     ref={disclosureRef}
@@ -63,11 +64,11 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
     {level === 'area' && <SpringRotation className={`${styles.chevron} ${rowLayout('leading')}`} angle={disclosure.isOpen ? 90 : 0}>
       <Icon name="chevron-right" size="md" />
     </SpringRotation>}
-    <ListText tone={level === 'section' ? 'section' : 'group'} className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
+    <ListText tone={presentation.tone} className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
   </button>;
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>
-    <div className={`${styles.areaRowWrap} ${rowLayout('row')}`}>
-      {level === 'section' ? <ListText as="h2" tone="section" className={styles.groupHeading}>{button}</ListText> : button}
+    <div className={`${styles.areaRowWrap} ${presentation.className}`}>
+      {level === 'section' ? <ListText as="h2" tone={presentation.tone} className={styles.groupHeading}>{button}</ListText> : button}
       <span className={`${styles.areaActions} ${rowLayout('inner')}`}>
         <DropdownMenu placement="below" button={{
           label: management.menuLabel, icon: <Icon name="more" size="sm" />,
@@ -113,6 +114,7 @@ export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = 
         unread={isUnread(track)}
         areaName={areas === undefined ? undefined : areaOf(track.areaId, areas)?.name}
         variant="rail"
+        presentation={{ kind: 'entry', depth: group.level === 'area' ? 1 : 0 }}
         nowMs={nowMs}
         active={markCurrent && track.id === activeTrackId}
         onOpen={(trackId) => onGo({ name: 'track', trackId })}

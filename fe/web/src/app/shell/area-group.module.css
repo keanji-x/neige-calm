@@ -10,15 +10,15 @@
    * it is not a Track.
    */
   .showMore {
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
     display: flex;
     align-items: center;
     inline-size: 100%;
     min-block-size: var(--row-h);
     padding-block: 0;
-    padding-inline-end: var(--space-3);
+    padding-inline-end: var(--space-2);
     border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    line-height: var(--leading-tight);
     color: var(--text-3);
     text-align: start;
     cursor: pointer;

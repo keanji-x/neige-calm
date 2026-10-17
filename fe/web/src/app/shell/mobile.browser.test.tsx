@@ -1,5 +1,5 @@
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
-import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
+import { withFontRoleProbe, fontRoleSnapshot } from '../../../../tools/styles/font-role-fixture.ts';
 /*
  * The mobile presentation, rendered on the real `AppShell` over a memory history;
  * this is the file that measures painted boxes.
@@ -455,7 +455,10 @@ describe('Track mobile presentation', () => {
     expect(boxes[2].bottom).toBe(844 - 16);
     expect(boxes[2].right).toBe(width - 16);
     expect(page.getByRole('button', { name: 'Settings', exact: true }).query()).toBeNull();
-    expect(getComputedStyle(heading).fontSize).toBe('17px');
+    const expectedTitle = fontRoleSnapshot('--type-detail', heading.parentElement!);
+    expect(getComputedStyle(heading)).toMatchObject({ fontFamily: expectedTitle.fontFamily,
+      fontSize: expectedTitle.fontSize, lineHeight: expectedTitle.lineHeight,
+      fontWeight: getComputedStyle(heading).getPropertyValue('--weight-medium').trim() });
     for (const control of controls.slice(0, 2)) {
       const glyph = control.querySelector('svg')!;
       expect(glyph.getBoundingClientRect().width).toBe(24);

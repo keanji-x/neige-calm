@@ -11,24 +11,24 @@
 
 @layer ui {
   .recovery {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-2-size);
     display: block;
-    padding: var(--space-6);
+    padding: var(--space-3);
     overflow-wrap: anywhere;
     color: var(--text);
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
   }
-  .reason { display: block; font-weight: var(--weight-medium); }
-  .description { margin: var(--space-3) 0; color: var(--text-2); }
-  .details { margin-block-start: var(--space-4); color: var(--text-3); font-size: var(--text-sm); }
+  .reason { font-weight: var(--weight-medium); display: block; }
+  .description { margin: var(--space-2) 0; color: var(--text-2); }
+  .details { font-size: var(--font-step-2-size); margin-block-start: var(--space-2); color: var(--text-3); }
   .details summary { cursor: pointer; }
-  .details p { margin-block: var(--space-3) 0; }
+  .details p { margin-block: var(--space-2) 0; }
   .floating {
     position: absolute;
-    inset-inline: var(--space-5);
-    inset-block-end: var(--space-5);
+    inset-inline: 10px;
+    inset-block-end: 10px;
     inline-size: fit-content;
-    max-inline-size: calc(100% - var(--space-5) * 2);
+    max-inline-size: calc(100% - 10px * 2);
     border: 1px solid var(--hairline-strong);
     border-radius: var(--radius-sm);
     background: var(--paper);

@@ -4,7 +4,7 @@
 
     position: absolute;
     inset-block: 0;
-    inset-inline-start: max(0px, calc(var(--document-start) - var(--control-h) - var(--space-2)));
+    inset-inline-start: max(0px, calc(var(--document-start) - var(--control-h) - var(--space-1)));
     inline-size: var(--control-h);
     pointer-events: none;
   }
@@ -14,7 +14,7 @@
     block-size: 0;
   }
   .navigator {
-    block-size: min(320px, calc(100dvh - var(--header-band) - var(--header-h) - var(--space-10) * 2));
+    block-size: min(320px, calc(100dvh - var(--header-band) - var(--header-h) - var(--space-5) * 2));
     inline-size: var(--control-h);
     translate: 0 -50%;
     pointer-events: auto;

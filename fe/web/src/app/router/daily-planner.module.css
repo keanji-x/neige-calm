@@ -1,8 +1,8 @@
 @layer features {
   .reportIntro { display: none; }
   @media (width < 60rem) {
-    .reportIntro { display: block; margin-block: 0 var(--space-11); }
-    .reportIntro h2 { font-family: var(--font-sans); font-size: calc(var(--text-xl) + var(--space-2)); font-weight: var(--weight-semibold); line-height: 1.3077; }
-    .reportIntro p { margin-block-start: var(--space-3); font-size: max(var(--text-md), 1rem); color: var(--text-3); line-height: 1.625; }
+    .reportIntro { display: block; margin-block: 0 var(--space-6); }
+    .reportIntro h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }
+    .reportIntro p { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); margin-block-start: var(--space-2); color: var(--text-3); }
   }
 }

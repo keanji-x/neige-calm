@@ -35,11 +35,11 @@
   }
 
   :where(*):has(> .header[data-nc-header-rows='2']) {
-    --header-h: calc(var(--control-h-lg) + var(--row-h-sm) + var(--space-3));
+    --header-h: calc(var(--control-h-lg) + var(--row-h-sm) + var(--space-2));
   }
 
   :where(*):has(> .header[data-nc-header-rows='3']) {
-    --header-h: calc(var(--control-h-lg) + var(--row-h-sm) * 2 + var(--space-3) * 2);
+    --header-h: calc(var(--control-h-lg) + var(--row-h-sm) * 2 + var(--space-2) * 2);
   }
 
   /*
@@ -54,7 +54,7 @@
   .header[data-nc-align='document'] {
     /* Routes that need this publish `--document-start`. Do not fall back to
        the retired 1180/280 page-cap math. */
-    padding-inline-start: var(--document-start, 0px);
+    padding-inline-start: var(--document-start, 0);
   }
 
   .header {
@@ -63,7 +63,7 @@
     z-index: var(--z-sticky);
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-2);
 
     /*
      * The band belongs to the header, not to the page.
@@ -107,23 +107,23 @@
   .titleRow {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
     min-block-size: var(--control-h-lg);
   }
 
   /* Identical on all four routes: the largest type on the page is chrome, so it
      does not compete for P0 (§3.3). */
   .title {
-    font-size: var(--text-lg);
+    font-size: var(--font-step-3-size);
     font-weight: var(--weight-semibold);
-    line-height: var(--leading-tight);
-    letter-spacing: var(--tracking-tight);
+    line-height: var(--font-step-3-line);
+    letter-spacing: var(--font-step-3-tracking);
     color: var(--text);
   }
 
   .spring {
     flex: 1;
-    margin-inline-start: var(--space-3);
+    margin-inline-start: var(--space-2);
   }
 
   /* Compact/mobile keeps the title row touch-sized and accounts for the
@@ -140,11 +140,11 @@
   }
 
   .crumbs {
+    font-size: var(--font-step-1-size);
+    line-height: 1;
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
+    gap: var(--space-1);
   }
 
   .back {
@@ -165,9 +165,9 @@
 
   /* "You are here" costs exactly one weight step over the ancestor. */
   .crumbLink {
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
+    line-height: 1;
     color: var(--text-3);
     cursor: pointer;
   }
@@ -178,12 +178,12 @@
   }
 
   .crumbCurrent {
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-medium);
+    line-height: 1;
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-none);
+    gap: var(--space-1);
     color: var(--text-2);
   }
 
@@ -200,23 +200,23 @@
       --header-h: var(--navigation-header-height);
     }
     :where(*):has(> .header[data-nc-header-rows='2']) {
-      --header-h: calc(var(--navigation-header-height) + var(--row-h-sm) + var(--space-3));
+      --header-h: calc(var(--navigation-header-height) + var(--row-h-sm) + var(--space-2));
     }
     :where(*):has(> .header[data-nc-header-rows='3']) {
-      --header-h: calc(var(--navigation-header-height) + var(--row-h-sm) * 2 + var(--space-3) * 2);
+      --header-h: calc(var(--navigation-header-height) + var(--row-h-sm) * 2 + var(--space-2) * 2);
     }
     .header {
       flex-shrink: 0;
       padding-block-start: 0;
-      margin-inline: calc(var(--space-10) * -1);
-      padding-inline: var(--space-10);
+      margin-inline: calc(var(--space-5) * -1);
+      padding-inline: var(--space-5);
     }
     .header,
     [data-nc-scrolled] .header {
       border-block-end-color: transparent;
     }
     .header[data-nc-align='document'] {
-      padding-inline-start: calc(var(--space-10) + var(--document-start, 0px));
+      padding-inline-start: calc(var(--space-5) + var(--document-start, 0px));
     }
     .titleRow {
       flex-shrink: 0;

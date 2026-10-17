@@ -95,22 +95,25 @@
     --radius-full: var(--radius-pill);
 
     /* Typography follows the same source as native components. */
-    --text-body-size: var(--text-base);
-    --text-body-leading: var(--line-ui);
-    --text-large-size: var(--text-md);
-    --text-supporting-size: var(--text-xs);
-    --text-label-size: var(--text-xs);
-    --text-code-size: var(--text-xs);
-    --text-code-leading: var(--line-ui);
-    --font-size-xs: var(--text-xs);
-    --font-size-sm: var(--text-base);
-    --font-size-base: var(--text-base);
-    --font-size-lg: var(--text-md);
-    --font-size-xl: var(--text-xl);
+    --text-body-size: var(--type-ui-size);
+    --text-body-leading: var(--type-ui-leading);
+    --text-large-size: var(--type-detail-size);
+    --text-supporting-size: var(--type-metadata-size);
+    --text-label-size: var(--type-label-size);
+    --text-code-size: var(--type-code-size);
+    --text-code-leading: var(--type-code-leading);
+    --font-size-xs: var(--type-metadata-size);
+    --font-size-sm: var(--type-ui-size);
+    --font-size-base: var(--type-ui-size);
+    --font-size-lg: var(--type-detail-size);
+    --font-size-xl: var(--type-heading-size);
     /* Type families */
-    --font-family-body: var(--font-sans);
-    --font-family-heading: var(--font-display);
+    --font-family-body: var(--type-ui-family);
+    --font-family-heading: var(--type-ui-family);
     --font-family-code: var(--font-mono);
+    --text-large-leading: var(--type-detail-leading);
+    --text-supporting-leading: var(--type-metadata-leading);
+    --text-label-leading: var(--type-label-leading);
   }
 }
 
@@ -119,21 +122,21 @@
      Reversing its two presentation items keeps the native right/down arrow
      immediately after the label without targeting private component children. */
   [data-nc-current-meta] .astryx-icon {
+    font-size: var(--font-step-1-size);
     inline-size: var(--glyph-meta);
     block-size: var(--glyph-meta);
-    font-size: var(--text-meta);
     color: var(--text-3);
   }
 
   [data-nc-current-meta] .astryx-collapsible-trigger {
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     min-block-size: var(--control-h);
     inline-size: fit-content;
     max-inline-size: 100%;
     flex-direction: row-reverse;
     justify-content: flex-end;
     align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-meta);
-    line-height: var(--leading-snug);
+    gap: var(--space-1);
   }
 }

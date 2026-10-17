@@ -373,7 +373,7 @@ export function AppShell({
       {narrowRail && !settingsOpen && !mobileOverlayRoute && <button type="button"
         className={`${styles.workspaceOpener} ${floatingControlClassName}`} aria-label="Open workspace"
         hidden={mobileNavOpen || historyOpen || conversationScope?.conversationOpen === true}
-        style={{ bottom: `calc(${visibleViewport.bottomInset}px + var(--space-8) + env(safe-area-inset-bottom))` }}
+        style={{ bottom: `calc(${visibleViewport.bottomInset}px + var(--space-4) + env(safe-area-inset-bottom))` }}
         onClick={() => openMobileSection({ kind: 'areas', areaId: activeArea?.id })}><Icon name="folder" /></button>}
       <EdgeSwipe enabled={narrowRail && !settingsOpen && !mobileOverlayRoute && !mobileNavOpen && !historyOpen} onSwipe={() => setHistoryOpen(true)} />
       {narrowRail && <MobileHistory open={historyOpen} onOpenChange={setHistoryOpen}

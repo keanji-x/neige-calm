@@ -7,15 +7,15 @@
   }
 
   .trackHeading {
+    font: inherit;
     inline-size: 100%;
     min-inline-size: 0;
     margin: 0;
-    font: inherit;
   }
 
-  .trackButton { display: flex; align-items: center; gap: var(--space-4); min-inline-size: 0; max-inline-size: 100%; inline-size: fit-content; margin-inline-start: auto; min-block-size: calc(var(--rail-w-collapsed) + var(--space-2)); padding-inline: var(--space-4); border: 0; border-radius: var(--radius-md); background: transparent; font: inherit; cursor: pointer; }
-  .trackButton svg { flex: none; inline-size: calc(var(--glyph) + var(--space-4)); block-size: calc(var(--glyph) + var(--space-4)); }
-  .trackLabel { min-inline-size: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: var(--weight-medium); }
+  .trackButton { font: inherit; display: flex; align-items: center; gap: var(--space-2); min-inline-size: 0; max-inline-size: 100%; inline-size: fit-content; margin-inline-start: auto; min-block-size: var(--control-h-touch); padding-inline: var(--space-2); border: 0; border-radius: var(--radius-md); background: transparent; cursor: pointer; }
+  .trackButton svg { flex: none; inline-size: var(--glyph-xl); block-size: var(--glyph-xl); }
+  .trackLabel { font-weight: var(--weight-medium); min-inline-size: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
   .area {
     position: relative;
@@ -33,20 +33,21 @@
     min-inline-size: 0;
     max-inline-size: 100%;
     min-block-size: var(--rail-w-collapsed);
-    padding-inline: var(--space-3);
+    padding-inline: var(--space-2);
       font: var(--type-page-title);
+      letter-spacing: var(--type-page-title-tracking);
   }
 
   .menu {
     position: absolute;
     z-index: var(--z-overlay);
-    inset-block-start: calc(100% + var(--space-3));
+    inset-block-start: calc(100% + 6px);
     inset-inline-start: 50%;
     translate: -50% 0;
-    inline-size: min(19rem, calc(100vw - var(--space-8)));
+    inline-size: min(19rem, calc(100vw - var(--space-4)));
     max-block-size: 60dvh;
     overflow: auto;
-    padding: var(--space-2);
+    padding: var(--space-1);
     background: var(--paper);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
@@ -54,23 +55,23 @@
   }
 
   .item {
+    font-size: var(--font-step-3-size);
     display: flex;
-    gap: var(--space-4);
+    gap: var(--space-2);
     align-items: center;
     min-block-size: var(--rail-w-collapsed);
     inline-size: 100%;
-    padding: var(--space-3) var(--space-5);
+    padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
     text-align: start;
     overflow-wrap: anywhere;
-    font-size: var(--text-md);
     cursor: pointer;
   }
 
   .item svg {
     flex: none;
-    inline-size: calc(var(--glyph) + var(--space-4));
-    block-size: calc(var(--glyph) + var(--space-4));
+    inline-size: var(--glyph-xl);
+    block-size: var(--glyph-xl);
     color: var(--text-3);
   }
 
@@ -89,7 +90,7 @@
   }
 
   .separator {
-    margin-block: var(--space-3);
+    margin-block: var(--space-2);
     border-block-start: 1px solid var(--hairline);
   }
 }

@@ -8,7 +8,7 @@
   .folder {
     display: flex;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--space-half);
   }
 
   .host {
@@ -24,7 +24,7 @@
   }
 
   .panel {
-    max-inline-size: min(22rem, calc(100dvw - var(--space-12)));
+    max-inline-size: min(22rem, calc(100dvw - var(--space-6)));
   }
 
   .panel .items {
@@ -50,7 +50,7 @@
     .host,
     .items,
     .folder {
-      gap: var(--space-2);
+      gap: var(--space-1);
     }
 
     .items {
@@ -58,7 +58,7 @@
     }
 
     .panel .items {
-      gap: var(--space-4);
+      gap: var(--space-2);
     }
 
   }

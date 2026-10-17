@@ -1683,9 +1683,7 @@ describe('the reply’s type, through Astryx’s markdown', () => {
     const painted = getComputedStyle(paintedParagraph());
 
     const wanted = probe({
-      fontFamily: 'var(--font-serif)',
-      fontSize: 'var(--text-md)',
-      lineHeight: 'var(--leading-loose)',
+      font: 'var(--type-reading)',
     });
     expect(painted.fontFamily).toBe(wanted.fontFamily);
     expect(painted.fontSize).toBe(wanted.fontSize);

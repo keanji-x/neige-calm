@@ -8,14 +8,14 @@
   .browser {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-2);
   }
 
   /* `auto 1fr`: the parent button keeps its square, the path takes the rest. */
   .head {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: var(--space-3);
+    gap: var(--space-2);
     align-items: center;
   }
 
@@ -27,7 +27,7 @@
      down a list of them. */
   .path input {
     font-family: var(--font-mono);
-    font-size: var(--text-md);
+    font-size: var(--font-step-3-size);
   }
 
   /* The list is a bounded window, not a growing column: the dialog it lives in
@@ -39,7 +39,7 @@
     flex-direction: column;
     max-block-size: 19rem;
     margin: 0;
-    padding: var(--space-1);
+    padding: var(--space-half);
     overflow-y: auto;
     overscroll-behavior: contain;
     list-style: none;
@@ -49,19 +49,19 @@
   }
 
   .entry {
+    font-family: inherit;
+    font-size: var(--font-step-2-size);
+    line-height: 1;
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
     inline-size: 100%;
     min-block-size: var(--row-h-sm);
-    padding-inline: var(--space-3);
+    padding-inline: var(--space-2);
     border: 0;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text);
-    font-family: inherit;
-    font-size: var(--text-base);
-    line-height: var(--leading-none);
     text-align: start;
     cursor: pointer;
   }
@@ -108,19 +108,19 @@
      so the list does not change shape when it has nothing to show. */
   .placeholder,
   .status {
+    font-size: var(--font-step-2-size);
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
     min-block-size: var(--row-h-sm);
     margin: 0;
-    padding-inline: var(--space-3);
+    padding-inline: var(--space-2);
     color: var(--text-3);
-    font-size: var(--text-base);
   }
 
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-4);
+    gap: var(--space-2);
   }
 }

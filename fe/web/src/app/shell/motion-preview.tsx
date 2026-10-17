@@ -36,12 +36,12 @@ function Preview() {
     { id: 'reply', author: 'agent', text: '可以。保留消息的位置，让输入区平稳展开。你可以点下方的编辑按钮，试试输入、取消，再快速重新编辑。', atMs: 2 },
     { id: 'outcome', author: 'turn', turnId: 'turn', status: 'completed', elapsedMs: 840, atMs: 3 },
   ];
-  return <main style={{ maxWidth: 1160, margin: '0 auto', padding: '40px 24px', color: 'var(--text)' }}>
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 24 }}>
-      <div><p style={{ color: 'var(--text-3)', fontSize: 12, letterSpacing: '.12em', marginBottom: 12 }}>NEIGE · 交互预览</p>
-        <h1 style={{ fontSize: 30, fontWeight: 500, margin: '0 0 12px' }}>Motion · 统一弹簧预览</h1>
+  return <main style={{ maxWidth: 1160, margin: "0 auto", padding: "var(--space-7) var(--space-5)", color: 'var(--text)' }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-5)', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 'var(--space-5)' }}>
+      <div><p style={{ color: 'var(--text-3)', font: 'var(--type-metadata)', letterSpacing: 'var(--type-metadata-tracking)', marginBottom: 'var(--space-3)' }}>NEIGE · 交互预览</p>
+        <h1 style={{ font: 'var(--type-display-title)', letterSpacing: 'var(--type-display-title-tracking)', margin: "0 0 var(--space-3)" }}>Motion · 统一弹簧预览</h1>
         <p style={{ color: 'var(--text-2)', margin: 0 }}>同一套运动规则处理短消息、超长消息和中途反向，文字保持清晰。</p></div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
         <button onClick={() => sample(shortText)}>短消息</button>
         <button onClick={() => sample(longText)}>长消息</button>
         <button onClick={() => sample(longText.repeat(20))}>超长消息</button>
@@ -50,13 +50,13 @@ function Preview() {
       </div>
     </div>
     <section style={{ position: 'relative', containerType: 'inline-size', height: 630, border: '1px solid var(--hairline)', borderRadius: 20, background: 'var(--surface-rail)' }}>
-      <div style={{ padding: 32, maxWidth: '48%' }}>
-        <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 24 }}>预览体验</p>
-        <h2 style={{ fontWeight: 500, fontSize: 22, marginBottom: 20 }}>内容一直在，动作自然发生</h2>
-        <p style={{ color: 'var(--text-2)', lineHeight: 1.8 }}>点对话里的铅笔开始编辑。试试长消息，或者展开途中立即取消，再重新编辑。</p>
-        <p style={{ color: 'var(--text-3)', lineHeight: 1.8 }}>收起、打开对话，也可以感受新的进出节奏。</p>
+      <div style={{ padding: 'var(--space-6)', maxWidth: '48%' }}>
+        <p style={{ font: 'var(--type-metadata)', color: 'var(--text-3)', marginBottom: 'var(--space-5)' }}>预览体验</p>
+        <h2 style={{ font: 'var(--type-interface-heading)', letterSpacing: 'var(--type-interface-heading-tracking)', marginBottom: 'var(--space-5)' }}>内容一直在，动作自然发生</h2>
+        <p style={{ color: 'var(--text-2)', font: 'var(--type-detail)', letterSpacing: 'var(--type-detail-tracking)' }}>点对话里的铅笔开始编辑。试试长消息，或者展开途中立即取消，再重新编辑。</p>
+        <p style={{ color: 'var(--text-3)', font: 'var(--type-detail)', letterSpacing: 'var(--type-detail-tracking)' }}>收起、打开对话，也可以感受新的进出节奏。</p>
         <button onClick={() => setOpen(true)}>打开对话</button>
-        <p role="status" style={{ marginTop: 24, color: 'var(--text-2)' }}>{notice}</p>
+        <p role="status" style={{ marginTop: 'var(--space-5)', color: 'var(--text-2)' }}>{notice}</p>
       </div>
       <Drawer open={open} title="动画预览" onClose={() => setOpen(false)} footer={
         <ChatComposer draft={{ text: draft, onChange: setDraft }} focusRequest={focus}
@@ -74,10 +74,10 @@ function Preview() {
           } : undefined} />
       </Drawer>
     </section>
-    <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 16 }}>交互预览 · 使用实际对话组件 · 内容仅保存在当前页面</p>
-    <section style={{ marginTop: 28 }}>
-      <h2 style={{ fontSize: 22, marginBottom: 16 }}>折叠与展开</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 24 }}>
+    <p style={{ color: 'var(--text-3)', font: 'var(--type-metadata)', marginTop: 'var(--space-4)' }}>交互预览 · 使用实际对话组件 · 内容仅保存在当前页面</p>
+    <section style={{ marginTop: 'var(--space-6)' }}>
+      <h2 style={{ font: 'var(--type-interface-heading)', letterSpacing: 'var(--type-interface-heading-tracking)', marginBottom: 'var(--space-4)' }}>折叠与展开</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 'var(--space-5)' }}>
         <ReportDocument report={{ summary: '', body: '', blocks: [
           { id: 'preview-prose', kind: 'prose', payload: { markdown: '# 组件动效\n\n展开内容保持即时，箭头轻柔接上。' } },
           { id: 'preview-task', kind: 'task', payload: { key: '检查动效', kind: 'codex', declared_by: 'user', ready: true, goal: '保留内容与键盘交互。' } },
@@ -86,9 +86,9 @@ function Preview() {
           renderRows={rows => rows.map(row => <p key={row}>{row}</p>)} />
       </div>
     </section>
-    <section style={{ marginTop: 28 }}>
-      <h2 style={{ fontSize: 22, marginBottom: 16 }}>进度与状态</h2>
-      <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+    <section style={{ marginTop: 'var(--space-6)' }}>
+      <h2 style={{ font: 'var(--type-interface-heading)', letterSpacing: 'var(--type-interface-heading-tracking)', marginBottom: 'var(--space-4)' }}>进度与状态</h2>
+      <div style={{ display: 'flex', gap: 'var(--space-5)', alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={() => setPercent(value => value === 10 ? 65 : 10)}>更新进度</button>
         <ContextRing usage={{ used_tokens: percent * 100, context_window: 10000, percent, at_ms: 0 }} />
         <ActivityIndicator state="working" />

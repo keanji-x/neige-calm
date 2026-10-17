@@ -5,6 +5,8 @@
      at body rank on the left, the caption tier on the right, and the caption is
      the part that gives way when the row is narrow. */
   .item {
+    font: var(--type-ui);
+    letter-spacing: var(--type-ui-tracking);
     --nc-mention-caption: light-dark(
       color-mix(in oklab, var(--text-3) 86%, var(--paper)),
       color-mix(in oklab, var(--text-3) 90%, var(--paper))
@@ -12,18 +14,14 @@
 
     display: flex;
     flex: 1;
-    gap: var(--space-3);
+    gap: var(--space-2);
     align-items: baseline;
     min-inline-size: 0;
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
   }
 
   /* Compact group labels orient the reader; candidate names carry the emphasis. */
   .categoryHead {
-    gap: var(--space-4);
+    gap: var(--space-2);
     align-items: baseline;
   }
 
@@ -31,14 +29,14 @@
     display: flex;
     box-sizing: border-box;
     align-items: center;
-    block-size: var(--space-10);
-    padding: 0 var(--space-6);
+    block-size: var(--space-5);
+    padding: 0 var(--space-3);
     border-radius: var(--radius-sm);
   }
 
   [role='option']:has(.categoryHead) {
-    block-size: var(--space-10);
-    margin-block-start: var(--space-2);
+    block-size: var(--space-5);
+    margin-block-start: var(--space-1);
   }
 
   [role='option']:first-child:has(.categoryHead) {
@@ -46,35 +44,35 @@
   }
 
   .itemMarker {
-    flex: none;
-    inline-size: var(--space-4);
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     font-weight: var(--weight-normal);
+    flex: none;
+    inline-size: var(--space-2);
     color: var(--nc-mention-caption);
     text-align: center;
   }
 
   .categoryTitle {
-    flex: none;
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     font-weight: var(--weight-semibold);
-    line-height: var(--leading-snug);
+    line-height: var(--font-step-1-line);
+    flex: none;
     color: var(--nc-mention-caption);
   }
 
   .description {
+    font-size: var(--font-step-1-size);
     max-inline-size: 50%;
     margin-inline-start: auto;
     min-inline-size: 0;
     overflow: hidden;
-    font-size: var(--text-xs);
     color: var(--nc-mention-caption);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .more {
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
     color: var(--text-3);
   }
 
@@ -89,26 +87,26 @@
 
   [role='listbox']:has(.categoryHead) {
     max-height: min(28rem, 70dvh);
-    padding: var(--space-2);
+    padding: var(--space-1);
   }
 
   .label {
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
     min-inline-size: 0;
     overflow: hidden;
-    font-size: var(--text-base);
-    line-height: var(--leading-snug);
     color: var(--text);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .detail {
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     flex: none;
     max-inline-size: 50%;
     margin-inline-start: auto;
     overflow: hidden;
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
     color: var(--nc-mention-caption);
     text-overflow: ellipsis;
     white-space: nowrap;

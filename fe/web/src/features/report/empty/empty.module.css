@@ -15,12 +15,12 @@
     flex: 1 1 auto;
     align-items: center;
     justify-content: center;
-    gap: var(--space-8);
+    gap: var(--space-4);
     min-block-size: 0;
     block-size: 100%;
     max-inline-size: var(--measure-prose);
     margin-inline: auto;
-    padding-block-end: var(--space-12);
+    padding-block-end: var(--space-6);
     text-align: center;
   }
 
@@ -31,18 +31,16 @@
    * this would normally lose to does not exist here.
    */
   .lead {
-    font-family: var(--font-serif);
-    font-size: var(--text-xl);
+    font: var(--type-heading);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-tight);
-    letter-spacing: var(--tracking-tight);
+    letter-spacing: var(--type-heading-tracking);
     color: var(--text-2);
   }
 
   .hints {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-2);
     max-inline-size: var(--measure-form);
     margin: 0;
     padding: 0;
@@ -57,9 +55,9 @@
    * they have to be legible.
    */
   .hint {
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-base);
+    line-height: var(--font-step-2-line);
     color: var(--text-3);
   }
 }

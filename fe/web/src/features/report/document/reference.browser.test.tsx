@@ -76,12 +76,16 @@ describe('the reference heading, as the engine lays it out', () => {
 
   it('keeps the word aligned at a gutter too narrow for the full pull', async () => {
     await browserPage.viewport(1200, 800);
-    render(<Page gutter="28px" />);
+    // A 14px marker plus the 16px row gap still fits below the full 38px pull.
+    render(<Page gutter="30px" />);
 
     const reference = document.querySelector('[data-nc-report-reference]')!;
     const sectionHead = [...document.querySelectorAll('[data-nc-report] h2')]
       .find((head) => !reference.contains(head))!;
     const word = reference.querySelector('h2 > span:nth-child(2)')!;
+    const marker = reference.querySelector('h2 > span:first-child')!.getBoundingClientRect();
+    const frame = document.querySelector('[data-testid="frame"]')!.getBoundingClientRect();
+    expect(Math.round(marker.left)).toBe(Math.round(frame.left));
 
     expect(Math.round(word.getBoundingClientRect().left))
       .toBe(Math.round(sectionHead.getBoundingClientRect().left));
@@ -107,7 +111,7 @@ describe('the reference heading, as the engine lays it out', () => {
     expect(box.right).toBeLessThan(word.left);
 
     const probe = document.createElement('div');
-    probe.style.inlineSize = 'var(--space-10)';
+    probe.style.inlineSize = 'var(--space-5)';
     document.body.append(probe);
     const gutterGap = probe.getBoundingClientRect().width;
     probe.remove();

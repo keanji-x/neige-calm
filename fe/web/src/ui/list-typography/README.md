@@ -5,8 +5,8 @@ Shared presentation roles for the workspace sidebar and context panels.
 | Role | Size | Weight | Line height | Use |
 | --- | --- | --- | --- | --- |
 | primary | 14px | 400 | 20px | Track and expanded card/task names |
-| group | 14px | 400 | 20px | Area, status-group and conversation names |
-| section | 12px | 500 | 16px | Sidebar and module headings, normal tracking |
+| group | 14px | 400 | 20px | Inventory, status-group and conversation names |
+| section | 12px | 500 | 16px | Module headings, normal tracking |
 | secondary | 12px | 400 | 16px | Status and resource kind |
 | count | 12px | 400 | 16px | Right-aligned tabular numbers |
 
@@ -18,8 +18,8 @@ Text emphasis also belongs here: `emphasis="medium"` preserves the two-line
 Track row's 500 weight, and `emphasis="selected"` gives both Track and
 conversation names the same primary color without changing their weight. Hosts pass state;
 they do not override the name's size, family or weight in local CSS.
-Tools, Tasks and Conversations are module headings. Their status groups and conversation names correspond to sidebar Areas; expanded
-items correspond to Tracks. Panel entries use a 28px row cadence; sidebar Track entries use 32px,
+Tools, Tasks and Conversations are module headings. Their status groups and conversation names retain the group tone; sidebar Areas and Tracks
+share the primary entry tone. Expanded items correspond to Tracks. Panel entries use a 28px row cadence; sidebar Track entries use 32px,
 with no extra gap between collapsed groups and a 12px surface inset. Expanded
 groups keep their heading in place: no added top padding, 4px before the list
 and 8px below it. Rows stay 28px apart; both insets count toward the bounded
@@ -33,3 +33,7 @@ its bounded width. Hosts retain layout/overflow ownership and use `text-overflow
 clip` instead of an ellipsis when opting in. Full DOM text, native title and
 accessible names are preserved; resize and content updates remeasure overflow,
 and the observer disconnects on unmount. Short labels receive no mask.
+
+Named tones own a complete font/tracking pair. Hosts choose a tone rather than overriding
+font and tracking independently. Navigation-row's required content schema selects
+`secondary` for captions and `primary` for entries; Inventory and Calendar keep `group`.

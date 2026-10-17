@@ -24,10 +24,10 @@
 
   /* A quiet, non-interactive band label when recipes and built-ins coexist. */
   .menuGroupHeading {
-    padding: var(--space-1) var(--space-2);
+    font-size: var(--font-step-1-size);
+    line-height: 1;
+    padding: var(--space-half) var(--space-1);
     color: var(--text-3);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
     user-select: none;
   }
 }

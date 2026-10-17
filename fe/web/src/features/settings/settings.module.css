@@ -2,7 +2,7 @@
   .durationControl {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-2);
     max-inline-size: 100%;
     overflow-wrap: anywhere;
   }
@@ -31,7 +31,7 @@
   .surface {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    gap: var(--space-9);
+    gap: var(--space-5);
     /* The overlay is top-aligned by `ui/dialog`'s frozen `.dialog-overlay-wide`
        (`align-items: start`), which this layer may not change. A taller floor
        is what is available: the panel then spans most of the viewport's height,
@@ -69,7 +69,7 @@
   .form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-9);
+    gap: var(--space-5);
     max-inline-size: var(--measure-list);
     min-block-size: 0;
   }
@@ -96,7 +96,7 @@
   /* A row's own two edges. The text block takes what is left after the control,
      so a long description wraps instead of pushing the control off the edge. */
   .row {
-    gap: var(--space-6);
+    gap: var(--space-3);
   }
 
   /* A group is a heading, its rows, and the space around them. The separation
@@ -105,41 +105,41 @@
   .group {
     display: flex;
     flex-direction: column;
-    gap: var(--space-6);
+    gap: var(--space-3);
   }
 
   .actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-2);
   }
 
   /* The only green in the app. */
   .saved {
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     font-weight: var(--weight-medium);
-    line-height: var(--leading-none);
+    line-height: 1;
     color: var(--success-text);
   }
 
   /* The error box: dot, message, and a home of its own — error tones, never
      warn tones. Waiting and broken are different things. */
   .error {
-    padding-block: var(--space-3);
-    padding-inline: var(--space-4);
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-normal);
+    line-height: var(--font-step-1-line);
+    padding-block: var(--space-2);
+    padding-inline: var(--space-2);
     border: 1px solid var(--error-border);
     border-radius: var(--radius-md);
     background: var(--error-soft);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
     color: var(--error-text);
   }
 
   .aboutValue {
     font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     color: var(--text-3);
   }
 
@@ -158,16 +158,16 @@
   }
 
   .categoryRow {
-    min-block-size: calc(var(--rail-w-collapsed) + var(--space-6));
-    font-size: var(--text-md);
+    font-size: var(--font-step-3-size);
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-3));
   }
 
   @media (width < 60rem) {
     .controlRow {
       flex-direction: column;
       align-items: stretch;
-      gap: var(--space-5);
-      padding-block: var(--space-7);
+      gap: var(--space-3);
+      padding-block: var(--space-4);
     }
 
     .controlRow > span {
@@ -180,10 +180,10 @@
     }
 
     .controlRow > span:first-of-type > span {
+      font-size: var(--font-step-3-size);
+      line-height: var(--font-step-3-line);
       white-space: normal;
       overflow: visible;
-      font-size: var(--text-md);
-      line-height: var(--leading-snug);
     }
 
     .controlRow > span:last-child > * {
@@ -191,13 +191,13 @@
     }
 
     .controlRow input {
-      font-size: var(--text-md);
+      font-size: var(--font-step-3-size);
     }
 
     .form {
       inline-size: 100%;
       max-inline-size: none;
-      padding-block-end: var(--space-8);
+      padding-block-end: var(--space-4);
     }
 
   }
@@ -209,7 +209,7 @@
      visibly off the line it belongs to. */
   .rowTitle {
     display: inline-flex;
-    gap: var(--space-3);
+    gap: var(--space-2);
     align-items: baseline;
   }
 
@@ -217,10 +217,8 @@
      annotation on the name rather than as part of it. Monospaced, because a
      version is a string you compare character by character. */
   .rowTitleSuffix {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    font: var(--type-code);
+    letter-spacing: var(--type-code-tracking);
     color: var(--text-3);
   }
 
@@ -231,7 +229,7 @@
   .pluginMeta {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--space-1);
     align-items: start;
   }
 
@@ -243,8 +241,8 @@
 
   .pluginId {
     font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     color: var(--text-3);
   }
 
@@ -254,8 +252,8 @@
      row's own voice, one step above the id's tone because it is read and not
      looked up. */
   .pluginEffectBoundary {
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     color: var(--text-2);
   }
 
@@ -292,7 +290,7 @@
   .pluginControls {
     display: flex;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-2);
   }
 
   /*
@@ -379,14 +377,14 @@
    * the two read as one family of message rather than two designs.
    */
   .notice {
-    padding-block: var(--space-3);
-    padding-inline: var(--space-4);
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-normal);
+    line-height: var(--font-step-1-line);
+    padding-block: var(--space-2);
+    padding-inline: var(--space-2);
     border: 1px solid var(--warn-border);
     border-radius: var(--radius-md);
     background: var(--warn-soft);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
     color: var(--warn-text);
   }
 
@@ -394,9 +392,9 @@
   .newTask {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
-    margin-block-start: var(--space-4);
-    padding-block-start: var(--space-4);
+    gap: var(--space-2);
+    margin-block-start: var(--space-2);
+    padding-block-start: var(--space-2);
     border-block-start: 1px solid var(--hairline);
   }
 }

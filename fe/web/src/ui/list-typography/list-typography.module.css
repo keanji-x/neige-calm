@@ -1,30 +1,25 @@
 @layer ui {
   /* Both navigation surfaces use these roles. Layout belongs to their hosts. */
-  .primary,
-  .group,
-  .section,
-  .secondary,
-  .count {
-    font-family: var(--font-sans);
-    letter-spacing: var(--tracking-normal);
-  }
   .primary {
-    font: var(--list-primary-font, var(--type-content));
+    font: var(--type-content);
+    letter-spacing: var(--type-content-tracking);
     color: var(--text);
   }
   .group {
-    font: var(--list-group-font, var(--type-ui));
+    font: var(--type-ui);
+    letter-spacing: var(--type-ui-tracking);
     color: var(--text);
   }
   .section,
   .secondary,
   .count {
     font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
     color: var(--text-3);
   }
   .section {
-    font: var(--list-section-font, var(--type-navigation-label));
-    letter-spacing: var(--list-section-tracking, var(--tracking-normal));
+    font: var(--type-navigation-label);
+    letter-spacing: var(--type-navigation-label-tracking);
     text-transform: var(--list-section-transform, none);
   }
   .count {
@@ -33,7 +28,7 @@
   }
   /* Black is the opaque alpha-mask stop; it does not supply a text colour. */
   .fade {
-    mask-image: linear-gradient(to right, black calc(100% - var(--space-8)), transparent);
+    mask-image: linear-gradient(to right, black calc(100% - var(--space-4)), transparent);
   }
 
   .medium {

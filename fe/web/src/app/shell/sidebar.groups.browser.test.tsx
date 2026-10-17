@@ -67,7 +67,7 @@ it('keeps category headers glyph-free and reserves the disclosure glyph for Area
     expect(area.querySelectorAll('svg').length).toBe(1);
     expect(section.querySelectorAll('svg').length).toBe(0);
     expect(area.querySelector('[title]')!.getBoundingClientRect().left)
-      .toBeGreaterThan(section.querySelector('[title]')!.getBoundingClientRect().left);
+      .toBe(section.querySelector('[title]')!.getBoundingClientRect().left);
     for (const title of ['Running', 'Unread', 'Pinned', 'Waiting on you', 'Areas']) {
       for (const action of ['Collapse', 'Expand']) {
         const disclosure = page.getByRole('button', { name: `${action} ${title}`, exact: true });
@@ -86,6 +86,8 @@ it('indents Area tracks beyond the Area label and preserves the selected inset',
   const selected = group.getByRole('button', { name: /^Track Build frontend/ }).element();
   expect(selected.querySelector('[title]')!.getBoundingClientRect().left).toBeGreaterThan(areaTitle.getBoundingClientRect().left);
   expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeGreaterThan(0);
+  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeCloseTo(
+    textBounds(selected.querySelector('[title]')!).left - textBounds(areaTitle).left, 1);
   expect(selected.getAttribute('aria-current')).toBe('page');
 });
 
@@ -109,7 +111,7 @@ it.each(['rail', 'panel'] as const)('centres both activity sizes in the %s actio
   const track: Track = { id: 'slot', title: 'Slot geometry', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   const tree = (working: boolean) => <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
-    <div style={{ inlineSize: '15rem' }}><TrackRow track={{ ...track, working }} variant={variant}
+    <div style={{ inlineSize: '15rem' }}><TrackRow track={{ ...track, working }} {...(variant === 'rail' ? { variant, presentation: { kind: 'entry' as const, depth: 0 as const } } : { variant })}
       unread={!working} onOpen={vi.fn()} onDelete={vi.fn()} onSetPinned={vi.fn()} /></div>
   </ThemeProvider>;
   const view = render(tree(false));
@@ -157,7 +159,7 @@ it('keeps long rail labels within the shared columns without horizontal scrollin
     const expected = today.element().lastElementChild!.getBoundingClientRect().left;
     const areaButton = page.getByRole('button', { name: `Collapse area ${areaName}`, exact: true });
     const areaTitle = areaButton.element().querySelector<HTMLElement>('[title]')!;
-    expect(areaTitle.getBoundingClientRect().left).toBeGreaterThan(expected);
+    expect(areaTitle.getBoundingClientRect().left).toBe(expected);
     const areaMenu = page.getByRole('button', { name: `Area actions for ${areaName}`, exact: true });
     expect(areaTitle.getBoundingClientRect().right).toBeLessThanOrEqual(areaMenu.element().getBoundingClientRect().left);
     const group = page.getByRole('group', { name: `area ${areaName}`, exact: true });
@@ -178,7 +180,7 @@ it('lets clicks in a decorative status slot reach Track navigation', async () =>
   const track: Track = { id: 'slot', title: 'Status target', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY, working: true };
   render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
-    <div style={{ inlineSize: '15rem' }}><TrackRow track={track} variant="rail" onOpen={onOpen} /></div>
+    <div style={{ inlineSize: '15rem' }}><TrackRow track={track} variant="rail" presentation={{ kind: 'entry', depth: 0 }} onOpen={onOpen} /></div>
   </ThemeProvider>);
   const row = page.getByRole('button', { name: /^Track Status target/ });
   const box = row.element().getBoundingClientRect();
@@ -192,7 +194,7 @@ it('places view options and preserves disclosure and keyboard navigation', async
     .querySelector<HTMLElement>('[title="Areas"]')!;
   const areaTitle = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element()
     .querySelector<HTMLElement>('[title="Work"]')!;
-  expect(areaTitle.getBoundingClientRect().left).toBeGreaterThan(areasTitle.getBoundingClientRect().left);
+  expect(areaTitle.getBoundingClientRect().left).toBe(areasTitle.getBoundingClientRect().left);
 
   const areasButton = areasDisclosure.element();
   expect(areasButton.querySelector('svg')).toBeNull();
@@ -419,7 +421,7 @@ it('fades only overflowing rail titles and keeps the action menu distinct', asyn
   const base: Track = { id: 'long', title: '', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   const tree = (title: string, width: string) => <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
-    <div style={{ inlineSize: width }}><TrackRow track={{ ...base, title }} variant="rail"
+    <div style={{ inlineSize: width }}><TrackRow track={{ ...base, title }} variant="rail" presentation={{ kind: 'entry', depth: 0 }}
       onOpen={vi.fn()} onDelete={vi.fn()}
       actions={{ areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() }} /></div>
   </ThemeProvider>;
@@ -454,7 +456,7 @@ it('reveals Track controls on hover or focus and lets the title use idle space',
   const track: Track = { id: 'hover', title, areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
-    <div style={{ inlineSize: '14rem' }}><TrackRow track={track} variant="rail" unread onOpen={vi.fn()} onDelete={vi.fn()}
+    <div style={{ inlineSize: '14rem' }}><TrackRow track={track} variant="rail" presentation={{ kind: 'entry', depth: 0 }} unread onOpen={vi.fn()} onDelete={vi.fn()}
       actions={{ areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() }} /></div>
     <button type="button">Outside row</button>
   </ThemeProvider>);
@@ -485,4 +487,26 @@ it('reveals Track controls on hover or focus and lets the title use idle space',
   expect(getComputedStyle(menu.element()).opacity).toBe('1');
   await userEvent.keyboard('{Escape}');
   await expect.element(menu).toHaveFocus();
+});
+
+function textBounds(node: Element) {
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  return range.getBoundingClientRect();
+}
+
+it('aligns Area and flat entry text in one schema-owned column and type', async () => {
+  await scene(true);
+  const area = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element().querySelector('[title]')!;
+  const flat = page.getByRole('group', { name: 'Waiting on you', exact: true }).element().querySelector('[title="Review result"]')!;
+  const font = (node: Element) => {
+    const style = getComputedStyle(node);
+    return [style.fontFamily, style.fontSize, style.fontWeight, style.lineHeight, style.letterSpacing];
+  };
+  const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
+  for (const width of ['15rem', '11rem']) {
+    rail.style.inlineSize = width;
+    expect.soft(textBounds(area).left).toBeCloseTo(textBounds(flat).left, 1);
+    expect.soft(font(area)).toEqual(font(flat));
+  }
 });

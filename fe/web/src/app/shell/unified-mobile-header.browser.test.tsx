@@ -1,5 +1,5 @@
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
-import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
+import { withFontRoleProbe, fontRoleSnapshot } from '../../../../tools/styles/font-role-fixture.ts';
 import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -452,8 +452,10 @@ describe('Unified mobile headers', () => {
         ?? header.querySelector<HTMLElement>('[aria-label^="Switch area,"]')
         ?? header.querySelector<HTMLElement>('h1, h2')!;
       if (root || workspace) {
-        expect(getComputedStyle(title).fontSize).toBe('17px');
-        expect(getComputedStyle(title).fontWeight).toBe('500');
+        const expected = fontRoleSnapshot('--type-detail', header);
+        expect(getComputedStyle(title)).toMatchObject({ fontFamily: expected.fontFamily,
+          fontSize: expected.fontSize, lineHeight: expected.lineHeight,
+          fontWeight: getComputedStyle(title).getPropertyValue('--weight-medium').trim() });
       } else {
         withFontRoleProbe('--type-page-title', header, expected => {
           expect(getComputedStyle(title)).toMatchObject(expected);

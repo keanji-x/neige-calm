@@ -32,11 +32,11 @@ const navigation = {
 describe('shared Track title in production hosts', () => {
   it.each(['default', 'compact', 'panel', 'rail'] as const)('strikes only closed title text in the %s row and restores it on reopen', (variant) => {
     const closed = track({ closedAt: 5, working: true });
-    const view = render(<TrackRow track={closed} variant={variant} onOpen={vi.fn()} />);
+    const view = render(<TrackRow track={closed} {...(variant === 'rail' ? { variant, presentation: { kind: 'entry' as const, depth: 0 as const } } : { variant })} onOpen={vi.fn()} />);
     const button = screen.getByRole('button', { name: 'Track Alpha, working, closed' });
     expect(decoration(button)).toBe('line-through');
     expect(getComputedStyle(button).textDecorationLine).toBe('none');
-    view.rerender(<TrackRow track={track()} variant={variant} onOpen={vi.fn()} />);
+    view.rerender(<TrackRow track={track()} {...(variant === 'rail' ? { variant, presentation: { kind: 'entry' as const, depth: 0 as const } } : { variant })} onOpen={vi.fn()} />);
     expect(decoration(screen.getByRole('button', { name: 'Track Alpha' }))).toBe('none');
   });
 

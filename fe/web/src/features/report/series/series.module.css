@@ -33,28 +33,28 @@
   }
 
   .caption {
-    margin-block: 0 var(--space-4);
     font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
+    margin-block: 0 var(--space-2);
     color: var(--text-3);
     text-align: start;
   }
 
   .figure .caption {
-    margin-block: var(--space-4) 0;
+    margin-block: var(--space-2) 0;
   }
 
   .head {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: 1;
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: var(--space-4);
-    padding-block-end: var(--space-3);
+    gap: var(--space-2);
+    padding-block-end: var(--space-2);
     border-block-end: 1px solid var(--hairline);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
     color: var(--text-3);
   }
 
@@ -64,39 +64,39 @@
   }
 
   .detailBody {
+    line-height: var(--type-ui-leading);
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-3);
-    padding-block: var(--space-3);
+    gap: var(--space-2);
+    padding-block: var(--space-2);
     overflow-wrap: anywhere;
-    line-height: var(--leading-snug);
   }
 
   .plot {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
-    column-gap: var(--space-3);
+    column-gap: var(--space-2);
   }
 
   .yAxis,
   .xAxis {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
     display: flex;
     justify-content: space-between;
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
     color: var(--text-3);
     font-variant-numeric: tabular-nums;
   }
 
   .yAxis {
-    flex-direction: column;
-    padding-block: var(--space-5);
     line-height: 1;
+    flex-direction: column;
+    padding-block: var(--space-3);
   }
 
   .xAxis {
     grid-column: 2;
-    margin-block-end: var(--space-4);
+    margin-block-end: var(--space-2);
   }
 
   .gridline {
@@ -123,7 +123,7 @@
     display: block;
     inline-size: 100%;
     block-size: 208px;
-    margin-block: var(--space-5);
+    margin-block: var(--space-3);
   }
 
   .line {
@@ -163,22 +163,22 @@
   .s8 { color: var(--nc-series-8); }
 
   .legend {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: 1;
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-3) var(--space-5);
+    gap: var(--space-2) var(--space-3);
     margin: 0;
     padding: 0;
     list-style: none;
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
     color: var(--text-3);
   }
 
   .legendItem {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-1);
     flex-wrap: wrap;
   }
 
@@ -192,8 +192,8 @@
   }
 
   .legendValue {
-    color: var(--text);
     font-weight: var(--weight-semibold);
+    color: var(--text);
     font-variant-numeric: tabular-nums;
   }
 

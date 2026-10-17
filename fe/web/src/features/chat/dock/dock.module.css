@@ -2,9 +2,9 @@
   .bar {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-1);
     box-sizing: border-box;
-    block-size: calc(var(--rail-w-collapsed) + var(--space-2));
+    block-size: var(--control-h-touch);
     padding: var(--space-px);
     background: var(--paper);
     border: 1px solid var(--hairline);
@@ -22,29 +22,29 @@
     block-size: var(--rail-w-collapsed);
     border-radius: var(--radius-pill);
     box-sizing: border-box;
-    padding: var(--space-1);
+    padding: var(--space-half);
     background-clip: content-box;
     cursor: pointer;
   }
 
   .send svg {
-    inline-size: calc(var(--glyph) + var(--space-4));
-    block-size: calc(var(--glyph) + var(--space-4));
+    inline-size: var(--glyph-xl);
+    block-size: var(--glyph-xl);
   }
 
   .send:disabled { background-color: var(--surface-chip); color: var(--text-2); cursor: default; }
 
   .input {
+    font-size: var(--font-step-3-size);
+    line-height: var(--font-step-3-line);
     flex: 1;
     min-inline-size: 0;
     block-size: var(--rail-w-collapsed);
-    padding: var(--space-5) var(--space-6);
+    padding: var(--space-3) var(--space-3);
     border: 0;
     box-shadow: none;
     resize: none;
     background: transparent;
-    font-size: max(var(--text-md), 1rem);
-    line-height: 1.625;
     color: var(--text);
   }
 

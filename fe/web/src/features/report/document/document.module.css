@@ -1,13 +1,13 @@
 @layer features {
   .field :is(p, li, blockquote, table, h2, h3) { font: inherit; }
-  .field :is(p, h2, h3, ul, ol, blockquote) { margin-block: var(--space-4); }
+  .field :is(p, h2, h3, ul, ol, blockquote) { margin-block: var(--space-2); }
   .field > :first-child { margin-block-start: 0; }
   .field > :last-child { margin-block-end: 0; }
 
   /*
    * The report's own layer, on top of `calm-prose`.
    *
-   * Everything about *prose* — serif, `--text-lg`, `--leading-loose`, the
+   * Everything about *prose* — serif, the reading role and its paired leading, the
    * measure, the block rhythm — lives in base.css and is shared with every
    * other surface that renders authored text. What is here is what makes a
    * report a report:
@@ -56,13 +56,14 @@
       var(--document-start, 0px)
       minmax(0, var(--document-measure, 40rem))
       minmax(0, 1fr);
-    row-gap: var(--space-8);
+    row-gap: var(--space-4);
 
     inline-size: 100%;
     max-inline-size: none;
     counter-reset: report-section;
     /* Honor a larger user root font without changing the global prose contract. */
     font: var(--type-reading);
+    letter-spacing: var(--type-reading-tracking);
   }
 
   /* One block, plus its sidenote. Placed explicitly — the rail claims column 1,
@@ -108,7 +109,7 @@
   /* The block rhythm `calm-prose` gives its own direct children, given to the
      blocks inside a block — which are now one level deeper. */
   .block > * + * {
-    margin-block-start: var(--space-8);
+    margin-block-start: var(--space-4);
   }
 
   .byline,
@@ -149,7 +150,7 @@
    * the appendix. No counter here — `Reference` is not section five, and
    * incrementing for it would renumber the report every time a task appears.
    *
-   * Serif and `--text-xl` like `.h1`, not the sans caption it was: the earlier
+   * Serif and `--type-chapter` like `.h1`, not the sans caption it was: the earlier
    * note argued sans said "this row is the reader's control, not something the
    * document wrote", but the control is the fold, and a document that sets one
    * of its own section heads in a different family to say so has spent a
@@ -168,10 +169,10 @@
     position: relative;
     display: flex;
     align-items: baseline;
-    gap: var(--space-7);
-    margin-block-start: calc(var(--space-12) + var(--space-6));
-    margin-block-end: var(--space-6);
-    letter-spacing: var(--tracking-normal);
+    gap: var(--space-4);
+    margin-block-start: calc(var(--space-6) + var(--space-3));
+    margin-block-end: var(--space-3);
+    letter-spacing: var(--type-chapter-tracking);
     color: var(--text);
     font: var(--type-chapter);
   }
@@ -188,7 +189,7 @@
   }
 
   /*
-   * Where `01` would be. `inset-inline-end: calc(100% + --space-10)` is
+   * Where `01` would be. `inset-inline-end: calc(100% + --space-5)` is
    * `.h1::before`'s own placement, so the chevron and the section numbers form
    * one column down the margin rather than two things near each other.
    *
@@ -199,7 +200,7 @@
    * In the flow, pulled into the margin — **not absolutely positioned**, and
    * that is what keeps it on screen.
    *
-   * It was `position: absolute` with `inset-inline-end: calc(100% + --space-10)`,
+   * It was `position: absolute` with `inset-inline-end: calc(100% + --space-5)`,
    * copying `.h1::before`'s placement of the section number. Measured: below
    * about 1100px `--document-start` clamps to `0px` (it is a `max(0px, …)` of
    * the leftover), so the marker sat *outside* `.main` — which is
@@ -228,33 +229,33 @@
     inline-size: var(--glyph-sm);
     block-size: var(--glyph-sm);
     /*
-     * `--space-10`, not the row's own `--space-7` gap, and the two numbers do
+     * `--space-5`, not the row's own `--space-4` gap, and the two numbers do
      * different jobs. The *pull* is the marker's box plus the distance that
      * puts its trailing edge on `.h1::before`'s — which hangs at
-     * `calc(100% + --space-10)` — so the chevron and the section numbers form
+     * `calc(100% + --space-5)` — so the chevron and the section numbers form
      * one column rather than two things 10px apart. The `margin-inline-end`
-     * then tops the row's gap up to that same `--space-10` so the word still
+     * then tops the row's gap up to that same `--space-5` so the word still
      * lands on the section-title column.
      */
     /*
      * **The trailing margin is derived from the same clamped value, not written
-     * as a constant.** It was `--space-10 − --space-7`, a fixed 10, which is
-     * right only while the pull is unclamped: at a gutter of 28 the pull clamps
-     * to 28 while the gap stayed 24, and the word — the thing this rule exists
+     * as a constant.** It was a fixed 10px trailing margin, which is
+     * right only while the pull is unclamped: at a gutter narrower than the full pull the pull clamps
+     * while the gap stayed 24, and the word — the thing this rule exists
      * to align — sat 10px right of every section title. So the gap is whatever
      * the surviving pull leaves over, `max()`-floored at zero for gutters too
      * small to hold even the glyph.
      *
      * It degrades in the right order: at a full gutter the word aligns *and*
-     * the chevron is on the number column; from 38 down to 28 the word still
+     * the chevron is on the number column; from the full pull down to the marker plus the row gap the word still
      * aligns and the chevron walks inward; below that the chevron sits before
      * the word and alignment is what gives way — the correct thing to lose,
      * since the chevron is the only remaining sign that the heading opens.
      */
-    --_pull: min(var(--glyph-sm) + var(--space-10), var(--document-start, 0px));
+    --_pull: min(var(--glyph-sm) + var(--space-5), var(--document-start, 0px));
 
     margin-inline-start: calc(-1 * var(--_pull));
-    margin-inline-end: max(0px, calc(var(--_pull) - var(--glyph-sm) - var(--space-7)));
+    margin-inline-end: max(0px, calc(var(--_pull) - var(--glyph-sm) - var(--space-4)));
     color: var(--text-3);
     transition: none;
   }
@@ -279,12 +280,12 @@
   }
 
   /* The heading's own type comes from `.referenceHead`; this only has to stop
-     `base.css`'s `.calm-prose h2` recipe — serif at `--text-md`, semibold —
+     `base.css`'s `.calm-prose h2` recipe — serif at the subheading role, semibold —
      from re-sizing the word inside it. */
   .referenceTitle {
-    min-inline-size: 0;
     font: inherit;
     letter-spacing: inherit;
+    min-inline-size: 0;
     color: inherit;
   }
 
@@ -294,14 +295,14 @@
      label. Tabular figures so two of these do not sit on different edges. */
   .referenceCount {
     flex: none;
-    letter-spacing: var(--tracking-normal);
+    letter-spacing: var(--type-metadata-tracking);
     color: var(--text-3);
     font: var(--type-metadata);
     font-variant-numeric: tabular-nums;
   }
 
   .appendix {
-    margin-inline-start: var(--document-start, 0px);
+    margin-inline-start: var(--document-start, 0);
     inline-size: min(100%, var(--document-measure, 40rem));
     min-inline-size: 0;
   }
@@ -309,13 +310,13 @@
   .detailEntry {
     --document-start: 0px;
     --document-measure: 100%;
-    margin-block-start: var(--space-8);
+    margin-block-start: var(--space-4);
   }
 
   .detailEntry > .referenceSummary > .referenceHead {
     margin-block-start: 0;
-    gap: var(--space-3);
-    letter-spacing: var(--tracking-normal);
+    gap: var(--space-2);
+    letter-spacing: var(--type-chapter-tracking);
     font: var(--type-chapter);
   }
 
@@ -327,6 +328,7 @@
     overflow-wrap: anywhere;
     text-align: end;
     font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
   }
 
   .referenceItem {
@@ -343,7 +345,7 @@
      entry after it got `--space-8`. */
   .referenceSummary + .referenceItem,
   .referenceItem + .referenceItem {
-    margin-block-start: var(--space-8);
+    margin-block-start: var(--space-4);
   }
 
   /* Inline rather than in the trailing gutter: an appendix entry is not in the
@@ -351,11 +353,11 @@
      rank and same glyph as `.sidenote`, so the marker still reads as the same
      thing it is elsewhere in the document. */
   .referenceSidenote {
-    display: inline-block;
-    margin-block-start: var(--space-2);
     font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
+    display: inline-block;
+    margin-block-start: var(--space-1);
     color: var(--text-3);
     white-space: nowrap;
   }
@@ -367,13 +369,13 @@
    * peripheral vision finds it and nothing is in the way.
    */
   .sidenote {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     grid-column: 3;
     align-self: start;
-    padding-block-start: var(--space-2);
-    padding-inline-start: var(--space-8);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    padding-block-start: var(--space-1);
+    padding-inline-start: var(--space-4);
     color: var(--text-3);
     white-space: nowrap;
   }
@@ -406,9 +408,9 @@
   /* A block this build cannot draw. One line, in the machine register, so it
      reads as a gap in the *viewer* rather than as a defect in the report. */
   .unsupported {
-    padding-block: var(--space-4);
     font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
+    padding-block: var(--space-2);
     color: var(--text-3);
   }
 
@@ -418,11 +420,11 @@
    * and the underline is the only thing that says it leads anywhere.
    */
   .link {
+    font: inherit;
     display: inline;
     padding: 0;
     border: none;
     background: none;
-    font: inherit;
     color: var(--accent);
     text-align: start;
     text-decoration: underline;
@@ -438,7 +440,7 @@
 
   /*
    * A section. The kernel splits a report at H1, so this is the rank that earns
-   * the number and the rule, and `--space-12 + --space-6` above it is the
+   * the number and the rule, and `--space-6 + --space-3` above it is the
    * largest break in the document — what makes sections read as sections.
    *
    * The heading is a flex row: its text, then the trailing rule taking exactly
@@ -451,10 +453,10 @@
     counter-increment: report-section;
     display: flex;
     align-items: baseline;
-    gap: var(--space-7);
-    margin-block-start: calc(var(--space-12) + var(--space-6));
-    margin-block-end: var(--space-6);
-    letter-spacing: var(--tracking-normal);
+    gap: var(--space-4);
+    margin-block-start: calc(var(--space-6) + var(--space-3));
+    margin-block-end: var(--space-3);
+    letter-spacing: var(--type-chapter-tracking);
     color: var(--text);
     font: var(--type-chapter);
   }
@@ -472,15 +474,12 @@
    * as a column of their own however wide they get.
    */
   .h1::before {
+    font: var(--type-code);
+    letter-spacing: var(--type-code-tracking);
     content: counter(report-section, decimal-leading-zero);
     white-space: nowrap;
     position: absolute;
-    inset-inline-end: calc(100% + var(--space-10));
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-loose);
-    letter-spacing: var(--tracking-wide);
+    inset-inline-end: calc(100% + var(--space-5));
     color: var(--accent);
     opacity: var(--report-section-number-opacity, 1);
     transition: opacity var(--motion-quick) var(--ease-feedback);
@@ -522,10 +521,11 @@
   /* A subsection: no number and no rule. One numbered rank, or the numbering
      stops meaning "section". */
   .h2 {
-    margin-block-start: var(--space-11);
-    margin-block-end: var(--space-6);
+    margin-block-start: var(--space-6);
+    margin-block-end: var(--space-3);
     color: var(--text);
     font: var(--type-subheading);
+    letter-spacing: var(--type-subheading-tracking);
   }
 
   /* Both headings own their spacing outright, so the generic sibling rule must
@@ -536,7 +536,7 @@
   }
 
   .list {
-    padding-inline-start: var(--space-10);
+    padding-inline-start: var(--space-5);
   }
 
   /* The marker is restored explicitly: the app's reset strips `list-style` from
@@ -556,7 +556,7 @@
   }
 
   .item + .item {
-    margin-block-start: var(--space-3);
+    margin-block-start: var(--space-2);
   }
 
   /* A list item's own paragraphs carry no extra block margin: the item is the
@@ -566,13 +566,13 @@
   }
 
   .check {
-    margin-inline-end: var(--space-3);
+    margin-inline-end: var(--space-2);
   }
 
   .quote {
     margin-inline: 0;
-    padding-block: var(--space-2);
-    padding-inline-start: var(--space-7);
+    padding-block: var(--space-1);
+    padding-inline-start: var(--space-4);
     border-inline-start: 2px solid var(--hairline-strong);
     color: var(--text-3);
   }
@@ -582,19 +582,21 @@
      too, and a fill that already separates does not also get a line. */
   .raw {
     overflow-x: auto;
-    padding: var(--space-6);
+    padding: var(--space-3);
     border-radius: var(--radius-sm);
     background: var(--surface-code);
     color: var(--text-2);
     font: var(--type-code);
+    letter-spacing: var(--type-code-tracking);
     white-space: pre-wrap;
   }
 
   .inlineCode {
-    padding-inline: var(--space-2);
+    padding-inline: var(--space-1);
     border-radius: var(--radius-sm);
     background: var(--surface-code);
     font: var(--type-code);
+    letter-spacing: var(--type-code-tracking);
   }
 
   .strong {
@@ -612,11 +614,12 @@
     inline-size: 100%;
     border-collapse: collapse;
     font: var(--type-table);
+    letter-spacing: var(--type-table-tracking);
   }
 
   .cell {
-    padding-block: var(--space-4);
-    padding-inline: var(--space-4) var(--space-6);
+    padding-block: var(--space-2);
+    padding-inline: var(--space-2) var(--space-3);
     border-block-end: 1px solid var(--hairline);
     text-align: start;
     vertical-align: top;
@@ -624,13 +627,13 @@
   }
 
   th.cell {
-    color: var(--text);
     font-weight: var(--weight-semibold);
+    color: var(--text);
   }
 
   .rule {
     block-size: 1px;
-    margin-block: var(--space-10);
+    margin-block: var(--space-5);
     border: none;
     background: var(--hairline);
   }
@@ -646,15 +649,14 @@
      must not keep its fixed document measure and widen the viewport. */
   @media (width < 60rem) {
     .outlineOnly > .row { display: none; }
-    .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-12); max-inline-size: 21rem; }
-    .mobileEmpty h2 { font-family: var(--font-sans); font-size: calc(var(--text-xl) + var(--space-2)); font-weight: var(--weight-semibold); line-height: 1.3077; }
-    .mobileEmpty p { font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; color: var(--text-3); margin-block-start: var(--space-6); }
-    .doc {
+    .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-6); max-inline-size: 21rem; }
+    .mobileEmpty h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }
+    .mobileEmpty p { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); color: var(--text-3); margin-block-start: var(--space-3); }
+    .doc { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line);
       grid-template-columns: minmax(0, min(100%, var(--document-measure, 40rem)));
       justify-content: center;
       max-inline-size: 100%;
       overflow-wrap: anywhere;
-    font: var(--type-reading);
   }
 
     .block,
@@ -681,23 +683,22 @@
   /* Compact reading uses type and spacing; the desktop section rail remains unchanged. */
   @media (width < 60rem) {
     .outlineOnly > .row { display: none; }
-    .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-12); max-inline-size: 21rem; }
-    .mobileEmpty h2 { font-family: var(--font-sans); font-size: calc(var(--text-xl) + var(--space-2)); font-weight: var(--weight-semibold); line-height: 1.3077; }
-    .mobileEmpty p { font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; color: var(--text-3); margin-block-start: var(--space-6); }
-    .doc { font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; row-gap: var(--space-10); }
-    .h1, .h2, .referenceHead { font-family: var(--font-sans); font-weight: var(--weight-semibold); }
-    .h1, .referenceHead { font-size: max(var(--text-lg), 1.125rem); margin-block-start: var(--space-10); margin-block-end: var(--space-4); line-height: 1.4445; }
+    .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-6); max-inline-size: 21rem; }
+    .mobileEmpty h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }
+    .mobileEmpty p { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); color: var(--text-3); margin-block-start: var(--space-3); }
+    .doc { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); row-gap: var(--space-5); }
+    .h1, .referenceHead { font-size: var(--font-step-4-size); line-height: var(--font-step-4-line); margin-block-start: var(--space-5); margin-block-end: var(--space-2); }
     .list:has(> .item > .check) { padding-inline-start: 0; }
-    .item:has(> .check) { min-block-size: var(--rail-w-collapsed); display: flex; align-items: center; gap: var(--space-6); }
-    .item:has(> .check) + .item { margin-block-start: var(--space-4); }
-    .check { appearance: none; flex: none; inline-size: calc(var(--glyph) + var(--space-2)); block-size: calc(var(--glyph) + var(--space-2)); margin: 0; border: 1px solid var(--hairline-strong); border-radius: var(--radius-sm); background: var(--paper); opacity: 1; position: relative; }
+    .item:has(> .check) { min-block-size: var(--rail-w-collapsed); display: flex; align-items: center; gap: var(--space-3); }
+    .item:has(> .check) + .item { margin-block-start: var(--space-2); }
+    .check { appearance: none; flex: none; inline-size: calc(var(--glyph) + var(--space-1)); block-size: calc(var(--glyph) + var(--space-1)); margin: 0; border: 1px solid var(--hairline-strong); border-radius: var(--radius-sm); background: var(--paper); opacity: 1; position: relative; }
     .check:checked { background: var(--accent); border-color: var(--accent); }
-    .check:checked::after { content: ''; position: absolute; inset-inline-start: var(--space-3); inset-block-start: var(--space-1); inline-size: var(--space-3); block-size: var(--space-6); border: solid var(--paper); border-width: 0 var(--space-px) var(--space-px) 0; transform: rotate(45deg); }
+    .check:checked::after { content: ''; position: absolute; inset-inline-start: 6px; inset-block-start: var(--space-half); inline-size: 6px; block-size: var(--space-3); border: solid var(--paper); border-width: 0 var(--space-px) var(--space-px) 0; transform: rotate(45deg); }
     .item:has(> .check:checked) { text-decoration: line-through; color: var(--text-3); }
-    .appendix .referenceHead { font-size: var(--text-md); font-weight: var(--weight-medium); line-height: 1.4667; align-items: center; gap: var(--space-4); min-block-size: var(--rail-w-collapsed); }
-    .appendix .referenceMarker { inline-size: var(--space-10); block-size: var(--space-10); margin-inline: 0; }
-    .appendix .referenceMarker svg { inline-size: var(--space-10); block-size: var(--space-10); }
-    .h2 { font-size: max(var(--text-md), 1rem); }
+    .appendix .referenceHead { font-size: var(--font-step-3-size); font-weight: var(--weight-medium); line-height: var(--font-step-3-line); align-items: center; gap: var(--space-2); min-block-size: var(--rail-w-collapsed); }
+    .appendix .referenceMarker { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); margin-inline: 0; }
+    .appendix .referenceMarker svg { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); }
+    .h2 { font-size: var(--font-step-3-size); }
     .h1::after, .referenceHead::after { display: none; }
   }
 

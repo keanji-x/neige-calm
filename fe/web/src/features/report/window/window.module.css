@@ -40,19 +40,19 @@
 
   /* On its own surface, so the state stays legible over whatever the old frame shows. */
   .label {
-    padding: var(--space-1) var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--font-step-1-size);
+    padding: var(--space-half) var(--space-2);
     border-radius: var(--radius-sm);
     background: var(--surface-card);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
     color: var(--text-2);
   }
 
   .caption {
-    margin-block-start: var(--space-3);
     font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
+    margin-block-start: var(--space-2);
     color: var(--text-3);
   }
 }

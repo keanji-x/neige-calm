@@ -13,6 +13,7 @@
     inline-size: 100%;
     border-collapse: collapse;
     font: var(--type-table);
+    letter-spacing: var(--type-table-tracking);
   }
 
   /* Dense tables retain a reading measure; their wrapper owns horizontal
@@ -22,20 +23,21 @@
   }
 
   .caption {
-    margin-block-end: var(--space-4);
+    margin-block-end: var(--space-2);
     color: var(--text-3);
     text-align: start;
     font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
   }
 
   /* The editorial header: small, uppercase, tracked. It is a label, so it takes
      the label register rather than a bolder version of the data. */
   .head {
-    padding-block: var(--space-2) var(--space-3);
-    padding-inline: var(--space-4) var(--space-6);
+    padding-block: var(--space-1) var(--space-2);
+    padding-inline: var(--space-2) var(--space-3);
     border-block-end: 1px solid var(--hairline-strong);
     color: var(--text-3);
-    letter-spacing: var(--tracking-label);
+    letter-spacing: var(--type-label-tracking);
     text-align: start;
     text-transform: uppercase;
     white-space: nowrap;
@@ -44,8 +46,8 @@
 
   .cell {
     overflow-wrap: normal;
-    padding-block: var(--space-3);
-    padding-inline: var(--space-4) var(--space-6);
+    padding-block: var(--space-2);
+    padding-inline: var(--space-2) var(--space-3);
     border-block-end: 1px solid var(--hairline);
     color: var(--text-2);
     text-align: start;

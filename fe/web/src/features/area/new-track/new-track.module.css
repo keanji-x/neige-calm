@@ -6,7 +6,7 @@
   .editor {
     display: flex;
     align-items: baseline;
-    gap: var(--space-2);
+    gap: var(--space-1);
     min-inline-size: 0;
   }
 
@@ -43,17 +43,17 @@
    * problem: it looks fine until it silently is not.
    */
   .page {
+    font-family: var(--font-sans);
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
     align-items: safe center;
     justify-content: safe center;
     min-block-size: 0;
-    padding-block: var(--space-10) var(--space-11);
-    padding-inline: var(--space-10);
+    padding-block: var(--space-5) var(--space-6);
+    padding-inline: var(--space-5);
     overflow: auto;
     color: var(--text);
-    font-family: var(--font-sans);
   }
 
   /*
@@ -69,9 +69,9 @@
    * the measure you will be reading at.
    */
   .form {
+    font-family: var(--font-sans);
     inline-size: min(var(--measure-doc), 100%);
     color: var(--text);
-    font-family: var(--font-sans);
   }
 
   /* The page prompt shares the composer's left edge, keeping one reading axis. */
@@ -80,15 +80,15 @@
     flex-direction: row;
     align-items: center;
     justify-content: flex-start;
-    gap: var(--space-4);
-    margin-block-end: var(--space-8);
+    gap: var(--space-2);
+    margin-block-end: var(--space-4);
   }
 
   .introduction {
-    margin-block: 0 var(--space-3);
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
+    margin-block: 0 var(--space-2);
     color: var(--text-2);
-    font-size: var(--text-sm);
-    line-height: var(--leading-base);
   }
 
   .mark {
@@ -96,18 +96,15 @@
     inline-size: 1em;
     block-size: 1em;
     vertical-align: middle;
-    margin-inline-end: var(--space-4);
+    margin-inline-end: var(--space-2);
     color: var(--text-3);
   }
 
   /* The prompt is the main editorial heading; template context stays in interface type. */
   .greeting {
+    font: var(--type-heading);
+    letter-spacing: var(--type-heading-tracking);
     color: var(--text);
-    font-family: var(--font-serif);
-    font-size: var(--text-xl);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-tight);
-    letter-spacing: var(--tracking-tight);
     text-align: start;
   }
 
@@ -242,12 +239,13 @@
 
   @media (width < 60rem) {
     .page {
+      font-family: var(--font-sans);
       justify-content: safe center;
-      padding: var(--space-10) var(--space-6) clamp(var(--space-10), 27dvh, 14rem);
+      padding: var(--space-5) var(--space-3) clamp(var(--space-5), 27dvh, 14rem);
     }
 
     .masthead {
-      margin-block-end: var(--space-8);
+      margin-block-end: var(--space-4);
     }
 
     .mark {
@@ -256,14 +254,14 @@
 
     .greeting {
       font-family: var(--font-sans);
-      font-size: var(--text-xl);
+      font-size: var(--font-step-5-size);
       font-weight: var(--weight-medium);
     }
 
     .input > [contenteditable],
     .input > [aria-hidden="true"] {
-      font-size: var(--text-lg);
-      line-height: var(--leading-base);
+      font-size: var(--font-step-3-size);
+      line-height: var(--font-step-3-line);
     }
 
     .composer .input > [contenteditable] {
@@ -275,7 +273,7 @@
        remaining space and folds its two controls before their labels clip. */
     .composer :has(> :first-child > [data-nc-composer-preferences]) {
       flex-wrap: nowrap;
-      gap: var(--space-4);
+      gap: var(--space-2);
     }
 
     .composer :has(> :first-child > [data-nc-composer-preferences]) > :first-child {
@@ -284,7 +282,7 @@
 
     .composer :has(> :first-child > [data-nc-composer-preferences]) > :last-child {
       flex: none;
-      max-inline-size: calc(100% - var(--space-12) - var(--space-4));
+      max-inline-size: calc(100% - var(--space-6) - var(--space-2));
     }
 
     .modelControls > * {

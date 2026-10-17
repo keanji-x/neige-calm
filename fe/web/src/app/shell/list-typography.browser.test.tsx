@@ -68,12 +68,13 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
       expect(getComputedStyle(node)).toMatchObject(expected);
     });
   };
-  assertRole(name, '--type-action');
+  assertRole(name, '--type-content');
   for (const node of primary) assertRole(node, '--type-content');
   const group = element(document.querySelector<HTMLElement>('[title="Work"]'));
-  assertRole(group, '--type-ui');
-  expect(typography(element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary > span:first-child')))).toEqual(typography(group));
-  expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(group));
+  assertRole(group, '--type-content');
+  const inventoryGroup = element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary > span:first-child'));
+  assertRole(inventoryGroup, '--type-ui');
+  expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(inventoryGroup));
   const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Tools', 'Tasks', 'Conversations'].includes(node.textContent ?? ''));
   expect(panelTitles).toHaveLength(3);
   for (const title of panelTitles) assertRole(title, '--type-navigation-label');

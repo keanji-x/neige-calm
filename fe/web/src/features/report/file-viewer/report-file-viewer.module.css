@@ -15,19 +15,19 @@
       var(--document-start, 0px)
       minmax(0, var(--document-measure, 40rem))
       minmax(0, 1fr);
-    row-gap: var(--space-6);
+    row-gap: var(--space-3);
     inline-size: 100%;
     min-block-size: 100%;
-    padding-block: var(--space-3) var(--space-12);
+    padding-block: var(--space-2) var(--space-6);
   }
 
   /* With no drawable card, the panel column is free. Replace the asymmetric
      document/panel tracks with one centered wide measure and equal gutters. */
   .bodyWide {
     grid-template-columns:
-      minmax(var(--space-8), 1fr)
+      minmax(var(--space-4), 1fr)
       minmax(0, 64rem)
-      minmax(var(--space-8), 1fr);
+      minmax(var(--space-4), 1fr);
   }
 
   .fileName,
@@ -41,10 +41,10 @@
   }
 
   .fileName {
-    overflow: hidden;
     font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    line-height: var(--leading-none);
+    font-size: var(--font-step-1-size);
+    line-height: 1;
+    overflow: hidden;
     color: var(--text-3);
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -53,8 +53,8 @@
   .state,
   .error,
   .notice {
+    font-size: var(--font-step-2-size);
     margin: 0;
-    font-size: var(--text-sm);
     color: var(--text-3);
   }
 
@@ -68,21 +68,21 @@
   }
 
   .markdown > .notice {
-    margin-inline-start: var(--document-start, 0px);
+    margin-inline-start: var(--document-start, 0);
   }
 
   .sourceWrap {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-2);
   }
 
   /* A page gets the viewport's height under the header, like an image's cap. */
   .pageWrap {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
-    block-size: calc(100dvh - var(--header-band, 0px) - var(--space-12));
+    gap: var(--space-2);
+    block-size: calc(100dvh - var(--header-band, 0px) - var(--space-6));
     min-block-size: 20rem;
   }
 
@@ -94,17 +94,17 @@
 
   .views {
     display: flex;
-    gap: var(--space-2);
+    gap: var(--space-1);
   }
 
   .view {
-    padding: var(--space-1) var(--space-3);
+    font: inherit;
+    font-size: var(--font-step-2-size);
+    padding: var(--space-half) var(--space-2);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-2);
-    font: inherit;
-    font-size: var(--text-sm);
     cursor: pointer;
   }
 
@@ -121,14 +121,14 @@
 
   .image {
     max-inline-size: 100%;
-    max-block-size: calc(100dvh - var(--header-band, 0px) - var(--space-12));
+    max-block-size: calc(100dvh - var(--header-band, 0px) - var(--space-6));
     object-fit: contain;
   }
 
   @media (width < 60rem) {
     .body {
       grid-template-columns: minmax(0, 1fr);
-      padding-block-start: var(--space-2);
+      padding-block-start: var(--space-1);
     }
 
     .fileName,

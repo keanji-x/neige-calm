@@ -28,8 +28,8 @@
     display: flex;
     flex-direction: column;
     min-block-size: 100%;
-    padding-block-end: calc(var(--header-primary-h) + var(--space-8) * 2 + env(safe-area-inset-bottom));
-    gap: var(--space-10);
+    padding-block-end: calc(var(--header-primary-h) + var(--space-4) * 2 + env(safe-area-inset-bottom));
+    gap: var(--space-5);
   }
 
   .standalonePage {
@@ -38,7 +38,7 @@
   }
 
   .actionRows {
-    padding-inline: var(--space-8);
+    padding-inline: var(--space-4);
   }
 
   .actionList {
@@ -46,36 +46,36 @@
   }
 
   .actionRow {
-    min-block-size: calc(var(--rail-w-collapsed) + var(--space-12));
+    font-size: var(--font-step-3-size);
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-6));
     border-block-end: 1px solid color-mix(in oklab, var(--hairline) 35%, transparent);
     border-radius: 0;
-    font-size: var(--text-md);
   }
 
   .iconButton svg,
   .actionRow svg {
-    inline-size: calc(var(--glyph) + var(--space-4));
-    block-size: calc(var(--glyph) + var(--space-4));
+    inline-size: var(--glyph-xl);
+    block-size: var(--glyph-xl);
   }
 
   .iconButton {
-    inline-size: calc(var(--rail-w-collapsed) + var(--space-2));
-    min-inline-size: calc(var(--rail-w-collapsed) + var(--space-2));
-    min-block-size: calc(var(--rail-w-collapsed) + var(--space-2));
+    inline-size: var(--control-h-touch);
+    min-inline-size: var(--control-h-touch);
+    min-block-size: var(--control-h-touch);
   }
 
-  .floatingAction { position: fixed; inset-inline-end: var(--space-8); inset-block-end: calc(var(--space-8) + env(safe-area-inset-bottom)); display: grid; place-items: center; inline-size: calc(var(--rail-w-collapsed) + var(--space-2)); block-size: calc(var(--rail-w-collapsed) + var(--space-2)); z-index: var(--z-sticky); cursor: pointer; }
-  .floatingAction svg { inline-size: var(--space-10); block-size: var(--space-10); }
+  .floatingAction { position: fixed; inset-inline-end: var(--space-4); inset-block-end: calc(var(--space-4) + env(safe-area-inset-bottom)); display: grid; place-items: center; inline-size: var(--control-h-touch); block-size: var(--control-h-touch); z-index: var(--z-sticky); cursor: pointer; }
+  .floatingAction svg { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); }
   .floatingAction:disabled { opacity: 0.5; cursor: default; }
 
   .navigationHeader { padding-block-end: 0; }
-  .navigationHeader :is(h1, h2) { font-size: calc(var(--text-md) + var(--space-px)); font-weight: var(--weight-medium); line-height: 1.4118; }
+  .navigationHeader :is(h1, h2) { font-size: var(--font-step-3-size); font-weight: var(--weight-medium); line-height: var(--font-step-3-line); }
 
   .content {
-    padding-inline: var(--space-8);
+    padding-inline: var(--space-4);
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
+    gap: var(--space-4);
   }
 
   .areaIcon {
@@ -84,19 +84,19 @@
 
   .navigationList { gap: 0 !important; }
   .trackRow { display: flex; align-items: center; border-block-end: 1px solid color-mix(in oklab, var(--hairline) 35%, transparent); }
-  .trackTitle { font-weight: var(--weight-medium); line-height: 1.4667; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .trackTitle { font-weight: var(--weight-medium); line-height: var(--type-ui-leading); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 
   .track {
+    font-size: var(--font-step-3-size);
+    line-height: var(--font-step-3-line);
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: var(--space-6);
+    gap: var(--space-3);
     inline-size: 100%;
-    min-block-size: calc(var(--rail-w-collapsed) + var(--space-12) - var(--space-px));
-    padding: var(--space-4);
-    border-radius: var(--space-6);
-    font-size: var(--text-md);
-    line-height: var(--leading-snug);
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-6) - var(--space-px));
+    padding: var(--space-2);
+    border-radius: var(--radius-md);
     text-align: start;
     overflow-wrap: anywhere;
     cursor: pointer;
@@ -126,31 +126,31 @@
   }
 
   .trackIcon svg {
-    inline-size: calc(var(--glyph) + var(--space-4));
-    block-size: calc(var(--glyph) + var(--space-4));
+    inline-size: var(--glyph-xl);
+    block-size: var(--glyph-xl);
   }
 
   .trackCopy {
     display: flex;
     flex-direction: column;
     min-inline-size: 0;
-    gap: var(--space-2);
+    gap: var(--space-1);
   }
 
   .trackActions { flex: none; min-inline-size: var(--rail-w-collapsed) !important; min-block-size: var(--rail-w-collapsed) !important; color: var(--text-3); }
-  .trackActions svg, .trackActions span:has(> svg) { flex: none; inline-size: calc(var(--glyph) + var(--space-2)) !important; block-size: calc(var(--glyph) + var(--space-2)) !important; }
-  .trackRow:has([aria-current='page']) { background: var(--accent-soft); border-radius: var(--space-6); }
+  .trackActions svg, .trackActions span:has(> svg) { flex: none; inline-size: var(--glyph-lg) !important; block-size: var(--glyph-lg) !important; }
+  .trackRow:has([aria-current='page']) { background: var(--accent-soft); border-radius: var(--radius-md); }
 
   .trackMeta {
-    font-size: var(--text-base);
-    line-height: 1.4615;
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
     color: var(--text-3);
   }
 
   /* The trailing edge is status (§3.1), as on the rail row: the indicator sits
      after the copy, and the copy keeps its width when there is nothing to show. */
   .trackArrow { display: flex; flex: none; margin-inline-start: auto; }
-  .trackArrow svg { inline-size: var(--space-10); block-size: var(--space-10); color: var(--text-3); }
+  .trackArrow svg { inline-size: var(--glyph-xl); block-size: var(--glyph-xl); color: var(--text-3); }
 
   .trackActivity {
     display: flex;

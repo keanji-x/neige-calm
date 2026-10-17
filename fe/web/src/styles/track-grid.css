@@ -2,9 +2,9 @@
    overrides. Class names stay the original names so the copied JSX matches. */
 @layer overrides {
   .track-grid-wrap {
-    --card-head-pad-v: var(--space-5);
-    --card-head-pad-h: var(--space-7);
-    --card-head-gap: var(--space-5);
+    --card-head-pad-v: var(--space-3);
+    --card-head-pad-h: var(--space-4);
+    --card-head-gap: var(--space-3);
     --card-head-icon-size: 20px;
     --card-head-close-size: 22px;
     --card-head-close-inset: 8px;
@@ -19,11 +19,11 @@
   }
 
   .track-grid {
-    margin-bottom: var(--space-8);
+    margin-bottom: var(--space-4);
   }
 
   .term {
-    margin-bottom: var(--space-10);
+    margin-bottom: var(--space-5);
     overflow: hidden;
     border: 1px solid var(--hairline);
     border-radius: var(--r);
@@ -32,13 +32,13 @@
   }
 
   .term-body {
+    font-family: var(--font-code);
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
     max-height: 280px;
     overflow-y: auto;
-    padding: var(--space-6) var(--space-8) var(--space-7);
+    padding: var(--space-3) var(--space-4) var(--space-4);
     color: var(--text-2);
-    font-family: var(--font-code);
-    font-size: var(--text-sm);
-    line-height: var(--leading-loose);
   }
 
   .term.live .term-body {
@@ -92,6 +92,8 @@
   }
 
   .card-grid-close {
+    font-size: var(--font-step-3-size);
+    line-height: 1;
     position: absolute;
     top: 50%;
     right: var(--card-head-close-inset);
@@ -104,8 +106,6 @@
     border-radius: var(--radius-md);
     background: transparent;
     color: var(--text-3);
-    font-size: var(--text-md);
-    line-height: var(--leading-none);
     cursor: pointer;
     opacity: 0;
     transition: opacity var(--motion-quick) var(--ease-feedback), background var(--motion-quick) var(--ease-feedback), color var(--motion-quick) var(--ease-feedback);
@@ -123,6 +123,7 @@
   }
 
   .card-head {
+    line-height: 1;
     position: relative;
     display: flex;
     align-items: center;
@@ -131,15 +132,14 @@
     padding-right: calc(var(--card-head-close-inset) + var(--card-head-close-size) + var(--card-head-close-inset));
     border-bottom: 1px solid var(--hairline);
     background: var(--surface-card);
-    line-height: var(--leading-none);
   }
 
   .card-head-title {
-    flex: 0 0 auto;
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
     font-weight: var(--weight-medium);
+    letter-spacing: var(--font-step-2-tracking);
+    flex: 0 0 auto;
     color: var(--text);
-    letter-spacing: var(--tracking-wider);
     text-transform: uppercase;
   }
 
@@ -148,7 +148,7 @@
     flex: 1;
     align-items: center;
     justify-content: flex-end;
-    gap: var(--space-4);
+    gap: var(--space-2);
     min-width: 0;
   }
 
@@ -180,10 +180,10 @@
   }
 
   .card-head-icon--letter {
-    font-size: var(--text-xs);
+    font-size: var(--font-step-1-size);
     font-weight: var(--weight-semibold);
-    line-height: var(--leading-none);
-    letter-spacing: var(--tracking-normal);
+    line-height: 1;
+    letter-spacing: var(--font-step-1-tracking);
     text-transform: uppercase;
     /* stylelint-disable-next-line color-no-hex */
     color: #fff;

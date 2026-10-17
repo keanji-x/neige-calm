@@ -1,5 +1,6 @@
 @layer ui {
   .title {
+    font: inherit;
     min-inline-size: 0;
     max-inline-size: 100%;
     overflow: hidden;
@@ -8,9 +9,8 @@
     background: none;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-2);
-    margin-inline-start: calc(-1 * var(--space-2));
-    font: inherit;
+    padding: var(--space-half) var(--space-1);
+    margin-inline-start: calc(-1 * var(--space-1));
     color: inherit;
     cursor: text;
     text-align: start;
@@ -31,8 +31,14 @@
      the title's own type and sheds the button's inline padding rather than
      re-adding its own — the characters must not move when editing opens. */
   .input {
-    padding-block: var(--space-1);
     font: inherit;
+    padding-block: var(--space-half);
     min-width: 0;
+  }
+}
+
+@layer ui {
+  @media (width < 60rem) {
+    .input { font: var(--type-input); letter-spacing: var(--type-input-tracking); }
   }
 }

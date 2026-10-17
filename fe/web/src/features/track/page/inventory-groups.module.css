@@ -1,7 +1,7 @@
 @layer features {
   .groups {
-    --nc-inventory-content-gap: var(--space-2);
-    --nc-inventory-footer-inset: var(--space-4);
+    --nc-inventory-content-gap: var(--space-1);
+    --nc-inventory-footer-inset: var(--space-2);
 
     display: grid;
     gap: 0;
@@ -10,9 +10,9 @@
     position: relative;
     isolation: isolate;
     min-inline-size: 0;
-    margin-inline: calc(var(--space-3) * -1);
-    padding-inline: var(--space-3);
-    border-radius: calc(var(--radius-md) - var(--space-2));
+    margin-inline: calc(var(--space-2) * -1);
+    padding-inline: var(--space-2);
+    border-radius: calc(var(--radius-md) - var(--radius-sm));
   }
   .group[open] {
     padding-block-end: var(--nc-inventory-footer-inset);
@@ -22,7 +22,7 @@
   .group[open]::before {
     content: '';
     position: absolute;
-    inset-block: var(--space-1);
+    inset-block: var(--space-half);
     inset-inline: 0;
     z-index: -1;
     border-radius: inherit;
@@ -33,12 +33,12 @@
   .content {
     /* Expanded groups share one module's room, keeping the next module reachable. */
     max-block-size: max(var(--row-h), min(10rem, calc(
-      (min(24rem, 40dvh) - var(--space-4)
+      (min(24rem, 40dvh) - var(--space-2)
       - var(--row-h) * var(--nc-inventory-group-count)
       - (var(--nc-inventory-content-gap) + var(--nc-inventory-footer-inset)) * var(--nc-inventory-open-count))
       / var(--nc-inventory-open-count)
     )));
-    margin-inline: calc(var(--space-2) * -1);
+    margin-inline: calc(var(--space-1) * -1);
     overflow: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
@@ -53,10 +53,10 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto var(--control-h-sm);
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-1);
     min-block-size: var(--row-h);
-    margin-inline: calc(var(--space-2) * -1);
-    padding-inline-start: var(--space-2);
+    margin-inline: calc(var(--space-1) * -1);
+    padding-inline-start: var(--space-1);
     border-radius: var(--radius-sm);
     color: var(--text-3);
     cursor: pointer;
@@ -70,8 +70,8 @@
   .group[open] > .summary::after {
     content: '';
     position: absolute;
-    inset-inline: var(--space-2);
-    inset-block-end: calc(var(--space-1) * -1);
+    inset-inline: var(--space-1);
+    inset-block-end: calc(var(--space-half) * -1);
     block-size: 1px;
     background: var(--hairline);
     pointer-events: none;
@@ -79,7 +79,7 @@
   .label {
     display: flex;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-2);
     min-inline-size: 0;
     text-align: start;
   }

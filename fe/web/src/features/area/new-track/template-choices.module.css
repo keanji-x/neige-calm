@@ -1,12 +1,12 @@
 @layer features {
   .choices {
-    margin-block-start: var(--space-4);
+    margin-block-start: var(--space-2);
   }
 
   .title {
-    margin-block: 0 var(--space-2);
-    font-size: var(--text-sm);
+    font-size: var(--font-step-2-size);
     font-weight: var(--weight-medium);
+    margin-block: 0 var(--space-1);
     color: var(--text-2);
   }
 

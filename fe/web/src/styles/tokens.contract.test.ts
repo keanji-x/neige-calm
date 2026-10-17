@@ -3,6 +3,7 @@
 /// <reference types="node" />
 
 import { readFileSync } from 'node:fs';
+import { GENERATED_TOKEN_INVENTORY } from './typography.generated.ts';
 
 import { describe, expect, it } from 'vitest';
 
@@ -41,23 +42,14 @@ const PROSE_SURFACES = ['--surface-terminal', '--surface-code'] as const;
 const OVERLAYS = [
   '--overlay-hover-faint', '--overlay-hover', '--overlay-hover-strong', '--overlay-active',
 ] as const;
-const TYPE_SCALE = [
-  '--text-xs', '--text-meta', '--text-base', '--text-md', '--text-lg', '--text-xl',
-] as const;
-const LEADING = [
-  '--leading-none', '--leading-tight', '--leading-snug', '--leading-base', '--leading-loose',
-] as const;
-const TRACKING = [
-  '--tracking-tighter', '--tracking-tight', '--tracking-normal', '--tracking-wide',
-  '--tracking-wider', '--tracking-widest',
-] as const;
+const TYPE_SCALE = GENERATED_TOKEN_INVENTORY.filter(name => name.endsWith('-size'));
+const TYPE_LINES = GENERATED_TOKEN_INVENTORY.filter(name => name.endsWith('-line'));
+const LEADING = GENERATED_TOKEN_INVENTORY.filter(name => name === '--leading-none' || name.endsWith('-leading'));
+const TRACKING = GENERATED_TOKEN_INVENTORY.filter(name => name.endsWith('-tracking'));
 const RADIUS = [
   '--radius-sm', '--radius-md', '--radius-lg', '--radius-pill',
 ] as const;
-const SPACING = [
-  '--space-0', '--space-px', '--space-1', '--space-2', '--space-3', '--space-4', '--space-5',
-  '--space-6', '--space-7', '--space-8', '--space-9', '--space-10', '--space-11', '--space-12',
-] as const;
+const SPACING = GENERATED_TOKEN_INVENTORY.filter(name => name.startsWith('--space-'));
 const MOTION = [
   '--motion-instant', '--motion-quick', '--motion-snappy', '--motion-medium', '--motion-slow',
   '--motion-pulse',
@@ -92,17 +84,126 @@ const SHADOW = ['--shadow-float'] as const;
 // This alias must resolve in both themes.
 const THEMED_ALIASES = ['--text-on-accent'] as const;
 const INVENTORY = [
-  ...POSITIONAL, ...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS,
-  ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...EASING, ...STATUS, ...FONT_ALIASES,
-  ...MISC, ...Z_INDEX,
-  ...BOX_SCALE, ...WEIGHTS, ...AREA_IDENTITY, ...SHADOW, ...THEMED_ALIASES,
-  '--surface-navigation', '--tracking-label', '--type-ui', '--type-action', '--type-detail', '--type-page-title', '--type-navigation-label', '--type-reading', '--type-chapter', '--type-table', '--type-label', '--type-metadata', '--type-code', '--type-content', '--type-metric', '--type-metric-primary', '--type-heading', '--type-subheading', '--type-subheading-small', '--navigation-rail-width', '--navigation-row-height', '--navigation-header-height', '--navigation-module-row-height', '--navigation-group-gap', '--navigation-section-gap', '--navigation-label-inset', '--chip-success', '--chip-on-success', '--chip-error', '--chip-on-error', '--chip-warning', '--chip-on-warning', '--chip-accent', '--chip-on-accent', '--chip-neutral', '--chip-text-primary', '--line-caption', '--line-ui', '--line-reading', '--line-heading', '--line-metric',
+  '--accent',
+  '--accent-soft',
+  '--area-1',
+  '--area-2',
+  '--area-3',
+  '--area-4',
+  '--area-5',
+  '--area-6',
+  '--area-7',
+  '--area-8',
+  '--bg',
+  '--chip-accent',
+  '--chip-error',
+  '--chip-neutral',
+  '--chip-on-accent',
+  '--chip-on-error',
+  '--chip-on-success',
+  '--chip-on-warning',
+  '--chip-success',
+  '--chip-text-primary',
+  '--chip-warning',
+  '--control-h',
+  '--control-h-lg',
+  '--control-h-sm',
+  '--control-h-touch',
+  '--dot-md',
+  '--dot-sm',
+  '--drawer-w',
+  '--ease-emphasis',
+  '--ease-enter',
+  '--ease-exit',
+  '--ease-feedback',
+  '--ease-layout',
+  '--error',
+  '--error-border',
+  '--error-soft',
+  '--error-text',
+  '--font-code',
+  '--font-display',
+  '--font-mono',
+  '--font-numeric',
+  '--font-sans',
+  '--font-serif',
+  '--glyph',
+  '--glyph-display',
+  '--glyph-lg',
+  '--glyph-meta',
+  '--glyph-sm',
+  '--glyph-xl',
+  '--hairline',
+  '--hairline-strong',
+  '--header-baseline',
+  '--header-primary-h',
+  '--measure-board',
+  '--measure-doc',
+  '--measure-form',
+  '--measure-list',
+  '--measure-page',
+  '--measure-prose',
+  '--menu-w-max',
+  '--menu-w-min',
+  '--motion-instant',
+  '--motion-medium',
+  '--motion-pulse',
+  '--motion-quick',
+  '--motion-slow',
+  '--motion-snappy',
+  '--overlay-active',
+  '--overlay-hover',
+  '--overlay-hover-faint',
+  '--overlay-hover-strong',
+  '--overlay-scrim',
+  '--panel-w',
+  '--paper',
+  '--radius-lg',
+  '--radius-md',
+  '--radius-pill',
+  '--radius-sm',
+  '--rail-w',
+  '--rail-w-collapsed',
+  '--row-h',
+  '--row-h-lg',
+  '--row-h-sm',
+  '--rule-h',
+  '--shadow-float',
+  '--slot-h',
+  '--success',
+  '--success-text',
+  '--surface-card',
+  '--surface-chip',
+  '--surface-code',
+  '--surface-navigation',
+  '--surface-rail',
+  '--surface-terminal',
+  '--text',
+  '--text-2',
+  '--text-3',
+  '--text-4',
+  '--text-on-accent',
+  '--warn',
+  '--warn-border',
+  '--warn-soft',
+  '--warn-text',
+  '--weight-bold',
+  '--weight-medium',
+  '--weight-normal',
+  '--weight-semibold',
+  '--z-base',
+  '--z-modal',
+  '--z-overlay',
+  '--z-raised',
+  '--z-sticky',
+  '--z-toast',
+  ...GENERATED_TOKEN_INVENTORY,
 ] as const;
 
 describe('styles/tokens inventory contract', () => {
   it('keeps the independently pinned token inventory exact', () => {
     const actual = [...root.keys(), ...dark.keys()].filter((name, index, all) => all.indexOf(name) === index);
-    expect(actual.sort()).toEqual([...INVENTORY, '--font-sans', '--font-serif', '--font-mono'].sort());
+    expect(actual.sort()).toEqual([...INVENTORY].sort());
   });
 });
 
@@ -211,17 +312,14 @@ describe('styles/tokens single-mode scalar contracts', () => {
     expect(dark.has(name)).toBe(false);
   });
 
-  it.each(TRACKING.filter((name) => name !== '--tracking-normal'))(
-    '%s delegates to the normal or label tracking token',
-    (name) => {
-    expect(root.get(name)).toMatch(/^var\(--tracking-(?:normal|label)\)$/);
+  it.each(TYPE_LINES)('%s is a paired rem line and has no dark override', (name) => {
+    expect(root.get(name)).toMatch(/^\d+(?:\.\d+)?rem$/);
     expect(dark.has(name)).toBe(false);
-    },
-  );
+  });
 
-  it('--tracking-normal is the numeric reset', () => {
-    expect(root.get('--tracking-normal')).toBe('0');
-    expect(dark.has('--tracking-normal')).toBe(false);
+  it.each(TRACKING)('%s is em and has no dark override', (name) => {
+    expect(root.get(name)).toMatch(/^-?\d+(?:\.\d+)?em$/);
+    expect(dark.has(name)).toBe(false);
   });
 
   it.each(RADIUS.filter((name) => root.has(name)))('%s is px and has no dark override', (name) => {

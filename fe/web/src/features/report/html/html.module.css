@@ -20,31 +20,31 @@
 
   /* Loading, refused, too large or on mobile: the box keeps its size and says why it is empty. */
   .note {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-2-size);
     display: grid;
     place-items: center;
     margin: 0;
-    padding: var(--space-3);
+    padding: var(--space-2);
     border-radius: var(--radius-sm);
     background: var(--surface-code);
-    font-family: var(--font-sans);
-    font-size: var(--text-sm);
     color: var(--text-2);
     text-align: center;
   }
 
   .unavailable {
-    padding-block: var(--space-2);
+    padding-block: var(--space-1);
   }
 
   .caption {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
-    margin-block-start: var(--space-3);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    gap: var(--space-1);
+    margin-block-start: var(--space-2);
     color: var(--text-3);
   }
 

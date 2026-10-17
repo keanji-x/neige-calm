@@ -23,23 +23,23 @@
 
   /* The window bar, in the chrome register: small sans type, quiet ink. */
   .bar {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2) var(--space-3);
-    padding: var(--space-1) var(--space-3);
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-half) var(--space-2);
     min-block-size: var(--control-h);
     background: var(--surface-chip);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
     color: var(--text-3);
   }
 
   /* Browser-window dots: decoration only, hidden from assistive tech. */
   .dots {
     display: flex;
-    gap: var(--space-1);
+    gap: var(--space-half);
   }
 
   .dots > span {
@@ -60,17 +60,17 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--space-half);
     margin-inline-start: auto;
   }
 
   .control,
   .segment {
-    padding-inline: var(--space-2);
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    padding-inline: var(--space-1);
     block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
     color: var(--text-2);
     background: transparent;
     cursor: pointer;
@@ -129,30 +129,30 @@
 
   /* The state line, in the caption register, centred in the stage's footprint. */
   .placeholder {
+    font-family: var(--font-sans);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: var(--space-4);
+    padding: var(--space-2);
     background: var(--surface-code);
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
     color: var(--text-3);
     text-align: center;
   }
 
   /* `390 × 844 · 43%`: which viewport the page believes it has, and the shrink. */
   .size {
-    margin: 0;
-    padding-block: var(--space-2);
     font-family: var(--font-numeric);
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
+    margin: 0;
+    padding-block: var(--space-1);
     color: var(--text-3);
     text-align: end;
   }
 
   .figure:fullscreen .size {
-    padding-inline: var(--space-3);
+    padding-inline: var(--space-2);
   }
 }

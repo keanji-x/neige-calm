@@ -1,17 +1,69 @@
 {
-  "version": 1,
+  "version": 2,
   "typography": {
     "families": {
       "ui": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", sans-serif",
       "reading": "\"New York\", \"Iowan Old Style\", Charter, Georgia, \"Songti SC\", SimSun, \"Noto Serif CJK SC\", serif",
       "code": "ui-monospace, SFMono-Regular, \"SF Mono\", Menlo, Consolas, monospace"
     },
-    "sizes": {
-      "caption": 12,
-      "ui": 14,
-      "reading": 16,
-      "heading": 20,
-      "metric": 36
+    "scale": {
+      "1": {
+        "size": 12,
+        "line": 16,
+        "tracking": 0.0025
+      },
+      "2": {
+        "size": 14,
+        "line": 20,
+        "tracking": 0
+      },
+      "3": {
+        "size": 16,
+        "line": 24,
+        "tracking": 0
+      },
+      "4": {
+        "size": 18,
+        "line": 26,
+        "tracking": -0.0025
+      },
+      "5": {
+        "size": 20,
+        "line": 28,
+        "tracking": -0.005
+      },
+      "6": {
+        "size": 24,
+        "line": 30,
+        "tracking": -0.00625
+      },
+      "7": {
+        "size": 28,
+        "line": 36,
+        "tracking": -0.0075
+      },
+      "8": {
+        "size": 35,
+        "line": 40,
+        "tracking": -0.01
+      },
+      "9": {
+        "size": 60,
+        "line": 60,
+        "tracking": -0.025
+      }
+    },
+    "exceptions": {
+      "editor": {
+        "size": 12,
+        "line": 20,
+        "tracking": 0
+      },
+      "compact": {
+        "size": 12,
+        "line": 12,
+        "tracking": 0
+      }
     },
     "weights": {
       "regular": 400,
@@ -19,119 +71,131 @@
       "semibold": 600,
       "bold": 700
     },
-    "lines": {
-      "caption": 16,
-      "ui": 20,
-      "reading": 26.4,
-      "heading": 24,
-      "metric": 43.2
-    },
-    "tracking": {
-      "normal": 0,
-      "label": 0.66
-    },
     "roles": {
+      "ui": "ui",
+      "action": "action",
+      "detail": "detail",
+      "page-title": "page-title",
+      "navigation-label": "navigation-label",
+      "reading": "reading",
+      "chapter": "chapter",
+      "table": "ui",
+      "label": "label",
+      "metadata": "metadata",
+      "code": "code",
+      "content": "ui",
+      "metric": "metric",
+      "metric-primary": "metric-primary",
+      "heading": "heading",
+      "subheading": "subheading",
+      "subheading-small": "subheading-small",
+      "interface-heading": "interface-heading",
+      "empty-heading": "empty-heading",
+      "display-title": "display-title",
+      "compact-metadata": "compact-metadata",
+      "code-detail": "code-detail",
+      "input": "detail"
+    },
+    "profiles": {
       "ui": {
         "family": "ui",
-        "size": "ui",
-        "weight": "regular",
-        "line": "ui"
+        "step": "2",
+        "weight": "regular"
       },
       "action": {
         "family": "ui",
-        "size": "ui",
-        "weight": "medium",
-        "line": "ui"
+        "step": "2",
+        "weight": "medium"
       },
       "detail": {
         "family": "ui",
-        "size": "reading",
-        "weight": "regular",
-        "line": "reading"
+        "step": "3",
+        "weight": "regular"
       },
       "page-title": {
         "family": "ui",
-        "size": "reading",
-        "weight": "semibold",
-        "line": "heading"
+        "step": "3",
+        "weight": "semibold"
       },
       "navigation-label": {
         "family": "ui",
-        "size": "caption",
-        "weight": "medium",
-        "line": "caption"
+        "step": "1",
+        "weight": "medium"
       },
       "reading": {
         "family": "reading",
-        "size": "reading",
-        "weight": "regular",
-        "line": "reading"
+        "step": "3",
+        "weight": "regular"
       },
       "chapter": {
         "family": "reading",
-        "size": "heading",
-        "weight": "bold",
-        "line": "heading"
-      },
-      "table": {
-        "family": "ui",
-        "size": "ui",
-        "weight": "regular",
-        "line": "ui"
+        "step": "5",
+        "weight": "bold"
       },
       "label": {
         "family": "ui",
-        "size": "caption",
-        "weight": "semibold",
-        "line": "caption"
+        "step": "1",
+        "weight": "semibold"
       },
       "metadata": {
         "family": "ui",
-        "size": "caption",
-        "weight": "regular",
-        "line": "caption"
+        "step": "1",
+        "weight": "regular"
       },
       "code": {
         "family": "code",
-        "size": "caption",
-        "weight": "regular",
-        "line": "ui"
-      },
-      "content": {
-        "family": "ui",
-        "size": "ui",
-        "weight": "regular",
-        "line": "ui"
+        "step": "editor",
+        "weight": "regular"
       },
       "metric": {
         "family": "ui",
-        "size": "heading",
-        "weight": "medium",
-        "line": "heading"
+        "step": "5",
+        "weight": "medium"
       },
       "metric-primary": {
         "family": "ui",
-        "size": "metric",
-        "weight": "medium",
-        "line": "metric"
+        "step": "8",
+        "weight": "medium"
       },
       "heading": {
         "family": "reading",
-        "size": "heading",
-        "weight": "semibold",
-        "line": "heading"
+        "step": "5",
+        "weight": "semibold"
       },
       "subheading": {
         "family": "reading",
-        "size": "reading",
-        "weight": "semibold",
-        "line": "ui"
+        "step": "3",
+        "weight": "semibold"
       },
       "subheading-small": {
         "family": "reading",
-        "size": "ui",
-        "weight": "semibold",
-        "line": "ui"
+        "step": "2",
+        "weight": "semibold"
+      },
+      "interface-heading": {
+        "family": "ui",
+        "step": "5",
+        "weight": "semibold"
+      },
+      "empty-heading": {
+        "family": "ui",
+        "step": "6",
+        "weight": "semibold"
+      },
+      "display-title": {
+        "family": "ui",
+        "step": "7",
+        "weight": "medium"
+      },
+      "compact-metadata": {
+        "family": "ui",
+        "step": "compact",
+        "weight": "regular"
+      },
+      "code-detail": {
+        "family": "code",
+        "step": "3",
+        "weight": "regular"
       }
     }
   },
@@ -140,9 +204,9 @@
     "rowHeight": 32,
     "headerHeight": 40,
     "moduleRowHeight": 28,
-    "groupGap": 8,
-    "sectionGap": 20,
-    "labelInset": 4,
+    "groupGap": "2",
+    "sectionGap": "5",
+    "labelInset": "1",
     "railMix": 28
   },
   "shared": {
@@ -151,29 +215,10 @@
     "--font-code": "var(--font-mono)",
     "--header-baseline": "42px",
     "--header-primary-h": "56px",
-    "--leading-none": "1",
-    "--leading-tight": "1.15",
-    "--leading-snug": "1.3",
-    "--leading-base": "1.5",
-    "--leading-loose": "1.65",
     "--radius-sm": "4px",
     "--radius-md": "12px",
     "--radius-lg": "16px",
     "--radius-pill": "999px",
-    "--space-0": "0",
-    "--space-px": "1px",
-    "--space-1": "2px",
-    "--space-2": "4px",
-    "--space-3": "6px",
-    "--space-4": "8px",
-    "--space-5": "10px",
-    "--space-6": "12px",
-    "--space-7": "14px",
-    "--space-8": "16px",
-    "--space-9": "20px",
-    "--space-10": "24px",
-    "--space-11": "28px",
-    "--space-12": "32px",
     "--motion-instant": "0.06s",
     "--motion-quick": "0.1s",
     "--motion-snappy": "0.15s",
@@ -215,7 +260,12 @@
     "--z-sticky": "4",
     "--z-overlay": "10",
     "--z-modal": "100",
-    "--z-toast": "1000"
+    "--z-toast": "1000",
+    "--leading-none": "1",
+    "--glyph-lg": "20px",
+    "--glyph-xl": "24px",
+    "--glyph-display": "32px",
+    "--control-h-touch": "48px"
   },
   "light": {
     "--bg": "oklch(96% 0.005 90)",
@@ -397,5 +447,19 @@
   },
   "terminalText": {
     "fontSize": 12.5
+  },
+  "spacing": {
+    "0": 0,
+    "1": 4,
+    "2": 8,
+    "3": 12,
+    "4": 16,
+    "5": 24,
+    "6": 32,
+    "7": 40,
+    "8": 48,
+    "9": 64,
+    "px": 1,
+    "half": 2
   }
 }

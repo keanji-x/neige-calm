@@ -14,11 +14,12 @@
    * the machine cares about".
    */
   .task {
-    padding: var(--space-6) var(--space-7);
+    padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-sm);
     background: var(--surface-code);
     color: var(--text-2);
     font: var(--type-detail);
+    letter-spacing: var(--type-detail-tracking);
   }
 
   /*
@@ -40,7 +41,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: var(--space-4);
+    gap: var(--space-2);
     list-style: none;
     cursor: pointer;
   }
@@ -85,12 +86,14 @@
   .kindLabel {
     color: var(--text-3);
     font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
   }
 
   /* The key is a literal other reports and the kernel address this task by. */
   .key {
     color: var(--text);
     font: var(--type-content);
+    letter-spacing: var(--type-content-tracking);
   }
 
   .kind,
@@ -98,6 +101,7 @@
   .withdrawn {
     color: var(--text-3);
     font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
   }
 
   .withdrawn {
@@ -105,7 +109,7 @@
   }
 
   .goal {
-    margin-block: var(--space-4) 0;
+    margin-block: var(--space-2) 0;
     color: var(--text);
   }
 
@@ -117,10 +121,11 @@
   .fields {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
-    column-gap: var(--space-7);
-    row-gap: var(--space-2);
-    margin-block: var(--space-5) 0;
+    column-gap: var(--space-4);
+    row-gap: var(--space-1);
+    margin-block: var(--space-3) 0;
     font: var(--type-table);
+    letter-spacing: var(--type-table-tracking);
   }
 
   .label {
@@ -142,11 +147,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font: var(--type-code);
+    letter-spacing: var(--type-code-tracking);
   }
   .recovery {
-    margin-block-start: var(--space-5);
     font-family: var(--font-sans);
-    font-size: var(--text-base);
+    font-size: var(--font-step-2-size);
+    margin-block-start: var(--space-3);
   }
 
   .current { color: var(--text); }
@@ -156,20 +162,20 @@
   .actions {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-4);
-    margin-block: var(--space-4);
+    gap: var(--space-2);
+    margin-block: var(--space-2);
   }
 
   .history {
-    margin-block-start: var(--space-4);
+    margin-block-start: var(--space-2);
     overflow-wrap: anywhere;
   }
 
   .history summary { cursor: pointer; }
 
   .attempts {
-    padding-inline-start: var(--space-6);
+    padding-inline-start: var(--space-3);
   }
 
-  .attempts > li { margin-block: var(--space-3); }
+  .attempts > li { margin-block: var(--space-2); }
 }

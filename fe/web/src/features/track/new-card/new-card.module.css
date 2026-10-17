@@ -24,7 +24,7 @@
     min-inline-size: var(--control-h-sm);
     min-block-size: var(--control-h-sm);
     padding: 0;
-    margin-inline-end: calc(var(--space-2) * -1);
+    margin-inline-end: calc(var(--space-1) * -1);
     border-radius: var(--radius-sm);
     color: var(--text-3);
   }
@@ -32,7 +32,7 @@
   /* As in `new-track.module.css`: the column and the gap are `VStack`'s, and the
      only things astryx cannot know are the dialog's text colour and font. */
   .form {
-    color: var(--text);
     font-family: var(--font-sans);
+    color: var(--text);
   }
 }

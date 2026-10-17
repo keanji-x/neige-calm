@@ -3,19 +3,23 @@
   .row {
     --navigation-slot: var(--control-h-sm);
     --navigation-inset: var(--navigation-label-inset);
-    --navigation-gap: var(--space-2);
+    --navigation-gap: var(--space-1);
     --navigation-text-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
-    --navigation-inner-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
+    --navigation-inner-inset: var(--navigation-text-inset);
+    --navigation-depth-inset: 0px;
+    --navigation-selection-inset: var(--navigation-depth-inset);
     --navigation-two-actions: calc(var(--navigation-inner-inset) + var(--navigation-slot) + var(--navigation-gap));
     position: relative;
   }
 
+  .nested { --navigation-depth-inset: var(--space-5); }
+
   .content {
     min-inline-size: 0;
-    padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-label-offset, 0px));
+    padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-depth-inset));
     padding-inline-end: var(--navigation-text-inset);
   }
-  .labelStart { padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-label-offset, 0px)); }
+  .labelStart { padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-depth-inset)); }
   .twoActions { padding-inline-end: var(--navigation-two-actions); }
 
   .leading,

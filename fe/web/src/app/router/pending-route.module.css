@@ -1,32 +1,32 @@
 @layer features {
   .panel {
+    font-family: var(--font-sans);
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-6);
+    gap: var(--space-2);
+    padding: var(--space-3);
     color: var(--text);
-    font-family: var(--font-sans);
   }
 
   .title {
-    font-size: var(--text-xl);
-    letter-spacing: var(--tracking-tight);
+    font-size: var(--font-step-5-size);
+    letter-spacing: var(--font-step-5-tracking);
     margin: 0;
   }
 
   .body {
+    font-size: var(--font-step-2-size);
     margin: 0;
     color: var(--text-2);
-    font-size: var(--text-base);
   }
 
   .meta {
+    font-size: var(--font-step-2-size);
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    gap: var(--space-1) var(--space-4);
+    gap: var(--space-half) var(--space-2);
     margin: 0;
     color: var(--text-3);
-    font-size: var(--text-base);
   }
 
   .meta dt {
@@ -34,19 +34,19 @@
   }
 
   .meta dd {
-    margin: 0;
     font-family: var(--font-mono);
+    margin: 0;
   }
 
   .back {
+    font: inherit;
+    font-size: var(--font-step-2-size);
     align-self: start;
     border: 1px solid var(--hairline);
     border-radius: var(--radius-sm);
     background: var(--surface-chip);
     color: var(--text);
-    font: inherit;
-    font-size: var(--text-base);
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-1) var(--space-2);
     cursor: pointer;
   }
 

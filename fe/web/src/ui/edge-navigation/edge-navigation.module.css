@@ -1,6 +1,6 @@
 @layer ui {
   .rail {
-    --nc-rail-pitch: var(--space-9);
+    --nc-rail-pitch: 20px;
     --nc-rail-max: 320px;
     --nc-rail-dot: 4px;
     --nc-rail-dot-current: var(--dot-sm);
@@ -16,7 +16,7 @@
   }
   @media (pointer: coarse) {
     .rail {
-      --nc-rail-pitch: calc(var(--space-11) + var(--space-8));
+      --nc-rail-pitch: calc(28px + var(--space-4));
       --nc-rail-dot: var(--dot-sm);
       --nc-rail-dot-current: var(--dot-md);
     }
@@ -86,23 +86,23 @@
     color: var(--text);
   }
   .previewTitle {
+    font-size: var(--font-step-2-size);
+    font-weight: var(--weight-medium);
+    line-height: var(--font-step-2-line);
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     overflow: hidden;
-    font-size: var(--text-base);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-snug);
   }
   .previewExcerpt {
+    font-size: var(--font-step-1-size);
+    font-weight: var(--weight-normal);
+    line-height: var(--font-step-1-line);
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 4;
     overflow: hidden;
-    margin: var(--space-3) 0 0;
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-base);
+    margin: var(--space-2) 0 0;
     color: var(--text-2);
   }
   @media (prefers-reduced-motion: reduce) {

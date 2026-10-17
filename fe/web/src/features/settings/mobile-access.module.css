@@ -3,12 +3,12 @@
     max-inline-size: 45rem;
     white-space: normal;
     overflow-wrap: anywhere;
-    margin-block: var(--space-3);
+    margin-block: var(--space-2);
   }
   .invitation {
     display: grid;
     justify-items: center;
-    padding-block: var(--space-4);
+    padding-block: var(--space-2);
   }
 
   .qr {

@@ -25,7 +25,7 @@
     color: var(--text);
     -webkit-font-smoothing: antialiased;
       font: var(--type-ui);
-    letter-spacing: var(--tracking-normal);
+    letter-spacing: var(--type-ui-tracking);
   }
 
   /* Weight is a hierarchy channel; UA defaults wire heading weight to
@@ -38,6 +38,7 @@
 
   code, kbd, samp, pre {
       font: var(--type-code);
+      letter-spacing: var(--type-code-tracking);
   }
 
   /* One focus recipe for the whole app. A component may restyle it, but it
@@ -79,7 +80,7 @@
     padding-inline: var(--space-0);
     border: none;
     border-block-end: 1px solid var(--hairline-strong);
-    border-radius: var(--space-0);
+    border-radius: 0;
     background: transparent;
     color: var(--text);
   }
@@ -128,37 +129,22 @@
    * (§2.3); prose is the stated exception, because its rhythm is the
    * document's, not a container's `gap`.
    *
-   * ── Reading type, not interface type ──────────────────────────────────
-   *
-   * This was `--text-base` sans, the same rank the rail's rows take, and that
-   * was the mistake: the two registers do different jobs. Interface type is
-   * *scanned* because you are looking for one row among twenty and never read
-   * it twice. Prose is *read*, one line after another, and the rank that
-   * supports that is `--text-lg`.
-   *
-   * The pairing is what makes it a system rather than a preference: a measure
-   * is only correct for one size. The rule is 65–75 characters a line, and it
-   * is *measured*, not estimated — at `--text-base` in the old 616px column a
-   * report ran 108 characters, half again the upper bound. `--measure-prose` is
-   * now sized for `--text-lg`: 504px, measured at 70.
-   *
-   * The report document is the one consumer of this class. Conversation turns
-   * are a deliberate exception: their 364px column cannot carry the report's
-   * 18px serif at a readable measure, so replies use `--text-md` instead.
+   * The report and AI replies share the reading role; their owners retain
+   * their respective measure and responsive font-family adaptation.
    */
   .calm-prose {
     max-inline-size: var(--measure-prose);
     color: var(--text-2);
     font: var(--type-reading);
-    letter-spacing: var(--tracking-normal);
+    letter-spacing: var(--type-reading-tracking);
   }
 
   .calm-prose > * + * {
-    margin-block-start: var(--space-8);
+    margin-block-start: var(--space-4);
   }
 
   .calm-prose h1 {
-    letter-spacing: var(--tracking-normal);
+    letter-spacing: var(--type-chapter-tracking);
     color: var(--text);
     font: var(--type-chapter);
   }
@@ -166,19 +152,19 @@
   .calm-prose h2 {
     color: var(--text);
     font: var(--type-subheading);
-    letter-spacing: var(--tracking-normal);
+    letter-spacing: var(--type-subheading-tracking);
   }
 
   .calm-prose h3 {
     color: var(--text-2);
     font: var(--type-subheading-small);
-    letter-spacing: var(--tracking-normal);
+    letter-spacing: var(--type-subheading-small-tracking);
   }
 
   .calm-prose code {
     color: var(--text-2);
     font: var(--type-code);
-    letter-spacing: var(--tracking-normal);
+    letter-spacing: var(--type-code-tracking);
   }
 
   /*
@@ -194,17 +180,17 @@
    * one, so hover cannot change layout.
    */
   [data-nc-action] {
+    font-size: var(--font-step-2-size);
+    font-weight: var(--weight-normal);
+    line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: var(--space-2);
+    gap: var(--space-1);
     block-size: var(--control-h);
-    padding-inline: var(--space-6);
+    padding-inline: var(--space-3);
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
     cursor: pointer;
     transition: background-color var(--motion-quick) var(--ease-feedback),
       color var(--motion-quick) var(--ease-feedback),

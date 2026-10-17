@@ -16,6 +16,6 @@
   .content {
     flex: 1 1 auto;
     min-block-size: 0;
-    padding: 0 var(--space-8) var(--space-8);
+    padding: 0 var(--space-4) var(--space-4);
   }
 }
