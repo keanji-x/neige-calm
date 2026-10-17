@@ -4,6 +4,8 @@
     color: var(--text);
   }
 
+  .nameField { inline-size: 100%; }
+
   .pills {
     min-inline-size: 0;
     flex-wrap: wrap;

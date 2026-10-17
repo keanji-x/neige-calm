@@ -75,6 +75,8 @@ it('fills only the new project name and waits for the native Create action', asy
   const fixture = renderDailyFixture({ emptyWorkspace: true, uiPreferences: preferences });
   await page.getByRole('button', { name: 'New area', exact: true }).click();
   await expect.element(page.getByRole('button', { name: '下一步', exact: true })).toBeDisabled();
+  await expect.poll(() => page.getByRole('textbox', { name: 'Name', exact: true }).element().getBoundingClientRect().width)
+    .toBeGreaterThan(page.getByRole('dialog', { name: 'New area', exact: true }).element().getBoundingClientRect().width * 0.8);
   await page.getByRole('button', { name: '填入这个名字', exact: true }).click();
   await expect.element(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('我的练习项目');
   expect(fixture.requests.filter(request => request.method === 'POST' && request.path === '/api/areas')).toHaveLength(0);

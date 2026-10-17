@@ -24,6 +24,13 @@ to a quiet header, establish a readable title/body hierarchy, use one primary
 action and subdued back/skip actions, and reduce arrow and example decoration.
 Do not add another layout or introduce global theme tokens.
 
+Ownership decision (tooling/architecture, architecture tracking #997): register
+the new `app/onboarding-demo` composition and the exact bootstrap selector/test
+paths in the frozen inventory. This adds module owners only; it does not relax
+any ownership or dependency rule. Preserve the corresponding ownership trailer.
+The visual check also preserves the native full-width project-name field inside
+the guide's measured wrapper, rather than leaving a small field in a wide dialog.
+
 Review tier: L2 because this adds a composition/isolation boundary and a sizable
 integration. Two independent review worktrees must inspect ownership layers,
 duplicate logic and application assumptions. Verify native create/send/revise,

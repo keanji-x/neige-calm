@@ -116,7 +116,7 @@ export function AreaEditorForm({
       {error !== null && <Banner status="error" title={error} data-nc-area-editor-error />}
       <GuideAnchor id="area-name" reserveSpace canAdvance={normalizedName !== ''} disabled={initial.name !== '' || browsing || submitting || locked}
         onExample={name.trim() !== '' ? undefined : (text) => { setName(text); nameInputRef.current?.focus(); }}>
-      {(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1}><TextInput
+      {(anchor, describedBy) => <div ref={anchor} aria-describedby={describedBy} tabIndex={-1} className={styles.nameField}><TextInput
         {...NATIVE_REQUIRED_INPUT_PROPS}
         ref={nameInputRef}
         label="Name"
