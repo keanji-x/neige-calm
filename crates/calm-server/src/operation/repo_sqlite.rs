@@ -16,6 +16,10 @@ use super::{
     idempotency_payload_conflict, operation_result_from, required_lease_owner, required_output,
 };
 
+#[cfg(test)]
+#[path = "claim_tests.rs"]
+mod claim_tests;
+
 #[derive(Clone)]
 pub struct SqlxOperationRepo {
     pub(super) pool: SqlitePool,
