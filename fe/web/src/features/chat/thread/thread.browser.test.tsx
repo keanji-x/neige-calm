@@ -185,7 +185,9 @@ describe('the / command menu, as the engine lays it out', () => {
     const waiting = screen.getByRole('button', { name: 'Send' });
     expect(waiting).toBe(control);
     // Starting feedback must not mount new glyph resources in the send commit.
-    expect([...waiting.querySelectorAll('*')]).toEqual(glyphNodes);
+    const waitingNodes = [...waiting.querySelectorAll('*')];
+    expect(waitingNodes).toHaveLength(glyphNodes.length);
+    waitingNodes.forEach((node, index) => expect(node).toBe(glyphNodes[index]));
     expect(waiting.hasAttribute('disabled')).toBe(true);
     expect(screen.getByRole('group', { name: 'Message composer' }).getAttribute('aria-busy')).toBe('true');
     expect(document.querySelector('[data-nc-send-attachment]')).toBeNull();
@@ -200,7 +202,9 @@ describe('the / command menu, as the engine lays it out', () => {
     expect(getComputedStyle(waiting).backgroundColor).toBe(getComputedStyle(probe).backgroundColor);
     probe.remove();
     view.rerender(<ImageOnlyCard disabled />);
-    expect([...control.querySelectorAll('*')]).toEqual(glyphNodes);
+    const settledNodes = [...control.querySelectorAll('*')];
+    expect(settledNodes).toHaveLength(glyphNodes.length);
+    settledNodes.forEach((node, index) => expect(node).toBe(glyphNodes[index]));
     expect(control.getAnimations({ subtree: true }).filter(animation => animation.effect?.getTiming().iterations === Infinity)
       .every(animation => animation.playState === 'paused')).toBe(true);
   });
