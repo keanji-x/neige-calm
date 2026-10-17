@@ -2,7 +2,7 @@
 //! against, frozen at `prepare_tx`, sampled again when the gate ends, and carried on every
 //! verdict as [`TaskGateResult::target`].
 //!
-//! Producers (D3's producer × variant table): `prepare_target_tx` freezes the target and refuses
+//! Producers (D3's producer × variant table): `prepare_target` freezes the target and refuses
 //! in the same transaction (P1–P5), `finalize` is the one exit of the three completion paths
 //! (P6, P7), `compensation_target` feeds the compensation step (P8) and `reconcile_result_tx`
 //! is the scheduler's reconcile arm (P9, P9b, P10). The wire vocabulary lives in
@@ -72,16 +72,11 @@ const STATUS_ARGV: [&str; 11] = [
     "--ignore-submodules=none",
 ];
 
-/// One deadline for the three commands of one D3.0 sample. The prepare-time sample runs inside
-/// the driver's `BEGIN IMMEDIATE` (D3), so it must not hold the kernel's only write slot for longer
-/// than other writers tolerate. `STATUS_ARGV` already disables `core.fsmonitor`; what remains
-/// under this bound is real I/O stall and any clean filter or `post-index-change` hook the
-/// repository configures. U4 measured the
-/// sample at p99 101 ms and 264 ms cold, G23 at ≤ 212 ms after heavy I/O; 4 s is ~15× the worst
-/// observed and, crucially, stays UNDER the single 5 s `busy_timeout` of the pool's auto-commit
-/// writers (lease releases, `today` upserts), so a sample that stalls the full bound never makes
-/// those writers return `database is locked` before its own transaction rolls back. A timeout is
-/// `SampleFailure` (`Unsampled`), and the command's whole process group is killed.
+/// One deadline for the external target sample and optional reuse refs digest. A stalled clean
+/// filter or post-index-change hook is bounded and its whole process group is killed. Preparation
+/// releases its read transaction before these commands; the short writer transaction revalidates
+/// their exact SQL facts before consuming the observation. A timeout is `SampleFailure`
+/// (`Unsampled`), never evidence that the target mismatched.
 pub const SAMPLE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Bytes of a sampling command's stdout / stderr kept (the porcelain status of a large dirty
@@ -195,7 +190,7 @@ fn legacy_verdict_target() -> VerifyTarget {
 /// reconcile arm P10 all read this one derivation). `Bound` carries the three rows inline
 /// (`clippy::large_enum_variant`): built once per read and destructured at once.
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum VerifyIdentity {
     Unbound {
         reason: FrozenUnbound,
@@ -264,7 +259,7 @@ pub struct Expected {
 }
 
 impl Expected {
-    fn for_candidate(lease: &WorkspaceLease, candidate: &CandidateRow) -> Result<Self> {
+    pub(super) fn for_candidate(lease: &WorkspaceLease, candidate: &CandidateRow) -> Result<Self> {
         let base = lease.base.as_ref().ok_or_else(|| {
             CalmError::Internal(format!(
                 "kernel lease {} has no recorded base",
@@ -386,7 +381,7 @@ pub(crate) async fn sample_within(
 }
 
 /// [`sample`] ending by `deadline`; `timeout` is the bound a timeout failure names.
-async fn sample_by(
+pub(super) async fn sample_by(
     cwd: &Path,
     expected: &Expected,
     deadline: tokio::time::Instant,
@@ -564,21 +559,20 @@ pub(crate) struct PreparedTarget {
     pub verdict: Option<TaskGateResult>,
 }
 
-/// The prepare-time target check (D3, after the attempt bump): freeze the identity; on a
-/// candidate-bound attempt refuse `gate.cwd` (`Conflict`, P4), refuse a missing candidate in the
-/// transaction (P3), sample the checkout (a sampling failure is `Internal` → op Stuck, P5) and
-/// refuse a mismatch in the transaction (P2); otherwise freeze `refused: false` (P1). The sample
-/// ends by `deadline`, the prepare's one [`SAMPLE_TIMEOUT`] bound.
-pub(crate) async fn prepare_target_tx(
-    tx: &mut Tx<'_>,
+/// Consume the externally collected observation only after the owner revalidated its SQL
+/// facts and bumped the attempt. Freeze identity/refusal in the same transaction; a sampling
+/// failure still reports honest Unsampled/infra. Final refusal log publication retains attempt
+/// ownership here. This function runs no Git commands.
+pub(super) async fn prepare_target(
     task: &Task,
     gate: &GateSpec,
     cwd: &str,
     attempt: i64,
     log_path: &Path,
-    deadline: tokio::time::Instant,
+    identity: VerifyIdentity,
+    sampled: Option<std::result::Result<Sampled, SampleFailure>>,
 ) -> Result<PreparedTarget> {
-    let (lease, delivery, candidate) = match verify_target_identity(tx, task).await? {
+    let (lease, delivery, candidate) = match identity {
         VerifyIdentity::Unbound { reason } => {
             return Ok(PreparedTarget {
                 target: FrozenTarget::Unbound { reason },
@@ -617,8 +611,8 @@ pub(crate) async fn prepare_target_tx(
         });
     };
     let expected = Expected::for_candidate(&lease, &candidate)?;
-    let sampled = sample_by(Path::new(cwd), &expected, deadline, SAMPLE_TIMEOUT)
-        .await
+    let sampled = sampled
+        .ok_or_else(|| CalmError::Internal("verification observation missing".into()))?
         .map_err(|failure| {
             CalmError::Internal(format!(
                 "gate-infra: verification target unsampled: {}",

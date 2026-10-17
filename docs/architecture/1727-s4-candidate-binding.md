@@ -1,5 +1,10 @@
 # attached 仓库的候选绑定（#1727 S4）— 设计 v9
 
+> **#2785 后续修订：D3 的采样时序。** 下文历史设计中“在 `prepare_tx` / 同一事务内采样 before”的要求由本修订替代：task-verify 先在只读事务读取 typed task/gate/cwd 来源、lease/delivery/candidate 与 gate-run 事实，关闭事务后执行 Git before 采样和可能的 reuse refs digest；随后短 `BEGIN IMMEDIATE` 重验原 operation 的输入、Pending phase、有效 claim 及同一组 owner 事实，再原子提交 attempt bump、target freeze、拒绝/reuse verdict 与事件。事实变更时丢弃整个一次性观察（包含采样错误），在原 claim 下最多重新准备三次；连续变化后保持 Pending 与原 lease，scheduler 已有 `runtime.wait()` 每 25 ms 驱动，lease 到期后重新认领，最坏延后现有 60 秒，不依赖额外 maintenance daemon。原 claim 失效时不可提交或借用新 claim。reuse 在提交时仍重做停止证明与完整资格核对。
+>
+> 最终 log unlink/append/hard-link 继续位于拥有 attempt 的短事务内，保留 NoOp、崩溃重试、run log 不截断和 link 失败回退语义；本修订仅移出昂贵 Git 子进程，不引入日志发布协议或 schema 变化。SQLite 原写锁也从未锁住工作树/refs；before-after 仍是诚实的分时观察，不新增跨 Git 编辑或 refs ABA 的原子性承诺。
+
+
 > **#2459（2026-10-09）**：`gh_pr_diff` 改读 GitHub compare 的净 diff `base_sha...head_sha`（`gh api repos/<repo>/compare/<base>...<head>`，diff 媒体类型），钉在调用方给的两个 commit 上，不再读 PR 当前 head 的逐提交 `--patch`；`forge.pr.diff.read.head_sha` 因此就是 diff 所读的 head。G9 的另一半「PR 远端 head == 候选」仍不由内核核对（合并围栏 `expected_head_sha` 照旧）。下文 F5.4、G9 中「`gh pr diff` 自己读 PR」的描述是历史记录。
 >
 > **#1893 S6（2026-09-30）**：`calm.task.delivery{retry|abandon}` 与 `task_git_delivery_abandonments`（迁移 0126 删表）已删除。失败的交付在结算事务里把仍在 `verifying` 的 gated 行翻成 `failed/delivery-failed`，ungated 行保持 `done`；读面没有 `abandoned` 状态与 `failure.retry_allowed`。下文涉及 retry / abandon 的段落是历史记录。

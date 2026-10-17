@@ -176,8 +176,11 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         &self,
         op: &Operation,
         adapter: &dyn ProviderAdapter,
-    ) -> CalmResult<Option<(Operation, Vec<BroadcastEnvelope>)>> {
-        self.inner.prepare_tx_and_advance(op, adapter).await
+        prepared: Option<Box<dyn calm_server::operation::PreparedTx>>,
+    ) -> CalmResult<calm_server::operation::PrepareAdvance> {
+        self.inner
+            .prepare_tx_and_advance(op, adapter, prepared)
+            .await
     }
 
     async fn set_phase(&self, op: &Operation, phase: Phase) -> CalmResult<Option<Operation>> {
@@ -301,8 +304,11 @@ impl OperationRepo for DriveErrorOnceRepo {
         &self,
         op: &Operation,
         adapter: &dyn ProviderAdapter,
-    ) -> CalmResult<Option<(Operation, Vec<BroadcastEnvelope>)>> {
-        self.inner.prepare_tx_and_advance(op, adapter).await
+        prepared: Option<Box<dyn calm_server::operation::PreparedTx>>,
+    ) -> CalmResult<calm_server::operation::PrepareAdvance> {
+        self.inner
+            .prepare_tx_and_advance(op, adapter, prepared)
+            .await
     }
 
     async fn set_phase(&self, op: &Operation, phase: Phase) -> CalmResult<Option<Operation>> {

@@ -499,12 +499,47 @@ async fn expired_claim_cannot_enter_prepare_callback() {
     // This table intentionally does not exist. Entering the real prepare_tx
     // callback would error, even if a later settlement rolled it back.
     assert!(
-        repo.prepare_tx_and_advance(&op, &TxOnlyClaimAdapter)
+        repo.prepare_tx_and_advance(&op, &TxOnlyClaimAdapter, None)
             .await
             .unwrap()
+            .committed()
             .is_none()
     );
     let stored = repo.get_operation(&op.id).await.unwrap().unwrap();
     assert_eq!(stored.phase, op.phase);
     assert_eq!(stored.tx_output.unwrap().result, json!({"original":true}));
+}
+
+struct PoisonPreparedEvidence;
+#[async_trait]
+impl crate::operation::PreparedTx for PoisonPreparedEvidence {
+    async fn apply(
+        self: Box<Self>,
+        _: &mut Tx<'_>,
+        _: &Operation,
+    ) -> Result<crate::operation::PreparedTxResult> {
+        panic!("expired claim consumed external evidence");
+    }
+}
+
+#[tokio::test]
+async fn expired_claim_cannot_consume_prepared_evidence() {
+    let (db, repo, op) = claimed_operation().await;
+    expire(&db, &op).await;
+    let result = repo
+        .prepare_tx_and_advance(
+            &op,
+            &TxOnlyClaimAdapter,
+            Some(Box::new(PoisonPreparedEvidence)),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        crate::operation::PrepareAdvance::ClaimLost
+    ));
+    assert_eq!(
+        repo.get_operation(&op.id).await.unwrap().unwrap().phase,
+        op.phase
+    );
 }

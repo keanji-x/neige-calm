@@ -27,6 +27,30 @@ pub(super) fn context(repo: Arc<SqlxRepo>, operations: Arc<SqlxOperationRepo>) -
     )
 }
 
+pub(super) async fn pending_terminal_operation(
+    ctx: &SpawnCtx,
+    payload: &serde_json::Value,
+) -> crate::operation::Operation {
+    let id = ctx
+        .operation_repo
+        .insert_operation(
+            "terminal-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: crate::routes::idempotency_key::stable_payload_hash(payload).unwrap(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    ctx.operation_repo
+        .get_operation(&id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn workspace_identity_managed_preflight_does_not_create_or_repair() {
     for unborn in [false, true] {
@@ -119,7 +143,11 @@ async fn workspace_identity_legacy_non_git_terminal_owner_prepares_without_git_a
         cwd: None,
     })
     .unwrap();
-    adapter.prepare_external(&payload, &ctx).await.unwrap();
+    let external_op = pending_terminal_operation(&ctx, &payload).await;
+    adapter
+        .prepare_external(&payload, &external_op, &ctx)
+        .await
+        .unwrap();
     assert!(
         observed_root(&repo, &plain).await.is_none(),
         "a legacy directory execution supplies no Git workspace identity"
@@ -210,9 +238,10 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
         .pop()
         .unwrap();
     operations
-        .prepare_tx_and_advance(&claimed, adapter.as_ref())
+        .prepare_tx_and_advance(&claimed, adapter.as_ref(), None)
         .await
         .unwrap()
+        .committed()
         .unwrap();
     let before: (String, String, String) = sqlx::query_as(
         "SELECT payload_json,payload_hash,tx_output_json FROM operations WHERE id=?1",
@@ -290,7 +319,10 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
         observed_root(&repo, &current).await.is_none(),
         "replaying an old external source cannot acquire the current track's identity"
     );
-    adapter.prepare_external(&payload, &ctx).await.unwrap();
+    adapter
+        .prepare_external(&payload, &claimed, &ctx)
+        .await
+        .unwrap();
     assert!(observed_root(&repo, &current).await.is_none());
     let proof: (String, String, String) = sqlx::query_as(
         "SELECT path,base_sha,git_common_dir FROM workspace_leases WHERE lease_id='historical'",

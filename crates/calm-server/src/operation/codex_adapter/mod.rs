@@ -741,9 +741,15 @@ impl ProviderAdapter for CodexAdapter {
 
 #[async_trait]
 impl ProviderAdapter for CodexWorkerAdapter {
-    async fn prepare_external(&self, input: &Value, ctx: &SpawnCtx) -> Result<()> {
+    async fn prepare_external(
+        &self,
+        input: &Value,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<Box<dyn crate::operation::PreparedTx>>> {
         let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        super::workspace_lease::worker::observe_worker_checkout(ctx, &payload.track_id).await
+        super::workspace_lease::worker::observe_worker_checkout(ctx, &payload.track_id).await?;
+        Ok(None)
     }
 
     fn kind(&self) -> &'static str {

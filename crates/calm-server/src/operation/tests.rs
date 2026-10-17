@@ -645,9 +645,10 @@ async fn a_committed_prepare_leaves_no_lease_to_mark_the_row_stuck_from_pending(
         steal_lease_after_artifacts: false,
     };
     let (prepared, _) = repo
-        .prepare_tx_and_advance(&op, &adapter)
+        .prepare_tx_and_advance(&op, &adapter, None)
         .await
         .unwrap()
+        .committed()
         .expect("the claiming driver commits the prepare");
     assert_eq!(prepared.phase, Phase::TxCommitted);
 

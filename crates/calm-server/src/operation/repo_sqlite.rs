@@ -6,7 +6,6 @@ use sqlx::{Row, Sqlite, SqlitePool};
 
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
-use crate::event::BroadcastEnvelope;
 use crate::model::{new_id, now_ms};
 
 use super::{
@@ -21,14 +20,14 @@ use super::{ParkedCompletion, ParkedOutcome};
 
 mod writes;
 
+use writes::read_output_tx;
 pub(super) use writes::{
     PhaseWrite, record_spawn_artifacts, set_parked, write_phase_and_tx_output,
 };
 pub(crate) use writes::{
-    checkpoint_app_server_interact_tx, complete_parked_tx, require_live_claim_tx,
-    require_original_operation_tx,
+    checkpoint_app_server_interact_tx, complete_parked_tx, has_live_claim_tx,
+    require_live_claim_tx, require_original_operation_tx,
 };
-use writes::{has_live_claim_tx, read_output_tx};
 
 #[cfg(test)]
 mod claim_tests;
@@ -297,13 +296,25 @@ impl OperationRepo for SqlxOperationRepo {
         &self,
         op: &Operation,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<Option<(Operation, Vec<BroadcastEnvelope>)>> {
+        prepared: Option<Box<dyn super::PreparedTx>>,
+    ) -> Result<super::PrepareAdvance> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(None);
+            return Ok(super::PrepareAdvance::ClaimLost);
         }
-        let output = match adapter.prepare_tx(&mut tx, &op.payload, op).await {
-            Ok(output) => output,
+        let applied = match prepared {
+            Some(prepared) => prepared.apply(&mut tx, op).await,
+            None => adapter
+                .prepare_tx(&mut tx, &op.payload, op)
+                .await
+                .map(super::PreparedTxResult::Ready),
+        };
+        let output = match applied {
+            Ok(super::PreparedTxResult::Stale) => {
+                tx.rollback().await?;
+                return Ok(super::PrepareAdvance::Stale);
+            }
+            Ok(super::PreparedTxResult::Ready(output)) => output,
             Err(e) => {
                 let _ = tx.rollback().await;
                 return Err(e);
@@ -319,14 +330,14 @@ impl OperationRepo for SqlxOperationRepo {
         .await?;
         if !written {
             let _ = tx.rollback().await;
-            return Ok(None);
+            return Ok(super::PrepareAdvance::ClaimLost);
         }
         tx.commit().await?;
         let next = self
             .find_by_id(&op.id)
             .await?
             .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))?;
-        Ok(Some((next, events)))
+        Ok(super::PrepareAdvance::Committed(next, events))
     }
 
     async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>> {

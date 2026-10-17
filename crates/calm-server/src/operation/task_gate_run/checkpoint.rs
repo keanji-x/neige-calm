@@ -79,8 +79,8 @@ async fn git_read(
 
 /// SHA-256 of the remote-tracking refs and tags with their symref targets, read by `deadline`;
 /// `None` when it cannot be taken (then nothing may stand on it). The run takes it at spawn under
-/// its own sampling bound; reuse takes it inside the gate's prepare under the target sample's
-/// deadline, so the `BEGIN IMMEDIATE` hold stays under one bound (#2464 §4 (4)).
+/// its own sampling bound; reuse collects it outside the writer under the target sample's
+/// deadline, then revalidates the exact candidate/run facts before consuming it (#2464 §4 (4)).
 pub(crate) async fn refs_digest(cwd: &Path, deadline: tokio::time::Instant) -> Option<String> {
     let output = git_read(
         cwd,

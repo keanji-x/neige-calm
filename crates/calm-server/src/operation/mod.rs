@@ -611,7 +611,7 @@ pub struct CompensationStateVersioned {
     pub steps: Vec<CompensationStep>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OperationOutcome {
     Succeeded {
         result: Value,
@@ -693,6 +693,34 @@ pub enum RecoveryItem {
     },
 }
 
+/// One-use, adapter-owned evidence collected without the repository writer lock.
+#[async_trait]
+pub trait PreparedTx: Send {
+    async fn apply(self: Box<Self>, tx: &mut Tx<'_>, op: &Operation) -> Result<PreparedTxResult>;
+}
+
+pub enum PreparedTxResult {
+    Ready(TxOutput),
+    /// The read facts changed. Discard all observations and collect new evidence.
+    Stale,
+}
+
+pub enum PrepareAdvance {
+    Committed(Operation, Vec<BroadcastEnvelope>),
+    ClaimLost,
+    Stale,
+}
+
+impl PrepareAdvance {
+    /// The committed operation and envelopes, when preparation actually advanced it.
+    pub fn committed(self) -> Option<(Operation, Vec<BroadcastEnvelope>)> {
+        match self {
+            Self::Committed(op, events) => Some((op, events)),
+            Self::ClaimLost | Self::Stale => None,
+        }
+    }
+}
+
 #[async_trait]
 pub trait ProviderAdapter: Send + Sync {
     fn kind(&self) -> &'static str;
@@ -718,8 +746,16 @@ pub trait ProviderAdapter: Send + Sync {
 
     /// Recoverable preparation that must finish outside the repository writer transaction.
     /// Adapters retain ownership of their resource protocol; the driver knows no kind list.
-    async fn prepare_external(&self, _input: &Value, _ctx: &SpawnCtx) -> Result<()> {
-        Ok(())
+    /// Optional typed evidence is consumed once after the repository revalidates the original
+    /// live claim. Its owner must revalidate SQL facts before applying observations or failures;
+    /// Stale requests bounded re-preparation, never permanent operation failure.
+    async fn prepare_external(
+        &self,
+        _input: &Value,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> Result<Option<Box<dyn PreparedTx>>> {
+        Ok(None)
     }
 
     async fn prepare_tx<'tx>(
@@ -949,7 +985,8 @@ pub trait OperationRepo: Send + Sync {
         &self,
         op: &Operation,
         adapter: &dyn ProviderAdapter,
-    ) -> Result<Option<(Operation, Vec<BroadcastEnvelope>)>>;
+        prepared: Option<Box<dyn PreparedTx>>,
+    ) -> Result<PrepareAdvance>;
     async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>>;
     async fn set_phase_and_tx_output(
         &self,
@@ -1087,3 +1124,6 @@ mod operation_on_track_tests;
 mod awaiting_retry_migration_tests;
 
 pub(crate) mod worker_attempt;
+
+#[cfg(test)]
+mod prepared_tx_tests;

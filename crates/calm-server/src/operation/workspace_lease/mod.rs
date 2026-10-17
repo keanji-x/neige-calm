@@ -43,7 +43,7 @@ pub(crate) use worker::{WorkerLeasePlan, prepare_worker_lease_tx, worker_branch_
 pub(crate) const WORKSPACE_LEASE_COLUMNS: &str = "lease_id, card_id, track_id, path, state, boot_id, \
      base_sha, base_source, base_attempt_id, canonical_path, git_common_dir, delivery_policy";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WorkspaceLease {
     pub lease_id: String,
     pub card_id: String,

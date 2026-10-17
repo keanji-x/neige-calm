@@ -495,9 +495,10 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
     let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
     let pending = claim_worker_operation(&harness, "pinned", "pinned").await;
     let (prepared, _) = op_repo
-        .prepare_tx_and_advance(&pending, &harness.adapter)
+        .prepare_tx_and_advance(&pending, &harness.adapter, None)
         .await
         .unwrap()
+        .committed()
         .expect("prepare commits its owning operation checkpoint");
     let mut output = super::super::required_output(&prepared).unwrap().clone();
     let op = op_repo

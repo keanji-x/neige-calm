@@ -228,9 +228,10 @@ pub(super) async fn prepare_claude_worker_as_scheduled(
     let op = op_repo.claim_drive_batch(1).await.unwrap().remove(0);
     assert_eq!(op.id, op_id);
     let (op, _) = op_repo
-        .prepare_tx_and_advance(&op, &harness.adapter)
+        .prepare_tx_and_advance(&op, &harness.adapter, None)
         .await
         .unwrap()
+        .committed()
         .unwrap();
     op.tx_output.unwrap()
 }

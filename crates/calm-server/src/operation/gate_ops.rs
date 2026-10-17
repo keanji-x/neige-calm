@@ -11,7 +11,7 @@ use crate::error::Result;
 
 /// One gate operation of an attempt: its key (also its processes' `NEIGE_GATE_OP` marker), its
 /// phase and its last recorded process group.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GateOp {
     pub key: String,
     pub kind: GateOpKind,

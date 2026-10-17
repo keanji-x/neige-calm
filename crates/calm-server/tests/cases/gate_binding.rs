@@ -2748,3 +2748,6 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
         TaskStatus::Failed
     );
 }
+
+#[path = "gate_binding/prepare_writer_tests.rs"]
+mod prepare_writer_tests;

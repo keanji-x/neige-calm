@@ -472,40 +472,56 @@ impl OperationRuntime {
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
-                let prepared = match adapter.prepare_external(&op.payload, &self.spawn_ctx).await {
-                    Ok(()) => {
-                        self.repo
-                            .prepare_tx_and_advance(&op, adapter.as_ref())
-                            .await
-                    }
-                    Err(error) => Err(error),
-                };
-                let Some((_next, events)) = (match prepared {
-                    Ok(prepared) => prepared,
-                    Err(e) => {
-                        if let Some((last_error, last_error_class)) =
-                            crate::routes::idempotency_key::operation_failure_parts(&e)
-                        {
-                            if let Some(result) = self
-                                .repo
-                                .mark_failed(
-                                    &op,
-                                    last_error,
-                                    PhaseTag::Pending,
-                                    Some(last_error_class.to_string()),
-                                )
-                                .await?
-                            {
-                                self.completion.complete(result);
-                            } else {
-                                log_lost_lease(&op, PhaseTag::Failed);
-                            }
+                // Facts may change during external I/O. Retry boundedly under this exact
+                // claim; after that leave Pending leased, so wait()'s drive retries on expiry.
+                let mut committed = None;
+                for _ in 0..3 {
+                    let prepared = match adapter
+                        .prepare_external(&op.payload, &op, &self.spawn_ctx)
+                        .await
+                    {
+                        Ok(prepared) => {
+                            self.repo
+                                .prepare_tx_and_advance(&op, adapter.as_ref(), prepared)
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match prepared {
+                        Ok(super::PrepareAdvance::Committed(next, events)) => {
+                            committed = Some((next, events));
+                            break;
+                        }
+                        Ok(super::PrepareAdvance::Stale) => continue,
+                        Ok(super::PrepareAdvance::ClaimLost) => {
+                            log_lost_lease(&op, PhaseTag::TxCommitted);
                             return Ok(());
                         }
-                        return Err(e);
+                        Err(e) => {
+                            if let Some((last_error, last_error_class)) =
+                                crate::routes::idempotency_key::operation_failure_parts(&e)
+                            {
+                                if let Some(result) = self
+                                    .repo
+                                    .mark_failed(
+                                        &op,
+                                        last_error,
+                                        PhaseTag::Pending,
+                                        Some(last_error_class.to_string()),
+                                    )
+                                    .await?
+                                {
+                                    self.completion.complete(result);
+                                } else {
+                                    log_lost_lease(&op, PhaseTag::Failed);
+                                }
+                                return Ok(());
+                            }
+                            return Err(e);
+                        }
                     }
-                }) else {
-                    log_lost_lease(&op, PhaseTag::TxCommitted);
+                }
+                let Some((_next, events)) = committed else {
                     return Ok(());
                 };
                 for envelope in events {
