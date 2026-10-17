@@ -389,19 +389,18 @@ async fn overlay_null_missing_non_overlay_and_duplicate_fields_freeze_sql_quads(
     for malformed_shape in ["missing", "null", "duplicate"] {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let mut older: serde_json::Value = serde_json::from_str(&payload("shape")).unwrap();
-        let latest;
-        if malformed_shape == "null" {
+        let latest = if malformed_shape == "null" {
             older["plugin_id"] = serde_json::Value::Null;
             let mut missing = older.clone();
             missing.as_object_mut().unwrap().remove("plugin_id");
-            latest = missing.to_string();
+            missing.to_string()
         } else if malformed_shape == "missing" {
             let mut missing = older.clone();
             missing.as_object_mut().unwrap().remove("id");
-            latest = missing.to_string();
+            missing.to_string()
         } else {
-            latest = format!("{{\"plugin_id\":\"kernel\",{}", &older.to_string()[1..]);
-        }
+            format!("{{\"plugin_id\":\"kernel\",{}", &older.to_string()[1..])
+        };
         let a1 = insert_event(repo.pool(), "overlay.set", &older.to_string(), old(60)).await;
         let a2 = insert_event(repo.pool(), "overlay.set", &latest, old(50)).await;
         let (_, control) = pair(repo.pool(), "shape-control").await;

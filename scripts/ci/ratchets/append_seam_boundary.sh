@@ -59,7 +59,7 @@ crates/calm-truth/src/db/sqlite/area_ownership_tests.rs:1
 crates/calm-truth/src/db/sqlite/events.rs:1
 crates/calm-truth/src/db/sqlite/proposal_withdraw_upgrade_tests.rs:1
 crates/calm-truth/src/db/sqlite/track_closed_at_migration_tests.rs:1
-crates/calm-truth/src/events_prune.rs:1
+crates/calm-truth/src/events_prune/tests.rs:1
 crates/calm-truth/tests/ask_delivery_migration.rs:1
 crates/calm-truth/tests/events_since_bound.rs:8
 crates/calm-truth/tests/file_delivery_migration.rs:1}"
