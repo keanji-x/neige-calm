@@ -17,11 +17,17 @@ pub(super) struct Journal {
     pub request: PrepareExecution,
     pub phase: Phase,
     pub interactive_revoked: bool,
+    /// Volatile IO bookkeeping. Loaded journal facts are already durable; never a wire field.
+    #[serde(skip)]
+    pub pending_persistence: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) enum Phase {
     Prepared,
+    Reserved {
+        slot_version: u64,
+    },
     Revoked,
     Forking {
         slot_version: u64,
@@ -50,7 +56,7 @@ pub(super) enum Phase {
 impl Phase {
     pub fn state(&self) -> ExecutionState {
         match self {
-            Self::Prepared => ExecutionState::Prepared,
+            Self::Prepared | Self::Reserved { .. } => ExecutionState::Prepared,
             Self::Revoked => ExecutionState::Revoked,
             Self::Forking { .. } => ExecutionState::Forking,
             Self::Spawned(_) => ExecutionState::Spawned,
@@ -75,7 +81,8 @@ impl Phase {
     }
     pub fn slot_version(&self) -> Option<u64> {
         match self {
-            Self::Forking { slot_version }
+            Self::Reserved { slot_version }
+            | Self::Forking { slot_version }
             | Self::NoChild { slot_version, .. }
             | Self::Unknown { slot_version, .. } => Some(*slot_version),
             _ => self.receipt().map(|receipt| receipt.slot_version),
@@ -90,6 +97,12 @@ pub(super) struct Store {
 
 impl Store {
     pub fn open(root: PathBuf) -> anyhow::Result<Self> {
+        Self::open_with_barrier(root, sync_ancestry)
+    }
+    fn open_with_barrier(
+        root: PathBuf,
+        barrier: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&root)?;
         anyhow::ensure!(
             !std::fs::symlink_metadata(&root)?.file_type().is_symlink(),
@@ -114,7 +127,7 @@ impl Store {
             } == 0,
             "executor journal already owned"
         );
-        File::open(&root)?.sync_all()?;
+        barrier(&root)?;
         Ok(Self { root, _lock: lock })
     }
     pub fn load(&self) -> anyhow::Result<Vec<Journal>> {
@@ -122,6 +135,9 @@ impl Store {
     }
     pub fn registrations(&self) -> anyhow::Result<Vec<ObjectRegistrationReceipt>> {
         self.load_extension("registration")
+    }
+    pub fn retirements(&self) -> anyhow::Result<Vec<ObjectRegistrationReceipt>> {
+        self.load_extension("retired")
     }
     fn load_extension<T: serde::de::DeserializeOwned>(
         &self,
@@ -175,5 +191,64 @@ impl Store {
     }
     pub fn path(&self) -> &Path {
         &self.root
+    }
+}
+
+// Repeat the entire barrier on open: a previous attempt may have created names then failed fsync.
+fn sync_ancestry(root: &Path) -> std::io::Result<()> {
+    sync_ancestry_with(root, |directory| File::open(directory)?.sync_all())
+}
+fn sync_ancestry_with(
+    root: &Path,
+    mut sync: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    for directory in root.ancestors() {
+        let directory = if directory.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            directory
+        };
+        sync(directory)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_journal_bootstrap_retries_every_containing_entry_barrier() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("new-parent/new-store");
+        let parent = root.parent().unwrap();
+        let mut first = Vec::new();
+        let failed = Store::open_with_barrier(root.clone(), |path| {
+            sync_ancestry_with(path, |directory| {
+                first.push(directory.to_owned());
+                if directory == parent {
+                    return Err(std::io::Error::from_raw_os_error(libc::EIO));
+                }
+                File::open(directory)?.sync_all()
+            })
+        });
+        assert!(
+            failed.is_err(),
+            "store acknowledged before containing entry was durable"
+        );
+        assert!(root.exists());
+        assert_eq!(first, [root.clone(), parent.to_owned()]);
+        let mut retried = Vec::new();
+        let _store = Store::open_with_barrier(root.clone(), |path| {
+            sync_ancestry_with(path, |directory| {
+                retried.push(directory.to_owned());
+                File::open(directory)?.sync_all()
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            retried,
+            root.ancestors().map(Path::to_owned).collect::<Vec<_>>()
+        );
     }
 }

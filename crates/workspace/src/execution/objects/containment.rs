@@ -5,12 +5,9 @@ use super::{
     fact,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    fs::File,
-    io,
-    marker::PhantomData,
-    os::{fd::FromRawFd, unix::ffi::OsStrExt},
-};
+#[cfg(target_os = "linux")]
+use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
+use std::{fs::File, io, marker::PhantomData};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContainmentKind {

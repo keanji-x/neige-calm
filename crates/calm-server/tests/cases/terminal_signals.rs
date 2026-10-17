@@ -2629,7 +2629,7 @@ async fn await_supervisor_exit(h: &Harness, terminal: &str) {
     use calm_session::{read_frame, write_frame};
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let mut stream = tokio::net::UnixStream::connect(h.supervisor_socket())
+        let mut stream = calm_session::control::execution::connect_legacy(h.supervisor_socket())
             .await
             .unwrap();
         write_frame(
@@ -2795,7 +2795,7 @@ async fn await_ring_holds_sleeper_output(h: &Harness, terminal: &str) {
     let needle = "READY\r\n";
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let mut stream = tokio::net::UnixStream::connect(h.supervisor_socket())
+        let mut stream = calm_session::control::execution::connect_legacy(h.supervisor_socket())
             .await
             .unwrap();
         write_frame(

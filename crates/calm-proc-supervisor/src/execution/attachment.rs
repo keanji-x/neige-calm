@@ -17,6 +17,14 @@ impl Executor {
         let registration = transfer.registration.clone();
         let gate = self.gate(registration_resource(&registration))?;
         let _fence = gate.lock().await;
+        anyhow::ensure!(
+            !self
+                .retired
+                .lock()
+                .map_err(poison)?
+                .contains_key(&transfer.registration_id),
+            "registration lease retired; immutable history cannot restore live objects"
+        );
         let key = registration_key(&registration);
         if let Some(previous) = self.registration_facts.lock().map_err(poison)?.get(&key) {
             anyhow::ensure!(
@@ -41,12 +49,13 @@ impl Executor {
             }
         }
         for previous in self.registrations.lock().map_err(poison)?.values() {
-            if registration_resource(&previous.registration) == registration_resource(&registration)
-                && (previous.receipt.transfer.incarnation != transfer.incarnation
-                    || previous.receipt.transfer.shape != transfer.shape)
+            if registration_resource(&previous.transfer.registration)
+                == registration_resource(&registration)
+                && (previous.transfer.incarnation != transfer.incarnation
+                    || previous.transfer.shape != transfer.shape)
             {
                 anyhow::ensure!(
-                    directory_recovery_version(&previous.registration, &registration),
+                    directory_recovery_version(&previous.transfer.registration, &registration),
                     "object incarnation/layout replacement needs explicit recovery version"
                 );
                 directory_changed = true;
@@ -120,7 +129,10 @@ impl Executor {
             .lock()
             .map_err(poison)?
             .insert(receipt.id.clone(), root.clone());
-        self.registrations.lock().map_err(poison)?.insert(key, root);
+        self.registrations
+            .lock()
+            .map_err(poison)?
+            .insert(key, receipt.clone());
         Ok(ExecutionReply::Registered(receipt))
     }
 }
@@ -182,13 +194,13 @@ impl Executor {
                     if ack.executor_boot == self.boot && ack.registration == root.receipt.id && ack.nonce == export.nonce)),
                 "export ACK provenance mismatch"
             );
+            drop(root);
             rights::send(
                 stream,
                 &ControlReply::Execution(Box::new(ExecutionReply::ExportAcknowledged)),
                 &[],
             )
             .await?;
-            drop(root);
             return Ok(());
         }
         let answer = self.dispatch(secret, request).await;

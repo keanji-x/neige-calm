@@ -10,7 +10,7 @@ use qualification::NamespaceContext;
 pub use qualification::{
     LocalObjectProfile, ObjectQualificationFailure, ObjectQualificationStage,
     ObjectQualificationUnknown, ObjectQualificationUnsupported, QualifiedCwd, QualifiedHeldObjects,
-    QualifiedObjectFact,
+    QualifiedObjectFact, local_object_platform,
 };
 pub use relation::{
     DirectoryObservationStage, DirectoryPairFacts, DirectoryPairFailure, DirectoryRelationOutcome,
@@ -291,10 +291,7 @@ impl HeldSourceObjects {
                 "attachment object kind mismatch",
             )?;
             // A named object is compared to a continuously held descriptor, never substituted for it.
-            let named_file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&path)?;
+            let named_file = open_named_object(&path)?;
             let named = named_file.metadata()?;
             ensure(
                 !named.file_type().is_symlink() && fact(&named_file, role.clone())? == *expected,
@@ -447,4 +444,19 @@ fn git_path(root: &Path, flag: &str) -> io::Result<PathBuf> {
     } else {
         root.join(path)
     })
+}
+
+#[cfg(target_os = "linux")]
+fn open_named_object(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+#[cfg(not(target_os = "linux"))]
+fn open_named_object(_: &Path) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "held executor objects require Linux",
+    ))
 }

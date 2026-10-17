@@ -7,6 +7,9 @@ mod directory_relation;
 #[path = "execution_registration/qualification.rs"]
 mod qualification;
 
+#[path = "execution_registration/repair.rs"]
+mod repair;
+
 struct Pair {
     harness: Harness,
     left: RegisteredExecutorConnection,
@@ -173,7 +176,7 @@ async fn execution_same_binding_operation_grants_preserve_both_pending_and_live_
     assert!(pair.right.attach(collision, &other_held).await.is_err());
     assert!(matches!(
         input(&mut pair.left, &pair.first, &pair.first_receipt, b"left\n").await,
-        ExecutionReply::ActionComplete
+        ExecutionReply::StdinProgress { accepted_bytes: 5 }
     ));
     assert!(matches!(
         input(
@@ -183,7 +186,7 @@ async fn execution_same_binding_operation_grants_preserve_both_pending_and_live_
             b"right\n"
         )
         .await,
-        ExecutionReply::ActionComplete
+        ExecutionReply::StdinProgress { accepted_bytes: 6 }
     ));
     wait_for(
         &mut pair.left,
@@ -272,7 +275,7 @@ async fn execution_exact_revocation_is_durable_without_revoking_another_operatio
             b"peer\n"
         )
         .await,
-        ExecutionReply::ActionComplete
+        ExecutionReply::StdinProgress { accepted_bytes: 5 }
     ));
     wait_for(
         &mut pair.right,

@@ -5,18 +5,21 @@ use std::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::process::CommandExt,
     },
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
 };
 
 use calm_session::control::{IoMode, ProcSignal, execution::ExecutionSpecification};
 use workspace::execution::NativeProcessIdentity;
 
-use super::scope_helper::{HelperContext, HelperPlan};
+use super::{
+    native_child::OwnedChild,
+    scope_helper::{HelperContext, HelperPlan},
+};
 
 pub(super) struct Process {
     pub started: std::sync::atomic::AtomicBool,
-    pub child: Mutex<Child>,
+    pub child: Mutex<OwnedChild>,
     pub input: Mutex<File>,
     pub output: Mutex<Output>,
     pub pty: Option<Mutex<File>>,
@@ -79,13 +82,20 @@ impl Process {
         );
         Ok(())
     }
-    pub fn write(&self, bytes: &[u8]) -> anyhow::Result<()> {
+    pub fn write(&self, bytes: &[u8]) -> anyhow::Result<usize> {
         anyhow::ensure!(bytes.len() <= 1024 * 1024, "execution input too large");
-        self.input
+        let mut input = self
+            .input
             .lock()
-            .map_err(|_| anyhow::anyhow!("input poisoned"))?
-            .write_all(bytes)?;
-        Ok(())
+            .map_err(|_| anyhow::anyhow!("input poisoned"))?;
+        loop {
+            match input.write(bytes) {
+                Ok(count) => return Ok(count),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(0),
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
     pub fn resize(&self, cols: u16, rows: u16, pixel_w: u16, pixel_h: u16) -> anyhow::Result<()> {
         let master = self
@@ -116,6 +126,16 @@ pub(super) fn spawn(
     cwd: &File,
     specification: &ExecutionSpecification,
     context: HelperContext,
+) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
+    spawn_with_pin(helper, cwd, specification, context, pin_helper)
+}
+
+fn spawn_with_pin(
+    helper: &File,
+    cwd: &File,
+    specification: &ExecutionSpecification,
+    context: HelperContext,
+    pin: impl FnOnce(u32) -> anyhow::Result<File>,
 ) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
     let (configuration, config_writer) = pipe()?;
     let (reports, report_writer) = pipe()?;
@@ -194,24 +214,17 @@ pub(super) fn spawn(
             Ok(())
         });
     }
-    let child = command.spawn()?;
+    let child = OwnedChild::new(command.spawn()?);
     drop(configuration);
     drop(report_writer);
     let pid = child.id();
-    // SAFETY: a positive child PID still pinned by the unreaped Child handle.
-    let native_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-    anyhow::ensure!(
-        native_fd >= 0,
-        "pin execution helper: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: pidfd_open returned a uniquely owned descriptor.
-    let pidfd = unsafe { File::from_raw_fd(native_fd as RawFd) };
+    let pidfd = pin(pid)?;
     let identity = NativeProcessIdentity {
         pid,
         start_time_ticks: start_time(pid)?,
         nonce,
     };
+    nonblocking(input.as_raw_fd())?;
     let process = Arc::new(Process {
         started: std::sync::atomic::AtomicBool::new(false),
         child: Mutex::new(child),
@@ -224,13 +237,6 @@ pub(super) fn spawn(
         pty,
         pidfd,
     });
-    nonblocking(
-        process
-            .input
-            .lock()
-            .map_err(|_| anyhow::anyhow!("input poisoned"))?
-            .as_raw_fd(),
-    )?;
     std::thread::spawn(move || {
         let mut writer = config_writer;
         let _ = writer.write_all(&encoded);
@@ -375,4 +381,71 @@ fn start_time(pid: u32) -> anyhow::Result<u64> {
         .nth(19)
         .ok_or_else(|| anyhow::anyhow!("missing process start time"))?
         .parse()?)
+}
+
+fn pin_helper(pid: u32) -> anyhow::Result<File> {
+    // SAFETY: a positive child PID still pinned by the unreaped Child handle.
+    let native_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    anyhow::ensure!(
+        native_fd >= 0,
+        "pin execution helper: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: pidfd_open returned a uniquely owned descriptor.
+    Ok(unsafe { File::from_raw_fd(native_fd as RawFd) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use workspace::execution::{
+        CapabilityToken, ExecutionId, ExecutorBootId, ScopeMechanismIdentity,
+    };
+
+    #[test]
+    fn execution_post_spawn_pin_failure_reaps_exact_child() {
+        let helper = File::open("/bin/sh").unwrap();
+        let cwd = File::open("/").unwrap();
+        let context = HelperContext {
+            execution_id: ExecutionId::fresh().unwrap(),
+            executor_boot: ExecutorBootId::fresh().unwrap(),
+            nonce: CapabilityToken::fresh().unwrap(),
+            mechanism: ScopeMechanismIdentity {
+                executable_device: 0,
+                executable_inode: 0,
+                protocol_version: 1,
+            },
+        };
+        let spec = ExecutionSpecification {
+            program: "/bin/true".into(),
+            args: vec![],
+            environment: vec![],
+            io_mode: IoMode::Pipe,
+            replay_bytes: 1024,
+        };
+        let mut spawned = None;
+        let result = spawn_with_pin(&helper, &cwd, &spec, context, |pid| {
+            spawned = Some(pid);
+            Err(std::io::Error::from_raw_os_error(libc::EMFILE).into())
+        });
+        assert!(result.is_err());
+        let pid = spawned.expect("fault must occur after a successful real spawn");
+        let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // A non-consuming exact query establishes collection, rather than merely a stop request.
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut status,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
 }

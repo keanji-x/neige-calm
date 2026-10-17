@@ -23,8 +23,14 @@ impl Executor {
                 let Ok(mut record) = self.record(id) else {
                     continue;
                 };
-                if matches!(record.phase, Phase::Prepared) {
-                    record.phase = Phase::Revoked;
+                if matches!(record.phase, Phase::Prepared | Phase::Reserved { .. }) {
+                    record.phase = match record.phase {
+                        Phase::Reserved { slot_version } => Phase::NoChild {
+                            slot_version,
+                            reason: "executor closed before fork barrier".into(),
+                        },
+                        _ => Phase::Revoked,
+                    };
                     record.interactive_revoked = true;
                     let _ = self.persist(record);
                     continue;

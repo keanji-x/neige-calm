@@ -5,7 +5,6 @@ use crate::terminal_renderer::TerminalRendererRegistry;
 use calm_session::control::{AttachRequest, ControlErrorKind, ControlMsg, ControlReply};
 use calm_session::{read_frame, write_frame};
 use calm_truth::db::RepoRead;
-use tokio::net::UnixStream;
 
 enum Source {
     Explicit,
@@ -153,7 +152,9 @@ async fn rejects_prepared_cwd(source: Source) {
                 .pid
                 .is_none()
         );
-        let mut stream = UnixStream::connect(supervisor.sock()).await.unwrap();
+        let mut stream = calm_session::control::execution::connect_legacy(supervisor.sock())
+            .await
+            .unwrap();
         write_frame(
             &mut stream,
             &ControlMsg::Attach(AttachRequest {

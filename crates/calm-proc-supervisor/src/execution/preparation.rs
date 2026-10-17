@@ -67,7 +67,7 @@ impl Executor {
             );
             // Terminal/historical exact retries return their original facts without recreating
             // source authority. A still-Prepared retry must satisfy today's source qualification.
-            if !matches!(existing.phase, Phase::Prepared) {
+            if !matches!(existing.phase, Phase::Prepared | Phase::Reserved { .. }) {
                 return Ok(reply(existing));
             }
         }
@@ -107,6 +107,7 @@ impl Executor {
             request,
             phase: Phase::Prepared,
             interactive_revoked: false,
+            pending_persistence: false,
         })?;
         Ok(ExecutionReply::Prepared)
     }

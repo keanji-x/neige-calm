@@ -1,5 +1,5 @@
 //! One read-only role of the registered helper image. It never forks or executes a payload.
-use super::{process, scope_helper::HelperPlan};
+use super::{native_child::OwnedChild, process, scope_helper::HelperPlan};
 use calm_session::control::execution::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -9,7 +9,6 @@ use std::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::{fs::MetadataExt, process::CommandExt},
     },
-    process::{Child, ExitStatus},
     time::{Duration, Instant},
 };
 use workspace::execution::objects::*;
@@ -117,7 +116,7 @@ fn observe_inner(
             Ok(child) => child,
             Err(_) => return Ok(unknown(DirectoryRelationUnknown::HelperSpawn)),
         };
-        let mut child = OwnedObserver(Some(child));
+        let mut child = OwnedChild::new(child);
         drop(configuration);
         drop(report_writer);
         // One bounded frame fits the empty pipe's atomic-write capacity. There is no writer thread.
@@ -129,31 +128,8 @@ fn observe_inner(
     run().unwrap_or_else(|_| unknown(DirectoryRelationUnknown::HelperIo))
 }
 
-struct OwnedObserver(Option<Child>);
-impl OwnedObserver {
-    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        let child = self.0.as_mut().expect("owned child not yet reaped");
-        match child.try_wait()? {
-            Some(status) => {
-                self.0.take();
-                Ok(Some(status))
-            }
-            None => Ok(None),
-        }
-    }
-}
-impl Drop for OwnedObserver {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            // The exact child has not been reaped by this owner, so its PID remains pinned.
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 fn collect(
-    child: &mut OwnedObserver,
+    child: &mut OwnedChild,
     reports: &mut File,
     context: &ProbeContext,
 ) -> std::io::Result<DirectoryRelationOutcome> {

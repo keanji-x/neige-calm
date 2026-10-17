@@ -38,7 +38,7 @@ fn execution_directory_helper_report_requires_exact_boot_nonce_receipts_and_role
             .env_clear()
             .spawn()
             .unwrap();
-        let mut child = OwnedObserver(Some(child));
+        let mut child = OwnedChild::new(child);
         let mut bad = context.clone();
         match fault {
             0 => bad.nonce = TransferNonce::fresh().unwrap(),
@@ -68,7 +68,7 @@ fn execution_directory_helper_report_requires_exact_boot_nonce_receipts_and_role
             DirectoryRelationOutcome::Unknown(DirectoryRelationUnknown::HelperProtocol)
         );
         assert!(
-            child.0.is_none(),
+            child.is_reaped(),
             "report rejection skipped concrete child reap"
         );
     }

@@ -216,7 +216,7 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
             }))
             .await
             .unwrap(),
-        ExecutionReply::ActionComplete
+        ExecutionReply::StdinProgress { accepted_bytes: 6 }
     ));
     wait_for(&mut client, &next, &next_receipt, |state, output| {
         matches!(state, ExecutionState::Drained { .. }) && output.contains("new:hello")

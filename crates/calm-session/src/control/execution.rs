@@ -11,6 +11,10 @@ use super::{IoMode, ProcSignal};
 pub mod attachment;
 mod attachment_client;
 mod directory_relation;
+#[cfg(target_os = "linux")]
+pub mod rights;
+#[cfg(not(target_os = "linux"))]
+#[path = "execution/rights_unsupported.rs"]
 pub mod rights;
 pub use attachment::*;
 pub use directory_relation::*;
@@ -111,6 +115,8 @@ pub enum ExecutionRequest {
     Revoke(ConsumeExecution),
     Control(ExecutionControl),
     ObserveDirectories(Box<DirectoryRelationRequest>),
+    /// Release this exact immutable lease after its executor references settle.
+    RetireRegistration(ObjectRegistrationReceipt),
 }
 
 /// All process actions, including future variants, must first resolve this exact capability.
@@ -172,6 +178,9 @@ pub enum ExecutionReply {
         nonce: TransferNonce,
     },
     ExportAcknowledged,
+    RegistrationRetired {
+        registration: ObjectRegistrationId,
+    },
     Prepared,
     Receipt {
         receipt: Option<ExecutionReceipt>,
@@ -189,6 +198,10 @@ pub enum ExecutionReply {
         ticket_id: LaunchTicketId,
         receipt: Option<ExecutionReceipt>,
         state: ExecutionState,
+    },
+    /// A single nonblocking write accepted exactly this prefix; retry only the remaining suffix.
+    StdinProgress {
+        accepted_bytes: usize,
     },
     ActionComplete,
     Refused {

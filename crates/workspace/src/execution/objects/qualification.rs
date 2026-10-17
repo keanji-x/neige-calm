@@ -102,9 +102,18 @@ impl NamespaceContext {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn namespace_file() -> io::Result<File> {
     // thread-self reflects the actual caller even if another thread has a different namespace.
     File::open("/proc/thread-self/ns/mnt")
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn namespace_file() -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "held executor objects require Linux",
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +173,15 @@ impl MountTable {
     }
 }
 
+/// A platform capability fact only; this does not inspect or qualify any source object.
+pub fn local_object_platform() -> std::result::Result<(), ObjectQualificationUnsupported> {
+    if cfg!(target_os = "linux") {
+        Ok(())
+    } else {
+        Err(ObjectQualificationUnsupported::Platform)
+    }
+}
+
 /// Borrowed evidence over the actual original FDs. No serde or scalar/path constructor.
 pub struct QualifiedHeldObjects<'lease> {
     held: &'lease HeldSourceObjects,
@@ -175,11 +193,7 @@ impl HeldSourceObjects {
     /// IO happens before the caller takes its short canonical-index lock. Ext4 is an intentional
     /// OS/driver contract; the shared EXT magic alone does not admit ext2/ext3 or layered drivers.
     pub fn qualify_local(&self) -> Result<QualifiedHeldObjects<'_>> {
-        if !cfg!(target_os = "linux") {
-            return Err(ObjectQualificationFailure::Unsupported(
-                ObjectQualificationUnsupported::Platform,
-            ));
-        }
+        local_object_platform().map_err(ObjectQualificationFailure::Unsupported)?;
         check_namespace(self)?;
         if self.files.is_empty() || self.files.len() != self.shape.objects.len() {
             return Err(ObjectQualificationFailure::Unknown(

@@ -284,7 +284,7 @@ async fn execution_directory_relation_timeout_and_child_failure_are_unknown_and_
             registry,
             receiver,
         ));
-        let mut client = RegisteredExecutorConnection::connect(&socket, secret)
+        let mut client = RegisteredExecutorConnection::connect(&socket, secret.clone())
             .await
             .unwrap();
         let path = temp.path().join("root");
@@ -292,9 +292,44 @@ async fn execution_directory_relation_timeout_and_child_failure_are_unknown_and_
         let root = attach_external(&mut client, directory(&path)).await;
         let request = query(&client, &root, &root);
         let started = tokio::time::Instant::now();
+        let worker =
+            tokio::spawn(async move { client.observe_directories(request).await.unwrap() });
+        if expected == DirectoryRelationUnknown::Timeout {
+            // Wait for the real helper to exist. The isolated test has no other child; this
+            // non-consuming query only synchronizes actual lease acquisition, never reaps it.
+            loop {
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                let result = unsafe {
+                    libc::waitid(
+                        libc::P_ALL,
+                        0,
+                        &mut info,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    )
+                };
+                if result == 0 {
+                    break;
+                }
+                assert!(started.elapsed() < Duration::from_secs(2));
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let mut owner = RegisteredExecutorConnection::connect(&socket, secret.clone())
+                .await
+                .unwrap();
+            assert!(
+                matches!(owner.request(ExecutionRequest::RetireRegistration(root.clone())).await.unwrap(), ExecutionReply::Refused { reason } if reason.contains("in-flight")),
+                "observer's real source lease was released early"
+            );
+        }
         assert_eq!(
-            client.observe_directories(request).await.unwrap().outcome(),
+            worker.await.unwrap().outcome(),
             &DirectoryRelationOutcome::Unknown(expected)
+        );
+        let mut owner = RegisteredExecutorConnection::connect(&socket, secret.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(owner.request(ExecutionRequest::RetireRegistration(root.clone())).await.unwrap(), ExecutionReply::RegistrationRetired { registration } if registration == root.id)
         );
         assert!(
             started.elapsed() < Duration::from_secs(8),

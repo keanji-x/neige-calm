@@ -1,4 +1,8 @@
 mod child_environment;
+#[cfg(target_os = "linux")]
+pub mod execution;
+#[cfg(not(target_os = "linux"))]
+#[path = "execution_unsupported.rs"]
 pub mod execution;
 
 use calm_session::control::{

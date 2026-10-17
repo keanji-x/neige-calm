@@ -5,8 +5,13 @@ mod directory;
 mod directory_probe;
 mod directory_relation;
 mod journal;
+mod launch;
+#[cfg(test)]
+mod monitor_tests;
+mod native_child;
 mod preparation;
 mod process;
+mod retirement;
 mod scope_helper;
 mod shutdown;
 mod validation;
@@ -52,10 +57,11 @@ pub struct Executor {
     mechanism: ScopeMechanismIdentity,
     legacy_persistence: StdMutex<()>,
     gates: StdMutex<HashMap<ResourceKey, Arc<Mutex<()>>>>,
-    registrations: StdMutex<HashMap<String, Arc<RegisteredRoot>>>,
+    registrations: StdMutex<HashMap<String, ObjectRegistrationReceipt>>,
     registration_facts: StdMutex<HashMap<String, ExecutionRegistration>>,
     transfers: StdMutex<HashMap<TransferNonce, ObjectRegistrationReceipt>>,
     live_objects: StdMutex<HashMap<ObjectRegistrationId, Arc<RegisteredRoot>>>,
+    retired: StdMutex<HashMap<ObjectRegistrationId, ObjectRegistrationReceipt>>,
     preparations: preparation::PreparationReservations,
     records: StdMutex<HashMap<ExecutionId, Journal>>,
     aliases: StdMutex<HashMap<String, AliasSlot>>,
@@ -104,6 +110,7 @@ impl Executor {
             }
             record.phase = match &record.phase {
                 Phase::Prepared => { record.interactive_revoked = true; Phase::Revoked },
+                Phase::Reserved { slot_version } => Phase::NoChild { slot_version: *slot_version, reason: "executor restarted before fork barrier".into() },
                 phase if !phase.state().permits_handoff() => Phase::Unknown { slot_version: phase.slot_version().ok_or_else(|| anyhow::anyhow!("missing active alias version"))?, receipt: phase.receipt().cloned(), reason: "executor restarted without original native handles; reconciliation required".into() },
                 phase => phase.clone(),
             };
@@ -181,6 +188,17 @@ impl Executor {
                 "duplicate persisted attachment nonce"
             );
         }
+        let mut retired = HashMap::new();
+        for receipt in store.retirements()? {
+            anyhow::ensure!(
+                transfers.get(&receipt.transfer.nonce) == Some(&receipt),
+                "retired lease does not match immutable registration history"
+            );
+            anyhow::ensure!(
+                retired.insert(receipt.id.clone(), receipt).is_none(),
+                "duplicate retired registration identity"
+            );
+        }
         let executor = Arc::new(Self {
             closing: std::sync::atomic::AtomicBool::new(false),
             store,
@@ -194,6 +212,7 @@ impl Executor {
             registration_facts: StdMutex::new(registration_facts),
             transfers: StdMutex::new(transfers),
             live_objects: Default::default(),
+            retired: StdMutex::new(retired),
             preparations: preparation::PreparationReservations::from_records(&records)?,
             records: StdMutex::new(records),
             aliases: StdMutex::new(aliases),
@@ -239,6 +258,9 @@ impl Executor {
             | ExecutionRequest::ExportAck(_) => {
                 anyhow::bail!("object attachment requires the controlled ancillary transport")
             }
+            ExecutionRequest::RetireRegistration(receipt) => {
+                self.retire_registration(receipt).await
+            }
             ExecutionRequest::Prepare(request) => self.prepare(request).await,
             ExecutionRequest::Launch(request) => self.launch(request).await,
             ExecutionRequest::Revoke(request) => self.revoke(request).await,
@@ -266,13 +288,23 @@ impl Executor {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("unknown execution identity"))
     }
-    fn persist(&self, record: Journal) -> anyhow::Result<()> {
+    fn persist(&self, mut record: Journal) -> anyhow::Result<()> {
         self.store.save(&record)?;
+        record.pending_persistence = false;
         self.records
             .lock()
             .map_err(poison)?
             .insert(record.request.identity.execution_id.clone(), record);
         Ok(())
+    }
+
+    fn latch(&self, mut record: Journal) -> anyhow::Result<Journal> {
+        record.pending_persistence = true;
+        self.records
+            .lock()
+            .map_err(poison)?
+            .insert(record.request.identity.execution_id.clone(), record.clone());
+        Ok(record)
     }
 
     fn resolve(
@@ -308,9 +340,9 @@ impl Executor {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("binding has no current live lifecycle fence"))?;
         anyhow::ensure!(
-            lifecycle_matches(&current.registration, identity, require_admission)
-                && current.receipt.transfer.incarnation == root.receipt.transfer.incarnation
-                && current.receipt.transfer.shape == root.receipt.transfer.shape,
+            lifecycle_matches(&current.transfer.registration, identity, require_admission)
+                && current.transfer.incarnation == root.receipt.transfer.incarnation
+                && current.transfer.shape == root.receipt.transfer.shape,
             "binding closed or source/version changed"
         );
         for known in self.registration_facts.lock().map_err(poison)?.values() {
@@ -334,135 +366,6 @@ impl Executor {
         Ok(())
     }
 
-    async fn launch(self: &Arc<Self>, request: ConsumeExecution) -> anyhow::Result<ExecutionReply> {
-        let first = self.record(&request.execution_id)?;
-        let gate = self.gate(scope_resource(&first.request.identity.scope))?;
-        let _fence = gate.lock().await;
-        let mut record = self.record(&request.execution_id)?;
-        Self::check_ticket(&record, &request)?;
-        if !matches!(record.phase, Phase::Prepared) {
-            return Ok(reply(&record));
-        }
-        anyhow::ensure!(
-            !self.closing.load(std::sync::atomic::Ordering::SeqCst),
-            "executor admission closed"
-        );
-        anyhow::ensure!(
-            record.request.identity.executor_boot == self.boot,
-            "executor boot changed"
-        );
-        let root = self.resolve(&record.request.identity, true)?;
-        let cwd = root.launch_cwd(scope_cwd(&record.request.identity.scope))?;
-        let previous_state = record
-            .request
-            .handoff
-            .as_ref()
-            .map(|handoff| self.record(&handoff.previous_execution))
-            .transpose()?;
-        let version = {
-            // Short global guard follows the resource gate and never spans IO/fork.
-            let mut aliases = self.aliases.lock().map_err(poison)?;
-            let alias = &record.request.identity.process_alias;
-            let version = match aliases.get(alias) {
-                None => {
-                    anyhow::ensure!(
-                        record.request.handoff.is_none(),
-                        "handoff alias slot absent"
-                    );
-                    1
-                }
-                Some(slot) => {
-                    let handoff = record.request.handoff.as_ref().ok_or_else(|| {
-                        anyhow::anyhow!("process alias occupied; explicit handoff required")
-                    })?;
-                    anyhow::ensure!(
-                        slot.execution.as_ref() == Some(&handoff.previous_execution)
-                            && slot.version == handoff.expected_slot_version,
-                        "alias handoff CAS failed"
-                    );
-                    anyhow::ensure!(
-                        previous_state
-                            .as_ref()
-                            .is_some_and(|previous| previous.phase.state().permits_handoff()),
-                        "previous execution is not positively drained/revoked/no-child"
-                    );
-                    slot.version
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("alias slot version overflow"))?
-                }
-            };
-            aliases.insert(
-                alias.clone(),
-                AliasSlot {
-                    execution: Some(request.execution_id.clone()),
-                    version,
-                },
-            );
-            version
-        };
-        record.phase = Phase::Forking {
-            slot_version: version,
-        };
-        self.persist(record.clone())?;
-        if let Err(error) = root.validate().and_then(|()| cwd.revalidate()) {
-            record.phase = Phase::NoChild {
-                slot_version: version,
-                reason: format!("root identity failed before fork: {error}"),
-            };
-            self.persist(record.clone())?;
-            return Ok(reply(&record));
-        }
-        let context = scope_helper::HelperContext {
-            execution_id: request.execution_id.clone(),
-            executor_boot: self.boot.clone(),
-            nonce: CapabilityToken::fresh()?,
-            mechanism: self.mechanism.clone(),
-        };
-        let result = process::spawn(
-            &self.helper_image,
-            cwd.directory(),
-            &record.request.specification,
-            context,
-        );
-        let (process, native, reports) = match result {
-            Ok(spawned) => spawned,
-            Err(error) => {
-                record.phase = Phase::Unknown {
-                    slot_version: version,
-                    receipt: None,
-                    reason: format!("fork/setup result requires reconciliation: {error}"),
-                };
-                self.persist(record.clone())?;
-                return Ok(reply(&record));
-            }
-        };
-        let receipt = ExecutionReceipt {
-            identity: record.request.identity.clone(),
-            slot_version: version,
-            process: native,
-            scope_mechanism: self.mechanism.clone(),
-        };
-        record.phase = Phase::Spawned(receipt.clone());
-        self.processes
-            .lock()
-            .map_err(poison)?
-            .insert(request.execution_id.clone(), process);
-        if let Err(error) = self.persist(record.clone()) {
-            record.phase = Phase::Unknown {
-                slot_version: version,
-                receipt: Some(receipt),
-                reason: format!("fork succeeded but receipt could not be made durable: {error}"),
-            };
-            // Unknown is not a durable success acknowledgement. Preserve native ownership for reconciliation.
-            self.records
-                .lock()
-                .map_err(poison)?
-                .insert(request.execution_id.clone(), record.clone());
-        }
-        self.monitor(request.execution_id, reports);
-        Ok(reply(&record))
-    }
-
     async fn revoke(&self, request: ConsumeExecution) -> anyhow::Result<ExecutionReply> {
         let first = self.record(&request.execution_id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;
@@ -470,16 +373,18 @@ impl Executor {
         let mut record = self.record(&request.execution_id)?;
         Self::check_ticket(&record, &request)?;
         record.interactive_revoked = true;
-        if matches!(record.phase, Phase::Prepared) {
-            record.phase = Phase::Revoked;
-        }
+        record.phase = match record.phase {
+            Phase::Prepared => Phase::Revoked,
+            Phase::Reserved { slot_version } => Phase::NoChild {
+                slot_version,
+                reason: "revoked before fork barrier".into(),
+            },
+            phase => phase,
+        };
         // IO failure seals interaction in this boot but cannot acknowledge durable revocation.
         // Every retry fsyncs again, so a previous in-memory latch cannot manufacture an ACK.
         if let Err(error) = self.persist(record.clone()) {
-            self.records
-                .lock()
-                .map_err(poison)?
-                .insert(request.execution_id.clone(), record);
+            self.latch(record)?;
             return Err(error);
         }
         Ok(ExecutionReply::RevocationAcknowledged {
@@ -564,7 +469,11 @@ impl Executor {
                     anyhow::anyhow!("original native execution unavailable; recovery required")
                 })?;
                 match action {
-                    ProcessAction::WriteStdin { bytes } => process.write(&bytes)?,
+                    ProcessAction::WriteStdin { bytes } => {
+                        return Ok(ExecutionReply::StdinProgress {
+                            accepted_bytes: process.write(&bytes)?,
+                        });
+                    }
                     ProcessAction::Resize {
                         cols,
                         rows,
@@ -581,7 +490,22 @@ impl Executor {
         }
     }
 
-    fn monitor(self: &Arc<Self>, id: ExecutionId, reports: std::fs::File) {
+    fn monitor(
+        self: &Arc<Self>,
+        id: ExecutionId,
+        reports: std::fs::File,
+        process: Arc<process::Process>,
+    ) {
+        self.monitor_with_reap_barrier(id, reports, process, std::future::ready(()));
+    }
+
+    fn monitor_with_reap_barrier(
+        self: &Arc<Self>,
+        id: ExecutionId,
+        reports: std::fs::File,
+        process: Arc<process::Process>,
+        barrier: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
         let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
         std::thread::spawn(move || scope_helper::reports(reports, send));
         let executor = self.clone();
@@ -626,15 +550,12 @@ impl Executor {
                     )
                     .await;
             }
-            if let Ok(processes) = executor.processes.lock()
-                && let Some(process) = processes.get(&id).cloned()
-            {
-                std::thread::spawn(move || {
-                    if let Ok(mut child) = process.child.lock() {
-                        let _ = child.wait();
-                    }
-                });
-            }
+            barrier.await;
+            std::thread::spawn(move || {
+                if let Ok(mut child) = process.child.lock() {
+                    let _ = child.wait();
+                }
+            });
             Ok::<(), anyhow::Error>(())
         });
     }
