@@ -14,6 +14,8 @@ Paths are under `crates/calm-server/src/` unless named otherwise.
 
 ## 1. What exists today
 
+This section records the historical pre-Admin baseline; current grant eligibility is in D1.
+
 | Capability | Today | Evidence |
 |---|---|---|
 | Add a Track | Every Planner on an unbound, top-level Track that no Track added. Keyed and replayable. At most `--track-add-max-open` (16) open added Tracks per creator, checked in the create transaction. | `mcp_server/tools/track_add.rs:142` (roles), `:201-206` (closed creator), `:255-290` (`authorize_creator`); `routes/tracks/add.rs:36-60`; `config.rs:175-182` |
@@ -222,6 +224,9 @@ red within its package filter; S2's prediction includes the retargeted eligibili
 Resolved in this revision, where both reviews agreed: unbound-only eligibility, no content-keyed
 backfill, no Admin spawning Admins, several Admins per Area allowed (with own-added close they
 are isolated).
+
+The historical unbound-only decision above is superseded by D1: an otherwise eligible
+plugin-bound Track may receive a person's explicit Admin grant, preserving plugin-tool isolation.
 
 ## Follow-up issue (draft)
 
