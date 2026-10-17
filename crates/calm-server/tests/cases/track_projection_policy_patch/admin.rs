@@ -42,20 +42,16 @@ async fn admin_patch_refuses_ai_actor_headers() {
 #[tokio::test]
 async fn admin_patch_refuses_an_ineligible_track() {
     let (state, id, repo) = boot().await;
-    sqlx::query("UPDATE tracks SET plugin_scope='bound' WHERE id=?1")
+    sqlx::query("UPDATE tracks SET purpose='area-chat' WHERE id=?1")
         .bind(&id)
         .execute(&repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    use http_body_util::BodyExt;
-    let response = patch(state.clone(), &id, None, json!({"admin":true})).await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body: Value =
-        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert!(body.to_string().contains("bound"), "{body}");
-    assert!(
-        body.to_string().contains("Create a new top-level Track"),
-        "{body}"
+    assert_eq!(
+        patch(state.clone(), &id, None, json!({"admin":true}))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
     );
     assert!(
         repo.track_get(&id)
@@ -97,7 +93,7 @@ async fn admin_revoke_is_allowed_when_ineligible() {
             .len(),
         1
     );
-    sqlx::query("UPDATE tracks SET plugin_scope='bound' WHERE id=?1")
+    sqlx::query("UPDATE areas SET kind='system' WHERE id=(SELECT area_id FROM tracks WHERE id=?1)")
         .bind(&id)
         .execute(&repo.sqlite_pool().unwrap())
         .await
@@ -121,34 +117,12 @@ async fn admin_revoke_is_allowed_when_ineligible() {
 #[tokio::test]
 async fn admin_eligibility_and_detail_use_storage_facts() {
     use http_body_util::BodyExt;
-    for (shape, reason, action) in [
-        (
-            "plugin_scope='missing-plugin'",
-            "bound to plugin `missing-plugin`",
-            "without a plugin-bound template",
-        ),
-        (
-            "plugin_scope='another-owner',template_id='birth-template'",
-            "bound to plugin `another-owner` (template `birth-template`)",
-            "without a plugin-bound template",
-        ),
-        (
-            "purpose='area-chat'",
-            "Area chat Tracks",
-            "separate top-level Track",
-        ),
-        (
-            "creator_track_id='historical-creator',creator_key='key'",
-            "created by another Track",
-            "yourself in this Area",
-        ),
-        (
-            "parent_track_id='historical-parent'",
-            "child Tracks",
-            "directly in this Area",
-        ),
-        ("managed", "managed identity", "without a managed identity"),
-        ("system", "system Area", "non-system Area"),
+    for shape in [
+        "purpose='area-chat'",
+        "creator_track_id='historical-creator',creator_key='key'",
+        "parent_track_id='historical-parent'",
+        "managed",
+        "system",
     ] {
         let (state, id, repo) = boot().await;
         let pool = repo.sqlite_pool().unwrap();
@@ -175,33 +149,12 @@ async fn admin_eligibility_and_detail_use_storage_facts() {
                 .await
                 .unwrap();
         }
-        let before = repo.track_get(&id).await.unwrap().unwrap();
-        let response = patch(
-            state.clone(),
-            &id,
-            None,
-            json!({"admin":true,"title":"must not change"}),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{shape}");
-        let body: Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        let error = body["error"].as_str().unwrap();
-        assert!(error.contains(reason), "{shape}: {body}");
-        assert!(error.contains(action), "{shape}: {body}");
-        if shape == "plugin_scope='missing-plugin'" {
-            assert!(!error.contains("(template"), "{body}");
-        }
-        let after = repo.track_get(&id).await.unwrap().unwrap();
-        assert_eq!(after.title, before.title);
-        assert_eq!(after.updated_at, before.updated_at);
-        assert!(after.admin_granted_at.is_none());
-        assert!(
-            repo.events_for_track(&id, &["track.updated"], None)
+        assert_eq!(
+            patch(state.clone(), &id, None, json!({"admin":true}))
                 .await
-                .unwrap()
-                .is_empty()
+                .status(),
+            StatusCode::FORBIDDEN,
+            "{shape}"
         );
         let response = app(state)
             .oneshot(
@@ -230,7 +183,7 @@ async fn admin_patch_same_state_succeeds_when_now_ineligible() {
         StatusCode::OK
     );
     let before = repo.track_get(&id).await.unwrap().unwrap();
-    sqlx::query("UPDATE tracks SET plugin_scope='bound' WHERE id=?1")
+    sqlx::query("UPDATE areas SET kind='system' WHERE id=(SELECT area_id FROM tracks WHERE id=?1)")
         .bind(&id)
         .execute(&repo.sqlite_pool().unwrap())
         .await

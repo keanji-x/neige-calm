@@ -60,6 +60,14 @@ async fn boot_with_gate(
     max_open: u32,
     gate: Option<Arc<routes::tracks::TrackCreateMintGate>>,
 ) -> Boot {
+    boot_with_plugins(max_open, gate, false).await
+}
+
+async fn boot_with_plugins(
+    max_open: u32,
+    gate: Option<Arc<routes::tracks::TrackCreateMintGate>>,
+    plugins: bool,
+) -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -86,7 +94,11 @@ async fn boot_with_gate(
             proc_supervisor_sock: None,
         }),
         Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
+            Arc::new(if plugins {
+                PluginRegistry::empty().with_builtins()
+            } else {
+                PluginRegistry::empty()
+            }),
             repo_dyn.clone(),
             PathBuf::new(),
             tmp.path().join("plugins-data"),
@@ -102,6 +114,10 @@ async fn boot_with_gate(
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo_dyn, None,
     ));
+    if plugins {
+        state.plugin.reconcile_builtins().await.unwrap();
+        state.plugin.enable("gitforge").await.unwrap();
+    }
     if let Some(gate) = gate {
         state = state.with_track_create_mint_rendezvous(gate);
     }
