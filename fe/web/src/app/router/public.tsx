@@ -391,6 +391,10 @@ function useConversationPane(
   const [openTarget, setOpenTarget] = target;
   const registry = useConversationRegistry();
   const sourceScopeId = options?.slotId ?? source.scopeId;
+  // Terminal intent belongs to this pane's scope, including its draft. Keep the
+  // event identity stable while dispatching to the latest committed Track view.
+  const revealTerminal = useCommittedCallback(sourceScopeId, () => { options?.onTerminal?.(); });
+  const onTerminal = options?.onTerminal === undefined ? undefined : revealTerminal;
   /* The conversation whose composer this route was asked to put the caret in. Held
        here because the request is cleared in the same commit that opens the row;
        dropped when the drawer closes. */
@@ -624,7 +628,7 @@ function useConversationPane(
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
               showSideCommand={(options?.showSideCommand ?? true) && sideSourceReady}
               onSideConversation={!hasSideConversation || !composerView.historyReady ? undefined : sideQuestion}
-              onTerminal={options?.onTerminal}
+              onTerminal={onTerminal}
               onSend={sendText}
               allowEmptyText={!editingQueue && composerAttachments.items.length > 0}
               onFiles={editingQueue || !composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
@@ -684,7 +688,7 @@ function useConversationPane(
               )}
             />
   ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, changeComposer, composerView,
-    replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, options?.onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
+    replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
@@ -725,7 +729,7 @@ function useConversationPane(
               </ChatFooterNotice>
             )}
             {/* Initial submit hands words to the held draft, including refusal; only recovery uses the takeover boolean. */}
-            <ChatComposer onTerminal={options?.onTerminal} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
+            <ChatComposer onTerminal={onTerminal} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
               focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
               draft={{ text: newConversationText, onChange: setNewConversationText }}

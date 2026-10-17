@@ -6,6 +6,48 @@ import { setupWorkbench, terminalCard } from './terminal-workbench-fixture.tsx';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
+it.each(['main', 'draft', 'side'] as const)('dispatches /terminal from the %s pane to the latest committed card list and pending intent', async pane => {
+  const fixture = setupWorkbench({ defer: true, failure: 'definite' });
+  await userEvent.click(await screen.findByRole('button', { name: pane === 'draft' ? /^New conversation$/u : 'Conversation Main discussion' }));
+  const command = (input: HTMLElement, text: string) => {
+    input.textContent = text; fireEvent.input(input);
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+  };
+  if (pane === 'side') {
+    command(await screen.findByRole('combobox', { name: 'Message' }), '/side');
+    await screen.findByRole('region', { name: 'Side conversation · Codex' });
+  }
+  const input = pane === 'side'
+    ? within(screen.getByRole('region', { name: 'Side conversation · Codex' })).getByRole('combobox', { name: 'Message' })
+    : await screen.findByRole('combobox', { name: 'Message' });
+  if (pane === 'main') {
+    fixture.live.text = 'Streamed before terminal intent';
+    await act(async () => { await fixture.client.refetchQueries({ queryKey: queryKeys.plannerRun('parent') }); });
+    await act(async () => { await fixture.client.refetchQueries({ queryKey: queryKeys.harnessLive('parent') }); });
+    await screen.findByText('Streamed before terminal intent');
+  }
+  // The composer was already committed with an empty card list. A new list
+  // must change the event implementation without freezing that initial intent.
+  fixture.cards.push(terminalCard('arrived'));
+  await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.trackDetail('workbench') }); });
+  command(input, '/terminal');
+  await screen.findByRole('button', { name: 'Hide terminal' });
+  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Terminal session' }).value).toBe('arrived');
+  expect(fixture.posts()).toHaveLength(0);
+  await userEvent.click(screen.getByRole('button', { name: 'Hide terminal' }));
+  fixture.cards.length = 0;
+  await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.trackDetail('workbench') }); });
+  command(input, '/terminal'); command(input, '/terminal');
+  await waitFor(() => expect(fixture.posts()).toHaveLength(1));
+  await act(async () => { fixture.releases[0]?.(); await Promise.resolve(); });
+  await screen.findByText('Terminal refused');
+  command(input, '/terminal');
+  await waitFor(() => expect(fixture.posts()).toHaveLength(2));
+  expect(fixture.posts()[1]?.headers?.['Idempotency-Key']).not.toBe(fixture.posts()[0]?.headers?.['Idempotency-Key']);
+  await act(async () => { fixture.releases[1]?.(); await Promise.resolve(); });
+  await screen.findByText('No terminal session available.');
+});
+
 it('opens the fixed entry without a conversation, deduplicates pending presses and retains the host when hidden', async () => {
   const fixture = setupWorkbench({ defer: true });
   const mount = vi.spyOn(fixture.runtime.host, 'mount');
@@ -95,7 +137,9 @@ it('creates within the resolved daily Track rather than a global or guessed scop
 
 it('leaves a different Track view and its focus untouched when creation completes after navigation', async () => {
   const fixture = setupWorkbench({ defer: true });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await userEvent.click(await screen.findByRole('button', { name: /^New conversation$/u }));
+  const input = await screen.findByRole('combobox', { name: 'Message' });
+  input.textContent = '/terminal'; fireEvent.input(input); fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
   await waitFor(() => expect(fixture.posts()).toHaveLength(1));
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'other' } }); });
   await screen.findAllByText('Other track');
@@ -107,6 +151,11 @@ it('leaves a different Track view and its focus untouched when creation complete
   expect(fixture.router.state.location.href).toBe(location);
   expect(document.activeElement).toBe(active);
   expect(screen.queryByRole('button', { name: 'Hide terminal' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: /^New conversation$/u }));
+  const current = await screen.findByRole('combobox', { name: 'Message' });
+  current.textContent = '/terminal'; fireEvent.input(current); fireEvent.keyDown(current, { key: 'Enter', code: 'Enter' });
+  await screen.findByText('No terminal session available.');
+  expect(fixture.posts().map(post => post.path)).toEqual(['/api/tracks/workbench/terminal-cards', '/api/tracks/other/terminal-cards']);
 });
 
 it('routes an ordinary card URL into the same dock and keeps it out of the board', async () => {

@@ -18,6 +18,8 @@ export function terminalCard(id: string, trackId = 'workbench'): CardWire {
 export function setupWorkbench({ cards: initial = [] as CardWire[], defer = false, lost = false, daily = false, failure = null as null | 'definite' | 'unknown', initialCard = null as string | null, secondaryReads = null as Promise<void> | null } = {}) {
   const requests: ApiRequest[] = [];
   const cards = [...initial];
+  const otherCards: CardWire[] = [];
+  const live = { text: '' };
   const releases: (() => void)[] = [];
   const keys = new Map<string, CardWire>();
   const track = { id: 'workbench', area_id: 'area', title: 'Workbench track', sort: 1,
@@ -37,11 +39,14 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
     if (path === '/api/areas') return ok([{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }]);
     if (path === '/api/areas/area/tracks') return ok([track]);
     if (path === '/api/settings') return ok({});
-    if (path === '/api/tracks/other') return ok({ track: { ...track, id: 'other', title: 'Other track' }, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
+    if (path === '/api/tracks/other') return ok({ track: { ...track, id: 'other', title: 'Other track' }, can_reopen: false, can_admin: false, can_close: true, cards: [...otherCards], overlays: [] });
     if (path === '/api/tracks/workbench') return ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [...cards], overlays: [] });
     if (secondaryReads !== null && ['/api/tracks/workbench/report', '/api/tracks/workbench/conversations', '/api/tracks/workbench/backlinks'].includes(path)) await secondaryReads;
     if (path === '/api/tracks/workbench/report') return ok({ taskDiagnostics: [] });
     if (path === '/api/tracks/workbench/conversations') return ok(rows);
+    if (path === '/api/tracks/other/terminal-cards' && method === 'POST') {
+      const card = terminalCard('other-terminal', 'other'); otherCards.push(card); return ok(card);
+    }
     if (path === '/api/tracks/workbench/terminal-cards' && method === 'POST') {
       if (defer) await new Promise<void>(resolve => releases.push(resolve));
       const outcome = failure; failure = null;
@@ -53,9 +58,10 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
       return ok(card);
     }
     if (method === 'DELETE' && path.startsWith('/api/cards/')) { cards.splice(cards.findIndex(card => card.id === path.split('/')[3]), 1); return ok(undefined); }
-    if (path.endsWith('/planner/run')) return ok({ card_id: 'parent', worker_session_id: 'session-parent', phase: 'idle', model: null,
+    if (path.endsWith('/planner/run')) return ok({ card_id: 'parent', worker_session_id: 'session-parent', phase: live.text === '' ? 'idle' : 'issuing_turn', model: null,
       reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
-    if (path.endsWith('/harness/live')) return ok({ turn_id: null, items: [] });
+    if (path.endsWith('/harness/live')) return ok(live.text === '' ? { turn_id: null, items: [] }
+      : { turn_id: 'streamed-turn', items: [{ item_id: 'streamed-message', text: live.text }] });
     return ok([]);
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -66,5 +72,5 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}${daily ? '/' : '/track/workbench'}${initialCard === null ? '' : `?card=${encodeURIComponent(initialCard)}`}`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);
   const view = render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
-  return { ...view, requests, releases, router, client, runtime, cards, posts: () => requests.filter(request => request.method === 'POST' && request.path.endsWith('/terminal-cards')) };
+  return { ...view, requests, releases, router, client, runtime, cards, live, posts: () => requests.filter(request => request.method === 'POST' && request.path.endsWith('/terminal-cards')) };
 }
