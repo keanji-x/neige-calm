@@ -572,6 +572,75 @@ async fn prompt_card_turn_start_failure_marks_runtime_failed() {
 }
 
 #[tokio::test]
+async fn failed_turn_checkpoint_compensates_the_original_shared_turn() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let boot = boot().await;
+    sqlx::query("CREATE TRIGGER reject_turn_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN NEW.kind='codex-create' AND json_type(NEW.tx_output_json,'$.data.turn_started_at_ms') IS NOT NULL BEGIN SELECT RAISE(ABORT,'forced turn checkpoint failure'); END")
+        .execute(boot.repo.pool()).await.unwrap();
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        post(
+            boot.app.clone(),
+            &boot.track_id,
+            json!({"cwd":boot.cwd, "prompt":"checkpoint should fail", "theme":theme()}),
+        ),
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+    let (status, body) = response
+        .expect("failed checkpoint must enter compensation without waiting for lease expiry");
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let rows = wait_for_requests(&capture_file, 4).await;
+    assert!(
+        has_interrupt(&rows, "fake-thread-0001", "fake-turn-0001"),
+        "cleanup must interrupt the original issued turn: {rows:?}"
+    );
+    for method in ["thread/start", "turn/start"] {
+        assert_eq!(
+            rows.iter().filter(|row| row["method"] == method).count(),
+            1,
+            "{method} must not be issued again: {rows:?}"
+        );
+    }
+    let (phase, output, state, error): (String, String, String, String) = sqlx::query_as(
+        "SELECT phase,tx_output_json,compensation_state,last_error FROM operations WHERE kind='codex-create'",
+    ).fetch_one(boot.repo.pool()).await.unwrap();
+    assert_eq!(phase, "failed");
+    assert!(error.contains("forced turn checkpoint failure"), "{error}");
+    let output: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(output["data"]["codex_thread_id"], "fake-thread-0001");
+    assert!(
+        output["data"].get("turn_started_at_ms").is_none(),
+        "failed checkpoint must not replace the previous committed output"
+    );
+    let state: Value = serde_json::from_str(&state).unwrap();
+    assert!(
+        state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["op"] == "interrupt_shared_codex_turn"
+                && step["args"]["thread_id"] == "fake-thread-0001"
+                && step["completed"] == true),
+        "{state}"
+    );
+    let cards = boot.repo.cards_by_track(&boot.track_id).await.unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(
+        runtime_status_for_card(&boot.repo, cards[0].id.as_str()).await,
+        "failed"
+    );
+}
+
+#[tokio::test]
 async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
     let _guard = ENV_LOCK.lock().await;
     let capture = TempDir::new().unwrap();

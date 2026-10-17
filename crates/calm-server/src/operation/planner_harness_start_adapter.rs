@@ -1411,6 +1411,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         AppServerInteractKind::MintAndAwait {
                             thread_id: Some(thread_for_tx),
                         },
+                        super::required_output(&op_clone)?,
                         &checkpoint_output,
                     )
                     .await?;

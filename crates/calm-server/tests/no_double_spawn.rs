@@ -197,9 +197,8 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        output: &TxOutput,
     ) -> CalmResult<Option<Operation>> {
-        self.inner.set_compensating(op, state, output).await
+        self.inner.set_compensating(op, state).await
     }
 
     async fn update_compensation_state(
@@ -323,9 +322,8 @@ impl OperationRepo for DriveErrorOnceRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        output: &TxOutput,
     ) -> CalmResult<Option<Operation>> {
-        self.inner.set_compensating(op, state, output).await
+        self.inner.set_compensating(op, state).await
     }
 
     async fn update_compensation_state(
