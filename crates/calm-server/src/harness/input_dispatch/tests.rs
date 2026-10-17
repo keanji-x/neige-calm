@@ -1,3 +1,5 @@
+mod source_gate;
+
 use super::*;
 use crate::db::prelude::*;
 use crate::db::sqlite::conversation::*;
