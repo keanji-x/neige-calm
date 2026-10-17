@@ -7,6 +7,8 @@ use axum::{Router, routing::get};
 use utoipa::OpenApi;
 
 mod application;
+#[cfg(all(test, feature = "fixtures"))]
+mod canonical_flow_tests;
 pub use application::application_router;
 pub use application::public_mobile_router;
 

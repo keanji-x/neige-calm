@@ -117,7 +117,10 @@ pub async fn area_require_access(
             "system Area requires deployment authority".into(),
         ));
     }
-    require_member_access(area_member_role(connection, area_id, user_id).await?, access)?;
+    require_member_access(
+        area_member_role(connection, area_id, user_id).await?,
+        access,
+    )?;
     Ok(area)
 }
 
