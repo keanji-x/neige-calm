@@ -72,7 +72,7 @@ pub(super) async fn quiesce(
             state,
             HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }
         )
-        || !inner.pending_queue.lock().await.is_empty()
+        || !inner.historical_queue()?.lock().await.is_empty()
         || !inner.steered_into_running_turn.lock().await.is_empty()
     {
         return Ok(false);

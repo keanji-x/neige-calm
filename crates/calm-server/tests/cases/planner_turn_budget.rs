@@ -92,7 +92,7 @@ async fn planner_turn_budget_current_freezes_next_samples_and_snapshot_roundtrip
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     setting(&boot, json!("1")).await;
     start(&boot).await;
-    let snapshot = boot.harness.snapshot().await;
+    let snapshot = boot.harness.snapshot().await.unwrap();
     assert!(
         matches!(&snapshot.turn_budget, FrozenBudget::Planner {budget, ..} if budget.limit() == Duration::from_secs(60))
     );
@@ -103,7 +103,7 @@ async fn planner_turn_budget_current_freezes_next_samples_and_snapshot_roundtrip
     setting(&boot, json!("2")).await;
     assert_eq!(
         snapshot.turn_budget,
-        boot.harness.snapshot().await.turn_budget
+        boot.harness.snapshot().await.unwrap().turn_budget
     );
     let HarnessState::TurnRunning { turn_id, .. } = boot.harness.state_for_test().await else {
         panic!("running")
@@ -118,7 +118,7 @@ async fn planner_turn_budget_current_freezes_next_samples_and_snapshot_roundtrip
     })
     .await;
     start(&boot).await;
-    let snapshot = boot.harness.snapshot().await;
+    let snapshot = boot.harness.snapshot().await.unwrap();
     assert!(
         matches!(&snapshot.turn_budget, FrozenBudget::Planner {budget, ..} if budget.limit() == Duration::from_secs(120))
     );
@@ -147,7 +147,7 @@ async fn planner_turn_budget_corrupt_storage_leaves_input_queued_until_reset() {
     assert_eq!(status, 200);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(boot.daemon.started_turns_for_test().is_empty());
-    assert_eq!(boot.harness.snapshot().await.pending_entries().len(), 1);
+    assert_eq!(boot.harness.snapshot().await.unwrap().pending_entries().len(), 1);
     assert!(
         boot.harness
             .issuance_block()
@@ -336,7 +336,7 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
             })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
-        while boot.harness.snapshot().await.pending_entries().is_empty() {
+        while boot.harness.snapshot().await.unwrap().pending_entries().is_empty() {
             assert!(
                 Instant::now() < deadline,
                 "ingress must stage the observation"
@@ -397,7 +397,7 @@ async fn planner_turn_budget_claude_initial_warning_only() {
         HarnessState::TurnRunning { .. }
     ));
     assert_eq!(stdin, root.read_fake("stdin").unwrap());
-    let frozen = harness.snapshot().await.turn_budget;
+    let frozen = harness.snapshot().await.unwrap().turn_budget;
     let (status, _) = stack
         .send(
             "PUT",
@@ -410,7 +410,7 @@ async fn planner_turn_budget_claude_initial_warning_only() {
     let stack = Stack::boot(&root).await;
     assert_eq!(
         frozen,
-        stack.harness(&session.id).snapshot().await.turn_budget
+        stack.harness(&session.id).snapshot().await.unwrap().turn_budget
     );
     stack.shutdown().await;
 }
@@ -469,7 +469,7 @@ async fn planner_turn_budget_failed_warning_is_once_and_still_stops() {
         .await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(matches!(
-        boot.harness.snapshot().await.turn_budget,
+        boot.harness.snapshot().await.unwrap().turn_budget,
         FrozenBudget::Planner {
             warning_attempted: true,
             ..
@@ -575,14 +575,14 @@ async fn planner_turn_budget_failed_start_replays_its_frozen_attempt() {
         assert!(Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let frozen = boot.harness.snapshot().await.turn_budget;
+    let frozen = boot.harness.snapshot().await.unwrap().turn_budget;
     setting(&boot, json!("2")).await;
     boot.daemon.clear_turn_start_failure_for_test();
     wait_for_state(&boot.harness, |s| {
         matches!(s, HarnessState::TurnRunning { .. })
     })
     .await;
-    assert_eq!(frozen, boot.harness.snapshot().await.turn_budget);
+    assert_eq!(frozen, boot.harness.snapshot().await.unwrap().turn_budget);
     let input = serde_json::to_string(&boot.daemon.started_turns_for_test()).unwrap();
     assert!(
         input.contains("1 minutes"),

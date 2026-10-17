@@ -26,7 +26,7 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
         ));
     }
     if inner.backend.active_turn_id_for_thread(&thread).is_some()
-        || !inner.pending_queue.lock().await.is_empty()
+        || !inner.historical_queue()?.lock().await.is_empty()
         || inner.projection_client_id.lock().await.is_some()
         || inner.pending_rewind.lock().await.is_some()
     {

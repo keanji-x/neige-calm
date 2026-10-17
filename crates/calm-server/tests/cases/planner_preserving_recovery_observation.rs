@@ -34,8 +34,12 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap())).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), old.clone());
 
     // This real event can be recovered through normal Planner catch-up. The
@@ -86,7 +90,7 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
     tokio::time::timeout(Duration::from_secs(3), entered.notified())
         .await
         .unwrap();
-    let paused = old.snapshot().await;
+    let paused = old.snapshot().await.unwrap();
     assert_eq!(
         paused.push_watermark, event_id,
         "the real delivery advanced its watermark"

@@ -582,7 +582,7 @@ async fn an_interrupt_issued_before_its_turn_start_drains_still_streams_the_turn
     release.notify_one();
     // `turn/start` returned, so its `turn/started` is queued ahead of the frames below.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while boot.harness.snapshot().await.last_turn_id.as_deref() != Some(turn.as_str()) {
+    while boot.harness.snapshot().await.unwrap().last_turn_id.as_deref() != Some(turn.as_str()) {
         assert!(Instant::now() < deadline, "turn/start never returned");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -636,8 +636,12 @@ async fn a_harness_that_loses_its_start_leaves_the_installed_harness_streaming()
 
         live_replies: boot.registry.live_replies().clone(),
         config: HarnessConfig::default(),
-        snapshot: (idle_snapshot(vec![])).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (idle_snapshot(vec![]))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     assert!(!stale.install(loser.clone()), "the start was superseded");
     loser.shutdown().await.unwrap();
 

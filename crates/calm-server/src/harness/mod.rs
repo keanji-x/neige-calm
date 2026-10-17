@@ -60,7 +60,7 @@ pub use observation::{HookKind, Observation};
 pub use queue::{QueueEntry, QueueEntryId};
 pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
 pub use run_loop::{
-    MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams, SendKey, SteerApplied,
+    MAX_PENDING_QUEUE_LEN, HarnessRuntimeSnapshot, PlannerHarness, PlannerHarnessParams, SendKey, SteerApplied,
     SteerRefused, SteerResult,
 };
 pub use snapshot::{
@@ -360,7 +360,8 @@ pub async fn spawn_recovered_harness(
         live_replies: registry.live_replies().clone(),
         config: HarnessConfig::default(),
         snapshot: (snapshot).try_into()?,
-    }).await?;
+    })
+    .await?;
     Ok(match install_or_shutdown(reservation, handle).await? {
         Some(handle) => RecoveryOutcome::Installed(handle),
         None => RecoveryOutcome::Skipped,
@@ -823,8 +824,12 @@ mod tests {
 
             live_replies: registry.live_replies().clone(),
             config: HarnessConfig::default(),
-            snapshot: (HarnessSnapshot::initial(0, vec![])).try_into().expect("historical fixture snapshot contract"),
-        }).await.expect("historical fixture harness");
+            snapshot: (HarnessSnapshot::initial(0, vec![]))
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
         let installed = install_or_shutdown(reservation, handle.clone())
             .await
             .unwrap();
@@ -1231,7 +1236,7 @@ mod tests {
             );
         }
 
-        let after_issue = handle.snapshot().await;
+        let after_issue = handle.snapshot().await.unwrap();
         assert!(after_issue.pending_entries().is_empty());
         assert_eq!(after_issue.push_watermark, last_id);
         assert_eq!(

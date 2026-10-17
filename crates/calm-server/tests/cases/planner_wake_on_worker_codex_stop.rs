@@ -191,8 +191,12 @@ async fn boot() -> Boot {
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     let harness_registry = HarnessRegistry::new();
     harness_registry.insert(worker_session_id.clone(), harness.clone());
 

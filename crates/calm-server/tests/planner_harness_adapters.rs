@@ -1341,8 +1341,12 @@ async fn force_new_thread_kills_old_pty_immediately() {
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (old_snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (old_snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     state
         .harness
         .insert(old_worker_session_id.clone(), old_harness);
@@ -1454,8 +1458,12 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (old_snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (old_snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     state
         .harness
         .insert(old_worker_session_id.clone(), old_harness);

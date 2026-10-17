@@ -245,8 +245,12 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, Planne
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
         .insert(worker_session_id.clone(), harness.clone());

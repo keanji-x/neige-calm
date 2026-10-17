@@ -7,12 +7,14 @@ use calm_types::conversation::{
 };
 use calm_types::worker::WorkerSession;
 
-pub(crate) async fn authorize_human_execution_tx(
+/// The shared current resource decision before a new private effect. Success
+/// is not a reusable grant: the owning task keeps the real source and calls
+/// this decision again after awaits before beginning another effect.
+pub(crate) async fn authorize_human_resource_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source: &HumanInputSource,
     carrier: &CurrentInputCarrier,
-    plan: &SubmissionRenderPlan,
-) -> Result<(ConversationExecutionProvenance, WorkerSession)> {
+) -> Result<()> {
     let principal = source.current_principal()?;
     let area = conversation::conversation_area_tx(tx, carrier.card_id()).await?;
     crate::organization_access::require_legacy_input_execution_tx(tx, area.id.as_str(), &principal)
@@ -24,6 +26,17 @@ pub(crate) async fn authorize_human_execution_tx(
             "legacy deployment execution cannot run SharedHistory".into(),
         ));
     }
+    Ok(())
+}
+
+pub(crate) async fn authorize_human_execution_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    source: &HumanInputSource,
+    carrier: &CurrentInputCarrier,
+    plan: &SubmissionRenderPlan,
+) -> Result<(ConversationExecutionProvenance, WorkerSession)> {
+    authorize_human_resource_tx(tx, source, carrier).await?;
+    let principal = source.current_principal()?;
     plan.input_refs()
         .map_err(|error| CalmError::Conflict(error.into()))?;
     for segment in plan.segments() {

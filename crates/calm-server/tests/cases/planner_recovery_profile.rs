@@ -161,8 +161,12 @@ async fn duplicate_failed_completions_have_one_persisted_outcome() {
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap())).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     let daemon = &boot.state.shared_codex_appserver;
     for _ in 0..2 {
         daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::TurnCompleted {

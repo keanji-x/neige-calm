@@ -184,7 +184,9 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
 
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         8,
     );

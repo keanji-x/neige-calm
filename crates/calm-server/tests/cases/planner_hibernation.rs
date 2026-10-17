@@ -49,8 +49,12 @@ async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (HarnessSnapshot::from_value_strict(snapshot)).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (HarnessSnapshot::from_value_strict(snapshot))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), handle.clone());
     assert_eq!(
         boot.state
@@ -478,7 +482,7 @@ async fn dispatch_wake(settlement: bool) {
         .harness
         .get(&runtime)
         .expect("Dispatcher restored sleeping Planner");
-    assert!(awakened.snapshot().await.push_watermark >= id);
+    assert!(awakened.snapshot().await.unwrap().push_watermark >= id);
     assert_eq!(
         boot.state
             .shared_codex_appserver

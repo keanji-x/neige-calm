@@ -1341,7 +1341,10 @@ impl Inner {
         // including a failure arriving before or after its settlement replay.
         let cursor = self.push_cursor.bump(
             planner_card_id.clone(),
-            cursor.max(harness.snapshot().await.push_watermark),
+            cursor.max(match harness.runtime_header().await {
+                Ok(header) => header.push_watermark,
+                Err(_) => return,
+            }),
         );
         if envelope_id <= cursor {
             return;

@@ -565,7 +565,7 @@ async fn request_lines_containing_panics_loudly_on_timeout() {
 async fn wait_for_harness_watermark(harness: &PlannerHarness, watermark: i64) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let snapshot = harness.snapshot().await;
+        let snapshot = harness.snapshot().await.unwrap();
         if snapshot.push_watermark == watermark {
             return;
         }
@@ -663,8 +663,12 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
         .insert(worker_session_id.clone(), harness.clone());
@@ -738,8 +742,12 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
         .insert(worker_session_id.clone(), harness.clone());
@@ -770,7 +778,7 @@ async fn planner_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let pending =
-            serde_json::to_string(&harness.snapshot().await.pending_observations()).unwrap();
+            serde_json::to_string(&harness.snapshot().await.unwrap().pending_observations()).unwrap();
         let started =
             serde_json::to_string(&boot.state.shared_codex_appserver.started_turns_for_test())
                 .unwrap();
@@ -818,7 +826,7 @@ async fn seed_inactive_planner_runtime(boot: &Boot, card: &Card) -> String {
 async fn wait_for_user_message(harness: &PlannerHarness, text: &str) -> HarnessSnapshot {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let snapshot = harness.snapshot().await;
+        let snapshot = harness.snapshot().await.unwrap();
         if snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
@@ -2334,8 +2342,12 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
         .insert(old_worker_session_id.clone(), harness.clone());
@@ -2546,8 +2558,12 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
         .insert(old_worker_session_id.clone(), old_harness);

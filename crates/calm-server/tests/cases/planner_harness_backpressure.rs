@@ -36,7 +36,9 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> PlannerHarness {
 
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         1024,
     );
@@ -241,7 +243,7 @@ async fn oversized_snapshot_keeps_newest_pending_queue_tail() {
     let snapshot = HarnessSnapshot::initial(0, entries);
 
     let harness = harness_from_snapshot(snapshot).await;
-    let restored = harness.snapshot().await;
+    let restored = harness.snapshot().await.unwrap();
     let restored_entries = restored.pending_entries();
 
     assert_eq!(restored_entries.len(), 256);

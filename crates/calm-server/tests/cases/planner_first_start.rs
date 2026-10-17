@@ -190,7 +190,7 @@ impl Boot {
             .unwrap();
         let queued = match runtime.and_then(|runtime| self.state.harness.get(&runtime.id)) {
             Some(harness) => {
-                serde_json::to_string(&harness.snapshot().await.pending_observations())
+                serde_json::to_string(&harness.snapshot().await.unwrap().pending_observations())
                     .unwrap()
                     .contains(text)
             }

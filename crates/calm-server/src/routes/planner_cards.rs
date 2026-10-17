@@ -329,7 +329,7 @@ pub(crate) async fn interrupt_planner_card(
         .ok_or_else(dormant)?;
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
 
-    let phase = harness.snapshot().await.phase;
+    let phase = harness.runtime_header().await?.phase;
     // Dispatch for IssuingTurn too (best-effort), but only TurnRunning reports `stopped: true`.
     let dispatch = matches!(
         phase,
@@ -462,7 +462,7 @@ pub(crate) async fn get_planner_run(
         return Ok(Json(dormant));
     };
     // Phase and the running turn come from one state read, so a running turn is never paired with another phase.
-    let (snapshot, running_turn) = harness.snapshot_with_running_turn().await;
+    let (snapshot, running_turn) = harness.snapshot_with_running_turn().await?;
     let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
         attachments_supported,

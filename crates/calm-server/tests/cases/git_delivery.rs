@@ -966,8 +966,12 @@ impl Fx {
 
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-        }).await.expect("historical fixture harness");
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
         handle
             .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
             .await
@@ -978,7 +982,7 @@ impl Fx {
 }
 
 pub(super) async fn observations(handle: &PlannerHarness) -> Vec<Observation> {
-    handle.snapshot().await.pending_observations().to_vec()
+    handle.snapshot().await.unwrap().pending_observations().to_vec()
 }
 
 /// Wait until the harness holds `n` pending observations (or fail with what it holds).

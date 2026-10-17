@@ -286,8 +286,12 @@ async fn run_harness(
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (snapshot(thread)).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot(thread))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     wait_for("the harness to listen", || async {
         daemon.notification_receiver_count_for_test() > listening
     })

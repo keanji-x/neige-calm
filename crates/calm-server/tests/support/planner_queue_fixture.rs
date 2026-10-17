@@ -280,8 +280,12 @@ async fn boot_inner(
             transient_silence_budget: Duration::from_secs(5),
             ..HarnessConfig::default()
         },
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     // A user message hard-fires past the debounce windows and would be drained by the first 50ms tick;
     // pausing issuance makes the in-queue assertions deterministic.
     if issuance == Issuance::Paused {

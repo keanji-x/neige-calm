@@ -141,7 +141,9 @@ impl Fixture {
                     debounce_max_wait: Duration::ZERO,
                     ..HarnessConfig::default()
                 },
-                snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+                snapshot: (snapshot)
+                    .try_into()
+                    .expect("historical fixture snapshot contract"),
             },
             8,
         );
@@ -321,7 +323,9 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
             backend: inner.backend.clone(),
             live_replies: crate::harness::LiveReplies::for_test(),
             config: inner.config,
-            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         8,
     );
@@ -410,7 +414,7 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
     fx.close().await;
     let (_, commit) = fx.commit().await;
     fx.enqueue(vec![commit]).await;
-    let before = fx.harness.snapshot().await;
+    let before = fx.harness.snapshot().await.unwrap();
     let debounce = *fx.harness.inner.debounce.lock().await;
     sqlx::query("CREATE TRIGGER refuse_consumption BEFORE UPDATE OF handle_state_json ON worker_sessions BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END")
         .execute(fx.repo.pool()).await.unwrap();
@@ -420,14 +424,14 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
         "{error}"
     );
     assert_eq!(
-        fx.harness.snapshot().await.pending_entries(),
+        fx.harness.snapshot().await.unwrap().pending_entries(),
         before.pending_entries()
     );
     assert_eq!(
         fx.stored().await.pending_entries(),
         before.pending_entries()
     );
-    assert_eq!(fx.harness.snapshot().await.phase, HarnessPhaseTag::Idle);
+    assert_eq!(fx.harness.snapshot().await.unwrap().phase, HarnessPhaseTag::Idle);
     let after_debounce = *fx.harness.inner.debounce.lock().await;
     assert_eq!(after_debounce.first_pending_at, debounce.first_pending_at);
     assert_eq!(after_debounce.last_pending_at, debounce.last_pending_at);

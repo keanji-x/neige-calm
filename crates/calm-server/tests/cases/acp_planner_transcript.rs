@@ -14,7 +14,7 @@ async fn partial_receipt_recovery_restores_native_item_order() {
         .await
         .unwrap();
     let pool = stack.repo().sqlite_pool().unwrap();
-    let mut snapshot = stack.harness(&runtime.id).snapshot().await;
+    let mut snapshot = stack.harness(&runtime.id).snapshot().await.unwrap();
     stack.shutdown().await;
     let receipt: String =
         sqlx::query_scalar("SELECT outcome_json FROM acp_submissions WHERE worker_session_id=?1")

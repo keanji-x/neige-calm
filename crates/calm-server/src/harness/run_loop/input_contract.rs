@@ -45,11 +45,11 @@ impl RuntimeInputs {
 impl HarnessRuntimeSnapshot {
     pub fn decode(value: Value) -> Result<Self> {
         let kind = match value.get("schema_version").and_then(Value::as_u64) {
-            Some(1) => RuntimeSnapshotKind::Historical(
-                HarnessSnapshot::parse_known(value).ok_or_else(|| {
-                    CalmError::Conflict("invalid historical harness snapshot".into())
-                })?,
-            ),
+            Some(1) => {
+                RuntimeSnapshotKind::Historical(HarnessSnapshot::parse_known(value).ok_or_else(
+                    || CalmError::Conflict("invalid historical harness snapshot".into()),
+                )?)
+            }
             Some(2) => {
                 // The actual current frame/fence is loaded by run under SQL.
                 // Retaining this caller's older pending list would make it a

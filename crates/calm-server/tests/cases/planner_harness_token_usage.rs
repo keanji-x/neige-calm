@@ -201,8 +201,12 @@ async fn boot() -> Boot {
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     state
         .harness
         .insert(worker_session_id.clone(), harness.clone());
@@ -262,7 +266,7 @@ async fn emit_and_wait(boot: &Boot, params: Value, expect_used: i64) -> TokenUsa
     });
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if let Some(usage) = boot.harness.snapshot().await.token_usage
+        if let Some(usage) = boot.harness.snapshot().await.unwrap().token_usage
             && usage.used_tokens == expect_used
         {
             return usage;
@@ -440,12 +444,16 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
         .unwrap(),
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     let recovered = rehydrated
         .snapshot()
-        .await
+        .await.unwrap()
         .token_usage
         .expect("token usage must survive the rebuild");
     assert_eq!(

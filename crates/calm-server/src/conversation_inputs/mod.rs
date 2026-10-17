@@ -5,7 +5,9 @@
 mod execution;
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
-pub(crate) use execution::{authorize_human_execution_tx, claim_human_initial_tx};
+pub(crate) use execution::{
+    authorize_human_execution_tx, authorize_human_resource_tx, claim_human_initial_tx,
+};
 
 use calm_types::conversation::{
     HumanPayload, LogicalTurnId, MessageRevisionRef, PrivateHistoryOperationId,

@@ -133,7 +133,7 @@ async fn a_system_observation_cannot_be_addressed_at_all() {
     let (status, _) = delete_entry(&boot, "anything", 0).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
-        boot.harness.snapshot().await.pending_entries().len(),
+        boot.harness.snapshot().await.unwrap().pending_entries().len(),
         1,
         "the system entry is untouched"
     );
@@ -233,7 +233,7 @@ async fn a_fold_invalidates_an_editor_holding_the_pre_fold_rev() {
             .expect("a system observation is accepted");
     }
     for _ in 0..2_000 {
-        if boot.harness.snapshot().await.pending_entries().len()
+        if boot.harness.snapshot().await.unwrap().pending_entries().len()
             == calm_server::harness::MAX_PENDING_QUEUE_LEN - 1
         {
             break;
@@ -243,7 +243,7 @@ async fn a_fold_invalidates_an_editor_holding_the_pre_fold_rev() {
 
     let tail = queue_one(&boot, "first half").await;
     assert_eq!(
-        boot.harness.snapshot().await.pending_entries().len(),
+        boot.harness.snapshot().await.unwrap().pending_entries().len(),
         calm_server::harness::MAX_PENDING_QUEUE_LEN,
         "the queue is now full and its tail is the entry under test"
     );
@@ -437,7 +437,7 @@ async fn a_delete_racing_issuance_never_lands_in_a_third_state() {
 
         // Let an issuance already in flight finish before reading the daemon; this decides nothing, it only stops the read from racing the write.
         for _ in 0..2_000 {
-            if boot.harness.snapshot().await.pending_entries().is_empty() {
+            if boot.harness.snapshot().await.unwrap().pending_entries().is_empty() {
                 break;
             }
             tokio::task::yield_now().await;

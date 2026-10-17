@@ -140,7 +140,9 @@ async fn install_live_harness(b: &Boot, track_id: &str) -> String {
 
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: Default::default(),
-            snapshot: (calm_server::harness::HarnessSnapshot::initial(0, Vec::new())).try_into().expect("historical fixture snapshot contract"),
+            snapshot: (calm_server::harness::HarnessSnapshot::initial(0, Vec::new()))
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         8,
     );

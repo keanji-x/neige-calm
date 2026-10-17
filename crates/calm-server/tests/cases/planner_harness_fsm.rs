@@ -137,8 +137,12 @@ async fn harness_with(
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     (repo, harness, worker_session_id, thread_id)
 }
 
@@ -194,8 +198,12 @@ async fn harness_from_snapshot(
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     (harness, worker_session_id)
 }
 
@@ -376,7 +384,7 @@ async fn stale_turn_completed_ignored_during_active_turn() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == turn2
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn2.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -414,7 +422,7 @@ async fn stale_turn_started_ignored_when_other_turn_active() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -462,7 +470,7 @@ async fn replayed_turn_started_after_completed_ignored() {
         HarnessState::TurnCompleted { last_turn_id } if last_turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -510,7 +518,7 @@ async fn stale_turn_started_in_turn_completed_ignored() {
         HarnessState::TurnCompleted { last_turn_id } if last_turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -549,7 +557,7 @@ async fn stale_turn_started_in_issuing_with_foreign_id_ignored() {
             ..
         }
     ));
-    assert!(harness.snapshot().await.last_turn_id.is_none());
+    assert!(harness.snapshot().await.unwrap().last_turn_id.is_none());
     harness.shutdown().await.unwrap();
 }
 
@@ -588,7 +596,7 @@ async fn recovered_resumed_accepts_matching_turn_started() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == "turn-prior"
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some("turn-prior")
     );
     harness.shutdown().await.unwrap();
@@ -626,7 +634,7 @@ async fn turn_started_without_id_ignored() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -836,8 +844,12 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     tokio::time::timeout(
         config.debounce_min_idle + Duration::from_millis(300),

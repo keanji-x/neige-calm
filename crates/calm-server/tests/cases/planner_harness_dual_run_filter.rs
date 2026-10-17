@@ -109,8 +109,12 @@ async fn harness_drops_foreign_thread_notifications() {
 
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     daemon.emit_notification_for_test(Notification::TurnStarted {
         thread_id: "thread-legacy-a".into(),
@@ -242,8 +246,12 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
-    }).await.expect("historical fixture harness");
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     registry.insert(worker_session_id.clone(), harness.clone());
     let codex = Arc::new(CodexClient::new_stub());
     let _dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
@@ -292,7 +300,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
 
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let snapshot = harness.snapshot().await;
+        let snapshot = harness.snapshot().await.unwrap();
         if snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
@@ -412,7 +420,9 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
 
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot: (snapshot).try_into().expect("historical fixture snapshot contract"),
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         1,
     );

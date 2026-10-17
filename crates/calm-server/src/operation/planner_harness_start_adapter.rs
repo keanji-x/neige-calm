@@ -1542,7 +1542,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             live_replies: self.harness_registry.live_replies().clone(),
             config: HarnessConfig::default(),
             snapshot: (snapshot).try_into()?,
-        }).await?;
+        })
+        .await?;
         if !reservation.install(handle.clone()) {
             // Superseded by a concurrent `reserve_replacing`: shut down the handle we just built (never leak its run loop) and fail the op.
             handle.shutdown().await?;

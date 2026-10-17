@@ -2,12 +2,12 @@
 use super::digest;
 use crate::error::{CalmError, Result};
 use calm_types::conversation::{
-    AcceptedInputRef, ConversationExecutionProvenance, ConversationMessageId, FrozenHumanAttribution,
-    InputCorrelationFact, InputDeliveryFact, InputSubmissionId, LogicalTurnId, MessageAuthor,
-    MessageRevisionRef, PendingInput,
-    PrivateHistoryOperationId, PrivateHistoryPayload, SubmissionDispatchProof,
-    SubmissionRenderDigest, SubmissionRenderInput, SubmissionRenderPlan, SubmissionRenderPlanRef,
-    SubmissionRenderPlanVersion, SubmissionRenderSegment, SystemObservationId, SystemRenderContext,
+    AcceptedInputRef, ConversationExecutionProvenance, ConversationMessageId,
+    FrozenHumanAttribution, InputCorrelationFact, InputDeliveryFact, InputSubmissionId,
+    LogicalTurnId, MessageAuthor, MessageRevisionRef, PendingInput, PrivateHistoryOperationId,
+    PrivateHistoryPayload, SubmissionDispatchProof, SubmissionRenderDigest, SubmissionRenderInput,
+    SubmissionRenderPlan, SubmissionRenderPlanRef, SubmissionRenderPlanVersion,
+    SubmissionRenderSegment, SystemObservationId, SystemRenderContext,
 };
 use sqlx::{Row, Sqlite, Transaction};
 use std::num::NonZeroU32;
