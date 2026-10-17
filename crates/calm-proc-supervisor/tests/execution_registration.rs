@@ -6,6 +6,8 @@ use workspace::execution::objects::{ContainmentKind, DirectoryContainment, HeldS
 mod directory_relation;
 #[path = "execution_registration/qualification.rs"]
 mod qualification;
+#[path = "execution_registration/recovery.rs"]
+mod recovery;
 
 #[path = "execution_registration/repair.rs"]
 mod repair;
