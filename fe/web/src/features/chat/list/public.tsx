@@ -49,16 +49,16 @@ export function ChatList({
         const turns = conversation.turns;
         if (context) {
           const role = CONVERSATION_KIND_LABEL[conversation.kind];
-          const contextDescription = [role, description].filter(Boolean).join(' · ');
+          const contextDescription = [name === role ? null : role, description].filter(Boolean).join(' · ') || null;
           return <li key={conversation.id}>
           <ContextItem icon={conversation.kind === PLANNER_CONVERSATION_KIND ? 'tasks' : 'chat'} label={name}
             trailing={activity === 'quiet' ? undefined : <ContextIconSlot><ActivityIndicator state={activity} /></ContextIconSlot>} unread={unread} selected={active} buttonProps={{
             'aria-label': `Conversation ${name}${activity === 'working' ? ', working' : ''}`,
             'aria-current': active ? 'true' : undefined,
-            'aria-describedby': descriptionId,
+            'aria-describedby': contextDescription === null ? undefined : descriptionId,
             title: `${role}: ${name}`,
             onClick: () => onOpen(conversation),
-          }} metadata={<span hidden id={descriptionId}>{contextDescription}</span>} />
+          }} metadata={contextDescription === null ? undefined : <span hidden id={descriptionId}>{contextDescription}</span>} />
         </li>;
         }
         return (

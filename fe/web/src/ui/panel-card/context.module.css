@@ -29,9 +29,11 @@
   .withTrailing { grid-template-columns: var(--glyph-sm) minmax(0, 1fr) fit-content(40%); }
   .withMenu { padding-inline-end: calc(var(--control-h-sm) + var(--space-1)); }
   .withMenu.withTrailing { padding-inline-end: var(--space-1); }
-  /* Like the existing panel rows, an intent-revealed menu uses the same end slot. */
-  .item:hover .withMenu > .trailing, .item:focus-within .withMenu > .trailing,
-  .item:has([aria-expanded="true"]) .withMenu > .trailing { opacity: 0; }
+  /* Hover-capable devices share the status slot with the intent-revealed menu. */
+  @media (hover: hover) {
+    .item:hover .withMenu > .trailing, .item:focus-within .withMenu > .trailing,
+    .item:has([aria-expanded="true"]) .withMenu > .trailing { opacity: 0; }
+  }
   .name { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .menu { position: absolute; inset-inline-end: var(--space-1); inset-block-start: var(--space-1); opacity: 0; }
   .trigger { inline-size: var(--control-h-sm); block-size: var(--control-h-sm); border-radius: var(--radius-highlight); }
@@ -48,5 +50,11 @@
   .action { display: flex; align-items: center; opacity: 0; }
   .alwaysAction { opacity: 1; }
   .group:hover .action, .group:focus-within .action { opacity: 1; }
-  @media (hover: none) { .menu, .action { opacity: 1; } }
+  @media (hover: none) {
+    .menu, .action { opacity: 1; }
+    /* Persistent actions get a separate column; all state rows stay aligned. */
+    .withMenu.withTrailing, .frame:has(.menu) .open {
+      padding-inline-end: calc(var(--control-h-sm) + var(--space-1) * 2);
+    }
+  }
 }
