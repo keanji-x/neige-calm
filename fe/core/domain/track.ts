@@ -245,6 +245,19 @@ export function trackActivityFrom(trackId: string, overlays: readonly OverlayWir
   return activity;
 }
 
+/** Bulk projection keeps each entity's original overlay order and the single-track fold's policy. */
+export function trackActivitiesFrom(overlays: readonly OverlayWire[]): ReadonlyMap<string, TrackActivity> {
+  const byTrack = new Map<string, OverlayWire[]>();
+  for (const overlay of overlays) {
+    if (overlay.entity_kind !== 'track') continue;
+    const id = overlay.entity_id;
+    const rows = byTrack.get(id);
+    if (rows === undefined) byTrack.set(id, [overlay]);
+    else rows.push(overlay);
+  }
+  return new Map([...byTrack].map(([id, rows]) => [id, trackActivityFrom(id, rows)]));
+}
+
 function finiteOrNull(value: number): number | null {
   return Number.isFinite(value) ? value : null;
 }

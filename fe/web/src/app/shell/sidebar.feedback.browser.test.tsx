@@ -10,7 +10,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import '../../styles/entry.css';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import styles from './shell.module.css';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 

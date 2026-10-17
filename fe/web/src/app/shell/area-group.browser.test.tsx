@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import '../../styles/entry.css';
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 const receipts = readReceiptsFixture();

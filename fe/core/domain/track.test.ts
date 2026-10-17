@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   activeTracksOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
   createTrackOperation, deleteCardOperation, hasFailed, isBlankForKernel, isClosed,
-  isWorking, needsUserAttention, toTrack, trackActivityFrom,
+  isWorking, needsUserAttention, toTrack, trackActivityFrom, trackActivitiesFrom,
   sortAreaTracksByRecent, trackRecentAt, limitAreaTracks, railAreaTracks, AREA_TRACK_LIMIT,
   trackActivityState, trackDetailSchema, updateTrackOperation,
   NEUTRAL_ACTIVITY, UNTITLED_TRACK_LABEL, trackDisplayTitle, trackWireSchema, tracksInAreaOperation,
@@ -202,6 +202,29 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     ],
     cards: [{ card_id: 'worker-1', state: 'failed' }, { card_id: 'planner', state: 'input' }, { card_id: 'w2', state: 'working' }],
   };
+
+  it('bulk-folds interleaved entities in original order without weakening activity authority', () => {
+    const rows = Object.freeze([
+      overlay({ value: 0.1 }, { kind: 'progress' }),
+      overlay({ ...payload, activity_at_ms: 80 }, { updated_at: 100 }),
+      overlay({ ...payload, activity_at_ms: 999 }, { entity_kind: 'card' }),
+      overlay({ ...payload, working: false, activity_at_ms: 2 }, { entity_id: 't2', updated_at: 3 }),
+      overlay({ value: 0.9 }, { kind: 'progress', plugin_id: 'plugin' }),
+      overlay({ schemaVersion: 4 }, { updated_at: 150 }),
+      overlay({ ...payload, working: false, attention: 'none', activity_at_ms: 40, cards: [], items: [] }, { updated_at: 30 }),
+      overlay({ ...payload, activity_at_ms: 999 }, { plugin_id: 'impostor', updated_at: 999 }),
+    ].map(row => Object.freeze(row)));
+    const before = JSON.stringify(rows);
+    const all = trackActivitiesFrom(rows);
+    expect(all.get('t1')).toEqual({ ...NEUTRAL_ACTIVITY, progress: 0.9, activityAt: 40, recentAt: 150 });
+    expect(all.get('t2')).toMatchObject({ working: false, activityAt: 2, recentAt: 3 });
+    expect(all.has('missing')).toBe(false);
+    for (const ordered of [rows, rows.toReversed()]) {
+      const bulk = trackActivitiesFrom(ordered);
+      for (const id of ['t1', 't2']) expect(bulk.get(id)).toEqual(trackActivityFrom(id, ordered));
+    }
+    expect(JSON.stringify(rows)).toBe(before);
+  });
 
   it('keeps timeout notices with none attention and skips unknown sources', () => {
     const activity = trackActivityFrom('t1', [overlay({ ...payload, attention: 'none', working: false,

@@ -2,10 +2,10 @@
 // app/providers because the router renders the shell and both need the same reads (`no-circular`).
 
 import {
-  useQueries, useQuery, useQueryClient, type QueryClient,
+  useQueries, useQuery, useQueryClient, type QueryClient, type UseQueryResult,
 } from '@tanstack/react-query';
 import { hasReadFailure } from './query-read-feedback.ts';
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import { admitTransport, useRecoveryMutation } from './recovery-mutation.ts';
 import { z } from 'zod';
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
@@ -49,7 +49,7 @@ import {
   createCardOperation, createClaudeCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
   overlaysByKindOperation, recipeSaveAttempts, recipeSaveLanded, toTrack, updateTrackOperation, updateTrackRecipeOperation,
-  sortAreaTracksByRecent, trackActivityFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation, trackTemplatesOperation,
+  NEUTRAL_ACTIVITY, sortAreaTracksByRecent, trackActivitiesFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation, trackTemplatesOperation,
   tracksInAreaOperation,
   type CardWire, type NewCardBody, type NewClaudeCardBody, type NewCodexCardBody, type NewTerminalCardBody,
   type NewTrackBody, type OverlayWire,
@@ -680,9 +680,9 @@ export function useTrackRecipeMutations(
 }
 
 export type Workspace = Readonly<{
-  areas: Area[];
-  tracksByArea: ReadonlyMap<string, Track[]>;
-  tracks: Track[];
+  areas: readonly Area[];
+  tracksByArea: ReadonlyMap<string, readonly Track[]>;
+  tracks: readonly Track[];
   areasLoading: boolean;
   overlaysLoading: boolean;
   areasError: Error | null;
@@ -694,6 +694,17 @@ export type Workspace = Readonly<{
   retryTracks: (areaId: string) => void;
 }>;
 
+// Query structurally shares these plain arrays independently: read status can change
+// without replacing unchanged data. The outer useQueries result is not a memo key.
+function combineWorkspaceTracks(results: UseQueryResult<Track[]>[]) {
+  return {
+    data: results.map(query => query.data),
+    reads: results.map(query => ({ pending: query.isPending, error: query.error, refetch: query.refetch })),
+  };
+}
+
+const NO_AREAS: readonly Area[] = Object.freeze([]);
+
 /**
  * The area → tracks fan-out is a page-level `useQueries`, never a route loader await: one slow area
  * must not block the calendar. The workspace-wide overlay read is folded in so every surface sees the same activity.
@@ -701,25 +712,34 @@ export type Workspace = Readonly<{
 export function useWorkspace(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Workspace {
   const areasQuery = useQuery(areaListQueryOptions(transport, unauthorized));
   const overlaysQuery = useQuery(trackOverlaysQueryOptions(transport, unauthorized));
-  const areas = areasQuery.data ?? [];
-  const overlays = overlaysQuery.data ?? [];
+  const areas = areasQuery.data ?? NO_AREAS;
   const trackQueries = useQueries({
     queries: areas.map((area) => tracksInAreaQueryOptions(transport, area.id, unauthorized)),
+    combine: combineWorkspaceTracks,
   });
-  const tracksByArea = new Map<string, Track[]>();
-  const trackErrorsByArea = new Map<string, Error>();
-  const tracksLoadingByArea = new Map<string, boolean>();
-  const tracks: Track[] = [];
-  for (const [index, area] of areas.entries()) {
-    const query = trackQueries[index];
-    tracksLoadingByArea.set(area.id, query?.isPending ?? false);
-    if (query?.error instanceof Error) trackErrorsByArea.set(area.id, query.error);
-    if (query?.data !== undefined) {
-      const rows = query.data.map((track) => ({ ...track, ...trackActivityFrom(track.id, overlays) }));
+  const activity = useMemo(() => trackActivitiesFrom(overlaysQuery.data ?? []), [overlaysQuery.data]);
+  const { tracksByArea, tracks } = useMemo(() => {
+    const tracksByArea = new Map<string, readonly Track[]>();
+    const tracks: Track[] = [];
+    for (const [index, area] of areas.entries()) {
+      const data = trackQueries.data[index];
+      if (data === undefined) continue;
+      const rows = data.map(track => ({ ...track, ...(activity.get(track.id) ?? NEUTRAL_ACTIVITY) }));
       tracksByArea.set(area.id, sortAreaTracksByRecent(rows));
       tracks.push(...rows);
     }
-  }
+    return { tracksByArea, tracks };
+  }, [activity, areas, trackQueries.data]);
+  const { trackErrorsByArea, tracksLoadingByArea } = useMemo(() => {
+    const trackErrorsByArea = new Map<string, Error>();
+    const tracksLoadingByArea = new Map<string, boolean>();
+    for (const [index, area] of areas.entries()) {
+      const query = trackQueries.reads[index];
+      tracksLoadingByArea.set(area.id, query?.pending ?? false);
+      if (query?.error instanceof Error) trackErrorsByArea.set(area.id, query.error);
+    }
+    return { trackErrorsByArea, tracksLoadingByArea };
+  }, [areas, trackQueries.reads]);
   return {
     areas, tracksByArea, tracks, areasLoading: areasQuery.isPending,
     overlaysLoading: overlaysQuery.isLoading,
@@ -731,7 +751,7 @@ export function useWorkspace(transport: ApiTransportPort, unauthorized: Unauthor
     retryOverlays: () => { void overlaysQuery.refetch(); },
     retryTracks: (areaId) => {
       const index = areas.findIndex((area) => area.id === areaId);
-      if (index >= 0) void trackQueries[index]?.refetch();
+      if (index >= 0) void trackQueries.reads[index]?.refetch();
     },
   };
 }

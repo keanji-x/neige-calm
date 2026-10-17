@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { ThemeProvider } from '../theme/public.tsx';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });

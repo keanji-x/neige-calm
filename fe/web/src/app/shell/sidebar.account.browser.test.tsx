@@ -8,7 +8,7 @@ import '../../styles/entry.css';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import styles from './shell.module.css';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 const receipts = readReceiptsFixture();

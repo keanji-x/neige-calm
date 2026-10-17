@@ -9,7 +9,7 @@ import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-pref
 import { createReadReceiptsKernel, readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import styles from './shell.module.css';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { TrackRow } from '../../features/track/row/public.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });

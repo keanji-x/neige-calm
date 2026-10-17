@@ -6,7 +6,7 @@ import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import '../../styles/entry.css';
 import { ThemeProvider } from '../theme/public.tsx';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 const receipts = readReceiptsFixture();

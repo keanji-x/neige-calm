@@ -1,4 +1,4 @@
-import { sidebarTrackGroups } from './sidebar-track-groups.ts';
+import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
 // The workspace rail: shared groups with owner-defined membership and actions.
 
 import { useEffect, useRef } from 'react';
@@ -33,6 +33,8 @@ export type SidebarProps = Readonly<{
   areas: readonly Area[];
   tracksByArea: ReadonlyMap<string, readonly Track[]>;
   tracks: readonly Track[];
+  /** The shell's one membership projection, shared with mobile shortcuts. */
+  trackGroups: SidebarTrackGroups;
   currentPath: string;
   onGo: (target: NavTarget) => void;
   onRequestCreateArea: () => void;
@@ -71,7 +73,7 @@ export function initialsOf(label: string): string {
  * as well as in the query layer.
  */
 export function Sidebar({
-  areas, tracksByArea, tracks, currentPath, onGo,
+  areas, tracksByArea, tracks, trackGroups: memberships, currentPath, onGo,
   onRequestCreateArea, onRequestEditArea, onDeleteArea, onNewTrack, onSetPinned, onDeleteTrack,
   onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed,
   userLabel = 'You', nowMs, readError = null, activityError = null,
@@ -90,7 +92,6 @@ export function Sidebar({
   const userTracks = userVisibleTracks(tracks, areas);
   const receipts = useReadReceipts();
   const isUnread = (track: Track) => receipts.isUnread('track', track.id, track.activityAt);
-  const memberships = sidebarTrackGroups(userTracks, isUnread);
   const waiting = memberships.waiting;
   const groups: ReadonlyArray<{ id: SidebarSectionId; title: string; tracks: readonly Track[] }> = [
     { id: 'waiting', title: 'Waiting on you', tracks: waiting },

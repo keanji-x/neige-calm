@@ -7,7 +7,7 @@ import type { Area } from '../../../../core/domain/area.ts';
 import '../../styles/entry.css';
 import { ThemeProvider } from '../theme/public.tsx';
 import { TrackRow } from '../../features/track/row/public.tsx';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 const receipts = readReceiptsFixture();

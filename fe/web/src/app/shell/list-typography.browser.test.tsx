@@ -8,7 +8,7 @@ import { deriveTrackPageView } from '../../../../core/view/track-page.ts';
 import { makeDesktopPainter, paintDesktopPanel } from '../../features/track/page/desktop-painter.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { MobileTrackList } from './mobile-track-list.tsx';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';

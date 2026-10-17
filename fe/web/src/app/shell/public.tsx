@@ -17,7 +17,7 @@ import { useReadReceipts } from '../providers/read-receipts.tsx';
 import { MARK_UNREAD_TEXT, READ_RECEIPT_FAILURES } from '../../../../core/domain/read-receipts.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, trackDisplayTitle, userVisibleTracks } from '../../../../core/domain/track.ts';
+import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, trackDisplayTitle } from '../../../../core/domain/track.ts';
 import { OperationFeedback, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import type { Track } from '../../../../core/domain/track.ts';
 import { AREA_CREATE_FAILURES, AREA_CREATE_TEXT, AREA_PATCH_FAILURES, AREA_PATCH_TEXT, visibleAreas } from '../../../../core/domain/area.ts';
@@ -182,8 +182,10 @@ export function AppShell({
   const conversationScope = useMobileConversationScope();
   const historyTracks = conversationScope === null ? [] : [conversationScope.track];
   const receipts = useReadReceipts();
-  const isUnread = (track: Track) => receipts.isUnread('track', track.id, track.activityAt);
-  const trackGroups = sidebarTrackGroups(userVisibleTracks(workspace.tracks, workspace.areas), isUnread);
+  const readUnread = receipts.isUnread;
+  const isUnread = useCallback((track: Track) => readUnread('track', track.id, track.activityAt), [readUnread]);
+  const trackGroups = useMemo(() => sidebarTrackGroups(workspace.tracks, workspace.areas, isUnread),
+    [workspace.tracks, workspace.areas, isUnread]);
   const history = useMobileHistoryData(transport, unauthorized, historyTracks, conversationScope?.conversations ?? [], narrowRail && historyOpen);
   const visibleViewport = useVisibleViewport(narrowRail);
   const mobileSectionKind = mobileSection?.kind;
@@ -453,6 +455,7 @@ export function AppShell({
               />
             ) : null
           ) : <Sidebar
+            trackGroups={trackGroups}
             collapsed={railCollapsed}
             onToggleCollapsed={() => preferences.setRailCollapsed(!railCollapsed)}
             areas={workspace.areas}

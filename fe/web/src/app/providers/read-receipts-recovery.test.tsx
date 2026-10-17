@@ -11,7 +11,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { RecoverySession } from '../../systems/recovery/session.ts';
 import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { RecoveryGate } from '../auth/recovery-gate.tsx';
-import { Sidebar } from '../shell/sidebar.tsx';
+import { SidebarFixture as Sidebar } from '../shell/sidebar-fixture.tsx';
 import { WEB_COMPAT_VERSION } from './public.tsx';
 import { ReadReceiptsProvider, useReadReceipt, useReadReceipts, type ReadReceipts } from './read-receipts.tsx';
 import { createReadReceiptsKernel, type ReadReceiptsKernel } from './read-receipts-fixture.tsx';

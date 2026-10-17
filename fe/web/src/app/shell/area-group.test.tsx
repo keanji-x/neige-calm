@@ -8,7 +8,7 @@ import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
 import { createReadReceiptsKernel, readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 
 afterEach(() => { cleanup(); });
 

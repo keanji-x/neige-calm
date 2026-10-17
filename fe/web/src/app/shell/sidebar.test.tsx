@@ -9,7 +9,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
 import { createReadReceiptsKernel, readReceiptsFixture, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
-import { Sidebar } from './sidebar.tsx';
+import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 

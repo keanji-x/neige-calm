@@ -11,7 +11,7 @@ import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 const receipts = readReceiptsFixture();
 import { ThemeProvider } from '../theme/public.tsx';
-import { Sidebar, type SidebarProps } from './sidebar.tsx';
+import { SidebarFixture as Sidebar, type SidebarFixtureProps as SidebarProps } from './sidebar-fixture.tsx';
 
 // Browser coverage pins the actual paint, hover disclosure, and event-to-shell path.
 afterEach(cleanup);
