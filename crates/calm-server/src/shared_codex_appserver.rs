@@ -6,6 +6,7 @@ mod macos_process;
 mod metadata_reads;
 mod native_turns;
 mod preserving_recovery;
+pub(crate) use preserving_recovery::ActiveRecoveryAdmission;
 mod prompt_attempt;
 pub(crate) use native_turns::{CodexHarnessBinding, NativeInput, NativeSteer};
 use native_turns::{NativeTurns, SourceRetirement};

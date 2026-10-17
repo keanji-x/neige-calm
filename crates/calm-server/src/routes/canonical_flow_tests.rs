@@ -216,7 +216,12 @@ async fn post(app: &axum::Router, cookie: &str, uri: &str, key: &str, body: Valu
     body
 }
 
-async fn original_input_flow(native_initially_available: bool) {
+mod cold_recovery_tests;
+
+async fn original_input_flow(
+    native_initially_available: bool,
+    cold_second_turn: Option<cold_recovery_tests::Scenario>,
+) {
     let mut fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let area = post(
@@ -404,8 +409,13 @@ async fn original_input_flow(native_initially_available: bool) {
         .recover_harnesses_on_boot(BootRows::All)
         .await
         .unwrap();
-    let replay = post(&app, &cookie, "/api/tracks", "first", create).await;
-    assert_eq!(replay["id"], created["id"]);
+    if cold_second_turn.is_none() {
+        // The original replay-only cases exercise this post-reopen wake. Cold
+        // scenarios instead issue one new message below: a second authorized
+        // POST may independently re-admit its then-current pending head.
+        let replay = post(&app, &cookie, "/api/tracks", "first", create).await;
+        assert_eq!(replay["id"], created["id"]);
+    }
     let after = fixture.carrier(track).await;
     assert_eq!((&after.0, &after.1), (&card, &worker));
     assert_eq!(after.2.canonical_inputs, done.canonical_inputs);
@@ -414,14 +424,26 @@ async fn original_input_flow(native_initially_available: bool) {
     assert_eq!(after.2.header.last_turn_id.as_deref(), Some(TURN));
     assert_eq!(fixture.receipt(area_id).await, original_receipt);
     assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
+    if let Some(scenario) = cold_second_turn {
+        cold_recovery_tests::second_turn(
+            &fixture,
+            &restarted,
+            &app,
+            &cookie,
+            (track, &card, &worker),
+            scenario,
+        )
+        .await;
+        assert_eq!(fixture.receipt(area_id).await, original_receipt);
+    }
 }
 
 #[tokio::test]
 async fn production_http_executes_original_input_and_reopens_its_completed_record() {
-    original_input_flow(true).await;
+    original_input_flow(true, None).await;
 }
 
 #[tokio::test]
 async fn production_http_retry_after_native_unavailability_resumes_original_head() {
-    original_input_flow(false).await;
+    original_input_flow(false, None).await;
 }

@@ -1517,7 +1517,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         if let Some(wire) = RetainedPayload::decode(&_op.payload)? {
-            return self.retained_spawn(&wire, ctx).await;
+            return self.retained_spawn(&wire, &ctx.events).await;
         }
         let payload = super::assistant_start_wire::StartInput::decode(&_op.payload)?.payload;
         crate::conversation_inputs::require_historical_storage(
