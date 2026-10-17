@@ -53,6 +53,9 @@ function emptyPanel() {
   dom.setAttribute('aria-hidden', 'true');
   return {
     dom,
+    // Match the React bar's top edge. A hidden bottom panel would otherwise
+    // reserve a phantom bottom margin when the editor reveals a match.
+    top: true,
     mount() { dom.parentElement?.classList.add('fv-code-search-panels-empty'); },
     destroy() { dom.parentElement?.classList.remove('fv-code-search-panels-empty'); },
   };

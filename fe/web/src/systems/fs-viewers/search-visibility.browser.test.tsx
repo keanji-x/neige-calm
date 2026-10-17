@@ -21,7 +21,7 @@ it.each([false, true])('keeps file search visible and clickable while the editor
     },
     set: (key, value) => { values.set(key, value); },
   };
-  const text = Array.from({ length: 300 }, (_, index) => `line ${index} ${[8, 140, 298].includes(index) ? 'needle' : 'ordinary'} ${'.'.repeat(100)}`).join('\n');
+  const text = Array.from({ length: 300 }, (_, index) => `line ${index} ${[0, 140, 298].includes(index) ? 'needle' : 'ordinary'} ${'.'.repeat(100)}`).join('\n');
   // FileViewer's real card is a shrinking flex column. Keep that production
   // frame; a plain fixed-height parent does not exercise its layout contract.
   render(<div className="fv-card" style={{ height: truncated ? 360 : 480, width: truncated ? 580 : 660 }}>
@@ -50,6 +50,19 @@ it.each([false, true])('keeps file search visible and clickable while the editor
       const hit = document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
       expect(hit !== null && control.contains(hit)).toBe(true);
     }
+    // Read the actual selected DOM text rather than accepting editor state or
+    // a nonzero scroll offset as proof that the current match can be seen.
+    const selected = view.state.selection.main;
+    const from = view.domAtPos(selected.from), to = view.domAtPos(selected.to);
+    const range = document.createRange();
+    range.setStart(from.node, from.offset); range.setEnd(to.node, to.offset);
+    expect(range.toString()).toBe('needle');
+    const match = range.getBoundingClientRect();
+    const editorClip = view.scrollDOM.getBoundingClientRect();
+    expect(match.top).toBeGreaterThanOrEqual(Math.max(0, editorClip.top, clip.top));
+    expect(match.bottom).toBeLessThanOrEqual(Math.min(innerHeight, editorClip.bottom, clip.bottom));
+    expect(match.left).toBeGreaterThanOrEqual(Math.max(0, editorClip.left, clip.left));
+    expect(match.right).toBeLessThanOrEqual(Math.min(innerWidth, editorClip.right, clip.right));
   };
   content.focus();
   await userEvent.keyboard('/');
