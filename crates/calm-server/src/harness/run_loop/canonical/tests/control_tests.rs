@@ -1,6 +1,5 @@
 //! Controls exercise the real loop and protocol owner; no fixture creates a claim or END.
 use super::*;
-use crate::planner_turn_budget::PlannerTurnBudgetExt;
 
 async fn running(fx: &Fixture, peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer) {
     fx.original
@@ -61,11 +60,17 @@ async fn canonical_budget_warns_once_and_hard_stops_the_actual_original_executio
     assert_eq!(warning["method"], "turn/steer");
     assert_eq!(warning["params"]["threadId"], thread);
     assert_eq!(warning["params"]["expectedTurnId"], turn);
-    let budget = crate::planner_turn_budget::PlannerTurnBudget::try_from(1).unwrap();
     assert!(
         warning["params"]["input"]
-            .to_string()
-            .contains(&budget.warning_input())
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["text"].as_str().is_some_and(|text| {
+                    text.starts_with("[Trusted Planner turn budget reminder]\n")
+                        && text.contains("12 seconds of execution remain")
+                })
+            })
     );
     send(
         &mut peer,
