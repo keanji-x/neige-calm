@@ -1,3 +1,4 @@
+import { isUserConversationTurn } from './conversation.js';
 import type { AgentProvider } from '../api/generated/wire.js';
 import { CONVERSATION_STATE_SOURCE, conversationNameFrom, type Conversation, type ConversationKind, type ConversationMessage, type ConversationState } from './conversation.js';
 
@@ -29,7 +30,7 @@ export function describeConversation(
        `ChatList` renders the difference; `''` would render a blank. */
     ...(facts.trackTitle === undefined ? {} : { trackTitle: facts.trackTitle }),
     title: facts.cardTitle
-      ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+      ?? conversationNameFrom(turns.find(isUserConversationTurn)?.text ?? ''),
     kind: facts.kind,
     /* The server's state is the server's to report (`run_status_for` writes `turn_pending`,
            never `running`); the local phase wins only while a turn is in flight.

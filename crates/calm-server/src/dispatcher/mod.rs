@@ -161,6 +161,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::WorkerSessionStarted { .. }
         | Event::WorkerSessionStatusChanged { .. }
         | Event::WorkerSessionSuperseded { .. }
+        | Event::HarnessPresentationChanged { .. }
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }
@@ -1189,7 +1190,8 @@ impl Inner {
             | Event::WorkerSessionStarted { .. }
             | Event::WorkerSessionStatusChanged { .. }
             | Event::WorkerSessionSuperseded { .. }
-            | Event::HarnessItemAdded { .. }
+            | Event::HarnessPresentationChanged { .. }
+        | Event::HarnessItemAdded { .. }
             | Event::HarnessPhaseChanged { .. }
             | Event::HarnessTranscriptCleared { .. }
             | Event::HarnessTranscriptRewound { .. }
@@ -1730,6 +1732,7 @@ pub(crate) fn harness_observation_from_event(
         | Event::WorkerSessionStarted { .. }
         | Event::WorkerSessionStatusChanged { .. }
         | Event::WorkerSessionSuperseded { .. }
+        | Event::HarnessPresentationChanged { .. }
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }

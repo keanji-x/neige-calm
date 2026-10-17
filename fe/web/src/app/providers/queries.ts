@@ -1,3 +1,6 @@
+import { conversationItemsOperation, conversationRunOperation } from '../../../../core/domain/conversation-display.ts';
+import { conversationLiveOperation } from '../../../../core/domain/conversation-live.ts';
+import type { ConversationCursor, ConversationPage, ConversationLiveReplies, HarnessLiveReplies } from '../../../../core/api/generated/wire.ts';
 // Query and mutation wiring shared by app/router, app/shell and every feature slice. It lives under
 // app/providers because the router renders the shell and both need the same reads (`no-circular`).
 
@@ -56,8 +59,8 @@ import {
   type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
-  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
-  plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
+  compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
+  createTrackConversationOperation, trackConversationsOperation,
   createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation, PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT,
@@ -73,7 +76,7 @@ import {
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type {
-  AskAnswer, HarnessItem, PlannerPermissionMode, SetPlannerPermissionModeResponse, UploadAttachmentResponse,
+  AskAnswer, PlannerPermissionMode, SetPlannerPermissionModeResponse, UploadAttachmentResponse,
 } from '../../../../core/api/generated/wire.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 
@@ -170,29 +173,29 @@ export const queryKeys = Object.freeze({
 
 export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.harnessItems(cardId),
-    queryFn: ({ pageParam }: { pageParam: number }) => runOperation(
-      transport, harnessItemsOperation(cardId, pageParam, 'desc'), unauthorized,
+    queryKey: [...queryKeys.harnessItems(cardId),'conversation_v1'],
+    queryFn: ({ pageParam, signal }: { pageParam: ConversationCursor | null; signal: AbortSignal }) => runOperation(
+      transport, { ...conversationItemsOperation(cardId, pageParam), signal }, unauthorized,
     ),
-    initialPageParam: 0,
-    getNextPageParam: (page: HarnessItem[]) =>
-      page.length === HARNESS_ITEMS_PAGE_LIMIT ? page[0]?.id : undefined,
+    initialPageParam: null as ConversationCursor | null,
+    getNextPageParam: (page: ConversationPage) => page.next_cursor ?? undefined,
   };
 }
 
-export function harnessLiveQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function harnessLiveQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel, canonical:boolean) {
   return {
-    queryKey: queryKeys.harnessLive(cardId),
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      runOperation(transport, { ...harnessLiveOperation(cardId), signal }, unauthorized),
+    queryKey: [...queryKeys.harnessLive(cardId),canonical ? 'conversation_v1':'historical'],
+    queryFn: async ({ signal }: { signal: AbortSignal }):Promise<ConversationLiveReplies|HarnessLiveReplies> => canonical
+      ? runOperation(transport,{...conversationLiveOperation(cardId),signal},unauthorized)
+      : runOperation(transport,{...harnessLiveOperation(cardId),signal},unauthorized),
   };
 }
 
 export function plannerRunQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.plannerRun(cardId),
+    queryKey: [...queryKeys.plannerRun(cardId),'conversation_v1'],
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      runOperation(transport, { ...plannerRunOperation(cardId), signal }, unauthorized),
+      runOperation(transport, { ...conversationRunOperation(cardId), signal }, unauthorized),
   };
 }
 

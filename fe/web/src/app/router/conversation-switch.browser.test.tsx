@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
@@ -11,7 +12,7 @@ declare module 'vitest/internal/browser' {
   interface BrowserCommands { recordConversationSwitchPerformance(count: number, report: string): Promise<void> }
 }
 
-function transcriptKey() { return queryKeys.harnessItems('second-planner'); }
+function transcriptKey() { return [...queryKeys.harnessItems('second-planner'),'conversation_v1']; }
 
 function history(count: number, cardId = 'second-planner'): TranscriptRow[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -51,9 +52,9 @@ it.each([20, 900])('presents the selected shell before mounting %i cached messag
         provider: 'codex', state: 'idle', updatedAt: count, lastTurnCompletedAt: count,
       }] };
       return request.path.includes('/second-planner/harness/items')
-        ? { status: 200, statusText: 'OK', body: rows }
+        ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) }
         : request.path.includes('/daily-planner/harness/items')
-          ? { status: 200, statusText: 'OK', body: history(20, 'daily-planner') } : undefined;
+          ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), history(20, 'daily-planner'), null) } : undefined;
     },
   });
   try {
@@ -62,7 +63,7 @@ it.each([20, 900])('presents the selected shell before mounting %i cached messag
     await expect.poll(() => document.getElementById('conversation-daily-planner')?.querySelectorAll('[data-nc-turn="agent"]').length).toBe(20);
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await expect.element(page.getByRole('button', { name: /Conversation Other conversation/ })).toBeVisible();
-    fixture.client.setQueryData(transcriptKey(), { pages: [rows], pageParams: [0] });
+    fixture.client.setQueryData(transcriptKey(), { pages: [historicalConversationPage('second-planner', rows, null)], pageParams: [null] });
     const start = performance.now();
     observing = true;
     fireEvent.click(screen.getByRole('button', { name: /Conversation Other conversation/ }));
@@ -98,11 +99,11 @@ it.each([390, 1400])('can close at the first shell frame before cached content m
       });
     },
     reply: request => request.path.includes('/second-planner/harness/items')
-      ? { status: 200, statusText: 'OK', body: rows } : undefined,
+      ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) } : undefined,
   });
   try {
     await expect.element(page.getByRole('button', { name: /Conversation Other conversation/ })).toBeVisible();
-    fixture.client.setQueryData(transcriptKey(), { pages: [rows], pageParams: [0] });
+    fixture.client.setQueryData(transcriptKey(), { pages: [historicalConversationPage('second-planner', rows, null)], pageParams: [null] });
     fireEvent.click(screen.getByRole('button', { name: /Conversation Other conversation/ }));
     await expect.poll(() => frame).toEqual({ thread: false, closed: true });
     await expect.poll(() => document.getElementById('conversation-second-planner')).toBeNull();
@@ -119,7 +120,7 @@ it('lets a slow history read finish after closing without painting its body', as
     reply: async request => {
       if (request.path.includes('/second-planner/harness/items')) {
         await pending;
-        return { status: 200, statusText: 'OK', body: rows };
+        return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) };
       }
       return undefined;
     },

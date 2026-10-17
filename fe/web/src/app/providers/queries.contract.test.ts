@@ -754,19 +754,18 @@ describe('track create folders cache', () => {
 });
 
 describe('planner history pagination', () => {
-  it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
-    const firstPage = Array.from({ length: 300 }, (_, index) => ({
-      id: 701 + index, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
-      turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
-      params: '{}', created_at_ms: index,
+  it('uses the returned contract cursor rather than a raw item row id', async () => {
+    const cursor = { contract:'conversation_v1',card_id:'card',source:'presentation',position:7 } as const;
+    const { transport, paths } = recordingTransport(() => ok({
+      contract:'conversation_v1',source:'presentation',items:[],next_cursor:cursor,
     }));
-    const { transport, paths } = recordingTransport(() => ok(firstPage));
     const options = harnessItemsQueryOptions(transport, 'card', unauthorized);
-    const page = await options.queryFn({ pageParam: 0 });
-    const cursor = options.getNextPageParam(page);
-    expect(cursor).toBe(701);
-    await options.queryFn({ pageParam: cursor ?? 0 });
-    expect(paths[1]).toContain('after_id=701');
+    const signal = new AbortController().signal;
+    const page = await options.queryFn({ pageParam:null,signal });
+    expect(options.getNextPageParam(page)).toEqual(cursor);
+    await options.queryFn({ pageParam:cursor,signal });
+    expect(paths[1]).toContain(`cursor=${encodeURIComponent(JSON.stringify(cursor))}`);
+    expect(paths[1]).not.toContain('after_id=');
   });
 });
 

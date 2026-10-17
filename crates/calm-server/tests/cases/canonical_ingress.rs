@@ -58,6 +58,7 @@ impl Fixture {
         let events = EventBus::new();
         let roles = calm_server::card_role_cache::CardRoleCache::new();
         let tracks = calm_server::track_area_cache::TrackAreaCache::new();
+        self.repo.seed_card_role_cache(&roles).await.unwrap();
         self.repo.seed_track_area_cache(&tracks).await.unwrap();
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
@@ -488,3 +489,117 @@ async fn canonical_send_replay_does_not_restore_its_original_runtime() {
             .unwrap();
     assert_eq!(count, 2);
 }
+
+async fn get(app: &axum::Router, cookie: &str, uri: &str) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+#[tokio::test]
+async fn conversation_reader_shows_saved_human_before_native_and_after_reopen() {
+    let mut fixture = Fixture::new().await;
+    let (app, cookie) = fixture.application().await;
+    let (status, track) = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "read-first",
+        fixture.create_body(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{track}");
+    let (card, _, _) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    let uri =
+        format!("/api/cards/{card}/harness/items?contract=conversation_v1&direction=desc&limit=1");
+    let (status, page) = get(&app, &cookie, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["contract"], "conversation_v1", "{page}");
+    assert_eq!(page["source"], "presentation");
+    assert_eq!(page["items"][0]["source"]["kind"], "human");
+    assert_eq!(
+        page["items"][0]["source"]["author"]["user_id"],
+        LEGACY_OWNER_USER_ID
+    );
+    assert_eq!(
+        page["items"][0]["source"]["text"],
+        "Keep the original accepted input"
+    );
+    assert!(page["items"][0]["source"].get("thread_id").is_none());
+    let (_, legacy) = get(&app, &cookie, &format!("/api/cards/{card}/harness/items")).await;
+    assert_eq!(
+        legacy["code"], "conflict",
+        "canonical cannot silently read raw items"
+    );
+    drop(app);
+    fixture.repo.pool().close().await;
+    fixture.repo = Arc::new(SqlxRepo::open(&fixture.database_url).await.unwrap());
+    let (app, cookie) = fixture.application().await;
+    assert_eq!(get(&app, &cookie, &uri).await, (StatusCode::OK, page));
+}
+
+#[tokio::test]
+async fn conversation_run_reads_durable_frame_without_live_handle() {
+    let fixture = Fixture::new().await;
+    let (app, cookie) = fixture.application().await;
+    let (status, track) = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "run-first",
+        fixture.create_body(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{track}");
+    let (card, worker, _) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    let (status, run) = get(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["input_contract"], "canonical", "{run}");
+    assert_eq!(run["worker_session_id"], worker);
+    assert_eq!(run["phase"], "idle");
+    assert_eq!(run["pending_messages"].as_array().unwrap().len(), 1);
+    assert!(run["pending_messages"][0].get("text").is_none());
+}
+
+#[tokio::test]
+async fn conversation_reader_rejects_cross_card_cursor() {
+    let fixture = Fixture::new().await;
+    let (app, cookie) = fixture.application().await;
+    let (status, track) = post(
+        &app,
+        &cookie,
+        "/api/tracks",
+        "cursor-first",
+        fixture.create_body(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{track}");
+    let (card, _, _) = fixture.carrier(track["id"].as_str().unwrap()).await;
+    let cursor = "%7B%22contract%22:%22conversation_v1%22,%22card_id%22:%22other%22,%22source%22:%22presentation%22,%22position%22:1%7D";
+    let (status, body) = get(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/harness/items?contract=conversation_v1&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[path = "canonical_presentation.rs"]
+mod presentation;

@@ -107,7 +107,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                 let report = crate::model::new_id();
                 // Audit attribution is not permission. The actual live source and
                 // current organization decision above authorize content acceptance.
-                let ((_, created), events) = super::super::allocation::allocate_track_structure_tx(
+                let ((_, created), mut events) = super::super::allocation::allocate_track_structure_tx(
                     tx,
                     ActorId::User,
                     p,
@@ -190,6 +190,13 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                 )
                 .await?;
                 let track = response_track_tx(tx, &stored.acknowledgement).await?;
+                events.push((ActorId::User, crate::event::EventScope::Card {
+                    card:planner.clone().into(),track:track.id.clone(),area:track.area_id.clone(),
+                }, crate::event::Event::HarnessPresentationChanged {
+                    card_id:planner.clone().into(),track_id:track.id.clone(),
+                    cursor:calm_types::conversation_display::ConversationCursor::new(&planner,
+                        calm_types::conversation_display::ConversationCursorSource::Presentation,accepted.presentation_sequence),
+                }));
                 Ok(((stored.acknowledgement, track), events))
             })
         },

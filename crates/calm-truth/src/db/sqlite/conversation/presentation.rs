@@ -3,6 +3,12 @@ use crate::error::{CalmError, Result};
 use calm_types::conversation::{ConversationMessageId, SystemObservationId};
 use sqlx::{Sqlite, Transaction};
 
+#[derive(Clone, Debug)]
+pub struct StoredNativePresentation {
+    pub raw_row_id: i64,
+    pub cursor: calm_types::conversation_display::ConversationCursor,
+}
+
 type NativeItemIdentityRow = (String, Option<String>, Option<String>, String, String);
 
 /// Content is a native thread/item observation, never an input acceptance or END
@@ -14,7 +20,7 @@ pub async fn observe_native_item_tx(
     turn: Option<&str>,
     method: &str,
     params: &serde_json::Value,
-) -> Result<Option<i64>> {
+) -> Result<Option<StoredNativePresentation>> {
     use calm_types::conversation::InputDeliveryFact;
     let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
         serde_json::from_value(carrier.snapshot().clone())?;
@@ -75,16 +81,23 @@ pub async fn observe_native_item_tx(
         None,
     )
     .await?;
-    allocate_presentation_tx(
+    let sequence = allocate_presentation_tx(
         tx,
         carrier.card_id(),
         PresentationSource::NativeItem { row_id: row },
     )
     .await?;
-    Ok(Some(row))
+    Ok(Some(StoredNativePresentation {
+        raw_row_id: row,
+        cursor: calm_types::conversation_display::ConversationCursor::new(
+            carrier.card_id(),
+            calm_types::conversation_display::ConversationCursorSource::Presentation,
+            sequence,
+        ),
+    }))
 }
 
-fn native_source_identity(
+pub(in crate::db::sqlite) fn native_source_identity(
     thread: &str,
     item: Option<&str>,
     kind: Option<&str>,

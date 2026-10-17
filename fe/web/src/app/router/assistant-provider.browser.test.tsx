@@ -133,7 +133,7 @@ it.each([false, true])('combines images=%s with a run that supports attachments'
     existingProvider: 'claude', runAttachmentsSupported: true });
   await page.getByRole('button', { name: 'Conversation Saved Assistant' }).click();
   await expect.element(page.getByText('Saved reply', { exact: true })).toBeVisible();
-  await expect.poll(() => fixture.requests.some(request => request.path.endsWith('/planner/run'))).toBe(true);
+  await expect.poll(() => fixture.requests.some(request => request.path.includes('/planner/run?contract=conversation_v1'))).toBe(true);
   const attach = page.getByRole('button', { name: 'Attach an image' });
   if (images) await expect.element(attach).toBeEnabled();
   else await expect.element(attach).toBeDisabled();

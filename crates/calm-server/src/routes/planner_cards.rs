@@ -365,17 +365,28 @@ pub(crate) async fn interrupt_planner_card(
     get,
     path = "/api/cards/{id}/planner/run",
     tag = "cards",
-    params(("id" = String, Path, description = "Planner card id")),
+    params(("id" = String, Path, description = "Planner card id"), super::conversation_run::RunReadQuery),
     responses(
-        (status = 200, description = "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = GetPlannerRunResponse),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
+        (status = 200, description = "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = super::conversation_run::PlannerRunReadResponse),
+        (status = 401, description = "Verified session required", body = ErrorBody),
+        (status = 409, description = "Canonical read requires conversation_v1", body = ErrorBody),
+        (status = 403, description = "Current Area access or Planner shape refused", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn get_planner_run(
     State(s): State<RouteState>,
+    principal: crate::auth::Principal,
     Path(id): Path<String>,
+    crate::extract::Query(query): crate::extract::Query<super::conversation_run::RunReadQuery>,
+) -> Result<axum::response::Response> {
+    super::conversation_run::read(s, principal, id, query).await
+}
+
+pub(super) async fn historical_planner_run(
+    s: RouteState,
+    id: String,
 ) -> Result<Json<GetPlannerRunResponse>> {
     let card = s
         .repo

@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { commands, page } from 'vitest/browser';
@@ -40,22 +41,22 @@ function mount({ persistSent = false, running = false, message = text }: { persi
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
       capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
     }]);
-    if (request.path === '/api/cards/second-planner/planner/run') return ok({ card_id: 'second-planner', worker_session_id: 'runtime',
+    if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return ok(historicalConversationRun({ card_id: 'second-planner', worker_session_id: 'runtime',
       phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
     if (request.path.endsWith('/harness/live')) return ok({ turn_id: 'running-turn', items: [] });
     if (request.path.includes('/second-planner/harness/items')) {
       if (storedText !== null) canonicalReads++;
-      return ok([{
+      return ok(historicalConversationPage(conversationCardId(request.path), [{
       id: 1, worker_session_id: 'runtime', card_id: 'second-planner', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: 'Stored history remains still.' } }), created_at_ms: 1,
-    }, ...(storedText === null ? [] : [userRow('second-planner', storedText)])]);
+    }, ...(storedText === null ? [] : [userRow('second-planner', storedText)])], null));
     }
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
     if (created !== null && request.path.includes(`/${created.id}/harness/items`)) {
       canonicalReads++;
-      return ok([userRow(created.id, message)]);
+      return ok(historicalConversationPage(conversationCardId(request.path), [userRow(created.id, message)], null));
     }
     if (request.method === 'POST' && (request.path.endsWith('/planner/input') || request.path.endsWith('/conversations'))) {
       return responseAt(posts++).promise.then(result => {

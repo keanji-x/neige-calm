@@ -98,11 +98,14 @@ export function byRecency(left: Conversation, right: Conversation): number {
 }
 
 /** Who wrote a turn. Tool calls, shell runs and the like are not speech; they arrive as `ConversationActivity`. */
-export type TurnAuthor = 'you' | 'agent';
+export type TurnAuthor = 'you' | 'agent' | 'human' | 'unknown';
 
 export type ConversationTurn = Readonly<{
   id: string;
   author: TurnAuthor;
+  /** Present only for actual canonical Human identity; native user echoes have none. */
+  human?: Readonly<{ userId: string; displayName: string; messageId: string; revision: number }>;
+  displayPosition?: number;
   /** Verbatim. Line breaks are the author's and are preserved on render. */
   text: string;
   atMs: number;
@@ -118,6 +121,7 @@ export type ConversationTurn = Readonly<{
  */
 export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
+  authorUserId?: string;
   /**
    * True when the kernel put this message on the harness `pending_queue` instead of issuing it
    * as a turn. Required rather than optional: an absent flag would read as *not* queued, and an
@@ -173,7 +177,7 @@ export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.objec
   origin: z.object({ observation: z.string(), event_id: z.number().nullable() }).optional(),
 });
 
-const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
+export const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
   id: z.number(), worker_session_id: z.string(), card_id: z.string(), track_id: z.string(),
   thread_id: z.string(), turn_id: z.string().nullable(), item_uuid: z.string().nullable(),
   item_type: z.string().nullable(), method: z.string(), params: z.string(), created_at_ms: z.number(),
@@ -1068,7 +1072,7 @@ export type TranscriptEntry = ConversationMessage | ConversationActivity | Conve
 
 /** The speakers; neither an activity line nor a turn outcome is one. */
 export function isConversationMessage(entry: TranscriptEntry): entry is ConversationMessage {
-  return entry.author === 'you' || entry.author === 'agent' || entry.author === 'system';
+  return entry.author === 'you' || entry.author === 'human' || entry.author === 'unknown' || entry.author === 'agent' || entry.author === 'system';
 }
 
 /** `bash -lc '…'` is how codex spells every command; the line shows what was actually run. */
@@ -1409,7 +1413,7 @@ function placeTurnOutcomes(
  * A finished `Thought` survives only while nothing but turn outcomes follows it. Shared by
  * `buildTranscript` and `mergeTranscript` so the two agree on which thought is "followed".
  */
-function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
+export function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
   return entries.filter((entry, index) => {
     if (entry.author !== 'activity' || entry.verb !== 'Thought') return true;
     return !entries.slice(index + 1).some((later) => later.author !== 'turn');
@@ -1484,11 +1488,16 @@ export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]):
   return items.reduce((highest, item) => Math.max(highest, item.id), 0);
 }
 
-/** An exchange opens at a turn authored by you whose predecessor was not. */
+/** User-role display data includes unknown historical authors; this is never an ownership test. */
+export function isUserConversationTurn(entry:TranscriptEntry|undefined):entry is ConversationTurn {
+  return entry?.author === 'you' || entry?.author === 'human' || entry?.author === 'unknown';
+}
+
+/** An exchange opens at a user-role message after an agent/activity boundary. */
 export function opensExchange(turns: readonly TranscriptEntry[], index: number): boolean {
   const turn = turns[index];
   if (turn === undefined) return false;
-  return turn.author === 'you' && turns[index - 1]?.author !== 'you';
+  return isUserConversationTurn(turn) && !isUserConversationTurn(turns[index-1]);
 }
 
 /** The gap after which a transcript is worth stamping with a time; the time is a separator, not a label. */

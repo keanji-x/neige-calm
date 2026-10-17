@@ -132,6 +132,36 @@ claude_version?: string, };
  */
 export type ClaudeInstalledVersion = { version: string | null, };
 
+export type ConversationActiveInput = { logical_turn_id: string, submissions: Array<ConversationSubmissionDelivery>, };
+
+export type ConversationCursor = { contract: ConversationReadContract, card_id: string, source: ConversationCursorSource, position: number, };
+
+export type ConversationCursorSource = "presentation" | "historical_raw";
+
+export type ConversationDelivery = "crossing_unknown" | "unknown" | "not_dispatched" | "accepted";
+
+export type ConversationDisplayIdentity = { "kind": "human", message_id: string, } | { "kind": "native", thread_id: string, item_id: string, };
+
+export type ConversationDisplayItem = { cursor: ConversationCursor, source: ConversationDisplaySource, };
+
+export type ConversationDisplaySource = { "kind": "human", message_id: string, revision: number, author: ConversationHumanAuthor, text: string, attachments: Array<PlannerAttachment>, created_at_ms: number, } | { "kind": "native", item: HarnessItem, } | { "kind": "historical_raw", item: HarnessItem, } | { "kind": "removed", identity: ConversationDisplayIdentity, };
+
+export type ConversationHumanAuthor = { user_id: string, display_name: string, };
+
+export type ConversationInputContract = "canonical" | "historical";
+
+export type ConversationLiveReplies = { contract: ConversationReadContract, turn: ConversationLiveTurn | null, };
+
+export type ConversationLiveTurn = { thread_id: string, turn_id: string, items: Array<HarnessLiveReply>, };
+
+export type ConversationPage = { contract: ConversationReadContract, source: ConversationCursorSource, items: Array<ConversationDisplayItem>, next_cursor: ConversationCursor | null, };
+
+export type ConversationPendingMessage = { message_id: string, revision: number, queue_position: number, queued_at_ms: number, };
+
+export type ConversationReadContract = "conversation_v1";
+
+export type ConversationSubmissionDelivery = { submission_id: string, attempt_id: string | null, delivery: ConversationDelivery | null, };
+
 export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
 
 /**
@@ -280,7 +310,7 @@ status_detail?: string,
 /**
  * #1727 S4: what the verdict was checked against (D3); absent on pre-slice-4 producers.
  */
-target?: VerifyTarget, } } | { "ev": "task.regate_requested", "data": { attempt_id: string, key: string, previous_gate_attempt: number, reserved_gate_attempt: number, agent_message: string, } };
+target?: VerifyTarget, } } | { "ev": "task.regate_requested", "data": { attempt_id: string, key: string, previous_gate_attempt: number, reserved_gate_attempt: number, agent_message: string, } } | { "ev": "harness.presentation.changed", "data": { card_id: CardId, track_id: TrackId, cursor: ConversationCursor, } };
 
 /**
  * Where an event lives in the area → track → card hierarchy.

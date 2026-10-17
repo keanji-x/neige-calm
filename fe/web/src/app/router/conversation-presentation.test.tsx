@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -17,11 +18,11 @@ it('offers the side menu only after the source mounts, while keeping the trigger
         assistantProviders: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
         syncEventVersion: 29, dbInstanceId: 'presentation-menu',
       } };
-      if (request.path.includes('/second-planner/harness/items')) return { status: 200, statusText: 'OK', body: [{
+      if (request.path.includes('/second-planner/harness/items')) return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [{
         id: 1, worker_session_id: 'runtime', card_id: 'second-planner', track_id: 'daily', thread_id: 'thread',
         turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
         params: JSON.stringify({ item: { text: 'Source ready for presentation.' } }), created_at_ms: 1,
-      }] };
+      }], null) };
       return undefined;
     },
   });

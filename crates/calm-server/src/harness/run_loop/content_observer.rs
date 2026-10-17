@@ -41,6 +41,7 @@ pub(super) async fn on_item(
         return Ok(());
     }
     let params_json = serde_json::to_string(&params)?;
+    let mut presentation_cursor = None;
     let (item_db_id, legacy_segments_json) = if inner.inputs.canonical().is_some() {
         let Some(row) =
             canonical::persist_native_item(inner, &thread_id, turn_id.as_deref(), method, &params)
@@ -51,7 +52,8 @@ pub(super) async fn on_item(
             }
             return Ok(());
         };
-        (row, None)
+        presentation_cursor = Some(row.cursor);
+        (row.raw_row_id, None)
     } else {
         // The one turn an older binary can have left in flight: its drain wrote no projection row,
         // so its echo takes the segments from the legacy slot.
@@ -147,6 +149,9 @@ pub(super) async fn on_item(
     // Only a completed item has asked: a started one may still change.
     if phase == ItemPhase::Completed && !questions.is_empty() {
         native_ask::ask_from_item(inner, item_uuid.as_deref(), questions).await;
+    }
+    if let Some(cursor) = presentation_cursor {
+        return emit_presentation_changed(inner, cursor).await;
     }
     emit_item_added(
         inner,

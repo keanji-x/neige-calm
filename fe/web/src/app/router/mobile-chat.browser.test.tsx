@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
@@ -88,11 +89,11 @@ it('keeps draft words across closing and sends the same Planner before reopening
   let answered = false;
   const { requests, client } = renderDailyFixture({ emptyWorkspace: true, reply: (request) => {
     if (request.path.endsWith('/planner/input')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime' });
-    if (request.path.includes('/harness/items') && answered) return ok([{
+    if (request.path.includes('/harness/items') && answered) return ok(historicalConversationPage(conversationCardId(request.path), [{
       id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: 'Your plan is ready.' } }), created_at_ms: 1,
-    }]);
+    }], null));
     return undefined;
   } });
   const entry = page.getByRole('textbox', { name: 'Chat message', exact: true });
@@ -205,11 +206,11 @@ it('keeps the fixed mobile editor above a reduced visible viewport without losin
 
 it('keeps the message viewport above a growing multiline composer', async () => {
   await page.viewport(390, 844);
-  renderDailyFixture({ emptyWorkspace: true, reply: request => request.path.includes('/harness/items') ? ok([{
+  renderDailyFixture({ emptyWorkspace: true, reply: request => request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), [{
     id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 'thread',
     turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ item: { text: `${'A previous reply.\n\n'.repeat(80)}Final line remains visible.` } }), created_at_ms: 1,
-  }]) : undefined });
+  }], null)) : undefined });
   await page.getByRole('textbox', { name: 'Chat message', exact: true }).click();
   const field = page.getByRole('combobox', { name: 'Message', exact: true });
   await expect.element(field).toBeEnabled();
@@ -303,7 +304,7 @@ it('keeps Area editor actions inside the visible viewport when its keyboard open
 it('interrupts the current working conversation from its portalled mobile editor without dismissing it', async () => {
   await page.viewport(390, 844);
   const { requests } = renderDailyFixture({ emptyWorkspace: true, reply: request => {
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null });
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, 'idle'));
     if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', stopped: true });
     return undefined;
   } });

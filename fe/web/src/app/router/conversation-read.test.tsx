@@ -38,7 +38,7 @@ it.each([true, false])('does not claim Running after a failed run read (initial 
   const after = fixture.requests.slice(before);
   expect(after.every(request => request.method === 'GET')).toBe(true);
   expect(after.filter(request => !request.path.endsWith('/harness/live')).map(request => request.path))
-    .toEqual(['/api/cards/daily-planner/planner/run']);
+    .toEqual(['/api/cards/daily-planner/planner/run?contract=conversation_v1']);
 });
 
 it('retries history independently and retains the last readable transcript', async () => {

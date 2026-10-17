@@ -162,6 +162,10 @@ function policies(): PolicyMap {
   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
+  'harness.presentation.changed': plan((event) => result([
+    ['harness-items',event.data.card_id],['planner-run',event.data.card_id],
+    ...conversationLists(event.data.track_id),
+  ])),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
   /* `harness-items` is here because the phase event IS the delivery signal for the per-turn
    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */

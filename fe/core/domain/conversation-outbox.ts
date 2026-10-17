@@ -84,6 +84,8 @@ export function matchSendOps(
   const matched = new Map<string, string>();
   for (const op of [...ops].sort((left, right) => left.echo.atMs - right.echo.atMs)) {
     const match = available.findIndex((turn) => {
+      if (turn.human !== undefined) return op.echo.entryId === turn.human.messageId
+        && op.echo.authorUserId === turn.human.userId;
       const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
       return sequence > op.echo.serverHighWaterBefore && reconcileUserEchoes([turn], [op.echo]).length === 0;
     });
@@ -235,4 +237,14 @@ export function withConfirmedSends(
  */
 export function queueTombstoneHides(wroteAt: number | undefined, rev: number): boolean {
   return wroteAt !== undefined && rev <= wroteAt;
+}
+
+/** Identity-only canonical tombstones retire an exact acknowledged input without reviving its body. */
+export function outboxFactsWithRemovedInputs(
+  input: Parameters<typeof outboxFacts>[0], removedMessageIds: ReadonlySet<string>,
+): OutboxFacts {
+  const removed = input.ops.filter(op => op.echo.entryId !== null && removedMessageIds.has(op.echo.entryId));
+  const remaining = input.ops.filter(op => !removed.includes(op));
+  const facts = outboxFacts({ ...input, ops:remaining });
+  return { ...facts, retire:[...facts.retire,...removed.map(op => ({ key:op.key,row:null }))] };
 }

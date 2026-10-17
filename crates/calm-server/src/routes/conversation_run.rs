@@ -1,0 +1,205 @@
+//! Adapt the existing current-state read to the persisted canonical header.
+use super::conversation_read::{ReadScope, current_frame};
+use super::planner_cards::GetPlannerRunResponse;
+use crate::auth::Principal;
+use crate::error::{CalmError, Result};
+use crate::extract::Json;
+use crate::harness::token_usage::TokenUsageExt;
+use crate::state::RouteState;
+use axum::response::{IntoResponse, Response};
+use calm_types::conversation::{InputDeliveryFact, PendingInput};
+use calm_types::conversation_display::*;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+
+#[derive(Deserialize, IntoParams, ToSchema)]
+pub struct RunReadQuery {
+    pub contract: Option<ConversationReadContract>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum PlannerRunReadResponse {
+    Historical(GetPlannerRunResponse),
+    Conversation(ConversationRunResponse),
+}
+
+// Negotiated responses extend the old view, so both schemas may match: anyOf,
+// not oneOf. Refer to the actual view schemas instead of copying their fields.
+impl utoipa::PartialSchema for PlannerRunReadResponse {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::AnyOfBuilder::new()
+            .item(GetPlannerRunResponse::schema())
+            .item(ConversationRunResponse::schema())
+            .into()
+    }
+}
+impl ToSchema for PlannerRunReadResponse {
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        GetPlannerRunResponse::schemas(schemas);
+        ConversationRunResponse::schemas(schemas);
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ConversationRunResponse {
+    #[serde(flatten)]
+    pub run: GetPlannerRunResponse,
+    pub input_contract: ConversationInputContract,
+    /// Actual current worker row state. Canonical is always present; null means no current historical runtime.
+    #[schema(required = true, nullable = true)]
+    pub runtime_state: Option<calm_types::worker::WorkerSessionState>,
+    pub pending_messages: Vec<ConversationPendingMessage>,
+    #[schema(required = true, nullable = true)]
+    pub active_input: Option<ConversationActiveInput>,
+    #[schema(required = true, nullable = true)]
+    pub native_turn_id: Option<String>,
+}
+
+pub(super) async fn read(
+    s: RouteState,
+    principal: Principal,
+    id: String,
+    query: RunReadQuery,
+) -> Result<Response> {
+    let scope = ReadScope::check(s.repo.as_ref(), &id, &principal).await?;
+    let card = super::cards::harness_card(&s, &id).await?;
+    if card.track_id.as_str() != scope.track {
+        return Err(CalmError::Forbidden("conversation moved".into()));
+    }
+    let role = s
+        .write
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let frame = current_frame(s.repo.as_ref(), &id).await?;
+    let response = if let Some(snapshot) = frame.canonical {
+        if query.contract.is_none() {
+            return Err(CalmError::Conflict(
+                "canonical conversation requires contract=conversation_v1".into(),
+            ));
+        }
+        let runtime = frame.runtime.as_ref().ok_or_else(|| {
+            CalmError::Internal("canonical conversation has no current runtime fact".into())
+        })?;
+        let pending_messages = snapshot
+            .canonical_inputs
+            .pending
+            .iter()
+            .map(|input| match input {
+                PendingInput::Human {
+                    message,
+                    queue_position,
+                    queued_at_ms,
+                    ..
+                } => Ok(ConversationPendingMessage {
+                    message_id: message.message_id.as_str().into(),
+                    revision: message.revision.get(),
+                    queue_position: *queue_position,
+                    queued_at_ms: *queued_at_ms,
+                }),
+                _ => Err(CalmError::Conflict(
+                    "this input source requires its owning display reader".into(),
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let header = snapshot.header;
+        let active_input = ConversationActiveInput::from_checkpoint(&snapshot.canonical_inputs);
+        let selection = crate::planner_model::CardModelSelection::from_payload(&card.payload)
+            .unwrap_or_default();
+        let unknown = snapshot
+            .canonical_inputs
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                snapshot.canonical_inputs.attempts.iter().any(|a| {
+                    active.submission_ids.contains(&a.attempt.submission_id)
+                        && matches!(
+                            a.delivery,
+                            InputDeliveryFact::CrossingUnknown | InputDeliveryFact::Unknown
+                        )
+                })
+            });
+        let usage = if header.context_usage_invalidated {
+            None
+        } else {
+            header
+                .token_usage
+                .as_ref()
+                .map(|usage| super::planner_cards::PlannerRunTokenUsage {
+                    used_tokens: usage.used_tokens,
+                    context_window: usage.context_window,
+                    percent: usage.percent(),
+                    at_ms: usage.at_ms,
+                })
+        };
+        let blocked_reason = if runtime.state.is_terminal() {
+            Some(if runtime.state == calm_types::worker::WorkerSessionState::Failed {
+                "Execution is held after this session failed. Messages remain saved."
+            } else {
+                "Execution is held because this session is no longer active. Messages remain saved."
+            }.into())
+        } else {
+            header.wedged_reason.clone().or_else(|| unknown.then(||
+                "Delivery could not be confirmed. This message is held to avoid sending it twice.".into()))
+                .or_else(|| (!pending_messages.is_empty() && s.harness.get(&runtime.id).is_none())
+                    .then(|| "Message saved. Execution has not started.".into()))
+        };
+        Json(PlannerRunReadResponse::Conversation(
+            ConversationRunResponse {
+                native_turn_id: (header.phase == crate::harness::HarnessPhaseTag::TurnRunning)
+                    .then(|| header.last_turn_id.clone())
+                    .flatten(),
+                run: GetPlannerRunResponse {
+                    card_id: card.id.clone(),
+                    worker_session_id: Some(runtime.id.clone()),
+                    phase: Some(header.phase),
+                    model: selection.model,
+                    reasoning_effort: selection.reasoning_effort,
+                    permission_mode: crate::planner_permission_mode::card_has_permission_mode(
+                        &card, role,
+                    )
+                    .then(|| crate::planner_permission_mode::shown_for_planner(&card)),
+                    blocked_reason,
+                    token_usage: usage,
+                    compact_outcome: header.compact_outcome,
+                    context_usage_invalidated: header.context_usage_invalidated,
+                    pending: vec![],
+                    pending_overflow: 0,
+                    attachments_supported: false,
+                    manual_compact_supported: false,
+                    // Persisted native identity does not prove a monotonic running clock after reopen.
+                    running_turn: None,
+                },
+                input_contract: ConversationInputContract::Canonical,
+                runtime_state: Some(runtime.state),
+                pending_messages,
+                active_input,
+            },
+        ))
+        .into_response()
+    } else {
+        let Json(run) = super::planner_cards::historical_planner_run(s.clone(), id).await?;
+        if query.contract.is_some() {
+            Json(PlannerRunReadResponse::Conversation(
+                ConversationRunResponse {
+                    native_turn_id: run.running_turn.as_ref().map(|turn| turn.turn_id.clone()),
+                    run,
+                    input_contract: ConversationInputContract::Historical,
+                    runtime_state: frame.runtime.map(|runtime| runtime.state),
+                    pending_messages: vec![],
+                    active_input: None,
+                },
+            ))
+            .into_response()
+        } else {
+            Json(PlannerRunReadResponse::Historical(run)).into_response()
+        }
+    };
+    scope.publish(s.repo.as_ref(), &principal).await?;
+    Ok(response)
+}

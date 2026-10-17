@@ -321,3 +321,6 @@ BEFORE DELETE ON conversation_human_track_creations
 BEGIN
     SELECT RAISE(ABORT, 'Original Human creation keys cannot be reused');
 END;
+
+-- New display event kind belongs to this unreleased canonical contract only.
+UPDATE events SET event_version = 30 WHERE kind = 'harness.presentation.changed';

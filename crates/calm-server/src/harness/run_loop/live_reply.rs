@@ -120,6 +120,7 @@ async fn store_partial(
         "completedAtMs": crate::model::now_ms(),
         "_partial": true,
     });
+    let mut presentation_cursor = None;
     let row_id = if inner.inputs.canonical().is_some() {
         let Some(row) =
             super::canonical::persist_native_item(inner, thread_id, Some(turn_id), method, &params)
@@ -129,7 +130,8 @@ async fn store_partial(
             live.item_stored(&reply.item_id);
             return Ok(());
         };
-        row
+        presentation_cursor = Some(row.cursor);
+        row.raw_row_id
     } else {
         insert_item_row(
             inner,
@@ -144,6 +146,9 @@ async fn store_partial(
         .await?
     };
     live.item_stored(&reply.item_id);
+    if let Some(cursor) = presentation_cursor {
+        return super::emit_presentation_changed(inner, cursor).await;
+    }
     emit_item_added(
         inner,
         row_id,

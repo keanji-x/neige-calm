@@ -8,10 +8,10 @@ mod claim_storage;
 mod claim_validation;
 mod claims;
 mod creation;
-mod messages;
+pub(super) mod messages;
 mod pending_edit;
 mod plans;
-mod presentation;
+pub(super) mod presentation;
 mod release;
 mod runtime_frame;
 
@@ -35,7 +35,9 @@ pub use plans::{
     erase_submission_render_payloads_tx, human_plan_for_pending_prefix_tx,
     original_input_execution_tx, submission_identity_tx, submission_plan_tx,
 };
-pub use presentation::{PresentationSource, allocate_presentation_tx, observe_native_item_tx};
+pub use presentation::{
+    PresentationSource, StoredNativePresentation, allocate_presentation_tx, observe_native_item_tx,
+};
 pub use release::release_submission_tx;
 pub use runtime_frame::{
     RuntimeExecutionFence, RuntimeFrameAfterWrite, complete_input_execution_tx,

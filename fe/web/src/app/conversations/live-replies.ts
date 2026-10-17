@@ -1,8 +1,8 @@
-import { hashKey, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { hashKey, notifyManager, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
-import type { HarnessLiveReplies, HarnessPhaseTag } from '../../../../core/api/generated/wire.ts';
+import type { ConversationCursor, ConversationPage, HarnessLiveReplies, HarnessPhaseTag } from '../../../../core/api/generated/wire.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ConversationTurn } from '../../../../core/domain/conversation.ts';
 import {
@@ -16,12 +16,12 @@ import { useState } from '../../ui/state/public.ts';
 
 const NO_COPIES: readonly LiveReplyCopy[] = Object.freeze([]);
 
-type HeldCopies = Readonly<{ cardId: string; read: number; copies: readonly LiveReplyCopy[]; lastReply: HarnessLiveReplies | null }>;
+type HeldCopies = Readonly<{ cardId: string; read: number; copies: readonly LiveReplyCopy[]; lastReply: HarnessLiveReplies | import('../../../../core/api/generated/wire.ts').ConversationLiveReplies | null }>;
 
 /** A page of transcript rows, as far as numbering its read needs it. */
-type TranscriptPage = readonly LiveReplyTranscriptRow[];
-type TranscriptResult = InfiniteData<TranscriptPage, number>;
-type TranscriptQueryOptions = Readonly<{ queryFn: (context: { pageParam: number }) => Promise<TranscriptPage> }>;
+type TranscriptPage = ConversationPage;
+type TranscriptResult = InfiniteData<TranscriptPage, ConversationCursor | null>;
+type TranscriptQueryOptions = Readonly<{ queryFn: (context: { pageParam: ConversationCursor | null; signal: AbortSignal }) => Promise<TranscriptPage> }>;
 
 /**
  * The order the transcript's reads started in (#1923 S2, rule b). Each page read is numbered as it
@@ -57,7 +57,8 @@ function createTranscriptReads(nextRead: () => number): TranscriptReads {
  * layer's recovery gating applies as it does to every read. The copies are held per card, so a
  * switch never shows one card's text in another.
  */
-export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase, runningTurnId, nextRead, transcriptKey, transcriptReads, items }: {
+export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase, runningTurnId, nextRead, transcriptKey, transcriptReads, items, canonical }: {
+  canonical:boolean;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   cardId: string;
@@ -76,8 +77,8 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
 }): readonly ConversationTurn[] {
   const client = useQueryClient();
   const streaming = enabled && replyMayStream(phase);
-  const scope = useStreamReadScope(cardId, streaming, phase, runningTurnId, nextRead);
-  const liveOptions = harnessLiveQueryOptions(transport, cardId, unauthorized);
+  const scope = useStreamReadScope(cardId, streaming, phase, runningTurnId, nextRead,canonical);
+  const liveOptions = harnessLiveQueryOptions(transport, cardId, unauthorized,canonical);
   const live = useQuery({
     ...liveOptions,
     // A delayed initial read cannot hold up or answer a later streaming visit.
@@ -110,34 +111,40 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
     [client, transcriptKey, transcriptReads],
   );
   const transcriptHash = useMemo(() => hashKey(transcriptKey), [transcriptKey]);
-  const subscribeToQueries = useCallback((notify: () => void) => client.getQueryCache().subscribe((event) => {
-    if (event.query.queryHash === transcriptHash) notify();
-  }), [client, transcriptHash]);
+  const subscribeToQueries = useCallback((notify: () => void) => {
+    // Query creation/removal can notify while another view is rendering. Match
+    // React Query's own subscription schedule; snapshots still read the same cache.
+    const scheduled = notifyManager.batchCalls(notify);
+    return client.getQueryCache().subscribe((event) => {
+      if (event.query.queryHash === transcriptHash) scheduled();
+    });
+  }, [client, transcriptHash]);
   const transcriptStart = useSyncExternalStore(subscribeToQueries, readTranscriptStart);
 
   // Confirmation of the first identity keeps matching text; a different identity
   // retires the previous turn immediately, even if an idle phase was not observed.
   useEffect(() => {
-    if (scope.turnId !== null) apply({ kind: 'active-turn', turnId: scope.turnId });
-  }, [apply, scope.turnId]);
+    if (!canonical && scope.turnId !== null) apply({ kind: 'active-turn', turnId: scope.turnId });
+  }, [apply, scope.turnId,canonical]);
   const reply = live.data;
   // Consume each cache value before committing children, instead of committing
   // the old body once and then the grown body in a passive effect. The cursor
   // survives transcript retirement so a completed item is not re-added forever.
   if (reply !== undefined && scope.streaming && (held.cardId !== cardId || held.read !== scope.read || held.lastReply !== reply)) {
     setHeld({ cardId, read: scope.read, lastReply: reply,
-      copies: reconcileLiveReplies(copies, { kind: 'poll', reply, atMs: Date.now(), activeTurnId: scope.turnId }) });
+      copies: reconcileLiveReplies(copies, 'contract' in reply ? {kind:'native-poll',reply,atMs:Date.now()}
+        : { kind: 'poll', reply, atMs: Date.now(), activeTurnId: scope.turnId }) });
   }
 
   /* Drawn from the copies the current transcript does not retire, so a stored row and its live
      copy never share a frame; the effect below forgets the retired ones. */
   const visible = useMemo(
     () => {
-      const current = scope.turnId === null ? copies
+      const current = canonical || scope.turnId === null ? copies
         : reconcileLiveReplies(copies, { kind: 'active-turn', turnId: scope.turnId });
       return reconcileLiveReplies(current, { kind: 'transcript', items, readStart: transcriptStart });
     },
-    [copies, items, transcriptStart, scope.turnId],
+    [copies, items, transcriptStart, scope.turnId,canonical],
   );
 
   /* Only a read started after this point stands for the phase, however late an earlier one lands.
@@ -181,14 +188,14 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
  * non-streaming phase was observed. Query keys bind separately to confirmed ids. */
 function useStreamReadScope(
   cardId: string, streaming: boolean, phase: HarnessPhaseTag | null,
-  runningTurnId: string | null, nextRead: () => number,
+  runningTurnId: string | null, nextRead: () => number, canonical:boolean,
 ) {
-  const [scope, setScope] = useState(() => ({ cardId, streaming, phase, turnId: runningTurnId, read: nextRead() }));
-  const starts = scope.cardId !== cardId || (streaming && !scope.streaming)
+  const [scope, setScope] = useState(() => ({ cardId, streaming, phase, turnId: runningTurnId, read: nextRead(),canonical }));
+  const starts = scope.cardId !== cardId || scope.canonical !== canonical || (streaming && !scope.streaming)
     || (streaming && phase === 'issuing_turn' && scope.phase !== 'issuing_turn');
   const turnId = starts ? runningTurnId : runningTurnId ?? scope.turnId;
   if (starts || scope.streaming !== streaming || scope.phase !== phase || scope.turnId !== turnId) {
-    setScope({ cardId, streaming, phase, turnId, read: starts ? nextRead() : scope.read });
+    setScope({ cardId, streaming, phase, turnId, read: starts ? nextRead() : scope.read,canonical });
   }
   return scope;
 }
