@@ -737,3 +737,6 @@ async fn repeated_archive_stays_idempotent_with_buffered_observations() {
     );
     assert_eq!(handle.pending_len_for_test().await, 1);
 }
+
+#[path = "conversation_archive_start.rs"]
+mod start;

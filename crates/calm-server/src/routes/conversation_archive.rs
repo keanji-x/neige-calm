@@ -57,7 +57,7 @@ pub(crate) async fn set_conversation_archive(
     )?;
     crate::track_access::require_detail_access(s.repo.as_ref(), &track_id, &principal).await?;
     let id = crate::ids::CardId::from(card_id.clone());
-    let _card = CardStartFence::lock(
+    let card_fence = CardStartFence::lock(
         &s.planner_recovery_locks,
         &s.repo,
         &s.operation_runtime,
@@ -84,6 +84,9 @@ pub(crate) async fn set_conversation_archive(
         ));
     }
 
+    if body.archived {
+        card_fence.require_settled().await?;
+    }
     let unchanged = s.repo.conversation_archived_at(&card_id).await?.is_some() == body.archived;
     let runtime = if body.archived && !unchanged {
         s.repo

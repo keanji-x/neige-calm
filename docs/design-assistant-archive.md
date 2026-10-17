@@ -127,3 +127,85 @@ queue motion, fresh-send visibility and persistent Track view state in addition
 to desktop, coarse-pointer and 390px archive/restore. The frozen kernel gate
 replays its declared targets; this does not substitute for independent final L2
 reviews or precise-head PR CI, which remain Planner-owned.
+
+
+## Persisted start admission (PR #2790 final review)
+
+An HTTP-owned CardStartFence is not the lifetime of a start operation. Submission
+commits Pending before waiting for the operation drive mutex. Cancelling that
+request drops its fence but leaves durable work. The old archive path saw an idle
+predecessor and returned 204; a later production drive replaced its session and
+native thread, and reset also cleared the transcript. Real HTTP reset and restart
+regressions reproduce this schedule before the fix.
+
+The start submission owner, CardStartFence, now exposes settled-start admission.
+Archive holds that card fence and the existing operation drive mutex, then asks
+this owner before writing metadata. It reuses the operation repository's boot
+recovery inventory and the start wire decoder, rather than copying operation SQL,
+phase lists or payload field spellings into the route. The existing first-send
+CardConversation read intentionally prioritizes ThreadToPreserve over StartInFlight;
+it cannot answer whether an existing conversation also has a pending reset, so
+its return contract stays unchanged. Any same-card resumable
+start, including a committed preparation or compensation, refuses archive with
+409 and no metadata, card timestamp or event write. Other cards' starts do not
+block it. The card fence prevents a new submission until archive commits; the
+drive mutex serializes normal provider preparation, spawn and compensation.
+Boot recovery runs before serving HTTP and uses the same durable inventory;
+terminal/stuck operations cannot resume effects. Start has no AwaitingRetry
+phase. Successful completion or compensation permits a later idle archive.
+No generic driver or kernel policy depends on Assistant identity.
+
+The regressions cancel real HTTP after Pending is stored. A second schedule drives
+the same operation through real prepare, cancels at adapter interaction entry,
+and invokes boot recovery after the refused PATCH. They check reset and restart,
+unchanged pre-PATCH runtime/history on refusal, no archive event, operation convergence,
+and successful later archive followed by a harmless production drive. Existing
+create/first-send/replay, restart compensation and preserving-recovery scopes
+remain the owners of those contracts. The new admission costs one existing
+unfinished-operation inventory read per archive assignment, independent of the
+number of providers or test cases. Future start phase changes update their owner
+and its recovery contract, with no extra archive phase roster.
+
+CI run 39049420963 attempt 1 on old head 8b3caf086 also exposed stale FE mutation
+evidence: s2b-conversation-row-from-session-state now reddens four archive/restore
+renderer cases. Those fixtures retain turn_pending without a kernel activity
+verdict; the mutation adds working to their exact accessible row names in both
+renderers. Their independent assertions stay intact. Only the existing mutation's
+expected_red and rationale expand; selection and strict complete-red-set judgment
+remain unchanged. The architecture whole-file focused recheck passed 75 tests;
+its reported 5s CI timeout is not evidence for changing the timeout. New-head CI
+and fresh independent L2 reviews remain required.
+
+Local verification for this correction used the real api_suite archive scope:
+`env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test api_suite conversation_archive --no-tests fail --no-fail-fast --test-threads 8`.
+The original code failed both Pending reset/restart cases after PATCH 204. The
+fixed scope passed 21/21. Disabling only the start owner's settled rejection
+predicted exactly those two reds across all 21 tests; the actual complete red
+set matched, including an empty reset transcript and a replaced restart runtime.
+Byte restoration passed 21/21. Prepared cancellation cases stayed green under
+that mutation because their PendingThreadStart snapshot already refuses archive;
+they additionally pin real recovery convergence. Previous, unchanged compact,
+replace, durable-input and authority mutations were not repeated.
+
+Focused library owner scopes selected 10 start-adapter, 3 start-read contract and
+14 claim-transaction tests. Harness scopes selected 52 tests covering real start,
+first-send/create ownership, boot/provider recovery, restart/compensation,
+repoint/bootstrap and the start-fence invariant. The only initial owner failure
+was the existing source invariant's count for the new read-only kind reference;
+its existing entry now records that reference, and the focused recheck passed.
+No test inventory, generic lifecycle policy or judge was added. Shutdown names
+only the superseded predecessor after start completes; it neither mints a native
+context nor clears transcript. Worker/PTY restart adapters are not Assistant
+start entry points. Formal reviews and exact-head CI still own final acceptance.
+
+The affected FE evidence was run with the existing runner:
+`cd fe && npm run test:mutation:run -- --shard 81/104 --test-scope witness --report /tmp/archive-v6-fe-mutation.json`.
+This selects one affected entry from the 104-entry manifest and runs its complete
+three-file witness scope. Expected and actual red sets both contain exactly 12
+test IDs; the unchanged judge reports no errors and the runner restores its
+production target. A subsequent `npm test -- --maxWorkers=2 core/view/conversation-list.test.ts web/src/features/chat/list/public.test.tsx web/src/app/router/track-conversation.test.tsx`
+passes all 200 tests. The first gate's text failures were corrected by using the
+existing public frozen wire-key constant in the new test query and splitting
+that SQL literal; neither ratchet baseline changed. That mechanical query change
+passed the complete 21-test archive scope again and leaves the production
+mutation and its load-bearing assertions unchanged.

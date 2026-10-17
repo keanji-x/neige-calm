@@ -1476,14 +1476,18 @@
       "conversation rows read activity.cards, not session state shows unread from the receipt set, below every kernel verdict",
       "the injected planner row reads activity.cards and last_turn_completed_ms",
       "distinguishes Planner and Assistant by their declared role even when their names are swapped",
-      "keeps questions, failures and unread distinct from idle session state"
+      "keeps questions, failures and unread distinct from idle session state",
+      "archives through either renderer and preserves failed rows (context=false)",
+      "archives through either renderer and preserves failed rows (context=true)",
+      "keeps archived history accessible and restores the original id (context=false)",
+      "keeps archived history accessible and restores the original id (context=true)"
     ],
     "selection_paths": [
       "web/src/app/router/track-conversation.test.tsx",
       "web/src/features/chat/list/public.test.tsx",
       "core/view/conversation-list.test.ts"
     ],
-    "why_more_than_one": "The shared core fold, ordinary/contextual ChatList cases and the Track-route Planner row reject session-state activity inference. The role-swap case also detects a spurious working suffix on otherwise quiet rows."
+    "why_more_than_one": "The shared core fold, ordinary/contextual ChatList cases and the Track-route Planner row reject session-state activity inference. The role-swap case also detects a spurious working suffix on otherwise quiet rows. The four archive/restore renderer cases also require the quiet row's exact accessible name. Their fixture deliberately retains turn_pending with no activity verdict; inferring working from that stale session state adds a working suffix in both renderers, so all four independently reject the same mutation."
   },
   {
     "mutation_id": "s2b-planner-row-from-runtime-status",
