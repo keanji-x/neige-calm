@@ -384,6 +384,8 @@ describe('TrackPage task inventory', () => {
         runtime: { worker_session_id: 'ws-stale', kind: 'codex', status: 'running' } }),
       card({ id: 'asking', title: 'Asking worker', kind: 'claude',
         runtime: { worker_session_id: 'ws-asking', kind: 'claude', status: 'running' } }),
+      card({ id: 'independent', title: 'Independent stale resource', kind: 'terminal',
+        runtime: { worker_session_id: 'ws-independent', kind: 'terminal', status: 'running' } }),
     ];
     const tasks = [
       running('impl', 'running', 'busy'),
@@ -407,13 +409,15 @@ describe('TrackPage task inventory', () => {
     ]));
     expect(indicators).toEqual({
       'tool:asking': 'attention',
-      /* `runtime.status: 'running'` with no verdict: the word, no spinner. */
+      /* An independent running resource cannot inherit a verdict from its session. */
+      'tool:independent': null,
       /* Tasks: by worker card — none for a task without one, none for a
          running execution whose card the kernel did not list. */
       'task:b-impl': 'working', 'task:b-doc': null, 'task:b-gate': null,
     });
     expect(statuses).toEqual({
-      'tool:asking': 'running', 'task:b-impl': 'running', 'task:b-doc': 'running', 'task:b-gate': 'running',
+      'tool:asking': 'running', 'tool:independent': 'running',
+      'task:b-impl': 'running', 'task:b-doc': 'running', 'task:b-gate': 'running',
     });
   });
 

@@ -1466,21 +1466,24 @@
     "defends": [
       "oracle:INV-APP-118"
     ],
-    "target": "web/src/features/chat/list/public.tsx",
-    "patch": "diff --git a/web/src/features/chat/list/public.tsx b/web/src/features/chat/list/public.tsx\nindex e30833b..3bc4c0a 100644\n--- a/web/src/features/chat/list/public.tsx\n+++ b/web/src/features/chat/list/public.tsx\n@@ -45,7 +45,9 @@ export function ChatList({\n         const echo = local !== null && local.id === conversation.id ? local : null;\n         const unread = unreadIds?.has(conversation.id) ?? false;\n         const activity = activityStateOf({\n-          working: verdict === 'working' || (echo?.working ?? false),\n+          working: verdict === 'working' || (echo?.working ?? false)\n+            // MUT-1722-S2B-1: the row spins on the server's session reading again\n+            || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending',\n           attention: echo?.stalled ? 'failed' : attentionOfCard(verdict),\n           unread,\n         });\n",
+    "target": "core/view/conversation-list.ts",
+    "patch": "diff --git a/core/view/conversation-list.ts b/core/view/conversation-list.ts\n--- a/core/view/conversation-list.ts\n+++ b/core/view/conversation-list.ts\n@@ -22,7 +22,9 @@\n     const echo = input.local?.id === conversation.id ? input.local : null;\n     const unread = input.unreadIds?.has(conversation.id) ?? false;\n     const cardAttention = attentionOfCard(verdict);\n-    const activity = activityStateOf({ working: verdict === 'working' || (echo?.working ?? false),\n+    const activity = activityStateOf({ working: verdict === 'working' || (echo?.working ?? false)\n+      // MUT-1722-S2B-1: the shared fold spins on the server's session reading again\n+      || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending',\n       attention: echo?.stalled || cardAttention === 'failed' ? 'failed'\n         : input.awaitingInputIds?.has(conversation.id) ? 'input' : cardAttention, unread });\n     return { conversation, name: conversationName(conversation), activity, unread };\n",
     "expected_red": [
       "conversation rows read activity.cards, not session state",
       "conversation rows read activity.cards, not session state keeps only the open row’s declared local echoes: the sender’s send and the drawer’s wedge",
       "conversation rows read activity.cards, not session state reads another card’s verdict as nothing about this row",
       "conversation rows read activity.cards, not session state shows nothing for a turn_pending row the kernel lists no verdict for",
       "conversation rows read activity.cards, not session state shows unread from the receipt set, below every kernel verdict",
-      "the injected planner row reads activity.cards and last_turn_completed_ms"
+      "the injected planner row reads activity.cards and last_turn_completed_ms",
+      "distinguishes Planner and Assistant by their declared role even when their names are swapped",
+      "keeps questions, failures and unread distinct from idle session state"
     ],
     "selection_paths": [
       "web/src/app/router/track-conversation.test.tsx",
-      "web/src/features/chat/list/public.test.tsx"
+      "web/src/features/chat/list/public.test.tsx",
+      "core/view/conversation-list.test.ts"
     ],
-    "why_more_than_one": "Shared ChatList tests and the Track-route Planner row reject session-state activity inference; the unified Today uses that same Track composition."
+    "why_more_than_one": "The shared core fold, ordinary/contextual ChatList cases and the Track-route Planner row reject session-state activity inference. The role-swap case also detects a spurious working suffix on otherwise quiet rows."
   },
   {
     "mutation_id": "s2b-planner-row-from-runtime-status",
@@ -1537,14 +1540,14 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/view/track-page.ts",
-    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -55,7 +55,8 @@\n     kind: title !== null || card.kind === 'terminal' || agentProviderSchema.safeParse(card.kind).success ? card.kind : null,\n     badges,\n     status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}`, detail: null }),\n-    activity: rowActivity(activity, card.id),\n+    // MUT-1722-S2B-4: a card row spins on its runtime status again\n+    activity: rowActivity(activity, card.id) ?? (card.runtime?.status === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
+    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -92,7 +92,8 @@\n     kind: title !== null || card.kind === 'terminal' || agentProviderSchema.safeParse(card.kind).success ? card.kind : null,\n     badges,\n     status,\n-    activity: rowActivity(activity, card.id),\n+    // MUT-1722-S2B-4: a card row spins on its runtime status again\n+    activity: rowActivity(activity, card.id) ?? (card.runtime?.status === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
     "expected_red": [
       "TrackPage task inventory card and task rows paint activity.cards, not runtime status"
     ],
     "selection_paths": [
       "web/src/features/track/page/public.test.tsx"
     ],
-    "why_more_than_one": "The derivation is shared by both painters, but only the page case that puts a runtime.status of running beside an unlisted card sees the fallback; the projection suites compare the derivation to itself and stay green by construction."
+    "why_more_than_one": "The derivation is shared by both painters; the page invariant includes an independent running resource with no kernel verdict so task-worker absorption cannot hide the mutation. Only that invariant reaches this fallback; projection suites compare the derivation to itself."
   },
   {
     "mutation_id": "s2b-task-row-from-token",
