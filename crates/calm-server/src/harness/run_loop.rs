@@ -2660,7 +2660,9 @@ async fn on_notification(
             live.delta(&turn_id, &item_id, &delta);
             return Ok(());
         }
-        PlannerEventKind::Ignored => {}
+        // The provider declares these frames have no harness state to change. In particular,
+        // high-frequency reasoning deltas must not contend for the database's writer lock.
+        PlannerEventKind::Ignored => return Ok(()),
     }
     persist_snapshot(inner).await
 }
@@ -4693,6 +4695,8 @@ mod turn_permission;
 mod checkpoint_tests;
 #[cfg(test)]
 mod completed_commit_tests;
+#[cfg(test)]
+mod notification_write_tests;
 
 #[cfg(test)]
 mod report_edit_replay_tests;

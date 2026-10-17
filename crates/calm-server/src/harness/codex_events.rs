@@ -1,7 +1,7 @@
 //! The Codex arm's [`PlannerEvent`]s: the app-server's daemon-wide notifications, mapped one for
 //! one (#1981 S4). Every notification maps to an event, so the run loop's thread filter sees
-//! exactly the frames it saw before the mapping existed. The snapshot write sees them too, except
-//! a reply delta (#1923), which the run loop keeps in memory only.
+//! exactly the frames it saw before the mapping existed. The run loop persists semantic state
+//! changes; ignored frames do not write storage, and reply deltas (#1923) stay in memory only.
 
 use calm_types::event::AskQuestion;
 use serde::Deserialize;
