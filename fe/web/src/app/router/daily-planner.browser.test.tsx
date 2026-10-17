@@ -120,7 +120,9 @@ it.each(['light', 'dark'])('uses the sidebar text roles and surfaces in %s theme
   await expect.element(calendar).toBeVisible();
   document.documentElement.dataset.theme = theme;
   try {
-    const month = getComputedStyle(calendar.getByRole('heading', { name: 'October 2026' }).element());
+    const monthHeading = calendar.getByRole('heading', { name: 'October 2026' });
+    await expect.element(monthHeading).toBeVisible();
+    const month = getComputedStyle(monthHeading.element());
     const date = getComputedStyle(page.getByRole('heading', { name: 'Sun, Oct 4' }).element());
     expect(month.fontFamily).toBe(date.fontFamily);
     expect(month.fontSize).toBe('14px');
