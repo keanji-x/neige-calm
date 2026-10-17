@@ -416,7 +416,7 @@ mod tests {
                 protocol_version: 1,
             },
         };
-        let spec = ExecutionSpecification {
+        let specification = ExecutionSpecification {
             program: "/bin/true".into(),
             args: vec![],
             environment: vec![],
@@ -424,7 +424,7 @@ mod tests {
             replay_bytes: 1024,
         };
         let mut spawned = None;
-        let result = spawn_with_pin(&helper, &cwd, &spec, context, |pid| {
+        let result = spawn_with_pin(&helper, &cwd, &specification, context, |pid| {
             spawned = Some(pid);
             Err(std::io::Error::from_raw_os_error(libc::EMFILE).into())
         });
