@@ -30,8 +30,8 @@ it('renders both pills and both actions as one compact borderless row', async ()
     </Dialog>,
   );
   const template = screen.getByRole('button', { name: 'Default template: No template' });
-  const nameBox = screen.getByRole('textbox', { name: 'Name', exact: true }).getBoundingClientRect();
-  const dialogBox = screen.getByRole('dialog', { name: 'New area', exact: true }).getBoundingClientRect();
+  const nameBox = screen.getByRole('textbox', { name: 'Name' }).getBoundingClientRect();
+  const dialogBox = screen.getByRole('dialog', { name: 'New area' }).getBoundingClientRect();
   expect(nameBox.width).toBeGreaterThan(dialogBox.width * 0.8);
   const folder = screen.getByRole('button', { name: 'Default folder: Neige workspace' });
   for (const pill of [template, folder]) {
