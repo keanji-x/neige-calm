@@ -67,7 +67,7 @@ it('supports previous and next without invoking product actions', async () => {
 
 it('continues to lower priority unseen tours after ordinary steps are finished', async () => {
   await page.viewport(1000, 800); render(<Fixture />);
-  await page.getByRole('button', { name: '下一步', exact: true }).click();
+  await page.getByRole('button', { name: '略过这一步', exact: true }).click();
   await page.getByRole('button', { name: '知道了', exact: true }).click();
   await expect.element(page.getByRole('note', { name: 'Another visible area' })).toBeVisible();
 });
