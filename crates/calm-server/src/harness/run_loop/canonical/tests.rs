@@ -9,6 +9,7 @@ use calm_types::conversation::{HumanPayload, InputDeliveryFact};
 use serde_json::json;
 
 mod content_tests;
+mod control_tests;
 mod selection_authority_tests;
 
 struct Fixture {

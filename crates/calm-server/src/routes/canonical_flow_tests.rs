@@ -26,6 +26,8 @@ const FIRST_BODY: &str = "Preserve this accepted input through native activation
 const THREAD: &str = "http-canonical-original-thread";
 const TURN: &str = "http-canonical-original-turn";
 
+mod control_tests;
+
 struct Fixture {
     repo: Arc<SqlxRepo>,
     root: tempfile::TempDir,
