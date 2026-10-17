@@ -120,6 +120,37 @@ impl Fixture {
         (card, worker, serde_json::from_str(&snapshot).unwrap())
     }
 
+    async fn receipt(
+        &self,
+        area: &str,
+    ) -> crate::db::sqlite::conversation::HumanTrackCreationRecord {
+        let mut tx = self.repo.pool().begin().await.unwrap();
+        let receipt =
+            crate::db::sqlite::conversation::human_track_creation_get_tx(&mut tx, area, "first")
+                .await
+                .unwrap()
+                .expect("original committed creation receipt");
+        tx.rollback().await.unwrap();
+        receipt
+    }
+
+    async fn counts(&self, card: &str) -> (i64, i64, i64, i64, i64) {
+        sqlx::query_as(
+            "SELECT
+             (SELECT count(*) FROM conversation_messages WHERE card_id=?1),
+             (SELECT count(*) FROM conversation_message_revisions r
+              JOIN conversation_messages m ON m.id=r.message_id WHERE m.card_id=?1),
+             (SELECT count(*) FROM worker_sessions WHERE card_id=?1),
+             (SELECT count(*) FROM conversation_input_submissions WHERE card_id=?1),
+             (SELECT count(*) FROM harness_items
+              WHERE card_id=?1 AND item_uuid='original-native-reply')",
+        )
+        .bind(card)
+        .fetch_one(self.repo.pool())
+        .await
+        .unwrap()
+    }
+
     async fn wait_phase(&self, track: &str, phase: HarnessPhaseTag) -> CanonicalHarnessSnapshot {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -132,6 +163,34 @@ impl Fixture {
         })
         .await
         .expect("the real application must advance the original execution record")
+    }
+
+    async fn wait_for_stored_reply(&self, card: &str) {
+        // END may be consumed by tick before queued content observations. Wait
+        // for the independent persisted body/presentation fact as well.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let payload: Option<String> = sqlx::query_scalar(
+                    "SELECT i.params FROM conversation_presentations p
+                     JOIN harness_items i ON i.id=p.native_item_row_id
+                     WHERE p.card_id=?1 AND p.source_kind='native_item'
+                       AND p.erased_by_operation_id IS NULL
+                       AND i.item_uuid='original-native-reply'",
+                )
+                .bind(card)
+                .fetch_optional(self.repo.pool())
+                .await
+                .unwrap();
+                if let Some(payload) = payload {
+                    let item: Value = serde_json::from_str(&payload).unwrap();
+                    assert_eq!(item["item"]["text"], "Original execution result");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the actual native reply and its presentation must both be committed");
     }
 }
 
@@ -188,6 +247,16 @@ async fn original_input_flow(native_initially_available: bool) {
     let (card, worker, before) = fixture.carrier(track).await;
     let accepted_refs = before.canonical_inputs.pending.clone();
     assert_eq!(accepted_refs.len(), 1);
+    let area_id = area["id"].as_str().unwrap();
+    let original_receipt = fixture.receipt(area_id).await;
+    let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 { first_message, .. } =
+        &original_receipt.acknowledgement;
+    assert_eq!(
+        accepted_refs[0].input_ref(),
+        calm_types::conversation::AcceptedInputRef::Human {
+            message: first_message.clone()
+        }
+    );
     let (client, mut peer) = match native {
         Some(native) => native,
         None => {
@@ -227,6 +296,42 @@ async fn original_input_flow(native_initially_available: bool) {
         crossing.2.canonical_inputs.attempts[0].delivery,
         InputDeliveryFact::CrossingUnknown
     ));
+    let original_refs = accepted_refs
+        .iter()
+        .map(calm_types::conversation::PendingInput::input_ref)
+        .collect::<Vec<_>>();
+    let mut tx = fixture.repo.pool().begin().await.unwrap();
+    let submission = crate::db::sqlite::conversation::submission_plan_tx(
+        &mut tx,
+        &crossing.2.canonical_inputs.attempts[0]
+            .attempt
+            .submission_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(submission.plan.input_refs().unwrap(), original_refs);
+    let identity = crate::db::sqlite::conversation::submission_identity_tx(
+        &mut tx,
+        &crossing.2.canonical_inputs.attempts[0]
+            .attempt
+            .submission_id,
+    )
+    .await
+    .unwrap();
+    let active = crossing.2.canonical_inputs.active.as_ref().unwrap();
+    assert_eq!(identity.card_id, card);
+    assert_eq!(identity.ordinal, 0, "the original Initial submission");
+    assert_eq!(identity.logical_turn_id, active.logical_turn_id);
+    assert_eq!(
+        active.submission_ids,
+        vec![
+            crossing.2.canonical_inputs.attempts[0]
+                .attempt
+                .submission_id
+                .clone()
+        ]
+    );
+    tx.rollback().await.unwrap();
     send(
         &mut peer,
         json!({"id":turn_start["id"],"result":{"turn":{"id":TURN}}}),
@@ -267,17 +372,14 @@ async fn original_input_flow(native_initially_available: bool) {
         done.canonical_inputs.attempts,
         running.canonical_inputs.attempts
     );
-    let rows: (i64, i64, i64) = sqlx::query_as(
-        "SELECT
-         (SELECT count(*) FROM conversation_messages WHERE card_id=?1),
-         (SELECT count(*) FROM worker_sessions WHERE card_id=?1),
-         (SELECT count(*) FROM harness_items WHERE card_id=?1 AND item_uuid='original-native-reply')",
-    )
-    .bind(&card)
-    .fetch_one(fixture.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(rows, (1, 1, 1));
+    fixture.wait_for_stored_reply(&card).await;
+    let replay = post(&app, &cookie, "/api/tracks", "first", create.clone()).await;
+    assert_eq!(replay["id"], created["id"]);
+    assert_eq!(
+        fixture.carrier(track).await.2.canonical_inputs,
+        done.canonical_inputs
+    );
+    assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
 
     let harness = state
         .harness
@@ -307,8 +409,11 @@ async fn original_input_flow(native_initially_available: bool) {
     let after = fixture.carrier(track).await;
     assert_eq!((&after.0, &after.1), (&card, &worker));
     assert_eq!(after.2.canonical_inputs, done.canonical_inputs);
+    assert_eq!(after.2.header.phase, HarnessPhaseTag::TurnCompleted);
     assert_eq!(after.2.header.last_thread_id.as_deref(), Some(THREAD));
     assert_eq!(after.2.header.last_turn_id.as_deref(), Some(TURN));
+    assert_eq!(fixture.receipt(area_id).await, original_receipt);
+    assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
 }
 
 #[tokio::test]
