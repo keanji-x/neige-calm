@@ -1,3 +1,6 @@
+import { useEffect } from 'react';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
+import { PanelModule } from '../../ui/panel-card/public.tsx';
 import { Button } from '@astryxdesign/core/Button';
 import { Banner } from '@astryxdesign/core/Banner';
 import { List, ListItem } from '@astryxdesign/core/List';
@@ -7,8 +10,10 @@ import { ListText } from '../../ui/list-typography/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { calendarDate, calendarOccurrenceOn, type CalendarListedEntry, type CalendarEdit, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import { CalendarEditor, WeeklyEntryDetails } from './editor.tsx';
-import { TaskCalendar } from './calendar-view.tsx';
+import { loadCalendarGrid } from './grid-loader.ts';
 import styles from './calendar.module.css';
+
+type GridState = { kind: 'loading' } | { kind: 'failed' } | { kind: 'ready'; Grid: typeof import('./calendar-view.tsx').TaskCalendar };
 
 export type CalendarEntriesView = Readonly<{ entries: readonly CalendarListedEntry[] | undefined; loading: boolean; error: string | null }>;
 export type CalendarTasksProps = Readonly<{
@@ -20,16 +25,35 @@ export type CalendarTasksProps = Readonly<{
   onOpenTrack(id: string): void; onSave(write: CalendarEdit): Promise<void>;
 }>;
 export function CalendarTasks({ date, timezone, trackCountOn, month, day, enabled, pending, onDateChange, onWindowChange, onRetry, onSettings, onOpenTrack, onSave }: CalendarTasksProps) {
+  const [mode, setMode] = useState('week');
+  const [attempt, setAttempt] = useState(0);
+  const [grid, setGrid] = useState<GridState>({ kind: 'loading' });
+  useEffect(() => {
+    let cancelled = false;
+    setGrid({ kind: 'loading' });
+    void loadCalendarGrid().then(
+      module => { if (!cancelled) setGrid({ kind: 'ready', Grid: module.TaskCalendar }); },
+      () => { if (!cancelled) setGrid({ kind: 'failed' }); },
+    );
+    return () => { cancelled = true; };
+  }, [attempt, setGrid]);
   const [editing, setEditing] = useState<Readonly<{ entry: CalendarListedEntry | null; date: string }> | null>(null);
   const dateLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' }).format(new Date(`${date}T12:00:00Z`));
   const open = (entry: CalendarListedEntry) => setEditing({ entry, date });
   const schedule = editing?.entry?.task.schedule;
   const weekly = schedule?.kind === 'weekly' ? schedule : null;
   return <>
-    <TaskCalendar trackCountOn={trackCountOn} date={date} timezone={timezone} entries={enabled ? month.entries ?? [] : []}
-      onDateChange={onDateChange} onWindowChange={onWindowChange}>
+    <PanelModule title="Calendar" icon="calendar" className={styles.calendarModule} grow action={<span className={styles.viewControl}><SegmentedControl label="Calendar view" size="sm" value={mode}
+      onChange={setMode}>
+      <SegmentedControlItem value="week" label="Week" />
+      <SegmentedControlItem value="month" label="Month" />
+    </SegmentedControl></span>}><section className={styles.calendar} aria-label="Calendar tasks">
+    {grid.kind === 'ready' && <grid.Grid trackCountOn={trackCountOn} date={date} timezone={timezone} mode={mode} entries={enabled ? month.entries ?? [] : []}
+      onDateChange={onDateChange} onWindowChange={onWindowChange} />}
+    {grid.kind === 'failed' && <Banner status="error" title="The calendar grid could not load."
+      endContent={<Button label="Retry calendar grid" variant="ghost" onClick={() => setAttempt(value => value + 1)} />} />}
     {month.error && <Banner status="error" title={month.error} endContent={<Button label="Retry" variant="ghost" onClick={onRetry} />} />}
-    {month.loading && <p role="status" className={styles.empty}>Loading calendar…</p>}
+    {(grid.kind === 'loading' || (grid.kind === 'ready' && month.loading)) && <p role="status" className={styles.empty}>Loading calendar…</p>}
     {!month.loading && !month.error && !enabled && <p className={styles.empty}>Calendar is temporarily unavailable.<br /><Button label="Open plugin settings" variant="ghost" onClick={onSettings} /></p>}
     <section className={styles.dayDetails} aria-label="Selected day tasks">
       <div className={styles.heading}>
@@ -48,7 +72,7 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
           </List>)}
       </div>
     </section>
-    </TaskCalendar>
+    </section></PanelModule>
     {editing !== null && <Dialog open onClose={() => { if (!pending) setEditing(null); }} title={weekly ? 'Weekly task' : editing.entry ? 'Edit task' : 'New task'}>
       {weekly && editing.entry ? <WeeklyEntryDetails task={editing.entry.task} schedule={weekly} />
         : <CalendarEditor key={editing.entry ? `${editing.entry.id}:${editing.entry.version}` : 'new'} entry={editing.entry}

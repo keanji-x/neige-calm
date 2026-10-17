@@ -1,8 +1,5 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
-import { useState } from '../../ui/state/public.ts';
-import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
+import { useEffect, useMemo, useRef } from 'react';
 import { Icon } from '../../ui/icon/public.tsx';
-import { PanelModule } from '../../ui/panel-card/public.tsx';
 import FullCalendar, { type CalendarRef } from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/react/daygrid';
 import interactionPlugin from '@fullcalendar/react/interaction';
@@ -10,19 +7,23 @@ import themePlugin from '@fullcalendar/react/themes/monarch';
 import { calendarDate, calendarEntryIncludesDate, type CalendarListedEntry, type CalendarWindow } from '../../../../core/domain/calendar.ts';
 import styles from './calendar.module.css';
 
-export function TaskCalendar({ date, timezone, entries, children, trackCountOn, onDateChange, onWindowChange }: Readonly<{
+export function TaskCalendar({ date, timezone, entries, mode, trackCountOn, onDateChange, onWindowChange }: Readonly<{
   trackCountOn?: (date: string) => number | null;
-  children: ReactNode;
+  mode: string;
   date: string; timezone: string; entries: readonly CalendarListedEntry[];
   onDateChange(date: string): void; onWindowChange(window: CalendarWindow): void;
 }>) {
-  const [mode, setMode] = useState('week');
   const plugins = useMemo(() => [dayGridPlugin, interactionPlugin, themePlugin], []);
   const calendar = useRef<CalendarRef>(null);
   useEffect(() => {
     const api = calendar.current?.getApi();
     if (api && calendarDate(api.getDate().getTime(), timezone) !== date) api.gotoDate(date);
   }, [date, timezone]);
+  useEffect(() => {
+    const api = calendar.current?.getApi();
+    const view = mode === 'week' ? 'dayGridWeek' : 'dayGridMonth';
+    if (api && api.view.type !== view) api.changeView(view);
+  }, [mode]);
   const choose = (day: string) => onDateChange(day);
   const countsOn = (value: Date) => {
     const day = calendarDate(value.getTime(), timezone);
@@ -40,12 +41,8 @@ export function TaskCalendar({ date, timezone, entries, children, trackCountOn, 
       </span>
     </span>;
   };
-  return <PanelModule title="Calendar" icon="calendar" className={styles.calendarModule} grow action={<span className={styles.viewControl}><SegmentedControl label="Calendar view" size="sm" value={mode}
-    onChange={(value) => { setMode(value); calendar.current?.getApi().changeView(value === 'week' ? 'dayGridWeek' : 'dayGridMonth'); }}>
-    <SegmentedControlItem value="week" label="Week" />
-    <SegmentedControlItem value="month" label="Month" />
-  </SegmentedControl></span>}><section className={styles.calendar} aria-label="Calendar tasks">
-    <FullCalendar ref={calendar} plugins={plugins} initialView="dayGridWeek" initialDate={date}
+  return (
+    <FullCalendar ref={calendar} plugins={plugins} initialView={mode === 'week' ? 'dayGridWeek' : 'dayGridMonth'} initialDate={date}
     className={styles.monthGrid} viewClass={styles.monthView} borderless headerToolbarClass={styles.monthToolbar} headerToolbar={{ start: 'prev', center: 'title', end: 'next' }}
     buttons={{ prev: { iconContent: () => <Icon name="chevron-left" size="sm" /> }, next: { iconContent: () => <Icon name="chevron-right" size="sm" /> } }}
     buttonClass={styles.navigationButton} toolbarTitleClass={styles.monthTitle} titleFormat={{ year: 'numeric', month: 'long' }} firstDay={1} fixedWeekCount={false} height="auto"
@@ -65,5 +62,6 @@ export function TaskCalendar({ date, timezone, entries, children, trackCountOn, 
       onDateChange(calendarDate(info.view.calendar.getDate().getTime(), timezone));
     }}
     dateClick={(info) => choose(calendarDate(info.date.getTime(), timezone))}
-    navLinkDayClick={(day) => choose(calendarDate(day.getTime(), timezone))} />{children}</section></PanelModule>;
+    navLinkDayClick={(day) => choose(calendarDate(day.getTime(), timezone))} />
+  );
 }
