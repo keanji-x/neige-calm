@@ -3,6 +3,8 @@
 //! Canonical ingress checks this owner in its protected transaction. Key replay
 //! must check it before retrieving a stored result. Storage retains factual rules.
 mod execution;
+mod selection_read;
+pub(crate) use selection_read::SelectionReadAdmission;
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
 pub(crate) use execution::{
