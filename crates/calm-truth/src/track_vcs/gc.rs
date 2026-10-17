@@ -325,7 +325,7 @@ fn harness_snapshot_endpoint<'a>(
 }
 
 #[cfg(test)]
-#[path = "gc_writer_tests.rs"]
+#[path = "gc/gc_writer_tests.rs"]
 mod gc_writer_tests;
 
 #[path = "gc_object_sweep.rs"]
@@ -333,5 +333,5 @@ mod object_sweep;
 pub use object_sweep::{spawn_unreferenced_object_sweeper, sweep_unreferenced_objects_once};
 
 #[cfg(test)]
-#[path = "gc_object_safety_tests.rs"]
+#[path = "gc/gc_object_safety_tests.rs"]
 mod gc_object_safety_tests;
