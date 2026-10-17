@@ -154,3 +154,5 @@
 - { path: fe/tools/benchmark-code.mjs, type: file, owner: tooling/preview, readonly: false, basis: "#2474 standalone production reader performance comparison" }
 
 - { path: fe/web/src/ui/navigation-row, type: directory, owner: ui/navigation-row, readonly: false, basis: "User-approved shared sidebar icon, label and action column geometry" }
+
+- { path: fe/web/src/ui/content-presentation, type: directory, owner: ui/content-presentation, readonly: false, basis: "Generic visit-scoped content admission; Track and conversation presentation" }

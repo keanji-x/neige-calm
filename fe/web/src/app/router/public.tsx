@@ -1,6 +1,6 @@
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
-import { useThreadPresentation } from '../../features/chat/thread/presentation.ts';
+import { useContentAdmission } from '../../ui/content-presentation/public.ts';
 import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
 import { useConversationStore } from '../conversations/store.ts';
@@ -455,7 +455,7 @@ function useConversationPane(
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const threadAvailable = open !== null
     && (store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled || store.stopFeedback !== null);
-  const threadPresented = useThreadPresentation(open?.id ?? null, threadAvailable);
+  const threadPresented = useContentAdmission(open?.id ?? null, threadAvailable);
   const sideSourceReady = threadPresented && store.historyReady;
   /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
   const respondable = canContinue && edit.held === null;

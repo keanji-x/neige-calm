@@ -38,7 +38,7 @@ Measured through `app/router/chat-performance.browser.test.tsx`, with identical
 separate contract for variable heights, history anchors, jumps, focus and cross-row
 selection; #2235 tracks that remaining decision.
 
-`presentation.ts` owns the first-mount boundary for one eligible conversation visit.
+The generic `ui/content-presentation/public.ts` owns first-content admission.
 The app supplies the selected id and whether the existing transcript owner has
 content/status to render. Once eligible, the shell gets a rendering opportunity
 before a transition mounts the thread. A slow read starts this boundary when it

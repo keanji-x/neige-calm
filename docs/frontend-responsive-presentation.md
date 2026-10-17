@@ -12,7 +12,7 @@ loaded history so native Find and cross-message selection keep their DOM.
 | --- | --- | --- |
 | Conversation facts and commands | `app/conversations/store.ts`, `contracts.ts`, Query and ConversationProvider | Consume their declared results. Do not reconstruct transcript, outbox acknowledgements or send readiness in presentation code. |
 | Route, main/side association and selected shell | `app/router/public.tsx` | Compose capabilities and layout. Slow history must not be awaited before committing the selected shell. |
-| First eligible thread mount | `features/chat/thread/presentation.ts` | Supply selected identity and existing content/status eligibility. Close, switch and loss of eligibility cancel that visit. Same-conversation updates after mount stay immediate. |
+| First eligible content admission | `ui/content-presentation/public.ts` | Supply selected identity and existing content/status eligibility. Close, switch and loss of eligibility cancel that visit. Same-conversation updates after mount stay immediate. |
 | Visible messages and reading memory | `features/chat/thread/public.tsx`, `message-entry.tsx`, `reading-view.tsx` | Keep grouping keys, expansion and focus memory in the committed UI path. Extend the feature's presentation contract. |
 | Generic reading and restoration | `ui/drawer/follow-scroll.ts`, `restore-focus.ts` | Declare navigation, return and restoration explicitly. The primitive observes input/focus/selection; it never knows message identities. |
 | Motion | `ui/motion/spring.ts`, `target.ts` | Supply targets to the shared spring. Keep semantic state and cancellation in the component owning the surface. |
@@ -27,7 +27,7 @@ feature, nor a new global task/store framework.
 ```mermaid
 flowchart LR
   facts["Existing conversation facts and commands"] --> host["App route and selected shell"]
-  host --> visit["Feature first-mount visit"]
+  host --> visit["Generic first-content admission"]
   visit --> thread["Committed thread and visible actions"]
   host --> composer["Composer and execution controls"]
   thread --> reading["Generic reading / restoration"]
@@ -40,6 +40,10 @@ The arrows describe responsibilities, not every import or a second business stor
 No asynchronous transcript projection, new cache or Worker is currently present.
 
 ## Lifetimes and action consistency
+
+`useContentAdmission(selectedKey, eligible)` returns mount permission only. The caller
+retains data readiness, mounted-content evidence, visibility and read policy. It
+adds no request, cache, preparation, authorization or motion state.
 
 A selected conversation, a history request and a presentation visit are different
 lifetimes. Closing invalidates pending presentation callbacks. Dispatched sends, uploads
@@ -104,7 +108,7 @@ add these abstractions until a real measured consumer needs them.
 From `fe/`, the focused production-owner checks are:
 
 ```sh
-npx vitest run --project web-dom web/src/features/chat/thread/presentation.test.tsx web/src/app/router/conversation-presentation.test.tsx
+npx vitest run --project web-dom web/src/ui/content-presentation/public.test.tsx web/src/app/router/conversation-presentation.test.tsx
 npx vitest run --project browser web/src/app/router/conversation-switch.browser.test.tsx web/src/app/router/chat-performance.browser.test.tsx
 npx vitest run --project browser --project web-dom web/src/ui/drawer/selection-follow.browser.test.tsx web/src/ui/drawer/selection.test.ts web/src/ui/drawer/follow-scroll.browser.test.tsx web/src/ui/drawer/follow-scroll.test.ts web/src/features/chat/thread/scroll-follow.browser.test.tsx
 ```

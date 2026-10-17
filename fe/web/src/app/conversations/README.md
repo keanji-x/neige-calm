@@ -54,11 +54,12 @@ Pane still observes capabilities and holds selection/layout/focus. Those remaini
 responsibilities are tracked in #2083; loaded DOM and streaming display work remain
 under #2235.
 
-The router uses Chat's `useThreadPresentation` only for first mounting eligible
+The router uses UI's generic `useContentAdmission` only for first mounting eligible
 content. It keeps the selected shell/composer available while a rendering opportunity
 precedes the expensive thread. Eligibility comes from this store's existing history,
 remembered transcript and status facts; it is not another history readiness or send
 authorization. Read acknowledgement additionally requires that presentation boundary.
 Ordinary updates after mounting are not deferred, so visible actions keep their
-existing transcript and command alignment. See the Chat thread README for its narrow
-presentation contract and the production `conversation-switch` browser regression.
+existing transcript and command alignment. See the
+[admission contract](../../ui/content-presentation/README.md), the Chat thread README
+for feature integration and the production `conversation-switch` browser regression.
