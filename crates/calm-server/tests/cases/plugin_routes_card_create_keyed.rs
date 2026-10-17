@@ -295,7 +295,10 @@ async fn a_legacy_committed_row_replays_its_card() {
             .execute(&pool)
             .await
             .unwrap();
-        let (status, replay) = post_keyed(&fx, body, Some(key)).await;
+        let (status, replay) =
+            tokio::time::timeout(Duration::from_secs(5), post_keyed(&fx, body, Some(key)))
+                .await
+                .expect("an unfinished legacy operation must replay without waiting for lease expiry");
         assert_eq!(status, StatusCode::CREATED, "{replay}");
         assert_eq!(replay["id"], first["id"]);
         let phase: String =
