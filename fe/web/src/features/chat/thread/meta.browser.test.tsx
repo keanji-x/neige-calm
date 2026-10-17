@@ -140,3 +140,12 @@ for (const width of [390, 1280]) {
     expect(document.documentElement.scrollWidth).toBe(width);
   });
 }
+
+it('keeps the same copy control when its feedback glyph changes', async () => {
+  render(<ThreadStatusNotice heading="Completed" clock={{ elapsedMs: null, timestamp: null }}
+    copyAction={{ id: 'response', text: 'Answer', run: () => Promise.resolve() }} />);
+  const button = screen.getByRole('button', { name: 'Copy response' });
+  await userEvent.click(button);
+  await expect.element(page.getByRole('button', { name: 'Copied response', exact: true })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Copied response' })).toBe(button);
+});

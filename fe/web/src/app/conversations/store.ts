@@ -4,7 +4,7 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
 import { describeConversation, pendingConversationIds, withRememberedConversation, withRememberedTitle, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
-import { queueTombstoneHides as tombstoneHides } from '../../../../core/domain/conversation-outbox.ts';
+import { synchronizeQueuedSends, rememberQueuePlacements, presentPendingMessages, queueTombstoneHides as tombstoneHides } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { PERMISSION_MODE_CHANGE_TEXT, PLANNER_PERMISSION_MODE_FAILURES } from '../../../../core/domain/planner-permission-mode.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
@@ -76,8 +76,8 @@ export function useConversationStore(
   const [runningAnchor, setRunningAnchor] = useState<RunningTurnAnchor | null>(null);
   const nextRunningAnchor = anchorRunningTurn(runningAnchor, run.data?.running_turn ?? null, run.dataUpdatedAt);
   if (nextRunningAnchor !== runningAnchor) setRunningAnchor(nextRunningAnchor);
-  /* `pendingQueueIds` is the visibility judgement for the echoes below: an entry the
-       queue region is drawing must not also be drawn in the transcript. */
+  /* The run page owns pending input identity. Replace its persisted rows with
+     the display projection below, keeping one bubble while the queue drains. */
   /* Tombstones for entries this client has had a `done` DELETE or steer for, until the
        cached page catches up. Keyed by card AND entry (entry ids are unique per card);
        the value is the rev written against, so an entry the kernel puts back one rev
@@ -125,8 +125,8 @@ export function useConversationStore(
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   /* A remembered transcript is the reopen fallback while the first page is unknown;
        once any query data exists the server wins, even when empty. */
-  /* An entry the queue region is currently listing is drawn there and nowhere else;
-       only the rendered transcript is filtered, `serverTurns` still sees the row. */
+  /* Queued rows are supplied by the display projection, not twice from the server
+     transcript. Raw `serverTurns` still sees every row for delivery reconciliation. */
   const rememberedEntries = history.data === undefined ? rememberedTurnsOf(cardId) : null;
   const serverEntries = useMemo(
     () => rememberedEntries !== null
@@ -163,11 +163,22 @@ export function useConversationStore(
   const landedRun = runReads.startOf(run.data);
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
   const outbox = useConversationOutbox({
-    cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntryIds: pendingQueueIds,
+    cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntries: pendingQueue,
     stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view } = outbox;
+  const queueOps = registry.outboxOf(cardId);
+  const [placementMemory, setPlacementMemory] = useState(() => ({ cardId, ops: queueOps, queue: pendingQueue,
+    placements: rememberQueuePlacements(new Map(), queueOps, pendingQueue) }));
+  let placements = placementMemory.placements;
+  if (placementMemory.cardId !== cardId || placementMemory.ops !== queueOps || placementMemory.queue !== pendingQueue) {
+    placements = rememberQueuePlacements(placementMemory.cardId === cardId ? placementMemory.placements : new Map(), queueOps, pendingQueue);
+    setPlacementMemory({ cardId, ops: queueOps, queue: pendingQueue, placements });
+  }
+  const presentation = useMemo(() => presentPendingMessages(view.transcript, pendingQueue, view.shown,
+    placements, view.failed, stalled, queueOps),
+  [view.transcript, pendingQueue, view.shown, placements, view.failed, stalled, queueOps]);
   /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
      server has answered it, and only until a read shows it in its place. */
   const turns = useMemo(
@@ -261,7 +272,7 @@ export function useConversationStore(
 
   return {
     conversations,
-    turnsOf: (conversationId) => conversation?.id === conversationId ? view.transcript : registry.turnsOf(conversationId),
+    turnsOf: (conversationId) => conversation?.id === conversationId ? presentation.transcript : registry.turnsOf(conversationId),
     pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,
@@ -270,8 +281,13 @@ export function useConversationStore(
     sending: view.sending,
     sendBlocked: view.blocked,
     awaitingConversationUpdate: view.awaitingReconciliation && history.error === null && run.error === null,
-    pendingQueue,
+    pendingQueue: presentation.queue,
+    pendingSends: presentation.sending,
     pendingQueueOverflow,
+    editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => mutations.editQueued(entry, text)).then(outcome => {
+      if (outcome.kind === 'done') registry.editOutbox(cardId, current => synchronizeQueuedSends(current, [outcome.entry]));
+      return outcome;
+    }),
     deleteQueuedEntry,
     queueWriteOut: registry.queueWriteOutOf(cardId),
     steerQueuedEntry,

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   PendingQueueEntry, PlannerQueueWriteOutcome,
-} from '../../../../core/domain/conversation.ts';
+} from '../../../../../core/domain/conversation.ts';
 import { PendingQueue, type PendingQueueProps } from './pending-queue.tsx';
 
 afterEach(cleanup);
@@ -23,6 +23,7 @@ function renderQueue(props: Partial<PendingQueueProps> = {}) {
     overflow={0}
     busy={false}
     onDelete={onDelete}
+    onEdit={() => undefined} canEdit editingEntryId={null} savedEntry={null} onFocusComposer={() => undefined}
     {...props}
   />);
   return { onDelete, ...view };
@@ -38,6 +39,7 @@ async function pressable(find: () => HTMLButtonElement): Promise<void> {
   await waitFor(() => {
     const button = find();
     expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).not.toBe('true');
     expect(button.getAttribute('aria-busy')).not.toBe('true');
   });
 }
@@ -122,7 +124,8 @@ describe('PendingQueue', () => {
     renderQueue({ entries: [], overflow: 3 });
     expect(screen.getByText('3 queued messages are waiting but cannot be shown or edited here.'))
       .toBeTruthy();
-    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Edit queued message' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete this message' })).toBeNull();
   });
 
   it('says “more” only when some of the queue is actually shown', () => {
@@ -140,13 +143,13 @@ describe('PendingQueue', () => {
   it('offers "Say it now" only when a steer handler is given', () => {
     renderQueue();
     expect(screen.queryByRole('button', { name: 'Say it now' })).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getAllByRole('button')).toHaveLength(2);
     cleanup();
 
     const onSteer = vi.fn<NonNullable<PendingQueueProps['onSteer']>>(() => done);
     renderQueue({ onSteer });
     expect(screen.getByRole('button', { name: 'Say it now' })).toBeTruthy();
-    expect(screen.getAllByRole('button')).toHaveLength(2);
+    expect(screen.getAllByRole('button')).toHaveLength(3);
   });
 
   it('hands the entry, at the revision shown, to the steer handler', async () => {
@@ -195,7 +198,7 @@ describe('PendingQueue', () => {
     await userEvent.click(screen.getAllByRole('button', { name: 'Say it now' })[0]);
     await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(1));
     await waitFor(() => {
-      for (const button of screen.getAllByRole<HTMLButtonElement>('button')) {
+      for (const button of screen.getAllByRole<HTMLButtonElement>('button').filter(button => !button.hasAttribute('data-nc-queue-toggle'))) {
         expect(button.disabled || button.getAttribute('aria-disabled') === 'true').toBe(true);
       }
     });
@@ -209,4 +212,32 @@ describe('PendingQueue', () => {
     expect(screen.queryByText(/waiting to send when this turn ends/)).toBeNull();
   });
 
+});
+
+
+it('offers editing for every queued message', () => {
+  renderQueue({ entries: [entry(), entry({ entry_id: 'e2', text: 'middle message' }), entry({ entry_id: 'e3', text: 'last message' })] });
+  expect(screen.getAllByRole('button', { name: 'Edit queued message' })).toHaveLength(3);
+});
+
+
+it('marks the original bubble and hands editing to the existing composer owner', async () => {
+  const onEdit = vi.fn();
+  renderQueue({ entries: [entry()], onEdit, editingEntryId: 'e1' });
+  expect(document.querySelector('[data-nc-turn="you"][data-nc-editing]')?.textContent).toBe('look at the report');
+  expect(document.querySelector('[data-nc-composer]')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
+  expect(onEdit).toHaveBeenCalledWith(entry());
+});
+
+it('reuses outgoing bubbles and exposes only icons without a queue header', () => {
+  renderQueue({ onSteer: () => done });
+  expect(document.querySelector('[data-nc-pending-entry] [data-nc-turn="you"]')?.textContent).toBe('look at the report');
+  expect(document.querySelector('[data-nc-queue-toggle]')).toBeNull();
+  const actions = screen.getAllByRole('button');
+  expect(actions).toHaveLength(3);
+  for (const action of actions) {
+    expect(action.querySelector('svg')).not.toBeNull();
+    expect(action.textContent).toBe('');
+  }
 });

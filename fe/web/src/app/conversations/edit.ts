@@ -1,65 +1,90 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 
-import type { ConversationTurnOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import type { ConversationTurnOutcome, TranscriptEntry, PendingQueueEntry, PlannerQueueEditOutcome } from '../../../../core/domain/conversation.ts';
 import { markedReplace, replacingTurn, type ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import { notSentMessage } from '../../../../core/domain/conversation-delivery.ts';
 import { editedTurnRefill, isComposerEmpty, isLatestTurn } from '../../../../core/domain/conversation-composer.ts';
+import { useState } from '../../ui/state/public.ts';
 import { useConversationRegistry } from './public.tsx';
 
 /** Beside a refused replace while its words are still in the composer: they are a new message now. */
 export const REFILLED_NOTE = 'Your message is back in the composer; sending adds a new one.';
 
-/**
- * Edit (#1923) as a composer mode for the open conversation. The click puts the turn's message in that conversation's
- * composer and asks the server nothing; the turn stays on screen. Send in edit mode is one keyed send that names the
- * turn it replaces (#2043): the outbox holds it from the press, and the server removes the turn and queues the
- * message in one commit, or refuses and changes nothing. Send outside edit mode is an ordinary new message.
- */
-export function useConversationEdit({ conversationId, transcript, historyReady, focusComposer }: {
+/** One retained composer edit flow. Turn edits replace a completed turn; queued edits update an existing entry in place. */
+export function useConversationEdit({ conversationId, transcript, historyReady, focusComposer, changeComposer, queue }: {
   conversationId: string | null;
-  /** That conversation's transcript as the store holds it, the edited turn included while a read still shows it. */
   transcript: readonly TranscriptEntry[];
-  /** Whether `transcript` is a read rather than a remembered fallback. */
   historyReady: boolean;
-  /** Asks for the caret in that conversation's composer if it is the one shown. */
   focusComposer: (conversationId: string) => void;
+  changeComposer: Dispatch<SetStateAction<string>>;
+  queue: Readonly<{
+    entries: readonly PendingQueueEntry[]; ready: boolean; busy: boolean;
+    save: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueEditOutcome>;
+  }>;
 }) {
-  const { editOf, beginEdit, cancelEdit, leaveEdit, editNoticeOf, outboxOf, composerOf } = useConversationRegistry();
+  const { editOf, beginEdit, cancelEdit, settleQueuedEdit, leaveEdit, editNoticeOf, outboxOf, composerOf } = useConversationRegistry();
   const held = conversationId === null ? null : editOf(conversationId);
   const ops = conversationId === null ? [] : outboxOf(conversationId);
   const replacing = replacingTurn(ops);
-  /* A turn that is no longer the latest cannot be replaced: the server only ever removes the latest. */
-  const stale = historyReady && held !== null && !isLatestTurn(transcript, held.outcomeId) ? held.outcomeId : null;
+  const leases = useRef(new Set<string>());
+  const [saving, setSaving] = useState<ReadonlySet<string>>(() => new Set());
+  const [queuedResult, setQueuedResult] = useState<Readonly<{ cardId: string; entryId: string; outcome: PlannerQueueEditOutcome }> | null>(null);
+  const [savedEntry, setSavedEntry] = useState<Readonly<{ cardId: string; entry: PendingQueueEntry }> | null>(null);
+  const stale = historyReady && held?.kind === 'turn' && !isLatestTurn(transcript, held.outcomeId) ? held.outcomeId : null;
   useEffect(() => {
     if (conversationId !== null && stale !== null) leaveEdit(conversationId, stale);
   }, [conversationId, leaveEdit, stale]);
-  /** Enter edit mode for the turn that ends at `outcome`, the conversation's latest. */
   const start = (outcome: ConversationTurnOutcome) => {
     if (conversationId === null) return;
     const refill = editedTurnRefill(transcript, outcome.id);
-    if (refill === null || !beginEdit(conversationId, { turnId: outcome.turnId, outcomeId: outcome.id, refill })) return;
+    if (refill === null || !beginEdit(conversationId, { kind: 'turn', turnId: outcome.turnId, outcomeId: outcome.id, refill })) return;
     focusComposer(conversationId);
   };
-  /* A dormant send and a restart are the restart strip's to say (`restart.ts`), with its action. */
+  const startQueued = (entry: PendingQueueEntry) => {
+    if (conversationId === null || queue.busy || !queue.ready || !isComposerEmpty(composerOf(conversationId))) return;
+    if (!beginEdit(conversationId, { kind: 'queued', entry, refill: { text: entry.text, attachments: [] } })) return;
+    setQueuedResult(null);
+    focusComposer(conversationId);
+  };
+  const queued = held?.kind === 'queued' ? held : null;
+  const queuedMissing = queued !== null && (!queue.ready || !queue.entries.some(entry => entry.entry_id === queued.entry.entry_id));
+  const queuedSaving = conversationId !== null && (saving.has(conversationId) || (queued !== null && queue.busy));
+  const saveQueued = (text: string): false => {
+    if (conversationId === null || queued === null || queuedMissing || queue.busy || leases.current.has(conversationId) || text.trim() === '') return false;
+    const cardId = conversationId;
+    const submitted = composerOf(cardId);
+    leases.current.add(cardId); setSaving(new Set(leases.current)); setQueuedResult(null);
+    void (async () => {
+      let outcome: PlannerQueueEditOutcome;
+      try { outcome = await queue.save(queued.entry, text); }
+      catch (error) { outcome = { kind: 'failed', message: error instanceof Error ? error.message : 'Could not save this queued message.' }; }
+      settleQueuedEdit(cardId, queued, submitted, outcome);
+      if (outcome.kind === 'done') setSavedEntry({ cardId, entry: outcome.entry });
+      else setQueuedResult({ cardId, entryId: queued.entry.entry_id, outcome });
+      leases.current.delete(cardId); setSaving(new Set(leases.current));
+    })();
+    // The existing composer keeps an untaken draft; the acknowledged queue write ends this edit.
+    return false;
+  };
+  const onComposerChange = useCallback<Dispatch<SetStateAction<string>>>(action => {
+    if (conversationId === null || !leases.current.has(conversationId)) changeComposer(action);
+  }, [conversationId, changeComposer]);
   const heldNotice = conversationId === null ? null : editNoticeOf(conversationId);
   const notice = heldNotice?.kind === 'dormant' || heldNotice?.kind === 'restarted' ? null : heldNotice;
-  const cancel = () => { if (conversationId !== null) cancelEdit(conversationId); };
+  const cancel = () => { if (conversationId !== null && !queuedSaving) cancelEdit(conversationId); };
   return {
-    /** This conversation's Edit while one is held: nothing else acts on the conversation meanwhile. */
-    held,
-    /** What a Send pressed in `pressedIn` replaces: the held Edit's turn there, or `null` for a new message. */
+    held, queued, queuedMissing, queuedSaving, startQueued, saveQueued, onComposerChange,
+    canEditQueued: held === null && conversationId !== null && isComposerEmpty(composerOf(conversationId)) && queue.ready && !queue.busy,
+    savedQueuedEntry: savedEntry?.cardId === conversationId ? savedEntry.entry : null,
+    queueFailure: queuedResult?.cardId === conversationId && queuedResult.entryId === queued?.entry.entry_id ? queuedResult.outcome : null,
     replacesIn: (pressedIn: string): ReplacedTurn | null => {
       const edit = editOf(pressedIn);
-      return edit === null ? null : { turnId: edit.turnId, outcomeId: edit.outcomeId };
+      return edit?.kind === 'turn' ? { turnId: edit.turnId, outcomeId: edit.outcomeId } : null;
     },
-    /** The edit bar while in edit mode. */
-    bar: held === null ? undefined : { preview: held.refill.text, onCancel: cancel },
-    /** A replace is out: Send is a spinner and the composer waits. */
+    bar: held === null ? undefined : { preview: held.refill.text, onCancel: cancel,
+      ...(held.kind === 'queued' ? { submitLabel: 'Save queued message', canSubmit: !queuedMissing } : {}) },
     replacing: replacing !== null,
-    /** The outcome of the turn shown marked: being edited, or being replaced by a send still out or failed (#2068). */
-    marked: held?.outcomeId ?? markedReplace(ops)?.outcomeId ?? null,
-    /** What the last Edit or send came to, as shown above the composer; a turn that moved on is news, not a failure.
-     * A refused Edit's line says where the words are only while they are there. */
+    marked: held?.kind === 'turn' ? held.outcomeId : markedReplace(ops)?.outcomeId ?? null,
     notice: notice === null ? null : notice.kind === 'refused'
       ? { tone: 'error', lines: notice.edit ? [`Edit failed: ${notice.message}`,
         ...(conversationId === null || isComposerEmpty(composerOf(conversationId)) ? [] : [REFILLED_NOTE])]

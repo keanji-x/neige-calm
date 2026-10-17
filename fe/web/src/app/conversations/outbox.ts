@@ -5,11 +5,11 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
 import {
   conversationNameFrom, isConversationMessage,
-  type ConversationMessage, type ConversationTurn, type SentPlannerInput, type TranscriptEntry,
+  type ConversationMessage, type ConversationTurn, type PendingQueueEntry, type SentPlannerInput, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  outboxFacts, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
+  outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
@@ -63,7 +63,7 @@ function rememberSent(
  * server state shows it (`outboxView`) or the reader drops it.
  */
 export function useConversationOutbox({
-  cardId, transport, send, serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, landed,
+  cardId, transport, send, serverEntries, serverTurns, liveReplies, queuedEntries, stalled, landed,
   queuesInput, highWater, pressed,
 }: {
   cardId: string;
@@ -74,7 +74,7 @@ export function useConversationOutbox({
   serverEntries: readonly TranscriptEntry[];
   serverTurns: readonly ConversationMessage[];
   liveReplies: readonly ConversationTurn[];
-  queuedEntryIds: ReadonlySet<string>;
+  queuedEntries: readonly PendingQueueEntry[];
   stalled: boolean;
   landed: LandedReads;
   /** Whether the kernel queues a message posted now (`kernelQueuesInput`), read at the press. */
@@ -88,12 +88,17 @@ export function useConversationOutbox({
   const { editOutbox, retireSends, beginSend, nextRead, updateExisting } = registry;
   const ops = registry.outboxOf(cardId);
   const spent = registry.spentRowsOf(cardId);
+  const queuedEntryIds = useMemo(() => new Set(queuedEntries.map(entry => entry.entry_id)), [queuedEntries]);
+  const observedOps = useMemo(() => synchronizeQueuedSends(ops, queuedEntries), [ops, queuedEntries]);
+  useEffect(() => {
+    if (observedOps !== ops) editOutbox(cardId, current => synchronizeQueuedSends(current, queuedEntries));
+  }, [cardId, editOutbox, observedOps, ops, queuedEntries]);
   /** The card shown now; a send's own `cardId` is the one it was pressed in. */
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
   const facts = useMemo(
-    () => outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed }),
-    [serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed],
+    () => outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops: observedOps, spent, landed }),
+    [serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed],
   );
   const view = useMemo(() => withOutboxLiveReplies(facts, liveReplies), [facts, liveReplies]);
   const { retire } = view;
@@ -145,7 +150,7 @@ export function useConversationOutbox({
       /* Not claimed: the answer may replay an entry deleted, rewound or reset since, which no read would ever
          show. The echo stays until reads started after this answer land, and they alone then show the message. */
       if (everUnknown) { settle({ key, echo, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return; }
-      const confirmed = settle({ key, echo: { ...echo, entryId: sent.entry_id }, fromComposer, replaces, phase: 'confirmed' });
+      const confirmed = settle({ key, echo: { ...echo, entryId: sent.entry_id }, fromComposer, replaces, phase: 'confirmed', queueRevision: null });
       /* The answer can outlive the drawer: the row is written straight through for the conversation it was sent
          to, through `updateExisting` because a background refresh may already have put newer data there. */
       updateExisting(sentTo, (entry) => rememberSent(entry, confirmed, registry.spentRowsOf(sentTo), echo.text, echo.atMs));

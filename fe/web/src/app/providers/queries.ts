@@ -58,11 +58,11 @@ import {
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
-  createSerialWriter, deletePlannerInputOperation, steerPlannerInputOperation,
+  createSerialWriter, deletePlannerInputOperation, editPlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation, PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT,
   type Conversation, type ModelCatalogScope, type ModelSelection, type ModelSelectionResult,
-  type PlannerQueueWriteOutcome,
+  type PlannerQueueWriteOutcome, type PlannerQueueEditOutcome, type PendingQueueEntry,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import { setPlannerPermissionModeOperation } from '../../../../core/domain/planner-permission-mode.ts';
@@ -276,6 +276,12 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     },
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
+    editQueued: (entry: PendingQueueEntry, text: string): Promise<PlannerQueueEditOutcome> =>
+      runOperation(transport, editPlannerInputOperation(cardId, entry.entry_id, text, entry.rev), unauthorized)
+        .then((saved): PlannerQueueEditOutcome => ({ kind: 'done', entry: { ...entry, text: saved.text, rev: saved.rev } }))
+        .catch((error: unknown) => plannerQueueWriteFailure(
+          error instanceof ApiError ? error.failure : null, 'Could not edit the queued message.',
+        )).then(refreshAfter),
     deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
         .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))

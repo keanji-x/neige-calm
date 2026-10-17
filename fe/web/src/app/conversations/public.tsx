@@ -3,7 +3,7 @@ import {
 } from 'react';
 
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
-import type { SideConversation } from '../../../../core/domain/conversation.ts';
+import type { SideConversation, PendingQueueEntry, PlannerQueueEditOutcome } from '../../../../core/domain/conversation.ts';
 import {
   isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
@@ -107,14 +107,11 @@ function moveDraft(slots: DraftSlots, move: DraftMove): DraftSlots {
  * An Edit of a conversation's latest turn (#1923): its message is in the composer and Send replaces the turn. The
  * Send is one keyed send that names the turn (#2043); beginning it ends the Edit, and the outbox holds the rest.
  */
-export type ConversationEdit = Readonly<{
-  /** The turn the replace names. */
-  turnId: string;
-  /** Its outcome entry, keyed by row: a later turn reusing `turnId` is never taken for it. */
-  outcomeId: string;
-  /** What the click put in the composer. */
-  refill: ComposerContent;
-}>;
+export type ConversationEdit = Readonly<{ refill: ComposerContent }> & Readonly<
+  | { kind: 'turn'; turnId: string; outcomeId: string }
+  | { kind: 'queued'; entry: PendingQueueEntry }
+>;
+export type QueuedConversationEdit = Extract<ConversationEdit, { kind: 'queued' }>;
 
 /**
  * How this conversation's last Edit or send ended, shown above its composer until its next Edit or send: a newer turn
@@ -192,6 +189,8 @@ export type ConversationRegistry = Readonly<{
   editOf: (conversationId: string) => ConversationEdit | null;
   /** Enter edit mode, one Edit per conversation; false while one is held. Puts the message in that conversation's composer. */
   beginEdit: (conversationId: string, edit: ConversationEdit) => boolean;
+  /** Settle a queued edit only while this exact edit is still held; accepted saves clear only their submitted draft. */
+  settleQueuedEdit: (conversationId: string, edit: QueuedConversationEdit, submitted: ComposerContent, outcome: PlannerQueueEditOutcome) => void;
   /** Leave edit mode and its notice; a composer still holding exactly the refill (no upload in flight) goes back to empty, one the reader changed is kept. */
   cancelEdit: (conversationId: string) => void;
   /** The edited turn is no longer the latest: edit mode ends and the composer keeps what it holds. */
@@ -292,7 +291,8 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     editOutbox(conversationId, () => begun);
     clearEditNotice(conversationId);
     /* The Edit's Send is now this op, which holds the words until the server answers: no ✕ can drop them (#2041). */
-    if (op.replaces !== null && editsRef.current[conversationId]?.outcomeId === op.replaces.outcomeId) writeEdit(conversationId, null);
+    const edit = editsRef.current[conversationId];
+    if (op.replaces !== null && edit?.kind === 'turn' && edit.outcomeId === op.replaces.outcomeId) writeEdit(conversationId, null);
     return true;
   }, [clearEditNotice, editOutbox, writeEdit]);
   const outboxOf = useCallback((conversationId: string) => outboxes[conversationId] ?? NO_SENDS, [outboxes]);
@@ -401,9 +401,20 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     if ((uploads[conversationId]?.inFlight ?? 0) > 0) return;
     editComposer(conversationId, (current) => isSameComposer(current, edit.refill) ? EMPTY_COMPOSER : current);
   }, [clearEditNotice, editComposer, editUpload, uploads, writeEdit]);
+  const settleQueuedEdit = useCallback((conversationId: string, edit: QueuedConversationEdit,
+    submitted: ComposerContent, outcome: PlannerQueueEditOutcome) => {
+    if (editsRef.current[conversationId] !== edit) return;
+    if (outcome.kind === 'done') {
+      writeEdit(conversationId, null);
+      clearEditNotice(conversationId);
+      editComposer(conversationId, current => isSameComposer(current, submitted) ? EMPTY_COMPOSER : current);
+    } else if (outcome.kind === 'stale') {
+      writeEdit(conversationId, { ...edit, entry: { ...edit.entry, text: outcome.text, rev: outcome.rev } });
+    }
+  }, [writeEdit, clearEditNotice, editComposer]);
   const leaveEdit = useCallback((conversationId: string, outcomeId: string) => {
     const edit = editsRef.current[conversationId];
-    if (edit?.outcomeId !== outcomeId) return;
+    if (edit?.kind !== 'turn' || edit.outcomeId !== outcomeId) return;
     writeEdit(conversationId, null);
     noteEdit(conversationId, { kind: 'stale' });
   }, [noteEdit, writeEdit]);
@@ -484,11 +495,11 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       adoptedDraftIdOf, finishDraftAdoption,
       outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       composerOf, editComposer, refillComposer, newConversationComposerOf, editNewConversationComposer,
-      editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, editUpload,
+      editOf, beginEdit, cancelEdit, settleQueuedEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, editUpload,
       queueWriteOutOf, holdQueueWrite, restartOutOf, holdRestart,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, refillComposer, queueWriteOutOf, holdQueueWrite, restartOutOf, holdRestart, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
+      composerOf, discardUnsentDraft, draftOf, editComposer, refillComposer, queueWriteOutOf, holdQueueWrite, restartOutOf, holdRestart, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, settleQueuedEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       remember, requestOpen,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf,
       updateExisting],

@@ -1,3 +1,10 @@
+/* The shell owns one interpolated allocation for the document and trailing panel. */
+@property --nc-panel-open {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
 /*
  * The shell and the rail (§7.1, §7.4, §7.5).
  *
@@ -63,7 +70,9 @@
      */
     position: relative;
     container-type: inline-size;
-    --panel-span: max(15rem, 25cqi);
+    --nc-panel-open: 0;
+    --panel-rest-span: max(15rem, 25cqi);
+    --panel-span: calc(var(--panel-rest-span) + (var(--conversation-span) - var(--panel-rest-span)) * var(--nc-panel-open));
     --conversation-span: clamp(22rem, 40cqi, 40rem);
     display: flex;
     flex-direction: column;
@@ -87,36 +96,11 @@
     flex-direction: column;
   }
 
-  /*
-   * While the conversation card is open, the panel card it covers is not drawn.
-   *
-   * The two now share a track — same `--panel-span` column, same top offset —
-   * and the drawer is the larger of the two, so the panel is entirely behind
-   * it. "Entirely" is not quite free, though: the panel is `align-self: start`
-   * and its own height is its content's, so it can end below the drawer's
-   * bottom edge, and its rounded corners are inside the drawer's, so a
-   * hairline-wide arc of the wrong card shows at each one. A stack of two cards
-   * offset by two pixels is not a design, it is a rendering artefact, and the
-   * only card that is being read is the one on top.
-   *
-   * `visibility`, not `display`: the panel keeps its box while the track below
-   * widens to `--conversation-span`. That one allocation intentionally reduces
-   * the report's left margin; its authored measure does not change, so the
-   * reading column stays centred beside the drawer. The panel also drops out
-   * of the accessibility tree, which is right while a card covers it.
-   *
-   * The selector crosses two CSS Modules, so neither end can be a local class:
-   * `ui/drawer` stamps `data-nc-drawer` on its root, and every route that has a
-   * trailing column stamps `data-nc-panel` on its `<aside>`. `.main` scopes it
-   * so this is a statement about one main region, not about the document.
-   *
-   * The marker is on all three of them — Today, area, track — and the set is
-   * exactly the set of routes that render `chat.drawer`, which is the invariant
-   * to re-check when a fourth route grows a panel column. Settings has neither
-   * and needs neither.
-   */
-  .main:has([data-nc-drawer]) {
-    --panel-span: var(--conversation-span);
+  /* The open marker changes at the gesture; the retained exit node must not
+     keep the covered panel hidden. One registered spring progress allocates
+     document space continuously while the card and seam fade away. */
+  .main:has([data-nc-drawer-open]) {
+    --nc-panel-open: 1;
   }
 
   /*
@@ -136,7 +120,7 @@
     --conversation-span: clamp(22rem, var(--nc-drawer-width, min(40cqi, 40rem)), 75cqi);
   }
 
-  .main:has([data-nc-drawer]) [data-nc-panel] {
+  .main:has([data-nc-drawer-open]) [data-nc-panel] {
     visibility: hidden;
   }
 

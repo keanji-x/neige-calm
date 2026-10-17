@@ -55,3 +55,12 @@ A desktop host may set `--nc-card-header-height` to align the header's minimum
 height with adjacent surfaces. The regular reading-role title and close control
 remain vertically centered within that header. Card/divider bounds, the semantic
 heading, accessible label and close/focus behavior are unchanged.
+
+
+## Presence and host layout
+
+`data-nc-drawer` remains on the retained desktop surface until its exit finishes.
+`data-nc-drawer-open` follows the requested open state immediately. Hosts use the
+open marker to reveal covered content and start layout restoration, rather than
+waiting for the exit node to disappear. The shell owns its panel allocation;
+Drawer and its seam keep their existing shared presence spring.

@@ -107,7 +107,9 @@ it.each(['idle', 'turn_running'])('shows the local sending state before a held %
     vi.mocked(buildTranscript).mockClear(); vi.mocked(toTranscriptTurns).mockClear();
     fireEvent.keyDown(field(), { key: 'Enter' });
     await waitFor(() => expect(view.requests.filter(request => request.path.endsWith('/planner/input'))).toHaveLength(1));
-    expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toBe('Send without waiting for the server');
+    const localMessage = phase === 'turn_running' ? document.querySelector('[data-nc-pending-send]') : document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]');
+    expect(localMessage?.textContent).toContain('Send without waiting for the server');
+    if (phase === 'turn_running') expect(localMessage?.closest('[data-nc-pending-queue]')).not.toBeNull();
     expect(screen.getByText('Sending…')).toBeDefined();
     expect(buildTranscript).not.toHaveBeenCalled();
     expect(toTranscriptTurns).not.toHaveBeenCalled();

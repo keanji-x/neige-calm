@@ -1,0 +1,12 @@
+@layer features {
+  .queue { min-inline-size: 0; margin-block: var(--space-2); }
+  .list { min-inline-size: 0; }
+  .rowSpace { padding-block-end: var(--space-2); }
+  .row { min-inline-size: 0; }
+  .content { min-inline-size: 0; }
+  .line { display: flex; flex-direction: column; gap: var(--space-1); }
+  .actions { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-1); flex-wrap: wrap; color: var(--text-3); }
+  .notice { font-size: var(--text-xs); color: var(--text-2); margin-block: var(--space-2); }
+  .sending { padding-block-end: var(--space-2); }
+  .delivery { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}

@@ -60,6 +60,8 @@ export type ChatThreadProps = Readonly<{
   conversation: Conversation;
   /** Messages and the actions between them, in the order they happened. */
   turns: readonly TranscriptEntry[];
+  /** Waiting inputs follow the current status without interleaving with its reply. */
+  pendingMessages?: ReactNode;
   /** Current work confirmed by the run query while the activity overlay catches up. */
   pending?: boolean;
   /** Local dispatch is pending, independently of model execution and the displayed message. */
@@ -93,7 +95,7 @@ export type ChatThreadProps = Readonly<{
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -170,7 +172,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   /* The rail is portalled into the drawer's seam (`.drawer` is `overflow: hidden`, so a descendant cannot reach it). Held in state because a portal needs the node at render time. */
   const [railSeam, setRailSeam] = useState<HTMLElement | null>(null);
   const [scrollOverlay, setScrollOverlay] = useState<HTMLElement | null>(null);
-  /* The frame is not rendered on an empty transcript, so the first turn arriving is the one edge that creates it under a live component. */
+  /* Keep one frame across the empty-to-streaming boundary so queued edits retain their owner. */
   const hasTranscript = turns.length > 0;
   useLayoutEffect(() => {
     setRailSeam(drawerSeamAround(frameRef.current));
@@ -268,16 +270,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     );
   };
 
-  if (turns.length === 0 && noticeKind === null) {
-    return (
-      <div className={styles.empty} data-nc-thread-empty="">
-        <p className={styles.emptyLead}>{compactViewport ? (live ? '正在整理你的想法' : '聊聊你想做什么') : (live ? 'The agent is working.' : 'Nothing said yet.')}</p>
-        <p className={styles.emptyHint}>{compactViewport ? (live ? '回复会显示在这里。' : '从一个问题或想法开始。') : (live ? 'Messages will appear here.' : 'Write below and it starts here.')}</p>
-        {live && <ActivityIndicator state="working" motion="thinking" />}
-        {currentMeta}
-      </div>
-    );
-  }
+  const empty = turns.length === 0 && noticeKind === null;
 
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
     {scrollOverlay === null && <div className={styles.scrollBlur} aria-hidden="true" />}
@@ -285,9 +278,14 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   </div>;
 
   return (
-    <div className={styles.threadFrame} ref={frameRef}>
+    <div className={`${styles.threadFrame} ${empty ? styles.emptyFrame : ''}`} ref={frameRef}>
       <ExchangeNavigation turns={turns} frameRef={frameRef} seam={railSeam} navigate={scrollFollower.navigate} />
-      <div className={`${styles.thread} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
+      <div className={`${styles.thread} ${empty ? styles.empty : ''} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-thread-empty={empty ? '' : undefined} ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
+        {empty && <>
+          <p className={styles.emptyLead}>{compactViewport ? (live ? '正在整理你的想法' : '聊聊你想做什么') : (live ? 'The agent is working.' : 'Nothing said yet.')}</p>
+          <p className={styles.emptyHint}>{compactViewport ? (live ? '回复会显示在这里。' : '从一个问题或想法开始。') : (live ? 'Messages will appear here.' : 'Write below and it starts here.')}</p>
+          {live && <ActivityIndicator state="working" motion="thinking" />}
+        </>}
         {transcriptGroups.map(({ entry: turn, activities, key }) => {
           const block = quietBlocks.get(turn.id);
           if (block !== undefined) {
@@ -305,12 +303,13 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
           return renderEntry(turn, key);
         })}
         {/* A reply that has not arrived yet still gets a place to arrive in; the placeholder keeps the one mark visible unless the tail carries it. */}
-        {live && !tailCarriesLiveMark && (
+        {live && !empty && !tailCarriesLiveMark && (
           <p className={styles.reply}><ActivityIndicator state="working" motion="thinking" /></p>
         )}
         {/* The drawer's one accessible "in motion" fact: every indicator is decorative. It sits after the placeholder because the stylesheet spaces `.thread`'s children by adjacency (`.exchange + *`). */}
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
         {currentMeta}
+        <div key="pending-messages" className={styles.pendingMessages}>{pendingMessages}</div>
         <div ref={endRef} aria-hidden="true" />
       </div>
       {scrolledUp && (scrollOverlay !== null ? createPortal(scrollControls, scrollOverlay)
@@ -396,7 +395,7 @@ export function ChatComposer({
   /** A local send waits for its answer. Show a busy Send while preserving an existing Stop. */
   sendWaiting?: boolean;
   /** Edit mode: a bar names the message being replaced, ✕ or Esc leaves the mode, and Send is "Replace message". */
-  editing?: Readonly<{ preview: string; onCancel: () => void }>;
+  editing?: Readonly<{ preview: string; onCancel: () => void; submitLabel?: string; canSubmit?: boolean }>;
   /** Put the caret in the field as this composer mounts. Read once, at mount; the composer has no `key` on the router's path, so raising the flag again on a mounted composer does nothing — one mount per intent is the caller's job. */
   focusOnMount?: boolean;
   /** Each new value asks once for the caret, on a mounted composer (an Edit's refill); the same wait as after a send. */
@@ -512,7 +511,7 @@ export function ChatComposer({
   const submit = (value: string) => {
     const text = value.trim();
     /* `allowEmptyText` is the caller saying the message carries an image. */
-    if ((text === '' && !allowEmptyText) || disabled) return;
+    if ((text === '' && !allowEmptyText) || disabled || editing?.canSubmit === false) return;
     const question = onSideConversation === undefined ? null : sideQuestion(text);
     if (question !== null) {
       if (onSideConversation?.(question) === false) {
@@ -579,7 +578,7 @@ export function ChatComposer({
           return;
         }
         if (route === 'menu' || event.key !== 'Enter' || event.shiftKey) return;
-        if (disabled) {
+        if (disabled || editing?.canSubmit === false) {
           event.preventDefault();
           event.stopPropagation();
           return;
@@ -630,7 +629,7 @@ export function ChatComposer({
             <>{sendAdornment}{sendDoor}</>
           )}
           input={(
-            <div ref={messageInputRef} className={layout === 'mobile' ? mobileStyles.input : undefined}><ChatComposerInput
+            <div ref={messageInputRef} className={layout === 'mobile' ? mobileStyles.input : styles.input}><ChatComposerInput
               /* Longer drafts scroll inside the editor, leaving room for a shared pane's recovery strip and Send. */
               maxRows={3}
               onFiles={disabled ? undefined : onFiles}
@@ -651,8 +650,8 @@ export function ChatComposer({
               <span className={styles.sendWait}><LoadingIndicator active={sendWaiting && !stopShown} /></span>
             </span>
           } />
-            : <Button label={sendWaiting ? 'Sending…' : 'Replace message'} variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
-              isLoading={sendWaiting} isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)}
+            : <Button label={sendWaiting ? 'Sending…' : editing.submitLabel ?? 'Replace message'} variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
+              isLoading={sendWaiting} isDisabled={disabled || editing.canSubmit === false || (draft.trim() === '' && !allowEmptyText)}
               onClick={() => { submit(draft); }} />}
         />
       </SizeMotion>

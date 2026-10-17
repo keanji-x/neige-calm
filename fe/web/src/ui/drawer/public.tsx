@@ -166,6 +166,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
       className={`${styles.drawer} ${inline ? styles.embedded : ''} ${closing ? styles.drawerClosing : ''}`}
       role={inline ? "region" : "complementary"}
       data-nc-drawer=""
+      data-nc-drawer-open={open ? '' : undefined}
       data-nc-escape-layer={open ? '' : undefined}
       data-nc-drawer-resizable={width !== undefined ? '' : undefined}
       /* Labelled once: by the painted desktop title, or, compact, by the name the shared Header also paints. */

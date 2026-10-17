@@ -37,7 +37,7 @@ vi.mock('../../../../core/domain/recovery/access.ts', async (importOriginal) => 
 }));
 
 /** Text in the drawer outside its desktop header, which paints the conversation's name (often its first message). */
-const TRANSCRIPT_TEXT = { ignore: 'script, style, [data-nc-drawer] > header *' };
+const TRANSCRIPT_TEXT = { ignore: 'script, style, [data-nc-drawer] > header *, [aria-hidden="true"] *' };
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
@@ -971,7 +971,7 @@ describe('track conversations', () => {
     expect(within(drawerElement()).getByText('Waiting for the server', TRANSCRIPT_TEXT)).toBeTruthy();
     expect(document.querySelector('[data-nc-queued-note]')).toBeNull();
     await act(async () => { resolve(inputAccepted()); await held; });
-    await screen.findByText('Queued · sends when this turn ends');
+    await screen.findByText('等待处理…');
     expect(messageField().getAttribute('contenteditable')).toBe('true');
   });
 
@@ -1178,6 +1178,10 @@ describe('track conversations', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain(text));
+    const queued = document.querySelector('[data-nc-pending-entry="entry-9"]')!;
+    expect(queued.closest('[data-nc-entry]')).toBeNull();
+    expect(queued.closest('[data-nc-composer]')).toBeNull();
+    expect(queued.querySelector('[data-nc-pending-entry-text]')?.textContent).toBe(text);
     await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
     expect(messageField().getAttribute('contenteditable')).toBe('true');
   });
@@ -2281,10 +2285,10 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
     fireEvent.click(deleteIn(ASSISTANT_CARD.id));
-    await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).hasAttribute('disabled')).toBe(true));
+    await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(true));
     await pickPlanner();
     await waitFor(() => expect(entryOf(PLANNER_CARD.id)).toBeDefined());
-    expect(deleteIn(PLANNER_CARD.id).hasAttribute('disabled')).toBe(false);
+    expect(deleteIn(PLANNER_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false);
     await act(async () => { answer(); await answered; });
   });
 
@@ -2317,7 +2321,7 @@ describe('track conversations', () => {
     await waitFor(() => expect(entryOf(PLANNER_CARD.id)).toBeDefined());
     await pickAssistant();
     await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
-    expect(deleteIn(ASSISTANT_CARD.id).hasAttribute('disabled')).toBe(true);
+    expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(true);
     fireEvent.click(deleteIn(ASSISTANT_CARD.id));
     await act(async () => { answer(); await answered; });
     expect(deletes()).toHaveLength(1);
@@ -2673,7 +2677,7 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     await screen.findByRole('button', { name: 'Paused' });
     const thread = drawerElement().querySelector<HTMLElement>('[data-nc-thread]')!;
-    expect(within(thread).getAllByRole('status', { name: 'Current response status' })).toHaveLength(1);
+    expect(within(drawerElement()).getAllByRole('status', { name: 'Current response status' })).toHaveLength(1);
     expect(thread.querySelector('[data-nc-turn-outcome]')).toBeNull();
     expect(screen.queryByText('Previous outcome reason.')).toBeNull();
     expect(messageField().getAttribute('contenteditable')).toBe('false');
@@ -2851,7 +2855,7 @@ describe('track conversations', () => {
     await screen.findByRole('button', { name: 'Stop' });
     await typeInto(messageField(), 'Queued before the stall');
     await submit();
-    await screen.findByText('Queued · sends when this turn ends');
+    await screen.findByText('等待处理…');
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
     expect(await screen.findByRole('button', { name: 'Paused', expanded: false })).toBeTruthy();
