@@ -120,17 +120,29 @@ async fn store_partial(
         "completedAtMs": crate::model::now_ms(),
         "_partial": true,
     });
-    let row_id = insert_item_row(
-        inner,
-        thread_id,
-        Some(turn_id),
-        Some(&reply.item_id),
-        Some(REPLY_ITEM_TYPE),
-        method,
-        &serde_json::to_string(&params)?,
-        None,
-    )
-    .await?;
+    let row_id = if inner.inputs.canonical().is_some() {
+        let Some(row) =
+            super::canonical::persist_native_item(inner, thread_id, Some(turn_id), method, &params)
+                .await?
+        else {
+            // An erased or retired source also retires its ephemeral body.
+            live.item_stored(&reply.item_id);
+            return Ok(());
+        };
+        row
+    } else {
+        insert_item_row(
+            inner,
+            thread_id,
+            Some(turn_id),
+            Some(&reply.item_id),
+            Some(REPLY_ITEM_TYPE),
+            method,
+            &serde_json::to_string(&params)?,
+            None,
+        )
+        .await?
+    };
     live.item_stored(&reply.item_id);
     emit_item_added(
         inner,

@@ -15,6 +15,9 @@ use calm_types::conversation::{
 };
 use std::collections::HashMap;
 
+mod content;
+pub(super) use content::{on_notification, persist_native_item};
+
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
 
@@ -120,6 +123,13 @@ async fn publish(inner: &Inner, next: CommittedFrame) {
     *inner.last_turn_id.lock().await = header.last_turn_id.clone();
     *inner.turn_budget.lock().await = header.turn_budget.clone();
     *inner.last_phase.lock().await = header.phase;
+    *inner.token_usage.lock().await = header.token_usage.clone();
+    *inner.context_usage_invalidation.lock().await =
+        header
+            .context_usage_invalidated
+            .then_some(compact_command::UsageInvalidation {
+                user_turn_id: header.context_usage_invalidated_turn.clone(),
+            });
     inputs.publish_committed(next).await;
 }
 
@@ -534,39 +544,6 @@ fn require_head(
         return Err(CalmError::Conflict(
             "canonical execution or pending head changed".into(),
         ));
-    }
-    Ok(())
-}
-
-pub(super) async fn on_notification(
-    inner: &Arc<Inner>,
-    live: &LiveReplyWriter,
-    kind: PlannerEventKind,
-) -> Result<()> {
-    match kind {
-        PlannerEventKind::ReplyDelta {
-            turn_id,
-            item_id,
-            delta,
-        } => live.delta(&turn_id, &item_id, &delta),
-        PlannerEventKind::TurnStarted { .. }
-        | PlannerEventKind::TurnCompleted { .. }
-        | PlannerEventKind::TurnAborted { .. }
-        | PlannerEventKind::ThreadIdle => {
-            if let Some(done) = crate::harness::input_dispatch::complete_once(
-                inner.repo.as_ref(),
-                &inner.backend,
-                inner.card_id.as_str(),
-                &inner.worker_session_id,
-            )
-            .await?
-            {
-                publish(inner, written(done)?).await;
-            }
-        }
-        // Display/usage handling is added through the existing item owner; no
-        // native echo can manufacture a second human message or phase writer.
-        _ => {}
     }
     Ok(())
 }

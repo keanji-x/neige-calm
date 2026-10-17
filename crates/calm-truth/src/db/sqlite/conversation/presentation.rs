@@ -5,6 +5,115 @@ use sqlx::{Sqlite, Transaction};
 
 type NativeItemIdentityRow = (String, Option<String>, Option<String>, String, String);
 
+/// Content is a native thread/item observation, never an input acceptance or END
+/// proof. Keep its body and display reference in the same erasure transaction.
+pub async fn observe_native_item_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &super::CurrentInputCarrier,
+    thread: &str,
+    turn: Option<&str>,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<Option<i64>> {
+    use calm_types::conversation::InputDeliveryFact;
+    let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+        serde_json::from_value(carrier.snapshot().clone())?;
+    // A crossing is enough to observe content: requiring Accepted or the active
+    // native turn loses early replies and historical items after the next claim.
+    if frame.header.last_thread_id.as_deref() != Some(thread)
+        || !carrier.checkpoint().attempts.iter().any(|attempt| {
+            attempt.correlation.thread_id == thread
+                && !matches!(attempt.delivery, InputDeliveryFact::NotDispatched { .. })
+        })
+    {
+        return Ok(None);
+    }
+    let item = params
+        .pointer("/item/id")
+        .and_then(serde_json::Value::as_str);
+    let kind = params
+        .pointer("/item/type")
+        .and_then(serde_json::Value::as_str);
+    // Human/System input presentation is already canonical. A native echo may
+    // neither make another body nor restore an erased source payload.
+    if calm_types::harness::is_native_user_message_type(kind)
+        || params
+            .get("_projection")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    {
+        return Ok(None);
+    }
+    let identity = native_source_identity(thread, item, kind, method, params)?;
+    let erased: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM conversation_presentations
+         WHERE card_id=?1 AND source_kind='native_item' AND source_identity=?2
+         AND erased_by_operation_id IS NOT NULL)",
+    )
+    .bind(carrier.card_id())
+    .bind(&identity)
+    .fetch_one(&mut **tx)
+    .await?;
+    if erased {
+        return Ok(None);
+    }
+    let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+        .bind(carrier.card_id())
+        .fetch_one(&mut **tx)
+        .await?;
+    let row = super::super::transcript_projection::insert_transcript_row(
+        &mut **tx,
+        carrier.worker_session_id(),
+        carrier.card_id(),
+        &track,
+        thread,
+        turn,
+        item,
+        kind,
+        method,
+        &serde_json::to_string(params)?,
+        None,
+    )
+    .await?;
+    allocate_presentation_tx(
+        tx,
+        carrier.card_id(),
+        PresentationSource::NativeItem { row_id: row },
+    )
+    .await?;
+    Ok(Some(row))
+}
+
+fn native_source_identity(
+    thread: &str,
+    item: Option<&str>,
+    kind: Option<&str>,
+    method: &str,
+    params: &serde_json::Value,
+) -> Result<String> {
+    let item = item.filter(|id| !id.is_empty()).ok_or_else(|| {
+        CalmError::Conflict("native presentation requires a persisted native item identity")
+    })?;
+    if thread.is_empty() {
+        return Err(CalmError::Conflict(
+            "native presentation requires its persisted thread identity",
+        ));
+    }
+    if calm_types::harness::is_native_user_message_type(kind)
+        || kind.is_none_or(str::is_empty)
+        || params
+            .get("_projection")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        || !matches!(method, "item/started" | "item/completed")
+    {
+        return Err(CalmError::Conflict(
+            "input projections and echoes use their canonical source presentation, not NativeItem",
+        ));
+    }
+    Ok(serde_json::to_string(&(thread, item))?)
+}
+
 pub enum PresentationSource<'a> {
     HumanMessage(&'a ConversationMessageId),
     SystemObservation(&'a SystemObservationId),
@@ -100,27 +209,14 @@ async fn native_identity_tx(
             .await?;
     let (thread, item, item_type, method, params) =
         row.ok_or_else(|| CalmError::Conflict("native item does not belong to this conversation"))?;
-    let item = item.filter(|id| !id.is_empty()).ok_or_else(|| {
-        CalmError::Conflict("native presentation requires a persisted native item identity")
-    })?;
-    if thread.is_empty() {
-        return Err(CalmError::Conflict(
-            "native presentation requires its persisted thread identity",
-        ));
-    }
     let params: serde_json::Value = serde_json::from_str(&params)?;
-    if calm_types::harness::is_native_user_message_type(item_type.as_deref())
-        || item_type.as_deref().is_none_or(str::is_empty)
-        || params
-            .get("_projection")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-        || !matches!(method.as_str(), "item/started" | "item/completed")
-    {
-        return Err(CalmError::Conflict(
-            "input projections and echoes use their canonical source presentation, not NativeItem",
-        ));
-    }
+    let identity = native_source_identity(
+        &thread,
+        item.as_deref(),
+        item_type.as_deref(),
+        &method,
+        &params,
+    )?;
     // Completed is terminal for this native item identity. A late started frame
     // cannot regress the current reference; receipt rebuilds use fresh row IDs.
     let current_row:i64=sqlx::query_scalar("SELECT id
@@ -130,5 +226,5 @@ async fn native_identity_tx(
          AND json_valid(params) AND json_extract(params,'$._projection') IS NOT 1 ORDER BY (method=
          'item/completed') DESC,id DESC LIMIT 1")
         .bind(card_id).bind(&thread).bind(&item).fetch_one(&mut **tx).await?;
-    Ok((serde_json::to_string(&(thread, item))?, current_row))
+    Ok((identity, current_row))
 }

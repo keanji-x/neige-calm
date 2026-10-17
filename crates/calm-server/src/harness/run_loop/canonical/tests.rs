@@ -8,6 +8,8 @@ use crate::shared_codex_appserver::native_owner_tests::{connect, notify_thread, 
 use calm_types::conversation::{HumanPayload, InputDeliveryFact};
 use serde_json::json;
 
+mod content_tests;
+
 struct Fixture {
     original: ExistingRuntime,
     harness: PlannerHarness,
@@ -16,6 +18,7 @@ struct Fixture {
     auth: crate::auth::AuthState,
     session: String,
     daemon: Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
+    registry: crate::harness::registry::HarnessRegistry,
 }
 
 impl Fixture {
@@ -90,6 +93,7 @@ impl Fixture {
             &inner.worker_session_id,
         )
         .unwrap();
+        let registry = crate::harness::registry::HarnessRegistry::default();
         let harness = PlannerHarness::run(PlannerHarnessParams {
             worker_session_id: inner.worker_session_id.clone(),
             track_id: inner.track_id.clone(),
@@ -100,13 +104,19 @@ impl Fixture {
             card_role_cache: inner.card_role_cache.clone(),
             track_area_cache: inner.track_area_cache.clone(),
             backend,
-            live_replies: LiveReplies::for_test(),
+            live_replies: registry.live_replies().clone(),
             config: inner.config,
             snapshot: HarnessRuntimeSnapshot::decode(serde_json::to_value(snapshot).unwrap())
                 .unwrap(),
         })
         .await
         .unwrap();
+        assert!(
+            registry
+                .try_reserve(inner.worker_session_id.clone())
+                .unwrap()
+                .install(harness.clone())
+        );
         Self {
             original,
             harness,
@@ -115,6 +125,7 @@ impl Fixture {
             auth,
             session,
             daemon,
+            registry,
         }
     }
 
