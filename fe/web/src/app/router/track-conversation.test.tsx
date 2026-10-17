@@ -4130,7 +4130,7 @@ it('the injected planner row reads activity.cards and last_turn_completed_ms', a
   await refetch();
   await waitFor(() => expect(indicator()).toBe('failed'));
   expect(row().getAttribute('aria-label')).toBe('Conversation Planner chat');
-  expect(document.getElementById(row().getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
+  expect(document.getElementById(row().getAttribute('aria-describedby') ?? '')?.textContent).toBe('Planner · Needs attention');
 });
 
 it('an edited conversation retry cannot cross recovery after its reconciliation read completed', async () => {
