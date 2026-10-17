@@ -21,6 +21,9 @@ pub use attachment::*;
 pub use directory_relation::*;
 pub use transferred_directory::*;
 
+pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
+
 pub const EXECUTION_ENVELOPE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

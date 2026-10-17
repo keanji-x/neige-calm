@@ -1,8 +1,7 @@
 use super::*;
 use std::time::Duration;
 
-pub const STOP_GRACE: Duration = Duration::from_millis(200);
-pub const DRAIN_BUDGET: Duration = Duration::from_millis(1000);
+use calm_session::control::execution::{DRAIN_BUDGET, STOP_GRACE};
 
 impl Executor {
     /// Caller holds the resource gate. The first Stop fixes the deadline for this native scope.
@@ -16,34 +15,22 @@ impl Executor {
             .ok_or_else(|| {
                 anyhow::anyhow!("original native execution unavailable; recovery required")
             })?;
+        anyhow::ensure!(
+            process.ready.load(std::sync::atomic::Ordering::SeqCst),
+            "helper is not ready for Stop"
+        );
         let mut deadline = process.stop_deadline.lock().map_err(poison)?;
         let first = deadline.is_none();
-        deadline.get_or_insert(tokio::time::Instant::now() + STOP_GRACE);
+        let kill_at = *deadline.get_or_insert(tokio::time::Instant::now() + STOP_GRACE);
         drop(deadline);
         if !first {
             return Ok(());
         }
         tokio::spawn(async move {
-            // A Stop accepted immediately after launch still waits for the helper's handler.
-            while !process.started.load(std::sync::atomic::Ordering::SeqCst) {
-                if process.reaped.load(std::sync::atomic::Ordering::SeqCst) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
             if let Err(error) = process.signal(calm_session::control::ProcSignal::Term) {
                 tracing::error!(%error, "cannot TERM execution scope");
             }
-            loop {
-                let deadline = match process.stop_deadline.lock() {
-                    Ok(deadline) => deadline.expect("Stop owns a deadline"),
-                    Err(_) => return,
-                };
-                if tokio::time::Instant::now() >= deadline {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            tokio::time::sleep_until(kill_at).await;
             if let Err(error) = process.signal(calm_session::control::ProcSignal::Kill) {
                 tracing::error!(%error, "cannot KILL execution scope");
             }
@@ -60,6 +47,7 @@ impl Executor {
                 Ok(records) => records.keys().cloned().collect::<Vec<_>>(),
                 Err(_) => return,
             };
+            let mut waiting = Vec::new();
             for id in &ids {
                 let Ok(first) = self.record(id) else {
                     continue;
@@ -83,14 +71,24 @@ impl Executor {
                     if let Err(error) = self.persist(record) {
                         tracing::error!(%error, "cannot persist shutdown before-fork settlement");
                     }
-                } else if !record.durably_settled()
-                    && let Err(error) = self.stop_execution(id)
-                {
-                    tracing::error!(%error, "cannot stop execution during shutdown");
+                } else if !record.durably_settled() {
+                    let live = self
+                        .processes
+                        .lock()
+                        .is_ok_and(|processes| processes.contains_key(id));
+                    match self.stop_execution(id) {
+                        Ok(()) => waiting.push(id.clone()),
+                        Err(error) => {
+                            tracing::error!(%error, "cannot stop execution during shutdown");
+                            if live {
+                                waiting.push(id.clone());
+                            }
+                        }
+                    }
                 }
             }
             loop {
-                if ids
+                if waiting
                     .iter()
                     .all(|id| self.record(id).is_ok_and(|record| record.durably_settled()))
                 {

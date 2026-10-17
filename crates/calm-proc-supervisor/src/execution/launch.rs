@@ -91,10 +91,7 @@ impl Executor {
         record = self.latch(record)?;
         self.persist(record.clone())?;
         let output_log = output::OutputLog::open(
-            &self
-                .store
-                .path()
-                .join(format!("{}.output", request.execution_id.as_str())),
+            &self.store.output_path(&request.execution_id),
             record.request.specification.replay_bytes,
         )?;
         self.outputs
@@ -309,6 +306,7 @@ mod tests {
         );
         let original = executor.record(&consume.execution_id).unwrap();
         assert!(matches!(original.phase, Phase::NoChild { .. }));
+        assert_eq!(original.output_end, OutputEnd::Complete { final_cursor: 0 });
         assert!(matches!(
             executor.launch(consume.clone()).await.unwrap(),
             ExecutionReply::Receipt {

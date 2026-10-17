@@ -39,6 +39,7 @@ use std::{
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) enum HelperEvent {
+    Ready,
     Started,
     LeaderExited { status: Option<i32> },
     Drained { status: Option<i32> },
@@ -52,6 +53,14 @@ extern "C" fn remember_signal(signal: i32) {
 }
 
 pub fn run(config_fd: RawFd, report_fd: RawFd) -> anyhow::Result<()> {
+    run_with_command_hook(config_fd, report_fd, |_| {})
+}
+
+pub(super) fn run_with_command_hook(
+    config_fd: RawFd,
+    report_fd: RawFd,
+    before_spawn: impl FnOnce(&mut Command),
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         config_fd > 2 && report_fd > 2 && config_fd != report_fd,
         "invalid helper descriptors"
@@ -122,7 +131,25 @@ pub fn run(config_fd: RawFd, report_fd: RawFd) -> anyhow::Result<()> {
     unsafe {
         command.pre_exec(super::process::mark_child_descriptors_cloexec);
     }
-    let mut child = match command.spawn() {
+    before_spawn(&mut command);
+    // Readiness precedes the target exec handshake. The helper remains able to forward
+    // Stop signals while std waits for exec (including a slow filesystem/loader).
+    send(&mut report, &context, &HelperEvent::Ready);
+    let (spawned, receive) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = spawned.send(command.spawn());
+    });
+    let result = loop {
+        match receive.try_recv() {
+            Ok(result) => break result,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                anyhow::bail!("target spawn worker ended")
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => forward_signal()?,
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let mut child = match result {
         Ok(child) => child,
         Err(error) => {
             send(
@@ -151,21 +178,7 @@ pub fn run(config_fd: RawFd, report_fd: RawFd) -> anyhow::Result<()> {
             root_exited = true;
             send(&mut report, &context, &HelperEvent::LeaderExited { status });
         }
-        // This kernel-reported list belongs to this dedicated single owner, not the host.
-        let children = immediate_children()?;
-        let signal = REQUESTED_SIGNAL.load(Ordering::SeqCst);
-        for pid in &children {
-            if signal != 0 {
-                signal_child(
-                    *pid,
-                    if signal == libc::SIGUSR1 {
-                        libc::SIGKILL
-                    } else {
-                        signal
-                    },
-                )?;
-            }
-        }
+        forward_signal()?;
         match peek_child()? {
             ChildObservation::NoChildren if root_exited => {
                 // No further fork entry exists here. ECHILD is kernel evidence, not a /proc snapshot.
@@ -234,20 +247,61 @@ fn send(report: &mut File, context: &HelperContext, event: &HelperEvent) {
 }
 
 fn immediate_children() -> anyhow::Result<Vec<u32>> {
-    let path = format!("/proc/self/task/{}/children", std::process::id());
-    let contents = std::fs::read_to_string(path)?;
-    contents
-        .split_whitespace()
-        .map(|pid| pid.parse().map_err(Into::into))
-        .collect()
+    let mut children = Vec::new();
+    // A target in std's exec handshake belongs to the spawning thread until it exits.
+    for task in std::fs::read_dir("/proc/self/task")? {
+        let path = task?.path().join("children");
+        let contents = match std::fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        for pid in contents.split_whitespace() {
+            children.push(pid.parse()?);
+        }
+    }
+    Ok(children)
 }
 
-fn signal_child(pid: u32, signal: i32) -> anyhow::Result<()> {
-    // Child PIDs cannot be reused before this sole helper has reaped them.
-    // SAFETY: positive immediate child PID, never a process-group wildcard.
-    let result = unsafe { libc::kill(i32::try_from(pid)?, signal) };
-    if result < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-        return Err(std::io::Error::last_os_error().into());
+fn forward_signal() -> anyhow::Result<()> {
+    use std::os::fd::AsRawFd;
+    let signal = REQUESTED_SIGNAL.load(Ordering::SeqCst);
+    if signal == 0 {
+        return Ok(());
+    }
+    for pid in immediate_children()? {
+        // Pin first, then revalidate scope membership: the spawn worker can reap an exec failure.
+        // No signal is ever delivered through a recycled numeric PID.
+        // SAFETY: opening a native handle has no signaling or reaping side effect.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if fd < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                continue;
+            }
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // SAFETY: successful pidfd_open transferred this unique descriptor.
+        let handle = unsafe { File::from_raw_fd(fd as RawFd) };
+        if !immediate_children()?.contains(&pid) {
+            continue;
+        }
+        // SAFETY: the owned pidfd was pinned before scope membership was revalidated.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                handle.as_raw_fd(),
+                if signal == libc::SIGUSR1 {
+                    libc::SIGKILL
+                } else {
+                    signal
+                },
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if result < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            return Err(std::io::Error::last_os_error().into());
+        }
     }
     Ok(())
 }

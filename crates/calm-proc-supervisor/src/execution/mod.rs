@@ -15,6 +15,8 @@ mod process;
 mod retirement;
 mod scope_helper;
 mod shutdown;
+#[cfg(test)]
+mod stop_tests;
 mod validation;
 use validation::*;
 
@@ -102,11 +104,10 @@ impl Executor {
         let mut records = HashMap::new();
         let mut aliases: HashMap<String, AliasSlot> = HashMap::new();
         for mut record in store.load()? {
-            anyhow::ensure!(record.version == 3, "unsupported execution journal version");
-            let identity = &record.request.identity;
+            let identity = record.request.identity.clone();
             if let Some(receipt) = record.phase.receipt() {
                 anyhow::ensure!(
-                    receipt.identity == *identity,
+                    receipt.identity == identity,
                     "receipt identity does not match its journal"
                 );
             }
@@ -117,9 +118,7 @@ impl Executor {
                     "drain proof does not bind original scope receipt"
                 );
             }
-            let path = store
-                .path()
-                .join(format!("{}.output", identity.execution_id.as_str()));
+            let path = store.output_path(&identity.execution_id);
             if record.phase.receipt().is_some() || path.exists() {
                 // Persisted completion must agree with the actual durable log.
                 let log =
@@ -133,9 +132,20 @@ impl Executor {
                 }
                 outputs.insert(identity.execution_id.clone(), log);
             }
-            if record.output_end == OutputEnd::Open {
+            let rebooted = record.host_boot_id != host_boot_id;
+            // A formerly possible child can have output even when reboot maps it to NoChild.
+            if rebooted
+                && !matches!(
+                    record.phase,
+                    Phase::Prepared
+                        | Phase::Reserved { .. }
+                        | Phase::Revoked
+                        | Phase::NoChild { .. }
+                )
+                && record.output_end == OutputEnd::Open
+            {
                 record.output_end = OutputEnd::Incomplete {
-                    reason: "executor_restarted".into(),
+                    reason: "host_rebooted".into(),
                 };
             }
             record.phase = match &record.phase {
@@ -147,6 +157,17 @@ impl Executor {
                 phase if !phase.state().permits_handoff() => Phase::Unknown { slot_version: phase.slot_version().ok_or_else(|| anyhow::anyhow!("missing active alias version"))?, receipt: phase.receipt().cloned(), reason: "executor restarted without original native handles; reconciliation required".into() },
                 phase => phase.clone(),
             };
+            record.settle_unspawned_output();
+            if record.output_end == OutputEnd::Open {
+                record.output_end = OutputEnd::Incomplete {
+                    reason: if rebooted {
+                        "host_rebooted"
+                    } else {
+                        "executor_restarted"
+                    }
+                    .into(),
+                };
+            }
             store.save(&record)?;
             if let Some(version) = record.phase.slot_version() {
                 let slot = aliases
@@ -325,6 +346,7 @@ impl Executor {
             .ok_or_else(|| anyhow::anyhow!("unknown execution identity"))
     }
     fn persist(&self, mut record: Journal) -> anyhow::Result<()> {
+        record.settle_unspawned_output();
         self.store.save(&record)?;
         record.pending_persistence = false;
         self.records
@@ -343,6 +365,7 @@ impl Executor {
     }
 
     fn latch(&self, mut record: Journal) -> anyhow::Result<Journal> {
+        record.settle_unspawned_output();
         record.pending_persistence = true;
         self.records
             .lock()
@@ -656,6 +679,7 @@ impl Executor {
             "helper report identity mismatch"
         );
         record.phase = match report.event {
+            scope_helper::HelperEvent::Ready => anyhow::bail!("duplicate helper readiness report"),
             scope_helper::HelperEvent::Started => {
                 if let Some(process) = self.processes.lock().map_err(poison)?.get(id) {
                     process

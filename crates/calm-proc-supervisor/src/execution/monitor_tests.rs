@@ -50,7 +50,7 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
     // A real successfully spawned child owns its actual Child, pidfd and stdio. /bin/sh rejects
     // the helper envelope and exits; no payload or synthetic copy of process lifetime is involved.
     let output_log = output::OutputLog::open(&temp.path().join("output"), 1024).unwrap();
-    let (process, native, real_reports) = process::spawn(
+    let (process, native, real_reports) = process::spawn_unready(
         &executor.helper_image,
         &File::open("/").unwrap(),
         &specification,
@@ -78,7 +78,7 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
     };
     executor
         .persist(Journal {
-            version: 3,
+            version: journal::JOURNAL_VERSION,
             host_boot_id: executor.host_boot_id.clone(),
             output_end: OutputEnd::Open,
             request: PrepareExecution {

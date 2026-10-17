@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::Write,
+    io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::process::CommandExt,
@@ -18,6 +18,7 @@ use super::{
 };
 
 pub(super) struct Process {
+    pub ready: std::sync::atomic::AtomicBool,
     pub started: std::sync::atomic::AtomicBool,
     pub reaped: std::sync::atomic::AtomicBool,
     pub child: Mutex<OwnedChild>,
@@ -30,7 +31,7 @@ pub(super) struct Process {
 impl Process {
     pub fn signal(&self, signal: ProcSignal) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.started.load(std::sync::atomic::Ordering::SeqCst),
+            self.ready.load(std::sync::atomic::Ordering::SeqCst),
             "helper signal handler is not ready; retry exact control"
         );
         let signal = match signal {
@@ -96,6 +97,42 @@ impl Process {
 
 /// std's exec handshake proves spawn errors have reaped the failed executable child.
 pub(super) fn spawn(
+    helper: &File,
+    cwd: &File,
+    specification: &ExecutionSpecification,
+    context: HelperContext,
+    output_log: Arc<super::output::OutputLog>,
+) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
+    let expected = context.clone();
+    let (process, native, mut reports) =
+        spawn_unready(helper, cwd, specification, context, output_log)?;
+    // Consume exactly one frame: buffering here must not steal subsequent lifecycle reports.
+    let mut bytes = Vec::new();
+    loop {
+        let mut byte = [0];
+        anyhow::ensure!(
+            reports.read(&mut byte)? == 1,
+            "helper ended before readiness"
+        );
+        if byte[0] == b'\n' {
+            break;
+        }
+        anyhow::ensure!(bytes.len() < 64 * 1024, "oversized helper readiness");
+        bytes.push(byte[0]);
+    }
+    let report: super::scope_helper::HelperReport = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        report.context == expected
+            && matches!(report.event, super::scope_helper::HelperEvent::Ready),
+        "helper readiness identity mismatch"
+    );
+    process
+        .ready
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok((process, native, reports))
+}
+
+pub(super) fn spawn_unready(
     helper: &File,
     cwd: &File,
     specification: &ExecutionSpecification,
@@ -202,6 +239,7 @@ fn spawn_with_pin(
     };
     nonblocking(input.as_raw_fd())?;
     let process = Arc::new(Process {
+        ready: std::sync::atomic::AtomicBool::new(false),
         started: std::sync::atomic::AtomicBool::new(false),
         reaped: std::sync::atomic::AtomicBool::new(false),
         child: Mutex::new(child),

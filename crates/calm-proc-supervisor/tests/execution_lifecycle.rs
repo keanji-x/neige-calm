@@ -199,6 +199,10 @@ async fn host_reboot_is_no_child() {
     .unwrap();
     h.child = Harness::spawn(h.temp.path(), &h.socket);
     let mut c = h.connect().await;
+    assert_eq!(
+        journal(&h, &r)["output_end"]["Incomplete"]["reason"],
+        "host_rebooted"
+    );
     assert!(
         matches!(c.request(ExecutionRequest::Launch(consume(&r))).await.unwrap(), ExecutionReply::Receipt { state: ExecutionState::NoChild { reason }, .. } if reason == "host_rebooted")
     );
@@ -252,4 +256,71 @@ async fn escaped_output(
         ))
     };
     (c, r, receipt, file)
+}
+
+#[tokio::test]
+async fn never_spawned_output_revoke_survives_restart() {
+    let mut h = Harness::start().await;
+    let mut c = h.connect().await;
+    let a = authority();
+    let (scope, registration) = external(h.root("never-spawned", false), &a);
+    register(&mut c, registration).await;
+    let r = prepare(&c, scope, a, "never-spawned", IoMode::Pipe, "exit 1");
+    c.request(ExecutionRequest::Prepare(r.clone()))
+        .await
+        .unwrap();
+    c.request(ExecutionRequest::Revoke(consume(&r)))
+        .await
+        .unwrap();
+    let end = journal(&h, &r)["output_end"].clone();
+    assert_eq!(end, serde_json::json!({"Complete": {"final_cursor": 0}}));
+    unsafe {
+        libc::kill(h.child.id() as i32, libc::SIGTERM);
+    }
+    h.child.wait().unwrap();
+    drop(c);
+    h.child = Harness::spawn(h.temp.path(), &h.socket);
+    let _c = h.connect().await;
+    assert_eq!(journal(&h, &r)["output_end"], end);
+}
+
+#[tokio::test]
+async fn never_spawned_output_recovery_and_shutdown_paths() {
+    for phase in [
+        serde_json::json!("Prepared"),
+        serde_json::json!({"Reserved": {"slot_version": 1}}),
+    ] {
+        let mut h = Harness::start().await;
+        let mut c = h.connect().await;
+        let a = authority();
+        let (scope, registration) = external(h.root("no-child", false), &a);
+        register(&mut c, registration).await;
+        let r = prepare(&c, scope, a, "no-child", IoMode::Pipe, "exit 1");
+        c.request(ExecutionRequest::Prepare(r.clone()))
+            .await
+            .unwrap();
+        let mut before = journal(&h, &r);
+        unsafe {
+            libc::kill(h.child.id() as i32, libc::SIGTERM);
+        }
+        h.child.wait().unwrap();
+        assert_eq!(
+            journal(&h, &r)["output_end"],
+            serde_json::json!({"Complete":{"final_cursor":0}})
+        );
+        before["phase"] = phase;
+        std::fs::write(
+            h.journal()
+                .join(format!("{}.execution", r.identity.execution_id.as_str())),
+            serde_json::to_vec(&before).unwrap(),
+        )
+        .unwrap();
+        drop(c);
+        h.child = Harness::spawn(h.temp.path(), &h.socket);
+        let _c = h.connect().await;
+        assert_eq!(
+            journal(&h, &r)["output_end"],
+            serde_json::json!({"Complete":{"final_cursor":0}})
+        );
+    }
 }
