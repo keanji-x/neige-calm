@@ -270,6 +270,7 @@ impl PlannerHarnessStartAdapter {
         let mut checkpoint = output.clone();
         checkpoint.data = json!({"activation": "crossing_unknown"});
         let checkpoint_tx = checkpoint.clone();
+        let previous_output = output.clone();
         let expected = write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
                 let target = this.retained_target_tx(tx, &wire_tx).await?;
@@ -292,6 +293,7 @@ impl PlannerHarnessStartAdapter {
                     tx,
                     &op_tx,
                     AppServerInteractKind::MintAndAwait { thread_id: None },
+                    &previous_output,
                     &checkpoint_tx,
                 )
                 .await?;
@@ -313,12 +315,25 @@ impl PlannerHarnessStartAdapter {
         );
         let admitted = self.clone();
         let admitted_wire = wire.clone();
+        let admitted_operation = op.clone();
         let thread = self
             .daemon
             .thread_start_mint_admitted_for_card(&wire.card_id, params, move || {
                 let admitted = admitted.clone();
                 let wire = admitted_wire.clone();
-                async move { admitted.retained_target(&wire).await.map(|_| ()) }
+                let operation = admitted_operation.clone();
+                let repo = admitted.repo.clone();
+                async move {
+                    write_in_tx_typed(repo.as_ref(), move |tx| {
+                        Box::pin(async move {
+                            super::super::repo_sqlite::require_live_claim_tx(tx, &operation)
+                                .await?;
+                            admitted.retained_target_tx(tx, &wire).await?;
+                            Ok(())
+                        })
+                    })
+                    .await
+                }
             })
             .await
             .map_err(|_| {
@@ -327,6 +342,7 @@ impl PlannerHarnessStartAdapter {
         // The driver's existing failure journal must retain a returned native
         // identity even if binding/its event cannot commit. It remains held;
         // neither that error nor a later request authorizes another mint.
+        let previous_output = output.clone();
         output.data = json!({"activation":"native_known", "thread_id":thread});
         let repo = self.repo.clone();
         let wire = wire.clone();
@@ -411,6 +427,7 @@ impl PlannerHarnessStartAdapter {
                         AppServerInteractKind::MintAndAwait {
                             thread_id: Some(thread_tx),
                         },
+                        &previous_output,
                         &checkpoint,
                     )
                     .await?;

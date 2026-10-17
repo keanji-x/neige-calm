@@ -803,9 +803,21 @@ pub(crate) async fn create_track(
 ) -> Result<Response> {
     if request.first_message.is_some() {
         let source = source.ok_or(CalmError::Unauthorized)?.0;
-        let accepted =
-            create::dormant::accept_dormant_human_track(s.clone(), source, headers, request)
-                .await?;
+        let accepted = create::dormant::accept_dormant_human_track(
+            s.clone(),
+            source.clone(),
+            headers,
+            request,
+        )
+        .await?;
+        let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 {
+            planner_card_id, ..
+        } = accepted.ack;
+        crate::operation::planner_start_fence::wake_canonical_human(
+            s,
+            CardId::from(planner_card_id),
+            source,
+        );
         return Ok((StatusCode::CREATED, Json(accepted.track)).into_response());
     }
     if request.admin {

@@ -2,10 +2,10 @@
 //! receipt; the existing canonical carrier is its only pending queue.
 use super::*;
 use crate::auth::HumanInputSource;
-use crate::db::sqlite::conversation::{current_input_carrier_tx, message_tx};
+use crate::db::sqlite::conversation::{current_input_content_carrier_tx, message_tx};
 use crate::db::sqlite::{PlannerInputBinding, planner_input_bind_tx};
 use calm_types::conversation::{
-    AcceptedInputRef, ConversationMessageId, HumanPayload, MessageAuthor, MessageRevisionRef,
+    AcceptedInputRef, ConversationMessageId, HumanPayload, MessageAuthor,
 };
 
 pub(super) async fn accept(
@@ -77,22 +77,13 @@ pub(super) async fn accept(
                         .into(),
                 ));
             }
-            let runtime = crate::db::sqlite::session_projection_active_for_card_tx(tx, &card_id)
-                .await?
-                .ok_or_else(|| CalmError::Conflict(
-                    "conversation has no retained canonical carrier".into(),
-                ))?;
-            if runtime.handle_state_json.as_ref().is_some_and(|value| {
-                value.get("schema_version").and_then(serde_json::Value::as_u64) == Some(1)
-            }) {
-                return Err(CalmError::Conflict(
-                    "historical input requires explicit activation before new Human acceptance"
-                        .into(),
-                ));
-            }
-            let mut carrier = current_input_carrier_tx(tx, &card_id, &runtime.id).await?;
-            let (_, current_session) =
-                crate::harness::profile::input_carrier_binding_tx(tx, &carrier).await?;
+            let mut carrier = current_input_content_carrier_tx(tx, &card_id).await?;
+            let current_session = crate::db::sqlite::session_get_tx(
+                tx,
+                &calm_types::worker::WorkerSessionId(carrier.worker_session_id().into()),
+            )
+            .await?
+            .ok_or_else(|| CalmError::Conflict("conversation carrier disappeared".into()))?;
             let current = source.current_principal()?;
             let accepted = crate::conversation_inputs::accept_human_tx(
                 tx,
@@ -109,7 +100,7 @@ pub(super) async fn accept(
             };
             let binding = PlannerInputBinding {
                 payload_hash,
-                worker_session_id: runtime.id,
+                worker_session_id: carrier.worker_session_id().to_owned(),
                 entry_id: Some(message.message_id.as_str().to_owned()),
             };
             planner_input_bind_tx(tx, &card_id, &raw_key, &binding).await?;
@@ -134,15 +125,19 @@ pub(super) async fn accept(
                 scope,
                 event,
             };
-            Ok((response(card_id, binding), Some((message, envelope))))
+            Ok((response(card_id, binding), Some(envelope)))
         })
     })
     .await?;
     let (ack, fresh) = result;
-    if let Some((message, envelope)) = fresh {
+    if let Some(envelope) = fresh {
         state.events.emit_envelope(envelope);
-        observe_existing(state, &ack.worker_session_id, message, source_for_wake);
     }
+    crate::operation::planner_start_fence::wake_canonical_human(
+        state.clone(),
+        ack.card_id.clone(),
+        source_for_wake,
+    );
     Ok(ack)
 }
 
@@ -151,22 +146,5 @@ fn response(card_id: String, binding: PlannerInputBinding) -> SendPlannerInputRe
         card_id: CardId::from(card_id),
         worker_session_id: binding.worker_session_id,
         entry_id: binding.entry_id,
-    }
-}
-
-/// No queue/receipt or startup authority lives here. An existing owner receives
-/// the exact committed ref asynchronously; native failure cannot undo the ACK.
-pub(crate) fn observe_existing(
-    state: &RouteState,
-    runtime_id: &String,
-    message: MessageRevisionRef,
-    source: HumanInputSource,
-) {
-    if let Some(harness) = state.harness.get(runtime_id) {
-        tokio::spawn(async move {
-            if let Err(error) = harness.observe_canonical_source(message, source).await {
-                tracing::warn!(%error, "accepted input awaits its live source owner");
-            }
-        });
     }
 }
