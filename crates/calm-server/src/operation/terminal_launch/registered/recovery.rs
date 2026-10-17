@@ -16,11 +16,15 @@ pub(crate) struct OriginalRegisteredLaunch {
     pub(crate) original: RegisteredRequest,
 }
 
-pub(crate) async fn lookup(pool: &sqlx::SqlitePool, terminal_id: &str) -> Result<OriginalLaunch> {
-    let mut tx = begin_immediate_tx(pool).await?;
-    let result = lookup_tx(&mut tx, terminal_id).await?;
-    tx.commit().await?;
-    Ok(result)
+pub(crate) async fn lookup(
+    repo: &dyn crate::db::RouteRepo,
+    terminal_id: &str,
+) -> Result<OriginalLaunch> {
+    let terminal_id = terminal_id.to_owned();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move { lookup_tx(tx, &terminal_id).await })
+    })
+    .await
 }
 
 pub(crate) async fn lookup_tx(tx: &mut Tx<'_>, terminal_id: &str) -> Result<OriginalLaunch> {
@@ -96,7 +100,7 @@ async fn query(
 
 pub(crate) async fn restore(
     config: &RegisteredExecutorConfig,
-    pool: &sqlx::SqlitePool,
+    repo: std::sync::Arc<dyn crate::db::RouteRepo>,
     original: &OriginalRegisteredLaunch,
 ) -> Result<std::sync::Arc<RegisteredExecution>> {
     let (receipt, state) = query(config, original).await?;
@@ -112,7 +116,7 @@ pub(crate) async fn restore(
             original.original.request.clone(),
             receipt,
         ),
-        pool: pool.clone(),
+        repo,
         operation_id: original.operation.id.clone(),
         original_payload_hash: original.operation.payload_hash.clone(),
     }))

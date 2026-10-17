@@ -25,7 +25,8 @@ pub(super) async fn spawn(
         ));
     };
     if RegisteredRequest::read(&output.data)?.is_none() {
-        let mut tx = begin_immediate_tx(&ctx.operation_repo.sqlite_pool()).await?;
+        let pool = ctx.operation_repo.sqlite_pool();
+        let mut tx = begin_immediate_tx(&pool).await?;
         require_live_claim_tx(&mut tx, op).await?;
         grant.require_current_tx(&mut tx).await?;
         tx.commit().await?;

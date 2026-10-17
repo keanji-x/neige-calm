@@ -90,10 +90,7 @@ async fn attach_original_registered(
     term: &Terminal,
 ) -> Result<Option<Arc<RendererEntry>>> {
     use crate::operation::terminal_launch::registered::{self, OriginalLaunch};
-    let pool = repo.sqlite_pool().ok_or_else(|| {
-        CalmError::Conflict("Terminal execution requires its owning SQL repository".into())
-    })?;
-    match registered::lookup(&pool, &term.id).await? {
+    match registered::lookup(repo, &term.id).await? {
         OriginalLaunch::Legacy => Ok(None),
         OriginalLaunch::AwaitingOriginalRequest => Err(CalmError::Conflict(
             "Terminal's original registered request is still pending".into(),
@@ -105,7 +102,8 @@ async fn attach_original_registered(
                     "original Terminal requires its configured registered executor".into(),
                 ));
             };
-            let execution = registered::restore(config, &pool, &original).await?;
+            let execution =
+                registered::restore(config, renderer.owning_repository()?, &original).await?;
             let cfg = registered_renderer_config(
                 term,
                 &term.cwd,

@@ -42,7 +42,7 @@ enum ExecutionInputRetention {
 pub(crate) struct RegisteredExecution {
     _retention: ExecutionInputRetention,
     control: crate::terminal_executor_client::ExecutionControlHandle,
-    pool: sqlx::SqlitePool,
+    repo: std::sync::Arc<dyn crate::db::RouteRepo>,
     operation_id: String,
     original_payload_hash: String,
 }
@@ -51,13 +51,13 @@ impl RegisteredExecution {
     fn new(
         source: OpenedExecutionInput,
         control: crate::terminal_executor_client::ExecutionControlHandle,
-        pool: sqlx::SqlitePool,
+        repo: std::sync::Arc<dyn crate::db::RouteRepo>,
         op: &Operation,
     ) -> Self {
         Self {
             _retention: ExecutionInputRetention::Held(source),
             control,
-            pool,
+            repo,
             operation_id: op.id.clone(),
             original_payload_hash: op.payload_hash.clone(),
         }
@@ -68,26 +68,38 @@ impl RegisteredExecution {
             action,
             ProcessAction::WriteStdin { .. } | ProcessAction::Resize { .. }
         ) {
+            let id = self.operation_id.clone();
+            let hash = self.original_payload_hash.clone();
+            let authority = self.control.identity().authority.clone();
+            crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    let row =
+                        sqlx::query("SELECT * FROM operations WHERE id=?1 AND payload_hash=?2")
+                            .bind(id)
+                            .bind(hash)
+                            .fetch_one(&mut **tx)
+                            .await?;
+                    let op = super::super::repo_sqlite::operation_from_row(&row)?;
+                    let grant =
+                        super::super::terminal_adapter::admission::TerminalExecutionGrant::load_tx(
+                            tx, &op,
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            CalmError::Conflict("original Terminal grant is missing".into())
+                        })?;
+                    if grant.authority != authority {
+                        return Err(CalmError::Conflict(
+                            "original Terminal control authority changed".into(),
+                        ));
+                    }
+                    grant.require_current_tx(tx).await
+                })
+            })
+            .await?;
             if let ExecutionInputRetention::Held(source) = &self._retention {
                 source.validate()?;
             }
-            let mut tx = begin_immediate_tx(&self.pool).await?;
-            let row = sqlx::query("SELECT * FROM operations WHERE id=?1 AND payload_hash=?2")
-                .bind(&self.operation_id)
-                .bind(&self.original_payload_hash)
-                .fetch_one(&mut *tx)
-                .await?;
-            let op = super::super::repo_sqlite::operation_from_row(&row)?;
-            let grant = super::super::terminal_adapter::admission::TerminalExecutionGrant::load_tx(
-                &mut tx, &op,
-            )
-            .await?
-            .ok_or_else(|| CalmError::Conflict("original Terminal grant is missing".into()))?;
-            if grant.authority != self.control.identity().authority {
-                anyhow::bail!("original Terminal control authority changed");
-            }
-            grant.require_current_tx(&mut tx).await?;
-            tx.commit().await?;
         }
         Ok(self.control.control(action).await?)
     }
@@ -97,33 +109,40 @@ impl RegisteredExecution {
     }
 
     pub(crate) async fn stop(&self) -> Result<()> {
-        let row = sqlx::query("SELECT * FROM operations WHERE id=?1 AND payload_hash=?2")
-            .bind(&self.operation_id)
-            .bind(&self.original_payload_hash)
-            .fetch_one(&self.pool)
-            .await?;
-        let operation = super::super::repo_sqlite::operation_from_row(&row)?;
-        let original = RegisteredRequest::read(
-            &operation
-                .tx_output
-                .as_ref()
-                .ok_or_else(|| CalmError::Conflict("original launch output missing".into()))?
-                .data,
-        )?
-        .ok_or_else(|| CalmError::Conflict("original launch request missing".into()))?;
-        if &original.request.identity != self.control.identity() {
-            return Err(CalmError::Conflict(
-                "original terminal control identity changed".into(),
-            ));
-        }
-        stop_original(
-            self.control.config(),
-            &recovery::OriginalRegisteredLaunch {
-                operation,
-                original,
-            },
-        )
-        .await
+        let id = self.operation_id.clone();
+        let hash = self.original_payload_hash.clone();
+        let identity = self.control.identity().clone();
+        let original = crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let row = sqlx::query("SELECT * FROM operations WHERE id=?1 AND payload_hash=?2")
+                    .bind(id)
+                    .bind(hash)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                let operation = super::super::repo_sqlite::operation_from_row(&row)?;
+                let original = RegisteredRequest::read(
+                    &operation
+                        .tx_output
+                        .as_ref()
+                        .ok_or_else(|| {
+                            CalmError::Conflict("original launch output missing".into())
+                        })?
+                        .data,
+                )?
+                .ok_or_else(|| CalmError::Conflict("original launch request missing".into()))?;
+                if original.request.identity != identity {
+                    return Err(CalmError::Conflict(
+                        "original terminal control identity changed".into(),
+                    ));
+                }
+                Ok(recovery::OriginalRegisteredLaunch {
+                    operation,
+                    original,
+                })
+            })
+        })
+        .await?;
+        stop_original(self.control.config(), &original).await
     }
 }
 
@@ -299,7 +318,7 @@ pub(crate) async fn launch(
                     return Ok(std::sync::Arc::new(RegisteredExecution {
                         _retention: ExecutionInputRetention::OriginalControlOnly,
                         control: crate::terminal_executor_client::ExecutionControlHandle::new(config.clone(), original.request, receipt),
-                        pool, operation_id: op.id.clone(), original_payload_hash: op.payload_hash.clone(),
+                        repo: ctx.repo.clone(), operation_id: op.id.clone(), original_payload_hash: op.payload_hash.clone(),
                     }));
                 }
                 ExecutionReply::Receipt {state: ExecutionState::Prepared | ExecutionState::Forking, receipt: None} => {},
@@ -420,7 +439,7 @@ pub(crate) async fn launch(
                 original.request,
                 receipt,
             ),
-            pool,
+            ctx.repo.clone(),
             op,
         ),
     ))

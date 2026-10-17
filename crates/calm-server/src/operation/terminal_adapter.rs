@@ -390,8 +390,8 @@ impl ProviderAdapter for TerminalAdapter {
         }
 
         let grant = {
-            let mut tx =
-                crate::db::sqlite::begin_immediate_tx(&ctx.operation_repo.sqlite_pool()).await?;
+            let pool = ctx.operation_repo.sqlite_pool();
+            let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
             let grant = admission::TerminalExecutionGrant::load_tx(&mut tx, op).await?;
             if let Some(grant) = &grant {
                 if grant.contract == admission::TerminalExecutionContract::Legacy

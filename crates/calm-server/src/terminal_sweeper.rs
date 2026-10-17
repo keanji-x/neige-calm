@@ -465,10 +465,7 @@ async fn quiesce_original_registered(
     term: &Terminal,
 ) -> Result<OriginalCleanup> {
     use crate::operation::terminal_launch::registered::{self, OriginalLaunch};
-    let pool = repo.sqlite_pool().ok_or_else(|| {
-        crate::error::CalmError::Conflict("Terminal cleanup has no owning SQL repository".into())
-    })?;
-    match registered::lookup(&pool, &term.id).await? {
+    match registered::lookup(repo, &term.id).await? {
         OriginalLaunch::Legacy => Ok(OriginalCleanup::Legacy),
         OriginalLaunch::AwaitingOriginalRequest => Err(crate::error::CalmError::Conflict(
             "original registered Terminal has not completed its launch reservation".into(),

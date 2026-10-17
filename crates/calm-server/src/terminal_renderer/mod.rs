@@ -327,6 +327,13 @@ enum RendererClient {
 }
 
 impl TerminalRendererRegistry {
+    pub(crate) fn owning_repository(&self) -> crate::error::Result<Arc<dyn RouteRepo>> {
+        self.repo.clone().ok_or_else(|| {
+            crate::error::CalmError::Conflict(
+                "registered renderer requires its original repository".into(),
+            )
+        })
+    }
     pub fn new() -> Arc<Self> {
         Self::with_client(None, RendererClient::Legacy)
     }

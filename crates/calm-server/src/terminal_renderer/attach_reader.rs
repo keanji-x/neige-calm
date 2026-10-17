@@ -29,7 +29,7 @@ impl AttachConnection {
     async fn read(&mut self, proc_id: &str) -> anyhow::Result<ControlReply> {
         use calm_session::control::execution::{ExecutionReply, ExecutionState, ProcessAction};
         match self {
-            Self::Legacy(stream) => read_frame::<ControlReply, _>(stream).await,
+            Self::Legacy(stream) => Ok(read_frame::<ControlReply, _>(stream).await?),
             Self::Registered {
                 execution,
                 cursor,

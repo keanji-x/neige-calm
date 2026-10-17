@@ -76,7 +76,7 @@ impl ControlConnection {
         match self {
             Self::Legacy(stream) => {
                 write_frame(stream, &message).await?;
-                read_frame::<ControlReply, _>(stream).await
+                Ok(read_frame::<ControlReply, _>(stream).await?)
             }
             Self::Registered(execution) => match message {
                 ControlMsg::WriteStdin(request) => {
