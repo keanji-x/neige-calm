@@ -69,6 +69,13 @@ formatter per style and thread timezone. Its stable identity lets unchanged rows
 skip formatting during live updates; browser timezone changes are observed on
 render and invalidate the formatters.
 
+`exchange-navigation.tsx` owns the lit exchange and its scroll/resize listener.
+Its local marker updates render the rail without rereading unchanged transcript
+rows. It still uses the thread's existing scroll follower for jumps and the
+drawer seam for its portal; transcript grouping, following intent and all message
+nodes remain in their existing owners. The native hotspot regression retains all
+900 message nodes and an actual cross-message selection while the marker moves.
+
 `ChatThread` uses React's default prop memoization. The app supplies committed,
 view-scoped action callbacks and stable history inputs; it never suppresses a
 changed callback or reading-state update with a custom comparator. Composer

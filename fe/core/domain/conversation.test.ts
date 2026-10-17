@@ -9,7 +9,7 @@ import {
 import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
   CONVERSATION_CREATE_TEXT, CONVERSATION_STATE_SOURCE, conversationCreateFailure,
-  createSerialWriter, createTrackConversationOperation, sendPlannerInputOperation,
+  createSerialWriter, createTrackConversationOperation, sendPlannerInputOperation, editPlannerInputOperation,
   harnessItemToActivity, harnessItemToTurns as transcriptRowToMessages,
   isOptimisticConversationTurn, isQueuedConversationTurn, kernelQueuesInput,
   mergeTranscript, plannerQueueWriteFailure, readableCommand,
@@ -1323,4 +1323,14 @@ describe('createSerialWriter', () => {
     await write('b');
     expect(committed).toEqual(['a', 'b']);
   });
+});
+
+
+it('edits the same queued entry with the exact observed revision and requires stored text in the receipt', () => {
+  const operation = editPlannerInputOperation('card/a', 'entry/b', 'revised middle message', 7);
+  expect(operation.method).toBe('PATCH');
+  expect(operation.path).toBe('/api/cards/card%2Fa/planner/input/entry%2Fb');
+  expect(operation.body).toEqual({ text: 'revised middle message', if_entry_rev: 7 });
+  expect(operation.responseSchema.safeParse({ card_id: 'card/a', entry_id: 'entry/b', rev: 8, text: null }).success).toBe(false);
+  expect(operation.responseSchema.safeParse({ card_id: 'card/a', entry_id: 'entry/b', rev: 8, text: 'revised middle message' }).success).toBe(true);
 });

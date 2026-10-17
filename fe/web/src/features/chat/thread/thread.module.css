@@ -531,6 +531,12 @@
 
 
 
+  .emptyFrame { block-size: 100%; }
+  .pendingMessages { min-inline-size: 0; align-self: stretch; }
+  .pendingMessages:empty { display: none; }
+  .empty > [data-nc-current-meta] { align-self: stretch; }
+  .thread.empty > * + * { margin-block-start: 0; }
+
   .empty {
     display: flex;
     flex-direction: column;
@@ -564,6 +570,12 @@
    * Composer chrome is Astryx ChatComposer. This wrapper only insets it so
    * the library well sits on the same column as the transcript.
    */
+  /* An empty disabled editor loses its line box. Reserve the same line and
+     vertical padding while a send is out so the pinned composer cannot shrink. */
+  .input [contenteditable] {
+    min-block-size: calc(1lh + var(--space-2) * 2);
+  }
+
   .composer {
     flex: none;
     padding: 0 var(--nc-card-inset, var(--space-2)) var(--nc-card-inset, var(--space-2));

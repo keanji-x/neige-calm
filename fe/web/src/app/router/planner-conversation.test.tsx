@@ -704,7 +704,7 @@ describe('planner conversation regressions', () => {
     const queued = document.querySelector('[data-nc-queued]');
     expect(queued?.textContent).toBe('queued words');
     expect(document.querySelector('[data-nc-queued-note]')?.textContent)
-      .toContain('sends when this turn ends');
+      .toContain('等待处理…');
   });
 
   /* Once the POST answers with an entry id and `GET /planner/run` lists it, the queue
@@ -773,8 +773,8 @@ describe('planner conversation regressions', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain('sent once');
     });
-    expect(screen.getAllByText('sent once')).toHaveLength(1);
-    expect(document.querySelector('[data-nc-turn="you"]')).toBeNull();
+    expect(screen.getAllByText('sent once', { ignore: '[aria-hidden="true"] *' })).toHaveLength(1);
+    expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')).toBeNull();
 
     // The phase change after `turn/start` refetches `planner-run`.
     listed = false;
@@ -782,9 +782,9 @@ describe('planner conversation regressions', () => {
       await client.invalidateQueries({ queryKey: queryKeys.plannerRun(CARD.id) });
     });
     await waitFor(() => {
-      expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toContain('sent once');
+      expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')?.textContent).toContain('sent once');
     });
-    expect(screen.getAllByText('sent once')).toHaveLength(1);
+    expect(screen.getAllByText('sent once', { ignore: '[aria-hidden="true"] *' })).toHaveLength(1);
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
   });
 
@@ -1015,7 +1015,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
     });
     await waitFor(() => {
-      expect(screen.queryAllByText('take this back')).toHaveLength(0);
+      expect(screen.queryAllByText('take this back', { ignore: '[aria-hidden="true"] *' })).toHaveLength(0);
     });
   });
 

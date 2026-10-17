@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConversationTurn, TranscriptEntry } from './conversation.js';
 import {
-  beginSendOp, markedReplace, matchSendOps, outboxView, replacingTurn, settleSendOp, withConfirmedSends, withoutQueuedEntry,
+  beginSendOp, markedReplace, matchSendOps, outboxView, replacingTurn, settleSendOp, withConfirmedSends, withPendingMessages, synchronizeQueuedSends, presentPendingMessages, rememberQueuePlacements, withoutQueuedEntry,
   type SendOp, type SendOpPhase,
 } from './conversation-outbox.js';
 
@@ -15,7 +15,7 @@ const op = (key: string, phase: SendOpPhase, { before = 4, text = 'same', queued
 });
 
 const SENDING = { phase: 'sending', unknown: false } as const;
-const CONFIRMED = { phase: 'confirmed' } as const;
+const CONFIRMED = { phase: 'confirmed', queueRevision: null } as const;
 const UNKNOWN_SPENT = { phase: 'failed', delivery: 'unknown', message: 'dropped' } as const;
 const NOTHING_READ = { transcript: 0, run: 0 } as const;
 const NONE_SPENT: readonly string[] = [];
@@ -205,4 +205,112 @@ describe('a send that replaces a turn', () => {
     expect(texts(withConfirmedSends(server, [replace(CONFIRMED)], NONE_SPENT))).toEqual(['Earlier', 'Earlier answer', 'o-early', 'Revised']);
     expect(withConfirmedSends(server, [replace(SENDING)], NONE_SPENT)).toBe(server);
   });
+});
+
+
+describe('pending inputs in the transcript', () => {
+  const waiting = { entry_id: 'queue-a', text: 'same', rev: 1, queued_at_ms: 100 };
+  it('retains the confirmed echo identity and its attachments through queue acknowledgement', () => {
+    const echo = { ...op('a', CONFIRMED, { entryId: waiting.entry_id }).echo,
+      attachments: [{ id: 'image', url: '/image.png', contentType: 'image/png', size: 1 }] };
+    const projected = withPendingMessages([], [waiting], [echo]);
+    expect(projected).toEqual([{ ...echo, queued: true }]);
+    expect(projected[0].id).toBe(echo.id);
+  });
+  it('keeps two identical messages distinct when only one has a confirmed entry id', () => {
+    const unconfirmed = op('unknown', { phase: 'sending', unknown: true }).echo;
+    const projected = withPendingMessages([unconfirmed], [waiting], [unconfirmed]);
+    expect(projected).toHaveLength(2);
+    expect(projected[0]).toBe(unconfirmed);
+    expect(projected[1]).toMatchObject({ id: 'queued-queue-a', text: 'same', queued: true, entryId: 'queue-a' });
+  });
+  it('updates an existing queued bubble once, preserving its place and identity', () => {
+    const echo = op('a', CONFIRMED, { entryId: waiting.entry_id }).echo;
+    const entries = [row('1', 'earlier'), echo];
+    const projected = withPendingMessages(entries, [{ ...waiting, text: 'updated queue text' }], [echo]);
+    expect(projected).toHaveLength(2);
+    expect(projected[0]).toBe(entries[0]);
+    expect(projected[1]).toMatchObject({ id: echo.id, text: 'updated queue text', queued: true });
+    expect(echo.text).toBe('same');
+    expect(withPendingMessages(entries, [], [echo])).toBe(entries);
+  });
+});
+
+
+describe('waiting input presentation', () => {
+  const queue = { entry_id: 'entry', text: 'later question', rev: 4, queued_at_ms: 100 };
+  const streaming: ConversationTurn = { id: 'live', author: 'agent', text: 'still streaming', atMs: 1 };
+  it('keeps an outgoing waiting message out of a streaming transcript before acknowledgement', () => {
+    const echo = op('later', SENDING, { text: queue.text, queued: true }).echo;
+    const drawn = { ...echo, queued: false };
+    const shown = presentPendingMessages([streaming, drawn], [], [echo], new Map(), null, false, [op('later', SENDING, { text: queue.text, queued: true })]);
+    expect(shown.transcript).toEqual([streaming]);
+    expect(shown.sending).toEqual([{ ...echo, delivery: 'sending' }]);
+  });
+  it('keeps confirmed waiting inputs separate and does not interleave them with a live reply', () => {
+    const echo = op('later', CONFIRMED, { text: queue.text, queued: true, entryId: queue.entry_id }).echo;
+    const shown = presentPendingMessages([streaming], [queue], [echo], new Map(), null, false, []);
+    expect(shown.transcript).toEqual([streaming]); expect(shown.queue).toEqual([queue]); expect(shown.sending).toEqual([]);
+  });
+  it('keeps an idle send inline until its queue snapshot disappears, even after its outbox retires', () => {
+    const sent = op('idle', CONFIRMED, { text: queue.text, queued: false, entryId: queue.entry_id });
+    let placements = rememberQueuePlacements(new Map(), [sent], [queue]);
+    placements = rememberQueuePlacements(placements, [], [queue]);
+    const shown = presentPendingMessages([], [queue], [], placements, null, false, []);
+    expect(shown.queue).toEqual([]); expect(shown.transcript).toMatchObject([{ text: queue.text, queued: false }]);
+  });
+  it('restores waiting controls when a previously inline input is rebuffered at a newer revision', () => {
+    const sent = op('idle', CONFIRMED, { queued: false, entryId: queue.entry_id });
+    let placements = rememberQueuePlacements(new Map(), [sent], [queue]);
+    placements = rememberQueuePlacements(placements, [], [{ ...queue, rev: 6 }]);
+    const shown = presentPendingMessages([streaming], [{ ...queue, rev: 6 }], [], placements, null, false, []);
+    expect(shown.transcript).toEqual([streaming]); expect(shown.queue).toMatchObject([{ entry_id: queue.entry_id, rev: 6 }]);
+  });
+  it('keeps a failed waiting send outside the streaming transcript with explicit failure feedback', () => {
+    const failed = op('failed', { phase: 'failed', delivery: 'unknown', message: 'lost' }, { queued: true });
+    if (failed.phase !== 'failed') throw new Error('fixture must be failed');
+    const drawn = { ...failed.echo, queued: false };
+    const shown = presentPendingMessages([streaming, drawn], [], [], new Map(), failed, false, [failed]);
+    expect(shown.transcript).toEqual([streaming]); expect(shown.sending).toEqual([{ ...failed.echo, delivery: 'failed' }]);
+  });
+});
+
+
+it('does not promise dispatch for an accepted input while the runtime is paused', () => {
+  const echo = op('paused', CONFIRMED, { queued: true, entryId: 'entry' }).echo;
+  const shown = presentPendingMessages([], [], [echo], new Map(), null, true, []);
+  expect(shown.transcript).toEqual([]);
+  expect(shown.sending).toEqual([{ ...echo, delivery: 'paused' }]);
+});
+
+
+it('uses acknowledged operation state even when an accepted legacy receipt has no entry id', () => {
+  const accepted = op('accepted', CONFIRMED, { queued: true, entryId: null });
+  const shown = presentPendingMessages([], [], [accepted.echo], new Map(), null, false, [accepted]);
+  expect(shown.sending).toEqual([{ ...accepted.echo, delivery: 'waiting' }]);
+});
+
+
+it('retires an edited queued send against the revised transcript text without leaving a phantom input', () => {
+  const sent = op('edited', CONFIRMED, { text: 'old middle text', queued: true, entryId: 'middle' });
+  const edited = synchronizeQueuedSends([sent], [{ entry_id: 'middle', text: 'new middle text', rev: 1, queued_at_ms: 10 }]);
+  const shown = view(edited, [row('5', 'new middle text')]);
+  expect(shown.retire).toEqual([{ key: sent.key, row: '5' }]);
+  expect(shown.transcript).toEqual([row('5', 'new middle text')]);
+  expect(shown.shown).toEqual([]);
+});
+
+it('does not roll a successful queue edit back to an older cached queue revision', () => {
+  const sent = op('edited', CONFIRMED, { text: 'before', queued: true, entryId: 'middle' });
+  const fresh = synchronizeQueuedSends([sent], [{ entry_id: 'middle', text: 'after', rev: 2, queued_at_ms: 10 }]);
+  const stale = synchronizeQueuedSends(fresh, [{ entry_id: 'middle', text: 'before', rev: 1, queued_at_ms: 10 }]);
+  expect(stale).toBe(fresh);
+  expect(stale[0].echo.text).toBe('after');
+});
+
+it('updates only the confirmed queue identity when equal messages coexist', () => {
+  const confirmed = op('known', CONFIRMED, { queued: true, entryId: 'known' });
+  const unconfirmed = op('unknown', SENDING, { queued: true });
+  const shown = synchronizeQueuedSends([confirmed, unconfirmed], [{ entry_id: 'known', text: 'edited', rev: 1, queued_at_ms: 10 }]);
+  expect(shown[0].echo.text).toBe('edited'); expect(shown[1]).toBe(unconfirmed);
 });

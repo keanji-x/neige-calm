@@ -8,7 +8,14 @@ unless the task requires it.
 ## Workflow
 
 1. Inspect the real implementation, full call path, existing tests, and current
-   worktree state. Preserve unrelated changes.
+   worktree state. Preserve unrelated changes. Before implementing a feature,
+   search for existing implementations of the same or related behavior and read
+   their callers and contracts. Prefer reusing or extending the implementation
+   in its owning layer over creating a parallel one. For UI work, include the
+   existing interaction flow, components, icons, sizes, colors, and motion in
+   that inspection. Add a new implementation only when the existing one cannot
+   meet the requirement; explain the concrete gap and the ownership choice in
+   the pull request.
 2. Define one clear outcome and its acceptance checks, and choose its review
    tier. Write an issue or short design first only for large, risky,
    authority-boundary, or persistence-boundary changes.

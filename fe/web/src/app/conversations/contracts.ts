@@ -1,6 +1,6 @@
 import type { AgentProvider, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
-import type { Conversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
+import type { Conversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerQueueEditOutcome, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import type { FailedSendOp, PendingQueueSend, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import type { UploadAttachment } from '../../features/planner/attachments.tsx';
@@ -23,6 +23,8 @@ export type ConversationStore = Readonly<{
   awaitingConversationUpdate: boolean;
   /** The addressable page of the harness pending queue. */
   pendingQueue: readonly PendingQueueEntry[];
+  pendingSends: readonly PendingQueueSend[];
+  editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueEditOutcome>;
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
   deleteQueuedEntry: (entry: PendingQueueEntry) => Promise<PlannerQueueWriteOutcome>;

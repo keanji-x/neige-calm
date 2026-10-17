@@ -17,7 +17,6 @@ export function ListText({ as: Tag = 'span', tone, emphasis, className, fadeOver
   const elementRef = useRef<HTMLElement | null>(null);
   const [overflowing, setOverflowing] = useState(false);
   const setElement = useCallback((element: HTMLElement | null) => { elementRef.current = element; }, []);
-  const { children, title } = attributes;
   useLayoutEffect(() => {
     const element = elementRef.current;
     if (!fadeOverflow || element === null) return;
@@ -25,8 +24,12 @@ export function ListText({ as: Tag = 'span', tone, emphasis, className, fadeOver
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
-    return () => observer.disconnect();
-  }, [fadeOverflow, children, title, Tag]);
+    // React can recreate unchanged children, or a child can update without
+    // rendering this host. Observe the committed content, not JSX identity.
+    const content = new MutationObserver(measure);
+    content.observe(element, { subtree: true, childList: true, characterData: true, attributes: true });
+    return () => { observer.disconnect(); content.disconnect(); };
+  }, [fadeOverflow, Tag]);
   return <Tag {...attributes} ref={setElement} className={[styles[tone], fadeOverflow && overflowing ? styles.fade : '',  emphasis === undefined ? '' : styles[emphasis], className]
     .filter(Boolean).join(' ')}
     {...(Tag === 'button' ? { type: 'button' as const } : {})} />;

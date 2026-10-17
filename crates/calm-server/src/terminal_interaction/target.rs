@@ -51,15 +51,13 @@ impl Binding {
 /// interrupts its turn and starts none, #1782); `{provider}` is the worker's provider.
 const WORKER_KEYS_REFUSED: &str = include_str!("../../prompts/terminal/worker-keys-refused.md");
 
-/// A request's terminal now serves another task or worker session than the one it was resolved to.
-pub(super) const BINDING_CHANGED: &str =
-    "terminal task/session binding changed; show and read again";
-
-/// A refusal decided before any connection, claim or byte: `data.refusal` names it (#2493).
+/// A refusal decided before any connection, claim or byte: `data.refusal` names it (#2493), and a
+/// starting worker's adds what it waits for and how long the call waited (#2571).
 #[derive(Debug)]
 pub struct InputRefused {
     pub refusal: &'static str,
     pub message: String,
+    pub starting: Option<Starting>,
 }
 impl std::fmt::Display for InputRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,11 +66,123 @@ impl std::fmt::Display for InputRefused {
 }
 impl std::error::Error for InputRefused {}
 pub(super) fn refused(refusal: &'static str, message: String) -> InputRefused {
-    InputRefused { refusal, message }
+    InputRefused {
+        refusal,
+        message,
+        starting: None,
+    }
 }
 
+/// What a starting worker has yet to do before it takes input (#2571).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingFor {
+    /// Its task is dispatched, or its worker card is not stamped yet: no worker runs.
+    TaskRunning,
+    /// Its agent has not submitted its task prompt (a provider whose message waits for it, #2532).
+    PromptSubmitted,
+}
+
+/// `worker_starting` (#2554): the worker the attempt is waiting for, and how long the refused call
+/// waited for it (`None` when it did not wait).
+#[derive(Debug)]
+pub struct Starting {
+    pub waiting_for: WaitingFor,
+    pub waited_ms: Option<u64>,
+    attempt_id: String,
+    status: &'static str,
+}
+impl Starting {
+    /// What the kernel did and which event ends the state: a later wake once the task runs, the
+    /// worker watcher's report once a startup screen holds the agent.
+    fn text(&self) -> String {
+        let (attempt, status) = (&self.attempt_id, self.status);
+        let waited = |what: &str| {
+            self.waited_ms.map_or(String::new(), |waited| {
+                format!(
+                    " after this call waited {:.1} s for {what}; nothing was written",
+                    waited as f64 / 1000.0
+                )
+            })
+        };
+        match self.waiting_for {
+            WaitingFor::TaskRunning if self.waited_ms.is_none() => format!(
+                "attempt {attempt} is {status}; its worker is starting and takes no input yet. \
+                 Send again on a later wake"
+            ),
+            WaitingFor::TaskRunning => format!(
+                "attempt {attempt} is still {status}{}. Send again on a later wake",
+                waited("its worker to start")
+            ),
+            WaitingFor::PromptSubmitted => format!(
+                "attempt {attempt} is running, but its worker has not started its task{}. Its agent \
+                 is likely held on a startup screen: the worker watcher looks at a worker after at \
+                 least {} s of quiet and reports to you. Send again after its report",
+                waited("it to submit its task prompt"),
+                crate::worker_quiet::QUIET_AFTER.as_secs()
+            ),
+        }
+    }
+}
 /// The refusal a starting worker answers; a message waits while it holds (#2554).
-pub(super) const WORKER_STARTING: &str = "worker_starting";
+pub(super) fn starting(
+    attempt_id: &str,
+    status: TaskStatus,
+    waiting_for: WaitingFor,
+) -> InputRefused {
+    let starting = Starting {
+        waiting_for,
+        waited_ms: None,
+        attempt_id: attempt_id.to_owned(),
+        status: status.wire_label(),
+    };
+    InputRefused {
+        refusal: "worker_starting",
+        message: starting.text(),
+        starting: Some(starting),
+    }
+}
+impl InputRefused {
+    /// This refusal answered after the call waited `waited` for its worker to start.
+    pub(super) fn waited(mut self, waited: Duration) -> Self {
+        if let Some(starting) = &mut self.starting {
+            starting.waited_ms = Some(waited.as_millis() as u64);
+            self.message = starting.text();
+        }
+        self
+    }
+}
+
+/// A request's terminal now serves another task, worker session or terminal than the one it was
+/// resolved to: only a fresh show and read reach the new binding. It claims nothing about input:
+/// a readback after a write answers it too.
+pub(super) fn binding_changed(was: &Binding, now: &Binding) -> InputRefused {
+    let attempt = |binding: &Binding| {
+        binding
+            .task
+            .as_ref()
+            .map_or("none".to_owned(), |task| task.attempt_id.clone())
+    };
+    let changes = [
+        ("terminal", was.terminal_id.clone(), now.terminal_id.clone()),
+        ("card", was.card_id.clone(), now.card_id.clone()),
+        ("attempt", attempt(was), attempt(now)),
+        (
+            "worker session",
+            was.worker_session_id.clone(),
+            now.worker_session_id.clone(),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, was, now)| was != now)
+    .map(|(field, was, now)| format!("{field} {was} is now {now}"))
+    .collect::<Vec<_>>()
+    .join(", ");
+    refused(
+        "binding_changed",
+        format!("the terminal binding this call resolved changed ({changes}); show and read again"),
+    )
+}
 
 /// What a task's lifecycle answers a terminal tool whose task has no worker taking input (#2493,
 /// #2554): one table whether or not a worker terminal resolved, decided from the task row alone.
@@ -96,13 +206,9 @@ pub(super) fn lifecycle_refusal(task: &TaskBinding, status: Option<TaskStatus>) 
                  block: its worker starts with it"
             ),
         ),
-        Some(TaskStatus::Dispatched | TaskStatus::Running) => refused(
-            WORKER_STARTING,
-            format!(
-                "attempt {attempt} is {label}; its worker is starting and takes no input yet. Send \
-                 again on a later wake"
-            ),
-        ),
+        Some(status @ (TaskStatus::Dispatched | TaskStatus::Running)) => {
+            starting(attempt, status, WaitingFor::TaskRunning)
+        }
         Some(TaskStatus::Verifying) => parked("Wait for its gate."),
         Some(TaskStatus::Canceled) => parked("Declare a new task."),
         Some(TaskStatus::Done | TaskStatus::Failed) | None => {
@@ -162,10 +268,10 @@ impl Resolved {
     /// keys while bound takes only `message`.
     pub(super) fn keys_refused(&self, tui: TuiInput) -> Option<InputRefused> {
         (self.binding.task.is_some() && tui.keys_while_bound() == BoundKeys::Refused).then(|| {
-            InputRefused {
-                refusal: "worker_keys_refused",
-                message: WORKER_KEYS_REFUSED.replace("{provider}", self.provider.as_db_str()),
-            }
+            refused(
+                "worker_keys_refused",
+                WORKER_KEYS_REFUSED.replace("{provider}", self.provider.as_db_str()),
+            )
         })
     }
 }
@@ -371,7 +477,9 @@ impl TerminalInteraction {
             &Target::Terminal(expected.terminal_id.clone()),
         )
         .await?;
-        ensure!(&current.binding == expected, BINDING_CHANGED);
+        if current.binding != *expected {
+            return Err(binding_changed(expected, &current.binding).into());
+        }
         if write {
             current.ensure_write_allowed()?;
         }

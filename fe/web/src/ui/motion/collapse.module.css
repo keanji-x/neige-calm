@@ -1,0 +1,4 @@
+@layer ui {
+  .host { display: grid; min-inline-size: 0; }
+  .inner { min-block-size: 0; overflow: clip; overflow-clip-margin: var(--space-1); }
+}

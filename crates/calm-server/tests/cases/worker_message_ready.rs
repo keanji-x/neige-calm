@@ -10,7 +10,9 @@ use super::worker_message::{
     Fixture, assert_refusal, expected, message, queued_change, reads, running, unstarted,
     wait_for_reads, written,
 };
+use super::worker_message_lifecycle::assert_waited;
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The Claude worker's `UserPromptSubmit` hook for its own session, through the production ingest
@@ -38,29 +40,26 @@ pub(crate) async fn agent_session(h: &Harness, worker: &Worker) -> String {
     .expect("claude worker session carries its agent session id")
 }
 
-fn not_started(attempt: &str) -> String {
+/// What the refusal says once the call waited `waited` seconds: what it waited for, and the event
+/// to send again on (#2571).
+fn not_started(attempt: &str, waited: &str) -> String {
     format!(
-        "attempt {attempt} is running, but its worker has not started its task: its agent is \
-         likely held on a startup screen, which the worker watcher clears and reports to you. Send \
-         again after its report"
+        "attempt {attempt} is running, but its worker has not started its task after this call \
+         waited {waited} s for it to submit its task prompt; nothing was written. Its agent is \
+         likely held on a startup screen: the worker watcher looks at a worker after at least 60 s \
+         of quiet and reports to you. Send again after its report"
     )
 }
 
 /// A refusal is answered once the call waited for the worker's start: keep that wait short.
-fn short_start_wait(h: &Harness) {
-    h.interaction()
-        .set_message_start_wait(Duration::from_millis(300));
-}
+const SHORT_WAIT: Duration = Duration::from_millis(300);
 
 async fn assert_not_started(h: &Harness, f: &Fixture, key: &str) {
-    short_start_wait(h);
+    h.interaction().set_message_start_wait(SHORT_WAIT);
     let reply = message(h, json!({"attempt_id":f.worker.task}), key, "x").await;
-    assert_refusal(
-        &reply,
-        -32403,
-        Some("worker_starting"),
-        &not_started(&f.worker.task),
-    );
+    assert_waited(&reply, SHORT_WAIT, "prompt_submitted", |waited| {
+        not_started(&f.worker.task, waited)
+    });
 }
 
 async fn post_hook(h: &Harness, worker: &Worker, body: Value) -> axum::http::StatusCode {
@@ -73,10 +72,7 @@ async fn message_to_claude_worker_before_prompt_submit_is_refused() {
     let f = unstarted(&h, "claude", true, false).await;
     let sent = Instant::now();
     assert_not_started(&h, &f, "early").await;
-    assert!(
-        sent.elapsed() >= Duration::from_millis(300),
-        "refused after the wait"
-    );
+    assert!(sent.elapsed() >= SHORT_WAIT, "refused after the wait");
     // By terminal id too: one rule per resolution.
     let reply = message(&h, json!({"terminal_id":f.worker.terminal}), "early-t", "x").await;
     assert_refusal(&reply, -32403, Some("worker_starting"), "has not started");
@@ -186,59 +182,33 @@ async fn message_waits_through_dispatch_for_its_worker_card_and_start() {
 }
 
 /// A waiting message writes only to the binding it first resolved: a worker session that replaces
-/// it on the same terminal meanwhile is refused, and nothing is written.
+/// it on the same terminal once the call waits is refused, typed, and nothing is written.
 #[tokio::test]
 async fn message_waiting_for_a_replaced_worker_session_writes_nothing() {
-    use calm_server::db::prelude::*;
-    use calm_server::db::sqlite::session_supersede_and_start_tx;
-    use calm_server::session_projection_repo::{
-        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-    };
     let h = Harness::start().await;
-    h.interaction()
-        .set_message_start_wait(Duration::from_secs(5));
     let f = unstarted(&h, "claude", true, false).await;
-    let replace = async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let old = h
-            .sql
-            .session_get_by_id(&f.worker.session.clone().into())
-            .await
-            .unwrap()
-            .unwrap();
-        let mut tx = h.sql.pool().begin().await.unwrap();
-        session_supersede_and_start_tx(
-            &mut tx,
-            &f.worker.session,
-            WorkerSessionInit {
-                id: calm_server::model::new_id(),
-                card_id: f.worker.card.clone(),
-                kind: WorkerSessionKind::ClaudeCard,
-                agent_provider: Some(AgentProvider::Claude),
-                status: WorkerSessionState::Running,
-                terminal_run_id: Some(f.worker.terminal.clone()),
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: old.spawn_op_id,
-                now_ms: calm_server::model::now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    };
-    let sent = Instant::now();
-    let (reply, ()) = tokio::join!(
-        message(&h, json!({"attempt_id":f.worker.task}), "m", "x"),
-        replace
+    let replaced = calm_server::model::new_id();
+    let (sql, id) = (h.sql.clone(), replaced.clone());
+    let (session, card, terminal) = (
+        f.worker.session.clone(),
+        f.worker.card.clone(),
+        f.worker.terminal.clone(),
     );
+    // Runs when the call first waits: its first resolved try has pinned the binding.
+    h.interaction().set_message_wait_seam(Box::new(move |_| {
+        Box::pin(async move { replace_session(&sql, &session, &card, &terminal, id).await })
+    }));
+    let sent = Instant::now();
+    let reply = message(&h, json!({"attempt_id":f.worker.task}), "m", "x").await;
     assert_refusal(
         &reply,
         -32403,
-        None,
-        "terminal task/session binding changed; show and read again",
+        Some("binding_changed"),
+        &format!(
+            "the terminal binding this call resolved changed (worker session {} is now \
+             {replaced}); show and read again",
+            f.worker.session
+        ),
     );
     assert!(
         sent.elapsed() < Duration::from_secs(5),
@@ -247,6 +217,144 @@ async fn message_waiting_for_a_replaced_worker_session_writes_nothing() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(reads(&f.log).is_empty(), "{:?}", reads(&f.log));
     stop(&h, &f.worker).await;
+}
+
+/// A message queued on the caller's connection behind another is decided under the serial guard
+/// (#2571): a worker session that replaced its binding while it queued is refused, typed, and
+/// neither message is written.
+#[tokio::test]
+async fn message_queued_behind_another_refuses_a_replaced_session() {
+    let h = Harness::start().await;
+    let f = running(&h, "claude", true, false).await;
+    let held = Arc::new(Mutex::new(None));
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let (registry, slot) = (h.state.terminal_renderer.clone(), held.clone());
+    h.interaction()
+        .set_message_write_seam(Box::new(move |terminal: String| {
+            Box::pin(async move {
+                let entry = registry.get(&terminal).unwrap();
+                *slot.lock().unwrap() = Some(entry.handle.input_barrier.hold_for_test().await);
+                let _ = entered.send(());
+            })
+        }));
+    let replaced = calm_server::model::new_id();
+    let target = json!({"attempt_id":f.worker.task});
+    let holder = message(&h, target.clone(), "held", "x");
+    let driver = async {
+        entered_rx.await.unwrap();
+        let queued = message(&h, target.clone(), "queued", "y");
+        let replace = async {
+            let start = Instant::now();
+            while h.interaction().serial_waiters(&f.worker.terminal).await == 0 {
+                assert!(start.elapsed() < Duration::from_secs(10), "never queued");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            replace_session(
+                &h.sql,
+                &f.worker.session,
+                &f.worker.card,
+                &f.worker.terminal,
+                replaced.clone(),
+            )
+            .await;
+            drop(held.lock().unwrap().take());
+        };
+        tokio::join!(queued, replace).0
+    };
+    let (held_reply, queued) = tokio::join!(holder, driver);
+    assert_eq!(
+        held_reply["result"]["structuredContent"]["outcome"], "refused",
+        "{held_reply}"
+    );
+    assert_refusal(
+        &queued,
+        -32403,
+        Some("binding_changed"),
+        &format!(
+            "the terminal binding this call resolved changed (worker session {} is now \
+             {replaced}); show and read again",
+            f.worker.session
+        ),
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(reads(&f.log).is_empty(), "{:?}", reads(&f.log));
+    stop(&h, &f.worker).await;
+}
+
+/// A written message whose binding moves during its readback wait keeps its `written` receipt; the
+/// readback says the binding changed and claims nothing about input (#2571).
+#[tokio::test]
+async fn binding_change_during_a_written_message_readback_keeps_the_receipt() {
+    let h = Harness::start().await;
+    let f = running(&h, "claude", true, false).await;
+    let replaced = calm_server::model::new_id();
+    let target = json!({"attempt_id":f.worker.task,"read":true,"wait_ms":3000});
+    let replace = async {
+        wait_for_reads(&f.log, 1).await;
+        replace_session(
+            &h.sql,
+            &f.worker.session,
+            &f.worker.card,
+            &f.worker.terminal,
+            replaced.clone(),
+        )
+        .await;
+    };
+    let (reply, ()) = tokio::join!(message(&h, target, "m", "x"), replace);
+    let receipt = written(&reply);
+    assert_eq!(
+        receipt["observation"],
+        json!({"status":"unavailable","reason":format!(
+            "the terminal binding this call resolved changed (worker session {} is now \
+             {replaced}); show and read again",
+            f.worker.session
+        )}),
+        "{receipt}"
+    );
+    assert_eq!(reads(&f.log), vec![expected(&h, &f.worker.task, "x").await]);
+    stop(&h, &f.worker).await;
+}
+
+/// Another worker session, `id`, takes over the card and terminal of `session`.
+async fn replace_session(
+    sql: &calm_server::db::sqlite::SqlxRepo,
+    session: &str,
+    card: &str,
+    terminal: &str,
+    id: String,
+) {
+    use calm_server::db::prelude::*;
+    use calm_server::db::sqlite::session_supersede_and_start_tx;
+    use calm_server::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    let old = sql
+        .session_get_by_id(&session.to_owned().into())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut tx = sql.pool().begin().await.unwrap();
+    session_supersede_and_start_tx(
+        &mut tx,
+        &session.to_owned(),
+        WorkerSessionInit {
+            id,
+            card_id: card.to_owned(),
+            kind: WorkerSessionKind::ClaudeCard,
+            agent_provider: Some(AgentProvider::Claude),
+            status: WorkerSessionState::Running,
+            terminal_run_id: Some(terminal.to_owned()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: old.spawn_op_id,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 /// Only this worker session's own `UserPromptSubmit` starts it: another hook kind, another card's
@@ -322,6 +430,7 @@ async fn codex_running_worker_takes_message_without_any_hook() {
 #[tokio::test]
 async fn queued_message_refused_when_prompt_submit_is_pruned() {
     let h = Harness::start().await;
+    h.interaction().set_message_start_wait(SHORT_WAIT);
     let f = running(&h, "claude", true, false).await;
     queued_change(
         &h,

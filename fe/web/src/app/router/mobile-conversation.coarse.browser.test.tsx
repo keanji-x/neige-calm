@@ -3,7 +3,7 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { ChatComposer } from '../../features/chat/thread/public.tsx';
-import { PendingQueue, type PendingQueueProps } from '../../features/planner/pending-queue.tsx';
+import { PendingQueue, type PendingQueueProps } from '../../features/chat/thread/pending-queue.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ConversationSurface } from './mobile-conversation-surface.tsx';
 
@@ -44,7 +44,7 @@ it('keeps the real composer drawer queue controls tappable above a floating inpu
   render(<ConversationSurface mobileSheet open title="Conversation" onClose={() => undefined}
     footer={<ChatComposer layout="mobile" disabled={false} onSend={() => undefined}
       drawer={<PendingQueue entries={[{ entry_id: 'queued', text: 'Queued question', rev: 0, queued_at_ms: 1 }]}
-        overflow={0} busy={false} onDelete={onDelete} />} />}>
+        overflow={0} busy={false} onEdit={() => undefined} canEdit editingEntryId={null} savedEntry={null} onFocusComposer={() => undefined} onDelete={onDelete} />} />}>
     <p>Scroll behind the floating controls.</p>
   </ConversationSurface>);
   await expect.element(page.getByRole('dialog', { name: 'Conversation', exact: true })).toBeVisible();

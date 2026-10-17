@@ -21,8 +21,19 @@
   .warning .label { color: var(--warn-text); }
   .error .label { color: var(--error-text); }
   .clock { color: var(--text-3); font-variant-numeric: tabular-nums; }
-  .actions { display: flex; flex-shrink: 0; align-items: center; gap: var(--space-half); }
+  .actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--space-half);
+  }
   .action { inline-size: var(--control-h); block-size: var(--control-h); min-inline-size: var(--control-h); min-block-size: var(--control-h); }
-  .icon { inline-size: var(--glyph-meta); block-size: var(--glyph-meta); color: var(--text-3); }
+  .icon {
+    inline-size: var(--glyph-meta);
+    block-size: var(--glyph-meta);
+    color: var(--text-3);
+    /* Align ink inside the hit target instead of overflowing the conversation. */
+    translate: calc((var(--control-h) - var(--glyph-meta)) / 2) 0;
+  }
   .reason { margin-block-start: var(--space-2); color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
 }

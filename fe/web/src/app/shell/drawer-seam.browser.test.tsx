@@ -4,7 +4,7 @@
  * no-op, so the seam between `ui/drawer` and `app/shell`'s `[data-nc-panel]` rule is tested here.
  */
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import { page, userEvent } from 'vitest/browser';
+import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /* The whole cascade, before anything that declares a layer of its own: layer
@@ -86,14 +86,16 @@ async function untilFocused(target: () => Element | null, expected: string) {
 }
 
 /** A page shaped like the real ones: `.main` with a trailing `[data-nc-panel]` column, a page title to fall back to, and the drawer overlaying it. */
-function Page({ onClose }: { onClose?: () => void }) {
+function Page({ onClose, motion = false }: { onClose?: () => void; motion?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [preferences] = useState(() => createUiPreferences());
+  const host = useDrawerWidthHost(preferences);
   return (
     <div className={shell.shell}>
       {/* The shell's navigation owns column one; keep that track occupied so `.main`
                 resolves its cqi against the real second column. */}
       <div aria-hidden="true" />
-      <main className={shell.main}>
+      <main ref={motion ? host.mainRef : undefined} className={shell.main} style={host.style}>
         <span data-testid="panel-span-probe" style={{ position: 'absolute', inlineSize: 'var(--panel-span)' }} />
         <h1 data-nc-page-title="" tabIndex={-1}>Today</h1>
         <aside data-nc-panel="">
@@ -821,4 +823,84 @@ it('keeps the conversation seam aligned and the document title reachable', async
   expect(seam.getBoundingClientRect().top).toBeCloseTo(drawer.getBoundingClientRect().top, 0);
   const title = header.querySelector('h1')!.getBoundingClientRect();
   expect(document.elementFromPoint(title.left + title.width / 2, title.top + title.height / 2)?.closest('header')).toBe(header);
+});
+
+
+it('reveals the covered panel as soon as the drawer starts leaving', async () => {
+  await page.viewport(1400, 900);
+  render(<Page />);
+  await click(opener());
+  await waitFor(() => expect(document.querySelector('[data-nc-drawer]')?.getAnimations()).toHaveLength(0));
+  await click(document.querySelector<HTMLButtonElement>('[aria-label="Close conversation"]')!);
+  expect(document.querySelector('[data-nc-drawer]')).not.toBeNull();
+  expect(getComputedStyle(plus()).visibility).toBe('visible');
+  await untilGone();
+});
+
+
+it('changes the panel allocation throughout the drawer exit rather than at unmount', async () => {
+  await page.viewport(1400, 900);
+  render(<Page motion />);
+  const main = document.querySelector('main')!;
+  const probe = document.querySelector('[data-testid="panel-span-probe"]')!;
+  const width = () => probe.getBoundingClientRect().width;
+  const closed = width();
+  await click(opener());
+  await waitFor(() => expect(main.getAnimations()).toHaveLength(0));
+  const expanded = width();
+  expect(expanded).toBeGreaterThan(closed);
+  await click(document.querySelector<HTMLButtonElement>('[aria-label="Close conversation"]')!);
+  const frames: number[] = [];
+  while (main.getAnimations().length > 0 || document.querySelector('[data-nc-drawer]') !== null) {
+    frames.push(width());
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    if (frames.length > 200) throw new Error('exit never settled');
+  }
+  frames.push(width());
+  expect(frames.some(value => value > closed + 1 && value < expanded - 1)).toBe(true);
+  expect(Math.max(...frames.slice(1).map((value, index) => Math.abs(value - frames[index]))))
+    .toBeLessThan((expanded - closed) / 2);
+  expect(width()).toBeCloseTo(closed, 0);
+});
+
+
+it('reverses the panel allocation from its painted position when reopened mid-exit', async () => {
+  await page.viewport(1400, 900);
+  render(<Page motion />);
+  const main = document.querySelector('main')!;
+  const probe = document.querySelector('[data-testid="panel-span-probe"]')!;
+  const width = () => probe.getBoundingClientRect().width;
+  const closed = width();
+  await click(opener());
+  await waitFor(() => expect(main.getAnimations()).toHaveLength(0));
+  const expanded = width();
+  await click(document.querySelector<HTMLButtonElement>('[aria-label="Close conversation"]')!);
+  await waitFor(() => expect(width()).toBeLessThan(expanded - 5));
+  const beforeReopen = width();
+  expect(beforeReopen).toBeGreaterThan(closed + 5);
+  await click(opener());
+  expect(Math.abs(width() - beforeReopen)).toBeLessThan((expanded - closed) / 2);
+  await waitFor(() => expect(main.getAnimations()).toHaveLength(0));
+  expect(width()).toBeCloseTo(expanded, 0);
+});
+
+it('settles the panel allocation immediately when reduced motion is enabled during exit', async () => {
+  await page.viewport(1400, 900);
+  render(<Page motion />);
+  const main = document.querySelector('main')!;
+  const probe = document.querySelector('[data-testid="panel-span-probe"]')!;
+  const closed = probe.getBoundingClientRect().width;
+  await click(opener());
+  await waitFor(() => expect(main.getAnimations()).toHaveLength(0));
+  await click(document.querySelector<HTMLButtonElement>('[aria-label="Close conversation"]')!);
+  try {
+    await commands.emulateReducedMotion(true);
+    await untilGone();
+    expect(main.getAnimations()).toHaveLength(0);
+    await waitFor(() => expect(probe.getBoundingClientRect().width).toBeCloseTo(closed, 0));
+    expect(main.getAnimations()).toHaveLength(0);
+    expect(getComputedStyle(plus()).visibility).toBe('visible');
+  } finally {
+    await commands.emulateReducedMotion(false);
+  }
 });

@@ -577,7 +577,7 @@ export type PlannerInputMutation = Readonly<{
   text: string | null;
 }>;
 
-const plannerInputMutationSchema: z.ZodType<PlannerInputMutation> = z.object({
+const plannerInputMutationSchema = z.object({
   card_id: z.string(),
   entry_id: z.string(),
   rev: z.number(),
@@ -586,6 +586,13 @@ const plannerInputMutationSchema: z.ZodType<PlannerInputMutation> = z.object({
 
 function plannerInputPath(cardId: string, entryId: string): string {
   return `/api/cards/${encodeURIComponent(cardId)}/planner/input/${encodeURIComponent(entryId)}`;
+}
+
+/** Edit in place under the queue's compare-and-swap revision. */
+export function editPlannerInputOperation(cardId: string, entryId: string, text: string, ifEntryRev: number):
+ApiOperation<Omit<PlannerInputMutation, 'text'> & Readonly<{ text: string }>> {
+  return { method: 'PATCH', path: plannerInputPath(cardId, entryId), body: { text, if_entry_rev: ifEntryRev },
+    responseSchema: plannerInputMutationSchema.extend({ text: z.string() }) };
 }
 
 /** Remove one queued message, refusing if somebody moved it first. */
@@ -631,6 +638,10 @@ export function steerPlannerInputOperation(
   };
 }
 
+export type PlannerQueueEditOutcome =
+  | Readonly<{ kind: 'done'; entry: PendingQueueEntry }>
+  | Exclude<PlannerQueueWriteOutcome, { kind: 'done' }>;
+
 const plannerInputStaleSchema = z.object({ text: z.string(), rev: z.number(), entry_id: z.string() });
 
 /**
@@ -669,7 +680,7 @@ export const PLANNER_QUEUE_WRITE_FAILURES: FailureTable<Exclude<PlannerQueueWrit
  */
 export function plannerQueueWriteFailure(
   failure: ApiFailure | null, fallback: string,
-): PlannerQueueWriteOutcome {
+): Exclude<PlannerQueueWriteOutcome, { kind: 'done' }> {
   const kind = classifyFailure(failure, PLANNER_QUEUE_WRITE_FAILURES);
   const stale = kind === 'stale' && failure?.kind === 'http' ? plannerInputStaleSchema.safeParse(failure.body) : null;
   if (stale?.success === true) return { kind: 'stale', text: stale.data.text, rev: stale.data.rev };

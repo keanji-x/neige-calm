@@ -1,6 +1,6 @@
 import {
-  isConversationMessage, mergeTranscript, reconcileUserEchoes,
-  type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry,
+  isConversationMessage, isOptimisticConversationTurn, mergeTranscript, reconcileUserEchoes,
+  type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry, type PendingQueueEntry,
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
 import { withoutEditedTurn } from './conversation-composer.js';
@@ -18,7 +18,7 @@ export type ReplacedTurn = Readonly<{ turnId: string; outcomeId: string }>;
  */
 export type SendOpPhase = Readonly<
   | { phase: 'sending'; unknown: boolean }
-  | { phase: 'confirmed' }
+  | { phase: 'confirmed'; queueRevision: number | null }
   | { phase: 'replayed'; afterRead: number }
   | { phase: 'failed'; delivery: Exclude<SendFailureKind, 'refused' | 'dormant'>; message: string }
 >;
@@ -247,4 +247,98 @@ export function outboxFactsWithRemovedInputs(
   const remaining = input.ops.filter(op => !removed.includes(op));
   const facts = outboxFacts({ ...input, ops:remaining });
   return { ...facts, retire:[...facts.retire,...removed.map(op => ({ key:op.key,row:null }))] };
+}
+
+/** Waiting inputs share the transcript's message surface. Match only confirmed entry ids,
+ * never text: two identical sentences can be separate sends. This is display-only;
+ * queue snapshots must not become remembered/persisted transcript facts. */
+export function withPendingMessages(
+  entries: readonly TranscriptEntry[], queue: readonly PendingQueueEntry[], echoes: readonly OptimisticConversationTurn[],
+): readonly TranscriptEntry[] {
+  if (queue.length === 0) return entries;
+  const waiting = new Map(queue.map(entry => [entry.entry_id, entry]));
+  const shown = entries.map(entry => {
+    const queued = isOptimisticConversationTurn(entry) && entry.entryId !== null ? waiting.get(entry.entryId) : undefined;
+    if (queued === undefined) return entry;
+    waiting.delete(queued.entry_id);
+    return { ...entry, text: queued.text, queued: true };
+  });
+  return mergeTranscript(shown, [...waiting.values()].map(entry => {
+    const echo = echoes.find(echo => echo.entryId === entry.entry_id);
+    return echo === undefined ? {
+      id: `queued-${entry.entry_id}`, author: 'you', text: entry.text, atMs: entry.queued_at_ms,
+      serverHighWaterBefore: 0, queued: true, entryId: entry.entry_id,
+    } : { ...echo, text: entry.text, queued: true };
+  }));
+}
+
+
+export type QueuePlacement = Readonly<{ kind: 'inline'; revision: number | null }> | Readonly<{ kind: 'waiting' }>;
+
+/** Local admission is display memory only. A new queue revision is new server
+ * evidence (including rebuffer), so it must regain its waiting controls. */
+export function rememberQueuePlacements(previous: ReadonlyMap<string, QueuePlacement>, ops: readonly SendOp[], queue: readonly PendingQueueEntry[]) {
+  const next = new Map(previous);
+  const known = new Set<string>();
+  for (const op of ops) {
+    if (op.phase !== 'confirmed' || op.echo.entryId === null) continue;
+    known.add(op.echo.entryId);
+    if (!next.has(op.echo.entryId)) next.set(op.echo.entryId, op.echo.queued ? { kind: 'waiting' } : { kind: 'inline', revision: null });
+  }
+  const pending = new Map(queue.map(entry => [entry.entry_id, entry]));
+  for (const [id, placement] of next) {
+    const entry = pending.get(id);
+    if (entry === undefined) { if (!known.has(id)) next.delete(id); continue; }
+    if (placement.kind === 'inline') next.set(id, placement.revision === null
+      ? { kind: 'inline', revision: entry.rev }
+      : placement.revision === entry.rev ? placement : { kind: 'waiting' });
+  }
+  return next;
+}
+
+export type PendingQueueSend = ConversationTurn & Readonly<{ delivery: 'sending' | 'waiting' | 'failed' | 'paused' | 'checking' }>;
+
+/** Presentation follows the send's admission, not a later phase change. Waiting
+ * input never interleaves with a reply that is still streaming. */
+export function presentPendingMessages(entries: readonly TranscriptEntry[], queue: readonly PendingQueueEntry[],
+  echoes: readonly OptimisticConversationTurn[], placements: ReadonlyMap<string, QueuePlacement>, failed: FailedSendOp | null, paused: boolean, operations: readonly SendOp[]) {
+  const waiting = queue.filter(entry => {
+    const remembered = placements.get(entry.entry_id);
+    if (remembered !== undefined) return remembered.kind === 'waiting';
+    const echo = echoes.find(echo => echo.entryId === entry.entry_id);
+    return echo === undefined ? true : echo.queued;
+  });
+  const waitingIds = new Set(waiting.map(entry => entry.entry_id));
+  const waitingEchoes = [...echoes, ...(failed === null ? [] : [failed.echo])]
+    .filter(echo => echo.queued && (echo.entryId === null || placements.get(echo.entryId)?.kind !== 'inline'));
+  const hidden = new Set(waitingEchoes.map(echo => echo.id));
+  const transcript = withPendingMessages(entries.filter(entry => !hidden.has(entry.id)),
+    queue.filter(entry => !waitingIds.has(entry.entry_id)), echoes)
+    .map(entry => isOptimisticConversationTurn(entry) && entry.queued ? { ...entry, queued: false } : entry);
+  return { transcript, queue: waiting,
+    sending: waitingEchoes.filter(echo => echo.entryId === null || !waitingIds.has(echo.entryId))
+      .map((echo): PendingQueueSend => {
+        const operation = operations.find(operation => operation.echo.id === echo.id);
+        return { ...echo, delivery: failed?.echo.id === echo.id ? 'failed'
+          : operation?.phase === 'sending' ? 'sending' : paused ? 'paused'
+            : operation?.phase === 'confirmed' ? 'waiting' : 'checking' };
+      }) };
+}
+
+
+/** Only the confirmed entry id can correlate a queue edit with a local send.
+ * Revision receipts fence stale queue reads after a successful local edit. */
+export function synchronizeQueuedSends(ops: readonly SendOp[], queue: readonly PendingQueueEntry[]): readonly SendOp[] {
+  if (queue.length === 0) return ops;
+  const byId = new Map(queue.map(entry => [entry.entry_id, entry]));
+  let changed = false;
+  const next = ops.map(op => {
+    if (op.phase !== 'confirmed' || op.echo.entryId === null) return op;
+    const entry = byId.get(op.echo.entryId);
+    if (entry === undefined || (op.queueRevision !== null && entry.rev < op.queueRevision)) return op;
+    if (op.queueRevision === entry.rev && op.echo.text === entry.text) return op;
+    changed = true;
+    return { ...op, queueRevision: entry.rev, echo: { ...op.echo, text: entry.text } };
+  });
+  return changed ? next : ops;
 }
