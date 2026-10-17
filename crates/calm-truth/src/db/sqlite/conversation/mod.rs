@@ -20,6 +20,7 @@ pub use acceptance::{AcceptedPendingInput, accept_pending_human_tx};
 pub use attempts::{begin_input_attempt_tx, record_input_attempt_fact_tx};
 pub use carrier::{
     CurrentInputCarrier, current_input_carrier_tx, current_input_content_carrier_tx,
+    current_input_fact_carrier_tx,
 };
 pub use claims::{
     ClaimedSubmission, claim_initial_submission_tx, claim_supplemental_submission_tx,

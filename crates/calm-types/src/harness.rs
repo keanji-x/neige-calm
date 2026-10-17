@@ -7,6 +7,7 @@ pub mod snapshot;
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
 pub const HARNESS_SYSTEM_ERROR_REASON: &str = "system_error";
+pub const HARNESS_RUNTIME_FAILED_REASON: &str = "runtime_failed";
 pub const HARNESS_INTERRUPT_TIMEOUT_REASON: &str = "interrupt_timeout";
 pub const HARNESS_INTERRUPT_TIMEOUT_MESSAGE: &str =
     "The stop request timed out before the model confirmed that this turn had stopped.";
@@ -80,6 +81,26 @@ impl HarnessInterruptionReason {
 pub enum HarnessInterruptionIntent {
     Versioned(HarnessTimeoutIntent),
     Legacy(HarnessLegacyInterruptionIntent),
+    Control(HarnessControlIntent),
+}
+
+/// A person's Stop has no execution-budget cause. Its request clock and exact
+/// owner survive an RPC timeout; recording it never claims native completion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "version", rename_all = "snake_case")]
+pub enum HarnessControlIntent {
+    UserStopV1(HarnessStopRequest),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessStopRequest {
+    pub session_id: String,
+    pub card_id: String,
+    pub track_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub requested_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,12 +148,23 @@ impl HarnessInterruptionIntent {
         match self {
             Self::Legacy(intent) => &intent.turn_id,
             Self::Versioned(HarnessTimeoutIntent::V1(request)) => &request.turn_id,
+            Self::Control(HarnessControlIntent::UserStopV1(request)) => &request.turn_id,
         }
     }
-    pub fn reason(&self) -> HarnessInterruptionReason {
+    pub fn timeout_reason(&self) -> Option<HarnessInterruptionReason> {
         match self {
-            Self::Legacy(intent) => intent.reason,
-            Self::Versioned(HarnessTimeoutIntent::V1(request)) => request.reason,
+            Self::Legacy(intent) => Some(intent.reason),
+            Self::Versioned(HarnessTimeoutIntent::V1(request)) => Some(request.reason),
+            Self::Control(_) => None,
+        }
+    }
+    pub fn requested_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::Versioned(HarnessTimeoutIntent::V1(request)) => Some(request.requested_at_ms),
+            Self::Control(HarnessControlIntent::UserStopV1(request)) => {
+                Some(request.requested_at_ms)
+            }
+            Self::Legacy(_) => None,
         }
     }
     /// Old snapshot construction has no trusted clock; retain only the legacy facts.

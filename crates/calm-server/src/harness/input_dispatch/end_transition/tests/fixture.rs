@@ -3,6 +3,7 @@
 use super::super::*;
 use crate::auth::{AuthConfig, AuthState, HumanInputSource, SessionAuthority, SessionIdentity};
 use crate::db::prelude::*;
+use crate::db::sqlite::conversation::current_input_carrier_tx;
 use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::harness::backend::InputDelivery;
 use crate::harness::held_requests::HeldRequestReceiver;

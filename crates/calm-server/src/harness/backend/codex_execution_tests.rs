@@ -14,6 +14,40 @@ struct Fixture {
     daemon: Arc<SharedCodexAppServer>,
 }
 
+#[tokio::test]
+async fn codex_original_native_end_keeps_its_first_terminal_fact() {
+    let fx = Fixture::new().await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    fx.accepted(&mut peer, "immutable-original").await;
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &fx.owner.thread,
+        "turn/completed",
+        json!({"id":"immutable-original","status":"interrupted"}),
+    )
+    .await;
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        &fx.owner.thread,
+        "turn/completed",
+        json!({"id":"immutable-original","status":"completed"}),
+    )
+    .await;
+    let observed = fx
+        .backend
+        .qualify_execution_end(&fx.target("immutable-original"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        observed.terminal().unwrap()["status"],
+        "interrupted",
+        "a conflicting duplicate cannot rewrite the actual original END"
+    );
+}
+
 impl Fixture {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();

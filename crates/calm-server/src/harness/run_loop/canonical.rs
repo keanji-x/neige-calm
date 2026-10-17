@@ -6,7 +6,9 @@ use crate::db::sqlite::conversation::{
     CurrentInputCarrier, RuntimeFrameAfterWrite, human_plan_for_pending_prefix_tx,
     persist_runtime_frame_tx,
 };
-use crate::db::sqlite::conversation::{RuntimeExecutionFence, current_input_carrier_tx};
+use crate::db::sqlite::conversation::{
+    RuntimeExecutionFence, current_input_carrier_tx, current_input_fact_carrier_tx,
+};
 use crate::harness::profile::input_carrier_binding_tx;
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
 use calm_types::conversation::MessageRevisionRef;
@@ -16,6 +18,7 @@ use calm_types::conversation::{
 use std::collections::HashMap;
 
 mod content;
+pub(super) mod control;
 pub(super) use content::{on_notification, persist_native_item};
 
 #[cfg(all(test, feature = "fixtures"))]
@@ -23,16 +26,44 @@ mod tests;
 
 fn frame(carrier: &CurrentInputCarrier) -> Result<CommittedFrame> {
     Ok(CommittedFrame {
-        snapshot: serde_json::from_value(carrier.snapshot().clone())?,
+        snapshot: checked_snapshot(carrier.snapshot().clone())?,
         fence: RuntimeExecutionFence::from_carrier(carrier),
     })
 }
 
 fn written(frame: RuntimeFrameAfterWrite) -> Result<CommittedFrame> {
     Ok(CommittedFrame {
-        snapshot: serde_json::from_value(frame.snapshot)?,
+        snapshot: checked_snapshot(frame.snapshot)?,
         fence: frame.execution_fence,
     })
+}
+
+fn checked_snapshot(value: Value) -> Result<CanonicalHarnessSnapshot> {
+    let snapshot: CanonicalHarnessSnapshot = serde_json::from_value(value)?;
+    if snapshot.header.phase == HarnessPhaseTag::IssuingInterrupt {
+        let turn = snapshot
+            .header
+            .last_turn_id
+            .as_deref()
+            .filter(|turn| !turn.is_empty());
+        if turn.is_none()
+            || snapshot
+                .header
+                .last_thread_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || snapshot
+                .header
+                .interruption_intent
+                .as_ref()
+                .is_none_or(|intent| Some(intent.turn_id()) != turn)
+        {
+            return Err(CalmError::Conflict(
+                "canonical control checkpoint has no exact original target/intent".into(),
+            ));
+        }
+    }
+    Ok(snapshot)
 }
 
 fn header_value(snapshot: &CanonicalHarnessSnapshot) -> Result<Value> {
@@ -127,11 +158,11 @@ impl CanonicalInputs {
     }
 }
 
-async fn read_current(inner: &Inner) -> Result<CommittedFrame> {
+pub(super) async fn read_current(inner: &Inner) -> Result<CommittedFrame> {
     let card = inner.card_id.to_string();
     let runtime = inner.worker_session_id.clone();
     write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-        Box::pin(async move { frame(&current_input_carrier_tx(tx, &card, &runtime).await?) })
+        Box::pin(async move { frame(&current_input_fact_carrier_tx(tx, &card, &runtime).await?) })
     })
     .await
 }
@@ -144,7 +175,9 @@ async fn publish(inner: &Inner, next: CommittedFrame) {
     let mut state = inner.state.lock().await;
     let same_running = matches!(&*state, HarnessState::TurnRunning {turn_id,..}
         if header.phase == HarnessPhaseTag::TurnRunning && header.last_turn_id.as_ref() == Some(turn_id));
-    if !same_running {
+    let same_interrupt = matches!(&*state, HarnessState::Issuing {kind:IssuingKind::Interrupt {target_turn_id,..},..}
+        if header.phase == HarnessPhaseTag::IssuingInterrupt && header.last_turn_id.as_ref() == Some(target_turn_id));
+    if !same_running && !same_interrupt {
         *state = if header.phase == HarnessPhaseTag::TurnRunning {
             match &header.last_turn_id {
                 Some(turn) => HarnessState::turn_running(turn.clone(), Instant::now()),
@@ -152,14 +185,56 @@ async fn publish(inner: &Inner, next: CommittedFrame) {
                     resumed_at: Instant::now(),
                 },
             }
+        } else if header.phase == HarnessPhaseTag::IssuingInterrupt {
+            HarnessState::Issuing {
+                since: Instant::now(),
+                kind: IssuingKind::Interrupt {
+                    target_turn_id: header
+                        .last_turn_id
+                        .clone()
+                        .expect("committed control has its target"),
+                    reason: if header
+                        .interruption_intent
+                        .as_ref()
+                        .and_then(|intent| intent.timeout_reason())
+                        .is_some()
+                    {
+                        "max_turn_duration".into()
+                    } else {
+                        "user_stop".into()
+                    },
+                },
+            }
         } else {
             state_from_runtime_header(header, &inner.inputs)
         };
     }
     drop(state);
+    if header.phase == HarnessPhaseTag::IssuingInterrupt && !same_interrupt {
+        *inner.interrupt_deadline.lock().await = header
+            .interruption_intent
+            .as_ref()
+            .and_then(|intent| intent.requested_at_ms())
+            .map(|requested| {
+                let elapsed = Duration::from_millis(
+                    crate::model::now_ms().saturating_sub(requested).max(0) as u64,
+                );
+                (
+                    header.last_turn_id.clone().expect("control target"),
+                    Instant::now()
+                        + inner
+                            .config
+                            .interrupt_completion_budget
+                            .saturating_sub(elapsed),
+                )
+            });
+    } else if header.phase != HarnessPhaseTag::IssuingInterrupt {
+        *inner.interrupt_deadline.lock().await = None;
+    }
     *inner.thread_id.write().await = header.last_thread_id.clone();
     *inner.last_turn_id.lock().await = header.last_turn_id.clone();
     *inner.turn_budget.lock().await = header.turn_budget.clone();
+    *inner.interruption_intent.lock().await = header.interruption_intent.clone();
     *inner.token_usage.lock().await = header.token_usage.clone();
     *inner.context_usage_invalidation.lock().await =
         header
@@ -177,6 +252,34 @@ async fn publish(inner: &Inner, next: CommittedFrame) {
     emit_phase_refresh(inner, phase, emitted).await;
 }
 
+async fn publish_end(inner: &Arc<Inner>, done: RuntimeFrameAfterWrite) -> Result<()> {
+    let next = written(done)?;
+    if next.snapshot.header.wedged_reason.is_none() {
+        *inner.issuance_block.lock().await = None;
+        *inner.refusing_since.lock().await = None;
+    }
+    publish(inner, next).await;
+    held::end_turn(inner).await;
+    Ok(())
+}
+
+fn error_notice(error: &CalmError) -> &'static str {
+    match error {
+        CalmError::Unauthorized => "A current session must authorize this saved input.",
+        CalmError::Forbidden(_) => "You no longer have access to run this saved input.",
+        CalmError::Conflict(_) => {
+            "This saved input or its conversation changed. Execution is held."
+        }
+        _ => "Execution is waiting for its saved state to become available.",
+    }
+}
+
+/// Feedback and pacing are not permission to retry or release an input claim.
+pub(super) async fn publish_issuance_error(inner: &Inner, error: &CalmError) {
+    *inner.issuance_block.lock().await = Some(error_notice(error).into());
+    *inner.issuance_retry_after.lock().await = Some(Instant::now() + TRANSIENT_RETRY_DELAY);
+}
+
 /// Consume the one persisted pending order in the existing scheduler. Live
 /// source entries carry no body, queue order, or reusable execution grant.
 pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
@@ -192,10 +295,12 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     )
     .await?
     {
-        publish(inner, written(done)?).await;
+        publish_end(inner, done).await?;
     }
     let current = read_current(inner).await?;
     publish(inner, current.clone()).await;
+    watchdog_tick(inner).await?;
+    let current = read_current(inner).await?;
     let checkpoint = &current.snapshot.canonical_inputs;
     let header = &current.snapshot.header;
     if inner.issuance_paused.load(Ordering::SeqCst)
@@ -274,6 +379,9 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
         Ok(resolved) => resolved,
         Err(refusal) => {
             apply_refusal(inner, &refusal).await;
+            if let Err(error) = read_admission.revalidate().await {
+                publish_issuance_error(inner, &error).await;
+            }
             return Ok(());
         }
     };
@@ -449,6 +557,9 @@ async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFrame) -> Res
         }
         Err(refusal) => {
             apply_refusal(inner, &refusal).await;
+            if let Err(error) = read_admission.revalidate().await {
+                publish_issuance_error(inner, &error).await;
+            }
             Ok(())
         }
     }
@@ -474,6 +585,28 @@ async fn dispatch_initial(
         None,
     )
     .await?;
+    match committed.report.outcome() {
+        Ok(_) => {
+            *inner.issuance_block.lock().await = None;
+            *inner.refusing_since.lock().await = None;
+        }
+        Err(failure) => {
+            let unknown = matches!(
+                committed.report.delivery(),
+                crate::harness::backend::InputDelivery::Unknown(_)
+            );
+            let reader = match failure {
+                TurnStartFailure::Refused { reader, .. }
+                | TurnStartFailure::AwaitingRecovery { reader, .. } => reader.clone(),
+                TurnStartFailure::Transient(error) => error_notice(error).into(),
+            };
+            *inner.issuance_block.lock().await = Some(if unknown {
+                "The original execution outcome is unconfirmed. Its input remains held; it will not be sent again automatically.".into()
+            } else {
+                reader
+            });
+        }
+    }
     if matches!(
         committed.report.delivery(),
         crate::harness::backend::InputDelivery::NotDispatched(_)
@@ -490,7 +623,7 @@ async fn dispatch_initial(
     let runtime = inner.worker_session_id.clone();
     let next = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let carrier = current_input_carrier_tx(tx, &card, &runtime).await?;
+            let carrier = current_input_fact_carrier_tx(tx, &card, &runtime).await?;
             let report = carrier
                 .checkpoint()
                 .attempt(&attempt.submission_id)
@@ -498,6 +631,29 @@ async fn dispatch_initial(
                 .ok_or_else(|| CalmError::Conflict("committed dispatch report changed".into()))?;
             let mut next: CanonicalHarnessSnapshot =
                 serde_json::from_value(carrier.snapshot().clone())?;
+            if !carrier.is_execution_current() {
+                next.header.phase = HarnessPhaseTag::Wedged;
+                next.header.wedged_reason.get_or_insert_with(|| {
+                    calm_types::harness::HARNESS_RUNTIME_FAILED_REASON.into()
+                });
+                if let Some(turn) = report
+                    .correlation
+                    .native_turn_id
+                    .as_ref()
+                    .or(report.correlation.local_turn_id.as_ref())
+                {
+                    next.header.last_turn_id = Some(turn.clone());
+                }
+                let persisted = persist_runtime_frame_tx(
+                    tx,
+                    &card,
+                    &runtime,
+                    &RuntimeExecutionFence::from_carrier(&carrier),
+                    header_value(&next)?,
+                )
+                .await?;
+                return written(persisted);
+            }
             if next.header.phase != HarnessPhaseTag::IssuingTurn {
                 return frame(&carrier);
             }
@@ -560,7 +716,7 @@ async fn dispatch_initial(
     )
     .await?
     {
-        publish(inner, written(done)?).await;
+        publish_end(inner, done).await?;
     }
     Ok(())
 }
@@ -599,10 +755,9 @@ pub(super) async fn load_current(params: &PlannerHarnessParams) -> Result<Commit
     write_in_tx_typed(params.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let carrier = current_input_carrier_tx(tx, &card, &runtime).await?;
-            let snapshot: CanonicalHarnessSnapshot =
-                serde_json::from_value(carrier.snapshot().clone()).map_err(|_| {
-                    CalmError::Conflict("current canonical carrier has an invalid frame".into())
-                })?;
+            let snapshot = checked_snapshot(carrier.snapshot().clone()).map_err(|_| {
+                CalmError::Conflict("current canonical carrier has an invalid frame".into())
+            })?;
             let (binding, current) = input_carrier_binding_tx(tx, &carrier).await?;
             if current.track_id.as_str() != track
                 || binding.provider != provider

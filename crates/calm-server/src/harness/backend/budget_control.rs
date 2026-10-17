@@ -10,6 +10,11 @@ pub(crate) enum ControlDelivery {
     Accepted { native_turn_id: String },
 }
 
+pub(crate) enum BudgetControlScope {
+    Historical,
+    Canonical(ExecutionEndTarget),
+}
+
 pub(crate) struct ControlAttemptReport {
     notice: BudgetControlNotice,
     delivery: ControlDelivery,
@@ -44,8 +49,10 @@ impl PlannerBackend {
     pub(crate) async fn send_budget_notice(
         &self,
         notice: &BudgetControlNotice,
+        scope: BudgetControlScope,
+        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
     ) -> ControlAttemptReport {
-        let Arm::Codex(daemon, _) = &self.0 else {
+        let Arm::Codex(daemon, owner) = &self.0 else {
             return ControlAttemptReport {
                 notice: notice.clone(),
                 delivery: ControlDelivery::NotDispatched,
@@ -55,6 +62,21 @@ impl PlannerBackend {
                 )),
             };
         };
+        if let BudgetControlScope::Canonical(target) = &scope
+            && (!owner.binding.matches(target)
+                || !matches!(&target.scope,
+                ExecutionEndScope::NativeTurn {thread_id, native_turn_id}
+                    if thread_id == notice.thread_id() && native_turn_id == notice.turn_id()))
+        {
+            return ControlAttemptReport {
+                notice: notice.clone(),
+                delivery: ControlDelivery::NotDispatched,
+                rpc_failure: None,
+                outcome: Err(CalmError::Conflict(
+                    "budget notice names another execution owner".into(),
+                )),
+            };
+        }
         let native = daemon
             .turn_steer_report(
                 notice.thread_id(),
@@ -63,8 +85,15 @@ impl PlannerBackend {
                     text: notice.text(),
                 }],
                 Some(notice.client_id()),
-                crate::shared_codex_appserver::NativeSteer::BudgetControl,
-                &|| Box::pin(async { Ok(()) }),
+                match scope {
+                    BudgetControlScope::Historical => {
+                        crate::shared_codex_appserver::NativeSteer::BudgetControl
+                    }
+                    BudgetControlScope::Canonical(target) => {
+                        crate::shared_codex_appserver::NativeSteer::CanonicalControl(target)
+                    }
+                },
+                admission,
             )
             .await;
         let delivery = match native.delivery() {
@@ -80,6 +109,21 @@ impl PlannerBackend {
             delivery,
             rpc_failure,
             outcome: native.into_outcome(),
+        }
+    }
+
+    pub(crate) async fn interrupt_execution(
+        &self,
+        target: &ExecutionEndTarget,
+        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+    ) -> Result<()> {
+        match &self.0 {
+            Arm::Codex(daemon, owner) if owner.binding.matches(target) => {
+                daemon.interrupt_execution(target, admission).await
+            }
+            _ => Err(CalmError::Conflict(
+                "control requires this backend's original native owner".into(),
+            )),
         }
     }
 }

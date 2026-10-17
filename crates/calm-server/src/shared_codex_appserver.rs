@@ -1405,6 +1405,29 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
+    /// One admitted control of an exact canonical execution. Connection waiting
+    /// precedes caller admission; the native owner then binds this one RPC to
+    /// its actual current client/proof. Internal socket queuing is that same RPC.
+    pub(crate) async fn interrupt_execution<'a>(
+        &self,
+        target: &crate::harness::backend::ExecutionEndTarget,
+        admission: &NativePromptAdmission<'a>,
+    ) -> Result<()> {
+        let client = self.connected_client().await?;
+        admission().await?;
+        let ticket = self.native_turns.begin_control(client, target)?;
+        ticket
+            .client
+            .turn_interrupt(&ticket.thread, &ticket.turn)
+            .await?;
+        self.native_turns.acknowledge_control_from_source(
+            &Arc::downgrade(&ticket.client),
+            &ticket.thread,
+            &ticket.turn,
+        );
+        Ok(())
+    }
+
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
         self.native_turns.active(thread_id)
     }

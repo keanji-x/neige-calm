@@ -40,6 +40,30 @@ async fn canonical_http_stop_controls_the_original_execution_and_waits_for_real_
     })
     .await
     .unwrap();
+    let (card, _, before_ack) = fixture.carrier(track).await;
+    assert_eq!(before_ack.header.phase, HarnessPhaseTag::IssuingTurn);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{card}/planner/interrupt"))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "unconfirmed issuance must not pretend a Stop was dispatched"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(80), request(&mut peer))
+            .await
+            .is_err()
+    );
     notify_thread(
         &state.shared_codex_appserver,
         &mut peer,
@@ -58,6 +82,40 @@ async fn canonical_http_stop_controls_the_original_execution_and_waits_for_real_
         .await;
     let (card, worker, _) = fixture.carrier(track).await;
     let uri = format!("/api/cards/{card}/planner/interrupt");
+    // Collaboration access alone cannot control this deployment's private
+    // execution environment. This changes policy facts, never a runtime phase.
+    let area_id = area["id"].as_str().unwrap();
+    sqlx::query("UPDATE area_members SET role='member' WHERE area_id=?1 AND user_id=?2")
+        .bind(area_id)
+        .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert_eq!(fixture.carrier(track).await.2, original);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(80), request(&mut peer))
+            .await
+            .is_err()
+    );
+    sqlx::query("UPDATE area_members SET role='owner' WHERE area_id=?1 AND user_id=?2")
+        .bind(area_id)
+        .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
+        .execute(fixture.repo.pool())
+        .await
+        .unwrap();
     let mut stop = tokio::spawn({
         let (app, cookie, uri) = (app.clone(), cookie.clone(), uri.clone());
         async move { post(&app, &cookie, &uri, "stop", json!({})).await }
@@ -98,6 +156,7 @@ async fn canonical_http_stop_controls_the_original_execution_and_waits_for_real_
         done.canonical_inputs.attempts,
         original.canonical_inputs.attempts
     );
+    peer.close(None).await.unwrap();
     state
         .harness
         .get(&worker)

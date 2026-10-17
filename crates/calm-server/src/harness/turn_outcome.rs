@@ -53,9 +53,18 @@ pub(crate) async fn record(
         && session.card_id == card_id
         && let Some(card) = repo.card_get(card_id).await?
         && card.track_id.as_str() == track_id
-        && let Some(snapshot) = session
-            .handle_state_json
-            .and_then(super::HarnessSnapshot::parse_known)
+        && let Some(snapshot) = session.handle_state_json.and_then(|value| {
+            match value.get("schema_version").and_then(Value::as_u64) {
+                Some(2) => serde_json::from_value::<
+                    calm_types::harness::snapshot::CanonicalHarnessSnapshot,
+                >(value)
+                .ok()
+                .map(|frame| frame.header),
+                Some(1) => super::HarnessSnapshot::parse_known(value)
+                    .map(|snapshot| snapshot.runtime_header()),
+                _ => None,
+            }
+        })
         && snapshot.last_turn_id.as_deref() == Some(turn_id)
         && snapshot.last_thread_id.as_deref() == Some(thread_id)
         && let Some(intent) = snapshot.interruption_intent

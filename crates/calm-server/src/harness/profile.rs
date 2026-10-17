@@ -118,6 +118,21 @@ pub(crate) async fn input_carrier_binding_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     carrier: &crate::db::sqlite::conversation::CurrentInputCarrier,
 ) -> crate::error::Result<(PlannerBinding, calm_types::worker::WorkerSession)> {
+    let (binding, session) = input_carrier_contract_tx(tx, carrier).await?;
+    if !session.state.is_active_authority() {
+        return Err(crate::error::CalmError::Conflict(
+            "input carrier is not active".into(),
+        ));
+    }
+    Ok((binding, session))
+}
+
+/// Contract facts for returned reports and END, including a failed current row.
+/// This does not grant execution; the binding wrapper above owns that decision.
+pub(crate) async fn input_carrier_contract_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    carrier: &crate::db::sqlite::conversation::CurrentInputCarrier,
+) -> crate::error::Result<(PlannerBinding, calm_types::worker::WorkerSession)> {
     let shape = crate::db::sqlite::card_execution_shape_tx(tx, carrier.card_id()).await?;
     let binding =
         PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload).ok_or_else(|| {
@@ -129,7 +144,7 @@ pub(crate) async fn input_carrier_binding_tx(
     )
     .await?
     .ok_or_else(|| crate::error::CalmError::Conflict("input carrier no longer exists".into()))?;
-    if !session.state.is_active_authority() || !binding.matches_session_contract(&session) {
+    if !binding.matches_session_contract(&session) {
         return Err(crate::error::CalmError::Conflict(
             "input carrier contract no longer matches its conversation".into(),
         ));

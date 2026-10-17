@@ -5,8 +5,25 @@
 //! repository operation or asynchronous cleanup runs under either lock.
 use super::*;
 use crate::harness::backend::{ExecutionEndScope, ExecutionEndTarget, ExecutionInput};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex as StdMutex, Weak};
+
+/// Closed protocol facts, not an arbitrary native diagnostic/body copy. END
+/// identity is already validated by this owner; unknown extras are not stored.
+fn terminal_fact(id: &str, native: &Value) -> Value {
+    let mut fact = serde_json::json!({"id":id});
+    if let Some(status @ ("completed" | "interrupted" | "failed")) =
+        native.get("status").and_then(Value::as_str)
+    {
+        fact["status"] = Value::String(status.into());
+    }
+    if native.get("error").is_some_and(|error| !error.is_null()) {
+        fact["error"] = Value::Bool(true);
+        crate::harness::turn_outcome::canonical_diagnostic(&mut fact);
+    }
+    fact
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CodexHarnessBinding {
@@ -65,10 +82,18 @@ impl NativeInput {
 pub(crate) enum NativeSteer {
     Legacy,
     BudgetControl,
+    CanonicalControl(ExecutionEndTarget),
     Canonical {
         binding: CodexHarnessBinding,
         logical_turn_id: calm_types::conversation::LogicalTurnId,
     },
+}
+
+/// Consumed by one interrupt RPC on the actual client qualified under this owner.
+pub(super) struct ControlTicket {
+    pub(super) client: Arc<CodexAppServer>,
+    pub(super) thread: String,
+    pub(super) turn: String,
 }
 
 pub(super) struct SteerTicket {
@@ -89,6 +114,7 @@ struct NativeExecution {
     turn: String,
     input: NativeInput,
     ended: bool,
+    terminal: Option<Value>,
     // Only the existing control projection. Acknowledgement is not END and
     // cannot retire the Original Initial association held by this execution.
     control_visible: bool,
@@ -354,6 +380,11 @@ impl NativeTurns {
                             && original.input.matches_logical(logical_turn_id)
                     }
                     (NativeSteer::BudgetControl, _) => true,
+                    (NativeSteer::CanonicalControl(target), _) => {
+                        current.input.matches(target)
+                            && matches!(&target.scope, ExecutionEndScope::NativeTurn {thread_id,native_turn_id}
+                                if thread_id == thread && native_turn_id == turn)
+                    }
                     (NativeSteer::Legacy, NativeInput::Legacy) => true,
                     _ => false,
                 }
@@ -430,10 +461,16 @@ impl NativeTurns {
             .as_ref()
             .filter(|candidate| candidate.turn == turn)
             .is_none_or(|candidate| candidate.control_visible);
+        let terminal = pending
+            .candidate
+            .as_ref()
+            .filter(|candidate| candidate.turn == turn)
+            .and_then(|candidate| candidate.terminal.clone());
         slot.current = Some(NativeExecution {
             turn: turn.into(),
             input: ticket.input.clone(),
             ended,
+            terminal,
             control_visible,
         });
     }
@@ -476,30 +513,40 @@ impl NativeTurns {
             // for a later formal END, including a not-yet-acknowledged candidate.
             slot.retire_control_hint(turn);
         }
-        let (thread, turn, ended) = match notification {
+        let (thread, native, ended) = match notification {
             Notification::TurnStarted { thread_id, turn } => (thread_id, turn, false),
             Notification::TurnCompleted { thread_id, turn } => (thread_id, turn, true),
             _ => return true,
         };
-        let Some(turn) = turn_id(turn).filter(|turn| !turn.is_empty()) else {
+        let Some(turn) = turn_id(native).filter(|turn| !turn.is_empty()) else {
             return true;
         };
+        let terminal = ended.then(|| terminal_fact(turn, native));
         let slot = state.slots.entry(thread.clone()).or_default();
         if let Some(current) = &mut slot.current
             && current.turn == turn
         {
             current.ended |= ended;
+            if ended && current.terminal.is_none() {
+                current.terminal = terminal;
+            }
             return true;
         }
         if let Some(pending) = &mut slot.pending {
             match &mut pending.candidate {
-                Some(candidate) if candidate.turn == turn => candidate.ended |= ended,
+                Some(candidate) if candidate.turn == turn => {
+                    candidate.ended |= ended;
+                    if ended && candidate.terminal.is_none() {
+                        candidate.terminal = terminal;
+                    }
+                }
                 Some(_) => pending.ambiguous = true,
                 None => {
                     pending.candidate = Some(NativeExecution {
                         turn: turn.into(),
                         input: NativeInput::Legacy,
                         ended,
+                        terminal,
                         control_visible: true,
                     })
                 }
@@ -509,22 +556,23 @@ impl NativeTurns {
                 turn: turn.into(),
                 input: NativeInput::Legacy,
                 ended: false,
+                terminal: None,
                 control_visible: true,
             });
         }
         true
     }
 
-    pub(super) fn qualify(&self, target: &ExecutionEndTarget) -> bool {
+    pub(super) fn qualified_terminal(&self, target: &ExecutionEndTarget) -> Option<Value> {
         let ExecutionEndScope::NativeTurn {
             thread_id,
             native_turn_id,
         } = &target.scope
         else {
-            return false;
+            return None;
         };
         let state = self.lock();
-        state
+        let eligible = state
             .source
             .as_ref()
             .is_some_and(|source| state.is_current(source))
@@ -537,7 +585,54 @@ impl NativeTurns {
                             && current.turn == *native_turn_id
                             && current.input.matches(target)
                     })
+            });
+        eligible
+            .then(|| {
+                state
+                    .slots
+                    .get(thread_id)
+                    .and_then(|slot| slot.current.as_ref())
+                    .and_then(|current| current.terminal.clone())
             })
+            .flatten()
+    }
+
+    pub(super) fn begin_control(
+        &self,
+        client: Arc<CodexAppServer>,
+        target: &ExecutionEndTarget,
+    ) -> Result<ControlTicket> {
+        let ExecutionEndScope::NativeTurn {
+            thread_id,
+            native_turn_id,
+        } = &target.scope
+        else {
+            return Err(CalmError::Conflict(
+                "control requires its actual native turn".into(),
+            ));
+        };
+        let state = self.lock();
+        let current = state
+            .slots
+            .get(thread_id)
+            .filter(|slot| !slot.unresolved && slot.pending.is_none() && slot.steering.is_none())
+            .and_then(|slot| slot.current.as_ref());
+        if !state.is_current(&Arc::downgrade(&client))
+            || !current.is_some_and(|current| {
+                current.needs_control()
+                    && current.turn == *native_turn_id
+                    && current.input.matches(target)
+            })
+        {
+            return Err(CalmError::Conflict(
+                "control no longer owns the original native execution".into(),
+            ));
+        }
+        Ok(ControlTicket {
+            client,
+            thread: thread_id.clone(),
+            turn: native_turn_id.clone(),
+        })
     }
 
     pub(super) fn active(&self, thread: &str) -> Option<String> {
@@ -629,6 +724,7 @@ impl NativeTurns {
             turn,
             input: NativeInput::Legacy,
             ended: false,
+            terminal: None,
             control_visible: true,
         });
     }
@@ -658,7 +754,10 @@ impl NativeTurns {
 }
 
 impl SharedCodexAppServer {
-    pub(crate) fn qualify_execution_end(&self, target: &ExecutionEndTarget) -> bool {
-        self.native_turns.qualify(target)
+    pub(crate) fn qualified_execution_terminal(
+        &self,
+        target: &ExecutionEndTarget,
+    ) -> Option<Value> {
+        self.native_turns.qualified_terminal(target)
     }
 }

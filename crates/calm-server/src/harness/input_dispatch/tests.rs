@@ -1,3 +1,4 @@
+mod failed_fact;
 mod source_gate;
 
 use super::*;

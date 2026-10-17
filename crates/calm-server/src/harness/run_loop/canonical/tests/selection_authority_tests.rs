@@ -77,6 +77,14 @@ async fn canonical_revoked_source_cannot_continue_from_config_to_catalog() {
             .await
             .unwrap();
     assert_eq!(submissions, 0);
+    assert!(
+        fx.harness
+            .issuance_block()
+            .await
+            .as_deref()
+            .is_some_and(|notice| notice.contains("session")),
+        "the actual source refusal must reach standing feedback rather than only a log"
+    );
     eprintln!("stage: loop completed; original pending preserved; no claim or marker");
     tokio::time::timeout(Duration::from_secs(5), fx.harness.shutdown())
         .await

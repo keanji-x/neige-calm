@@ -343,6 +343,11 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    CanonicalInterrupt {
+        target: crate::harness::backend::ExecutionEndTarget,
+        source: crate::auth::HumanInputSource,
+        answer: oneshot::Sender<Result<()>>,
+    },
     CanonicalSource {
         input: calm_types::conversation::MessageRevisionRef,
         source: crate::auth::HumanInputSource,
@@ -849,8 +854,34 @@ impl PlannerHarness {
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
+        if self.inner.inputs.canonical().is_some() {
+            return Err(CalmError::Conflict(
+                "canonical Stop requires its current Human source".into(),
+            ));
+        }
         self.inner.historical_queue()?;
         issue_interrupt(&self.inner, reason).await
+    }
+
+    pub(crate) async fn stop_canonical(&self, source: crate::auth::HumanInputSource) -> Result<()> {
+        if self.inner.inputs.canonical().is_none() {
+            return Err(CalmError::Conflict("Stop contract changed".into()));
+        }
+        let target = canonical::control::select_human_stop(&self.inner, &source).await?;
+        let ObservationIngress::Running(sender) = &self.inner.observations else {
+            return Err(CalmError::Conflict("canonical runtime is closed".into()));
+        };
+        let (answer, result) = oneshot::channel();
+        sender
+            .try_send(HarnessObservationCommand::CanonicalInterrupt {
+                target,
+                source,
+                answer,
+            })
+            .map_err(map_observation_send_error)?;
+        result
+            .await
+            .map_err(|_| CalmError::Conflict("Stop owner closed before confirmation".into()))?
     }
 
     /// Replace the latest turn `turn_id` with one message under the send's key (#2043): the turn
@@ -989,12 +1020,15 @@ impl PlannerHarness {
     }
 
     /// Runtime metadata has one representation and carries no human body queue.
-    /// A canonical read uses only its committed projection, never an empty V1.
+    /// Canonical metadata follows the actual committed carrier, including a
+    /// fact whose loop projection has not caught up yet. Never synthesize V1.
     pub async fn runtime_header(
         &self,
     ) -> Result<calm_types::harness::snapshot::HarnessRuntimeHeader> {
         match &self.inner.inputs {
-            RuntimeInputs::Canonical(inputs) => Ok(inputs.committed().await.snapshot.header),
+            RuntimeInputs::Canonical(_) => {
+                Ok(canonical::read_current(&self.inner).await?.snapshot.header)
+            }
             RuntimeInputs::Historical(_) => Ok(snapshot_for(&self.inner).await?.runtime_header()),
         }
     }
@@ -1532,6 +1566,9 @@ async fn run_loop(
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
+                    HarnessObservationCommand::CanonicalInterrupt { target, source, answer } => {
+                        canonical::control::manual(&inner, target, source, answer).await;
+                    }
                     HarnessObservationCommand::CanonicalSource { input, source, observed } => {
                         let result = match inner.inputs.canonical() {
                             Some(inputs) if !inner.shutting_down.load(Ordering::SeqCst) => {
@@ -1624,6 +1661,7 @@ async fn run_loop(
             _ = tick.tick() => {
                 if inner.inputs.canonical().is_some() {
                     if let Err(error) = canonical::tick(&inner).await {
+                        canonical::publish_issuance_error(&inner, &error).await;
                         tracing::warn!(%error, "canonical harness tick did not advance");
                     }
                     continue;
@@ -3942,7 +3980,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
     let compact_timed_out = matches!(&*inner.state.lock().await,
         HarnessState::Compacting { since } if since.elapsed() >= inner.config.interrupt_completion_budget)
         || matches!(&*inner.state.lock().await, HarnessState::CompactionRunning { started_at, .. } if started_at.elapsed() >= inner.config.max_turn_duration);
-    if compact_timed_out {
+    if compact_timed_out && inner.inputs.canonical().is_none() {
         compact_command::settle(
             inner,
             crate::harness::compact_outcome::CompactStatus::Unconfirmed,
@@ -3964,7 +4002,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
             _ => false,
         }
     };
-    if resume_elapsed {
+    if resume_elapsed && inner.inputs.canonical().is_none() {
         let mut state = inner.state.lock().await;
         if let HarnessState::Resumed { resumed_at } = &*state
             && Instant::now().duration_since(*resumed_at) >= inner.config.resumed_reconcile_budget
@@ -3976,9 +4014,20 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
         }
     }
 
-    if let Some((_, deadline)) = *inner.interrupt_deadline.lock().await
-        && Instant::now() >= deadline
-    {
+    let interrupt_expired = inner
+        .interrupt_deadline
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|(_, deadline)| Instant::now() >= *deadline);
+    if interrupt_expired {
+        if inner.inputs.canonical().is_some() {
+            return canonical::control::failed(
+                inner,
+                calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON,
+            )
+            .await;
+        }
         *inner.state.lock().await = HarnessState::Wedged {
             since: Instant::now(),
             reason: calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON.into(),
@@ -4056,6 +4105,9 @@ async fn issue_interrupt_for_turn(
     target_turn_id: String,
     reason: String,
 ) -> Result<()> {
+    if inner.inputs.canonical().is_some() {
+        return canonical::control::timeout(inner, &target_turn_id).await;
+    }
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         return Ok(());
     };
@@ -4386,9 +4438,9 @@ async fn persist_snapshot_inner(
                 "historical snapshot mutation cannot change canonical input".into(),
             ));
         }
-        // Every canonical mutation has already committed through its fact/frame
-        // owner. Never serialize the historical cache over that current frame.
-        return Ok(true);
+        return Err(CalmError::Conflict(
+            "canonical runtime mutations require their committed frame owner".into(),
+        ));
     }
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.

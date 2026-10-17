@@ -4,7 +4,7 @@
 //! before publishing a result. Missing returns remain frozen in the same snapshot.
 mod end_transition;
 mod hydrate;
-pub(crate) use end_transition::complete_once;
+pub(crate) use end_transition::{complete_once, execution_target_tx};
 
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
@@ -22,8 +22,8 @@ use crate::auth::HumanInputSource;
 use crate::codex_appserver::InputItem;
 use crate::db::sqlite::conversation::{
     RuntimeExecutionFence, begin_input_attempt_tx, current_input_carrier_tx,
-    record_input_attempt_fact_tx, release_submission_tx, submission_identity_tx,
-    submission_plan_tx,
+    current_input_fact_carrier_tx, record_input_attempt_fact_tx, release_submission_tx,
+    submission_identity_tx, submission_plan_tx,
 };
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
@@ -354,7 +354,8 @@ async fn settle(
     let worker_session_id = worker_session_id.to_owned();
     let snapshot = write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let mut carrier = current_input_carrier_tx(tx, &card_id, &worker_session_id).await?;
+            let mut carrier =
+                current_input_fact_carrier_tx(tx, &card_id, &worker_session_id).await?;
             record_input_attempt_fact_tx(tx, &mut carrier, fact.clone()).await?;
             if may_release {
                 release_submission_tx(tx, &mut carrier, &fact.attempt).await?;
