@@ -103,7 +103,9 @@ impl Executor {
         // The global reservation is released before journal IO, and survives failed persistence.
         self.preparations.reserve(&request)?;
         self.persist(Journal {
-            version: 3,
+            version: journal::JOURNAL_VERSION,
+            host_boot_id: self.host_boot_id.clone(),
+            output_end: OutputEnd::Open,
             request,
             phase: Phase::Prepared,
             interactive_revoked: false,

@@ -52,7 +52,7 @@ impl Executor {
     pub(crate) fn reserve_legacy(&self, _: &str) -> anyhow::Result<()> {
         Err(unavailable())
     }
-    pub async fn stop_known(&self) {}
+    pub async fn graceful_shutdown(&self) {}
 }
 pub fn run_scope_helper(_: i32, _: i32) -> anyhow::Result<()> {
     Err(unavailable())

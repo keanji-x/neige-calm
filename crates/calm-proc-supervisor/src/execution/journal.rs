@@ -10,10 +10,15 @@ use calm_session::control::execution::{ExecutionReceipt, ExecutionState, Prepare
 use serde::{Deserialize, Serialize};
 use workspace::execution::ExecutionId;
 
+// Pre-E1a opt-in journals are intentionally refused; required facts are never backfilled.
+pub(super) const JOURNAL_VERSION: u32 = 4;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Journal {
     pub version: u32,
+    pub host_boot_id: String,
+    pub output_end: calm_session::control::execution::OutputEnd,
     pub request: PrepareExecution,
     pub phase: Phase,
     pub interactive_revoked: bool,
@@ -23,6 +28,15 @@ pub(super) struct Journal {
 }
 
 impl Journal {
+    pub fn settle_unspawned_output(&mut self) {
+        if self.phase.receipt().is_none()
+            && self.phase.state().permits_handoff()
+            && self.output_end == calm_session::control::execution::OutputEnd::Open
+        {
+            self.output_end =
+                calm_session::control::execution::OutputEnd::Complete { final_cursor: 0 };
+        }
+    }
     pub fn durably_settled(&self) -> bool {
         !self.pending_persistence && self.phase.state().permits_handoff()
     }
@@ -49,7 +63,7 @@ pub(super) enum Phase {
         proof: workspace::execution::ScopeDrainProof,
     },
     NoChild {
-        slot_version: u64,
+        slot_version: Option<u64>,
         reason: String,
     },
     Unknown {
@@ -89,8 +103,8 @@ impl Phase {
         match self {
             Self::Reserved { slot_version }
             | Self::Forking { slot_version }
-            | Self::NoChild { slot_version, .. }
             | Self::Unknown { slot_version, .. } => Some(*slot_version),
+            Self::NoChild { slot_version, .. } => *slot_version,
             _ => self.receipt().map(|receipt| receipt.slot_version),
         }
     }
@@ -164,6 +178,19 @@ impl Store {
                     bytes.len() <= 16 * 1024 * 1024,
                     "oversized execution journal"
                 );
+                if extension == "execution" {
+                    #[derive(Deserialize)]
+                    struct Version {
+                        version: u32,
+                    }
+                    let probe: Version = serde_json::from_slice(&bytes)?;
+                    anyhow::ensure!(
+                        probe.version == JOURNAL_VERSION,
+                        "unsupported execution journal version {}; expected {}; pre-E1a journals require a fresh state directory",
+                        probe.version,
+                        JOURNAL_VERSION
+                    );
+                }
                 records.push(serde_json::from_slice(&bytes)?);
             }
         }
@@ -195,6 +222,9 @@ impl Store {
         File::open(&self.root)?.sync_all()?;
         Ok(())
     }
+    pub fn output_path(&self, id: &ExecutionId) -> PathBuf {
+        self.root.join(format!("{}.output", id.as_str()))
+    }
     pub fn path(&self) -> &Path {
         &self.root
     }
@@ -222,6 +252,28 @@ fn sync_ancestry_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_e1a_journal_is_explicitly_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("journal")).unwrap();
+        // The old format deliberately lacks the new required fields.
+        std::fs::write(store.path().join("old.execution"), br#"{"version":3}"#).unwrap();
+        let error = store.load().unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "unsupported execution journal version 3; expected 4; pre-E1a journals require a fresh state directory"
+        );
+        std::fs::write(store.path().join("old.execution"), br#"{"version":4}"#).unwrap();
+        assert!(
+            store
+                .load()
+                .unwrap_err()
+                .to_string()
+                .contains("missing field"),
+            "required facts must not default"
+        );
+    }
 
     #[test]
     fn execution_journal_bootstrap_retries_every_containing_entry_barrier() {
