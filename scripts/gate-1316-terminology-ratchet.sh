@@ -3,9 +3,11 @@
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).
 # A baseline is only valid for the tree it was generated on — regenerate after every merge of upstream.
+# Restored-input transfer test: harness_item/crates 298 -> 299 is one SQL trigger
+# on the existing transcript table; production DELETE is factored without a new reference.
 # Conversation-title projection bounded exception: harness_item/crates 288 -> 298 covers
 # two storage-owner SELECTs of the frozen transcript table plus eight test references to
-# that table and its existing insert/delete APIs. harness_item/fe 103 -> 104 is the frozen
+# that table and its existing insert/delete APIs. harness_item/fe 106 -> 107 is the frozen
 # pagination-limit import, aliased PAGE_LIMIT locally. No new domain name or scan rule;
 # ordinary new conversations and tests need no production inventory entry.
 # #2618 review-fix exception: harness_item/crates 282 -> 290 covers eight test-only SQL

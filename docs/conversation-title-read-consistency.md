@@ -3,11 +3,11 @@
 Review tier: L2. The complete repair crosses the title read and restored-input
 persistence boundaries. Two fresh independent reviews remain Planner-owned.
 
-**Delivery is blocked by inherited frontend recovery regressions.** The storage
-fix and #930 guard are green, but r9 gate run 1 stopped at step 7: the complete
-conversation-router target had 185 passes and two failures. The task's explicit
-FE-unchanged boundary prevents silently repairing that separate surface. This is
-a recovery checkpoint, not an all-gates-green merge candidate.
+The r9 frontend recovery blockage below is historical: r10 repaired it and its
+15-step gate passed. The r11 correction makes nullable server titles authoritative
+and completes restored-input transfer for active and failed owners. Focused
+results and the final kernel verdict are reported separately; remote CI and
+fresh L2 review remain Planner-owned.
 
 ## Final storage boundary
 
@@ -62,8 +62,8 @@ attachment-only input remains visible but unnamed, blocking later input.
 visible input, then parses opaque runtime JSON with `HarnessSnapshot::parse_known`
 and renders typed pending entries with the existing queue renderer. Truth does
 not parse private harness JSON. The obsolete independent `TitleRead` adapter stays
-removed. Explicit titles remain authoritative. No API schema, provider protocol,
-FE or scanner change is introduced by this attempt.
+removed. Explicit titles remain authoritative. The storage repair introduces no
+API schema or provider protocol change.
 
 Issuance persists pre-drain pending, writes the transcript projection, then
 persists the drained queue. Independent source-first reads can miss both sides.
@@ -81,13 +81,21 @@ boundary, issue a real system-only task-completion observation, receive
 the first visible user input. `TrackGoal` is intentionally user-presented and is
 not substituted for the system-only observation.
 
-[The restoration owner](../crates/calm-server/src/harness/run_loop.rs) re-buffers,
-persists the typed snapshot through `persist_snapshot_inner`, checks its actual
-written bool, then deletes projections. Error or unwritten/shutdown results keep
-the only durable projection. Caller phase/head persistence and announcements
-remain unchanged. This r8 fence is not rewritten here. The existing fixture-only
-SQLite trigger captures pending at actual deletion, and a real snapshot-write
-error proves projection retention through the production metadata entry point.
+[The restoration owner](../crates/calm-server/src/harness/run_loop.rs) re-buffers
+all dropped steers and records their projection ids together, after acquiring
+all required memory locks. Cancellation cannot register retirement without its
+pending input. The active snapshot owner retains its normal active-row guard;
+the system-error owner retains `session_set_failed_harness_snapshot_tx` and its
+current, uncompleted, unharvested failed-carrier guard.
+
+Both owners write the snapshot and retire the entire restored group in that
+same existing write transaction, only if the guarded snapshot write succeeds.
+The existing projection DELETE is factored into a transaction helper in its
+storage owner; its predicate is unchanged. Any snapshot/delete error rolls back
+both sides. Unwritten or canceled persistence keeps the unique durable source;
+live retirement responsibility remains until a successful owner commit, including
+quiescence before preserving recovery. There is no next-drain first-entry cleanup
+assumption, new snapshot field, provider protocol or generic permission change.
 
 Separate pre-existing follow-up evidence remains in `handle_steer`: a failed
 `insert_projection_row` is logged, stored as `row_id: None`, and the queue without
@@ -152,10 +160,11 @@ Source: `/tmp/title-r9-restored.log`. Earlier successful samples varied (the
 1,024-prefix run held eligibility for 24.50–27.59ms); no sample is discarded to
 select a performance outcome. They are local evidence, not a production performance promise.
 
-Restoring a nonempty steer group adds one existing snapshot persistence before
-deletion in addition to caller persistence. Failed persistence can temporarily
-leave pending and projection overlapping; existing issuance replaces stale
-projections by entry id. No background cleanup or generalized retry is added.
+Restoring a nonempty steer group retains the existing extra snapshot persist.
+Its projection deletes now share that transaction, removing one transaction per
+entry. The live retirement list is cloned on persistence; only nonempty restored
+groups execute deletes. An error retains responsibility for the next existing
+owner persist; no new scheduler, background cleanup or retry loop is added.
 
 Ordinary new tests, files and input variants need no permanent name list. Changing
 the candidate SQL prefix can require updating its observer. Each gate check has
@@ -174,8 +183,8 @@ changing commit. No upstream replay or frozen FE path edit occurs here.
 Historical r8 transfer mutation bypassed only the pending-durability fence and
 failed exactly the durable-before-delete and failed-persist-retention tests, then
 restored byte-for-byte and passed the full owner filter:
-`/tmp/title-r8-transfer-mutation-result.json`. Those production branches and tests
-remain unchanged. Historical FE results are not this attempt's gate results.
+`/tmp/title-r8-transfer-mutation-result.json`. That evidence describes the r8
+checkpoint; r11 replaces the transfer boundary as explained above. Historical FE results are not this attempt's gate results.
 
 ## Executed verification
 
@@ -202,93 +211,33 @@ The real SQLite concurrency/connection filter
 passed 8/8 (`/tmp/title-r9-sqlite.log`). The existing tests retain their original
 semantic schedules; no sleep or retry was added by this repair.
 
-Worker focused runs also passed:
-
-- `-p calm-server --lib conversation_title`: 4/4 (`/tmp/title-r9-owner.log`),
-  including both preserved restored-steer durability tests.
-- `-p calm-server --test api_suite conversation_title`: 7/7
-  (`/tmp/title-r9-api.log`), with original product assertions intact.
-- `-p calm-server --test planner_harness_suite -E 'test(/planner_steer::.*restor/)'`:
-  4/4 (`/tmp/title-r9-restoration.log`).
-
-`cargo fmt --all`, `git diff --check`, byte comparison of restored production
-against its pre-mutation backup, Markdown link resolution, and FE/scanner equality
-against the original changing commit passed. The final diff is limited to this
-document, the title transaction entrance, and its SQLite test module.
-
-The declared kernel gate replays these exact target/filter pairs:
-
-- `-p calm-server --test api_suite conversation_title`
-- `-p calm-truth --lib conversation_title`
-- `-p calm-server --lib conversation_title`
-- `-p calm-truth --lib -E 'test(/deadlock_semantics_|pool_repair/)'`
-- `-p calm-server --test planner_harness_suite -E 'test(/planner_steer::.*restor/)'`
-
-It also owns `scripts/local-rust-gates.sh --quick --base origin/main`,
-`scripts/local-ratchet-gates.sh`, and `scripts/local-contract-gates.sh`.
-From `fe`, it owns `npm run lint && npm run build` and these Vitest commands:
-
-```sh
-./node_modules/.bin/vitest run --project web-dom web/src/app/router/track-conversation.test.tsx
-./node_modules/.bin/vitest run --project browser web/src/app/router/conversation-title.browser.test.tsx
-./node_modules/.bin/vitest run --project platform-independent core/domain/conversation.test.ts
-./node_modules/.bin/vitest run --project platform-independent tools/architecture/architecture.test.ts
-./node_modules/.bin/vitest run --project platform-independent core/events/invalidation-plan.test.ts
-./node_modules/.bin/vitest run --project web-dom web/src/app/providers/queries.contract.test.ts
-```
-
-The worker report carries the frozen gate verdict and full log reference. This
-local verification does not claim Planner review convergence or remote CI green.
-
+Historical r9 focused checks passed server owner 4/4, API 7/7 and restoration
+4/4 (`/tmp/title-r9-{owner,api,restoration}.log`). Formatting, diff checks and
+safe mutation restoration passed. Its gate and r10's gate are historical evidence,
+not this attempt's verdict. The current gate adds complete adapter/oracle targets
+and the system-error recovery test to the existing API/truth/owner/SQLite,
+quick/text/contracts, FE lint/build/router/browser/domain/architecture/events/query
+checks. The worker runs only focused reproductions and necessary local checks;
+CI owns broad suites.
 
 ## r9 checkpoint: inherited FE recovery
 
-Run 1 passed API 7/7, truth 15/15, Rust quick (including OpenAPI drift), text,
-all contract groups (195/195, 178/178, 13/13), and FE lint/build including ownership.
-The actual production deferred guard passed in the 178-test group. Step 7 then
-failed two existing product assertions in
-[track-conversation.test.tsx](../fe/web/src/app/router/track-conversation.test.tsx):
+r9 gate run 1 passed API 7, truth 15, quick, text, contract groups 195/178/13
+and FE lint/build, then stopped at router step 7 (185 passed, 2 failed).
+The historical FE-unchanged scope prohibited repairing those failures then:
 
-- `a fresh session (#2192) > settles a restart on a run read started after its answer, not one still out from before`:
-  line 835 expected one run read before restart, received two.
-- `[F5] says only that delivery is unconfirmed when the retries ran out offline (bundled build)`:
-  line 1484 expected `Delivery is unconfirmed.`, received the history/status-read
-  failure alert and `Reload conversation` instead.
+- Restart settlement expected one pre-restart run read and saw two.
+- Offline delivery expected `Delivery is unconfirmed.` and instead saw a
+  history/status-read alert and `Reload conversation`.
 
-The complete target reported 185 passed / 2 failed (187). Steps 8–15 did not run.
-The independently executed Rust owner, SQLite and restoration focused checks
-remain green worker evidence; they are not claimed as completed gate steps.
-There was no blind gate retry.
-
-One decisive focused rerun from `fe` reproduced exactly the same two failures:
-
-```sh
-./node_modules/.bin/vitest run --project web-dom web/src/app/router/track-conversation.test.tsx -t 'settles a restart on a run read|says only that delivery is unconfirmed'
-```
-
-Vitest reported 2 failed / 2 passed / 183 skipped; no all-green result is claimed.
-Log: `/tmp/title-r9-fe-recovery-red.log`. Both tests use the injected
-`ApiTransportPort` in `setup`/`mountRecovery`, so they never execute the new Rust
-transaction. At the r9 checkpoint, the FE tree remained byte-identical to the original changing commit.
-
-The inherited r5 rejection branch in
-[queries.ts](../fe/web/src/app/providers/queries.ts) calls `refreshAfterSend`
-for a refused/unknown send as well as success. That helper cancels and invalidates
-run, history and metadata. The dormant fixture consequently starts the observed
-second run read before restart. In the offline fixture,
-[the recovery transport](../fe/web/src/systems/recovery/transport.ts) rejects those
-business reads, and the store exposes their read errors. This matches both actual
-failures. The existing metadata-reconciliation requirement must be preserved while
-resolving this FE lifecycle conflict in new scope; neither assertion was weakened
-or edited here. The separate pre-existing steer projection failure described
-above is still only follow-up evidence and remains unchanged.
-
-Full kernel evidence:
-`runs/7793bd62565c450282032faa12a61fbe:fix-title-safe-transaction-r9/gates/1.log`,
-or `/home/kenji/.local/share/neige-next/data/gate-logs/7793bd62565c450282032faa12a61fbe:fix-title-safe-transaction-r9-r1.log`.
-At that checkpoint the only post-gate change was this documentation update.
-The r9 run did not establish an all-green gate, final CI result, or formal-review convergence.
-
+The focused rerun reproduced the same two failures (also 2 passed, 183 skipped):
+`/tmp/title-r9-fe-recovery-red.log`. Both use the injected production router
+transport and do not execute the Rust transaction. The inherited r5 send failure
+handler canceled/refetched run/history, starting the extra read and surfacing
+offline read errors. r10's authorized correction below resolved that cause without
+weakening either assertion. Gate evidence:
+`runs/7793bd62565c450282032faa12a61fbe:fix-title-safe-transaction-r9/gates/1.log`.
+Steps 8–15 did not run; r9 was not an all-green candidate.
 
 ## r10 send recovery correction
 
@@ -348,3 +297,64 @@ suite was changed or run. The complete 15-step kernel gate and subsequent formal
 L2 review have separate task evidence; worker results do not substitute for them.
 This is an L2 correction because it touches recovery admission and lifecycle
 boundaries. It adds no permanent list, check, pin or retry mechanism.
+
+
+## r11 authority and recovery correction
+
+The review-B temporary router reproduction is now a permanent case in
+[track-conversation.test.tsx](../fe/web/src/app/router/track-conversation.test.tsx).
+Agent-only history plus pending metadata, open/close, then server null reproduced
+one failure (`/tmp/title-r11-router-red.log`). Confirmed-history null and
+attachment-only cases also reproduced stale open names. Server metadata now owns
+nullable titles even while transcript reads are stale. The remembered registry
+retains counts/time/outbox only; unreconciled local send echoes still supply
+immediate title feedback. No turn-count provenance, cache or type tag is added.
+Only affected fixtures now report the explicitly known first-input metadata for
+their scripted storage generation, including confirmed close/reopen and the
+earlier input retained after replacement. No general title extractor or bulk
+fixture backfill is added; the existing delivery/edit/isolation assertions remain.
+
+The real harness regression starts with a system-only task-completion turn,
+accepts steer A then B, receives systemError and matching failed completion,
+waits for the failed snapshot, takes the real preserving recovery route and drains
+again. Two independent assertions reproduced residual B and title A becoming B
+(`/tmp/title-r11-harness-red.log`). Fake notifications bypass the daemon reducer,
+so the test explicitly clears the fake provider's active-turn read at completion;
+no production protocol or provider code is modified.
+
+[The new recovery cases](../crates/calm-server/tests/cases/planner_steer_restoration.rs)
+also exercise edit/delete after preserving recovery. [Owner tests](../crates/calm-server/src/harness/run_loop/conversation_title_tests.rs)
+cover atomic rollback on delete error and retry, unwritten failed-owner guard,
+cancellation before rebuffer and before persistence, and durable-before-delete.
+The pre-existing projection insertion failure remains a separate follow-up.
+
+The original adapter focused case and actual oracle case each reproduced one
+failure (`/tmp/title-r11-{adapter,oracle}-red.log`). Exact scoped adapter keys and
+owner order are synchronized; CAP-APP-103/036/037 now point at their real source
+ranges. Complete targets pass 27/27 and 90/90 respectively, without an oracle
+baseline exception or validator change. The terminology baseline's FE import
+explanation is corrected from 103→104 to actual 106→107; one new SQL trigger
+reference moves crates 298→299. Scan rules are unchanged.
+
+The initial focused router filter passed 6 cases (186 skipped), and the full browser
+title target passed 6/6. The complete router then exposed five older fixture
+failures (187 passed): fixed-null metadata conflicted with their scripted persisted
+input. After exact per-case metadata corrections, the same five cases plus the
+initial filter passed 11/11 (181 skipped), with original business assertions intact
+(`/tmp/title-r11-fixtures-green.log`); targeted ESLint also passed. The combined server owner/restoration filter ran all 15
+selected tests before the mutation and passed. A single production mutation
+limited shared retirement to the first projection. The complete predicted red
+set was the two-entry rollback test and all three new preserving-recovery cases;
+all four failed, with the other 11 passing. Production was restored byte-for-byte,
+and the same complete filter passed 15/15 again. Evidence:
+`/tmp/title-r11-{transfer-baseline,transfer-mutation,transfer-restored}.log`,
+`/tmp/title-r11-mutation-prediction.json`, and
+`/tmp/title-r11-mutation-result.json`. The failed-owner guard itself was not
+mutated or relaxed. Full kernel verification remains recorded in the worker result.
+
+Maintenance: ordinary new inputs/tests/files require no production list update.
+The existing oracle range references must move when their owner source moves.
+The existing frontend unit shard runs each added DOM case once and the browser
+job runs each title case once per workflow; Rust discovery runs each added test
+once across its existing shards. No CI check, manifest pin or test-name inventory
+is added. Kernel gate replays are intentional local verification, not new CI work.

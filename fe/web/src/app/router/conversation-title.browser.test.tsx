@@ -136,3 +136,42 @@ it('refreshes the first pending title after local edit and deletes without a pha
   await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
   await expect.element(page.getByRole('button', { name: 'Conversation Planner', exact: true })).toBeVisible();
 });
+
+it.each(['agent-only pending', 'confirmed input', 'attachment-only'] as const)(
+  'honors authoritative null and manual metadata with stale %s history', async (source) => {
+    await page.viewport(1400, 900);
+    let title: string | null = source === 'attachment-only' ? null : 'First input';
+    const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
+    const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: request => {
+      if (request.path === '/api/tracks/daily') return ok({
+        track: { id: 'daily', area_id: 'daily-area', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
+        can_reopen: false, can_admin: false, can_close: false, overlays: [],
+        cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title, sort: 0,
+          payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
+      });
+      if (request.path.includes('/harness/items')) return ok([{
+        id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 't',
+        turn_id: null, turn_error_text: null, item_uuid: null, method: 'item/completed', created_at_ms: 1,
+        item_type: source === 'agent-only pending' ? 'agentMessage' : 'userMessage',
+        params: JSON.stringify({ item: source === 'agent-only pending' ? { text: 'System turn reply' } : { content: [{ text: 'First input' }] } }),
+        ...(source === 'attachment-only' ? { input_segments: [{ presentation: 'user', text: '', attachments: [
+          { id: 'a.png', contentType: 'image/png', size: 3, url: '/api/cards/daily-planner/planner/attachments/a.png' },
+        ] }] } : {}),
+      }]);
+      return undefined;
+    } });
+    const initial = source === 'attachment-only' ? 'Planner' : 'First input';
+    await page.getByRole('button', { name: `Conversation ${initial}`, exact: true }).click();
+    await expect.poll(() => fixture.client.getQueryCache().getAll().some(query => query.queryKey[0] === 'harness-items' && query.state.status === 'success')).toBe(true);
+    await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+    title = null;
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['track', 'daily'] }); });
+    await page.getByRole('button', { name: 'Conversation Planner', exact: true }).click();
+    await expect.element(page.getByRole('complementary', { name: 'Planner', exact: true })).toBeVisible();
+    title = 'Manual name';
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['track', 'daily'] }); });
+    await expect.element(page.getByRole('complementary', { name: 'Manual name', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Conversation Manual name', exact: true })).toBeVisible();
+  },
+);

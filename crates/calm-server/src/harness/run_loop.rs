@@ -261,6 +261,8 @@ pub(super) struct Inner {
     /// Entries codex accepted through `turn/steer` into the running turn, held until that turn
     /// completes. Live-only: a restart loses the turn with it.
     steered_into_running_turn: Mutex<Vec<SteeredEntry>>,
+    /// Restoration transfer still owed; cleared only with an atomic snapshot/projection commit.
+    restored_projections: Mutex<Vec<QueueEntryId>>,
     /// The provider requests the running turn is paused on (#2348); see `run_loop::held`.
     held_requests: Arc<HeldRequests>,
     /// The sending half of the one channel the run loop reads the table's input from.
@@ -1277,6 +1279,7 @@ fn inner_from_params(
         issuance_paused: AtomicBool::new(false),
         unannounced_drops: Mutex::new(dropped_on_load),
         steered_into_running_turn: Mutex::new(Vec::new()),
+        restored_projections: Mutex::new(Vec::new()),
         held_requests: Arc::new(HeldRequests::default()),
         held_request_sender,
         watchdog_held_since: Mutex::new(None),
@@ -1845,38 +1848,23 @@ async fn restore_steered_entries_codex_dropped(
     for entry in &mut restored {
         entry.bump_rev_for_restore();
     }
-    rebuffer_head(inner, restored).await;
+    rebuffer_head_retiring(inner, restored, &ids).await;
     // A restored steer can be the first visible user input (after a system-only turn).
     // Keep its projection until pending is durably written, including a no-row result.
-    let pending_durable = match persist_snapshot_inner(inner, None, None).await {
-        Ok(written) => written,
-        Err(error) => {
-            tracing::warn!(
-                worker_session_id = %inner.worker_session_id,
-                card_id = %inner.card_id,
-                error = %error,
-                "planner harness could not persist restored entries; retaining their projections"
-            );
-            false
-        }
+    let failed_owner = matches!(&*inner.state.lock().await,
+        HarnessState::Wedged { reason, .. } if reason == HARNESS_SYSTEM_ERROR_REASON);
+    let persisted = if failed_owner {
+        persist_failed_system_error_snapshot(inner).await
+    } else {
+        persist_snapshot_inner(inner, None, None).await.map(|_| ())
     };
-    if pending_durable {
-        for entry_id in &ids {
-            if let Err(error) = inner
-                .repo
-                .transcript_projection_delete(inner.card_id.as_str(), entry_id.as_str())
-                .await
-            {
-                tracing::warn!(
-                    worker_session_id = %inner.worker_session_id,
-                    card_id = %inner.card_id,
-                    entry_id = %entry_id,
-                    error = %error,
-                    "planner harness could not delete the transcript row of a steered entry codex \
-                     dropped"
-                );
-            }
-        }
+    if let Err(error) = persisted {
+        tracing::warn!(
+            worker_session_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            error = %error,
+            "planner harness could not transfer restored entries; retaining their projections"
+        );
     }
     ids
 }
@@ -3867,13 +3855,26 @@ fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> S
 }
 
 async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
+    rebuffer_head_retiring(inner, drained, &[]).await;
+}
+
+async fn rebuffer_head_retiring(
+    inner: &Arc<Inner>,
+    drained: Vec<QueueEntry>,
+    restored: &[QueueEntryId],
+) {
     let mut queue = inner.pending_queue.lock().await;
+    let mut debounce = inner.debounce.lock().await;
+    let mut projections = inner.restored_projections.lock().await;
+    // Acquire every lock before changing memory: cancellation cannot register retirement
+    // without also re-buffering the input whose durable snapshot authorizes that retirement.
+    projections.extend_from_slice(restored);
     // A re-buffered batch keeps the ids it was drained with: the same instances going back.
     for entry in drained.into_iter().rev() {
         queue.push_front(entry);
     }
     let now = Instant::now();
-    *inner.debounce.lock().await = DebounceState {
+    *debounce = DebounceState {
         first_pending_at: Some(now),
         last_pending_at: Some(now),
         hard_fire: true,
@@ -4232,20 +4233,33 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -
 }
 
 async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    if inner.shutting_down.load(Ordering::SeqCst) {
+        return Err(CalmError::Conflict("conversation is shutting down".into()));
+    }
+    let restored = inner.restored_projections.lock().await.clone();
+    let retired = restored.clone();
     let snapshot = serde_json::to_value(snapshot_for(inner).await)?;
     let card = inner.card_id.to_string();
     let id = inner.worker_session_id.clone();
-    let written =
-        write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                Ok(crate::db::sqlite::session_set_failed_harness_snapshot_tx(
-                    tx, &card, &id, &snapshot,
-                )
-                .await?)
-            })
+    let written = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let written = crate::db::sqlite::session_set_failed_harness_snapshot_tx(
+                tx, &card, &id, &snapshot,
+            )
+            .await?;
+            if written {
+                retire_restored_projections(tx, &card, &restored).await?;
+            }
+            Ok(written)
         })
-        .await?;
+    })
+    .await?;
     if written {
+        inner
+            .restored_projections
+            .lock()
+            .await
+            .retain(|id| !retired.contains(id));
         Ok(())
     } else {
         Err(CalmError::Conflict(
@@ -4305,6 +4319,18 @@ impl DurableSendBinding {
     }
 }
 
+/// Shared by the active and failed snapshot owners, inside their guarded write transaction.
+async fn retire_restored_projections(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card: &str,
+    restored: &[QueueEntryId],
+) -> Result<()> {
+    for id in restored {
+        crate::db::sqlite::transcript_projection_delete_tx(tx, card, id.as_str()).await?;
+    }
+    Ok(())
+}
+
 /// Returns whether the runtime's own row was written. `false` means the write
 /// matched no row — the runtime is shutting down, or its row has left the
 /// active set — and a caller that promised durability must not report success.
@@ -4320,6 +4346,8 @@ async fn persist_snapshot_inner(
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
     flush_dropped_announcements(inner).await?;
+    let restored = inner.restored_projections.lock().await.clone();
+    let retired = restored.clone();
     let mut snapshot = snapshot_for(inner).await;
     if let Some(head) = last_seen_head_override {
         snapshot.last_seen_head = Some(head);
@@ -4352,6 +4380,9 @@ async fn persist_snapshot_inner(
                 Some(snapshot_value),
             )
             .await?;
+            if written {
+                retire_restored_projections(tx, &bound_card_id, &restored).await?;
+            }
             if written && let Some(send) = &send {
                 crate::db::sqlite::planner_input_bind_tx(
                     tx,
@@ -4373,6 +4404,13 @@ async fn persist_snapshot_inner(
         })
     })
     .await?;
+    if written {
+        inner
+            .restored_projections
+            .lock()
+            .await
+            .retain(|id| !retired.contains(id));
+    }
 
     let feedback = (
         inner.compact_outcome.lock().await.clone(),

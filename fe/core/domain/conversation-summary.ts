@@ -1,5 +1,5 @@
 import type { AgentProvider } from '../api/generated/wire.js';
-import { CONVERSATION_STATE_SOURCE, conversationNameFrom, type Conversation, type ConversationKind, type ConversationMessage, type ConversationState } from './conversation.js';
+import { CONVERSATION_STATE_SOURCE, conversationNameFrom, isOptimisticConversationTurn, type Conversation, type ConversationKind, type ConversationMessage, type ConversationState } from './conversation.js';
 
 /** Everything about the open conversation that does *not* come from its turns. */
 export type ConversationFacts = Readonly<{
@@ -17,7 +17,8 @@ export type ConversationFacts = Readonly<{
   fallbackUpdatedAt: number;
 }>;
 
-/** The conversation row these turns describe; a function of the turns because "shown" and "happened" are not the same claim. */
+/** Server metadata owns the name, including null. Only an unreconciled local send
+ * may supply immediate feedback while its metadata read catches up. */
 export function describeConversation(
   facts: ConversationFacts, turns: readonly ConversationMessage[],
 ): Conversation {
@@ -29,7 +30,7 @@ export function describeConversation(
        `ChatList` renders the difference; `''` would render a blank. */
     ...(facts.trackTitle === undefined ? {} : { trackTitle: facts.trackTitle }),
     title: facts.cardTitle
-      ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+      ?? conversationNameFrom(turns.find(isOptimisticConversationTurn)?.text ?? ''),
     kind: facts.kind,
     /* The server's state is the server's to report (`run_status_for` writes `turn_pending`,
            never `running`); the local phase wins only while a turn is in flight.
@@ -42,25 +43,14 @@ export function describeConversation(
   };
 }
 
-/** Project confirmed facts this tab learned back onto a server summary; server facts win when present, and time never moves backwards. */
+/** Project confirmed facts this tab learned back onto a server summary; server titles win even when null, and time never moves backwards. */
 export function withRememberedConversation(
   row: Conversation, remembered: Conversation | undefined,
 ): Conversation {
   return {
-    ...withRememberedTitle(row, remembered),
+    ...row,
     ...(remembered?.turns === undefined ? {} : { turns: remembered.turns }),
     updatedAt: Math.max(row.updatedAt, remembered?.updatedAt ?? 0),
-  };
-}
-
-/** Only confirmed input can supply a remembered fallback. A metadata-only pending title is
- * revocable: deleting the last pending input makes the server title null again. */
-export function withRememberedTitle(
-  row: Conversation, remembered: Conversation | undefined,
-): Conversation {
-  return {
-    ...row,
-    ...(row.title === null && remembered?.title != null && (remembered.turns ?? 0) > 0 ? { title: remembered.title } : {}),
   };
 }
 
