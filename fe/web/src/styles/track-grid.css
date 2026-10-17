@@ -72,6 +72,14 @@
     overflow: auto;
   }
 
+  /* Opt-in surface: preserve the user-sized cell and its resize handle, but
+     keep controls and the renderer's nested scrollport inside the board. */
+  [data-nc-card-viewport='board'] > .term {
+    position: sticky;
+    top: 0;
+    max-block-size: var(--nc-board-block-size, 100%);
+  }
+
   .track-card > .term.live .term-body {
     min-height: 0;
     overflow: hidden;
