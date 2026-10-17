@@ -144,6 +144,7 @@ impl Executor {
         self: &Arc<Self>,
         stream: &tokio::net::UnixStream,
         secret: &CapabilityToken,
+        mode: &ExecutionProtocolMode,
         request: ExecutionRequest,
         descriptors: Vec<std::os::fd::OwnedFd>,
     ) -> anyhow::Result<()> {
@@ -185,10 +186,23 @@ impl Executor {
                 .lock()
                 .map_err(poison)?
                 .get(&export.registration)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("registration is Unwitnessed; no held objects to export")
-                })?;
+                .cloned();
+            let Some(root) = root else {
+                if *mode != ExecutionProtocolMode::RegisteredV3QueryV1 {
+                    anyhow::bail!("registration is Unwitnessed; no held objects to export");
+                }
+                rights::send(
+                    stream,
+                    &ControlReply::Execution(Box::new(ExecutionReply::RegistrationUnwitnessed {
+                        executor_boot: self.boot.clone(),
+                        registration: export.registration,
+                        nonce: export.nonce,
+                    })),
+                    &[],
+                )
+                .await?;
+                return Ok(());
+            };
             root.validate()?;
             rights::send(
                 stream,

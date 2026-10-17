@@ -41,6 +41,7 @@ impl Executor {
         self: &Arc<Self>,
         _: &tokio::net::UnixStream,
         _: &CapabilityToken,
+        _: &ExecutionProtocolMode,
         _: ExecutionRequest,
         _: Vec<std::os::fd::OwnedFd>,
     ) -> anyhow::Result<()> {

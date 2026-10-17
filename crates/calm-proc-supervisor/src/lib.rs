@@ -755,11 +755,11 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     .executor
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("registered executor unavailable"))?;
-                let (_, secret) = negotiated
+                let (mode, secret) = negotiated
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("handshake missing"))?;
                 executor
-                    .serve_registered(&stream, secret, *request, descriptors)
+                    .serve_registered(&stream, secret, mode, *request, descriptors)
                     .await?;
             }
         }

@@ -144,34 +144,41 @@ pub(crate) async fn prepare_registered_source(
             }
         }
         if &previous.executor_boot == client.executor_boot() {
-            let (receipt, objects) = client
+            let exported = client
                 .export(ExportRegistration {
                     executor_boot: previous.executor_boot.clone(),
                     registration: previous.registration_id.clone(),
                     nonce: TransferNonce::fresh()?,
                 })
                 .await?;
-            if receipt.transfer != previous {
-                return Err(CalmError::Conflict(
-                    "original source export differs from its workspace association".into(),
-                ));
+            match exported {
+                RegistrationExport::Held { receipt, objects } => {
+                    if receipt.transfer != previous {
+                        return Err(CalmError::Conflict(
+                            "original source export differs from its workspace association".into(),
+                        ));
+                    }
+                    let held = OpenedExecutionInput::transferred(objects);
+                    held.validate()?;
+                    let registration = transfer(
+                        client,
+                        authority,
+                        previous.registration,
+                        previous.incarnation,
+                        &held,
+                    )?;
+                    return Ok(PreparedSource {
+                        scope: scope_of(&registration.registration),
+                        held,
+                        registration,
+                    });
+                }
+                RegistrationExport::Unwitnessed => {}
             }
-            let held = OpenedExecutionInput::transferred(objects);
-            held.validate()?;
-            let registration = transfer(
-                client,
-                authority,
-                previous.registration,
-                previous.incarnation,
-                &held,
-            )?;
-            return Ok(PreparedSource {
-                scope: scope_of(&registration.registration),
-                held,
-                registration,
-            });
         }
-        // Explicit new-executor recovery installs a NEW incarnation/generation.
+        // A new executor or its exact correlated Unwitnessed fact permits only
+        // a new incarnation/generation candidate. It is not proof that old
+        // executions are absent; actual Attach still owns that decision.
         // The existing executor attachment gate checks every original record's
         // durable settlement; Unknown cannot pass. No kernel history census.
         let held = open(input).await?;

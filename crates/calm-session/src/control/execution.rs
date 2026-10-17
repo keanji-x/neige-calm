@@ -185,6 +185,11 @@ pub enum ExecutionReply {
         nonce: TransferNonce,
     },
     ExportAcknowledged,
+    RegistrationUnwitnessed {
+        executor_boot: ExecutorBootId,
+        registration: ObjectRegistrationId,
+        nonce: TransferNonce,
+    },
     RegistrationRetired {
         registration: ObjectRegistrationId,
     },

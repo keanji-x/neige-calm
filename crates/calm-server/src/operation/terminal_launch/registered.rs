@@ -197,13 +197,20 @@ pub(crate) async fn launch(
                         .into(),
                 ));
             }
-            let (receipt, held) = client
+            let exported = client
                 .export(ExportRegistration {
                     executor_boot: client.executor_boot().clone(),
                     registration: original.registration.registration_id.clone(),
                     nonce: TransferNonce::fresh()?,
                 })
                 .await?;
+            let RegistrationExport::Held {
+                receipt,
+                objects: held,
+            } = exported
+            else {
+                return Err(CalmError::Conflict("original request's held source is Unwitnessed; its identity cannot be replaced".into()));
+            };
             if receipt.transfer != original.registration {
                 return Err(CalmError::Conflict(
                     "exported source differs from original launch".into(),
@@ -223,6 +230,13 @@ pub(crate) async fn launch(
             let source = prepared.held;
             let scope = prepared.scope;
             let transfer = prepared.registration;
+            // Retain the actual source at the executor before promising an
+            // immutable one-shot request. Recheck the same owning admission
+            // after preparation awaits; source facts do not grant execution.
+            admit_new_crossing(op, grant, &pool).await?;
+            client.attach(transfer.clone(), &source.objects).await?;
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::crash_point("terminal-source-attached-before-request");
             let incarnation = transfer.incarnation.clone();
             let original = OriginalExecutionRequest {
                 request: PrepareExecution {
@@ -249,15 +263,13 @@ pub(crate) async fn launch(
             grant.require_current_tx(&mut tx).await?;
             execution_request::reserve_tx(&mut tx, op, &original).await?;
             tx.commit().await?;
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::crash_point("terminal-request-reserved-before-prepare");
             (original, source)
         }
     };
     // Every new effect uses the same kernel claim and current owning authority;
     // original settled receipt reads will use the executor's exact ticket.
-    admit_new_crossing(op, grant, &pool).await?;
-    client
-        .attach(original.registration.clone(), &source.objects)
-        .await?;
     admit_new_crossing(op, grant, &pool).await?;
     let prepared = client
         .request(ExecutionRequest::Prepare(original.request.clone()))
