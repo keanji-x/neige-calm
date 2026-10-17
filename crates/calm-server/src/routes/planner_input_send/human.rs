@@ -112,7 +112,7 @@ pub(super) async fn accept(
             };
             let scope = EventScope::Card {
                 card: CardId::from(card_id.clone()),
-                track: current_session.track_id,
+                track: current_session.track_id.clone(),
                 area: area.id,
             };
             let event_id = crate::db::sqlite::append_decision_event_in_tx(

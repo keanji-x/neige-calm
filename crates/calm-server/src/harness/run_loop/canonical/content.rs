@@ -4,6 +4,7 @@ use super::*;
 pub(in crate::harness::run_loop) async fn on_notification(
     inner: &Arc<Inner>,
     live: &LiveReplyWriter,
+    source_thread: Option<&str>,
     kind: PlannerEventKind,
 ) -> Result<()> {
     match kind {
@@ -33,7 +34,11 @@ pub(in crate::harness::run_loop) async fn on_notification(
             if current.snapshot.header.phase == HarnessPhaseTag::TurnRunning
                 && current.snapshot.header.last_turn_id.as_deref() == Some(turn_id.as_str())
             {
-                live.turn_started(&turn_id);
+                if let Some(thread) = source_thread.filter(|thread| !thread.is_empty())
+                    && current.snapshot.header.last_thread_id.as_deref() == Some(thread)
+                {
+                    live.turn_started_native(thread, &turn_id);
+                }
             }
             consume_end(inner).await?;
         }
@@ -139,7 +144,7 @@ pub(in crate::harness::run_loop) async fn persist_native_item(
     turn: Option<&str>,
     method: &str,
     params: &Value,
-) -> Result<Option<i64>> {
+) -> Result<Option<crate::db::sqlite::conversation::StoredNativePresentation>> {
     let card = inner.card_id.to_string();
     let worker = inner.worker_session_id.clone();
     let thread = thread.to_owned();

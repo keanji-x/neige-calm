@@ -9,6 +9,7 @@ const CONVERSATION_LIST_KINDS = [
   'card.added', 'card.updated', 'harness.transcript.rewound',
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'harness.phase.changed', 'harness.user_message.enqueued', 'harness.queue.changed',
+  'harness.presentation.changed',
 ] as const;
 
 function event(value: unknown): WireEvent {
@@ -186,6 +187,10 @@ describe('invalidation plan behavior', () => {
       event({ ev, data: { card_id: 'card-1', track_id: 'track-1' } }),
     ).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
+    expect(planned('harness.presentation.changed')).toEqual([
+      ['harness-items', 'card-1'], ['planner-run', 'card-1'],
+      ['track-conversations', 'track-1'],
+    ]);
     // The phase event delivers the turn outcome row, which emits no `harness.item.added` of its own.
     expect(planned('harness.phase.changed')).toEqual([
       ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
@@ -207,7 +212,7 @@ describe('invalidation plan behavior', () => {
     ]);
   });
 
-  it('refetches the track conversation list from exactly the nine session-writing kinds', () => {
+  it('refetches the track conversation list from exactly the declared session and presentation kinds', () => {
     const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
     const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)
       .invalidate.some((key) => key[0] === 'track-conversations'));

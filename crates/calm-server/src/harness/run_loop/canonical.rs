@@ -50,6 +50,44 @@ pub(super) struct CommittedFrame {
     pub fence: RuntimeExecutionFence,
 }
 
+/// Equality watermark for the existing phase-refresh emitter. No bodies, grants,
+/// private native receipts, or another runtime state machine are retained here.
+#[derive(Clone, PartialEq)]
+pub(super) struct PublicFeedback {
+    pending: Vec<(AcceptedInputRef, u64, i64)>,
+    active: Option<calm_types::conversation_display::ConversationActiveInput>,
+    usage: Option<(i64, Option<i64>, Option<f64>, i64)>,
+    blocked: Option<String>,
+    native_turn: Option<String>,
+}
+impl PublicFeedback {
+    fn from_frame(frame: &CanonicalHarnessSnapshot) -> Self {
+        let h = &frame.header;
+        Self {
+            pending: frame
+                .canonical_inputs
+                .pending
+                .iter()
+                .map(|p| (p.input_ref(), p.queue_position(), p.queued_at_ms()))
+                .collect(),
+            active: calm_types::conversation_display::ConversationActiveInput::from_checkpoint(
+                &frame.canonical_inputs,
+            ),
+            usage: if h.context_usage_invalidated {
+                None
+            } else {
+                h.token_usage
+                    .as_ref()
+                    .map(|u| (u.used_tokens, u.context_window, u.percent(), u.at_ms))
+            },
+            blocked: h.wedged_reason.clone(),
+            native_turn: (h.phase == HarnessPhaseTag::TurnRunning)
+                .then(|| h.last_turn_id.clone())
+                .flatten(),
+        }
+    }
+}
+
 pub(super) struct CanonicalInputs {
     // This is an identity index, not an ordered queue or an admission cache.
     // Every claim/crossing still revalidates its actual issuer and current scope.
@@ -122,7 +160,6 @@ async fn publish(inner: &Inner, next: CommittedFrame) {
     *inner.thread_id.write().await = header.last_thread_id.clone();
     *inner.last_turn_id.lock().await = header.last_turn_id.clone();
     *inner.turn_budget.lock().await = header.turn_budget.clone();
-    *inner.last_phase.lock().await = header.phase;
     *inner.token_usage.lock().await = header.token_usage.clone();
     *inner.context_usage_invalidation.lock().await =
         header
@@ -130,7 +167,14 @@ async fn publish(inner: &Inner, next: CommittedFrame) {
             .then_some(compact_command::UsageInvalidation {
                 user_turn_id: header.context_usage_invalidated_turn.clone(),
             });
+    let emitted = (
+        header.compact_outcome.clone(),
+        header.context_usage_invalidated,
+        Some(PublicFeedback::from_frame(&next.snapshot)),
+    );
+    let phase = header.phase;
     inputs.publish_committed(next).await;
+    emit_phase_refresh(inner, phase, emitted).await;
 }
 
 /// Consume the one persisted pending order in the existing scheduler. Live

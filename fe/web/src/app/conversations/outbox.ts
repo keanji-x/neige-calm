@@ -9,7 +9,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  outboxFacts, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
+  outboxFactsWithRemovedInputs, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
@@ -64,8 +64,10 @@ function rememberSent(
  */
 export function useConversationOutbox({
   cardId, transport, send, serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, landed,
-  queuesInput, highWater, pressed,
+  queuesInput, highWater, pressed, removedMessages, viewerId,
 }: {
+  removedMessages: ReadonlySet<string>;
+  viewerId: string | null;
   cardId: string;
   transport: ApiTransportPort;
   /** `POST …/planner/input` for this card; `answered` runs when its 200 is in hand, before its refresh reads start. */
@@ -92,8 +94,8 @@ export function useConversationOutbox({
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
   const facts = useMemo(
-    () => outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed }),
-    [serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed],
+    () => outboxFactsWithRemovedInputs({serverEntries,serverTurns,queuedEntryIds,stalled,ops,spent,landed},removedMessages),
+    [serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed,removedMessages],
   );
   const view = useMemo(() => withOutboxLiveReplies(facts, liveReplies), [facts, liveReplies]);
   const { retire } = view;
@@ -144,7 +146,7 @@ export function useConversationOutbox({
       if (fromComposer) releaseComposerImages(sentTo, attachments);
       /* Not claimed: the answer may replay an entry deleted, rewound or reset since, which no read would ever
          show. The echo stays until reads started after this answer land, and they alone then show the message. */
-      if (everUnknown) { settle({ key, echo, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return; }
+      if (everUnknown) { settle({ key, echo:{ ...echo,entryId:sent.entry_id }, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return; }
       const confirmed = settle({ key, echo: { ...echo, entryId: sent.entry_id }, fromComposer, replaces, phase: 'confirmed' });
       /* The answer can outlive the drawer: the row is written straight through for the conversation it was sent
          to, through `updateExisting` because a background refresh may already have put newer data there. */
@@ -205,6 +207,7 @@ export function useConversationOutbox({
           /* The op's, not the run's: a resumed op's first attempt may already be in the transcript, above any high
              water read later, and only this one lets that row stand for the op. */
           serverHighWaterBefore: highWater,
+          ...(viewerId === null ? {} : { authorUserId:viewerId }),
           /* Read at the press from the last `GET /planner/run` snapshot, against the kernel's whitelist, and never
              recomputed from the live phase later. */
           queued: queuesInput,

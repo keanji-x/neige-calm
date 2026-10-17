@@ -1,3 +1,4 @@
+import { historicalConversationRun, historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
@@ -178,7 +179,7 @@ it.each([1000, 768, 600])('keeps the composer inside its conversation card with 
     created_at_ms: index + 1,
   }));
   renderDailyFixture({ reply: (request) => request.path.includes('/harness/items')
-    ? { status: 200, statusText: 'OK', body: history } : undefined });
+    ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), history, null) } : undefined });
   await page.getByText('Prioritize the release.', { exact: false }).findElement();
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
@@ -254,11 +255,11 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
       webCompatVersion: 44, minWebCompatVersion: 44, supervisorControlVersion: 1, buildSha: 'fixture',
       dbInstanceId: 'fixture-instance', databaseId: 'fixture-database',
     } };
-    if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return { status: 200, statusText: 'OK', body: historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: wedged ? 'wedged' : 'idle', model: null,
       reasoning_effort: null, permission_mode: 'never', blocked_reason: wedged ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null,
       pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null,
-    } };
+    }, 'idle') };
     return undefined;
   } });
   await page.getByText('Prioritize the release.', { exact: false }).findElement();

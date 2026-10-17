@@ -20,7 +20,8 @@ export interface QueryCachePort extends QueryRefreshPort {
  * then clears `isInvalidated`; task verdicts do not all poll, so cancel the report fetch first.
  */
 function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
-  const cancelFirst = queryKey[0] === 'track-report'
+  const cancelFirst = queryKey[0] === 'harness-items' || queryKey[0] === 'planner-run'
+    || queryKey[0] === 'track-report'
     || (queryKey[0] === 'overlays' && queryKey[1] === 'track');
   if (!cancelFirst) {
     void client.invalidateQueries({ queryKey });

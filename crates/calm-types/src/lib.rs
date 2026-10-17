@@ -5,6 +5,7 @@
 pub mod boot_budget;
 pub mod compatibility;
 pub mod conversation;
+pub mod conversation_display;
 pub mod enrollment;
 pub mod error;
 pub mod event;

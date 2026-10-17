@@ -1,3 +1,4 @@
+import { historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // A track that starts with no name and no words in it: creating lands in the planner
@@ -86,8 +87,8 @@ function setup(options: Options = {}) {
           track: detail.track, can_reopen: false, can_admin: false, can_close: true, cards: detail.cards, overlays: [],
         }));
       }
-      if (request.path.endsWith('/planner/run')) {
-        return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'r', phase: 'idle', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false }));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return Promise.resolve(ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'r', phase: 'idle', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false }, 'idle')));
       }
       if (request.path === '/api/settings') return Promise.resolve(ok({}));
       return Promise.resolve(ok([]));

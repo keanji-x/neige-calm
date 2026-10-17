@@ -151,6 +151,15 @@ pub async fn revision_tx(
             reference.message_id, reference.revision
         ))
     })?;
+    decode_revision(reference.clone(), body_sha256, &payload_json, created_at_ms)
+}
+
+pub(crate) fn decode_revision(
+    reference: MessageRevisionRef,
+    body_sha256: String,
+    payload_json: &str,
+    created_at_ms: i64,
+) -> Result<StoredMessageRevision> {
     let payload: PrivateHistoryPayload<HumanPayload> = serde_json::from_str(&payload_json)?;
     if let PrivateHistoryPayload::Present { value } = &payload
         && digest(value)? != body_sha256
@@ -160,7 +169,7 @@ pub async fn revision_tx(
         ));
     }
     Ok(StoredMessageRevision {
-        reference: reference.clone(),
+        reference,
         body_sha256,
         payload,
         created_at_ms,

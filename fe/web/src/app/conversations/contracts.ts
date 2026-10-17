@@ -13,6 +13,8 @@ export type ConversationStore = Readonly<{
   pending: ReadonlySet<string>;
   working: boolean;
   stalled: boolean;
+  /** Actual current session is terminal; display hold does not prevent saving new content. */
+  executionHeld: boolean;
   stopping: boolean;
   stopFeedback: ConversationStopFeedback | null;
   sending: boolean;

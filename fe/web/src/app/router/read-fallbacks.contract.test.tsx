@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -256,7 +257,7 @@ describe('degraded workspace reads stay usable', () => {
          it (#1625 P2). This is where the reader's words come from once the
          card is adopted — the client mints nothing for them. */
       if (request.path.includes('/harness/items') && revealLanding) {
-        return ok([{
+        return ok(historicalConversationPage(conversationCardId(request.path), [{
           id: 1, worker_session_id: 'r', track_id: 'w1', thread_id: 't',
           card_id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
           turn_id: null, turn_error_text: null, item_uuid: 'entry-0001', item_type: 'userMessage', method: 'item/completed',
@@ -266,7 +267,7 @@ describe('degraded workspace reads stay usable', () => {
           }),
           input_segments: [{ presentation: 'user', text: 'User says:\nOriginal uncertain intent', attachments: [] }],
           created_at_ms: 1,
-        }]);
+        }], null));
       }
       return ok([]);
     });

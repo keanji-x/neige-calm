@@ -2133,9 +2133,36 @@
             }
           },
           {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
             "name": "after_id",
             "in": "query",
-            "description": "Return items with database ids greater than this value.",
+            "description": "Legacy physical item cursor. Accepted only without contract on V1 history.",
             "required": false,
             "schema": {
               "type": [
@@ -2148,7 +2175,6 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500.",
             "required": false,
             "schema": {
               "type": [
@@ -2161,7 +2187,6 @@
           {
             "name": "direction",
             "in": "query",
-            "description": "Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/HarnessItemsDirection"
@@ -2170,20 +2195,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Persisted planner harness items",
+            "description": "Negotiated conversation page, or historical-only original raw array",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/HarnessItem"
-                  }
+                  "$ref": "#/components/schemas/HarnessItemsReadResponse"
                 }
               }
             }
           },
           "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
+            "description": "Invalid or mixed cursor",
             "content": {
               "application/json": {
                 "schema": {
@@ -2193,7 +2215,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "Verified session required",
             "content": {
               "application/json": {
                 "schema": {
@@ -2203,7 +2225,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Current Area access refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -2222,8 +2244,18 @@
               }
             }
           },
+          "409": {
+            "description": "Read contract or canonical source unsupported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
-            "description": "Internal error",
+            "description": "Invalid persisted data",
             "content": {
               "application/json": {
                 "schema": {
@@ -2250,6 +2282,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
           }
         ],
         "responses": {
@@ -2258,7 +2305,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HarnessLiveReplies"
+                  "$ref": "#/components/schemas/HarnessLiveReadResponse"
                 }
               }
             }
@@ -2274,7 +2321,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "A verified session is required",
             "content": {
               "application/json": {
                 "schema": {
@@ -2284,7 +2331,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Current Area access is required or card is not a harness card",
             "content": {
               "application/json": {
                 "schema": {
@@ -2295,6 +2342,16 @@
           },
           "404": {
             "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Canonical live replies require the negotiated conversation contract",
             "content": {
               "application/json": {
                 "schema": {
@@ -3742,6 +3799,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
           }
         ],
         "responses": {
@@ -3750,7 +3822,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GetPlannerRunResponse"
+                  "$ref": "#/components/schemas/PlannerRunReadResponse"
                 }
               }
             }
@@ -3766,7 +3838,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "Verified session required",
             "content": {
               "application/json": {
                 "schema": {
@@ -3776,7 +3848,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Current Area access or Planner shape refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -3787,6 +3859,16 @@
           },
           "404": {
             "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Canonical read requires conversation_v1",
             "content": {
               "application/json": {
                 "schema": {
@@ -13391,6 +13473,360 @@
           }
         }
       },
+      "ConversationActiveInput": {
+        "type": "object",
+        "required": [
+          "logical_turn_id",
+          "submissions"
+        ],
+        "properties": {
+          "logical_turn_id": {
+            "type": "string"
+          },
+          "submissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationSubmissionDelivery"
+            }
+          }
+        }
+      },
+      "ConversationCursor": {
+        "type": "object",
+        "required": [
+          "contract",
+          "card_id",
+          "source",
+          "position"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/ConversationReadContract"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConversationCursorSource"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConversationCursorSource": {
+        "type": "string",
+        "enum": [
+          "presentation",
+          "historical_raw"
+        ]
+      },
+      "ConversationDelivery": {
+        "type": "string",
+        "enum": [
+          "crossing_unknown",
+          "unknown",
+          "not_dispatched",
+          "accepted"
+        ]
+      },
+      "ConversationDisplayIdentity": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "message_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "human"
+                ]
+              },
+              "message_id": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "thread_id",
+              "item_id",
+              "kind"
+            ],
+            "properties": {
+              "item_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "native"
+                ]
+              },
+              "thread_id": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "ConversationDisplayItem": {
+        "type": "object",
+        "required": [
+          "cursor",
+          "source"
+        ],
+        "properties": {
+          "cursor": {
+            "$ref": "#/components/schemas/ConversationCursor"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConversationDisplaySource"
+          }
+        }
+      },
+      "ConversationDisplaySource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "message_id",
+              "revision",
+              "author",
+              "text",
+              "attachments",
+              "created_at_ms",
+              "kind"
+            ],
+            "properties": {
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PlannerAttachment"
+                }
+              },
+              "author": {
+                "$ref": "#/components/schemas/ConversationHumanAuthor"
+              },
+              "created_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "human"
+                ]
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "item",
+              "kind"
+            ],
+            "properties": {
+              "item": {
+                "$ref": "#/components/schemas/HarnessItem"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "native"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "item",
+              "kind"
+            ],
+            "properties": {
+              "item": {
+                "$ref": "#/components/schemas/HarnessItem"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "historical_raw"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "identity",
+              "kind"
+            ],
+            "properties": {
+              "identity": {
+                "$ref": "#/components/schemas/ConversationDisplayIdentity"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "removed"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConversationHumanAuthor": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationInputContract": {
+        "type": "string",
+        "enum": [
+          "canonical",
+          "historical"
+        ]
+      },
+      "ConversationLiveReplies": {
+        "type": "object",
+        "required": [
+          "contract",
+          "turn"
+        ],
+        "properties": {
+          "contract": {
+            "$ref": "#/components/schemas/ConversationReadContract"
+          },
+          "turn": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationLiveTurn"
+              }
+            ]
+          }
+        }
+      },
+      "ConversationLiveTurn": {
+        "type": "object",
+        "required": [
+          "thread_id",
+          "turn_id",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarnessLiveReply"
+            }
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationPage": {
+        "type": "object",
+        "required": [
+          "contract",
+          "source",
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "contract": {
+            "$ref": "#/components/schemas/ConversationReadContract"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationDisplayItem"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationCursor"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConversationCursorSource"
+          }
+        }
+      },
+      "ConversationPendingMessage": {
+        "type": "object",
+        "required": [
+          "message_id",
+          "revision",
+          "queue_position",
+          "queued_at_ms"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "queue_position": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "queued_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ConversationReadContract": {
+        "type": "string",
+        "enum": [
+          "conversation_v1"
+        ]
+      },
       "ConversationRecoveryNotice": {
         "type": "object",
         "required": [
@@ -13410,6 +13846,35 @@
             "type": "string"
           },
           "track_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationSubmissionDelivery": {
+        "type": "object",
+        "required": [
+          "submission_id",
+          "attempt_id",
+          "delivery"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationDelivery"
+              }
+            ]
+          },
+          "submission_id": {
             "type": "string"
           }
         }
@@ -14474,21 +14939,59 @@
               "null"
             ],
             "format": "int64",
-            "description": "Return items with database ids greater than this value."
+            "description": "Legacy physical item cursor. Accepted only without contract on V1 history."
+          },
+          "contract": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationReadContract"
+              }
+            ]
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id."
           },
           "direction": {
-            "$ref": "#/components/schemas/HarnessItemsDirection",
-            "description": "Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`."
+            "$ref": "#/components/schemas/HarnessItemsDirection"
           },
           "limit": {
             "type": [
               "integer",
               "null"
             ],
-            "format": "int64",
-            "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500."
+            "format": "int64"
           }
         }
+      },
+      "HarnessItemsReadResponse": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarnessItem"
+            }
+          },
+          {
+            "$ref": "#/components/schemas/ConversationPage"
+          }
+        ]
+      },
+      "HarnessLiveReadResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HarnessLiveReplies"
+          },
+          {
+            "$ref": "#/components/schemas/ConversationLiveReplies"
+          }
+        ]
       },
       "HarnessLiveReplies": {
         "type": "object",
@@ -15704,6 +16207,192 @@
           "never",
           "ask",
           "full"
+        ]
+      },
+      "PlannerRunReadResponse": {
+        "anyOf": [
+          {
+            "type": "object",
+            "description": "Current harness and maintenance facts for a card. Dormancy is not an error: phase is null, while durable maintenance facts may retain their carrier runtime id.",
+            "required": [
+              "card_id",
+              "compact_outcome",
+              "context_usage_invalidated",
+              "permission_mode",
+              "pending",
+              "pending_overflow",
+              "attachments_supported",
+              "manual_compact_supported"
+            ],
+            "properties": {
+              "attachments_supported": {
+                "type": "boolean",
+                "description": "Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`)."
+              },
+              "blocked_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why this conversation's queue is not draining, or `null` when there is nothing worth saying: an undeterminable model/effort, a refused turn start, or a long codex outage. A client should render it as a standing notice, not a request error.\nA brief outage fills nothing, so `null` is not evidence that anything succeeded."
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "compact_outcome": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CompactOutcome",
+                    "description": "Current runtime's manual maintenance result; submission alone is not success."
+                  }
+                ]
+              },
+              "context_usage_invalidated": {
+                "type": "boolean",
+                "description": "A context replacement invalidated the previous occupancy; await a new trusted reading."
+              },
+              "manual_compact_supported": {
+                "type": "boolean",
+                "description": "Whether the bound Planner backend implements manual context compaction. This is not\ncurrent admission: the compact POST still checks authorization, busy state and history.\nAnswered for dormant conversations too; managed ACP does not implement it."
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The model slug this conversation's turns run with, or `null` to follow the installation default. Read off the CARD, so answered for a dormant conversation too."
+              },
+              "pending": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PendingQueueEntry"
+                },
+                "description": "The addressable user entries still waiting for the next turn, in queue order. Empty when dormant. Dispatcher observations and pre-id user entries never appear; the latter are counted in `pending_overflow`."
+              },
+              "pending_overflow": {
+                "type": "integer",
+                "format": "int32",
+                "description": "User-authored entries that exist in the queue but are NOT in `pending`: pre-id entries, plus anything past the page budget.",
+                "minimum": 0
+              },
+              "permission_mode": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlannerPermissionMode",
+                    "description": "The Planner's permission mode, read off the card like `model`; set with\n`PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a\nPlanner (a PlainChat or Assistant conversation has no permission mode). A stored value that\ncannot be read is reported as `never`."
+                  }
+                ]
+              },
+              "phase": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/HarnessPhaseTag",
+                    "description": "Current harness phase, or null when the harness is dormant."
+                  }
+                ]
+              },
+              "reasoning_effort": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The chosen reasoning effort, or `null` for the default. Same source as `model`."
+              },
+              "running_turn": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlannerRunningTurn",
+                    "description": "The turn the harness is running. Non-null exactly when this response's `phase` is `turn_running`: both come from one read of the harness state."
+                  }
+                ]
+              },
+              "token_usage": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlannerRunTokenUsage",
+                    "description": "Latest valid context-window reading, or null when no trusted reading exists or a context replacement invalidated it."
+                  }
+                ]
+              },
+              "worker_session_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Current live runtime id, or null when dormant (except the retained unconfirmed-stop carrier)."
+              }
+            }
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GetPlannerRunResponse"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "input_contract",
+                  "runtime_state",
+                  "pending_messages",
+                  "active_input",
+                  "native_turn_id"
+                ],
+                "properties": {
+                  "active_input": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ConversationActiveInput"
+                      }
+                    ]
+                  },
+                  "input_contract": {
+                    "$ref": "#/components/schemas/ConversationInputContract"
+                  },
+                  "native_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "pending_messages": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ConversationPendingMessage"
+                    }
+                  },
+                  "runtime_state": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/WorkerSessionState",
+                        "description": "Actual current worker row state. Canonical is always present; null means no current historical runtime."
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
         ]
       },
       "PlannerRunTokenUsage": {

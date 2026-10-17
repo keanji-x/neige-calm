@@ -5,8 +5,9 @@ import styles from './thread.module.css';
 
 /** The same readable outgoing text before and after a conversation exists.
  * Callers own delivery, grouping, attachments and identity; no row or clock is needed. */
-export function OutgoingMessage({ text, mobile, queued = false, edited = false, replacement = false }: Readonly<{
+export function OutgoingMessage({ text, mobile, speaker, queued = false, edited = false, replacement = false }: Readonly<{
   text: string;
+  speaker: 'you' | 'human' | 'unknown';
   mobile: boolean;
   queued?: boolean;
   edited?: boolean;
@@ -15,7 +16,7 @@ export function OutgoingMessage({ text, mobile, queued = false, edited = false, 
   return (
     <p
       className={`${styles.said} ${mobile ? mobileStyles.said : ''}`}
-      data-nc-turn="you"
+      data-nc-turn={speaker}
       {...(queued ? { 'data-nc-queued': '' } : {})}
       {...(edited ? { 'data-nc-editing': '' } : {})}
       {...(replacement ? { 'data-nc-replacement': '' } : {})}

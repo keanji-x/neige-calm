@@ -196,6 +196,7 @@ pub(super) struct Inner {
     last_context_feedback: Mutex<(
         Option<crate::harness::compact_outcome::CompactOutcome>,
         bool,
+        Option<canonical::PublicFeedback>,
     )>,
     inputs: RuntimeInputs,
     recent_hook_keys: Mutex<VecDeque<String>>,
@@ -1376,6 +1377,7 @@ fn inner_from_params(
         last_context_feedback: Mutex::new((
             header.compact_outcome.clone(),
             header.context_usage_invalidated,
+            None,
         )),
         inputs,
         recent_hook_keys: Mutex::new(recent_hook_keys),
@@ -2243,7 +2245,7 @@ async fn on_notification(
         return Ok(());
     }
     if inner.inputs.canonical().is_some() {
-        return canonical::on_notification(inner, live, kind).await;
+        return canonical::on_notification(inner, live, thread_id.as_deref(), kind).await;
     }
 
     let maintenance_item = match &kind {
@@ -2768,6 +2770,29 @@ async fn insert_item_row(
             legacy_segments_json,
         )
         .await?)
+}
+
+async fn emit_presentation_changed(
+    inner: &Arc<Inner>,
+    cursor: calm_types::conversation_display::ConversationCursor,
+) -> Result<()> {
+    inner
+        .repo
+        .log_pure_event(
+            ActorId::Kernel,
+            harness_event_scope(inner, "harness.presentation.changed"),
+            None,
+            &inner.events,
+            &inner.card_role_cache,
+            &inner.track_area_cache,
+            Event::HarnessPresentationChanged {
+                card_id: inner.card_id.clone(),
+                track_id: inner.track_id.clone(),
+                cursor,
+            },
+        )
+        .await?;
+    Ok(())
 }
 
 async fn emit_item_added(
@@ -4385,9 +4410,6 @@ async fn persist_snapshot_inner(
     let state_for_status = inner.state.lock().await.clone();
     let status = run_status_for(&state_for_status);
     let new_phase = snapshot.phase;
-    let event_runtime_id = runtime_id.clone();
-    let event_card_id = inner.card_id.clone();
-    let event_track_id = inner.track_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let repo = Arc::clone(&inner.repo);
     let bound_card_id = inner.card_id.to_string();
@@ -4422,52 +4444,58 @@ async fn persist_snapshot_inner(
     })
     .await?;
 
-    let feedback = (
-        inner.compact_outcome.lock().await.clone(),
-        inner.context_usage_invalidation.lock().await.is_some(),
-    );
+    emit_phase_refresh(
+        inner,
+        new_phase,
+        (
+            inner.compact_outcome.lock().await.clone(),
+            inner.context_usage_invalidation.lock().await.is_some(),
+            None,
+        ),
+    )
+    .await;
+    Ok(written)
+}
+
+async fn emit_phase_refresh(
+    inner: &Inner,
+    new_phase: HarnessPhaseTag,
+    feedback: (
+        Option<crate::harness::compact_outcome::CompactOutcome>,
+        bool,
+        Option<canonical::PublicFeedback>,
+    ),
+) {
     let mut last_feedback = inner.last_context_feedback.lock().await;
     let mut last_phase = inner.last_phase.lock().await;
-    // Reuse the run-refresh event for changed maintenance facts, including a boundary within a turn.
-    if *last_phase != new_phase || *last_feedback != feedback {
-        let old_phase = *last_phase;
-        let scope = harness_event_scope(inner, "harness.phase.changed");
-        if let Err(e) = inner
-            .repo
-            .log_pure_event(
-                ActorId::Kernel,
-                scope,
-                None,
-                &inner.events,
-                &inner.card_role_cache,
-                &inner.track_area_cache,
-                Event::HarnessPhaseChanged {
-                    worker_session_id: event_runtime_id,
-                    card_id: event_card_id,
-                    track_id: event_track_id,
-                    old_phase,
-                    new_phase,
-                },
-            )
-            .await
-        {
-            tracing::warn!(
-                runtime_id = %inner.worker_session_id,
-                card_id = %inner.card_id,
-                track_id = %inner.track_id,
-                ?old_phase,
-                ?new_phase,
-                error = %e,
-                "planner harness phase event persist failed after snapshot commit; retaining previous phase for retry"
-            );
-            // The snapshot transaction is already committed; reporting failure here would make durable
-            // ingress roll back memory after its message was accepted.
-            return Ok(written);
-        }
-        *last_phase = new_phase;
-        *last_feedback = feedback;
+    if *last_phase == new_phase && *last_feedback == feedback {
+        return;
     }
-    Ok(written)
+    let scope = harness_event_scope(inner, "harness.phase.changed");
+    if let Err(error) = inner
+        .repo
+        .log_pure_event(
+            ActorId::Kernel,
+            scope,
+            None,
+            &inner.events,
+            &inner.card_role_cache,
+            &inner.track_area_cache,
+            Event::HarnessPhaseChanged {
+                worker_session_id: inner.worker_session_id.clone(),
+                card_id: inner.card_id.clone(),
+                track_id: inner.track_id.clone(),
+                old_phase: *last_phase,
+                new_phase,
+            },
+        )
+        .await
+    {
+        tracing::warn!(%error,"phase refresh failed after commit; retaining previous emitted state for retry");
+        return;
+    }
+    *last_phase = new_phase;
+    *last_feedback = feedback;
 }
 
 fn state_from_runtime_header(

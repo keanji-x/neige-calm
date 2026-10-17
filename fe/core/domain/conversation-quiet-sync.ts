@@ -6,7 +6,7 @@
 
 import { REPORT_READ_TOOLS, REPORT_TOOL_PREFIX } from '../keys/mcp-tools.js';
 import {
-  SYSTEM_PRESENTATION_LABELS,
+  SYSTEM_PRESENTATION_LABELS, isUserConversationTurn,
   isPlannerBudgetContext,
   type ConversationSystemEntry, type ConversationTurn, type ConversationTurnOutcome,
   type TranscriptEntry,
@@ -67,7 +67,7 @@ export function isFailedOutcome(entry: TranscriptEntry): entry is ConversationTu
 
 /** What closes a group: the reader speaking or the kernel delivering the next observation. */
 function closesGroup(entry: TranscriptEntry): boolean {
-  return entry.author === 'you' || entry.author === 'system';
+  return isUserConversationTurn(entry) || entry.author === 'system';
 }
 
 /** Fail-closed on purpose: an unknown report tool is a change, never a look. */

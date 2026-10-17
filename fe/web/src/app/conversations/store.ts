@@ -1,8 +1,10 @@
+import { useCurrentUser } from '../auth/current-user.tsx';
+import { buildConversationTranscript, nativeDisplayRows, removedHumanIds } from '../../../../core/domain/conversation-display.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
+import { FOLLOW_INSTALLATION_DEFAULT, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
 import { describeConversation, pendingConversationIds, withRememberedConversation, withRememberedTitle, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
 import { queueTombstoneHides as tombstoneHides } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
@@ -36,6 +38,7 @@ export function useConversationStore(
   routeIntent: ConversationRouteIntent,
 ): ConversationStore {
   const registry = useConversationRegistry();
+  const currentUser = useCurrentUser();
   const { remember, turnsOf: rememberedTurnsOf, conversations: rememberedConversations } = registry;
   const cardId = scope?.cardId ?? '';
   const trackId = scope?.id;
@@ -45,7 +48,7 @@ export function useConversationStore(
   const scopeUpdatedAt = scope?.updatedAt;
   const scopeKind = scope?.kind ?? 'shared-spec';
   const capabilities = useQuery({ ...managedProvidersQueryOptions(transport, unauthorized), enabled: scope?.kind === 'track-assistant' });
-  const historyReplacementSupported = scopeKind !== 'track-assistant' || (!capabilities.isError
+  const historicalReplacementSupported = scopeKind !== 'track-assistant' || (!capabilities.isError
     && capabilities.data?.find(answer => answer.availability.provider === scope?.provider)?.capabilities.history_replacement === true);
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.rows;
@@ -70,8 +73,11 @@ export function useConversationStore(
   const modelCatalog = useQuery({
     ...modelCatalogQueryOptions(transport, { kind: 'card', cardId }, unauthorized), enabled: scope !== null,
   });
+  const historyReplacementSupported = run.data?.input_contract === 'historical' && historicalReplacementSupported;
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
+  const executionHeld = run.data?.runtime_state === 'failed' || run.data?.runtime_state === 'exited'
+    || run.data?.runtime_state === 'superseded';
   /* Anchored on the response's arrival (`dataUpdatedAt`); the fold keeps the earlier anchor for one turn. */
   const [runningAnchor, setRunningAnchor] = useState<RunningTurnAnchor | null>(null);
   const nextRunningAnchor = anchorRunningTurn(runningAnchor, run.data?.running_turn ?? null, run.dataUpdatedAt);
@@ -122,7 +128,9 @@ export function useConversationStore(
   /** The card shown now; a model write's answer is that of the card it was made in. */
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
-  const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
+  const displayItems = useMemo(() => (history.data?.pages ?? []).flatMap(page => page.items), [history.data]);
+  const items = useMemo(() => nativeDisplayRows(displayItems),[displayItems]);
+  const removedMessages = useMemo(() => removedHumanIds(displayItems),[displayItems]);
   /* A remembered transcript is the reopen fallback while the first page is unknown;
        once any query data exists the server wins, even when empty. */
   /* An entry the queue region is currently listing is drawn there and nowhere else;
@@ -131,23 +139,22 @@ export function useConversationStore(
   const serverEntries = useMemo(
     () => rememberedEntries !== null
       ? rememberedEntries.filter((entry) => !isOptimisticConversationTurn(entry))
-      : buildTranscript(items.filter((row) => row.item_uuid === null || !pendingQueueIds.has(row.item_uuid))),
-    [items, pendingQueueIds, rememberedEntries],
+      : buildConversationTranscript(displayItems,currentUser?.userId ?? null),
+    [displayItems,currentUser?.userId,rememberedEntries],
   );
   const serverTurns = useMemo(
-    () => history.data === undefined
-      ? serverEntries.filter(isConversationMessage)
-      : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
-    [history.data, items, serverEntries],
+    () => serverEntries.filter(isConversationMessage),
+    [serverEntries],
   );
   useEffect(() => { setActionError(null); }, [cardId]);
   /* The running turn's streamed replies: drawn at the tail, never remembered, never counted. */
   const liveReplies = useLiveReplies({
-    transport, unauthorized, cardId, enabled: scope !== null, phase,
-    runningTurnId: run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
+    canonical:run.data?.input_contract === 'canonical',
+    transport, unauthorized, cardId, enabled: scope !== null && run.data !== undefined && !executionHeld, phase,
+    runningTurnId: run.data?.native_turn_id ?? run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
     transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
   });
-  const working = phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running';
+  const working = !executionHeld && (phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running');
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
     responseEnded: phase === 'idle' || phase === 'turn_completed',
@@ -163,8 +170,9 @@ export function useConversationStore(
   const landedRun = runReads.startOf(run.data);
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
   const outbox = useConversationOutbox({
+    removedMessages, viewerId:currentUser?.userId ?? null,
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntryIds: pendingQueueIds,
-    stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
+    stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view } = outbox;
@@ -176,14 +184,14 @@ export function useConversationStore(
   const confirmedTurns = useMemo(
     () => [...serverTurns, ...view.confirmed].sort((left, right) => left.atMs - right.atMs), [serverTurns, view.confirmed],
   );
-  const stopping = !stalled && (phase === 'issuing_interrupt' || (working && stop.pending));
+  const stopping = !stalled && !executionHeld && (phase === 'issuing_interrupt' || (working && stop.pending));
   const stopFeedback: ConversationStopFeedback | null = stalled ? null
     : phase === 'issuing_interrupt' ? { kind: 'stopping' }
     : stop.feedback?.kind === 'requesting' && !working ? null : stop.feedback;
   const facts = useMemo<ConversationFacts | null>(() => trackId === undefined || provider === undefined ? null : {
     sourceCardId, cardId, trackId, trackTitle, provider, cardTitle: cardTitle ?? null, kind: scopeKind,
-    state: scopeState, working, stalled, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
-  }, [sourceCardId, cardId, cardTitle, provider, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled]);
+    state: scopeState, working, stalled:stalled || executionHeld, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
+  }, [sourceCardId, cardId, cardTitle, provider, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled,executionHeld]);
   /** What the reader is looking at: every turn, echoes included. */
   const conversation = useMemo(
     () => facts === null ? null : describeConversation(facts, turns), [facts, turns],
@@ -265,6 +273,7 @@ export function useConversationStore(
     pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,
+    executionHeld,
     stopping,
     stopFeedback,
     sending: view.sending,

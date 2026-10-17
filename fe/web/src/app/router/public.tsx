@@ -781,7 +781,7 @@ function useConversationPane(
                 onClick={store.restart.start}>{store.restart.strip.action}</ChatFooterRemedy>}</ChatFooterNotice>}
             {/* Not an `alert`: nothing just happened, the condition was already true when
                             this page opened. */}
-            {!store.stalled && store.blockedReason !== null && (
+            {!store.stalled && !store.executionHeld && store.blockedReason !== null && (
               <ChatFooterNotice>
                 <ChatFooterError message={store.blockedReason} />
               </ChatFooterNotice>
@@ -800,7 +800,7 @@ function useConversationPane(
         {draftOpen && (draft?.text == null
           ? <p>Nothing said yet. What you write starts the conversation.</p>
           : <>
-            <OutgoingMessage text={draft.text} mobile={compactViewport} />
+            <OutgoingMessage speaker="you" text={draft.text} mobile={compactViewport} />
             {creating && <p role="status">Sending…</p>}
           </>)}
         {open !== null && (
@@ -830,7 +830,7 @@ function useConversationPane(
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.working}
                 cards={source.cards}
-                stalled={store.stalled}
+                stalled={store.stalled || store.executionHeld}
                 statusUnconfirmed={!store.runReady || store.runError !== null}
                 statusLoading={store.runLoading}
                 copyText={edit.held === null ? writeClipboardText : undefined}
@@ -860,9 +860,9 @@ function useConversationPane(
   const listProps = useMemo(() => ({
     conversations: store.conversations, cards: source.cards, unreadIds, activeId: existingId,
     awaitingInputIds: new Set(pendingInputCardId === null ? [] : [pendingInputCardId]),
-    local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled },
+    local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled || store.executionHeld },
     showTrack: options?.showTrack ?? true, onOpen: openConversation,
-  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, options?.showTrack, openConversation]);
+  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, openConversation]);
   const listNode = useMemo(() => <ChatList {...listProps} />, [listProps]);
   const contextList = useMemo(() => <ChatList {...listProps} context />, [listProps]);
 

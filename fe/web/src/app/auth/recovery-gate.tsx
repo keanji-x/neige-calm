@@ -1,3 +1,4 @@
+import { CurrentUserScope } from './current-user.tsx';
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import { useEffect, type ReactNode } from 'react';
 import { whoamiOperation } from '../../../../core/api/auth.ts';
@@ -49,7 +50,7 @@ export function RecoveryGate({ children, transport, unauthorized, client, runtim
           instance id (#1722 §5.2); a kernel without one leaves the scope null. */}
       <ConnectionStatusScope value={{ connected: state.phase === 'connected',
         label: recoveryStatusLabel(state.phase), detail: state.detail, retry: session.retry }}>
-      <DatabaseScopeProvider id={session.version!.databaseId ?? null}>{children}</DatabaseScopeProvider></ConnectionStatusScope>
+      <CurrentUserScope value={session.identity!}><DatabaseScopeProvider id={session.version!.databaseId ?? null}>{children}</DatabaseScopeProvider></CurrentUserScope></ConnectionStatusScope>
     </div>
       : state.phase === 'login' ? renderLogin() : state.phase === 'update' ? <main><h1>{state.detail}</h1><a href="http://tauri.localhost/">返回连接页</a></main>
         : <RecoveryPresentation />}

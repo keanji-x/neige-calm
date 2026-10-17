@@ -17,6 +17,7 @@ type MessageEntryProps = Readonly<{
   timestampFormatter: Intl.DateTimeFormat | null;
   entryKey: string;
   author: ConversationTurn['author'];
+  human: ConversationTurn['human'];
   text: string;
   attachments: ConversationTurn['attachments'];
   opens: boolean;
@@ -28,7 +29,7 @@ type MessageEntryProps = Readonly<{
   imageFiles: ReplyImageFiles | null;
 }>;
 
-export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, text, attachments,
+export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, human, text, attachments,
   opens, gapLabel, queued, edited, replacement, working, imageFiles, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   return (
@@ -41,9 +42,10 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
       {gapLabel !== null && (
         <p className={styles.gap}>{gapLabel}</p>
       )}
-      {author === 'you' ? (
+      {author !== 'agent' ? (
         <>
-          <OutgoingMessage text={text} mobile={mobile} queued={queued} edited={edited} replacement={replacement} />
+          {author !== 'you' && <p>{author === 'human' ? human?.displayName : 'Unknown author'}</p>}
+          <OutgoingMessage speaker={author} text={text} mobile={mobile} queued={queued} edited={edited} replacement={replacement} />
           {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
           {(attachments ?? []).length > 0 && (
             <ul className={styles.attachments} data-nc-turn-attachments="" {...(edited ? { 'data-nc-editing': '' } : {})}>

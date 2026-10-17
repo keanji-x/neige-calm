@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The new-track page: `/area/{id}/new`, reached from each Area group's `+`.
@@ -244,14 +245,14 @@ function harness(options: {
           ? options.heldDetail.then(() => detail)
           : Promise.resolve(detail);
       }
-      if (request.method === 'GET' && request.path === '/api/cards/card-planner/planner/run') {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: {
+      if (request.method === 'GET' && request.path === '/api/cards/card-planner/planner/run?contract=conversation_v1') {
+        return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationRun({
           card_id: 'card-planner', worker_session_id: 'runtime', phase: 'idle',
           model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-        } });
+        }, 'idle') });
       }
       if (request.method === 'GET' && request.path.includes('/harness/items')) {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: [...(options.plannerItems ?? [])] });
+        return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [...(options.plannerItems ?? [])], null) });
       }
       if (request.path === '/api/areas' && options.areasFail) {
         return Promise.resolve({ status: 500, statusText: 'Server Error', body: { error: 'areas are unreadable' } });
