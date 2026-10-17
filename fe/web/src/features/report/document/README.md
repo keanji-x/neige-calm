@@ -26,15 +26,21 @@ miss and caches success only while its lease remains active. Missing/invalid rep
 reuse canonical empty preparation. The synchronous `read(cards)` entry remains for
 existing standalone consumers. There is no in-flight queue or strong source inventory.
 
-`useReportPreparation` owns local waiting/preparing/ready/failed state and retries.
-A same-selection replacement retains its previous complete visible revision until
+`useReportPreparation` memoizes a typed cache/executor adapter for the generic
+`systems/content-preparation` lease lifecycle. It returns data candidates with
+waiting/preparing/ready/failed state and retries.
+A same-selection replacement retains its previous complete prepared candidate until
 the new one is ready. Another selection or cache scope immediately loses that value.
 Selection, source, enablement, retry and cleanup invalidate the active lease; aborted
-results cannot enter the cache or visible state. Independent instances remain separate.
+results cannot enter the cache or candidate state. Independent instances remain separate.
 Cache hits expose prepared data immediately, including while execution is disabled;
 consumers still apply their own content admission before mounting.
 
-The visible model is `visible.preparation`, including its own `report` identity.
+The candidate model is `candidate.preparation`, including its own `report` identity.
+A candidate is data readiness only; app separately retains evidence of the model
+actually rendered in an admitted complete commit. A never-rendered cached candidate
+cannot be used as a committed fallback during replacement.
+
 A native Worker returns a structured clone, so passing the original `source.report`
 with that clone would violate `ReportDocument`'s identity contract. Read/restore
 policy and evidence of actual content commit remain in app composition.

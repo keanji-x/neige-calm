@@ -31,7 +31,7 @@ it('does not execute while disabled and exposes a completed cache hit immediatel
   const view = renderHook(({ enabled }) => useReportPreparation('track', source, cache, work.execute, enabled), {
     initialProps: { enabled: false },
   });
-  expect(view.result.current).toMatchObject({ status: 'waiting', visible: null, error: null });
+  expect(view.result.current).toMatchObject({ status: 'waiting', candidate: null, error: null });
   expect(work.execute).not.toHaveBeenCalled();
   view.rerender({ enabled: true });
   expect(view.result.current.status).toBe('preparing');
@@ -39,7 +39,7 @@ it('does not execute while disabled and exposes a completed cache hit immediatel
   expect(view.result.current.status).toBe('ready');
   view.unmount();
   const cached = renderHook(() => useReportPreparation('track', source, cache, work.execute, false));
-  expect(cached.result.current).toMatchObject({ status: 'ready', visible: { source, preparation: work.jobs[0].prepared } });
+  expect(cached.result.current).toMatchObject({ status: 'ready', candidate: { source, preparation: work.jobs[0].prepared } });
   expect(work.execute).toHaveBeenCalledTimes(1);
 });
 
@@ -50,14 +50,14 @@ it('retains only a same-selection model and atomically replaces it with the clon
     initialProps: { source: first },
   });
   await work.complete(0);
-  const visible = view.result.current.visible!;
-  expect(visible.preparation.report).not.toBe(first.report);
+  const candidate = view.result.current.candidate!;
+  expect(candidate.preparation.report).not.toBe(first.report);
   view.rerender({ source: next });
-  expect(view.result.current).toMatchObject({ status: 'preparing', visible });
-  expect(view.result.current.visible?.preparation.outline[0].label).toBe('First');
+  expect(view.result.current).toMatchObject({ status: 'preparing', candidate });
+  expect(view.result.current.candidate?.preparation.outline[0].label).toBe('First');
   await work.complete(1);
-  expect(view.result.current).toMatchObject({ status: 'ready', visible: { source: next, preparation: work.jobs[1].prepared } });
-  expect(view.result.current.visible?.preparation.outline[0].label).toBe('Next');
+  expect(view.result.current).toMatchObject({ status: 'ready', candidate: { source: next, preparation: work.jobs[1].prepared } });
+  expect(view.result.current.candidate?.preparation.outline[0].label).toBe('Next');
 });
 
 it('rejects A1 and B results after an A→B→A visit even when execution ignores abort', async () => {
@@ -67,15 +67,15 @@ it('rejects A1 and B results after an A→B→A visit even when execution ignore
     initialProps: { key: 'a', source: a },
   });
   view.rerender({ key: 'b', source: b });
-  expect(view.result.current.visible).toBeNull();
+  expect(view.result.current.candidate).toBeNull();
   expect(work.jobs[0].signal.aborted).toBe(true);
   view.rerender({ key: 'a', source: a });
   expect(work.jobs[1].signal.aborted).toBe(true);
   await work.complete(0); await work.complete(1);
-  expect(view.result.current).toMatchObject({ status: 'preparing', visible: null });
+  expect(view.result.current).toMatchObject({ status: 'preparing', candidate: null });
   expect(cache.peek(a)).toBeUndefined(); expect(cache.peek(b)).toBeUndefined();
   await work.complete(2);
-  expect(view.result.current).toMatchObject({ status: 'ready', visible: { source: a } });
+  expect(view.result.current).toMatchObject({ status: 'ready', candidate: { source: a } });
 });
 
 it('aborts replaced sources and disabled preparation without exposing stale failures', async () => {
@@ -91,14 +91,14 @@ it('aborts replaced sources and disabled preparation without exposing stale fail
   view.rerender({ source: next, enabled: false });
   expect(work.jobs[1].signal.aborted).toBe(true);
   await work.complete(1);
-  expect(view.result.current).toMatchObject({ status: 'waiting', visible: null, error: null });
+  expect(view.result.current).toMatchObject({ status: 'waiting', candidate: null, error: null });
   expect(cache.peek(next)).toBeUndefined();
   view.rerender({ source: next, enabled: true });
   await work.complete(2);
   expect(view.result.current.status).toBe('ready');
 });
 
-it('retains a visible revision on failure and retries only its current lease', async () => {
+it('retains a candidate revision on failure and retries only its current lease', async () => {
   const cache = createReportPreparationCache(); const first = cache.source([card('Seen')]); const next = cache.source([card('Retry')]);
   const work = controlled();
   const view = renderHook(({ source }) => useReportPreparation('track', source, cache, work.execute, true), {
@@ -108,15 +108,15 @@ it('retains a visible revision on failure and retries only its current lease', a
   const oldRetry = view.result.current.retry;
   view.rerender({ source: next });
   await act(async () => { work.jobs[1].reject('Preparation failed'); await Promise.resolve(); });
-  expect(view.result.current).toMatchObject({ status: 'failed', visible: { source: first } });
+  expect(view.result.current).toMatchObject({ status: 'failed', candidate: { source: first } });
   expect(view.result.current.error).toBeInstanceOf(Error);
   expect(view.result.current.error?.message).toBe('Preparation failed');
   act(() => { oldRetry(); });
   expect(work.execute).toHaveBeenCalledTimes(2);
   act(() => { view.result.current.retry(); });
-  expect(view.result.current).toMatchObject({ status: 'preparing', visible: { source: first }, error: null });
+  expect(view.result.current).toMatchObject({ status: 'preparing', candidate: { source: first }, error: null });
   await work.complete(2);
-  expect(view.result.current).toMatchObject({ status: 'ready', visible: { source: next } });
+  expect(view.result.current).toMatchObject({ status: 'ready', candidate: { source: next } });
 });
 
 it('releases StrictMode and unmounted executions and starts independent resource instances', async () => {
@@ -128,7 +128,7 @@ it('releases StrictMode and unmounted executions and starts independent resource
   expect(work.jobs[0].signal.aborted).toBe(true);
   expect(work.jobs[1].signal.aborted).toBe(false);
   await work.complete(0);
-  expect(view.result.current.visible).toBeNull();
+  expect(view.result.current.candidate).toBeNull();
   const separate = renderHook(() => useReportPreparation('track', source, cache, work.execute, true));
   view.unmount();
   expect(work.jobs[1].signal.aborted).toBe(true);
@@ -146,5 +146,24 @@ it('never retains a previous cache scope or selection model during the new rende
   });
   await work.complete(0);
   view.rerender({ key: 'b', owner: createReportPreparationCache() });
-  expect(view.result.current).toMatchObject({ status: 'preparing', visible: null });
+  expect(view.result.current).toMatchObject({ status: 'preparing', candidate: null });
+});
+
+it('memoizes the cache/executor adapter across unchanged renders and keeps empty success explicit', async () => {
+  const cache = createReportPreparationCache(); const source = cache.source([card('Stable')]); const work = controlled();
+  const view = renderHook(({ enabled }) => useReportPreparation('track', source, cache, work.execute, enabled), {
+    initialProps: { enabled: true },
+  });
+  view.rerender({ enabled: true }); view.rerender({ enabled: true });
+  expect(work.jobs).toHaveLength(1);
+  expect(work.jobs[0].signal.aborted).toBe(false);
+  await work.complete(0);
+  const candidate = view.result.current.candidate;
+  view.rerender({ enabled: true });
+  expect(view.result.current.candidate).toEqual(candidate);
+  expect(work.jobs).toHaveLength(1);
+  const empty = cache.source([]);
+  const emptyView = renderHook(() => useReportPreparation('empty', empty, cache, work.execute, false));
+  expect(emptyView.result.current).toMatchObject({ status: 'ready', candidate: { source: empty, preparation: { kind: 'empty', report: null } } });
+  expect(work.jobs).toHaveLength(1);
 });
