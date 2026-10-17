@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react';
-import { extractOutline, parse, REPORT_MAX_DEPTH, reportHeadingIdPolicy, sanitizeAstPolicy, type SafeBlock, type SafeInline } from '../../../../../core/markdown/public.ts';
+import { useMemo, type ReactNode } from 'react';
+import { prepareProse, type PreparedProse } from './preparation.ts';
+import type { SafeBlock, SafeInline } from '../../../../../core/markdown/public.ts';
 import { parseReportLink, type ReportLinkTarget } from '../../../../../core/domain/report.ts';
 import { parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
@@ -10,40 +11,27 @@ import { ReadOnlyCode } from '../../../ui/code/public.tsx';
 import { ReportLinkPreview, ReportSourceLinkPreview, externalPreviewUrl, type ReportLinkPreviewResources, type PreviewDestination } from '../link-preview/public.tsx';
 import styles from './document.module.css';
 
-/** The rendered-Markdown half of a report block. Exported for the recipe editor. */
-export function ProseBlock({
-  markdown, blockId, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview, referenceRepository = null, compact = false, destinationMode = 'interactive',
-}: {
-  markdown: string;
-  /** Captured evidence may format labels without granting navigation or resource loading. */
-  destinationMode?: 'interactive' | 'inert';
+type ProseOptions = Omit<ReportTextContext, 'referenceRepository'> & Readonly<{
   referenceRepository?: ReferenceRepository | null;
   compact?: boolean;
-  blockId: string | null;
-  onOpenLink?: (target: ReportLinkTarget) => void;
-  onOpenFileLink?: (target: ReportFileLinkTarget) => void;
-  onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
-  fileRoot?: string;
-  fileBasePath?: string;
-  linkPreview?: ReportLinkPreviewResources;
-}) {
-  const parsed = parse(markdown);
-  if (parsed.status === 'failed') {
-    return <pre className={styles.raw}>{markdown}</pre>;
-  }
+}>;
 
-  // Heading ids come from the same `extractOutline` call the outline uses, so the two cannot drift.
-  const headingIds = blockId === null
-    ? new Map<number, string>()
-    : new Map(extractOutline([{ context: { blockId }, ast: parsed.value }], {
-      maxDepth: REPORT_MAX_DEPTH,
-      headingId: reportHeadingIdPolicy,
-      textPolicy: 'non-empty-heading-label',
-      referenceText: 'visible',
-      traversal: 'recursive',
-    }).map((heading) => [heading.position.start.offset ?? -1, heading.id]));
+/** Standalone reports/previews use the same preparation without retaining navigation capabilities. */
+export function ProseBlock({ markdown, blockId, ...options }: ProseOptions & Readonly<{
+  markdown: string; blockId: string | null;
+}>) {
+  const prepared = useMemo(() => prepareProse(markdown, blockId), [markdown, blockId]);
+  return <PreparedProseBlock prepared={prepared} {...options} />;
+}
 
-  const ast = sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' });
+/** The rendered half consumes prepared syntax; admission and live callbacks remain current. */
+export function PreparedProseBlock({
+  prepared, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
+  referenceRepository = null, compact = false, destinationMode = 'interactive',
+}: ProseOptions & Readonly<{ prepared: PreparedProse }>) {
+  const { result } = prepared;
+  if (result.status === 'failed') return <pre className={styles.raw}>{prepared.source}</pre>;
+  const { ast, headingIds } = result;
   if (ast.children.length === 0) return null;
   const rendered = <>{ast.children.map((block, index) => (
     <Block

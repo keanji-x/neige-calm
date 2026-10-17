@@ -3,10 +3,9 @@ import { useCompactViewport } from '../../../ui/viewport/public.ts';
 
 import { useEffect, useMemo, type ReactNode } from 'react';
 
-import { parse, sanitizeAstPolicy } from '../../../../../core/markdown/public.ts';
-import { ProseBlock, PlainReportText } from './content.tsx';
+import { PreparedProseBlock, PlainReportText } from './content.tsx';
 export { ProseBlock } from './content.tsx';
-import { reportDocumentReferenceRepository, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
+import type { ReferenceRepository } from '../../../../../core/domain/report-references.ts';
 import {
   deriveReportTasks, isTaskBlock,
   type PreviewResolution, type ReportBlock, type ReportLinkTarget, type ReportTaskRow, type TaskVerdict,
@@ -18,6 +17,7 @@ import {
 import type { SeriesResolution } from '../../../../../core/domain/report-series.ts';
 import { type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { type ReportLinkPreviewResources } from '../link-preview/public.tsx';
+import { prepareReportDocument, type PreparedReport, type PreparedReportBlock } from './preparation.ts';
 import { ReportDetails } from './details.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
@@ -34,6 +34,8 @@ import styles from './document.module.css';
 export type ReportDocumentProps = Readonly<{
   /** The track's report. `null` when it has none. */
   report: TrackReport | null;
+  /** Prepared by the report owner; when supplied, it must describe this exact immutable report. */
+  preparation?: PreparedReport;
   /** What the empty state should offer, which differs per route. */
   empty: ReactNode;
   /** The outline rail, which hangs in the document's leading gutter. */
@@ -73,38 +75,33 @@ export type ReportDocumentProps = Readonly<{
 
 /** Agent-authored destinations become admitted preview controls. Navigation stays behind typed callbacks or explicit external activation. */
 export function ReportDocument({
-  report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
+  report, preparation, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
   resolveOverlay, resolveSeries, resolvePreview, previewViewports,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   const compactViewport = useCompactViewport();
-  const referenceRepository = useMemo(() => reportDocumentReferenceRepository(report), [report]);
+  const prepared = useMemo(() => preparation ?? prepareReportDocument(report), [preparation, report]);
+  if (prepared.report !== report) throw new Error('Report preparation does not match the displayed report');
+  const { referenceRepository } = prepared;
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
     revealReportAnchor(arrivalAnchorId);
   }, [arrivalAnchorId]);
 
-  if (report === null) return <>{empty}</>;
-
-  const prose = report.blocks === null ? [report.body || report.summary]
-    : report.blocks.every((block) => block.kind === 'prose') ? report.blocks.map((block) => block.payload.markdown) : null;
-  const outlineOnly = compactViewport && prose !== null && prose.every((markdown) => {
-    const parsed = parse(markdown);
-    return parsed.status === 'ready' && sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' }).children.every((block) => block.type === 'heading');
-  });
+  if (prepared.kind === 'empty') return <>{empty}</>;
+  const outlineOnly = compactViewport && prepared.outlineOnly;
 
   return (
     <article className={`calm-prose ${styles.doc} ${outlineOnly ? styles.outlineOnly : ''}`} data-nc-report="" tabIndex={-1}>
       {outlineOnly && <div className={styles.mobileEmpty}><h2>从一个想法开始</h2><p>计划、进展与重要结论会整理在这里。</p></div>}
       {rail}
       {byline !== undefined && <div className={styles.byline}>{byline}</div>}
-      {report.blocks === null
+      {prepared.kind === 'legacy'
         ? (
           <div className={styles.row}>
             <div className={styles.block} data-nc-report-reading="">
-              <ProseBlock
-                markdown={report.body || report.summary}
-                blockId={null}
+              <PreparedProseBlock
+                prepared={prepared.prose}
                 referenceRepository={referenceRepository} onOpenLink={onOpenLink}
                 onOpenFileLink={onOpenFileLink}
                 onOpenSourceLink={onOpenSourceLink}
@@ -116,15 +113,15 @@ export function ReportDocument({
           </div>
         )
         : (() => {
-          const documentBlocks = report.blocks.filter((block) => !isProcessBlock(block));
-          const processBlocks = report.blocks.filter(isProcessBlock);
+          const documentBlocks = prepared.blocks.filter(slot => !isProcessBlock(slot.block));
+          const processBlocks = prepared.blocks.map(slot => slot.block).filter(isProcessBlock);
           return (
             <>
-              {documentBlocks.map((block) => (
+              {documentBlocks.map(slot => (
                 <BlockSlot
-                  key={block.id}
-                  block={block}
-                  backlinks={backlinkCounts?.get(block.id) ?? 0}
+                  key={slot.block.id}
+                  slot={slot}
+                  backlinks={backlinkCounts?.get(slot.block.id) ?? 0}
                   referenceRepository={referenceRepository} onOpenLink={onOpenLink}
                   onOpenFileLink={onOpenFileLink}
                   onOpenSourceLink={onOpenSourceLink}
@@ -139,7 +136,7 @@ export function ReportDocument({
               ))}
               {processBlocks.length > 0 && (
                 <ReportReference blocks={processBlocks} backlinkCounts={backlinkCounts}
-                  tasks={taskRows ?? deriveReportTasks(report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution}
+                  tasks={taskRows ?? deriveReportTasks(prepared.report.blocks, taskVerdicts)} renderTaskExecution={renderTaskExecution}
                   referenceRepository={referenceRepository} onOpenLink={onOpenLink} onOpenFileLink={onOpenFileLink}
                   onOpenSourceLink={onOpenSourceLink} fileRoot={fileRoot} fileBasePath={fileBasePath} linkPreview={linkPreview} />
               )}
@@ -195,11 +192,11 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution, .
 
 /** One block, plus the sidenote that belongs to it. */
 function BlockSlot({
-  block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview, referenceRepository, resolveOverlay, resolveSeries,
+  slot, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview, referenceRepository, resolveOverlay, resolveSeries,
   resolvePreview, previewViewports,
 }: {
   referenceRepository: ReferenceRepository | null;
-  block: ReportBlock;
+  slot: PreparedReportBlock;
   backlinks: number;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
@@ -212,13 +209,13 @@ function BlockSlot({
   resolvePreview?: ReportDocumentProps['resolvePreview'];
   previewViewports?: PreviewViewportStore;
 }) {
+  const { block, prose } = slot;
   return (
     <div className={styles.row}>
       <div className={styles.block} id={block.id} data-nc-report-reading="">
-        {block.kind === 'prose'
-          ? <ProseBlock
-              markdown={block.payload.markdown}
-              blockId={block.id}
+        {prose !== null
+          ? <PreparedProseBlock
+              prepared={prose}
               referenceRepository={referenceRepository} onOpenLink={onOpenLink}
               onOpenFileLink={onOpenFileLink}
               onOpenSourceLink={onOpenSourceLink}

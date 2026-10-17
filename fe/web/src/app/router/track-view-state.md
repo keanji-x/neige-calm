@@ -40,3 +40,19 @@ Acceptance is covered through production entry points:
 The new Context has one exact-path architecture exception with positive and
 sibling-negative fixtures. No feature API, global stylesheet, backend contract
 or persisted schema changes are required.
+
+## Report preparation
+
+The same signed-in router scope owns a report-feature preparation cache, separate
+from the small UI snapshot map. Its weak keys are immutable report card objects
+already held by the query cache. The report feature reuses pure syntax/outline/
+reference data for that exact input; replacing the report card invalidates it.
+No DOM, navigation callback, file port, subscription or timer is retained. The
+cache neither keeps evicted query cards alive nor promises a memory cap while
+queries remain reachable. Leaving the authenticated/recovery scope drops it.
+
+TrackRouteBody consumes the prepared report model and gives its prepared syntax
+to ReportDocument. Standalone report renderers use the same preparation entry.
+File admission, live blocks and navigation still consume current render inputs.
+Track readiness, scroll/anchor restoration and read-receipt eligibility are
+unchanged in this slice; this cache is not asynchronous content admission.

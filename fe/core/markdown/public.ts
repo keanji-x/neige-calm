@@ -477,8 +477,8 @@ function inlineText(nodes: readonly NormalizedInline[], referenceText: 'visible'
 }
 
 /** Plain visible body text for compact previews; headings and raw HTML are omitted. */
-export function markdownExcerpt(markdown: string): string {
-  const parsed = parse(markdown);
+export function markdownExcerpt(markdown: string, readMarkdown: typeof parse = parse): string {
+  const parsed = readMarkdown(markdown);
   if (parsed.status === 'failed') return '';
   const text = (nodes: readonly NormalizedBlock[]): string[] => nodes.flatMap(node => {
     if (node.type === 'paragraph') return [inlineText(node.children, 'visible')];

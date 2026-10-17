@@ -21,7 +21,7 @@ import {
   createRootRoute, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
+import { TrackViewProvider, useTrackViewState, useTrackReportPreparation } from './track-view-state.tsx';
 import { HStack } from '@astryxdesign/core/HStack';
 import { useQuery, type QueryClient } from '@tanstack/react-query';
 
@@ -74,7 +74,7 @@ import { ReportOutline } from '../../features/report/outline/public.tsx';
 import { RecentFiles } from '../../features/report/recent-files/public.tsx';
 import { revealReportAnchor } from '../../features/report/anchor/public.ts';
 import {
-  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, readTrackReport, type ReportLinkTarget,
+  backlinkCountsByBlock, deriveReportTasks, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
   parseWorkspaceRelativeFilePath, type ReportFileLinkTarget,
@@ -1105,14 +1105,14 @@ function TrackRouteBody({
   /* The runtime half of the TASKS panel, keyed `['track-report', trackId]`: the key
    * `invalidation-plan` refreshes on every `task.*` event and `track.report_edited`. */
   /* Read before the query: the poll's interval depends on the rows this report can produce. */
-  const report = useMemo(() => readTrackReport(cards), [cards]);
+  const reportPreparation = useTrackReportPreparation(cards);
+  const { report, outline } = reportPreparation;
   const reportBlocks = report?.blocks ?? null;
   const verdictsQuery = useQuery(
     trackTaskVerdictsQueryOptions(transport, track.id, unauthorized, reportBlocks),
   );
   const verdicts = verdictsQuery.data;
-  const { outline, tasks: joinedTasks } = useMemo(() => ({
-    outline: deriveReportOutline(reportBlocks),
+  const { tasks: joinedTasks } = useMemo(() => ({
     /* The verdicts land a round-trip after the declarations; `undefined` renders
            the statusless list rather than a hole. */
     tasks: deriveReportTasks(reportBlocks, verdicts),
@@ -1419,6 +1419,7 @@ function TrackRouteBody({
       }}
       report={<><ReportDocument
         report={report}
+        preparation={reportPreparation}
         /* `overlay.set` already invalidates this track's detail, so a plugin push
                    re-renders the block without the report being rewritten. */
         resolveOverlay={resolveOverlay}

@@ -1,6 +1,8 @@
-import { createContext, useContext, useLayoutEffect, type ReactNode } from 'react';
+import { createContext, useContext, useLayoutEffect, useMemo, type ReactNode } from 'react';
 import { useRouterState } from '@tanstack/react-router';
 import { useState } from '../../ui/state/public.ts';
+import type { CardWire } from '../../../../core/domain/track.ts';
+import { createReportPreparationCache } from '../../features/report/document/preparation.ts';
 import type { TrackSearch } from './track-search.ts';
 
 type Offset = Readonly<{ top: number; left: number }>;
@@ -12,6 +14,7 @@ type TrackView = {
 function createTrackViews() {
   const views = new Map<string, TrackView>();
   return {
+    reports: createReportPreparationCache(),
     get: (id: string) => views.get(id),
     ensure: (id: string) => {
       let view = views.get(id);
@@ -34,6 +37,13 @@ export function TrackViewProvider({ children }: { children: ReactNode }) {
 }
 
 export function useTrackViews() { return useContext(TrackViewsContext); }
+
+/** The report owner prepares data; this signed-in router scope owns its weak cache lifetime. */
+export function useTrackReportPreparation(cards: readonly CardWire[]) {
+  const views = useTrackViews();
+  if (views === null) throw new Error('Track report preparation requires TrackViewProvider');
+  return useMemo(() => views.reports.read(cards), [views, cards]);
+}
 
 /** Called only after detail has arrived and the keyed track body mounts. */
 export function useTrackViewState(trackId: string) {
