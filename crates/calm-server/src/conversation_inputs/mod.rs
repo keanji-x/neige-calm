@@ -7,6 +7,9 @@ mod storage_contract;
 pub(crate) use storage_contract::{
     has_canonical_storage, require_historical_storage, require_historical_storage_tx,
 };
+mod selection_read;
+pub(crate) use selection_read::SelectionReadAdmission;
+
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
 pub(crate) use execution::{

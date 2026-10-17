@@ -191,7 +191,8 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     let message = message.clone();
     // Before model/workspace/config reads, validate the same source and exact
     // head through the shared admission owner. Claim and crossing repeat it.
-    write_in_tx_typed(inner.repo.as_ref(), {
+    let read_admission = write_in_tx_typed(inner.repo.as_ref(), {
+        let repo = inner.repo.clone();
         let (card, runtime, source, message, expected) = (
             card.clone(),
             runtime.clone(),
@@ -210,18 +211,17 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
                     vec![],
                 )
                 .await?;
-                crate::conversation_inputs::authorize_human_execution_tx(
-                    tx, &source, &carrier, &plan,
+                crate::conversation_inputs::SelectionReadAdmission::pending_tx(
+                    tx, repo, source, &carrier, plan,
                 )
-                .await?;
-                Ok(())
+                .await
             })
         }
     })
     .await?;
     let resolved = async {
         let budget = budget::sample(inner).await?;
-        let selection = inner.backend.resolve_selection(inner.as_ref()).await?;
+        let selection = inner.backend.resolve_selection(&read_admission).await?;
         let permission = turn_permission::resolve(inner).await?;
         Ok::<_, IssuanceRefusal>((budget, selection, permission))
     }
@@ -367,7 +367,8 @@ async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFrame) -> Res
     else {
         return Ok(());
     };
-    write_in_tx_typed(inner.repo.as_ref(), {
+    let read_admission = write_in_tx_typed(inner.repo.as_ref(), {
+        let repo = inner.repo.clone();
         let (submission, source) = (submission.clone(), source.clone());
         move |tx| {
             Box::pin(async move {
@@ -375,23 +376,17 @@ async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFrame) -> Res
                 if RuntimeExecutionFence::from_carrier(&carrier) != expected {
                     return Err(CalmError::Conflict("unattempted execution changed".into()));
                 }
-                let stored =
-                    crate::db::sqlite::conversation::submission_plan_tx(tx, &submission).await?;
-                crate::conversation_inputs::authorize_human_execution_tx(
-                    tx,
-                    &source,
-                    &carrier,
-                    &stored.plan,
+                crate::conversation_inputs::SelectionReadAdmission::stored_tx(
+                    tx, repo, source, &carrier, submission,
                 )
-                .await?;
-                Ok(())
+                .await
             })
         }
     })
     .await?;
     let resolved = async {
         Ok::<_, IssuanceRefusal>((
-            inner.backend.resolve_selection(inner.as_ref()).await?,
+            inner.backend.resolve_selection(&read_admission).await?,
             turn_permission::resolve(inner).await?,
         ))
     }

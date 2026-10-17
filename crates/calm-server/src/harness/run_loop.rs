@@ -2898,6 +2898,15 @@ const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(2);
 const NEEDS_A_CHOICE_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 impl SelectionSource for Inner {
+    fn admit_native_read(&self) -> futures_util::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            // Preserve the historical caller's existing authorization, not a
+            // grant derived from a schema number. Canonical requires its bound
+            // live-source admission and can never use this compatibility path.
+            self.historical_queue()?;
+            Ok(())
+        })
+    }
     /// Read the card as it stands NOW — the last moment before the frame is built; reading any
     /// earlier is the staleness bug this exists to prevent.
     async fn card_payload(&self) -> std::result::Result<Value, IssuanceRefusal> {

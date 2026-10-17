@@ -75,6 +75,10 @@ pub(crate) async fn hold_attribution(daemon: &SharedCodexAppServer) -> impl Drop
     daemon.kernel_initiated_threads.lock().await
 }
 
+pub(crate) async fn hold_connected_client_gate(daemon: &SharedCodexAppServer) -> impl Drop + '_ {
+    daemon.core.lock().await
+}
+
 pub(crate) async fn attribution_blocked(daemon: &SharedCodexAppServer) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
