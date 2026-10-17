@@ -7,7 +7,13 @@ second rectangle from application selectors or the global window.
 Cards may opt into `CardEntry.viewport = 'board'`. The board measures its own
 scrollport with ResizeObserver and supplies its block size as an inherited CSS
 property. The opted-in card's surface has a maximum block size of that scrollport
-and sticks to its top while the original grid cell passes through it. The grid
+and sticks to its top while the original grid cell passes through it. Sticky
+layout runs before the cell's transform, so its top inset compensates for the
+grid-owned `--nc-card-layout-y` coordinate published by MotionCell; this also
+keeps cards in later rows aligned with the board edge. When the scrollport height
+changes, the host replays its existing active-card reveal for an opted-in card,
+so a card aligned in a taller window starts at the visible edge in a short one.
+Other card types retain their existing reveal triggers. The grid
 cell, stored positions, resize handle and active-card reveal retain their existing
 ownership and dimensions. Other entries retain their full-cell surfaces.
 

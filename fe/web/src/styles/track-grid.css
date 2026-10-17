@@ -76,7 +76,9 @@
      keep controls and the renderer's nested scrollport inside the board. */
   [data-nc-card-viewport='board'] > .term {
     position: sticky;
-    top: 0;
+    /* Sticky layout precedes the cell's transform. Offset by the grid-owned
+       coordinate so later rows stick at the same board edge as row zero. */
+    top: calc(var(--nc-card-layout-y) * -1px);
     max-block-size: var(--nc-board-block-size, 100%);
   }
 

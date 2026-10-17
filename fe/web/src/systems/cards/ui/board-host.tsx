@@ -84,6 +84,9 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
   const [manipulating, setManipulating] = useState<Manipulation>(null);
   const positionStrategy = useMemo(() => Object.freeze({ ...transformStrategy, calcStyle: motionPositionStyle }), []);
   const [stored, setStored] = useState<StoredPositions>(EMPTY_POSITIONS);
+  const [boardHeight, setBoardHeight] = useState(0);
+  const activeViewportHeight = items.some(item => item.card.id === activeCardId
+    && host.registry.get(item.card.type)?.viewport === 'board') ? boardHeight : 0;
 
   const sized = useMemo(() => items.map((item) => ({
     id: item.card.id,
@@ -156,6 +159,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
     const measure = () => {
       if (container.clientHeight > 0) {
         container.style.setProperty('--nc-board-block-size', `${container.clientHeight}px`);
+        setBoardHeight(container.clientHeight);
       }
     };
     measure();
@@ -189,7 +193,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
       cancelAnimationFrame(firstFrame);
       if (secondFrame !== null) cancelAnimationFrame(secondFrame);
     };
-  }, [activeCardId, containerRef, mounted, visible]);
+  }, [activeCardId, activeViewportHeight, containerRef, mounted, visible]);
 
   return (
     <div ref={containerRef} className="track-grid-wrap" data-nc-card-board="">

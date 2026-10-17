@@ -40,7 +40,10 @@ function assertUsable(view: EditorView, board: HTMLElement) {
   }
 }
 
-it.each([false, true])('keeps keyboard search reachable in an oversized real file card (user resized: %s)', async resized => {
+it.each([
+  { resized: false, laterRow: false }, { resized: true, laterRow: false },
+  { resized: false, laterRow: true }, { resized: true, laterRow: true },
+])('keeps keyboard search reachable in an oversized real file card (%j)', async ({ resized, laterRow }) => {
   await page.viewport(1400, 900);
   const registry = createCardRegistry(); registerAvailableBuiltinCards(registry);
   const text = Array.from({ length: 8000 }, (_, index) => `row ${index}: needle`).join('\n');
@@ -52,7 +55,12 @@ it.each([false, true])('keeps keyboard search reachable in an oversized real fil
   } });
   const card = registry.resolve({ id: 'file', kind: 'file-viewer', payload: { path: '/repo' } });
   if (card === null) throw new Error('Real file card missing');
-  const items: readonly BoardHostItem[] = [{ card, title: 'File', originalIndex: 0, activity: null, notice: null }];
+  const preceding = laterRow ? ['before-a', 'before-b'].map((id, originalIndex): BoardHostItem => {
+    const terminal = registry.resolve({ id, kind: 'terminal', payload: {} });
+    if (terminal === null) throw new Error('Real terminal missing');
+    return { card: terminal, title: id, originalIndex, activity: null, notice: null };
+  }) : [];
+  const items: readonly BoardHostItem[] = [...preceding, { card, title: 'File', originalIndex: preceding.length, activity: null, notice: null }];
   const scene = (visible: boolean, active = 'file', cards = items) => <div style={{ display: visible ? 'flex' : 'none', width: 1200, height: 'calc(100vh - 132px)' }}>
     <BoardHost host={host} items={cards} activeCardId={active} visible={visible} />
   </div>;
@@ -62,6 +70,8 @@ it.each([false, true])('keeps keyboard search reachable in an oversized real fil
   const view = EditorView.findFromDOM(content);
   if (view === null) throw new Error('Real editor missing');
   const cell = document.querySelector<HTMLElement>('[data-nc-card-id="file"]')!;
+  await paint();
+  if (laterRow) expect(Number(cell.style.getPropertyValue('--nc-card-layout-y'))).toBeGreaterThan(0);
   if (!resized) {
     expect(document.querySelector('[data-nc-file-card]')!.getBoundingClientRect().height).toBe(cell.getBoundingClientRect().height);
   }
@@ -96,7 +106,7 @@ it.each([false, true])('keeps keyboard search reachable in an oversized real fil
   expect(cell.getBoundingClientRect().height).toBe(cardHeight);
   expect(view.state.doc.toString()).toBe(text);
   // A user can still scroll the board; resizing and visibility do not discard the grid dimensions.
-  board.scrollTop = 100;
+  board.scrollTop += 100;
   await paint();
   expect(board.scrollTop).toBeGreaterThan(0);
   await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
