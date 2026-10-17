@@ -64,6 +64,8 @@ export type ChatThreadProps = Readonly<{
   pending?: boolean;
   /** Local dispatch is pending, independently of model execution and the displayed message. */
   sending?: boolean;
+  /** Monotonic fresh local send request; `0` means none. Changes reveal it; mount and conversation changes only establish the baseline. */
+  submissionRequest?: number;
   /** The kernel's per-card verdicts for this conversation's track; a caller with no overlay passes `{}`. */
   cards: Readonly<Record<string, CardActivity>>;
   /** The drawer's local wedge fact. A wedged planner's kernel verdict is still `working`, so a thread that did not know it was stuck would spin beside "This conversation is stuck". */
@@ -91,7 +93,7 @@ export type ChatThreadProps = Readonly<{
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pending = false, sending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -179,6 +181,12 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const [scrollFollower] = useState(() => createScrollFollower({
     bottomSlack: FOLLOW_BOTTOM_SLACK_PX, onAwayChange: setScrolledUp,
   }));
+  const observedSubmission = useRef({ conversationId: conversation.id, request: submissionRequest });
+  useLayoutEffect(() => {
+    const before = observedSubmission.current;
+    observedSubmission.current = { conversationId: conversation.id, request: submissionRequest };
+    if (before.conversationId === conversation.id && submissionRequest > 0 && before.request !== submissionRequest) scrollFollower.followToEnd();
+  }, [scrollFollower, conversation.id, submissionRequest]);
   /** The turn at the end of the transcript as of this render — what the follow
    *  effect below both depends on and decides by. */
   const newestId = lastTurn?.id;

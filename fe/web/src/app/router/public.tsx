@@ -534,10 +534,18 @@ function useConversationPane(
   });
   const setModel = useCommittedCallback(existingId, store.setModel);
   const setPermissionMode = useCommittedCallback(existingId, store.setPermissionMode);
+  const [submission, setSubmission] = useState<Readonly<{ conversationId: string; request: number }> | null>(null);
+  /* Only a new admitted op asks the shown thread to follow. Retries retain their
+     key and reading place; pending work on mount is not a fresh local press. */
+  const submitMessage: typeof store.send = (...args) => {
+    const sent = store.send(...args);
+    if (sent !== null) setSubmission((previous) => ({ conversationId: args[0], request: (previous?.request ?? 0) + 1 }));
+    return sent;
+  };
   const sendText = useCommittedCallback(existingId, (text: string) => open !== null
-    && store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null);
+    && submitMessage(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null);
   const regenerateMessage = useCommittedCallback(existingId, async (message: ConversationTurn) => {
-    if (open !== null) await store.send(open.id, message.text, message.attachments ?? [], false, null);
+    if (open !== null) await submitMessage(open.id, message.text, message.attachments ?? [], false, null);
   });
   const editMessage = useCommittedCallback(existingId, edit.start);
   const sideQuestion = useCommittedCallback(existingId, (question: string) => {
@@ -827,6 +835,7 @@ function useConversationPane(
                 imageFiles={imageFiles}
                 turns={store.turnsOf(open.id)} editing={edit.marked}
                 sending={store.sending}
+                submissionRequest={submission?.conversationId === open.id ? submission.request : 0}
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.working}
                 cards={source.cards}
@@ -879,7 +888,7 @@ function useConversationPane(
   });
   const sendFromDock = useCommittedCallback(dockViewId, (text: string) => {
     if (dockRowId !== null) {
-      if (store.send(dockRowId, text, composer.attachments, true, edit.replacesIn(dockRowId)) !== null) {
+      if (submitMessage(dockRowId, text, composer.attachments, true, edit.replacesIn(dockRowId)) !== null) {
         setOpenTarget({ kind: 'row', id: dockRowId });
       }
     } else if (startWithMessage(text)) setNewConversationText('');
