@@ -14,6 +14,7 @@ mod planner_hibernation;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;
+mod terminal_executor_client;
 mod time_format;
 // Integration tests compile the library without `cfg(test)`, so re-gating this module for
 // them must also revisit its nested `cfg(test)` interceptor and test-module gates.

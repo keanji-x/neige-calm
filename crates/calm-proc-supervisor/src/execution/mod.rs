@@ -265,6 +265,7 @@ impl Executor {
             }
             ExecutionRequest::Prepare(request) => self.prepare(request).await,
             ExecutionRequest::Launch(request) => self.launch(request).await,
+            ExecutionRequest::Query(request) => self.query(request),
             ExecutionRequest::Revoke(request) => self.revoke(request).await,
             ExecutionRequest::Control(control) => self.control(control).await,
             ExecutionRequest::ObserveDirectories(request) => {
@@ -376,6 +377,17 @@ impl Executor {
         Ok(())
     }
 
+    fn query(&self, request: ConsumeExecution) -> anyhow::Result<ExecutionReply> {
+        // One records-lock snapshot is the read's linearization point. No gate
+        // allocation, persistence repair, source resolution or alias mutation.
+        let original = self.record(&request.execution_id)?;
+        Self::check_ticket(&original, &request)?;
+        Ok(ExecutionReply::Receipt {
+            receipt: original.phase.receipt().cloned(),
+            state: original.observed_state(),
+        })
+    }
+
     async fn revoke(&self, request: ConsumeExecution) -> anyhow::Result<ExecutionReply> {
         let first = self.record(&request.execution_id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;
@@ -457,7 +469,7 @@ impl Executor {
                 };
                 Ok(ExecutionReply::Observation {
                     receipt: Some(receipt.clone()),
-                    state: record.phase.state(),
+                    state: record.observed_state(),
                     cursor,
                     output,
                 })

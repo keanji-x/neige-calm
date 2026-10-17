@@ -44,6 +44,16 @@ pub(crate) async fn attach_terminal_for(
     s: &AppState,
     term: &Terminal,
 ) -> Result<Arc<RendererEntry>> {
+    if let Some(entry) = attach_original_registered(
+        s.daemon.as_ref(),
+        s.terminal_renderer.as_ref(),
+        s.repo.as_ref(),
+        term,
+    )
+    .await?
+    {
+        return Ok(entry);
+    }
     s.terminal_renderer
         .attach_running(
             terminal_renderer_config(s.daemon.as_ref(), term, &term.program, &term.cwd, &term.env)
@@ -58,16 +68,58 @@ pub(crate) async fn attach_terminal_for(
 pub(crate) async fn spawn_terminal_with_parts(
     daemon: &DaemonClient,
     renderer: &TerminalRendererRegistry,
-    _repo: &dyn RouteRepo,
+    repo: &dyn RouteRepo,
     term: &Terminal,
     program: &str,
     cwd: &str,
     env: &serde_json::Value,
 ) -> Result<Arc<RendererEntry>> {
+    if let Some(entry) = attach_original_registered(daemon, renderer, repo, term).await? {
+        return Ok(entry);
+    }
     renderer
         .ensure(terminal_renderer_config(daemon, term, program, cwd, env).await?)
         .await
         .map_err(|error| CalmError::Internal(error.to_string()))
+}
+
+async fn attach_original_registered(
+    daemon: &DaemonClient,
+    renderer: &TerminalRendererRegistry,
+    repo: &dyn RouteRepo,
+    term: &Terminal,
+) -> Result<Option<Arc<RendererEntry>>> {
+    use crate::operation::terminal_launch::registered::{self, OriginalLaunch};
+    let pool = repo.sqlite_pool().ok_or_else(|| {
+        CalmError::Conflict("Terminal execution requires its owning SQL repository".into())
+    })?;
+    match registered::lookup(&pool, &term.id).await? {
+        OriginalLaunch::Legacy => Ok(None),
+        OriginalLaunch::AwaitingOriginalRequest => Err(CalmError::Conflict(
+            "Terminal's original registered request is still pending".into(),
+        )),
+        OriginalLaunch::Registered(original) => {
+            let crate::state::TerminalExecutionTransport::Registered(config) = &daemon.execution
+            else {
+                return Err(CalmError::Conflict(
+                    "original Terminal requires its configured registered executor".into(),
+                ));
+            };
+            let execution = registered::restore(config, &pool, &original).await?;
+            let cfg = registered_renderer_config(
+                term,
+                &term.cwd,
+                config.socket(),
+                &original.original.request.specification,
+            )?;
+            Ok(Some(
+                renderer
+                    .attach_prepared(cfg, execution)
+                    .await
+                    .map_err(|error| CalmError::Internal(error.to_string()))?,
+            ))
+        }
+    }
 }
 
 pub(crate) async fn spawn_task_terminal_with_parts(
@@ -88,7 +140,7 @@ pub(crate) async fn spawn_task_terminal_with_parts(
         .map_err(|error| CalmError::Internal(error.to_string()))
 }
 
-async fn terminal_renderer_config(
+pub(crate) async fn terminal_renderer_config(
     daemon: &DaemonClient,
     term: &Terminal,
     program: &str,
@@ -127,6 +179,61 @@ async fn terminal_renderer_config(
         envs,
         cwd: cwd.to_string(),
         supervisor_sock: proc_supervisor_sock,
+    })
+}
+
+/// The environment owner freezes the same explicit ambient allowlist used by
+/// the existing supervisor, then applies the Terminal's declared overlays.
+/// The executor receives this complete set and adds no current ambient values.
+pub(crate) fn terminal_execution_specification(
+    program: &str,
+    env: &serde_json::Value,
+) -> Result<calm_session::control::execution::ExecutionSpecification> {
+    let mut environment = std::collections::BTreeMap::new();
+    for (key, value) in calm_proc_supervisor::allowed_environment() {
+        let key = key
+            .into_string()
+            .map_err(|_| CalmError::Conflict("non-UTF-8 allowed child environment name".into()))?;
+        let value = value
+            .into_string()
+            .map_err(|_| CalmError::Conflict("non-UTF-8 allowed child environment value".into()))?;
+        environment.insert(key, value);
+    }
+    environment.extend(terminal_child_envs(env));
+    let prepend = crate::kernel_bin_path::shell_path_prepend()
+        .map_err(|error| CalmError::Internal(format!("terminal PATH: {error}")))?;
+    Ok(calm_session::control::execution::ExecutionSpecification {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), format!("{prepend}\n{program}")],
+        environment: environment.into_iter().collect(),
+        io_mode: calm_session::control::IoMode::Pty { cols: 80, rows: 24 },
+        replay_bytes: 1 << 20,
+    })
+}
+
+pub(crate) fn registered_renderer_config(
+    term: &Terminal,
+    cwd: &str,
+    socket: &std::path::Path,
+    specification: &calm_session::control::execution::ExecutionSpecification,
+) -> Result<RendererConfig> {
+    let calm_session::control::IoMode::Pty { cols, rows } = specification.io_mode else {
+        return Err(CalmError::Conflict(
+            "Terminal original execution is not a PTY".into(),
+        ));
+    };
+    Ok(RendererConfig {
+        terminal_id: term.id.clone(),
+        cols,
+        rows,
+        buffer_bytes: specification.replay_bytes,
+        terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
+        terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
+        program: specification.program.to_string_lossy().into_owned(),
+        args: specification.args.clone(),
+        envs: specification.environment.clone(),
+        cwd: cwd.into(),
+        supervisor_sock: socket.into(),
     })
 }
 

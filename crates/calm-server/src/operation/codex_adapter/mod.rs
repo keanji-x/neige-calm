@@ -655,9 +655,10 @@ impl ProviderAdapter for CodexAdapter {
                 if let Some(term) = ctx.repo.terminal_get(&terminal_id).await? {
                     reap_terminal_artifacts_with_renderer(
                         Some(ctx.terminal_renderer.as_ref()),
+                        ctx.repo.as_ref(),
                         &term,
                     )
-                    .await;
+                    .await?;
                 }
                 Ok(())
             }

@@ -413,6 +413,7 @@ async fn boot_with_counted_spawn_and_workspace(worktree_name: Option<&str>) -> B
     .await
     .unwrap();
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });
@@ -534,6 +535,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
         .await
         .unwrap();
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });
@@ -672,6 +674,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
         .await
         .unwrap();
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });

@@ -406,6 +406,7 @@ fn build_scheduler_unbooted_with(
         route_repo,
         operation_repo.clone(),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: std::path::PathBuf::from("/tmp/neige-scheduler-test-noop"),
             proc_supervisor_sock: Some(std::path::PathBuf::from(
                 "/tmp/neige-scheduler-test-missing.sock",
@@ -9687,6 +9688,7 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
         route_repo,
         operation_repo.clone(),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: std::path::PathBuf::from("/tmp/neige-scheduler-test-noop"),
             proc_supervisor_sock: Some(std::path::PathBuf::from(
                 "/tmp/neige-scheduler-test-missing.sock",

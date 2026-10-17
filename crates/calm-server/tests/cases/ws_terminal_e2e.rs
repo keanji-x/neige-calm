@@ -74,6 +74,7 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
         .unwrap();
 
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });

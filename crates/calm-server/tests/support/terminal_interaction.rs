@@ -150,6 +150,7 @@ impl Harness {
             repo.clone(),
             events.clone(),
             Arc::new(DaemonClient {
+                execution: calm_server::state::TerminalExecutionTransport::Legacy,
                 data_dir: root.path().join("terminals"),
                 proc_supervisor_sock: Some(supervisor.sock().to_owned()),
             }),

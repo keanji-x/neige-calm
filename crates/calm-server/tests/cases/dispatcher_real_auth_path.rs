@@ -53,6 +53,7 @@ async fn boot() -> Boot {
         .unwrap();
 
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         // Non-existent daemon binary; the routes under test spawn nothing.
         proc_supervisor_sock: None,

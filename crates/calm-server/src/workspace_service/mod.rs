@@ -2,6 +2,7 @@
 use crate::error::{CalmError, Result};
 use std::path::{Path, PathBuf};
 use workspace::command::neige_git_command;
+pub(crate) mod execution_input;
 pub(crate) mod identity;
 pub(crate) mod sweep;
 pub(crate) mod track_worktree;

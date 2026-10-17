@@ -97,6 +97,7 @@ async fn boot() -> Boot {
         .unwrap();
 
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });
@@ -255,6 +256,7 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
         .unwrap();
 
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: Some(bad_sock),
     });

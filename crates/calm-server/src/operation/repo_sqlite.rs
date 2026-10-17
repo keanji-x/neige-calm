@@ -282,6 +282,7 @@ impl OperationRepo for SqlxOperationRepo {
         adapter: &dyn ProviderAdapter,
     ) -> Result<Option<(Operation, Vec<BroadcastEnvelope>)>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
+        super::admission::require_live_claim_tx(&mut tx, op).await?;
         let output = match adapter.prepare_tx(&mut tx, &op.payload, op).await {
             Ok(output) => output,
             Err(e) => {
@@ -353,17 +354,20 @@ impl OperationRepo for SqlxOperationRepo {
         phase: Phase,
         output: &TxOutput,
     ) -> Result<Option<Operation>> {
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let output = retain_launch_metadata_tx(&mut tx, op, output).await?;
         let written = write_phase_and_tx_output(
-            &self.pool,
+            &mut *tx,
             &op.id,
             Some(required_lease_owner(op)?),
             &phase,
-            output,
+            &output,
         )
         .await?;
         if !written {
             return Ok(None);
         }
+        tx.commit().await?;
         self.find_by_id(&op.id)
             .await?
             .map(Some)
@@ -376,18 +380,16 @@ impl OperationRepo for SqlxOperationRepo {
         state: &CompensationStateVersioned,
         output: &TxOutput,
     ) -> Result<Option<Operation>> {
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let text = serde_json::to_string(state)?;
-        let mut output_for_db = output.clone();
+        let mut output_for_db = retain_launch_metadata_tx(&mut tx, op, output).await?;
         output_for_db.post_commit_events.clear();
         let result = sqlx::query(
             r#"UPDATE operations
                SET phase = 'compensating',
                    phase_detail_json = ?1,
                    compensation_state = ?2,
-                   tx_output_json = CASE
-                       WHEN json_type(tx_output_json, '$.data.terminal_launch') = 'object'
-                       THEN json_set(?3, '$.data.terminal_launch', json_extract(tx_output_json, '$.data.terminal_launch'))
-                       ELSE ?3 END,
+                   tx_output_json = ?3,
                    target_type = ?4,
                    target_id = ?5,
                    target_json = ?6,
@@ -414,11 +416,12 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(now_ms())
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
         }
+        tx.commit().await?;
         self.find_by_id(&op.id)
             .await?
             .map(Some)
@@ -533,6 +536,24 @@ impl OperationRepo for SqlxOperationRepo {
             outcome: OperationOutcome::Stuck { reason, from_phase },
         }))
     }
+}
+
+async fn retain_launch_metadata_tx(
+    tx: &mut Tx<'_>,
+    op: &Operation,
+    proposed: &TxOutput,
+) -> Result<TxOutput> {
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?1")
+            .bind(&op.id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let mut proposed = proposed.clone();
+    if let Some(current) = current {
+        let current: TxOutput = serde_json::from_str(&current)?;
+        super::terminal_launch::retain_owned_metadata(&mut proposed.data, &current.data)?;
+    }
+    Ok(proposed)
 }
 
 impl SqlxOperationRepo {

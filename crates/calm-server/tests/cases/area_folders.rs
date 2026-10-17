@@ -50,6 +50,7 @@ async fn boot() -> Boot {
 
     // `area_folders` never needs the session daemon — the DaemonClient is a stub pointing at /dev/null.
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });

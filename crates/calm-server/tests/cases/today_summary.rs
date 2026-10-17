@@ -75,6 +75,7 @@ async fn boot_with_rendezvouses(
     repo.seed_track_area_cache(&tracks).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().join("data"),
         proc_supervisor_sock: None,
     });

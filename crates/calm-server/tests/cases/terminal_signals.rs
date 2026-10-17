@@ -1923,9 +1923,11 @@ async fn delayed_hook_after_kind_patch_and_terminal_reap_stays_a_signal() {
         .unwrap();
     calm_server::terminal_sweeper::reap_terminal_artifacts_with_renderer(
         Some(h.state.terminal_renderer.as_ref()),
+        h.state.repo.as_ref(),
         &term,
     )
-    .await;
+    .await
+    .unwrap();
     h.state.repo.terminal_delete(&term.id).await.unwrap();
     let card = h.state.repo.card_get(&card_id).await.unwrap().unwrap();
     assert_eq!(card.kind, "codex");

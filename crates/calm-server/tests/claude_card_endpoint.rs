@@ -132,6 +132,7 @@ where
         .unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().join("terminals"),
         proc_supervisor_sock: real.as_ref().map(|real| real.sock.clone()),
     });

@@ -193,6 +193,7 @@ impl Fixture {
             self.repo.clone(),
             self.ctx.events.clone(),
             Arc::new(crate::state::DaemonClient {
+                execution: crate::state::TerminalExecutionTransport::Legacy,
                 data_dir: self._dir.path().join("daemon"),
                 proc_supervisor_sock: None,
             }),

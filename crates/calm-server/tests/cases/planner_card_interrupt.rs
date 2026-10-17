@@ -82,6 +82,7 @@ async fn boot() -> Boot {
         repo.clone(),
         events,
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: tmp.path().join("terminals"),
             proc_supervisor_sock: None,
         }),

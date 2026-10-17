@@ -78,6 +78,7 @@ async fn boot() -> Boot {
 
     // Stub daemon bin: the planner spawn fails post-commit, so a 500 is expected and the test asserts on DB state.
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });

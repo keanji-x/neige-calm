@@ -2,6 +2,7 @@
 //! the operation runtime; non-idempotent unless the caller supplies `Idempotency-Key`.
 
 use crate::actor::Actor;
+use crate::auth::execution::AuthenticatedSession;
 use crate::error::{ErrorBody, Result};
 use crate::extract::{Json, JsonBody, Path};
 use crate::model::{Card, new_id};
@@ -12,7 +13,7 @@ use crate::operation::terminal_adapter::{
 use crate::routes::idempotency_key::{
     keyed_card_answer, parse_idempotency_key_header, stable_payload_hash,
 };
-use crate::state::{AppState, RouteState};
+use crate::state::AppState;
 use axum::{
     Router,
     extract::State,
@@ -73,7 +74,8 @@ pub struct NewTerminalCardBody {
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_terminal_card(
-    State(s): State<RouteState>,
+    State(s): State<AppState>,
+    session: AuthenticatedSession,
     actor: Actor,
     headers: HeaderMap,
     Path(track_id): Path<String>,
@@ -105,7 +107,7 @@ pub(crate) async fn create_terminal_card(
     })?;
     let op_id = s
         .operation_runtime
-        .submit(
+        .submit_admitted(
             "terminal-create",
             OperationKey {
                 operation_key,
@@ -113,6 +115,10 @@ pub(crate) async fn create_terminal_card(
                 payload_hash,
             },
             payload,
+            &crate::operation::terminal_adapter::admission::TerminalAdmission {
+                session: &session,
+                transport: &s.daemon.execution,
+            },
         )
         .await?;
     keyed_card_answer(

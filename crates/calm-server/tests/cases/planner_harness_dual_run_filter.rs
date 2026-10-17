@@ -238,6 +238,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         codex,
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: std::env::temp_dir().join("neige-harness-route-dispatcher"),
             proc_supervisor_sock: None,
         }),
@@ -407,6 +408,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         WriteContext::new(role_cache.clone(), track_area_cache.clone()),
         Arc::new(CodexClient::new_stub()),
         Arc::new(DaemonClient {
+            execution: calm_server::state::TerminalExecutionTransport::Legacy,
             data_dir: std::env::temp_dir().join("neige-harness-full-dispatcher"),
             proc_supervisor_sock: None,
         }),

@@ -159,6 +159,7 @@ async fn planner_card_codex_daemon_env_contains_mcp_vars() {
         .unwrap();
 
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
     });

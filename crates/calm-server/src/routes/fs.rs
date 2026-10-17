@@ -1244,6 +1244,7 @@ mod tests {
             repo_dyn.clone(),
             events.clone(),
             Arc::new(DaemonClient {
+                execution: crate::state::TerminalExecutionTransport::Legacy,
                 data_dir: workspace_a.to_path_buf(),
                 proc_supervisor_sock: None,
             }),

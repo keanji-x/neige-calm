@@ -2858,6 +2858,7 @@ async fn teardown_track_deletion(
     for terminal in &plan.terminals {
         quiesce_terminal_artifacts_for_deletion(
             Some(w.terminal_renderer.as_ref()),
+            s.repo.as_ref(),
             w.daemon.proc_supervisor_sock.as_deref(),
             terminal,
         )
@@ -4100,6 +4101,7 @@ mod tests {
                 repo_dyn.clone(),
                 events.clone(),
                 Arc::new(DaemonClient {
+                    execution: crate::state::TerminalExecutionTransport::Legacy,
                     data_dir: std::env::temp_dir().join("calm-admit-template-test"),
                     proc_supervisor_sock: None,
                 }),

@@ -167,6 +167,7 @@ async fn boot() -> Boot {
     codex.codex_bin = fake_codex_bin();
     let codex = Arc::new(codex);
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().join("terminals"),
         proc_supervisor_sock: None,
     });

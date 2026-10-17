@@ -2,7 +2,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::db::RouteRepo;
 use crate::db::sqlite::card_with_terminal_rollback_tx;
 use crate::terminal_renderer::TerminalRendererRegistry;
-use crate::terminal_sweeper::{reap_terminal_artifacts_with_renderer, reap_terminal_pid_only};
+use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkerCleanupOutcome {
@@ -59,11 +59,7 @@ pub(crate) async fn compensate_worker_rows(
             return Ok(WorkerCleanupOutcome::Preserved);
         }
 
-        if terminal_renderer.get(&term.id).is_some() {
-            reap_terminal_artifacts_with_renderer(Some(terminal_renderer), term).await;
-        } else if let Some(pid) = term.pid {
-            reap_terminal_pid_only(&term.id, pid);
-        }
+        reap_terminal_artifacts_with_renderer(Some(terminal_renderer), repo, term).await?;
     } else {
         tracing::debug!(
             card_id = %card_id,

@@ -47,6 +47,7 @@ use tokio::sync::Mutex;
 const HOOK_INGEST_CACHE_CAPACITY: usize = 4096;
 
 pub use crate::state_clients::{CodexClient, DaemonClient};
+pub use crate::terminal_executor_client::{RegisteredExecutorConfig, TerminalExecutionTransport};
 
 /// Fixed-size FIFO cache for hook ingest idempotency keys. Process-local: after a
 /// restart the first re-posted hook can emit again.
@@ -868,7 +869,8 @@ impl AppState {
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let acp_planner = Arc::new(AcpPlannerHost::unconfigured_scratch().expect("ACP host"));
-        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        let terminal_renderer =
+            TerminalRendererRegistry::new_with_repo_and_daemon(route_repo.clone(), daemon.clone());
         terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         let card_role_cache = card_role_cache.unwrap_or_default();
         let track_area_cache = track_area_cache.unwrap_or_default();
@@ -1238,7 +1240,7 @@ impl AppState {
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
 
-        let daemon = Arc::new(DaemonClient::new(cfg));
+        let daemon = Arc::new(DaemonClient::new(cfg)?);
         let codex = Arc::new(CodexClient::new(cfg));
         if let Err(e) = codex.shared_codex_home.seed() {
             tracing::warn!(
@@ -1333,7 +1335,8 @@ impl AppState {
         }
 
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
-        let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+        let terminal_renderer =
+            TerminalRendererRegistry::new_with_repo_and_daemon(route_repo.clone(), daemon.clone());
         terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
         let harness = HarnessRegistry::new();
         let activity_wake = crate::track_activity::spawn(

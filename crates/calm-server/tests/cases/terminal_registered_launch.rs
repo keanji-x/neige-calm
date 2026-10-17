@@ -25,6 +25,7 @@ use calm_session::control::execution::{
     ProcessAction, RegisteredExecutorConnection,
 };
 use calm_types::organization::LEGACY_OWNER_USER_ID;
+use clap::Parser;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -82,6 +83,7 @@ struct Fixture {
     cwd: PathBuf,
     journal: PathBuf,
     output: PathBuf,
+    count: PathBuf,
     program: PathBuf,
     cookie: String,
     client: RegisteredExecutorConnection,
@@ -186,14 +188,22 @@ impl Fixture {
             "workspace owner did not prepare its declared worktree"
         );
         let events = EventBus::new();
+        let daemon_config = calm_server::config::Config::try_parse_from([
+            std::ffi::OsString::from("terminal-vertical"),
+            "--data-dir".into(),
+            root.path().as_os_str().to_owned(),
+            "--proc-supervisor-sock".into(),
+            socket.as_os_str().to_owned(),
+            "--terminal-executor-sock".into(),
+            socket.as_os_str().to_owned(),
+            "--terminal-executor-key-file".into(),
+            key.as_os_str().to_owned(),
+        ])?;
         let route_repo: Arc<dyn Repo> = sql.clone();
         let state = AppState::from_parts(
             route_repo.clone(),
             events.clone(),
-            Arc::new(DaemonClient {
-                data_dir: root.path().join("terminals"),
-                proc_supervisor_sock: Some(socket),
-            }),
+            Arc::new(DaemonClient::new(&daemon_config)?),
             Arc::new(PluginHost::new_full(
                 Arc::new(PluginRegistry::empty()),
                 route_repo.clone(),
@@ -258,9 +268,10 @@ impl Fixture {
             .to_owned();
         let program = root.path().join("report-cwd.sh");
         let output = root.path().join("cwd-report");
+        let count = root.path().join("execution-count");
         std::fs::write(
             &program,
-            "#!/bin/sh\npwd -P > \"$NEIGE_TERMINAL_VERTICAL_OUTPUT\"\nprintf 'terminal-vertical-complete\\n'\n",
+            "#!/bin/sh\nprintf 'executed\\n' >> \"$NEIGE_TERMINAL_VERTICAL_COUNT\"\npwd -P > \"$NEIGE_TERMINAL_VERTICAL_OUTPUT\"\nprintf 'terminal-vertical-complete\\n'\n",
         )?;
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
         Ok(Self {
@@ -271,6 +282,7 @@ impl Fixture {
             cwd,
             journal,
             output,
+            count,
             program,
             cookie,
             client,
@@ -288,7 +300,7 @@ impl Fixture {
                 .header("Idempotency-Key", "terminal-vertical-existing-worktree")
                 .body(Body::from(json!({
                     "program": format!("'{}'", self.program.to_str().unwrap().replace('\'', "'\\''")),
-                    "env":{"NEIGE_TERMINAL_VERTICAL_OUTPUT":self.output},
+                    "env":{"NEIGE_TERMINAL_VERTICAL_OUTPUT":self.output,"NEIGE_TERMINAL_VERTICAL_COUNT":self.count},
                     "theme":calm_server::routes::theme::RequestTheme::default_dark(),
                 }).to_string()))?,
         ).await?;
@@ -354,6 +366,17 @@ impl Fixture {
             request.identity.process_alias == term.id,
             "typed execution belongs to another terminal"
         );
+        match std::fs::read(self.journal.join("legacy.aliases")) {
+            Ok(bytes) => {
+                let aliases: Vec<String> = serde_json::from_slice(&bytes)?;
+                ensure!(
+                    !aliases.contains(&format!("term:{}", term.id)),
+                    "registered Terminal also entered legacy Ensure"
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         ensure!(
             matches!(&request.identity.scope, ExecutionScope::Worktree { cwd, .. }
                 if cwd == &workspace::identity::WorkspaceCwd::root()),
@@ -419,5 +442,10 @@ async fn terminal_http_selected_workspace_uses_registered_launch() -> anyhow::Re
     let mut fixture = Fixture::start().await?;
     let result = fixture.exercise().await;
     fixture.stop().await;
-    result
+    result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\n",
+        "original accepted Terminal program executed more than once"
+    );
+    Ok(())
 }

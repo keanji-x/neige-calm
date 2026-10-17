@@ -26,6 +26,18 @@ impl Journal {
     pub fn durably_settled(&self) -> bool {
         !self.pending_persistence && self.phase.state().permits_handoff()
     }
+
+    /// Read-only consumers cannot repair a failed barrier or promote volatile
+    /// terminal facts into permission to release the original scope.
+    pub fn observed_state(&self) -> ExecutionState {
+        if self.pending_persistence {
+            ExecutionState::Unknown {
+                reason: "original execution journal persistence is unresolved".into(),
+            }
+        } else {
+            self.phase.state()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

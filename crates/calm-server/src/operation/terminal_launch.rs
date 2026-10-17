@@ -6,6 +6,39 @@ use crate::error::{CalmError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+pub(crate) mod registered;
+
+/// Launch ownership is committed by this owner while a feature callback runs.
+/// Later operation settlement must retain that same original capability, even
+/// when the callback began with an earlier domain-output snapshot.
+pub(super) fn retain_owned_metadata(proposed: &mut Value, current: &Value) -> Result<()> {
+    if let Some(original) = current.get("registered_execution") {
+        if proposed
+            .get("registered_execution")
+            .is_some_and(|value| value != original)
+        {
+            return Err(CalmError::Conflict(
+                "original registered launch cannot be replaced by operation settlement".into(),
+            ));
+        }
+        proposed
+            .as_object_mut()
+            .ok_or_else(|| CalmError::Conflict("prepared operation data is not an object".into()))?
+            .insert("registered_execution".into(), original.clone());
+    } else if proposed.get("registered_execution").is_some() {
+        return Err(CalmError::Conflict(
+            "operation settlement cannot mint a registered launch".into(),
+        ));
+    }
+    // Released one-use worker launch bytes retain their existing owner and codec.
+    if let Some(original) = current.get("terminal_launch") {
+        proposed
+            .as_object_mut()
+            .ok_or_else(|| CalmError::Conflict("prepared operation data is not an object".into()))?
+            .insert("terminal_launch".into(), original.clone());
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -115,6 +148,9 @@ pub(crate) async fn resolve(
         let card: String = sqlx::query_scalar("SELECT card_id FROM terminals WHERE id=?1")
             .bind(&terminal_id).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound(format!("terminal {terminal_id}")))?;
+        if !matches!(registered::lookup_tx(tx, &terminal_id).await?, registered::OriginalLaunch::Legacy) {
+            return Err(CalmError::Conflict("registered Terminal requires its original executor control; Legacy launch/attach refused".into()));
+        }
         let rows: Vec<(String,String,Option<String>,String)> = sqlx::query_as(&format!(
             "SELECT id,phase,lease_owner,tx_output_json {WORKER_OPS_OF_CARD} LIMIT 2"
         )).bind(&card).fetch_all(&mut **tx).await?;

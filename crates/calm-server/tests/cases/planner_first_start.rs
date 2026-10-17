@@ -68,6 +68,7 @@ pub(crate) async fn app_state(app_server: AppServer) -> (TempDir, Arc<SqlxRepo>,
     let tracks = TrackAreaCache::new();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: tmp.path().join("data"),
         proc_supervisor_sock: None,
     });

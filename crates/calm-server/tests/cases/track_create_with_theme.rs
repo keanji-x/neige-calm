@@ -51,6 +51,7 @@ async fn boot() -> Boot {
 
     let daemon_data_dir = tmp.path().to_path_buf();
     let daemon = Arc::new(DaemonClient {
+        execution: calm_server::state::TerminalExecutionTransport::Legacy,
         data_dir: daemon_data_dir.clone(),
         proc_supervisor_sock: None,
     });

@@ -279,6 +279,7 @@ async fn boot(owners: &[OwnerFixture]) -> Boot {
         repo_dyn.clone(),
         EventBus::new(),
         Arc::new(DaemonClient {
+            execution: crate::state::TerminalExecutionTransport::Legacy,
             data_dir: tmp.path().to_path_buf(),
             proc_supervisor_sock: None,
         }),
