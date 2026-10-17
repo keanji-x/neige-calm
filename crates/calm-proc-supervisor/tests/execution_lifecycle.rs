@@ -172,15 +172,30 @@ async fn graceful_shutdown_term_ignoring_child_persists_drained() {
 #[tokio::test]
 async fn host_reboot_is_no_child() {
     let mut h = Harness::start().await;
-    let (mut c, r, receipt) = setup(&h, IoMode::Pipe, "printf ready; sleep 0.15").await;
-    // Let the actual scope exit, then replay a crash journal from before its drain.
+    let (mut c, r, receipt) = setup(&h, IoMode::Pipe, "printf ready; read -r release").await;
+    // Keep the scope alive until its crash snapshot is captured, regardless of scheduling.
+    // Seeing ready alone does not prove a timed child has not already drained.
     let active = journal(&h, &r);
+    assert!(active["phase"].get("Spawned").is_some(), "{active}");
+    assert_eq!(active["output_end"], "Open");
     assert_eq!(
         active["host_boot_id"],
         std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
             .unwrap()
             .trim()
     );
+    // Release and drain the real scope before replaying its earlier nonterminal journal.
+    assert!(matches!(
+        c.request(ExecutionRequest::Control(ExecutionControl {
+            capability: capability(&r, &receipt, ExecutionControlPurpose::Interactive),
+            action: ProcessAction::WriteStdin {
+                bytes: b"done\n".to_vec(),
+            },
+        }))
+        .await
+        .unwrap(),
+        ExecutionReply::StdinProgress { accepted_bytes: 5 }
+    ));
     wait_for(&mut c, &r, &receipt, |state, _| {
         matches!(state, ExecutionState::Drained { .. })
     })
@@ -203,8 +218,13 @@ async fn host_reboot_is_no_child() {
         journal(&h, &r)["output_end"]["Incomplete"]["reason"],
         "host_rebooted"
     );
+    let replay = c
+        .request(ExecutionRequest::Launch(consume(&r)))
+        .await
+        .unwrap();
     assert!(
-        matches!(c.request(ExecutionRequest::Launch(consume(&r))).await.unwrap(), ExecutionReply::Receipt { state: ExecutionState::NoChild { reason }, .. } if reason == "host_rebooted")
+        matches!(&replay, ExecutionReply::Receipt { state: ExecutionState::NoChild { reason }, .. } if reason == "host_rebooted"),
+        "reboot replay did not settle the nonterminal execution: {replay:?}"
     );
 }
 
