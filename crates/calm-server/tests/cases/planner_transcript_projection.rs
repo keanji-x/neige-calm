@@ -268,6 +268,15 @@ async fn boot_with(plan: BootPlan) -> Boot {
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .with_state(state);
 
     Boot {
@@ -700,6 +709,11 @@ async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
             .contains("typed after the restart")),
         "the sentence rides in the recovered batch's row: {segments:?}"
     );
+    let user = segments.iter().find(|segment| segment["presentation"] == "user").unwrap();
+    assert_eq!(
+        user["origin"]["queue_entry_id"], sentence_id,
+        "the segment names its own entry, never the recovered batch alias"
+    );
     // Give a second row every chance to appear.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let rows = get_items(&boot).await;
@@ -1015,3 +1029,6 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
 
     boot.harness.shutdown().await.unwrap();
 }
+
+#[path = "planner_transcript_projection/entry_identity.rs"]
+mod entry_identity;
