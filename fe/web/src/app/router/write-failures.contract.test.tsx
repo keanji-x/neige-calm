@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // #2131 S1: every non-chat write on these surfaces settles through one runner and reads its failure through the write's
 // table. A lost answer shows the write's fixed state, never transport text or a connection sentence, and a DELETE retried
@@ -50,7 +51,7 @@ function renderApp(path: string, write: (request: ApiRequest, world: World) => P
     return Promise.resolve(ok([]));
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />

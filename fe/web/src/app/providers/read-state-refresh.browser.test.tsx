@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import '../../styles/entry.css';
 import { QueryClient } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -46,7 +47,7 @@ function load(kernel: ReadReceiptsKernel, storage: Map<string, string>, initial:
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(),
     uiPreferences: createUiPreferences(browserStorage), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   const runtime = { storage: browserStorage, reload: () => undefined, deleteDatabase: () => undefined, idbDatabaseName: 'test',

@@ -1,3 +1,6 @@
+import { runWorkerTask } from '../../systems/worker-task/public.ts';
+import type { PreparedReport } from '../../features/report/document/preparation.ts';
+import type { TrackReport } from '../../../../core/domain/report.ts';
 import { useMemo } from 'react';
 import { GitHubPreviewProvider } from '../../systems/github-links/public.tsx';
 import { githubPreviewOperation, type GitHubPreviewPort } from '../../../../core/domain/github-preview.ts';
@@ -101,6 +104,8 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
     clear: () => clearSessionArtifacts(client, cursorStore, runtime), online: () => navigator.onLine, visible: () => !document.hidden,
   }, { input: takeScanInput(window, window.location.origin, Date.now()), pairing: createScanPairingPort(base) }) : undefined;
   const router = createAppRouter({
+    prepareReport: (report, signal) => runWorkerTask<TrackReport | null, PreparedReport>(
+      () => new Worker(new URL('../../features/report/document/preparation.worker.ts', import.meta.url), { type: 'module' }), report, signal),
     transport,
     unauthorized,
     client,

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // Settings › Planners through the real router and query layer (#1817): the pane reads
 // `GET /api/agent-providers`, and Recheck asks the server to run every check again.
@@ -58,7 +59,7 @@ function renderPlanners(recheck?: () => Promise<ApiTransportResponse>,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queryKeys.modelCatalog({ kind: 'provider', provider: 'claude' }), { models: [] });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined,
   });
   router.update({ history: createMemoryHistory({ initialEntries: ['/settings/planners'] }) });

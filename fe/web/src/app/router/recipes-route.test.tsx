@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The body editor is mocked, and only it: CodeMirror measures a layout jsdom does not have.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -121,7 +122,7 @@ function harness(options: Options = {}) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
   });
   render(

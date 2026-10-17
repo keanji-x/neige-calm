@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 // `@` on the real routes, in a real engine (#1881 S2): the Planner's conversation and the
 // new-track sentence offer the area's tags, reports and blocks from the mentions endpoint; a
@@ -74,7 +75,7 @@ function mount(path: string, storedText: string | null = null, pluginDescription
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(), unauthorized, onSignOut: () => undefined });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(), unauthorized, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   const mentionReads = () => requests.filter((request) => request.path.startsWith('/api/areas/c1/mentions?')).map((request) => request.path);

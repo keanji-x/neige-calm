@@ -1,3 +1,4 @@
+import { markdownRuntimeAliases } from './tools/architecture/markdown-runtime-resolution.ts';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { ClientRequest, IncomingMessage } from 'node:http';
@@ -92,6 +93,7 @@ export default defineConfig(({ mode }) => {
     build: { target: platform.target },
     plugins: platform.plugins(),
     resolve: {
+      alias: markdownRuntimeAliases(),
       dedupe: ['react', 'react-dom'],
     },
     optimizeDeps: {

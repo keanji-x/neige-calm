@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // Real routing/rendering; only the API transport is scripted. File bodies stay
 // imported from the repository so tables, links and document length cannot drift.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -56,7 +57,7 @@ export function renderReadmeFixture(initial: string, detailReady: Promise<void> 
     return ok([]);
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport: withReadReceipts(transport), client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: task => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   const container = document.createElement('div');

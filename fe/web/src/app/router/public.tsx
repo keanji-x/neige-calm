@@ -21,7 +21,10 @@ import {
   createRootRoute, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { TrackViewProvider, useTrackViewState, useTrackReportPreparation } from './track-view-state.tsx';
+import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
+import { TrackReportRegion, useTrackReportPresentation, useTrackReportArrival } from './track-report-presentation.tsx';
+import type { ReportPreparationPort } from '../../features/report/document/preparation.ts';
+import { TrackPending } from '../../features/track/page/pending.tsx';
 import { HStack } from '@astryxdesign/core/HStack';
 import { useQuery, type QueryClient } from '@tanstack/react-query';
 
@@ -62,7 +65,6 @@ import { usePlannerRoleControl, type PlannerRoleControl } from './planner-role.t
 import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
-import { ReportDocument } from '../../features/report/document/public.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 import { useReportPreviewResolver, useReportPreviewViewports } from './report-preview.ts';
 import { useReportSeriesResolver } from './report-series.ts';
@@ -72,7 +74,6 @@ import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
 import { RecentFiles } from '../../features/report/recent-files/public.tsx';
-import { revealReportAnchor } from '../../features/report/anchor/public.ts';
 import {
   backlinkCountsByBlock, deriveReportTasks, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
@@ -172,6 +173,7 @@ export type AppRouterDeps = Readonly<{
   client: QueryClient;
   onSignOut: () => void;
   cards: CardRuntime;
+  prepareReport: ReportPreparationPort;
   recentFiles?: RecentFileHistory;
   uiPreferences?: UiPreferences;
 }>;
@@ -179,7 +181,7 @@ export type AppRouterDeps = Readonly<{
 function renderNothing(): null { return null; }
 
 export function createRouteTree(deps: AppRouterDeps): AnyRoute {
-  const { transport, unauthorized, client, onSignOut, cards } = deps;
+  const { transport, unauthorized, client, onSignOut, cards, prepareReport } = deps;
   const recentFiles = deps.recentFiles ?? createRecentFileHistory();
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRoute({ component: () => (
@@ -199,7 +201,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           adminGrantedAt={detail.track.admin_granted_at} canAdminTrack={detail.can_admin}
@@ -218,6 +220,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     path: '/track/$trackId',
     validateSearch: (search: Record<string, unknown>): TrackSearch => validateTrackSearch(search),
     component: () => <TrackRoute
+      prepareReport={prepareReport}
       transport={transport}
       unauthorized={unauthorized}
       cardRuntime={cards}
@@ -882,7 +885,8 @@ function useConversationPane(
   };
 }
 
-function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
+function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles, prepareReport }: {
+  prepareReport: ReportPreparationPort;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   cardRuntime: CardRuntime;
@@ -913,17 +917,18 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
   }, [detail.isFetching, detail.isLoading, detailMatchesRoute, registry, requestedCard]);
 
   if (!detail.data || track === null) {
-    if (detail.isLoading || detail.isFetching) return null;
+    if (detail.isLoading || detail.isFetching) return <TrackPending />;
     if (detail.error instanceof Error) return <ErrorBox message={readErrorText(detail.error, 'This track could not be loaded.')} onRetry={() => { void detail.refetch(); }} />;
     return <PendingRoute label="Track" owner="features/track" missing />;
   }
   // `detail.data` can still be the previously-viewed track while this one
   // fetches; rendering it under this URL would show the wrong track.
-  if (trackId !== undefined && detail.data.track.id !== trackId) return null;
+  if (trackId !== undefined && detail.data.track.id !== trackId) return <TrackPending />;
 
   return (
     <TrackRouteBody
       key={track.id}
+      prepareReport={prepareReport}
       transport={transport}
       unauthorized={unauthorized}
       track={track}
@@ -959,7 +964,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro, prepareReport,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -975,13 +980,14 @@ function TrackRouteBody({
   reportEvidence?: ReactNode;
   panelContent?: ReactNode;
   mobileReportIntro?: ReactNode;
+  prepareReport: ReportPreparationPort;
 }) {
-  useTrackViewState(track.id);
+  const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
+  useTrackViewState(track.id, reportPresentation.presentable);
   // The same key and comparison point the rail uses: the overlay's completion
   // high-water mark, never the row's `updatedAt`.
   // A completed navigation also acknowledges a repeated selection of this already rendered Track.
   const navigationCompletedAt = useRouterState({ select: (state) => state.loadedAt });
-  useReadReceipt('track', track.id, track.activityAt, true, navigationCompletedAt);
   const trackMutations = useTrackMutations(transport, unauthorized);
   const plannerRole = usePlannerRoleControl({ trackId: track.id, adminGrantedAt, canAdmin: canAdminTrack,
     setAdmin: (admin) => trackMutations.patch(track.id, track.areaId, { admin }) });
@@ -1105,8 +1111,7 @@ function TrackRouteBody({
   /* The runtime half of the TASKS panel, keyed `['track-report', trackId]`: the key
    * `invalidation-plan` refreshes on every `task.*` event and `track.report_edited`. */
   /* Read before the query: the poll's interval depends on the rows this report can produce. */
-  const reportPreparation = useTrackReportPreparation(cards);
-  const { report, outline } = reportPreparation;
+  const { report, outline } = reportPresentation;
   const reportBlocks = report?.blocks ?? null;
   const verdictsQuery = useQuery(
     trackTaskVerdictsQueryOptions(transport, track.id, unauthorized, reportBlocks),
@@ -1282,13 +1287,11 @@ function TrackRouteBody({
   const backlinksQuery = useQuery(trackBacklinksQueryOptions(transport, track.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
-  /* A `neige://wave/…` citation. Same track reveals immediately (so an unchanged
-   * hash still flashes) then records the hash; the route body is keyed by track
-   * id, so the document is preserved. */
+  /* Every report arrival follows the current committed content boundary. */
   const arrivalAnchorId = useRouteHash();
+  useTrackReportArrival(arrivalAnchorId, navigationCompletedAt, reportPresentation.current);
   const openReportLink = (target: ReportLinkTarget) => {
     if (target.trackId === track.id) {
-      if (target.blockId !== null) revealReportAnchor(target.blockId);
       // Same track: a move within the report, so the return surface survives and the
       // panel closes.
       go({ name: 'track', trackId: target.trackId, blockId: target.blockId ?? undefined, from: routeFrom });
@@ -1342,7 +1345,6 @@ function TrackRouteBody({
   const boardOpen = knownCard || requestedFilePath !== null;
 
   const openReportAnchor = (blockId: string) => {
-    revealReportAnchor(blockId);
     go({ name: 'track', trackId: track.id, blockId, from: routeFrom });
   };
 
@@ -1417,9 +1419,11 @@ function TrackRouteBody({
         if (routeFrom === 'area') openMobileSection({ kind: 'tracks', areaId: track.areaId });
         else openMobileSection({ kind: 'pages' });
       }}
-      report={<><ReportDocument
-        report={report}
-        preparation={reportPreparation}
+      report={<TrackReportRegion
+        presentation={reportPresentation}
+        trackId={track.id}
+        activityAt={track.activityAt}
+        openedAt={navigationCompletedAt}
         /* `overlay.set` already invalidates this track's detail, so a plugin push
                    re-renders the block without the report being rewritten. */
         resolveOverlay={resolveOverlay}
@@ -1441,7 +1445,6 @@ function TrackRouteBody({
         onOpenSourceLink={openReportSource}
         fileRoot={track.agentCwd}
         linkPreview={linkPreview}
-        arrivalAnchorId={arrivalAnchorId}
         empty={<ReportEmpty
           lead="This track has not taken shape yet."
           hints={[
@@ -1449,7 +1452,7 @@ function TrackRouteBody({
             'It stays with the track, so it is here the next time you open it.',
           ]}
         />}
-      />{reportEvidence}</>}
+      >{reportEvidence}</TrackReportRegion>}
       backlinks={backlinks !== undefined && backlinks.backlinks.length > 0
         ? (
           <ReportBacklinks

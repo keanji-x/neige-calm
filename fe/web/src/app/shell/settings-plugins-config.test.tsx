@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // Settings › Plugins › configuration over the real router, query client and transport;
 // a restart's verdict comes from re-reading the plugin, not from the status code.
@@ -98,7 +99,7 @@ function renderPlugins(reply: Reply) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined,
   });
   router.update({ history: createMemoryHistory({ initialEntries: ['/settings/plugins'] }) });

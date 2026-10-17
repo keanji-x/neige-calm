@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // #2131 S6: every Settings write (plugin enable/disable, remove, add, configuration save, Apply & restart, and the
 // network PUT) reads its failure through its route's table over the real router. A lost answer shows the write's
@@ -55,7 +56,7 @@ function renderSettings(
     return Promise.resolve(ok([]));
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />

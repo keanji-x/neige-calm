@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
@@ -69,7 +70,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     return { status, statusText: status === 201 ? 'Created' : 'OK', body };
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/${track.id}?panel=conversations`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);

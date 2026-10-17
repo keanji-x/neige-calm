@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // An existing Track's Area admin role on the real router, in a real engine: the Role picker in the Planner
 // conversation's composer sends `PATCH {admin}` and shows what the server then reports, the Track page keeps only the
 // Admin badge, and where `can_admin` is false the picker is disabled with its reason.
@@ -59,7 +60,7 @@ function renderTrack({ adminGrantedAt, canAdmin, refuse = false, theme = 'light'
     return ok([]);
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/w1?panel=conversations`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);

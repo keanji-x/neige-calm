@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 /** Production router/component probe. Durations are diagnostic, never a CI speed threshold. */
 import { Profiler, type ProfilerOnRenderCallback } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -101,7 +102,7 @@ function mount(count: number) {
     return { status: 200, statusText: 'OK', body };
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => {} });
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/${track.id}?panel=conversations`] }) });
   const root = document.createElement('div'); root.id = 'root'; document.body.append(root);

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -38,7 +39,7 @@ function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportR
     send: (request) => Promise.resolve(request.path === TODAY_LAUNCHPAD_PATH ? noLaunchpad() : reply(request)),
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   const view = render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />

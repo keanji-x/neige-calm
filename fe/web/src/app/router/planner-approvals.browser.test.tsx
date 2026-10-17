@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import '../../styles/entry.css';
 // #2348 A4 in a real browser: a Planner conversation's approval setting beside the model picker, and a
 // paused turn's request in the Questions drawer, through the production router.
@@ -74,7 +75,7 @@ function setup({ theme = 'light', mode = 'never', asks = [], putMode, answer }: 
     return { status: 200, statusText: 'OK', body };
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/${TRACK.id}?panel=conversations`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);

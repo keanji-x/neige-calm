@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // #2209 U3: the Planner's open asks, answered from its composer through the production router.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -62,7 +63,7 @@ function setup({ reopen = false, refusal = false } = {}) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => {} }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

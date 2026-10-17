@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -74,7 +75,7 @@ function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' 
     });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const router = createAppRouter({ transport: withReadReceipts(transport), client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   const mount = () => render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // The new-track route's Role picker in a real engine: Member by default, beside the model picker at every width, and
 // `admin: true` reaches `POST /api/tracks` only for Admin.
 import '../../styles/entry.css';
@@ -30,7 +31,7 @@ function mount() {
     return Promise.resolve(ok([]));
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/area/c1/new'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);

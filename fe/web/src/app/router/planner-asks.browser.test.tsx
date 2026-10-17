@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import '../../styles/entry.css';
 // #2209 U3 in a real browser: a two-question ask above the Planner composer, answered and gone.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -74,7 +75,7 @@ function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK, reopen = false) {
     return { status, statusText: status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK', body };
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/${TRACK.id}?panel=conversations`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);

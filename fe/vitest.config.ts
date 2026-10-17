@@ -1,3 +1,4 @@
+import { markdownRuntimeAliases } from './tools/architecture/markdown-runtime-resolution.ts';
 import { defineConfig } from 'vitest/config';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { defineBrowserProvider } from '@vitest/browser';
@@ -19,6 +20,7 @@ const readmeFixtureFiles = Object.freeze(['.', '../docs/README.md', '../docs/REA
 
 export default defineConfig({
   resolve: {
+    alias: markdownRuntimeAliases(),
     dedupe: ['react', 'react-dom'],
   },
   optimizeDeps: {
@@ -27,6 +29,7 @@ export default defineConfig({
   test: {
     projects: [
       {
+        resolve: { alias: markdownRuntimeAliases() },
         test: {
           name: 'platform-independent',
           environment: 'node',
@@ -36,6 +39,7 @@ export default defineConfig({
         },
       },
       {
+        resolve: { alias: markdownRuntimeAliases() },
         server: { fs: { allow: [...readmeFixtureFiles] } },
         test: {
           name: 'web-dom',
@@ -46,6 +50,7 @@ export default defineConfig({
         },
       },
       {
+        resolve: { alias: markdownRuntimeAliases() },
         server: { fs: { allow: [...readmeFixtureFiles] } },
         optimizeDeps: {
           // Browser projects are isolated Vite configs and do not inherit the
@@ -97,6 +102,7 @@ export default defineConfig({
       /* `pointer: coarse` needs its own project: `Emulation.setTouchEmulationEnabled` is a one-way door and Vitest reuses one page per project.
          `contextOptions.viewport` sizes the page; `browser.viewport` sizes the iframe, which is what `@media (width < 60rem)` is evaluated against. */
       {
+        resolve: { alias: markdownRuntimeAliases() },
         optimizeDeps: {
           include: [...OPTIMIZED_DEPENDENCIES],
         },

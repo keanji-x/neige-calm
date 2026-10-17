@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 /*
  * The mobile presentation, rendered on the real `AppShell` over a memory history;
@@ -99,7 +100,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport,
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }),
     client,

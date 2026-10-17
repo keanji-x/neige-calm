@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The new-track route's Role: kept per Area draft like the model, locked with it once a create is out, and sent as
 // `admin: true` only for Admin, on the first attempt and on the retry of the same request.
@@ -32,7 +33,7 @@ function harness() {
   } };
   window.history.pushState({}, '', `${APP_BASEPATH}/`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }) });
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   return { creates: () => sent.filter((request) => request.method === 'POST' && request.path === '/api/tracks') };

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -74,7 +75,7 @@ function setup(reply?: Reply) {
     return ok([]);
   }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   return { requests };
@@ -383,7 +384,7 @@ describe('the source panel on the track page', () => {
     const conversation = await screen.findByRole('complementary', { name: 'Planner chat' });
     const host = conversation.closest('[data-nc-conversation-drawer-host]');
     expect(host?.hasAttribute('inert')).toBe(false);
-    fireEvent.click(screen.getByRole('button', { name: 'Mikko 日志' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }));
     const source = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
     expect(screen.getByRole('complementary', { name: 'Planner chat' })).toBe(conversation);
     expect(host?.hasAttribute('inert')).toBe(true);
@@ -404,7 +405,7 @@ describe('the source panel on the track page', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Planner chat/ }));
     await screen.findByRole('complementary', { name: 'Planner chat' });
     await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/run'))).toBe(true));
-    fireEvent.click(screen.getByRole('button', { name: 'Mikko 日志' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }));
     const source = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
     fireEvent.keyDown(source, { key: 'Escape' });
     await waitFor(() => expect(source.hasAttribute('data-nc-escape-layer')).toBe(false));

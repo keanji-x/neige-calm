@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -86,7 +87,7 @@ function setup({ createFails = false, deferCreate = false, answers = [] as reado
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
   });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });

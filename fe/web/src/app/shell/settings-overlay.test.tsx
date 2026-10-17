@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The Settings panel is one element for the whole visit, not one per section; only
 // the real router can produce the navigation that would destroy it.
@@ -46,7 +47,7 @@ function renderApp(initialEntry: string) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined,
   });
   router.update({ history: createMemoryHistory({ initialEntries: [initialEntry] }) });

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -44,7 +45,7 @@ it.each([1280, 390, 320])('repairs a template prerequisite and returns to the sa
     return Promise.resolve(ok([]));
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: task => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/area/area/new'] }) });
   // The application-level providers own the draft; this is the actual routed form and Settings.

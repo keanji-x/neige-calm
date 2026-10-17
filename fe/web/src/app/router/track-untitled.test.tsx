@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // A track that starts with no name and no words in it: creating lands in the planner
 // conversation with the caret in it, and clearing the title is a request, not a cancel.
@@ -93,7 +94,7 @@ function setup(options: Options = {}) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
   });
   render(

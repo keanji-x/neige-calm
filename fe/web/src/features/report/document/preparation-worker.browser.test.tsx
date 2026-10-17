@@ -13,7 +13,7 @@ afterEach(cleanup);
 it('prepares in the actual native Worker and renders its coherent cloned report and heading Maps', async () => {
   const report: TrackReport = { summary: '', body: '', blocks: [
     { id: 'first', kind: 'prose', payload: { markdown: '# Shared heading\n\n[Issue](https://github.com/example/project/issues/1).' } },
-    { id: 'second', kind: 'prose', payload: { markdown: '# Shared heading\n\nFollow issue #2 and [File](./info.md).' } },
+    { id: 'second', kind: 'prose', payload: { markdown: '# Shared heading\n\nFollow issue #2 and [File](./info.md).\n\nEntities: &amp; &NotEqualTilde; &copy; &#x1F642; &madeup; &notit; &semi;' } },
   ] };
   const preparation = await runWorkerTask<TrackReport | null, PreparedReport>(
     () => new Worker(workerUrl, { type: 'module' }),
@@ -33,4 +33,5 @@ it('prepares in the actual native Worker and renders its coherent cloned report 
   expect(headings.map(heading => heading.id)).toEqual(['first-h1', 'second-h1']);
   await expect.element(page.getByRole('button', { name: 'File', exact: true })).toBeVisible();
   expect(document.querySelector('[data-nc-report] script')).toBeNull();
+  expect(document.querySelector('[data-nc-report]')?.textContent).toContain('Entities: & ≂̸ © 🙂 &madeup; &notit; ;');
 });

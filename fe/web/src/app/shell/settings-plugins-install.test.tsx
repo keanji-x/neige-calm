@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // Settings › Plugins › add and remove over the real router and transport: a blank
 // credential is an absent key, not an empty string, and the kernel refuses an empty one.
@@ -49,7 +50,7 @@ function renderPlugins(reply: Reply) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined,
   });
   router.update({ history: createMemoryHistory({ initialEntries: ['/settings/plugins'] }) });

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
@@ -94,7 +95,7 @@ function setup(reply?: Reply) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

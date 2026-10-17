@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, render, screen } from '@testing-library/react';
@@ -30,7 +31,7 @@ it.each([
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => {} });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => {} });
   window.history.pushState({}, '', `${APP_BASEPATH}/recipes`);
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => theme, setItem: () => {} }}>
     <RouterProvider router={router} />

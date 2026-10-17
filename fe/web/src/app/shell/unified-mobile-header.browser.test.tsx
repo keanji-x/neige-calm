@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -60,7 +61,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     return ok([]);
   }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }),
     client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   const view = render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>

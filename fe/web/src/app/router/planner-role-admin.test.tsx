@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // An existing Track's Role picker in its Planner conversation's composer, on the production router: the value is the
 // server's `admin_granted_at`, a pick is `PATCH /api/tracks/{id} {admin}`, and `can_admin` false disables it with a reason.
@@ -52,7 +53,7 @@ function setup({ adminGrantedAt, canAdmin, patch }: Kernel) {
     return ok([]);
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   return { patches: () => requests.filter((request) => request.method === 'PATCH' && request.path === '/api/tracks/w1') };

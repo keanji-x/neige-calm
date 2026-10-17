@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { QueryClient } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -35,7 +36,7 @@ describe('session gate contracts', () => {
     const runtime: ProviderRuntime = { fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(),
       idbDatabaseName: IDB_DB_NAME, storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+    const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
     render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
       cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
     expect(screen.getByRole('navigation', { name: '恢复页面导航' })).toBeTruthy();
@@ -53,7 +54,7 @@ describe('session gate contracts', () => {
     const fetchVersion = vi.fn(() => Promise.resolve({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 3, dbInstanceId: 'db' }));
     const runtime: ProviderRuntime = { fetchVersion,
       reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: IDB_DB_NAME, storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
-    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+    const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
     render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
       cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
     await waitFor(() => expect(fetchVersion).toHaveBeenCalledOnce());
@@ -67,7 +68,7 @@ describe('session gate contracts', () => {
     const fetchVersion = vi.fn();
     const runtime: ProviderRuntime = { fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: IDB_DB_NAME, storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+    const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
     render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
       cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
     expect(paths).toEqual(['/api/auth/whoami']);

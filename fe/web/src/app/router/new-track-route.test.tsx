@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The new-track page: `/area/{id}/new`, reached from each Area group's `+`.
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -270,7 +271,7 @@ function harness(options: {
   };
   window.history.pushState({}, '', `${APP_BASEPATH}${options.path ?? '/'}`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
   });
   /* `StrictMode`, because production runs it: its double-invoked effects are what

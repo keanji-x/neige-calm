@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 // A conversation not created yet keeps its unsent words per Track, driven through the real router (#1923).
@@ -74,7 +75,7 @@ function renderApp(managed = false) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   render(
     <QueryClientProvider client={client}>

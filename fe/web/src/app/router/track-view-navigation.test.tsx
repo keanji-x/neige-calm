@@ -5,7 +5,7 @@ import { useGo, useRouteParam, useTrackFileNavigation, validateTrackSearch } fro
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
 
 function Probe({ trackId }: { trackId: string }) {
-  useTrackViewState(trackId);
+  useTrackViewState(trackId, true);
   const go = useGo();
   const file = useTrackFileNavigation();
   return <>

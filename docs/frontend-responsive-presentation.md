@@ -37,7 +37,9 @@ flowchart LR
 ```
 
 The arrows describe responsibilities, not every import or a second business store.
-No asynchronous transcript projection, new cache or Worker is currently present.
+Conversation facts retain their existing store. Track report preparation uses the
+shared preparation lease and a report-owned data cache with native Worker execution;
+see [the content presentation design](design/content-presentation-framework.md).
 
 ## Lifetimes and action consistency
 
@@ -179,9 +181,13 @@ CPU profiles and detailed page data local unless their publication is authorized
   immediately lose its position. The user chose native Find and cross-message
   selection; the experiment is not product code. Layout/style containment alone
   showed no useful reduction in the same diagnostic workload.
-- Do not add a Worker/Comlink layer for this workload. The measured expensive calls
-  include synchronous DOM commit, layout and style work; a Worker cannot perform
-  those operations. The first-mount visit is a presentation boundary, not a thread.
+- Conversation DOM commit, layout and style remain main-thread work. Admission
+  creates a rendering opportunity. Track report syntax/outline computation now has
+  a measured, separate native Worker boundary; it does not move DOM work off-thread.
+  `systems/content-preparation` coordinates data candidates, `systems/worker-task`
+  owns execution cleanup, and app composition owns actual commit/read/restore.
+  The maintained [Track probe](../fe/tools/preview/README.md#track-presentation-profiling)
+  measures production entry points with immutable builds and API-only fixtures.
 - Native opacity/translate spring playback is already separate from per-frame
   React state updates. Starting/reversing it, committing DOM and layout still need
   the main thread. A main-thread rAF gap is not itself a measured compositor freeze. Chromium

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // The grouped model picker on the real new-track route, in a real engine: a Claude pick sets the
 // Planner's provider and model, drops a Codex effort and offers its own levels (#1822), and the row still fits a phone (#1810).
 import '../../styles/entry.css';
@@ -74,7 +75,7 @@ function mount(claude: unknown, opencode = false, opencodeCatalog: unknown = NO_
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(), unauthorized, onSignOut: () => undefined });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(), unauthorized, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/area/c1/new'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   return { creates };

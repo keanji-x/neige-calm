@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { useConversationStore } from '../conversations/store.ts';
 // @vitest-environment jsdom
@@ -204,7 +205,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
-  const router = createAppRouter({ transport: recovery ? createRecoveryTransports(transport, recovery).business : transport, unauthorized, client, onSignOut: vi.fn(), cards: bootTestCardRuntime(), uiPreferences: createUiPreferences(storage) });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport: recovery ? createRecoveryTransports(transport, recovery).business : transport, unauthorized, client, onSignOut: vi.fn(), cards: bootTestCardRuntime(), uiPreferences: createUiPreferences(storage) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

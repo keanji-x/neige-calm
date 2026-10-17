@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The Planner's reply as it streams (#1923 S2 P4), through the production router and a fake transport.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -101,7 +102,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{
     getItem: (key) => themeValues.get(key) ?? null, setItem: (key, value) => { themeValues.set(key, value); },
   }}>

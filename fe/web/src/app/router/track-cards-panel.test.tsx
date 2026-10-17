@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The track route's CARDS panel, driven through the real route, registry and built-ins.
 
@@ -136,7 +137,7 @@ function setup(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
   const runtime = bootTestCardRuntime();
   if (withVisibleFixture) runtime.registry.register(SURFACE_FIXTURE_ENTRY as unknown as CardEntry);
-  const router = createAppRouter({ transport, unauthorized, client, cards: runtime, onSignOut: vi.fn() });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: runtime, onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

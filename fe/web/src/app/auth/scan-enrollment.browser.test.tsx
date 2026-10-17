@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { QueryClient } from '@tanstack/react-query';
 import { createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, render, screen, act, waitFor } from '@testing-library/react';
@@ -39,7 +40,7 @@ it('the production bundled gate pairs in its original document and opens the sav
     adoptScope: vi.fn(), identity, version: fetchVersion, logout: () => Promise.resolve(), clear: () => client.clear(), online: () => true, visible: () => true },
   { input: { kind: 'scan', context: { generation: 9, origin: 'https://neige.tail.example', enrollmentId: 'invite', attemptId: 'attempt',
     attemptSecret: 'a'.repeat(64), pairTicket: 'b'.repeat(64), deadline: Date.now() + 180_000 } }, pairing: createScanPairingPort({ send }) });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => { void recovery.signOut(); } });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => { void recovery.signOut(); } });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   const document = window.document;
   render(<ProductionApp transport={transport} unauthorized={unauthorized} client={client} router={router} recovery={recovery}

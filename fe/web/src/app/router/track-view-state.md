@@ -16,9 +16,11 @@ priority, including an explicit link to the same previously selected card.
 Closing a resumed file therefore replaces the current entry rather than
 popping into the Track just left.
 
-The keyed Track body waits for detail before restoring its DOM scrollports.
-Report/panel positions are restored in layout, with a final pass after the
-board's two-frame selected-card reveal. Only resume navigation overrides that
+The keyed Track body renders matching detail and actions immediately. Report
+positions restore in layout after admitted complete report content commits; pending
+geometry is not saved. Reader wheel/touch/scroll keys or a reading gesture suppress
+deferred automatic restoration; header actions do not. Panel readiness is independent,
+with a final board pass after the board's two-frame selected-card reveal. Only resume navigation overrides that
 reveal. Scroll listeners and pending animation frames are disposed with the
 body. Conversation content, failed-send recovery and draft identity remain
 owned by ConversationProvider; conversation selection remains owned by UiPreferencesProvider.
@@ -51,8 +53,16 @@ No DOM, navigation callback, file port, subscription or timer is retained. The
 cache neither keeps evicted query cards alive nor promises a memory cap while
 queries remain reachable. Leaving the authenticated/recovery scope drops it.
 
-TrackRouteBody consumes the prepared report model and gives its prepared syntax
-to ReportDocument. Standalone report renderers use the same preparation entry.
-File admission, live blocks and navigation still consume current render inputs.
-Track readiness, scroll/anchor restoration and read-receipt eligibility are
-unchanged in this slice; this cache is not asynchronous content admission.
+TrackRouteBody composes generic UI admission and systems preparation leases through
+the report typed adapter. Production injects per-job native Worker execution of
+the canonical algorithm. Completed results bind to the exact input; changing or
+leaving a source aborts the active job. ReportDocument receives that cloned model
+and its own report identity atomically. Standalone renderers retain the canonical
+synchronous contract. File admission and live authority remain current inputs.
+
+Only an actually committed same-visit report can remain visible during replacement.
+Its series revision, previews and task declarations remain coherent until swap.
+New-source receipts wait for current complete content; unchanged-source overlay
+updates retain existing behavior. Empty success commits through the same boundary.
+Hash plus router navigation intent is served once after current content; an
+ordinary report refresh does not replay a served anchor. Today uses this same path.

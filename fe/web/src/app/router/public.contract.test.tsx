@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { pendingConversationIds } from '../../../../core/domain/conversation-summary.ts';
 // @vitest-environment jsdom
 // Invariants owned by the route tree.
@@ -44,21 +45,21 @@ function routeByPath(tree: ReturnType<typeof createRouteTree>, path: string) {
 describe('INV-APP-084 the index loader primes areas and nothing else', () => {
   it('issues exactly one request — the areas list — when the loader runs', async () => {
     const { transport, paths } = recordingTransport();
-    const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    const tree = createRouteTree({ prepareReport: prepareReportDocument, transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
     await routeByPath(tree, '/').options.loader?.();
     expect(paths).toEqual(['/api/areas']);
   });
 
   it('leaves the area → tracks fan-out off the loader so one slow area cannot block the commit', async () => {
     const { transport, paths } = recordingTransport();
-    const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    const tree = createRouteTree({ prepareReport: prepareReportDocument, transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
     await routeByPath(tree, '/').options.loader?.();
     expect(paths.filter((path) => path.endsWith('/tracks'))).toEqual([]);
   });
 
   it('gives the other routes no loader at all', () => {
     const { transport } = recordingTransport();
-    const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    const tree = createRouteTree({ prepareReport: prepareReportDocument, transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
     for (const path of ['/area/$areaId/new', '/track/$trackId', '/settings']) {
       expect(routeByPath(tree, path).options.loader).toBeUndefined();
     }
@@ -69,7 +70,7 @@ describe('route registration', () => {
   it('renders the index route at the deployed /next/ basepath', async () => {
     const { transport } = recordingTransport();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
     router.update({ history: createMemoryHistory({ initialEntries: ['/next/'] }) });
 
     render(
@@ -86,7 +87,7 @@ describe('route registration', () => {
 
   function registeredPaths(): (string | undefined)[] {
     const { transport } = recordingTransport();
-    const tree = createRouteTree({ transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    const tree = createRouteTree({ prepareReport: prepareReportDocument, transport, unauthorized, client: new QueryClient(), cards: bootTestCardRuntime(), onSignOut: () => undefined });
     return (tree.children as { options: { path?: string } }[]).map((child) => child.options.path);
   }
 

@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { StrictMode } from 'react';
 import { QueryClient, onlineManager } from '@tanstack/react-query';
 import { createMemoryHistory } from '@tanstack/react-router';
@@ -49,7 +50,7 @@ it.each(['before', 'after'] as const)('cold saved Track and hot reconnect retain
     socket.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ ev: '_replay_complete', _id: 0 }) }));
   };
   const painted = () => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => { void recovery.signOut(); } });
+  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => { void recovery.signOut(); } });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   const mounted = render(<StrictMode><ProductionApp transport={transport} unauthorized={unauthorized} client={client} router={router} recovery={recovery}
     runtime={{ fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'phone', storage }}

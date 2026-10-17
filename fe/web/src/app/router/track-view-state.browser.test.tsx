@@ -1,8 +1,12 @@
+import { prepareReportDocument, type PreparedReport, type ReportPreparationPort } from '../../features/report/document/preparation.ts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, render } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { commands, page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
+import type { TrackDetailWire } from '../../../../core/domain/track.ts';
+import type { TrackReport } from '../../../../core/domain/report.ts';
+import { queryKeys } from '../providers/queries.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { CardEntry } from '../../systems/cards/public.js';
@@ -15,7 +19,7 @@ import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
-function setup() {
+function setup(prepareReport: ReportPreparationPort = prepareReportDocument) {
   const tracks = ['a', 'b'].map((id) => ({ id, area_id: 'area', title: `Track ${id}`, sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null,
     created_at: 1, updated_at: 2 }));
@@ -27,6 +31,7 @@ function setup() {
       title: `Surface ${i}`, kind: 'view-state-surface', sort: i + 1, deletable: true,
       created_at: 1, updated_at: 2, payload: {},
     }))];
+  const serverCards = new Map(tracks.map(track => [track.id, cardsFor(track.id)]));
   const transport: ApiTransportPort = { async send(request) {
     await Promise.resolve();
     let body: unknown = [];
@@ -34,7 +39,7 @@ function setup() {
     if (request.path === '/api/areas/area/tracks') body = tracks;
     if (request.path === '/api/settings') body = {};
     for (const track of tracks) {
-      if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: cardsFor(track.id), overlays: [] };
+      if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: serverCards.get(track.id), overlays: [] };
       if (request.path === `/api/tracks/${track.id}/report`) body = { taskDiagnostics: [] };
     }
     return { status: 200, statusText: 'OK', body };
@@ -48,14 +53,14 @@ function setup() {
   };
   runtime.registry.register(surface as unknown as CardEntry);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: runtime,
+  const router = createAppRouter({ prepareReport, transport, client, cards: runtime,
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/a'] }) });
   const container = document.createElement('div');
   container.id = 'root';
   document.body.append(container);
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
-  return router;
+  return { router, client, serverCards };
 }
 
 async function settle() {
@@ -67,7 +72,7 @@ function board() { return document.querySelector<HTMLElement>('[data-nc-card-boa
 
 it('resumes independent report and grid positions through real sidebar navigation', async () => {
   await page.viewport(1440, 900);
-  const router = setup();
+  const { router } = setup();
   await expect.element(page.getByRole('button', { name: 'Rename track', exact: true })).toBeVisible();
   await settle();
   reportPage().scrollTop = 700;
@@ -114,4 +119,98 @@ it('shows a visible icon beside Recent files in the desktop panel', async () => 
   expect(icon!.getAttribute('aria-hidden')).toBe('true');
   expect(icon!.getBoundingClientRect().width).toBeGreaterThan(0);
   expect(icon!.getBoundingClientRect().height).toBeGreaterThan(0);
+});
+
+function controlledPreparation() {
+  let held = false;
+  const jobs: { report: TrackReport | null; resolve: (prepared: PreparedReport) => void }[] = [];
+  const execute: ReportPreparationPort = report => held
+    ? new Promise<PreparedReport>(resolve => { jobs.push({ report, resolve }); }) : prepareReportDocument(report);
+  return { execute, jobs, hold() { held = true; }, async release(index: number) {
+    await act(async () => { jobs[index].resolve(prepareReportDocument(jobs[index].report)); await Promise.resolve(); });
+  } };
+}
+
+async function replaceReport(client: QueryClient, serverCards: ReturnType<typeof setup>['serverCards'], revision: number) {
+  const cards = serverCards.get('a');
+  if (cards === undefined) throw new Error('Missing fixture Track a');
+  const replacement = cards.map(card => card.kind !== 'track-report' ? card : ({ ...card,
+    payload: { schemaVersion: 3, docRev: revision, summary: '', body: '', blocks: Array.from({ length: 50 }, (_, i) => ({
+      id: `paragraph-${i}`, kind: 'prose', rev: revision, payload: { markdown: `Paragraph ${i}. A long report to read and return to. Revision ${revision}.` },
+    })) },
+  }));
+  serverCards.set('a', replacement);
+  await act(() => client.setQueryData<TrackDetailWire>(queryKeys.trackDetail('a'), detail => detail === undefined ? detail : ({ ...detail, cards: replacement })));
+}
+
+it('restores the saved report position only after delayed current content mounts', async () => {
+  await page.viewport(1440, 900);
+  const control = controlledPreparation(); const { router, client, serverCards } = setup(control.execute);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to.', { exact: true })).toBeVisible();
+  await settle(); reportPage().scrollTop = 700; await settle();
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click(); await settle();
+  control.hold(); await replaceReport(client, serverCards, 2);
+  await page.getByRole('button', { name: /^Track Track a\b/ }).click();
+  await expect.poll(() => control.jobs.length).toBe(1);
+  expect(router.state.location.pathname.endsWith('/track/a')).toBe(true);
+  expect(document.querySelector('[data-nc-report]')).toBeNull();
+  expect(reportPage().scrollTop).toBe(0);
+  await control.release(0);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 2.', { exact: true })).toBeVisible();
+  await settle(); expect(reportPage().scrollTop).toBe(700);
+});
+
+it('lets a reader gesture during pending content override deferred report restoration', async () => {
+  await page.viewport(1440, 900);
+  const control = controlledPreparation(); const { client, serverCards } = setup(control.execute);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to.', { exact: true })).toBeVisible();
+  await settle(); reportPage().scrollTop = 700; await settle();
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click(); await settle();
+  control.hold(); await replaceReport(client, serverCards, 2);
+  await page.getByRole('button', { name: /^Track Track a\b/ }).click();
+  await expect.poll(() => control.jobs.length).toBe(1);
+  const wheel = new Promise<EventTarget | null>(resolve => { document.addEventListener('wheel', event => resolve(event.target), { capture: true, once: true }); });
+  await commands.wheelScroll('[data-nc-track-page]', 160, { x: 200, y: 200 });
+  const wheelTarget = await wheel;
+  expect(wheelTarget instanceof Node && reportPage().contains(wheelTarget)).toBe(true);
+  await control.release(0);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 2.', { exact: true })).toBeVisible();
+  await settle(); expect(reportPage().scrollTop).toBe(0);
+});
+
+it('serves pending and repeated anchor navigation after current content and does not replay it on refresh', async () => {
+  await page.viewport(1440, 900);
+  const control = controlledPreparation(); const { router, client, serverCards } = setup(control.execute);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to.', { exact: true })).toBeVisible();
+  await act(() => router.navigate({ to: '/track/a', hash: 'paragraph-40' }));
+  await settle(); expect(reportPage().scrollTop).toBeGreaterThan(700);
+  reportPage().scrollTop = 0; await settle();
+  control.hold(); await replaceReport(client, serverCards, 2);
+  await expect.poll(() => control.jobs.length).toBe(1);
+  await control.release(0);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 2.', { exact: true })).toBeVisible();
+  await settle(); expect(reportPage().scrollTop).toBe(0);
+  await replaceReport(client, serverCards, 3);
+  await expect.poll(() => control.jobs.length).toBe(2);
+  await act(() => router.navigate({ to: '/track/a', hash: 'paragraph-40' }));
+  await settle(); expect(reportPage().scrollTop).toBe(0);
+  await control.release(1);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 3.', { exact: true })).toBeVisible();
+  await settle(); expect(reportPage().scrollTop).toBeGreaterThan(700);
+});
+
+it('keeps the saved reading position when a pending header action is used', async () => {
+  await page.viewport(1440, 900);
+  const control = controlledPreparation(); const { client, serverCards } = setup(control.execute);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to.', { exact: true })).toBeVisible();
+  await settle(); reportPage().scrollTop = 700; await settle();
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click(); await settle();
+  control.hold(); await replaceReport(client, serverCards, 2);
+  await page.getByRole('button', { name: /^Track Track a\b/ }).click();
+  await expect.poll(() => control.jobs.length).toBe(1);
+  await page.getByRole('button', { name: 'Rename track', exact: true }).click();
+  await expect.element(page.getByRole('textbox', { name: 'Track title', exact: true })).toBeVisible();
+  await control.release(0);
+  await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 2.', { exact: true })).toBeVisible();
+  await settle(); expect(reportPage().scrollTop).toBe(700);
 });

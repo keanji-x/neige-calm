@@ -1,3 +1,4 @@
+import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 /* The real `AppShell`, the real track route, a real router and a real memory history: every claim
  * here is about how two modules are wired together, which a stub on either side could not prove. */
@@ -61,7 +62,7 @@ function setup(path: string) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({
+  const router = createAppRouter({ prepareReport: prepareReportDocument,
     transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
   });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
