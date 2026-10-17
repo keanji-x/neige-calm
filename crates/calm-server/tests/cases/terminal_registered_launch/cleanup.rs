@@ -257,9 +257,13 @@ async fn terminal_real_output_eof_precedes_durable_drain_and_final_screen() -> a
             .bind(&terminal.id).fetch_one(fixture.sql.pool()).await?;
         let request: PrepareExecution = serde_json::from_value(serde_json::from_str::<Value>(&json)?["request"].clone())?;
         let mut client = observer(&fixture).await?;
-        let reply = client.request(ExecutionRequest::Query(calm_session::control::execution::ConsumeExecution {
+        let ticket = calm_session::control::execution::ConsumeExecution {
             execution_id: request.identity.execution_id, ticket_id: request.identity.ticket_id, ticket: request.ticket,
-        })).await?;
+        };
+        let serialized = client.request(ExecutionRequest::Revoke(ticket.clone())).await?;
+        ensure!(matches!(serialized, ExecutionReply::RevocationAcknowledged { state: calm_session::control::execution::ExecutionState::Exited { .. }, .. }),
+            "the actual gated drain crossed the held reader before lifecycle serialization: {serialized:?}");
+        let reply = client.request(ExecutionRequest::Query(ticket)).await?;
         ensure!(matches!(reply, ExecutionReply::Receipt { state: calm_session::control::execution::ExecutionState::Exited { .. }, .. }),
             "helper drain was published before the actual held reader reached EOF: {reply:?}");
         let exit: Option<i64> = sqlx::query_scalar("SELECT exit_code FROM terminals WHERE id=?1")

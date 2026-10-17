@@ -541,19 +541,6 @@ impl Executor {
         tokio::spawn(async move {
             let mut drained = false;
             while let Some(event) = receive.recv().await {
-                #[cfg(any(test, feature = "test-support"))]
-                if matches!(event.event, scope_helper::HelperEvent::Drained { .. })
-                    && let Some(path) = executor
-                        .output_reader_release
-                        .lock()
-                        .map_err(poison)?
-                        .as_ref()
-                {
-                    std::fs::write(
-                        path.with_extension("drained"),
-                        b"actual helper report received",
-                    )?;
-                }
                 let outcome = executor.apply_event(&id, event).await;
                 match outcome {
                     Ok(true) => {
@@ -623,6 +610,17 @@ impl Executor {
                 && report.context.mechanism == receipt.scope_mechanism,
             "helper report identity mismatch"
         );
+        #[cfg(any(test, feature = "test-support"))]
+        if matches!(report.event, scope_helper::HelperEvent::Drained { .. })
+            && let Some(path) = self.output_reader_release.lock().map_err(poison)?.as_ref()
+        {
+            // The actual event owns its resource gate. A later lifecycle
+            // request cannot pass this report before its existing write.
+            std::fs::write(
+                path.with_extension("drained"),
+                b"validated helper report owns gate",
+            )?;
+        }
         record.phase = match report.event {
             scope_helper::HelperEvent::Started => {
                 if let Some(process) = self.processes.lock().map_err(poison)?.get(id) {
