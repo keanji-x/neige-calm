@@ -17,21 +17,22 @@ export function useConversationDraftRetention({ discardUnsentDraft, sourceScopeI
   }, [discardUnsentDraft, sourceScopeId]);
 }
 
-export function useConversationDraftAdoption({ adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget }: Readonly<{
+export function useConversationDraftAdoption({ adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget, selected }: Readonly<{
   adoptedDraftId: string | null;
   registry: Pick<ConversationRegistry, 'finishDraftAdoption'>;
   rows: readonly Conversation[];
   sourceScopeId: string;
   setOpenTarget: SetOpenTarget;
+  selected: boolean;
 }>) {
   /* Adoption: the reducer moves a matching `{ scopeId, key }` from `held` to
        `adopted`; if the create settles while unmounted, the outcome waits here. */
   useEffect(() => {
     if (adoptedDraftId === null) return;
     if (!rows.some((row) => row.id === adoptedDraftId)) return;
-    setOpenTarget({ kind: 'row', id: adoptedDraftId });
+    if (selected) setOpenTarget({ kind: 'row', id: adoptedDraftId });
     registry.finishDraftAdoption(sourceScopeId, adoptedDraftId);
-  }, [adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget]);
+  }, [adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget, selected]);
 }
 
 export function useRequestedConversationOpen({ registry, rows, setOpenTarget, setComposerFocusFor, inline }: Readonly<{

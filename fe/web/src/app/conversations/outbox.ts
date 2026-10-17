@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { onlineManager } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
@@ -222,17 +223,18 @@ export function useConversationOutbox({
      */
     retrySend: (key: string) => {
       const failed = view.failed;
-      if (failed?.key !== key || stalled) return;
+      if (failed?.key !== key || stalled || !onlineManager.isOnline()) return false;
       let admitted: ApiTransportPort;
       /* Not admitted: the op keeps its standing and its footer unchanged; the global recovery status says why. */
-      try { admitted = admitTransport(transport); } catch { return; }
+      try { admitted = admitTransport(transport); } catch { return false; }
       const op = {
         key, echo: failed.echo, fromComposer: failed.fromComposer, replaces: failed.replaces, phase: 'sending',
         unknown: failed.delivery === 'unknown',
       } as const;
-      if (!beginSend(cardId, op)) return;
+      if (!beginSend(cardId, op)) return false;
       pressed();
       void run(op, admitted);
+      return true;
     },
     /**
      * Edit of the failed op: it leaves the outbox and its words and images go back to the composer. Only for an op that

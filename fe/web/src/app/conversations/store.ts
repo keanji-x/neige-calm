@@ -269,6 +269,7 @@ export function useConversationStore(
     stopFeedback,
     sending: view.sending,
     sendBlocked: view.blocked,
+    awaitingConversationUpdate: view.awaitingReconciliation && history.error === null && run.error === null,
     pendingQueue,
     pendingQueueOverflow,
     deleteQueuedEntry,

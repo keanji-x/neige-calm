@@ -150,6 +150,8 @@ export type OutboxView = Readonly<{
   sending: boolean;
   /** Whether a new message must wait. */
   blocked: boolean;
+  /** An answered send still blocks input until the existing read/replay fence is satisfied. */
+  awaitingReconciliation: boolean;
   failed: FailedSendOp | null;
 }>;
 
@@ -198,6 +200,8 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
     /* Only a confirmed op licenses the queued caption, and a wedged queue cannot promise delivery. */
     .map((op) => op.phase === 'confirmed' && !stalled ? op.echo : { ...op.echo, queued: false })
     .sort((left, right) => left.atMs - right.atMs);
+  const sending = ops.some((op) => op.phase === 'sending');
+  const waitingForReads = live.some((op) => op.phase !== 'confirmed' || !op.echo.queued);
   return {
     /* KNOWN GAP (#1923): a steer sent while a reply streams draws its echo below the live reply,
        then its stored row above it: a one-time reorder that converges. */
@@ -206,11 +210,11 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
     shown: live.filter(drawsEcho).map((op) => op.echo),
     confirmed: live.filter((op) => op.phase === 'confirmed').map((op) => op.echo),
     retire: retiredOps(ops, matched, landed),
-    sending: ops.some((op) => op.phase === 'sending'),
+    sending,
+    awaitingReconciliation: !stalled && failed === null && !sending && waitingForReads,
     /* Any send still out blocks, even one a read already shows: the next press would be refused and its words lost.
        A queued confirmed message cannot be waited on: the queue writes no row until the turn ends. */
-    blocked: stalled || failed !== null || ops.some((op) => op.phase === 'sending')
-      || live.some((op) => op.phase !== 'confirmed' || !op.echo.queued),
+    blocked: stalled || failed !== null || sending || waitingForReads,
     failed,
   };
 }

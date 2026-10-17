@@ -1,6 +1,6 @@
 import { prepareReportDocument, type ReportPreparationPort } from '../../features/report/document/preparation.ts';
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
-import { Profiler } from 'react';
+import { Profiler, StrictMode } from 'react';
 // Test-only transport for the complete daily homepage composition; no model or live API.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -14,7 +14,7 @@ import type { UiPreferences } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { withReadReceipts, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
-export function renderDailyFixture({ initial = '/', plannerProvider = 'codex', failChanges = false, emptyWorkspace = false, extraPlanner = false, projectTitle = 'Project evidence', reply, onCommit, uiPreferences, receipts, prepareReport = prepareReportDocument }: Readonly<{ prepareReport?: ReportPreparationPort; plannerProvider?: AgentProvider; uiPreferences?: UiPreferences; receipts?: ReadReceiptsKernel; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; extraPlanner?: boolean; projectTitle?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
+export function renderDailyFixture({ withTransport, strict = false, initial = '/', plannerProvider = 'codex', failChanges = false, emptyWorkspace = false, extraPlanner = false, projectTitle = 'Project evidence', reply, onCommit, uiPreferences, receipts, prepareReport = prepareReportDocument }: Readonly<{ withTransport?: (transport: ApiTransportPort) => ApiTransportPort; strict?: boolean; prepareReport?: ReportPreparationPort; plannerProvider?: AgentProvider; uiPreferences?: UiPreferences; receipts?: ReadReceiptsKernel; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; extraPlanner?: boolean; projectTitle?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
   const requests: ApiRequest[] = [];
   const area = { id: 'daily-area', name: 'system', color: '#6574cd', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
   const projectArea = { ...area, id: 'project-area', name: 'Project', kind: 'user' };
@@ -51,11 +51,12 @@ export function renderDailyFixture({ initial = '/', plannerProvider = 'codex', f
   } };
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ prepareReport, transport: withReadReceipts(transport, receipts), unauthorized, client, cards: bootTestCardRuntime(), uiPreferences, onSignOut: () => undefined });
+  const router = createAppRouter({ prepareReport, transport: withReadReceipts(withTransport?.(transport) ?? transport, receipts), unauthorized, client, cards: bootTestCardRuntime(), uiPreferences, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   const container = document.createElement('div');
   container.id = 'root';
   document.body.appendChild(container);
-  render(<Profiler id="daily-fixture" onRender={onCommit ?? (() => undefined)}><QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></Profiler>, { container });
+  const tree = <Profiler id="daily-fixture" onRender={onCommit ?? (() => undefined)}><QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></Profiler>;
+  render(strict ? <StrictMode>{tree}</StrictMode> : tree, { container });
   return { router, requests, client };
 }

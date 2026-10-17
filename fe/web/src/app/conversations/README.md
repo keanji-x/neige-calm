@@ -70,3 +70,18 @@ value. Typing still updates the one retained composer; it does not invalidate
 unchanged history. Outbox operations remain authoritative for dispatch, keyed
 retry, queue visibility, refusal/unknown restoration and attachments. The app
 keeps local Sending feedback separate from run/activity evidence of execution.
+
+The outbox's `awaitingReconciliation` shares the existing input-blocking predicate;
+the app declares waiting feedback from that fact and leaves read errors on their
+existing retry surface. The sentence does not claim an active fetch or delivery
+after an ambiguous replay, and successful POST handling still does not await reads.
+
+Recovery methods return whether the local owner took the recovery intent, never
+whether the server accepted it. Only a taken action requests composer focus.
+The existing parking contract stops restoration when the user moves elsewhere.
+Draft adoption probes current field/parking ownership through a UI-only handle
+bound to that draft key. It never requests focus from cleanup, a capability read's
+completion or a late result in another view. A selected adopted draft resolves its
+real row directly; there is no intermediate closed drawer. Normalizing the target
+is conditional on that draft still being selected, while Registry adoption and
+the created row remain authoritative even after the user closes or switches.

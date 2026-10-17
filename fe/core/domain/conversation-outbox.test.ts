@@ -46,6 +46,15 @@ describe('matching sends to persisted rows', () => {
 });
 
 describe('the outbox view', () => {
+  it('declares only the existing answered-send reconciliation gate as awaiting reads', () => {
+    expect(view([op('a', CONFIRMED)]).awaitingReconciliation).toBe(true);
+    expect(view([op('a', { phase: 'replayed', afterRead: 7 })]).awaitingReconciliation).toBe(true);
+    expect(view([op('a', CONFIRMED, { queued: true })]).awaitingReconciliation).toBe(false);
+    expect(view([op('a', SENDING)]).awaitingReconciliation).toBe(false);
+    expect(view([op('a', UNKNOWN_SPENT)]).awaitingReconciliation).toBe(false);
+    expect(view([op('a', CONFIRMED)], [row('5')]).awaitingReconciliation).toBe(false);
+    expect(view([op('a', CONFIRMED)], [], { stalled: true }).awaitingReconciliation).toBe(false);
+  });
   it('keeps a confirmed send until a read shows it, and retires it then', () => {
     expect(view([op('a', CONFIRMED)]).retire).toEqual([]);
     expect(texts(view([op('a', CONFIRMED)]).transcript)).toEqual(['same']);

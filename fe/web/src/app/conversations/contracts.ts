@@ -17,6 +17,8 @@ export type ConversationStore = Readonly<{
   stopFeedback: ConversationStopFeedback | null;
   sending: boolean;
   sendBlocked: boolean;
+  /** Existing outbox reconciliation gate, with read errors left to their explicit retry surface. */
+  awaitingConversationUpdate: boolean;
   /** The addressable page of the harness pending queue. */
   pendingQueue: readonly PendingQueueEntry[];
   /** Queued messages that exist but carry no id to address them by. */
@@ -39,8 +41,8 @@ export type ConversationStore = Readonly<{
   actionError: string | null;
   /** The send that gave up, held by this conversation's outbox until its Try again, Edit or Dismiss. */
   failedSend: FailedSendOp | null;
-  /** Resume the failed send under its key. */
-  retrySend: (key: string) => void;
+  /** Resume under the same key; true means local recovery took the intent, never server acceptance. */
+  retrySend: (key: string) => boolean;
   /** Edit: a failed send that was not stored leaves the outbox, its words and images back in the composer. */
   discardFailedSend: (key: string) => void;
   /** Dismiss: the failed send leaves the outbox and nothing of it comes back, its composer images included. */

@@ -20,7 +20,7 @@ import { DELETE_FAILURES, DELETE_TEXT, NotSentError, writeFailureText } from '..
 import {
   createRootRoute, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { createRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
 import { TrackReportRegion, useTrackReportPresentation, useTrackReportArrival } from './track-report-presentation.tsx';
 import type { ReportPreparationPort } from '../../features/report/document/preparation.ts';
@@ -59,7 +59,7 @@ import {
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { OutgoingMessage } from '../../features/chat/thread/outgoing-message.tsx';
 import {
-  ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
+  ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread, type ComposerFocusHandle,
 } from '../../features/chat/thread/public.tsx';
 import { ModelPill, PermissionModePill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
 import { usePlannerRoleControl, type PlannerRoleControl } from './planner-role.ts';
@@ -382,11 +382,18 @@ function useConversationPane(
   /* Existing conversation selection survives navigation; unfinished drafts
      retain their separate ConversationProvider lifecycle. */
   const [openTarget, setOpenTarget] = target;
+  const registry = useConversationRegistry();
+  const sourceScopeId = options?.slotId ?? source.scopeId;
+  const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
+  // Adoption already wrote the real row. Resolve that selected draft directly,
+  // so the surface never closes and reopens between the two representations.
+  const adoptedRowId = openTarget?.kind === 'draft' && source.rows.some(row => row.id === adoptedDraftId)
+    ? adoptedDraftId : null;
   /* The conversation whose composer this route was asked to put the caret in. Held
        here because the request is cleared in the same commit that opens the row;
        dropped when the drawer closes. */
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
-  const openRowId = options?.enabled === false ? null : openTarget?.kind === 'row' ? openTarget.id : null;
+  const openRowId = options?.enabled === false ? null : openTarget?.kind === 'row' ? openTarget.id : adoptedRowId;
   const compactViewport = useCompactViewport();
   const compactComposer = options?.reportComposer !== undefined && compactViewport && options?.enabled !== false && options?.inline !== true;
   const dockRowId = compactComposer ? options?.reportComposer?.conversationId ?? null : null;
@@ -421,7 +428,6 @@ function useConversationPane(
   const plannerRow = source.planner !== null && openRowId === source.planner.cardId ? source.planner : null;
   const mentionTrigger = useMentionTrigger(useMentionSearch(transport, unauthorized,
     plannerRow === null ? null : plannerRow.areaId, source.scopeId));
-  const registry = useConversationRegistry();
   /* The open conversation's own composer: words and images live in the registry per conversation,
        so closing keeps them and switching shows the other conversation's own. */
   const composerId = scope?.cardId ?? null;
@@ -474,10 +480,14 @@ function useConversationPane(
     threadPresented && store.historyReady && !store.historyLoading && store.historyError === null);
 
   /* Only this route's slot is visible, reopenable or sendable here. */
-  const sourceScopeId = options?.slotId ?? source.scopeId;
   const draft = registry.draftOf(sourceScopeId);
-  const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
   const creating = draft?.creating ?? false;
+  const draftFocus = useMemo(() => ({ key: draft?.key ?? null, handle: createRef<ComposerFocusHandle>() }), [draft?.key]);
+  const onAdoptDraft = useCommittedCallback(draftFocus.key, (conversationId: string) => {
+    if (openTarget?.kind === 'draft' && options?.enabled !== false && draftFocus.handle.current?.ownsFocus()) {
+      setComposerFocusFor(conversationId);
+    }
+  });
   const discardUnsentDraft = registry.discardUnsentDraft;
   /* The new conversation's composer lives in the registry per Track, so closing, `+` and leaving keep its words. */
   const newConversationText = registry.newConversationComposerOf(sourceScopeId);
@@ -488,7 +498,8 @@ function useConversationPane(
 
   useConversationDraftRetention({ discardUnsentDraft, sourceScopeId });
 
-  useConversationDraftAdoption({ adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget });
+  useConversationDraftAdoption({ adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget,
+    selected: options?.enabled !== false && openTarget?.kind === 'draft' });
 
   const { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
     registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel,
@@ -498,6 +509,7 @@ function useConversationPane(
     supportsSideConversation: draftCapabilities.data?.conversationSide === true,
     openDraft: () => setOpenTarget({ kind: 'draft' }), closeView: () => setOpenTarget(null),
     onGone: () => go({ name: 'today' }),
+    onAdopt: onAdoptDraft,
   });
   const startAnother = start;
 
@@ -514,6 +526,9 @@ function useConversationPane(
   useConversationDraftAutoSend({ draftOpen, draft, creating: creating || managed.loading || draftCapabilities.isLoading, registry, sendDraft });
 
   const existingId = open?.id ?? null;
+  const retrySend = useCommittedCallback(existingId, () => {
+    if (open !== null && store.failedSend !== null && store.retrySend(store.failedSend.key)) focusComposer(open.id);
+  });
   const threadReadingView = useThreadReadingView(composerId);
   const newConversation = useCommittedCallback(existingId, startAnother);
   const interrupt = useCommittedCallback(existingId, store.interrupt);
@@ -688,16 +703,17 @@ function useConversationPane(
               <ChatFooterNotice>
                 {draft.error != null && <ChatFooterError message={draft.error} />}
                 {draft.remedy === 'retry' && (
-                  <ChatFooterRemedy disabled={creating} onClick={retryDraft}>Try again</ChatFooterRemedy>
+                  <ChatFooterRemedy disabled={creating} onClick={() => { if (retryDraft()) setComposerFocusRequest(count => count + 1); }}>Try again</ChatFooterRemedy>
                 )}
                 {draft.remedy === 'new-conversation' && (
-                  <ChatFooterRemedy disabled={creating} onClick={sendAsNewConversation}>
+                  <ChatFooterRemedy disabled={creating} onClick={() => { if (sendAsNewConversation()) setComposerFocusRequest(count => count + 1); }}>
                     Send as a new conversation
                   </ChatFooterRemedy>
                 )}
               </ChatFooterNotice>
             )}
             <ChatComposer layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={sendDraft} onNewConversation={options?.inline === true ? undefined : startAnother}
+              focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
               draft={{ text: newConversationText, onChange: setNewConversationText }}
               /* Menu membership and readiness come from the managed backend declarations. */
@@ -710,6 +726,7 @@ function useConversationPane(
         ) : open === null ? undefined : (
           <>
             {store.sending && !threadPresented && <ChatFooterNotice tone="neutral">Sending…</ChatFooterNotice>}
+            {store.awaitingConversationUpdate && <ChatFooterNotice tone="neutral">Waiting for conversation to update.</ChatFooterNotice>}
             {/* Each query owns its read retry; accepted sends keep their reconciliation fence (#2068). */}
             {(store.historyError !== null || store.runError !== null) && (
               <ErrorBox
@@ -733,7 +750,7 @@ function useConversationPane(
                   {/* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
                      No Edit here — an edited message is a new send under a new key, and the first may have arrived. */}
                   <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
-                    onClick={() => { if (store.failedSend !== null) store.retrySend(store.failedSend.key); }}>
+                    onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>
                   {/* Nothing of it comes back to the composer: it may already be delivered, and a read then shows it. */}
@@ -742,7 +759,7 @@ function useConversationPane(
                   </ChatFooterRemedy>
                 </> : <>
                   <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
-                    onClick={() => { if (store.failedSend !== null) store.retrySend(store.failedSend.key); }}>
+                    onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>
                   {/* Its words and images go back to the composer together; nothing already there is lost. */}

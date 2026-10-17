@@ -6,7 +6,7 @@ import { markdownExcerpt } from '../../../../../core/markdown/public.ts';
 // The conversation itself: a transcript and the box you write into. The unit is the
 // exchange — one thing you said and everything that came back.
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type Dispatch, type SetStateAction } from 'react';
+import { memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref, type Dispatch, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChatComposer as AstryxChatComposer,
@@ -479,10 +479,12 @@ export const COMPACT_CONVERSATION_COMMAND = Object.freeze({ id: 'compact-convers
 export const SIDE_CONVERSATION_COMMAND = Object.freeze({ id: 'side-conversation', label: 'Side conversation' });
 
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
+export type ComposerFocusHandle = Readonly<{ ownsFocus: () => boolean }>;
+
 export function ChatComposer({
   onSend, onStop, onCompact, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
   draft: controlledDraft, footerActions, sendAdornment,
-  drawer, headerActions, allowEmptyText = false, mentionTrigger, onFiles, layout = 'standard',
+  drawer, headerActions, allowEmptyText = false, mentionTrigger, onFiles, layout = 'standard', focusHandle,
 }: {
   /** Hand over the words, or return `false` when they were not taken and stay in the field. Words of a send taken
    * and later given back return through the caller's `draft`; the composer has no second way to restore them. */
@@ -508,6 +510,8 @@ export function ChatComposer({
   focusOnMount?: boolean;
   /** Each new value asks once for the caret, on a mounted composer (an Edit's refill); the same wait as after a send. */
   focusRequest?: number;
+  /** UI-only probe for a real owner handoff; cleanup never emits focus requests. */
+  focusHandle?: Ref<ComposerFocusHandle>;
   /** Per-conversation controls beside the field: a pass-through to Astryx's `footerActions` slot, because the controls need router state and `features/**` may not import `app/**`. */
   footerActions?: ReactNode;
   /** Compact pill layout uses the same editor and send callbacks. */
@@ -545,6 +549,11 @@ export function ChatComposer({
   /** The element this component last put focus on; `null` while no restore is in flight. */
   const parkedFocus = useRef<Element | null>(null);
   const answeredFocusRequest = useRef(focusRequest);
+  useImperativeHandle(focusHandle, () => ({ ownsFocus: () => {
+    const active = document.activeElement;
+    const message = messageInputRef.current?.querySelector('[contenteditable], textarea');
+    return active === message || (active === rootRef.current && wantsFieldFocus.current && parkedFocus.current === active);
+  } }), []);
 
   /* Put the caret back after a send, as a standing request: `disabled` goes true inside the very click that sends, Astryx turns the field `contenteditable="false"`, and Chromium hands the focus to `<body>`. While the field refuses focus it is parked on the composer's own box, and the restore continues only while focus is exactly where it was parked. */
   useEffect(() => {

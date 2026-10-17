@@ -27,12 +27,13 @@ export type ConversationDraftActionInput = Readonly<{
   openDraft: () => void;
   closeView: () => void;
   onGone: () => void;
+  onAdopt: (conversationId: string) => void;
 }>;
 
 /** A command assembly for this render's draft. Construction has no side effects;
  * dispatched attempts retain their original scope/key and settle through Registry. */
 export function createConversationDraftActions({ registry, draft, creating, source, sourceScopeId, transport,
-  supportsSideConversation, supportsDraftModel, supportsAssistantProviders, managedProviders, recheckManagedProviders, openDraft, closeView, onGone,
+  supportsSideConversation, supportsDraftModel, supportsAssistantProviders, managedProviders, recheckManagedProviders, openDraft, closeView, onGone, onAdopt,
 }: ConversationDraftActionInput) {
   /* Every draft write goes through one of these three, each a whole-object update,
        and each a no-op when the draft it was computed from is no longer the one held. */
@@ -83,6 +84,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
   /* `from` is not decoration: this runs after an `await`, and the reducer records
        the row only if `from` is still held. */
   const adopt = (from: ConversationDraftId, row: Conversation) => {
+    onAdopt(row.id);
     registry.adoptDraft(from, row.id);
     /* Nothing is minted for the first sentence here: the kernel writes it to the
            transcript at drain, and the item read serves it back. */
@@ -206,11 +208,11 @@ export function createConversationDraftActions({ registry, draft, creating, sour
   };
 
   const sendDraft = (text: string, answers = managedProviders) => {
-    if (creating || draft === null) return;
+    if (creating || draft === null) return false;
     /* The server refuses `text.trim().is_empty()` but counts `chars()` on the
            untrimmed text, in Unicode scalar values: so the blank check trims, the
            length check does not, and `Array.from` counts code points. */
-    if (text.trim() === '') return;
+    if (text.trim() === '') return false;
     if (Array.from(text).length > CONVERSATION_TEXT_MAX) {
       /* Shown back, but never recorded as sent: no request left the browser, so
          the key is untouched and the next press is not "the text changed". */
@@ -219,14 +221,15 @@ export function createConversationDraftActions({ registry, draft, creating, sour
         error: `This message is too long — the limit is ${CONVERSATION_TEXT_MAX} characters.`,
         remedy: null,
       });
-      return;
+      return false;
     }
-    if (refuseOfflineDraft(draft, text, answers)) return;
-    const current = admitDraft(draft); if (current === null) return;
+    if (refuseOfflineDraft(draft, text, answers)) return false;
+    const current = admitDraft(draft); if (current === null) return false;
     amendDraft(draft, { text, creating: true, error: null, remedy: null });
     /* Editing the text after a failure has to look at the list first: the old key may have succeeded with the old
        text, and only a re-read saying "no new row" earns a new key. */
     createDraft(draft, text, current, draft.sentText !== null && draft.sentText !== text ? 'retry' : null, answers);
+    return true;
   };
 
   async function handleCreateFailure(
@@ -280,28 +283,34 @@ export function createConversationDraftActions({ registry, draft, creating, sour
   }
 
   const sendAsNewConversation = () => {
-    if (creating || draft === null || draft.text === null) return;
+    if (creating || draft === null || draft.text === null) return false;
     const text = draft.text;
-    if (refuseOfflineDraft(draft, text)) return;
-    const current = admitDraft(draft); if (current === null) return;
+    if (refuseOfflineDraft(draft, text)) return false;
+    const current = admitDraft(draft); if (current === null) return false;
     amendDraft(draft, { creating: true, error: null, remedy: null });
     /* Pressed deliberately, but the same fence applies: a new key is only
        safe once the list has actually said the old one produced nothing. */
     createDraft(draft, text, current, 'new-conversation');
+    return true;
   };
 
-  /* Retry means the same draft again: same key, same words. */
+  /* Retry means the same draft again: same key, same words. The boolean reports
+     local takeover, not a dispatched/accepted POST or capability confirmation. */
   const retryDraft = () => {
-    if (creating || draft === null || draft.text === null) return;
-    if (draft.sentText !== null) { sendDraft(draft.sentText); return; }
+    if (creating || draft === null || draft.text === null) return false;
+    if (draft.sentText !== null) return sendDraft(draft.sentText);
     const text = draft.text;
+    if (!onlineManager.isOnline()) return false;
+    const current = admitDraft(draft); if (current === null) return false;
     amendDraft(draft, { creating: true });
     void recheckManagedProviders().then(answers => {
       amendDraft(draft, { creating: false });
+      if (!current()) return;
       sendDraft(text, answers);
     }).catch(() => {
       amendDraft(draft, { creating: false, error: 'Managed provider capabilities are unavailable. Reconnect before sending.', remedy: 'retry' });
     });
+    return true;
   };
 
   /* A draft no request was ever made for has no identity worth keeping; one that
