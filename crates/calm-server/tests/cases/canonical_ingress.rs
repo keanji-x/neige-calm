@@ -252,4 +252,14 @@ async fn unavailable_native_plain_send_persists_before_wake_and_replays_without_
     assert_eq!(status, StatusCode::OK, "{replay}");
     assert_eq!(replay, first);
     assert_eq!(fixture.carrier(track).await, before);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
+            .bind(&card)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 2,
+        "a retried send cannot leave an extra stored message"
+    );
 }
