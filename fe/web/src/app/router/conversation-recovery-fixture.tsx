@@ -1,3 +1,5 @@
+import { useLayoutEffect } from 'react';
+import { useConversationRegistry } from '../conversations/public.tsx';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -9,11 +11,12 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 export const RECOVERY_TEXT = 'Keep this message through recovery.';
 
 /** API-only faults; the router, outbox, read ordering and focus are production code. */
-export function renderRecoveryFixture({ accepted = false, holdReads = false, storeMessage = true, capabilitiesUnavailable = false, strict = false, recovery }: {
-  accepted?: boolean; holdReads?: boolean; storeMessage?: boolean; capabilitiesUnavailable?: boolean; strict?: boolean; recovery?: RecoveryAccess;
+export function renderRecoveryFixture({ accepted = false, holdReads = false, storeMessage = true, capabilitiesUnavailable = false, strict = false, recovery, createFailure, onDraftCommit }: {
+  accepted?: boolean; holdReads?: boolean; storeMessage?: boolean; capabilitiesUnavailable?: boolean; strict?: boolean; recovery?: RecoveryAccess; createFailure?: ApiTransportResponse; onDraftCommit?: (key: string | null) => void;
 } = {}) {
   let allowSend = accepted;
   let sent = false;
+  let sentText = RECOVERY_TEXT;
   let failedReads = false;
   let holdPost = false;
   let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; lastTurnCompletedAt: null } | null = null;
@@ -23,12 +26,18 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
   const heldCapabilities: (() => void)[] = [];
   const row = (cardId: string, user = false) => ({ id: user ? 2 : 1, card_id: cardId, track_id: 'daily', worker_session_id: 'runtime',
     thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: null, item_type: user ? 'userMessage' : 'agentMessage',
-    method: 'item/completed', params: JSON.stringify({ item: user ? { content: [{ text: RECOVERY_TEXT }] } : { text: 'A retained response.' } }), created_at_ms: user ? 2 : 1 });
+    method: 'item/completed', params: JSON.stringify({ item: user ? { content: [{ text: sentText }] } : { text: 'A retained response.' } }), created_at_ms: user ? 2 : 1 });
   const read = (body: () => unknown): ApiTransportResponse | Promise<ApiTransportResponse> => {
     const answer = () => failedReads ? { status: 500, statusText: 'Error', body: { error: 'Conversation refresh is unavailable.' } } : ok(body());
     return sent && holdReads ? new Promise(resolve => { heldReads.push(() => resolve(answer())); }) : answer();
   };
-  const view = renderDailyFixture({ strict, withTransport: recovery === undefined ? undefined : transport => createRecoveryTransports(transport, recovery).business,
+  function DraftCommitProbe() {
+    const registry = useConversationRegistry();
+    const key = registry.draftOf('daily')?.key ?? null;
+    useLayoutEffect(() => { onDraftCommit?.(key); }, [key]);
+    return null;
+  }
+  const view = renderDailyFixture({ strict, routeProbe: onDraftCommit === undefined ? undefined : <DraftCommitProbe />, withTransport: recovery === undefined ? undefined : transport => createRecoveryTransports(transport, recovery).business,
     initial: '/track/daily?panel=conversations', extraPlanner: true, reply: async request => {
     if (request.path === '/api/version') return ok({ assistantProviders: true, conversationCreateModel: true,
       webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'recovery-feedback' });
@@ -41,8 +50,13 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
       }]);
     }
     if (request.method === 'POST' && (request.path.endsWith('/planner/input') || request.path.endsWith('/conversations'))) {
-      if (!allowSend) throw new Error('The send response was lost.');
+      if (!allowSend) {
+        if (request.path.endsWith('/conversations') && createFailure !== undefined) return createFailure;
+        throw new Error('The send response was lost.');
+      }
       if (holdPost) await new Promise<void>(finish => { heldPosts.push(finish); });
+      if (request.body === null || typeof request.body !== 'object' || !('text' in request.body) || typeof request.body.text !== 'string') throw new Error('A send must carry text.');
+      sentText = request.body.text;
       sent = true;
       if (request.path.endsWith('/conversations')) {
         const key = request.headers?.['Idempotency-Key'];

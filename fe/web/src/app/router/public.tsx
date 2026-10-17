@@ -121,7 +121,7 @@ import { ReadReceiptsProvider, useReadReceipt, useReadReceipts } from '../provid
 import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, MobileConversationProvider, useMobileConversationOwner, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost } from '../shell/public.tsx';
 import {
-  ConversationProvider, useConversationRegistry,
+  ConversationProvider, useConversationRegistry, type ConversationDraftId,
 } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
@@ -483,7 +483,10 @@ function useConversationPane(
   const draft = registry.draftOf(sourceScopeId);
   const creating = draft?.creating ?? false;
   const draftFocus = useMemo(() => ({ key: draft?.key ?? null, handle: createRef<ComposerFocusHandle>() }), [draft?.key]);
-  const onAdoptDraft = useCommittedCallback(draftFocus.key, (conversationId: string) => {
+  // Rekey keeps this scope's event channel, but only the actual current attempt
+  // may hand focus to its adopted row. Its UI handle stays bound to that key.
+  const onAdoptDraft = useCommittedCallback(sourceScopeId, (from: ConversationDraftId, conversationId: string) => {
+    if (from.scopeId !== sourceScopeId || from.key !== draftFocus.key) return;
     if (openTarget?.kind === 'draft' && options?.enabled !== false && draftFocus.handle.current?.ownsFocus()) {
       setComposerFocusFor(conversationId);
     }
@@ -712,7 +715,8 @@ function useConversationPane(
                 )}
               </ChatFooterNotice>
             )}
-            <ChatComposer layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={sendDraft} onNewConversation={options?.inline === true ? undefined : startAnother}
+            {/* Initial submit hands words to the held draft, including refusal; only recovery uses the takeover boolean. */}
+            <ChatComposer layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
               focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
               draft={{ text: newConversationText, onChange: setNewConversationText }}

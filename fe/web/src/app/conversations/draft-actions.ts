@@ -27,7 +27,7 @@ export type ConversationDraftActionInput = Readonly<{
   openDraft: () => void;
   closeView: () => void;
   onGone: () => void;
-  onAdopt: (conversationId: string) => void;
+  onAdopt: (from: ConversationDraftId, conversationId: string) => void;
 }>;
 
 /** A command assembly for this render's draft. Construction has no side effects;
@@ -84,7 +84,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
   /* `from` is not decoration: this runs after an `await`, and the reducer records
        the row only if `from` is still held. */
   const adopt = (from: ConversationDraftId, row: Conversation) => {
-    onAdopt(row.id);
+    onAdopt(from, row.id);
     registry.adoptDraft(from, row.id);
     /* Nothing is minted for the first sentence here: the kernel writes it to the
            transcript at drain, and the item read serves it back. */
@@ -139,13 +139,14 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     return true;
   };
 
-  const admitDraft = (attempt: ConversationDraft): (() => boolean) | null => {
+  const admitDraft = (attempt: ConversationDraft, text: string): (() => boolean) | null => {
     try {
       const admitted = admitTransport(transport);
       const checkpoint = admitted.recovery?.checkpoint();
       return () => { try { checkpoint?.(); return true; } catch { return false; } };
     } catch {
-      amendDraft(attempt, { error: notSentText(attempt.sentText), remedy: 'retry' });
+      // Initial submit has handed these words to the held draft, even when no POST can leave.
+      amendDraft(attempt, { text, error: notSentText(attempt.sentText), remedy: 'retry' });
       return null;
     }
   };
@@ -224,7 +225,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
       return false;
     }
     if (refuseOfflineDraft(draft, text, answers)) return false;
-    const current = admitDraft(draft); if (current === null) return false;
+    const current = admitDraft(draft, text); if (current === null) return false;
     amendDraft(draft, { text, creating: true, error: null, remedy: null });
     /* Editing the text after a failure has to look at the list first: the old key may have succeeded with the old
        text, and only a re-read saying "no new row" earns a new key. */
@@ -286,7 +287,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     if (creating || draft === null || draft.text === null) return false;
     const text = draft.text;
     if (refuseOfflineDraft(draft, text)) return false;
-    const current = admitDraft(draft); if (current === null) return false;
+    const current = admitDraft(draft, text); if (current === null) return false;
     amendDraft(draft, { creating: true, error: null, remedy: null });
     /* Pressed deliberately, but the same fence applies: a new key is only
        safe once the list has actually said the old one produced nothing. */
@@ -301,7 +302,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     if (draft.sentText !== null) return sendDraft(draft.sentText);
     const text = draft.text;
     if (!onlineManager.isOnline()) return false;
-    const current = admitDraft(draft); if (current === null) return false;
+    const current = admitDraft(draft, text); if (current === null) return false;
     amendDraft(draft, { creating: true });
     void recheckManagedProviders().then(answers => {
       amendDraft(draft, { creating: false });

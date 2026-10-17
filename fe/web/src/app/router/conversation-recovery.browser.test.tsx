@@ -5,6 +5,7 @@ import { renderRecoveryFixture, RECOVERY_TEXT } from './conversation-recovery-fi
 import { queryKeys } from '../providers/queries.ts';
 import { onlineManager } from '@tanstack/react-query';
 import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
+import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import '../../styles/entry.css';
 
 // Keep the real retry/key/failure policy; backoff duration is outside this interaction contract.
@@ -178,5 +179,143 @@ it.each([false, true])('does not move focus or dispatch when recovery capture re
     await userEvent.click(retry);
     expect(document.activeElement).toBe(retry);
     expect(view.requests.filter(request => request.method === 'POST')).toHaveLength(before);
+  } finally { cleanup(); view.release(); view.client.clear(); }
+});
+
+const STALE_PAYLOAD: ApiTransportResponse = Object.freeze({ status: 409, statusText: 'Conflict', body: { code: 'idempotency_key_reused', error: 'This key used another message.' } });
+
+it.each(['new-conversation', 'edited-text'] as const)('preserves legitimate focus through a rendered draft rekey (%s)', async mode => {
+  const draftKeys = new Set<string>();
+  const view = renderRecoveryFixture({ createFailure: mode === 'new-conversation' ? STALE_PAYLOAD : undefined,
+    onDraftCommit: key => { if (key !== null) draftKeys.add(key); } });
+  try {
+    await open(true);
+    await expect.element(page.getByRole('button', { name: mode === 'new-conversation' ? 'Send as a new conversation' : 'Try again', exact: true })).toBeVisible();
+    const oldKey = view.requests.find(request => request.method === 'POST')?.headers?.['Idempotency-Key'];
+    expect(oldKey).toBeDefined();
+    view.allow(); view.pauseSend();
+    if (mode === 'new-conversation') await page.getByRole('button', { name: 'Send as a new conversation', exact: true }).click();
+    else {
+      await userEvent.type(field(), 'Edited recovery text.');
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+    }
+    await waitFor(() => expect(view.postHeld()).toBe(1));
+    const nextKey = view.requests.filter(request => request.method === 'POST').at(-1)?.headers?.['Idempotency-Key'];
+    expect(nextKey).toBeDefined();
+    expect(nextKey).not.toBe(oldKey);
+    await waitFor(() => expect(nextKey !== undefined && draftKeys.has(nextKey)).toBe(true));
+    await act(async () => { view.release(); await Promise.resolve(); });
+    await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
+    expect(document.activeElement).toBe(field());
+  } finally { cleanup(); view.release(); view.client.clear(); }
+});
+
+it.each(['new-conversation', 'edited-text'] as const)('keeps recovery focus when the rekey response is immediate (%s)', async mode => {
+  const view = renderRecoveryFixture({ createFailure: mode === 'new-conversation' ? STALE_PAYLOAD : undefined });
+  try {
+    await open(true);
+    await expect.element(page.getByRole('button', { name: mode === 'new-conversation' ? 'Send as a new conversation' : 'Try again', exact: true })).toBeVisible();
+    view.allow();
+    if (mode === 'new-conversation') await page.getByRole('button', { name: 'Send as a new conversation', exact: true }).click();
+    else {
+      await userEvent.type(field(), 'Edited recovery text.');
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+    }
+    await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
+    expect(document.activeElement).toBe(field());
+    expect(new Set(view.requests.filter(request => request.method === 'POST').map(request => request.headers?.['Idempotency-Key'])).size).toBe(2);
+  } finally { cleanup(); view.release(); view.client.clear(); }
+});
+
+it.each([
+  ['new-conversation', 'control'], ['new-conversation', 'close'], ['new-conversation', 'switch'],
+  ['edited-text', 'control'], ['edited-text', 'close'], ['edited-text', 'switch'],
+] as const)('preserves a later user choice after a rendered rekey (%s, %s)', async (mode, destination) => {
+  const draftKeys = new Set<string>();
+  const view = renderRecoveryFixture({ createFailure: mode === 'new-conversation' ? STALE_PAYLOAD : undefined,
+    onDraftCommit: key => { if (key !== null) draftKeys.add(key); } });
+  try {
+    await open(true);
+    await expect.element(page.getByRole('button', { name: mode === 'new-conversation' ? 'Send as a new conversation' : 'Try again', exact: true })).toBeVisible();
+    view.allow(); view.pauseSend();
+    if (mode === 'new-conversation') await page.getByRole('button', { name: 'Send as a new conversation', exact: true }).click();
+    else {
+      await userEvent.type(field(), 'Edited recovery text.');
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
+    }
+    await waitFor(() => expect(view.postHeld()).toBe(1));
+    const nextKey = view.requests.filter(request => request.method === 'POST').at(-1)?.headers?.['Idempotency-Key'];
+    await waitFor(() => expect(nextKey !== undefined && draftKeys.has(nextKey)).toBe(true));
+    const other = screen.getByRole('button', { name: 'Go to Today' });
+    if (destination === 'control') other.focus();
+    else {
+      await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+      await expect.element(page.getByRole('complementary', { name: 'Untitled', exact: true })).not.toBeInTheDocument();
+      if (destination === 'switch') await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+    }
+    await act(async () => { view.release(); await Promise.resolve(); });
+    await waitFor(() => expect(view.client.getQueryData<readonly { id: string }[]>(queryKeys.trackConversations('daily'))?.some(row => row.id === view.createdId())).toBe(true));
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
+    if (destination === 'control') { await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true')); expect(document.activeElement).toBe(other); }
+    else if (destination === 'close') expect(document.querySelector('[data-nc-drawer]')).toBeNull();
+    else expect(screen.getByRole('complementary', { name: 'Daily Planner conversation' })).toBeDefined();
+  } finally { cleanup(); view.release(); view.client.clear(); }
+});
+
+it.each([false, true])('consumes only the admitted first-message text after capability recovery (new unsent words: %s)', async changed => {
+  const view = renderRecoveryFixture({ capabilitiesUnavailable: true });
+  const unsent = 'A different idea saved for the next conversation.';
+  try {
+    await page.viewport(1400, 900);
+    await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    await waitFor(() => expect(view.client.getQueryData(['server-version'])).toBeDefined());
+    await userEvent.type(field(), RECOVERY_TEXT);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
+    // Initial submit hands its words to the held draft, including a local refusal.
+    expect(screen.getByText(RECOVERY_TEXT, { exact: true, selector: 'p' })).toBeDefined();
+    await expect.poll(() => field().textContent).toBe('');
+    expect(view.requests.filter(request => request.method === 'POST')).toHaveLength(0);
+    if (changed) { await userEvent.clear(field()); await userEvent.type(field(), unsent); }
+    view.allow(); view.recoverCapabilities();
+    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await waitFor(() => expect(view.capabilitiesHeld()).toBe(1));
+    await act(async () => { view.release(); await Promise.resolve(); });
+    await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
+    expect(view.requests.filter(request => request.method === 'POST').map(request => request.body)).toEqual([{ text: RECOVERY_TEXT, provider: 'codex' }]);
+    await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Close conversation', exact: true })).not.toBeInTheDocument();
+    await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    expect(field().textContent).toBe(changed ? unsent : '');
+  } finally { cleanup(); view.release(); view.client.clear(); }
+});
+
+it('retains locally refused first-message words when recovery capture fails', async () => {
+  const recovery = new RecoveryAccess(); recovery.change('connected');
+  const view = renderRecoveryFixture({ recovery });
+  try {
+    await page.viewport(1400, 900);
+    await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ }).hasAttribute('disabled')).toBe(false));
+    await userEvent.type(field(), RECOVERY_TEXT);
+    act(() => { recovery.change('recovering'); });
+    expect(recovery.read().phase).toBe('recovering');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
+    expect(recovery.read().phase).toBe('recovering');
+    expect(view.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations'))).toEqual([]);
+    expect(screen.queryByText('Sending…')).toBeNull();
+    // A refused local handoff must leave the actual words somewhere the reader can recover.
+    expect(field().textContent === RECOVERY_TEXT || screen.queryByText(RECOVERY_TEXT, { exact: true, selector: 'p' }) !== null).toBe(true);
+    act(() => { recovery.change('connected'); });
+    view.allow();
+    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
+    expect(document.activeElement).toBe(field());
+    expect(view.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).map(request => request.body)).toEqual([{ text: RECOVERY_TEXT, provider: 'codex' }]);
+    await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Close conversation', exact: true })).not.toBeInTheDocument();
+    await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+    expect(field().textContent).toBe('');
   } finally { cleanup(); view.release(); view.client.clear(); }
 });

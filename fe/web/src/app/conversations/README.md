@@ -85,3 +85,12 @@ completion or a late result in another view. A selected adopted draft resolves i
 real row directly; there is no intermediate closed drawer. Normalizing the target
 is conditional on that draft still being selected, while Registry adoption and
 the created row remain authoritative even after the user closes or switches.
+
+A legal retry rekey reports its actual scope/key at adoption. The scope's callback
+checks that identity against the current draft before probing its current UI
+handle; an old attempt cannot hand focus to another draft. Initial composer submit
+keeps the original void handoff into the held draft, including local refusals.
+Only recovery commands consume the local-takeover boolean, so a private retry
+cannot leave an extra restored copy in the next new-conversation composer.
+Initial admission also passes its actual text to the held-draft owner: recovery
+capture can refuse the POST without erasing the first sentence or inventing a send.
