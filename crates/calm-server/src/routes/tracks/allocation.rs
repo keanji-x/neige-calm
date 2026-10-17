@@ -25,6 +25,7 @@ pub(super) async fn allocate_track_structure_tx(
     replay_tx: Arc<OnceLock<String>>,
 ) -> Result<TrackAllocationWrite> {
     let CreateTrackOptions {
+        human_source,
         admin,
         managed_identity,
         creator,
@@ -39,6 +40,19 @@ pub(super) async fn allocate_track_structure_tx(
         workspace_plan,
         idempotency_claim,
     } = options;
+    if let Some(source) = &human_source {
+        source.require_area_tx(tx, &body_area_id).await?;
+        if let TrackInit::Fork { source_track_id } = &init {
+            source.require_track_tx(tx, source_track_id).await?;
+        }
+        if let FolderClaim::Enforce {
+            allow_cross_area_cwd: Some(cross),
+            ..
+        } = &folder_claim
+        {
+            source.require_area_tx(tx, cross.area_id.as_str()).await?;
+        }
+    }
     let (planner_card_id_for_tx, report_card_id_for_tx) = ids;
     let TrackAllocationOwners {
         write: write_for_tx,

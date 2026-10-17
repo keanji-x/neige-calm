@@ -961,6 +961,39 @@ impl SharedCodexAppServer {
 
     /// The caller's real source owner re-admits new native effects after this
     /// owner's awaited start gate/settings work. No credential enters this owner.
+    pub(crate) async fn thread_start_admitted_for_card<F, A>(
+        self: &Arc<Self>,
+        card_id: &str,
+        role: Option<CardRole>,
+        params: SharedThreadStartParams,
+        admit: F,
+    ) -> Result<String>
+    where
+        F: Fn() -> A + Send + Sync,
+        A: std::future::Future<Output = Result<()>> + Send,
+    {
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        admit().await?;
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.started_thread_params
+                .lock()
+                .expect("fake shared codex thread params mutex poisoned")
+                .push((
+                    params.developer_instructions.clone(),
+                    matches!(params.config, ThreadConfig::NoMcp),
+                    role,
+                ));
+        }
+        #[cfg(not(feature = "fixtures"))]
+        let _ = role;
+        self.thread_start_mint_inner_admitted(card_id, params, &admit)
+            .await
+            .map(|minted| minted.thread_id)
+    }
+
+    /// The retained caller uses the same admitted mint without historical role
+    /// observations. Its actual input owner proves the current source.
     pub(crate) async fn thread_start_mint_admitted_for_card<F, A>(
         self: &Arc<Self>,
         card_id: &str,
@@ -1401,6 +1434,29 @@ impl SharedCodexAppServer {
             &Arc::downgrade(&client),
             thread_id,
             turn_id,
+        );
+        Ok(())
+    }
+
+    /// One admitted control of an exact canonical execution. Connection waiting
+    /// precedes caller admission; the native owner then binds this one RPC to
+    /// its actual current client/proof. Internal socket queuing is that same RPC.
+    pub(crate) async fn interrupt_execution<'a>(
+        &self,
+        target: &crate::harness::backend::ExecutionEndTarget,
+        admission: &NativePromptAdmission<'a>,
+    ) -> Result<()> {
+        let client = self.connected_client().await?;
+        admission().await?;
+        let ticket = self.native_turns.begin_control(client, target)?;
+        ticket
+            .client
+            .turn_interrupt(&ticket.thread, &ticket.turn)
+            .await?;
+        self.native_turns.acknowledge_control_from_source(
+            &Arc::downgrade(&ticket.client),
+            &ticket.thread,
+            &ticket.turn,
         );
         Ok(())
     }

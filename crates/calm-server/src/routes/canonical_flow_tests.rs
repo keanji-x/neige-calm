@@ -26,6 +26,8 @@ const FIRST_BODY: &str = "Preserve this accepted input through native activation
 const THREAD: &str = "http-canonical-original-thread";
 const TURN: &str = "http-canonical-original-turn";
 
+mod control_tests;
+
 struct Fixture {
     repo: Arc<SqlxRepo>,
     root: tempfile::TempDir,
@@ -47,6 +49,21 @@ impl Fixture {
     }
 
     async fn application(&self) -> (AppState, axum::Router, String) {
+        self.application_with_historical_native(false).await
+    }
+
+    async fn application_with_historical_native(
+        &self,
+        running: bool,
+    ) -> (AppState, axum::Router, String) {
+        let (state, app, cookie, _) = self.application_with_auth(running).await;
+        (state, app, cookie)
+    }
+
+    async fn application_with_auth(
+        &self,
+        running: bool,
+    ) -> (AppState, axum::Router, String, AuthState) {
         let repo: Arc<dyn Repo> = self.repo.clone();
         let events = EventBus::new();
         let roles = crate::card_role_cache::CardRoleCache::new();
@@ -62,7 +79,7 @@ impl Fixture {
             events.clone(),
             WriteContext::new(roles.clone(), areas.clone()),
         ));
-        let state = AppState::from_parts(
+        let mut state = AppState::from_parts(
             repo,
             events,
             Arc::new(DaemonClient::new_stub()),
@@ -72,15 +89,21 @@ impl Fixture {
             Some(areas),
         )
         .with_workspace_root(self.root.path().join("workspaces"));
-        let app = super::application_router(
-            state.clone(),
-            AuthState::new(AuthConfig {
-                username: Some("jian".into()),
-                password: Some("fixture-password".into()),
-                dev_autologin: false,
-                display_name: "Jian".into(),
-            }),
-        );
+        if running {
+            state = state.with_shared_codex_appserver(
+                crate::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
+                    self.repo.clone(),
+                    None,
+                ),
+            );
+        }
+        let auth = AuthState::new(AuthConfig {
+            username: Some("jian".into()),
+            password: Some("fixture-password".into()),
+            dev_autologin: false,
+            display_name: "Jian".into(),
+        });
+        let app = super::application_router(state.clone(), auth.clone());
         let response = app
             .clone()
             .oneshot(
@@ -104,7 +127,7 @@ impl Fixture {
             .next()
             .unwrap()
             .to_owned();
-        (state, app, cookie)
+        (state, app, cookie, auth)
     }
 
     async fn carrier(&self, track: &str) -> (String, String, CanonicalHarnessSnapshot) {
@@ -217,6 +240,7 @@ async fn post(app: &axum::Router, cookie: &str, uri: &str, key: &str, body: Valu
 }
 
 mod cold_recovery_tests;
+mod historical_compatibility_tests;
 
 async fn original_input_flow(
     native_initially_available: bool,

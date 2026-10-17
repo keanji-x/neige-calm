@@ -95,7 +95,7 @@ async fn a_send_during_the_repoint_restart_waits_on_the_cards_lock() {
         )
         .await
         .unwrap();
-    let app = router(&state);
+    let app = router(&state).await;
     let (status, track) = request(
         app.clone(),
         "POST",

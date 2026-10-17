@@ -288,7 +288,9 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
 
 /// Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.
 /// Idle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.
-/// `IssuingTurn` also reports `stopped: false`: while `turn/start` is in flight the app-server may not know the turn yet, so the interrupt is dispatched best-effort but only `TurnRunning` guarantees a target.
+/// Historical `IssuingTurn` is best effort and reports `stopped: false`.
+/// Canonical issuance requires a confirmed exact native target and otherwise
+/// refuses with 409; an Actor label or operation payload cannot authorize Stop.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/interrupt",
@@ -296,14 +298,16 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
     params(("id" = String, Path, description = "Planner card id")),
     responses(
         (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)", body = InterruptPlannerCardResponse),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
+        (status = 401, description = "Canonical Stop requires a current verified Human source", body = ErrorBody),
+        (status = 403, description = "Planner card and current Area/private execution access required", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "No live session for this card; start a fresh one, history is kept (code `planner_harness_dormant`)", body = ErrorBody),
+        (status = 409, description = "No live session, changed original execution, or canonical issuance has no confirmed native target; retry Stop once the original turn is running. This refuses new control effects.", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn interrupt_planner_card(
     State(s): State<RouteState>,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<InterruptPlannerCardResponse>> {
@@ -329,6 +333,25 @@ pub(crate) async fn interrupt_planner_card(
         .ok_or_else(dormant)?;
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
 
+    let canonical =
+        crate::conversation_inputs::has_canonical_storage(s.repo.as_ref(), card.id.as_str())
+            .await?;
+    let canonical_source = if canonical {
+        let source = source.ok_or(CalmError::Unauthorized)?.0;
+        let (card, source_for_check) = (card.id.to_string(), source.clone());
+        crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let principal = source_for_check.current_principal()?;
+                crate::conversation_inputs::authorize_human_tx(tx, &principal, &card)
+                    .await
+                    .map(drop)
+            })
+        })
+        .await?;
+        Some(source)
+    } else {
+        None
+    };
     let phase = harness.runtime_header().await?.phase;
     // Dispatch for IssuingTurn too (best-effort), but only TurnRunning reports `stopped: true`.
     let dispatch = matches!(
@@ -337,11 +360,15 @@ pub(crate) async fn interrupt_planner_card(
     );
     let stopped = matches!(phase, HarnessPhaseTag::TurnRunning);
     if dispatch {
-        let payload = serde_json::to_value(PlannerHarnessInterruptOperationPayload {
-            worker_session_id: runtime.id.clone(),
-            reason: "user_stop".into(),
-        })?;
-        run_planner_card_operation(&s, "planner-harness-interrupt", payload).await?;
+        if let Some(source) = canonical_source {
+            harness.stop_canonical(source).await?;
+        } else {
+            let payload = serde_json::to_value(PlannerHarnessInterruptOperationPayload {
+                worker_session_id: runtime.id.clone(),
+                reason: "user_stop".into(),
+            })?;
+            run_planner_card_operation(&s, "planner-harness-interrupt", payload).await?;
+        }
     }
 
     tracing::info!(

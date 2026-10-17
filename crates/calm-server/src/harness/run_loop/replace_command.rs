@@ -32,13 +32,19 @@ fn refused(reason: impl std::fmt::Display) -> CalmError {
 /// Check, prepare with the provider, queue `entry` in memory, commit the removal, the message and
 /// the key in one transaction, then adopt the committed values in memory so no later snapshot
 /// rebuild overwrites them. Any failure puts the queue back as it was.
-pub(super) async fn handle_replace(
+pub(super) async fn handle_replace_admitted(
     inner: &Arc<Inner>,
     turn_id: &str,
     entry: QueueEntry,
     key: &SendKey,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<DurableAck> {
     let _issuance = inner.issuance.lock().await;
+    if let Some(source) = &source {
+        source
+            .require_card(inner.repo.as_ref(), inner.card_id.as_str())
+            .await?;
+    }
     if let Some(reader) = inner.backend.issuance_hold() {
         return Err(CalmError::Conflict(reader));
     }
@@ -90,6 +96,11 @@ pub(super) async fn handle_replace(
         .transcript_rows_of_thread(inner.card_id.as_str(), &thread_id)
         .await?;
     let plan = plan(&rows, turn_id).map_err(refused)?;
+    if let Some(source) = &source {
+        source
+            .require_card(inner.repo.as_ref(), inner.card_id.as_str())
+            .await?;
+    }
     let prepared = inner
         .backend
         .prepare_rewind(
@@ -158,7 +169,11 @@ pub(super) async fn handle_replace(
                     planned_rows: plan.row_count,
                     snapshot_value,
                     status: run_status_for(&state),
-                    send: DurableSendBinding::new(inner, key, ack.entry_id.as_ref()),
+                    send: {
+                        let mut send = DurableSendBinding::new(inner, key, ack.entry_id.as_ref());
+                        send.source = source;
+                        send
+                    },
                 },
             )
             .await
@@ -236,6 +251,9 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
         ),
         move |tx| {
             Box::pin(async move {
+                if let Some(source) = &send.source {
+                    source.require_card_tx(tx, card_id.as_str()).await?;
+                }
                 let removed_item_count = crate::db::sqlite::transcript_delete_thread_suffix_tx(
                     tx,
                     card_id.as_str(),

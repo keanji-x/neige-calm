@@ -328,7 +328,11 @@ async fn budget_control_sends_only_fixed_notice_to_original_native_turn() {
         "original-start",
     )
     .unwrap();
-    let report = backend.send_budget_notice(&notice).await;
+    let report = backend
+        .send_budget_notice(&notice, BudgetControlScope::Historical, &|| {
+            Box::pin(async { Ok(()) })
+        })
+        .await;
     assert!(
         matches!(report.delivery(), ControlDelivery::Accepted { native_turn_id } if native_turn_id == "original-turn")
     );

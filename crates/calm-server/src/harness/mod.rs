@@ -154,6 +154,41 @@ pub async fn spawn_recovered_harness(
     runtime: WorkerSessionProjection,
     claim_mode: ClaimMode,
 ) -> Result<RecoveryOutcome> {
+    spawn_recovered_harness_admitted(
+        repo,
+        events,
+        card_role_cache,
+        track_area_cache,
+        daemon,
+        seals,
+        claude,
+        registry,
+        track_delete_locks,
+        runtime,
+        claim_mode,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments, deprecated)]
+pub(crate) async fn spawn_recovered_harness_admitted(
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    card_role_cache: CardRoleCache,
+    track_area_cache: TrackAreaCache,
+    daemon: Arc<SharedCodexAppServer>,
+    seals: Arc<ThreadSeals>,
+    claude: &ClaudePlannerWiring,
+    registry: &HarnessRegistry,
+    track_delete_locks: &KeyedLocks,
+    runtime: WorkerSessionProjection,
+    claim_mode: ClaimMode,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<RecoveryOutcome> {
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
     // Boot has no current human invocation. In particular, neither an absent
     // pointer nor an old operation may route a V2 conversation into V1 replay,
     // credential setup or a newly minted native session. Explicit live-source
@@ -278,6 +313,9 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     }
     // The reservation sits after recovery replay, immediately before handle construction/install.
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
     let reservation = match claim_mode {
         ClaimMode::Replace | ClaimMode::ReplaceIfOpen => {
             registry.reserve_after_shutdown(runtime_id.clone()).await?
@@ -310,6 +348,9 @@ pub async fn spawn_recovered_harness(
             }
         }
     };
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
     if provider == AgentProvider::Claude {
         record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
@@ -334,6 +375,9 @@ pub async fn spawn_recovered_harness(
             .await?;
         }
     }
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
     let backend = PlannerBackend::open(
         provider,
         daemon,
@@ -352,6 +396,11 @@ pub async fn spawn_recovered_harness(
         },
     )
     .await?;
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
+    let source_repo = repo.clone();
+    let source_card = runtime.card_id.clone();
     let handle = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
@@ -369,6 +418,14 @@ pub async fn spawn_recovered_harness(
         snapshot: (snapshot).try_into()?,
     })
     .await?;
+    if let Some(source) = &source
+        && let Err(error) = source
+            .require_card(source_repo.as_ref(), &source_card)
+            .await
+    {
+        handle.shutdown().await?;
+        return Err(error);
+    }
     Ok(match install_or_shutdown(reservation, handle).await? {
         Some(handle) => RecoveryOutcome::Installed(handle),
         None => RecoveryOutcome::Skipped,

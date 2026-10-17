@@ -51,7 +51,7 @@ pub(crate) use attempt::{
     NativeAcceptanceReceipt, NativeRpcFailure, NonDispatchBasis, NonDispatchEvidence,
     RewindObservation, RewindReport,
 };
-pub(crate) use budget_control::{ControlAttemptReport, ControlDelivery};
+pub(crate) use budget_control::{BudgetControlScope, ControlDelivery};
 pub(crate) use execution_end::{
     ExecutionEndScope, ExecutionEndTarget, ExecutionInput, QualifiedExecutionEnd,
 };

@@ -75,14 +75,28 @@ impl ExecutionEndTarget {
 
 /// Only the adapter owner can construct this after inspecting its actual current
 /// native owner. Kept reusable across a canonical snapshot CAS retry.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct QualifiedExecutionEnd {
     target: ExecutionEndTarget,
+    terminal: Option<serde_json::Value>,
+}
+
+impl std::fmt::Debug for QualifiedExecutionEnd {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QualifiedExecutionEnd")
+            .field("target", &self.target)
+            .field("has_terminal", &self.terminal.is_some())
+            .finish()
+    }
 }
 
 impl QualifiedExecutionEnd {
     pub(crate) fn matches(&self, target: &ExecutionEndTarget) -> bool {
         &self.target == target
+    }
+    pub(crate) fn terminal(&self) -> Option<&serde_json::Value> {
+        self.terminal.as_ref()
     }
 }
 
@@ -91,15 +105,20 @@ impl PlannerBackend {
         &self,
         target: &ExecutionEndTarget,
     ) -> Result<Option<QualifiedExecutionEnd>> {
-        let qualified = match &self.0 {
-            Arm::Claude(session) => session.qualify_execution_end(target).await?,
-            Arm::Acp(session) => session.qualify_execution_end(target).await?,
+        let terminal = match &self.0 {
+            Arm::Claude(session) => session.qualify_execution_end(target).await?.then_some(None),
+            Arm::Acp(session) => session.qualify_execution_end(target).await?.then_some(None),
             Arm::Codex(daemon, owner) => {
-                owner.binding.matches(target) && daemon.qualify_execution_end(target)
+                if owner.binding.matches(target) {
+                    daemon.qualified_execution_terminal(target).map(Some)
+                } else {
+                    None
+                }
             }
         };
-        Ok(qualified.then(|| QualifiedExecutionEnd {
+        Ok(terminal.map(|terminal| QualifiedExecutionEnd {
             target: target.clone(),
+            terminal,
         }))
     }
 }

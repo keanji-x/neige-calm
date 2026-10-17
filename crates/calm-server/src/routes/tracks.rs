@@ -778,11 +778,11 @@ pub(crate) async fn get_track_detail(
     path = "/api/tracks",
     tag = "tracks",
     params(
-        ("Idempotency-Key" = Option<String>, Header, description = "Required with first_message; optional for message-less resource creation. A Human first message binds the original request, verified author and exact accepted message to this key. A same-author identical replay rechecks current Area access and returns the original resource acknowledgement without starting or recovering its old runtime. Different original input or an unproven historical binding is idempotency_key_reused. Historical #N delivery attempts are not adopted or implicitly retried. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Required with first_message; optional for message-less resource creation. The original key permanently selects its creation contract. New blank managed Codex inputs use canonical source-bound acceptance; variants requiring historical preparation retain their original fingerprint and delivery attempts under current deployment-owner/Private-resource authorization. An original canonical receipt is never downgraded. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation."),
     ),
     request_body = CreateTrackRequest,
     responses(
-        (status = 201, description = "Track created. With first_message, canonical input and its original acknowledgement have committed independently of native readiness. Acceptance does not promise execution has started. Identical authorized retries mint no second Track or message.", body = Track),
+        (status = 201, description = "Track created or its original acknowledgement replayed. Canonical first input commits independently of native readiness; historical preparation/start retains its original success contract. Identical authorized retries mint no second Track or message.", body = Track),
         (status = 400, description = "Invalid create/key/message. Fresh Human first-message creation currently supports a blank managed Track; attached cwd, template, recipe, fork, admin and cross-Area preparation are explicitly unsupported. These mutable preparation checks do not run on an accepted replay.", body = ErrorBody),
         (status = 401, description = "No verified live Human source for first_message, or the session is invalid or revoked", body = ErrorBody),
         (status = 403, description = "Registered current Area collaboration access is required for Human input; System targets are not Human Track creation", body = ErrorBody),
@@ -801,8 +801,18 @@ pub(crate) async fn create_track(
     State(codex): State<CodexShellState>,
     JsonBody(mut request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
-    if request.first_message.is_some() {
-        let source = source.ok_or(CalmError::Unauthorized)?.0;
+    let source = source.map(|source| source.0);
+    if request.first_message.is_some()
+        && create::first_message_storage_contract(
+            &s,
+            source.as_ref().ok_or(CalmError::Unauthorized)?,
+            &headers,
+            &request,
+        )
+        .await?
+            == crate::conversation_inputs::InputStorageContract::Canonical
+    {
+        let source = source.ok_or(CalmError::Unauthorized)?;
         let accepted = create::dormant::accept_dormant_human_track(
             s.clone(),
             source.clone(),
@@ -819,6 +829,12 @@ pub(crate) async fn create_track(
             source,
         );
         return Ok((StatusCode::CREATED, Json(accepted.track)).into_response());
+    }
+    let historical_source = source.map(crate::conversation_inputs::HistoricalHumanSource::new);
+    if let Some(source) = &historical_source {
+        source
+            .require_area(s.repo.as_ref(), request.area_id.as_str())
+            .await?;
     }
     if request.admin {
         super::track_report_blocks::require_rest_user_actor_for(
@@ -878,12 +894,16 @@ pub(crate) async fn create_track(
     // `message_less` carries the per-key claim guard that must be held until after the mint.
     let (plan, message_less) = match plan {
         create::CreatePlan::Resume(resume) => {
-            let track =
-                create::resume_prior_attempt(s, &create::KeyedActor::rest(&actor), resume).await?;
+            let track = create::resume_prior_attempt(
+                s,
+                &create::KeyedActor::rest(&actor, historical_source.clone()),
+                resume,
+            )
+            .await?;
             return Ok((StatusCode::CREATED, Json(track)).into_response());
         }
         create::CreatePlan::MessageLessResume(resume) => {
-            return create::resume_message_less(s, actor, resume).await;
+            return create::resume_message_less(s, actor, resume, historical_source).await;
         }
         create::CreatePlan::Legacy => (None, None),
         create::CreatePlan::Mint(plan) => (Some(plan), None),
@@ -940,6 +960,18 @@ pub(crate) async fn create_track(
     // `track_create_tx` stays a mechanical row insert. `materialize_workspace` runs after the
     // commit, so "non-201 ⇒ no side effect" is not a property of this handler.
 
+    if let Some(source) = &historical_source {
+        if let NamedSource::Fork(source_track_id) = &named_source {
+            source
+                .require_track(s.repo.as_ref(), source_track_id)
+                .await?;
+        }
+        if let Some(cross) = &allow_cross_area_cwd {
+            source
+                .require_area(s.repo.as_ref(), cross.area_id.as_str())
+                .await?;
+        }
+    }
     // The request's named source becomes the admitted source here, and only here.
     let source = named_source.resolve(&s).await?;
     // `template_input` is only accepted against a bound template whose owning plugin
@@ -1014,6 +1046,7 @@ pub(crate) async fn create_track(
         )
     };
     let options = CreateTrackOptions {
+        human_source: historical_source.clone(),
         admin,
         planner_provider,
         model,
@@ -1035,7 +1068,7 @@ pub(crate) async fn create_track(
         None => create_track_with_planner_harness(s, actor, p, options).await,
         Some(plan) => create::create_track_with_first_message(
             s,
-            &create::KeyedActor::rest(&actor),
+            &create::KeyedActor::rest(&actor, historical_source),
             p,
             options,
             plan,
@@ -1304,6 +1337,7 @@ enum TrackInit {
 }
 
 struct CreateTrackOptions {
+    human_source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     admin: bool,
     managed_identity: Option<crate::managed_track::ManagedTrackIdentity>,
     /// The Track whose Planner is creating this one with `neige_track_add`: its open-created cap is
@@ -1342,6 +1376,7 @@ async fn create_track_with_planner_harness(
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<Response> {
+    let human_source = options.human_source.clone();
     let area_id = options.body_area_id.clone();
     if s.repo.area_get(&area_id).await?.is_none() {
         return Err(CalmError::NotFound(format!("area {area_id}")));
@@ -1362,6 +1397,10 @@ async fn create_track_with_planner_harness(
         &CardId::from(planner_card_id.clone()),
     )
     .await;
+    let fence = match human_source {
+        Some(source) => fence.with_historical_human(s.planner_start_adapter.clone(), source),
+        None => fence,
+    };
     start_planner_harness(&fence, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
@@ -1372,6 +1411,7 @@ async fn create_track_structure(
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<(Track, bool, String, String)> {
+    let human_source = options.human_source.clone();
     let workspace_root_for_materialize = s.workspace_root.clone();
     let templates = s.templates;
     let planner_card_id = new_id();
@@ -1436,6 +1476,11 @@ async fn create_track_structure(
     // Materialize outside the transaction and before the planner harness starts. A failure
     // here MUST surface as a non-2xx; a 201 would leave a track whose first worker dies
     // with `spawn-failed`.
+    if let Some(source) = &human_source {
+        source
+            .require_track(s.repo.as_ref(), track.id.as_str())
+            .await?;
+    }
     crate::workspace_service::workspace_materialize::materialize_workspace(
         &track.workspace,
         &workspace_root_for_materialize,
@@ -1451,7 +1496,7 @@ async fn create_track_structure(
         error
     })?;
     // The attached twin of the managed materialization above, with the same contract.
-    crate::workspace_service::track_worktree::ensure_track_worktree(&track)
+    ensure_creation_worktree(&s, &track, human_source.as_ref())
         .await
         .map_err(|error| {
             tracing::error!(
@@ -1464,6 +1509,22 @@ async fn create_track_structure(
         })?;
 
     Ok((track, created, planner_card_id, report_card_id))
+}
+
+async fn ensure_creation_worktree(
+    state: &RouteState,
+    track: &Track,
+    source: Option<&crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<()> {
+    match source {
+        Some(source) => {
+            crate::workspace_service::track_worktree::ensure_track_worktree_admitted(track, || {
+                source.require_track(state.repo.as_ref(), track.id.as_str())
+            })
+            .await
+        }
+        None => crate::workspace_service::track_worktree::ensure_track_worktree(track).await,
+    }
 }
 
 /// Trusted callers reuse the ordinary cards, report initialization and workspace materialization.
@@ -1483,6 +1544,7 @@ pub(crate) async fn create_managed_track(
         .and_then(|id| s.templates.get(id))
         .ok_or_else(|| CalmError::Internal("managed Track template is not registered".into()))?;
     let options = CreateTrackOptions {
+        human_source: None,
         admin: false,
         managed_identity: Some(identity),
         creator: None,

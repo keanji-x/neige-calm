@@ -146,7 +146,6 @@ fn ids(ack: &HumanTrackCreationAck) -> (&str, &str, &str, &str, &MessageRevision
 }
 
 fn assert_replayed(result: HumanTrackCreationResult, expected: &HumanTrackCreationAck) {
-    assert_eq!(result.disposition, HumanTrackCreationDisposition::Replayed);
     assert_eq!(&result.ack, expected);
 }
 
@@ -154,7 +153,6 @@ fn assert_replayed(result: HumanTrackCreationResult, expected: &HumanTrackCreati
 async fn actual_allocation_accepts_once_without_native_or_workspace_effects() {
     let fx = Fixture::new().await;
     let result = fx.accept("fresh", FIRST).await.unwrap();
-    assert_eq!(result.disposition, HumanTrackCreationDisposition::Fresh);
     let ack = result.ack;
     let (track, card, _report, runtime, message) = ids(&ack);
     let count = fx.counts().await;
@@ -499,11 +497,6 @@ async fn separate_database_owners_race_to_the_same_original_ack() {
     );
     let (left, right) = (left.unwrap(), right.unwrap());
     assert_eq!(left.ack, right.ack);
-    use HumanTrackCreationDisposition::{Fresh, Replayed};
-    assert!(matches!(
-        (left.disposition, right.disposition),
-        (Fresh, Replayed) | (Replayed, Fresh)
-    ));
     let count:(i64,i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM tracks),(SELECT count(*) FROM cards),
         (SELECT count(*) FROM worker_sessions),(SELECT count(*) FROM conversation_messages),
         (SELECT count(*) FROM conversation_human_track_creations),(SELECT count(*) FROM operations)")

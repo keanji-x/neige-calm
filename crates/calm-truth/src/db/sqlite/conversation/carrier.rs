@@ -31,6 +31,11 @@ impl CurrentInputCarrier {
         &self.card_id
     }
 
+    /// Factual row state, not authority to start another operation.
+    pub fn is_execution_current(&self) -> bool {
+        self.execution_current
+    }
+
     pub(super) fn require_execution_current(&self) -> Result<()> {
         if !self.execution_current {
             return Err(CalmError::Conflict(
@@ -60,6 +65,17 @@ pub async fn current_input_carrier_tx(
     worker_session_id: &str,
 ) -> Result<CurrentInputCarrier> {
     load_input_carrier_tx(tx, card_id, worker_session_id, false).await
+}
+
+/// Recording a returned native fact is allowed on the same current failed
+/// carrier. Exact worker binding remains mandatory; claims/crossings still use
+/// the active-only loader and require_execution_current.
+pub async fn current_input_fact_carrier_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    worker_session_id: &str,
+) -> Result<CurrentInputCarrier> {
+    load_input_carrier_tx(tx, card_id, worker_session_id, true).await
 }
 
 /// Content remains saveable on the actual current failed carrier. This grants

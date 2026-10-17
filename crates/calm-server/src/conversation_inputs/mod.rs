@@ -3,9 +3,12 @@
 //! Canonical ingress checks this owner in its protected transaction. Key replay
 //! must check it before retrieving a stored result. Storage retains factual rules.
 mod execution;
+mod historical;
+pub(crate) use historical::HistoricalHumanSource;
 mod storage_contract;
 pub(crate) use storage_contract::{
-    has_canonical_storage, require_historical_storage, require_historical_storage_tx,
+    InputStorageContract, has_canonical_storage, human_input_storage_contract,
+    require_historical_storage, require_historical_storage_tx,
 };
 mod selection_read;
 pub(crate) use selection_read::SelectionReadAdmission;

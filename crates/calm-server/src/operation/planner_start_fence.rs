@@ -26,6 +26,10 @@ pub(crate) struct CardStartFence {
     card_id: CardId,
     repo: Arc<dyn RouteRepo>,
     operation_runtime: Arc<OperationRuntime>,
+    historical_human: Option<(
+        Arc<super::planner_harness_start_adapter::PlannerHarnessStartAdapter>,
+        crate::conversation_inputs::HistoricalHumanSource,
+    )>,
     _guard: PerCardLockGuard,
 }
 
@@ -44,8 +48,20 @@ impl CardStartFence {
             card_id: card_id.clone(),
             repo: repo.clone(),
             operation_runtime: operation_runtime.clone(),
+            historical_human: None,
             _guard: guard,
         }
+    }
+
+    /// Transient HTTP invocation context, never an authority inferred from an
+    /// Actor or stored operation. Internal historical callers keep `start`.
+    pub(crate) fn with_historical_human(
+        mut self,
+        adapter: Arc<super::planner_harness_start_adapter::PlannerHarnessStartAdapter>,
+        source: crate::conversation_inputs::HistoricalHumanSource,
+    ) -> Self {
+        self.historical_human = Some((adapter, source));
+        self
     }
 
     /// Retain the original card fence and request source until the owning
@@ -123,6 +139,20 @@ impl CardStartFence {
                 "a planner start for card {} was submitted under card {}'s start fence",
                 card_id, self.card_id
             )));
+        }
+        if let Some((registered, source)) = &self.historical_human {
+            source
+                .require_card(self.repo.as_ref(), card_id.as_str())
+                .await?;
+            let invocation = registered.historical_human_invocation(source.clone());
+            let result = self
+                .operation_runtime
+                .execute_with_adapter(registered.clone(), Arc::new(invocation), key, payload)
+                .await?;
+            source
+                .require_card(self.repo.as_ref(), card_id.as_str())
+                .await?;
+            return Ok(result);
         }
         let op_id = self
             .operation_runtime

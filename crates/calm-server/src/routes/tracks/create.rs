@@ -24,6 +24,7 @@ use crate::state::RouteState;
 use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
 
 mod creation_plan;
+pub(super) use creation_plan::first_message_storage_contract;
 mod delivery;
 pub(super) mod dormant;
 use delivery::{SubmitArm, start_planner_harness_with_first_message};
@@ -185,6 +186,7 @@ pub(super) const TRACK_ADD_KEY_PREFIX: &str = "track-add/";
 /// live, and that session's Planner card for the first-message delivery, an operation that may
 /// outlive the session.
 pub(super) struct KeyedActor {
+    pub(super) human_source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     pub(super) create: ActorId,
     pub(super) start: ActorId,
     /// The `actor` the delivery's payload hash binds; a REST create keeps the header's spelling.
@@ -194,8 +196,12 @@ pub(super) struct KeyedActor {
 }
 
 impl KeyedActor {
-    pub(super) fn rest(actor: &Actor) -> Self {
+    pub(super) fn rest(
+        actor: &Actor,
+        human_source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Self {
         Self {
+            human_source,
             create: actor.to_actor_id(),
             start: actor.to_actor_id(),
             start_label: actor.as_str().to_string(),
@@ -321,6 +327,11 @@ pub(super) async fn plan_keyed_create(s: &RouteState, request: KeyedCreate) -> R
         .track_create_idempotency_get(area_id, &idempotency_key)
         .await?;
     if let Some(binding) = binding.as_ref() {
+        crate::conversation_inputs::require_historical_storage(
+            s.repo.as_ref(),
+            &binding.planner_card_id,
+        )
+        .await?;
         ensure_binding_create_matches(
             binding,
             &create_request_sha256,
@@ -412,6 +423,11 @@ async fn plan_message_less(
             _same_key_claim: same_key_claim,
         }));
     };
+    crate::conversation_inputs::require_historical_storage(
+        s.repo.as_ref(),
+        &binding.planner_card_id,
+    )
+    .await?;
     // The create shape is permanent once its track commits, so a mismatching request is a
     // conflict rather than something to act on.
     ensure_binding_create_matches(
@@ -621,11 +637,19 @@ pub(super) async fn create_track_with_first_message(
 /// its workspace — the half both resuming arms share. `ensure_worktree` re-runs the track
 /// worktree ensure for an arm that submits the world as it is now; a replay passes `false`,
 /// because its recorded payload proves the mint's ensure succeeded.
-async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool) -> Result<Track> {
+async fn adopt_prior_track(
+    s: &RouteState,
+    track_id: &str,
+    planner_card_id: &str,
+    ensure_worktree: bool,
+    source: Option<&crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<Track> {
     // Direct replay materialization bypasses OperationRuntime, so take the same per-track
     // fence as lazy harness recovery; released before the operation is submitted to keep
     // the operation-drive → track-delete lock order.
     let track_delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, track_id).await;
+    crate::conversation_inputs::require_historical_storage(s.repo.as_ref(), planner_card_id)
+        .await?;
     // Fail closed: the binding row has no `ON DELETE CASCADE`, so a deleted track poisons
     // its key. 409 `idempotency_key_exhausted` is what makes the FE rotate to a fresh key.
     let track = s.repo.track_get(track_id).await?.ok_or_else(|| {
@@ -638,6 +662,11 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
     })?;
     // `Resume` re-materializes: a 201 for a track whose workspace does not exist would
     // replay the create failure one layer down. `materialize_workspace` is designed to be re-run.
+    if let Some(source) = source {
+        source
+            .require_track(s.repo.as_ref(), track.id.as_str())
+            .await?;
+    }
     crate::workspace_service::workspace_materialize::materialize_workspace(
         &track.workspace,
         &s.workspace_root,
@@ -664,7 +693,7 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
     // `idempotency_key_exhausted` mapping: that makes the FE rotate the key and mint a second
     // track, while a diverged checkout or a missing commit is the user's to fix.
     if ensure_worktree {
-        crate::workspace_service::track_worktree::ensure_track_worktree(&track).await?;
+        super::ensure_creation_worktree(s, &track, source).await?;
     }
     drop(track_delete_guard);
     Ok(track)
@@ -708,7 +737,9 @@ pub(super) async fn resume_prior_attempt(
     let track = adopt_prior_track(
         &s,
         &prior.track_id,
+        &prior.planner_card_id,
         matches!(prior.arm, PriorArm::GenuineRetry),
+        actor.human_source.as_ref(),
     )
     .await?;
     // The one place the two arms diverge: a replay owes the caller the selected
@@ -749,6 +780,7 @@ pub(super) async fn resume_message_less(
     s: RouteState,
     actor: Actor,
     resume: MessageLessResume,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<Response> {
     let MessageLessResume {
         track_id,
@@ -756,7 +788,7 @@ pub(super) async fn resume_message_less(
         report_card_id,
         _same_key_claim,
     } = resume;
-    let track = adopt_prior_track(&s, &track_id, true).await?;
+    let track = adopt_prior_track(&s, &track_id, &planner_card_id, true, source.as_ref()).await?;
     // Inside the same-key claim (`state.rs` lock order), and after `adopt_prior_track` let go of
     // `track_delete_locks`, which the fence never holds.
     let fence = CardStartFence::lock(
@@ -766,6 +798,10 @@ pub(super) async fn resume_message_less(
         &CardId::from(planner_card_id.clone()),
     )
     .await;
+    let fence = match source {
+        Some(source) => fence.with_historical_human(s.planner_start_adapter.clone(), source),
+        None => fence,
+    };
     match resumed_start(fence.conversation().await?)? {
         ResumedStart::Start => {
             super::start_planner_harness(&fence, &actor, &track, planner_card_id, report_card_id)

@@ -8,6 +8,10 @@ use sqlx::{Executor, Sqlite, Transaction};
 use crate::error::{Result, idempotency_binding_insert_error};
 use crate::model::now_ms;
 
+/// Versioned storage format of source-bound canonical send receipts. The prefix
+/// proves a persisted contract only; it never proves an author or grants access.
+pub const CANONICAL_PLANNER_INPUT_BINDING_PREFIX: &str = "v2:";
+
 /// What an earlier send under one key was answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannerInputBinding {

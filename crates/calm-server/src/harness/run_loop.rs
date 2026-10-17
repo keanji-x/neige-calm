@@ -343,6 +343,11 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    CanonicalInterrupt {
+        target: crate::harness::backend::ExecutionEndTarget,
+        source: crate::auth::HumanInputSource,
+        answer: oneshot::Sender<Result<()>>,
+    },
     CanonicalSource {
         input: calm_types::conversation::MessageRevisionRef,
         source: crate::auth::HumanInputSource,
@@ -363,6 +368,7 @@ enum HarnessObservationCommand {
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
         key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
         persisted: oneshot::Sender<Result<DurableAck>>,
     },
     /// A human edit or delete against one queue entry. Rides the same mpsc as every other command,
@@ -389,6 +395,7 @@ enum HarnessObservationCommand {
         turn_id: String,
         delivery: HarnessObservationDelivery,
         key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
         answer: oneshot::Sender<Result<DurableAck>>,
     },
 }
@@ -697,14 +704,30 @@ impl PlannerHarness {
         attachments: Vec<BoundAttachment>,
         key: SendKey,
     ) -> Result<DurableAck> {
-        self.observe_durable_entries(vec![QueueEntry::user_message(text, None, attachments)], key)
+        self.observe_user_message_admitted(text, attachments, key, None)
             .await
+    }
+
+    pub(crate) async fn observe_user_message_admitted(
+        &self,
+        text: String,
+        attachments: Vec<BoundAttachment>,
+        key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Result<DurableAck> {
+        self.observe_durable_entries(
+            vec![QueueEntry::user_message(text, None, attachments)],
+            key,
+            source,
+        )
+        .await
     }
 
     async fn observe_durable_entries(
         &self,
         entries: Vec<QueueEntry>,
         key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<DurableAck> {
         self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
@@ -724,6 +747,7 @@ impl PlannerHarness {
                     .try_send(HarnessObservationCommand::Durable {
                         deliveries,
                         key,
+                        source,
                         persisted,
                     })
                     .map_err(map_observation_send_error)?;
@@ -736,9 +760,13 @@ impl PlannerHarness {
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
                 let (ack, checkpoint) = stage_durable_entries(&self.inner, deliveries).await?;
-                if let Err(error) =
-                    persist_snapshot_for_durable_send(&self.inner, &key, ack.entry_id.as_ref())
-                        .await
+                if let Err(error) = persist_snapshot_for_durable_send(
+                    &self.inner,
+                    &key,
+                    ack.entry_id.as_ref(),
+                    source,
+                )
+                .await
                 {
                     restore_durable_user_message(&self.inner, checkpoint).await?;
                     return Err(error);
@@ -849,8 +877,34 @@ impl PlannerHarness {
     }
 
     pub async fn interrupt(&self, reason: String) -> Result<()> {
+        if self.inner.inputs.canonical().is_some() {
+            return Err(CalmError::Conflict(
+                "canonical Stop requires its current Human source".into(),
+            ));
+        }
         self.inner.historical_queue()?;
         issue_interrupt(&self.inner, reason).await
+    }
+
+    pub(crate) async fn stop_canonical(&self, source: crate::auth::HumanInputSource) -> Result<()> {
+        if self.inner.inputs.canonical().is_none() {
+            return Err(CalmError::Conflict("Stop contract changed".into()));
+        }
+        let target = canonical::control::select_human_stop(&self.inner, &source).await?;
+        let ObservationIngress::Running(sender) = &self.inner.observations else {
+            return Err(CalmError::Conflict("canonical runtime is closed".into()));
+        };
+        let (answer, result) = oneshot::channel();
+        sender
+            .try_send(HarnessObservationCommand::CanonicalInterrupt {
+                target,
+                source,
+                answer,
+            })
+            .map_err(map_observation_send_error)?;
+        result
+            .await
+            .map_err(|_| CalmError::Conflict("Stop owner closed before confirmation".into()))?
     }
 
     /// Replace the latest turn `turn_id` with one message under the send's key (#2043): the turn
@@ -862,6 +916,18 @@ impl PlannerHarness {
         text: String,
         attachments: Vec<BoundAttachment>,
         key: SendKey,
+    ) -> Result<DurableAck> {
+        self.replace_turn_admitted(turn_id, text, attachments, key, None)
+            .await
+    }
+
+    pub(crate) async fn replace_turn_admitted(
+        &self,
+        turn_id: String,
+        text: String,
+        attachments: Vec<BoundAttachment>,
+        key: SendKey,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<DurableAck> {
         self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
@@ -881,6 +947,7 @@ impl PlannerHarness {
                         turn_id,
                         delivery,
                         key,
+                        source,
                         answer,
                     })
                     .map_err(map_observation_send_error)?;
@@ -893,7 +960,14 @@ impl PlannerHarness {
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                replace_command::handle_replace(&self.inner, &turn_id, delivery.entry, &key).await
+                replace_command::handle_replace_admitted(
+                    &self.inner,
+                    &turn_id,
+                    delivery.entry,
+                    &key,
+                    source,
+                )
+                .await
             }
         }
     }
@@ -989,12 +1063,15 @@ impl PlannerHarness {
     }
 
     /// Runtime metadata has one representation and carries no human body queue.
-    /// A canonical read uses only its committed projection, never an empty V1.
+    /// Canonical metadata follows the actual committed carrier, including a
+    /// fact whose loop projection has not caught up yet. Never synthesize V1.
     pub async fn runtime_header(
         &self,
     ) -> Result<calm_types::harness::snapshot::HarnessRuntimeHeader> {
         match &self.inner.inputs {
-            RuntimeInputs::Canonical(inputs) => Ok(inputs.committed().await.snapshot.header),
+            RuntimeInputs::Canonical(_) => {
+                Ok(canonical::read_current(&self.inner).await?.snapshot.header)
+            }
             RuntimeInputs::Historical(_) => Ok(snapshot_for(&self.inner).await?.runtime_header()),
         }
     }
@@ -1532,6 +1609,9 @@ async fn run_loop(
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
+                    HarnessObservationCommand::CanonicalInterrupt { target, source, answer } => {
+                        canonical::control::manual(&inner, target, source, answer).await;
+                    }
                     HarnessObservationCommand::CanonicalSource { input, source, observed } => {
                         let result = match inner.inputs.canonical() {
                             Some(inputs) if !inner.shutting_down.load(Ordering::SeqCst) => {
@@ -1570,10 +1650,16 @@ async fn run_loop(
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
                     }
-                    HarnessObservationCommand::Durable { deliveries, key, persisted } => {
+                    HarnessObservationCommand::Durable { deliveries, key, source, persisted } => {
+                        if let Some(source) = &source
+                            && let Err(error) = source.require_card(inner.repo.as_ref(), inner.card_id.as_str()).await
+                        {
+                            let _ = persisted.send(Err(error));
+                            continue;
+                        }
                         let result = match stage_durable_entries(&inner, deliveries).await {
                             Ok((ack, checkpoint)) => {
-                                match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref()).await {
+                                match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref(), source).await {
                                     Ok(()) => Ok(ack),
                                     Err(error) => {
                                         match restore_durable_user_message(&inner, checkpoint).await {
@@ -1595,9 +1681,9 @@ async fn run_loop(
                         let outcome = handle_steer(&inner, &entry_id, if_entry_rev, &actor).await;
                         let _ = applied.send(outcome);
                     }
-                    HarnessObservationCommand::Replace { turn_id, delivery, key, answer } => {
+                    HarnessObservationCommand::Replace { turn_id, delivery, key, source, answer } => {
                         let outcome =
-                            replace_command::handle_replace(&inner, &turn_id, delivery.entry, &key).await;
+                            replace_command::handle_replace_admitted(&inner, &turn_id, delivery.entry, &key, source).await;
                         // A reply of the removed turn that failed to store stays live until the
                         // next turn starts; the turn is gone, so its text goes now.
                         if outcome.is_ok() {
@@ -1624,6 +1710,7 @@ async fn run_loop(
             _ = tick.tick() => {
                 if inner.inputs.canonical().is_some() {
                     if let Err(error) = canonical::tick(&inner).await {
+                        canonical::publish_issuance_error(&inner, &error).await;
                         tracing::warn!(%error, "canonical harness tick did not advance");
                     }
                     continue;
@@ -3942,7 +4029,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
     let compact_timed_out = matches!(&*inner.state.lock().await,
         HarnessState::Compacting { since } if since.elapsed() >= inner.config.interrupt_completion_budget)
         || matches!(&*inner.state.lock().await, HarnessState::CompactionRunning { started_at, .. } if started_at.elapsed() >= inner.config.max_turn_duration);
-    if compact_timed_out {
+    if compact_timed_out && inner.inputs.canonical().is_none() {
         compact_command::settle(
             inner,
             crate::harness::compact_outcome::CompactStatus::Unconfirmed,
@@ -3964,7 +4051,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
             _ => false,
         }
     };
-    if resume_elapsed {
+    if resume_elapsed && inner.inputs.canonical().is_none() {
         let mut state = inner.state.lock().await;
         if let HarnessState::Resumed { resumed_at } = &*state
             && Instant::now().duration_since(*resumed_at) >= inner.config.resumed_reconcile_budget
@@ -3976,9 +4063,20 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
         }
     }
 
-    if let Some((_, deadline)) = *inner.interrupt_deadline.lock().await
-        && Instant::now() >= deadline
-    {
+    let interrupt_expired = inner
+        .interrupt_deadline
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|(_, deadline)| Instant::now() >= *deadline);
+    if interrupt_expired {
+        if inner.inputs.canonical().is_some() {
+            return canonical::control::failed(
+                inner,
+                calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON,
+            )
+            .await;
+        }
         *inner.state.lock().await = HarnessState::Wedged {
             since: Instant::now(),
             reason: calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_REASON.into(),
@@ -4056,6 +4154,9 @@ async fn issue_interrupt_for_turn(
     target_turn_id: String,
     reason: String,
 ) -> Result<()> {
+    if inner.inputs.canonical().is_some() {
+        return canonical::control::timeout(inner, &target_turn_id).await;
+    }
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         return Ok(());
     };
@@ -4328,8 +4429,10 @@ async fn persist_snapshot_for_durable_send(
     inner: &Arc<Inner>,
     key: &SendKey,
     entry_id: Option<&QueueEntryId>,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<()> {
-    let bind = DurableSendBinding::new(inner, key, entry_id);
+    let mut bind = DurableSendBinding::new(inner, key, entry_id);
+    bind.source = source;
     if persist_snapshot_inner(inner, None, Some(bind)).await? {
         return Ok(());
     }
@@ -4350,6 +4453,7 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
 
 /// A durable send's key binding, written by the same transaction as the snapshot that holds it.
 struct DurableSendBinding {
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     idempotency_key: String,
     binding: crate::db::sqlite::PlannerInputBinding,
 }
@@ -4358,6 +4462,7 @@ impl DurableSendBinding {
     /// `key` bound to the answer this runtime gives: its session and the entry the message is in.
     fn new(inner: &Inner, key: &SendKey, entry_id: Option<&QueueEntryId>) -> Self {
         Self {
+            source: None,
             idempotency_key: key.idempotency_key.clone(),
             binding: crate::db::sqlite::PlannerInputBinding {
                 payload_hash: key.payload_hash.clone(),
@@ -4386,12 +4491,17 @@ async fn persist_snapshot_inner(
                 "historical snapshot mutation cannot change canonical input".into(),
             ));
         }
-        // Every canonical mutation has already committed through its fact/frame
-        // owner. Never serialize the historical cache over that current frame.
-        return Ok(true);
+        return Err(CalmError::Conflict(
+            "canonical runtime mutations require their committed frame owner".into(),
+        ));
     }
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
+    if let Some(source) = send.as_ref().and_then(|send| send.source.as_ref()) {
+        source
+            .require_card(inner.repo.as_ref(), inner.card_id.as_str())
+            .await?;
+    }
     flush_dropped_announcements(inner).await?;
     let mut snapshot = snapshot_for(inner).await?;
     if let Some(head) = last_seen_head_override {
@@ -4416,6 +4526,9 @@ async fn persist_snapshot_inner(
 
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
+            if let Some(source) = send.as_ref().and_then(|send| send.source.as_ref()) {
+                source.require_card_tx(tx, &bound_card_id).await?;
+            }
             let written = crate::db::sqlite::session_set_handle_state_tx(
                 tx,
                 &runtime_id,

@@ -51,6 +51,9 @@ pub(in crate::harness::run_loop) async fn on_notification(
         PlannerEventKind::TurnAborted { .. } | PlannerEventKind::ThreadIdle => {
             consume_end(inner).await?;
         }
+        PlannerEventKind::ThreadSystemError => {
+            super::control::failed(inner, HARNESS_SYSTEM_ERROR_REASON).await?;
+        }
         _ => {}
     }
     Ok(())
@@ -65,7 +68,7 @@ async fn consume_end(inner: &Arc<Inner>) -> Result<()> {
     )
     .await?
     {
-        publish(inner, written(done)?).await;
+        publish_end(inner, done).await?;
     }
     Ok(())
 }

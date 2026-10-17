@@ -11,6 +11,7 @@ mod recovery;
 #[derive(Clone)]
 pub(super) enum StartInvocation {
     Registered,
+    HistoricalHuman(crate::conversation_inputs::HistoricalHumanSource),
     Retained {
         source: HumanInputSource,
         workspace_root: PathBuf,
@@ -58,9 +59,9 @@ impl PlannerHarnessStartAdapter {
                 source,
                 workspace_root,
             } => Ok((source, workspace_root)),
-            StartInvocation::Registered => Err(CalmError::Conflict(
-                "retained activation requires a current human request".into(),
-            )),
+            StartInvocation::Registered | StartInvocation::HistoricalHuman(_) => Err(
+                CalmError::Conflict("retained activation requires a current human request".into()),
+            ),
         }
     }
 

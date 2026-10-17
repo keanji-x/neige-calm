@@ -6,6 +6,90 @@ use super::*;
 use crate::db::sqlite::TrackWorkspacePlan;
 use std::path::PathBuf;
 
+/// Permanent receipts decide first; a new key uses the creation owner's static
+/// capability. Runtime readiness and execution permission never choose storage.
+pub(in crate::routes::tracks) async fn first_message_storage_contract(
+    state: &RouteState,
+    source: &crate::auth::HumanInputSource,
+    headers: &HeaderMap,
+    request: &CreateTrackRequest,
+) -> Result<crate::conversation_inputs::InputStorageContract> {
+    use crate::conversation_inputs::InputStorageContract;
+    let key = track_create_key(headers)?.ok_or_else(|| {
+        CalmError::BadRequest(
+            "Idempotency-Key header is required when first input is accepted".into(),
+        )
+    })?;
+    let text = request
+        .first_message
+        .as_deref()
+        .ok_or_else(|| CalmError::BadRequest("first input is missing".into()))?;
+    validate_first_message(text)?;
+    let source = source.clone();
+    let area_id = request.area_id.to_string();
+    let supports_canonical = canonical_creation_supported(request);
+    crate::db::write_in_tx_typed(state.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let principal = source.current_principal()?;
+            let area = crate::organization_access::require_area_access_tx(
+                tx,
+                &area_id,
+                &principal,
+                calm_types::organization::AreaAccess::Collaborate,
+            )
+            .await?;
+            if crate::db::sqlite::conversation::human_track_creation_get_tx(tx, &area_id, &key)
+                .await?
+                .is_some()
+            {
+                return Ok(InputStorageContract::Canonical);
+            }
+            if let Some(binding) =
+                crate::db::sqlite::track_create_idempotency_get_tx(tx, &area_id, &key).await?
+            {
+                return Ok(
+                    if crate::db::sqlite::conversation::card_has_canonical_storage(
+                        tx,
+                        &binding.planner_card_id,
+                    )
+                    .await?
+                    {
+                        InputStorageContract::Canonical
+                    } else {
+                        InputStorageContract::Historical
+                    },
+                );
+            }
+            if super::dormant::prior_start_attempt_tx(tx, &area_id, &key).await? {
+                return Ok(InputStorageContract::Historical);
+            }
+            Ok(
+                if supports_canonical && area.kind == crate::model::AreaKind::User {
+                    InputStorageContract::Canonical
+                } else {
+                    InputStorageContract::Historical
+                },
+            )
+        })
+    })
+    .await
+}
+
+// The one creation-owned capability rule; both dispatch and allocation consume
+// it. Historical compatibility stops creating these variants when their full
+// canonical preparation/start path is implemented.
+fn canonical_creation_supported(request: &CreateTrackRequest) -> bool {
+    request.planner_provider == crate::session_projection_repo::AgentProvider::Codex
+        && !request.admin
+        && request.cwd.is_none()
+        && !request.attach_folder
+        && request.template_id.is_none()
+        && request.recipe_id.is_none()
+        && request.template_input.is_none()
+        && request.fork_report_from.is_none()
+        && request.allow_cross_area_cwd.is_none()
+}
+
 impl CreateRequestShape {
     /// Capture the caller's spelling before any normalization or admission.
     /// The existing digest owner, including its legacy omissions, stays shared.
@@ -86,15 +170,7 @@ impl HumanTrackCreationPlan {
     /// catalog, filesystem or provider check can make an accepted replay mint.
     pub(super) fn into_allocation(self) -> Result<(NewTrack, CreateTrackOptions, String)> {
         let request = self.request;
-        if request.admin
-            || request.cwd.is_some()
-            || request.attach_folder
-            || request.template_id.is_some()
-            || request.recipe_id.is_some()
-            || request.template_input.is_some()
-            || request.fork_report_from.is_some()
-            || request.allow_cross_area_cwd.is_some()
-        {
+        if !canonical_creation_supported(&request) {
             return Err(CalmError::BadRequest(
                 "dormant Human acceptance supports only a new blank keyed managed Track Planner"
                     .into(),
@@ -125,6 +201,7 @@ impl HumanTrackCreationPlan {
             theme: request.theme,
         };
         let options = CreateTrackOptions {
+            human_source: None,
             admin: false,
             managed_identity: None,
             creator: None,

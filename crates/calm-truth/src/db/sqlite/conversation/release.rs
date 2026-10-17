@@ -2,7 +2,7 @@
 //! identity; delivery proof is re-read from the existing owned checkpoint.
 use super::carrier::save_input_carrier_tx;
 use super::{
-    CurrentInputCarrier, current_input_carrier_tx, message_tx, revision_tx, submission_plan_tx,
+    CurrentInputCarrier, current_input_fact_carrier_tx, message_tx, revision_tx, submission_plan_tx,
 };
 use crate::error::{CalmError, Result};
 use calm_types::conversation::{
@@ -18,7 +18,8 @@ pub async fn release_submission_tx(
 ) -> Result<serde_json::Value> {
     // Discard a caller's cached facts, including any unpersisted local report or
     // queue view. Only the current fenced SQLite checkpoint authorizes release.
-    *carrier = current_input_carrier_tx(tx, &carrier.card_id, &carrier.worker_session_id).await?;
+    *carrier =
+        current_input_fact_carrier_tx(tx, &carrier.card_id, &carrier.worker_session_id).await?;
     let checkpoint = carrier
         .checkpoint
         .attempt(&attempt.submission_id)

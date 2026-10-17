@@ -9,6 +9,7 @@ use calm_types::conversation::{HumanPayload, InputDeliveryFact};
 use serde_json::json;
 
 mod content_tests;
+mod control_tests;
 mod selection_authority_tests;
 
 struct Fixture {
@@ -24,6 +25,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_config(HarnessConfig::default()).await
+    }
+
+    async fn with_config(config: HarnessConfig) -> Self {
         let original = ExistingRuntime::new().await;
         let inner = &original.harness.inner;
         let auth = crate::auth::AuthState::new(crate::auth::AuthConfig {
@@ -106,7 +111,7 @@ impl Fixture {
             track_area_cache: inner.track_area_cache.clone(),
             backend,
             live_replies: registry.live_replies().clone(),
-            config: inner.config,
+            config,
             snapshot: HarnessRuntimeSnapshot::decode(serde_json::to_value(snapshot).unwrap())
                 .unwrap(),
         })

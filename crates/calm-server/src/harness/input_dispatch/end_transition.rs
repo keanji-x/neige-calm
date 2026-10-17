@@ -6,14 +6,14 @@ use sqlx::{Sqlite, Transaction};
 
 use crate::db::sqlite::conversation::{
     OriginalInputExecution, RuntimeExecutionFence, RuntimeFrameAfterWrite,
-    complete_input_execution_tx, current_input_carrier_tx, original_input_execution_tx,
+    complete_input_execution_tx, current_input_fact_carrier_tx, original_input_execution_tx,
 };
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::Result;
 use crate::harness::backend::{
     ExecutionEndScope, ExecutionEndTarget, PlannerBackend, QualifiedExecutionEnd,
 };
-use crate::harness::profile::input_carrier_binding_tx;
+use crate::harness::profile::input_carrier_contract_tx;
 
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
@@ -30,11 +30,11 @@ async fn sample_tx(
     runtime: &str,
     provider: &AgentProvider,
 ) -> Result<Option<Sample>> {
-    let carrier = current_input_carrier_tx(tx, card, runtime).await?;
+    let carrier = current_input_fact_carrier_tx(tx, card, runtime).await?;
     let Some(original) = original_input_execution_tx(tx, &carrier).await? else {
         return Ok(None);
     };
-    let (binding, current) = input_carrier_binding_tx(tx, &carrier).await?;
+    let (binding, current) = input_carrier_contract_tx(tx, &carrier).await?;
     let ConversationExecutionProvenance::LegacySingleUserDeployment {
         provider: recorded_provider,
         profile,
@@ -83,6 +83,19 @@ async fn sample_tx(
     }))
 }
 
+/// The same original Initial/proof association used for END qualification.
+/// A returned value is correlation, never permission to send a control.
+pub(crate) async fn execution_target_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    runtime: &str,
+    provider: &AgentProvider,
+) -> Result<Option<ExecutionEndTarget>> {
+    Ok(sample_tx(tx, card, runtime, provider)
+        .await?
+        .map(|sample| sample.target))
+}
+
 async fn consume_tx(
     tx: &mut Transaction<'_, Sqlite>,
     provider: &AgentProvider,
@@ -129,6 +142,27 @@ pub(crate) async fn complete_once(
     let Some(observed) = backend.qualify_execution_end(&sampled.target).await? else {
         return Ok(None);
     };
+    if let Some(terminal) = observed.terminal() {
+        let mut terminal = terminal.clone();
+        crate::harness::turn_outcome::canonical_diagnostic(&mut terminal);
+        if let ExecutionEndScope::NativeTurn {
+            thread_id,
+            native_turn_id,
+        } = &sampled.target.scope
+        {
+            crate::harness::turn_outcome::record(
+                repo,
+                &sampled.target.worker_session_id,
+                &sampled.target.card_id,
+                &sampled.target.track_id,
+                thread_id,
+                native_turn_id,
+                &terminal,
+                crate::harness::turn_outcome::Confirmation::ProviderTerminal,
+            )
+            .await?;
+        }
+    }
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move { consume_tx(tx, &provider, &sampled, &observed).await })
     })
