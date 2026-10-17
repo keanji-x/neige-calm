@@ -73,7 +73,7 @@
 # serde/schema oracle, generated declarations, actual-response fixtures, and existing TxOutput key reads.
 # harness_item/crates 288 -> 296 covers the existing transcript repository read and tests
 # of projection failure, restart transfer and provider-bound acceptance on the frozen table.
-# harness_item/fe 106 -> 122 covers existing wire-row/derivation imports, fixtures and query keys
+# harness_item/fe 106 -> 124 covers existing wire-row/derivation imports, fixtures and query keys
 # used to pin canonical identity, acknowledgements and page handoff. No new domain name,
 # excluded file, pattern, count rule or executable policy is introduced; ordinary additional
 # contract references update this counted baseline without adding a file/test roster.
