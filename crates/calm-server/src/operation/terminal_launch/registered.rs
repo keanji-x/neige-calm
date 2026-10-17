@@ -279,7 +279,11 @@ pub(crate) async fn launch(
     #[cfg(feature = "fixtures")]
     crate::test_seams::crash_point("terminal-prepared-before-launch");
     let reply = match prepared {
-        ExecutionReply::Prepared => {
+        ExecutionReply::Prepared
+        | ExecutionReply::Receipt {
+            state: ExecutionState::Prepared,
+            receipt: None,
+        } => {
             admit_new_crossing(op, grant, &pool).await?;
             client
                 .request(ExecutionRequest::Launch(consume(&original.request)))
