@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { markdownExcerpt } from '../../../../../core/markdown/public.ts';
 import { opensExchange, type TranscriptEntry } from '../../../../../core/domain/conversation.ts';
+import { scrollGeometry } from '../../../ui/drawer/scroll-geometry.ts';
 import { EdgeNavigator } from '../../../ui/edge-navigation/public.tsx';
 import { observeResize } from '../../../ui/edge-navigation/resize.ts';
 import { useState } from '../../../ui/state/public.ts';
@@ -38,16 +39,16 @@ export const ExchangeNavigation = memo(function ExchangeNavigation({ turns, fram
 
     const read = () => {
       if (scroller.clientHeight === 0) return;
-      const pane = scroller.getBoundingClientRect();
+      const pane = scrollGeometry(scroller);
       const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
       const slid = Math.min(scroller.scrollTop, Math.max(0, pane.height - remaining));
-      const edge = Math.min(pane.bottom, pane.top + ACTIVE_MARKER_SLACK_PX + slid);
+      const edge = Math.min(pane.height, ACTIVE_MARKER_SLACK_PX + slid);
       // Exchange markers follow vertical transcript flow, so preceding history
       // does not need a full geometry scan or a retained position cache.
       let low = 0; let high = markers.length;
       while (low < high) {
         const middle = Math.floor((low + high) / 2);
-        if (markers[middle].getBoundingClientRect().top <= edge) low = middle + 1;
+        if (pane.y(markers[middle].getBoundingClientRect().top) <= edge) low = middle + 1;
         else high = middle;
       }
       const id = markers[Math.max(0, low - 1)]?.dataset.ncExchange;
@@ -118,5 +119,5 @@ function exchangePosition(frame: HTMLElement | null, id: string): (() => void) |
   if (marker === undefined) return null;
   const scroller = marker.closest<HTMLElement>('[data-nc-drawer-scroll]');
   if (scroller === null) return null;
-  return () => { scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top; };
+  return () => { scroller.scrollTop += scrollGeometry(scroller).y(marker.getBoundingClientRect().top); };
 }
