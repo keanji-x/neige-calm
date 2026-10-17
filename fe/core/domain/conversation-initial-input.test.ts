@@ -313,3 +313,26 @@ it('accepts higher actual source versions and rejects observations below or inco
   expect(withConfirmedSends([source], [handed], [])).toEqual([source]);
   expect(withConfirmedSends([], [handed], [])).toEqual([]);
 });
+
+it.each(['normal', 'delayed PATCH'] as const)('keeps a same-revision Delete stronger than a positive PATCH ACK in %s response order', order => {
+  const patch = { card_id: 'card', entry_id: receipt.entryId, rev: 1, text: 'Actual stored revision one' };
+  const removed = { ...patch, text: null };
+  const writes = order === 'normal' ? [patch, removed] : [removed, patch];
+  const ops = acknowledgeQueueMutation(acknowledgeQueueMutation([accepted], writes[0]), writes[1]);
+  const op = ops[0]; if (op.phase !== 'initial-accepted') throw new Error('Expected acceptance');
+  expect(currentInitialInput(op)).toEqual({ kind: 'write', rev: 1, text: null });
+  expect(acknowledgeQueueMutation(ops, { ...patch, rev: 0 })[0]).toBe(op);
+  const cached = { entry_id: receipt.entryId, rev: 1, text: patch.text, queued_at_ms: 100 };
+  const staleSource = { id: '7:0', author: 'you' as const, text: patch.text, atMs: 2, queueEntryId: receipt.entryId,
+    inputSource: { itemId: 7, segmentIndex: 0, turnId: null, entryRev: 1 } };
+  expect(withConfirmedSends([staleSource], ops, [])).toEqual([]);
+  expect(initialInputQueueView([cached], op, undefined, 100).entries).toEqual([]);
+  const newer = { ...cached, rev: 2, text: 'Actual strictly newer restored input' };
+  const restored = withInitialInputFacts(op, [{ kind: 'queue', entryId: receipt.entryId, rev: newer.rev, text: newer.text }]);
+  expect(currentInitialInput(restored)).toEqual({ kind: 'observed', rev: 2, text: newer.text });
+  expect(initialInputQueueView([newer], restored, undefined, 100).entries).toEqual([newer]);
+  expect(withConfirmedSends([], [restored], []).map(entry => 'text' in entry ? entry.text : entry.author)).toEqual([newer.text]);
+  const acknowledgedRestore = acknowledgeQueueMutation(ops, { ...patch, rev: 2, text: newer.text })[0];
+  if (acknowledgedRestore.phase !== 'initial-accepted') throw new Error('Expected acceptance');
+  expect(currentInitialInput(acknowledgedRestore)).toEqual({ kind: 'write', rev: 2, text: newer.text });
+});

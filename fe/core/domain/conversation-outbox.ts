@@ -114,7 +114,7 @@ function importInitialInput(op: AcceptedInitialInput,
   let next: AcceptedInitialInput;
   if (fact.kind === 'write') {
     if (op.localWrite !== null && (fact.value.rev < op.localWrite.rev
-      || (fact.value.rev === op.localWrite.rev && fact.value.text === op.localWrite.text))) return op;
+      || (fact.value.rev === op.localWrite.rev && (op.localWrite.text === null || fact.value.text === op.localWrite.text)))) return op;
     next = { ...op, localWrite: fact.value };
   } else {
     if (op.inputFact !== null && (fact.value.rev < op.inputFact.rev || (fact.value.rev === op.inputFact.rev
