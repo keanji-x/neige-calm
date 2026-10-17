@@ -107,6 +107,13 @@ async fn idle_harness(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            track.id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id,
         track_id: track.id.clone(),
         card_id: card.id,
@@ -115,7 +122,7 @@ async fn idle_harness(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
         snapshot,

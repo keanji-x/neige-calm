@@ -27,6 +27,13 @@ async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
         seed_active_planner_runtime_row(boot, &card, Some(thread.clone()), Some(snapshot.clone()))
             .await;
     let handle = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -35,7 +42,7 @@ async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),

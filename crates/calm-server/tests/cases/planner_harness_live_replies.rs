@@ -618,6 +618,13 @@ async fn a_harness_that_loses_its_start_leaves_the_installed_harness_streaming()
     let stale = boot.registry.try_reserve(runtime.clone()).unwrap();
     let (_winner, _) = boot.registry.reserve_replacing(runtime.clone());
     let loser = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.daemon.clone(),
+            boot.planner_card.id.as_ref(),
+            boot.planner_card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime,
         track_id: boot.planner_card.track_id.clone(),
         card_id: boot.planner_card.id.clone(),
@@ -626,7 +633,7 @@ async fn a_harness_that_loses_its_start_leaves_the_installed_harness_streaming()
         events: calm_server::event::EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: boot.daemon.clone().into(),
+
         live_replies: boot.registry.live_replies().clone(),
         config: HarnessConfig::default(),
         snapshot: idle_snapshot(vec![]),

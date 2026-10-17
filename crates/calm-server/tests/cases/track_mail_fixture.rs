@@ -216,6 +216,13 @@ impl World {
             .add_planner_without_harness(area, title, AgentProvider::Codex)
             .await;
         let harness = PlannerHarness::run(PlannerHarnessParams {
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                self.daemon.clone(),
+                planner.card_id.as_ref(),
+                planner.track_id.as_ref(),
+                planner.session_id.as_ref(),
+            )
+            .unwrap(),
             worker_session_id: planner.session_id.clone(),
             track_id: planner.track_id.clone(),
             card_id: planner.card_id.clone(),
@@ -224,7 +231,7 @@ impl World {
             events: self.events.clone(),
             card_role_cache: self.role_cache.clone(),
             track_area_cache: self.area_cache.clone(),
-            backend: self.daemon.clone().into(),
+
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
             snapshot: idle_snapshot(&planner.thread_id),

@@ -77,7 +77,7 @@ struct Boot {
     daemon: Arc<SharedCodexAppServer>,
     harness: PlannerHarness,
     planner_card: Card,
-    runtime_id: String,
+    worker_session_id: String,
 }
 
 /// A planner card with a live, registered harness: `GET /planner/run` resolves through the registry, so the harness must be installed under the same runtime id as the row.
@@ -131,7 +131,7 @@ async fn boot() -> Boot {
     .await
     .unwrap();
 
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
@@ -139,7 +139,7 @@ async fn boot() -> Boot {
     session_start_runtime_tx(
         &mut tx,
         calm_server::session_projection_repo::WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: planner_card.id.to_string(),
             kind: calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner,
             agent_provider: Some(calm_server::session_projection_repo::AgentProvider::Codex),
@@ -179,7 +179,14 @@ async fn boot() -> Boot {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            planner_card.id.as_ref(),
+            planner_card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: planner_card.track_id.clone(),
         card_id: planner_card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),
@@ -187,7 +194,7 @@ async fn boot() -> Boot {
         events,
         card_role_cache: role_cache,
         track_area_cache,
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
@@ -196,7 +203,9 @@ async fn boot() -> Boot {
         },
         snapshot,
     });
-    state.harness.insert(runtime_id.clone(), harness.clone());
+    state
+        .harness
+        .insert(worker_session_id.clone(), harness.clone());
 
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -210,7 +219,7 @@ async fn boot() -> Boot {
         daemon,
         harness,
         planner_card,
-        runtime_id,
+        worker_session_id,
     }
 }
 
@@ -284,7 +293,7 @@ async fn planner_run_reports_percent_derived_from_last_not_the_lifetime_total() 
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    assert_eq!(body["worker_session_id"], json!(boot.runtime_id));
+    assert_eq!(body["worker_session_id"], json!(boot.worker_session_id));
     assert_eq!(body["phase"], json!("idle"));
 
     let wire = &body["token_usage"];
@@ -414,7 +423,7 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
 
     let snapshot = HarnessSnapshot::from_value_strict(stored);
     let rehydrated = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: boot.runtime_id.clone(),
+        worker_session_id: boot.worker_session_id.clone(),
         track_id: boot.planner_card.track_id.clone(),
         card_id: boot.planner_card.id.clone(),
         thread_id: Some(SEED_THREAD_ID.to_string()),
@@ -422,8 +431,13 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
         events: EventBus::new(),
         card_role_cache: CardRoleCache::new(),
         track_area_cache: TrackAreaCache::new(),
-        backend: SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None)
-            .into(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None),
+            boot.planner_card.id.as_str(),
+            boot.planner_card.track_id.as_str(),
+            &boot.worker_session_id,
+        )
+        .unwrap(),
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,

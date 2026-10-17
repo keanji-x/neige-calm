@@ -58,26 +58,35 @@ pub async fn area_require_access(
             "system Area requires deployment authority".into(),
         ));
     }
+    let role = area_member_role(connection, area_id, user_id)
+        .await?
+        .ok_or_else(|| CalmError::Forbidden("Area membership required".into()))?;
+    if !role.permits(access) {
+        return Err(CalmError::Forbidden("Area owner required".into()));
+    }
+    Ok(area)
+}
+
+/// A current stored fact, not permission to execute using another authority.
+pub async fn area_member_role(
+    connection: &mut SqliteConnection,
+    area_id: &str,
+    user_id: &str,
+) -> Result<Option<AreaMemberRole>> {
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM area_members WHERE area_id=?1 AND user_id=?2")
             .bind(area_id)
             .bind(user_id)
             .fetch_optional(connection)
             .await?;
-    let role = match role.as_deref() {
-        Some("owner") => AreaMemberRole::Owner,
-        Some("member") => AreaMemberRole::Member,
-        None => return Err(CalmError::Forbidden("Area membership required".into())),
-        Some(value) => {
-            return Err(CalmError::Internal(format!(
-                "invalid Area member role {value}"
-            )));
-        }
-    };
-    if !role.permits(access) {
-        return Err(CalmError::Forbidden("Area owner required".into()));
+    match role.as_deref() {
+        Some("owner") => Ok(Some(AreaMemberRole::Owner)),
+        Some("member") => Ok(Some(AreaMemberRole::Member)),
+        None => Ok(None),
+        Some(value) => Err(CalmError::Internal(format!(
+            "invalid Area member role {value}"
+        ))),
     }
-    Ok(area)
 }
 
 pub async fn area_get(connection: &mut SqliteConnection, area_id: &str) -> Result<Area> {

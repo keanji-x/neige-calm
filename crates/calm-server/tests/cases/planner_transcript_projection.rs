@@ -215,6 +215,13 @@ async fn boot_with(plan: BootPlan) -> Boot {
     let events_rx = events.subscribe();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
@@ -223,7 +230,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
         events: events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),

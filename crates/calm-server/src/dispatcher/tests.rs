@@ -3799,6 +3799,13 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
     let events = EventBus::new();
     let registry = HarnessRegistry::new();
     let handle = PlannerHarness::run(PlannerHarnessParams {
+        backend: crate::harness::backend::PlannerBackend::codex(
+            SharedCodexAppServer::new_stub(repo.clone()),
+            planner_card.id.as_ref(),
+            track.id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: worker_session_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),
@@ -3807,7 +3814,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         events: events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        backend: SharedCodexAppServer::new_stub(repo.clone()).into(),
+
         live_replies: crate::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,

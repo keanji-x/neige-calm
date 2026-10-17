@@ -2,6 +2,7 @@
 //! fences and has quiesced any failed harness before entering here.
 use super::*;
 use crate::db::sqlite::{session_resume_system_error_tx, session_system_error_recovery_matches_tx};
+use crate::harness::profile::HarnessProfileExt;
 use crate::session_projection_repo::WorkerSessionProjection;
 use serde_json::Value;
 #[cfg(feature = "fixtures")]

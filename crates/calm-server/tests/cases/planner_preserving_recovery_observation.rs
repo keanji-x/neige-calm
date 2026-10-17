@@ -16,6 +16,13 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
         .await
         .unwrap();
     let old = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -24,7 +31,7 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),

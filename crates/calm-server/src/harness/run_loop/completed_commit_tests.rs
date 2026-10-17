@@ -119,6 +119,13 @@ impl Fixture {
         let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
         let (harness, ingress) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
+                backend: crate::harness::backend::PlannerBackend::codex(
+                    daemon.clone(),
+                    card.id.as_ref(),
+                    track.id.as_ref(),
+                    worker_session_id.as_ref(),
+                )
+                .unwrap(),
                 worker_session_id,
                 track_id: track.id,
                 card_id: card.id,
@@ -127,7 +134,7 @@ impl Fixture {
                 events: EventBus::new(),
                 card_role_cache: roles,
                 track_area_cache: areas,
-                backend: daemon.clone().into(),
+
                 live_replies: crate::harness::LiveReplies::for_test(),
                 config: HarnessConfig {
                     debounce_min_idle: Duration::ZERO,

@@ -15,9 +15,17 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> PlannerHarness {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let daemon = SharedCodexAppServer::new_stub(repo_dyn.clone());
+    let runtime = new_id();
     let (harness, _rx) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
-            worker_session_id: new_id(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                daemon,
+                "card-backpressure",
+                "track-backpressure",
+                runtime.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: runtime,
             track_id: TrackId::from("track-backpressure"),
             card_id: CardId::from("card-backpressure"),
             thread_id: Some("thread-backpressure".into()),
@@ -25,7 +33,7 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> PlannerHarness {
             events: EventBus::new(),
             card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
             track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-            backend: daemon.into(),
+
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
             snapshot,

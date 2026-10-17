@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
-use calm_types::planner_attachment::{AttachmentId, PlannerAttachment};
-use serde::{Deserialize, Serialize};
+use calm_types::planner_attachment::AttachmentId;
+pub use calm_types::planner_attachment::BoundAttachment;
 
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
@@ -15,21 +15,6 @@ use super::{AttachmentLocation, bound_file_path, open_attachment};
 
 /// The most attachments one message may carry; also bounds the backpressure fold that concatenates adjacent queued messages' attachment lists.
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 8;
-
-/// A bound attachment as the server holds it: `path` is an absolute host path and must not reach a browser.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BoundAttachment {
-    pub id: AttachmentId,
-    pub size: u64,
-    /// Absolute path under `<workspace>/.neige/attachments/<card>/bound/`; server-side only.
-    pub path: String,
-}
-
-impl BoundAttachment {
-    pub fn wire(&self, card_id: &CardId) -> PlannerAttachment {
-        PlannerAttachment::new(card_id, self.id.clone(), self.size)
-    }
-}
 
 /// Refuse a list that is too long, or that names the same attachment twice.
 pub fn validate_attachment_list(ids: &[AttachmentId]) -> Result<()> {

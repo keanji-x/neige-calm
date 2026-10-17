@@ -32,6 +32,32 @@ use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
 use crate::thread_seals::ThreadSeals;
 
+#[cfg(all(test, feature = "fixtures"))]
+mod acp_dispatch_tests;
+mod attempt;
+mod budget_control;
+#[cfg(all(test, feature = "fixtures"))]
+mod claude_dispatch_tests;
+#[cfg(all(test, feature = "fixtures"))]
+mod codex_execution_tests;
+mod dispatch;
+#[cfg(all(test, feature = "fixtures"))]
+mod dispatch_fixture;
+#[cfg(all(test, feature = "fixtures"))]
+mod dispatch_tests;
+mod execution_end;
+mod rewind;
+pub(crate) use attempt::{
+    AttemptCorrelation, InputAttemptReport, InputDelivery, NativeAcceptanceBasis,
+    NativeAcceptanceReceipt, NativeRpcFailure, NonDispatchBasis, NonDispatchEvidence,
+    RewindObservation, RewindReport,
+};
+pub(crate) use budget_control::{ControlAttemptReport, ControlDelivery};
+pub(crate) use execution_end::{
+    ExecutionEndScope, ExecutionEndTarget, ExecutionInput, QualifiedExecutionEnd,
+};
+pub(crate) use rewind::RewindPlanFailure;
+
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
 /// run loop paces its retry and tells the reader from this, never from the error's shape.
 #[derive(Debug, thiserror::Error)]
@@ -75,6 +101,13 @@ enum RewindArm {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         reverted: bool,
     },
+    /// C3 binds every positive rewind receipt to its native thread. The V1 arm above
+    /// remains byte-compatible, but cannot authorize a V2 dispatch.
+    CodexV2 {
+        thread_id: String,
+        before_turn_id: String,
+        reverted: bool,
+    },
     /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
     Claude { resume_at: Uuid, drops_turn: Uuid },
 }
@@ -101,16 +134,10 @@ enum Arm {
     Claude(Arc<ClaudePlannerSession>),
 }
 
-impl From<Arc<SharedCodexAppServer>> for PlannerBackend {
-    fn from(daemon: Arc<SharedCodexAppServer>) -> Self {
-        Self(Arm::Codex(daemon, Arc::default()))
-    }
-}
-
 /// What the Codex arm keeps for its one harness (#2348): the channel its thread's approval
 /// requests go to, handed over at install, and its claim on the thread its turns run on.
-#[derive(Default)]
 struct CodexApprovals {
+    binding: crate::shared_codex_appserver::CodexHarnessBinding,
     held: std::sync::OnceLock<HeldRequestSender>,
     route: std::sync::Mutex<Option<ApprovalRoute>>,
 }
@@ -139,6 +166,29 @@ impl CodexApprovals {
 }
 
 impl PlannerBackend {
+    /// Bind this harness to the persisted row used by its construction owner.
+    /// The association is required even before the first native turn starts.
+    pub fn codex(
+        daemon: Arc<SharedCodexAppServer>,
+        card_id: &str,
+        track_id: &str,
+        worker_session_id: &str,
+    ) -> Result<Self> {
+        let binding = crate::shared_codex_appserver::CodexHarnessBinding::new(
+            card_id,
+            track_id,
+            worker_session_id,
+        )?;
+        Ok(Self(Arm::Codex(
+            daemon,
+            Arc::new(CodexApprovals {
+                binding,
+                held: std::sync::OnceLock::new(),
+                route: std::sync::Mutex::new(None),
+            }),
+        )))
+    }
+
     /// Codex reports provider terminal confirmation directly. Local-process adapters record
     /// their confirmed terminal after teardown, before publishing the event; their event alone
     /// cannot prove teardown succeeded if that write failed.
@@ -164,7 +214,9 @@ impl PlannerBackend {
         row: ClaudePlannerRow<'_>,
     ) -> Result<Self> {
         Ok(match provider {
-            AgentProvider::Codex => daemon.into(),
+            AgentProvider::Codex => {
+                Self::codex(daemon, row.card_id, row.track_id, row.worker_session_id)?
+            }
             AgentProvider::OpenCode => {
                 let acp = crate::acp_planner::wiring::AcpPlannerWiring {
                     host: claude.acp.clone(),
@@ -283,7 +335,9 @@ impl PlannerBackend {
                         // turn and a wrong one.
                         *reverted = true;
                     }
-                    Some(RewindArm::Claude { .. }) => return Err(mismatched_rewind()),
+                    Some(RewindArm::Claude { .. } | RewindArm::CodexV2 { .. }) => {
+                        return Err(mismatched_rewind());
+                    }
                 }
                 // Before `turn/start`, so the turn's first approval already has somewhere to go.
                 approvals.route(daemon, thread_id);
@@ -309,7 +363,9 @@ impl PlannerBackend {
                         at: *resume_at,
                         drops_turn: *drops_turn,
                     }),
-                    Some(RewindArm::Codex { .. }) => return Err(mismatched_rewind()),
+                    Some(RewindArm::Codex { .. } | RewindArm::CodexV2 { .. }) => {
+                        return Err(mismatched_rewind());
+                    }
                 };
                 session
                     .turn_start(
@@ -597,19 +653,16 @@ fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
             if message == crate::codex_authentication::SIGN_IN_REFUSAL {
                 TurnStartFailure::AwaitingRecovery {
                     error: CalmError::CodexRefused(message),
-                    reader: format!(
-                        "{} Your message is still queued.",
-                        crate::codex_authentication::SIGN_IN_REQUIRED
-                    ),
+                    reader: crate::codex_authentication::SIGN_IN_REQUIRED.into(),
                 }
             } else {
                 TurnStartFailure::Refused {
                     error: CalmError::CodexRefused(message),
-                    reader: "codex refused to start a turn for this conversation, so \
-                             your message has not been sent. If you changed the model \
+                    reader:
+                        "codex returned an error for this conversation. If you changed the model \
                              recently, it may not be one this account can run — try \
                              another."
-                        .into(),
+                            .into(),
                 }
             }
         }

@@ -65,3 +65,29 @@ pub(crate) fn require_deployment_owner(principal: &Principal) -> Result<()> {
     }
     Ok(())
 }
+
+/// Legacy native execution spends this deployment's credentials. Collaboration
+/// membership and ownership of an unrelated user's Private Area do not grant it.
+pub(crate) async fn require_legacy_input_execution_tx(
+    connection: &mut SqliteConnection,
+    area_id: &str,
+    principal: &Principal,
+) -> Result<()> {
+    let area =
+        require_area_access_tx(connection, area_id, principal, AreaAccess::Collaborate).await?;
+    require_deployment_owner(principal)?;
+    if area.kind != AreaKind::System
+        && crate::db::sqlite::area_membership::area_member_role(
+            connection,
+            area_id,
+            &principal.user_id,
+        )
+        .await?
+            != Some(calm_types::organization::AreaMemberRole::Owner)
+    {
+        return Err(CalmError::Forbidden(
+            "legacy deployment execution requires ownership of this Area".into(),
+        ));
+    }
+    Ok(())
+}

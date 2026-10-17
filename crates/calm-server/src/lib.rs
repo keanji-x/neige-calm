@@ -4,6 +4,7 @@ pub mod actor;
 pub mod auth;
 pub mod builtin_plugins;
 pub mod card_kind;
+pub(crate) mod conversation_inputs;
 pub mod forge_trust;
 pub mod harness;
 pub mod liveness_feeder;

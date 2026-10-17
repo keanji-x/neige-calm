@@ -249,6 +249,7 @@ pub(crate) struct BoundTemplate {
 }
 
 pub use crate::harness::profile::HarnessProfile;
+use crate::harness::profile::HarnessProfileExt;
 
 /// Whether a conversation create prepends the activity briefing. A ruling per caller, not a property of the track: `POST /api/today/summary`
 /// carries the day's counts itself and must not be briefed twice.

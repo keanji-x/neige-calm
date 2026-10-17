@@ -10,6 +10,21 @@ pub(crate) enum Confirmation {
     Unconfirmed,
 }
 
+/// Native error messages can echo accepted input or malformed request frames.
+/// Canonical execution stores a fixed diagnostic, not those transport payloads.
+pub(crate) fn canonical_diagnostic(turn: &mut Value) {
+    if let Some(object) = turn.as_object_mut()
+        && object.get("error").is_some_and(|error| !error.is_null())
+    {
+        object.insert(
+            "error".into(),
+            serde_json::json!({
+                "message": "The provider ended this execution with an error."
+            }),
+        );
+    }
+}
+
 // Keep the full terminal identity and confirmation explicit at this authority boundary.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn record(

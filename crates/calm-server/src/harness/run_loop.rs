@@ -2693,7 +2693,7 @@ fn item_turn_id(params: &Value) -> Option<&str> {
 
 /// Live codex sends `userMessage`; the kernel stores `item.type` verbatim and tests have used snake case.
 pub(super) fn is_user_message_type(item_type: Option<&str>) -> bool {
-    matches!(item_type, Some("userMessage" | "user_message"))
+    calm_types::harness::is_native_user_message_type(item_type)
 }
 
 /// One transcript row for a codex `item/*` notification. `input_segments` is NULL for every

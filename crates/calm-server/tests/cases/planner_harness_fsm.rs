@@ -86,7 +86,7 @@ async fn harness_with(
     } else {
         "thread-offline".to_string()
     };
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = phase;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -100,7 +100,7 @@ async fn harness_with(
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -119,7 +119,14 @@ async fn harness_with(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon,
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id.clone()),
@@ -127,12 +134,12 @@ async fn harness_with(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
         snapshot,
     });
-    (repo, harness, runtime_id, thread_id)
+    (repo, harness, worker_session_id, thread_id)
 }
 
 async fn harness_from_snapshot(
@@ -141,7 +148,7 @@ async fn harness_from_snapshot(
     snapshot: HarnessSnapshot,
 ) -> (PlannerHarness, String) {
     let card = seed_card(&repo).await;
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = snapshot
         .last_thread_id
         .clone()
@@ -150,7 +157,7 @@ async fn harness_from_snapshot(
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -169,7 +176,14 @@ async fn harness_from_snapshot(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon,
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id),
@@ -177,12 +191,12 @@ async fn harness_from_snapshot(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,
     });
-    (harness, runtime_id)
+    (harness, worker_session_id)
 }
 
 async fn wait_for_state(
@@ -767,7 +781,7 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         )
         .await
         .unwrap();
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         0,
         QueueEntry::entries_from_observations_for_test(vec![Observation::TrackGoal {
@@ -780,7 +794,7 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -804,7 +818,14 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         ..HarnessConfig::default()
     };
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id),
@@ -812,7 +833,7 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config,
         snapshot,

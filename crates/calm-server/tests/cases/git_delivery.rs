@@ -948,6 +948,13 @@ impl Fx {
         .unwrap();
         tx.commit().await.unwrap();
         let handle = PlannerHarness::run(PlannerHarnessParams {
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                SharedCodexAppServer::new_stub(self.boot.repo.clone()),
+                self.boot.planner_card_id.as_ref(),
+                self.boot.track_id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
             worker_session_id: worker_session_id.clone(),
             track_id: self.boot.track_id.clone(),
             card_id: self.boot.planner_card_id.clone(),
@@ -956,7 +963,7 @@ impl Fx {
             events: self.boot.ctx.events.clone(),
             card_role_cache: self.boot.card_role_cache.clone(),
             track_area_cache: areas,
-            backend: SharedCodexAppServer::new_stub(self.boot.repo.clone()).into(),
+
             live_replies: calm_server::harness::LiveReplies::for_test(),
             config: HarnessConfig::default(),
             snapshot,

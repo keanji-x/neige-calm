@@ -33,6 +33,13 @@ pub(super) async fn planner(fx: &Fixture) -> Planner {
     snapshot.last_thread_id = Some(identity.thread_id.clone());
     let repo: Arc<dyn crate::db::Repo> = fx.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        backend: crate::harness::backend::PlannerBackend::codex(
+            SharedCodexAppServer::new_stub(repo.clone()),
+            identity.card_id.as_str(),
+            identity.track_id.as_deref().unwrap(),
+            identity.session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: identity.session_id.clone(),
         track_id: identity.track_id.as_deref().unwrap().into(),
         card_id: identity.card_id.as_str().into(),
@@ -41,7 +48,7 @@ pub(super) async fn planner(fx: &Fixture) -> Planner {
         events: fx.ctx.events.clone(),
         card_role_cache: fx.roles.clone(),
         track_area_cache: fx.areas.clone(),
-        backend: SharedCodexAppServer::new_stub(repo.clone()).into(),
+
         live_replies: crate::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
         snapshot,

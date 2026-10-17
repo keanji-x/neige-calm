@@ -98,14 +98,14 @@ async fn seed_harness_with_snapshot(
         repo.card_role_get(card.id.as_str()).await.unwrap(),
         Some(CardRole::Planner)
     );
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = SEED_THREAD_ID.to_string();
 
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -128,7 +128,14 @@ async fn seed_harness_with_snapshot(
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -136,7 +143,7 @@ async fn seed_harness_with_snapshot(
         events,
         card_role_cache: role_cache,
         track_area_cache,
-        backend: daemon.clone().into(),
+
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),

@@ -334,7 +334,7 @@ mod tests {
     use crate::shared_codex_appserver::SharedCodexAppServer;
     use std::sync::Arc;
 
-    async fn unstarted_handle(runtime_id: &str) -> PlannerHarness {
+    async fn unstarted_handle(worker_session_id: &str) -> PlannerHarness {
         let repo = Arc::new(
             crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
                 .await
@@ -343,7 +343,14 @@ mod tests {
         let daemon = SharedCodexAppServer::new_stub(repo.clone());
         let (handle, _obs_rx) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
-                worker_session_id: runtime_id.to_string(),
+                backend: crate::harness::backend::PlannerBackend::codex(
+                    daemon,
+                    "card-registry-test",
+                    "track-registry-test",
+                    worker_session_id,
+                )
+                .unwrap(),
+                worker_session_id: worker_session_id.to_string(),
                 track_id: TrackId::from("track-registry-test".to_string()),
                 card_id: CardId::from("card-registry-test".to_string()),
                 thread_id: None,
@@ -351,7 +358,7 @@ mod tests {
                 events: crate::event::EventBus::new(),
                 card_role_cache: crate::card_role_cache::CardRoleCache::new(),
                 track_area_cache: crate::track_area_cache::TrackAreaCache::new(),
-                backend: daemon.into(),
+
                 live_replies: crate::harness::LiveReplies::for_test(),
                 config: HarnessConfig::default(),
                 snapshot: HarnessSnapshot::initial(0, vec![]),
