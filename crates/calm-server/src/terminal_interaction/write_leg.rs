@@ -9,7 +9,7 @@
 //! bytes are sent, then `written` or `unknown`. A refusal proven before any byte reached the PTY is
 //! not kept: the same key is decided anew, like `stale_observation` and `control_unavailable`.
 use super::client::Client;
-use super::target::{BINDING_CHANGED, Resolved, refused};
+use super::target::{Resolved, binding_changed, refused};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 use tokio::sync::OwnedMutexGuard;
@@ -96,7 +96,10 @@ impl TerminalInteraction {
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target.target).await?;
         match &target.pinned {
-            Some(first) => ensure!(*first == resolved.binding, BINDING_CHANGED),
+            Some(first) if *first != resolved.binding => {
+                return Err(binding_changed(first, &resolved.binding).into());
+            }
+            Some(_) => {}
             None => target.pinned = Some(resolved.binding.clone()),
         }
         if self.renderer.get(&resolved.binding.terminal_id).is_none() {

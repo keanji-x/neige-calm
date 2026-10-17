@@ -8,9 +8,10 @@
 //! a starting worker waits for it inside the call (#2554): the kernel holds the readiness fact, so
 //! the Planner never has to guess when to send again.
 use super::client::InputRole;
-use super::target::{InputRefused, Resolved, WORKER_STARTING, refused};
+use super::target::{InputRefused, Resolved, WaitingFor, refused, starting};
 use super::write_leg::{Admission, Delivered, WriteRule, WriteTarget};
 use super::*;
+use crate::model::TaskStatus;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
 use calm_exec::{MessageReady, TuiInput};
 
@@ -116,15 +117,9 @@ async fn message_check(
         .task
         .as_ref()
         .map_or("", |task| task.attempt_id.as_str());
-    Ok((!started).then(|| refused(WORKER_STARTING, NOT_STARTED.replace("{attempt}", attempt))))
+    // Enter may answer a startup screen instead (a folder-trust dialog's "No, exit", #2532).
+    Ok((!started).then(|| starting(attempt, TaskStatus::Running, WaitingFor::PromptSubmitted)))
 }
-
-/// A running worker whose agent has not submitted its task prompt: Enter may answer a startup
-/// screen instead (a folder-trust dialog's "No, exit", #2532). Answered once the call waited
-/// [`START_WAIT`] for it, so the agent is likely held on a startup screen.
-const NOT_STARTED: &str = "attempt {attempt} is running, but its worker has not started its task: \
-     its agent is likely held on a startup screen, which the worker watcher clears and reports to \
-     you. Send again after its report";
 
 /// How long a message waits for a starting worker. On 4140 a task ran within 1.7 s of its
 /// dispatch, and a Claude worker with no startup screen submitted its task prompt 1.3–3.1 s after
@@ -132,13 +127,6 @@ const NOT_STARTED: &str = "attempt {attempt} is running, but its worker has not 
 const START_WAIT: Duration = Duration::from_secs(10);
 /// How often the waiting call re-runs its admission.
 const START_POLL: Duration = Duration::from_millis(200);
-
-/// A refusal the worker's start lifts: the waiting call tries again.
-fn starting(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<InputRefused>()
-        .is_some_and(|refused| refused.refusal == WORKER_STARTING)
-}
 
 /// Readable (the model view captures, as `observable`), not exited, and bracketed paste on: what
 /// the write needs from the terminal.
@@ -241,7 +229,8 @@ impl TerminalInteraction {
         // may have reported or left paste mode since the original write.
         // A starting worker is waited for: each try re-runs the whole admission, replay first, on
         // the binding the first resolved try found.
-        let deadline = Instant::now() + self.start_wait();
+        let sent = Instant::now();
+        let deadline = sent + self.start_wait();
         let mut write_target = WriteTarget::new(target);
         let admitted = loop {
             match self
@@ -257,10 +246,20 @@ impl TerminalInteraction {
             {
                 Ok(Admission::Answered(replayed)) => return Ok(replayed),
                 Ok(Admission::New(admitted)) => break admitted,
-                Err(error) if starting(&error) && Instant::now() < deadline => {
-                    tokio::time::sleep(START_POLL).await;
-                }
-                Err(error) => return Err(error),
+                Err(error) => match error.downcast::<InputRefused>() {
+                    // A refusal the worker's start lifts: the call tries again, then says how
+                    // long it waited.
+                    Ok(refusal) if refusal.starting.is_some() => {
+                        if Instant::now() >= deadline {
+                            return Err(refusal.waited(sent.elapsed()).into());
+                        }
+                        #[cfg(feature = "fixtures")]
+                        self.run_message_wait_seam(target).await;
+                        tokio::time::sleep(START_POLL).await;
+                    }
+                    Ok(refusal) => return Err(refusal.into()),
+                    Err(error) => return Err(error),
+                },
             }
         };
         let (resolved, client) = (&admitted.resolved, &admitted.client);
@@ -406,6 +405,29 @@ impl TerminalInteraction {
             .message_write_seam
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(seam);
+    }
+    /// Test seam: runs once when a message first waits for its worker to start, given the target's
+    /// id. A try refused by the message rule's readiness check has pinned its binding; one refused
+    /// by the task's lifecycle has not resolved one yet. Consumed once.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_message_wait_seam(&self, seam: ClaimWindowSeam) {
+        *self
+            .message_wait_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(seam);
+    }
+    #[cfg(feature = "fixtures")]
+    async fn run_message_wait_seam(&self, target: &Target) {
+        let seam = self
+            .message_wait_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(seam) = seam {
+            let (Target::Terminal(id) | Target::Attempt(id)) = target;
+            seam(id.clone()).await;
+        }
     }
     #[cfg(feature = "fixtures")]
     async fn run_message_write_seam(&self, terminal_id: &str) {
