@@ -307,3 +307,75 @@ async fn object_sweep_later_failure_preserves_earlier_committed_batches() {
         "failed later validation must not undo prior safe progress"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn object_sweep_restored_cycle_and_duplicate_states_keep_reachable_objects() {
+    use crate::track_vcs::store::{CommitTreeMeta, commit_tree_at_tx};
+    let f = Fixture::new().await;
+    let ancestor_tree = f.tree("restored cyclic ancestor", 1).await;
+    let ancestor = f.publish(&ancestor_tree, Some(&f.commit)).await;
+    let created: i64 = sqlx::query_scalar("SELECT created_at FROM track_vcs_commits WHERE hash=?1")
+        .bind(&ancestor)
+        .fetch_one(f.repo.pool())
+        .await
+        .unwrap();
+    let middle_tree = f.tree("cycle middle", 1).await;
+    let middle = f.publish(&middle_tree, Some(&ancestor)).await;
+    let head = f.publish(&f.tree, Some(&middle)).await;
+    // Deliberately seed a finite cyclic topology to pin corruption-safe traversal. The
+    // original root and HEAD now have identical (parent, tree) state but distinct commit IDs.
+    sqlx::query("UPDATE track_vcs_commits SET parent_hash=?1 WHERE hash=?2")
+        .bind(&middle)
+        .bind(&f.commit)
+        .execute(f.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM track_vcs_commits WHERE hash=?1")
+        .bind(&ancestor)
+        .execute(f.repo.pool())
+        .await
+        .unwrap();
+    for tree in [&f.tree, &ancestor_tree, &middle_tree] {
+        f.age(tree).await;
+    }
+    let orphan = f.orphan("independent cyclic graph garbage").await;
+    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    pause.entered().await;
+    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let restored = commit_tree_at_tx(
+        &mut tx,
+        &f.track,
+        &ancestor_tree,
+        CommitTreeMeta {
+            parent_hash: Some(&f.commit),
+            author: None,
+            event_id: None,
+            message: "published",
+            manifest_schema_version: 1,
+            created_at: created,
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
+        .bind(&head)
+        .bind(f.track.as_str())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    pause.release();
+    assert_eq!(finish(sweep).await.unwrap(), 1);
+    assert_eq!(restored, ancestor);
+    assert_eq!(
+        track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
+        Some(head)
+    );
+    for tree in [&f.tree, &ancestor_tree, &middle_tree] {
+        assert!(f.exists(&tree.tree_hash).await);
+        for entry in tree.manifest.entries.values() {
+            assert!(f.exists(&entry.blob_hash).await);
+        }
+    }
+    assert!(!f.exists(&orphan).await);
+}

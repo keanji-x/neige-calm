@@ -8,7 +8,11 @@ not every retained commit row.
 ## Observation and authority
 
 One recursive pooled SELECT obtains the reachable tree closure and object
-presence/kind/length metadata. It is a statement snapshot, with no deferred
+presence/kind/length metadata. Recursion carries `(parent_hash, tree_hash)` so a
+commit's parent and tree require one lookup. Equal pairs emit the same tree and
+have the same next parent, so merging them with UNION preserves the tree closure
+and terminates on finite cycles. Tree hashes are deduplicated before joining
+object metadata, avoiding one object lookup per commit that shares a tree. It is a statement snapshot, with no deferred
 transaction or later lock upgrade. Tree payloads are fetched in batches of 32;
 each fetch releases its connection before JSON parsing. Parsed tree hashes and
 the union of tree/blob references live only for this call. Full payloads are not
@@ -20,8 +24,11 @@ then uses `INSERT OR IGNORE`; blob insertion hashes kind and bytes and also uses
 Reinserting an identical content address therefore cannot change its reference
 set. This is the existing store contract, not a new cache-coherence protocol.
 
-The candidate scan reads only old object hashes, in keyset pages of 256, and
-excludes the observed reference union. A scan with no candidates returns zero
+The candidate scan first reads hash-only keyset pages of 256 through the
+covering primary-key index, and excludes the observed reference union before
+loading age metadata. Only remaining hashes are looked up by primary key with
+the fixed cutoff. This avoids reading large live objects' records just for the
+age column after their payload. A scan with no candidates returns zero
 without acquiring the writer. It can safely miss concurrently created garbage;
 it cannot delete anything.
 
@@ -72,7 +79,9 @@ phases. The regression requires an unrelated writer to commit while parsing is
 paused, then releases and drains both tasks before asserting. Safety tests cover
 reactivated old objects, restored ancestors with unchanged HEAD, missing and
 wrong-kind trees, concurrent sweeps, age refresh, multiple batches, small
-continuous commits, both delta limits and bounded safe deferral.
+continuous commits, both delta limits and bounded safe deferral. A real-entry regression also
+restores a missing ancestor into a finite cycle with duplicate `(parent, tree)`
+states and verifies all known reachable trees/blobs survive.
 
 The initial optimized synthetic probe matched 65,633 commits, 108 HEADs and
 18,846 trees containing about 419 MiB of valid manifests. The old implementation

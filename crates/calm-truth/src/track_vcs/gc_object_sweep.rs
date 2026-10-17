@@ -16,20 +16,24 @@ const INLINE_BYTE_LIMIT: u64 = 1024 * 1024;
 const VALIDATION_ATTEMPTS: usize = 3;
 
 // Root on HEADs, not every remaining commit: partial history pruning may leave detached rows.
+// Carry the only required state (parent, tree), so each commit is read once and objects are
+// joined only after tree deduplication. Equal pairs emit the same tree and have the same next
+// parent; UNION can merge them without changing reachability and still terminates on cycles.
 // LEFT JOIN makes missing/wrong-kind trees visible instead of treating them as empty manifests.
 const REACHABLE_TREES: &str = r#"
-    SELECT DISTINCT c.tree_hash, o.kind, length(o.bytes)
-    FROM track_vcs_commits AS c
-    LEFT JOIN track_vcs_objects AS o ON o.hash = c.tree_hash
-    WHERE c.hash IN (
-        WITH RECURSIVE reachable(hash) AS (
-            SELECT head_hash FROM track_vcs_refs
-            UNION
-            SELECT c2.parent_hash
-            FROM track_vcs_commits AS c2 JOIN reachable AS r ON c2.hash = r.hash
-            WHERE c2.parent_hash IS NOT NULL
-        ) SELECT hash FROM reachable
-    )"#;
+    WITH RECURSIVE reachable(parent_hash, tree_hash) AS (
+        SELECT c.parent_hash, c.tree_hash
+        FROM track_vcs_refs AS refs
+        JOIN track_vcs_commits AS c ON c.hash = refs.head_hash
+        UNION
+        SELECT c.parent_hash, c.tree_hash
+        FROM track_vcs_commits AS c
+        JOIN reachable AS r ON c.hash = r.parent_hash
+    )
+    SELECT rooted.tree_hash, o.kind, length(o.bytes)
+    FROM (SELECT DISTINCT tree_hash FROM reachable) AS rooted
+    LEFT JOIN track_vcs_objects AS o ON o.hash = rooted.tree_hash
+"#;
 
 struct TreeMeta {
     hash: ObjectHash,
@@ -97,11 +101,9 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
     let mut cursor = String::new();
     loop {
         let page: Vec<String> = sqlx::query_scalar(
-            "SELECT hash FROM track_vcs_objects WHERE hash > ?1 AND created_at < ?2 \
-             ORDER BY hash LIMIT ?3",
+            "SELECT hash FROM track_vcs_objects WHERE hash > ?1 ORDER BY hash LIMIT ?2",
         )
         .bind(&cursor)
-        .bind(cutoff)
         .bind(OBJECT_PAGE_SIZE)
         .fetch_all(pool)
         .await?;
@@ -109,10 +111,16 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
             return Ok(());
         };
         cursor.clone_from(last);
-        let candidates: Vec<_> = page
+        // This first page uses only the covering hash index. Do not fetch the large object
+        // records' trailing age column for hashes already proven live.
+        let unmarked: Vec<_> = page
             .into_iter()
             .filter(|hash| !observed.live.contains(hash))
             .collect();
+        if unmarked.is_empty() {
+            continue;
+        }
+        let candidates = old_candidates(pool, cutoff, &unmarked).await?;
         if candidates.is_empty() {
             continue;
         }
@@ -127,6 +135,18 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
             }
         }
     }
+}
+
+async fn old_candidates(pool: &SqlitePool, cutoff: i64, hashes: &[String]) -> Result<Vec<String>> {
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT hash FROM track_vcs_objects WHERE created_at < ");
+    query.push_bind(cutoff).push(" AND hash IN (");
+    let mut separated = query.separated(", ");
+    for hash in hashes {
+        separated.push_bind(hash);
+    }
+    separated.push_unseparated(")");
+    Ok(query.build_query_scalar().fetch_all(pool).await?)
 }
 
 async fn reachable_trees<'e>(
