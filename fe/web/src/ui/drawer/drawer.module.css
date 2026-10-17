@@ -461,7 +461,9 @@
     min-block-size: 0;
   }
 
-  .cell[hidden] { display: none; }
+  .cell[hidden],
+  .drawer[hidden],
+  .stack[hidden] { display: none; }
 
   .cell > .seam {
     inset-block: 0;

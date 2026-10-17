@@ -46,11 +46,14 @@ test('refreshing an exited terminal shows its final state while secondary reads 
   try {
     await page.goto('/next/track/track-1?card=card-1');
     await expect(page.getByText('Starting terminal…')).toBeVisible();
+    await expect(page).toHaveURL(/\?card=card-1$/);
     status = 'exited';
     await page.reload();
     await expect(page.getByText('Session exited.')).toBeVisible();
     await expect(page.getByText('Starting terminal…')).toHaveCount(0);
-    await expect(page.locator('[data-nc-card-cell] [data-nc-activity]')).toHaveCount(0);
+    const terminal = page.locator('[data-nc-terminal-card]');
+    await expect(terminal).toHaveCount(1);
+    await expect(terminal.locator('[data-nc-activity]')).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath('terminal-exited.png'), fullPage: true });
     expect(errors).toEqual([]);
   } finally {

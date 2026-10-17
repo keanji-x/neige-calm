@@ -1,0 +1,34 @@
+@layer features {
+  .workbench {
+    display: flex;
+    flex-direction: column;
+    block-size: 100%;
+    min-block-size: 0;
+    color: var(--text);
+    background: var(--surface-card);
+  }
+
+  .workbench[hidden] { display: none; }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .controls button,
+  .controls select { min-block-size: var(--control-h); }
+
+  .workbench > [data-nc-card-dock][hidden] { display: none; }
+
+  .workbench > [data-nc-card-dock] {
+    flex: 1;
+    min-block-size: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+}

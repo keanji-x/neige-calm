@@ -69,6 +69,7 @@ export function useConversationEscape({ open, store }: Readonly<{
       if (!store.working || store.stopping) return;
       const target = event.target;
       if (!(target instanceof Element)) return;
+      if (target.closest('[data-nc-terminal-card]') !== null) return;
       const region = target.closest('[data-nc-drawer], [data-nc-conversation-region]');
       if (region === null || (region.getAttribute('data-nc-conversation-region') ?? region.id) !== `conversation-${open.id}`) return;
       /* The source panel is a second `complementary` on the same track, and its Escape

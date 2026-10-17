@@ -201,12 +201,14 @@ describe('track route CARDS panel', () => {
     ]);
   });
 
-  it('opens the card grid on the clicked terminal and can return', async () => {
+  it('opens the clicked terminal in the shared workbench and can hide it', async () => {
     setup();
     await userEvent.click(await screen.findByRole('button', { name: /^Terminal one/ }));
-    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
-    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
+    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Terminal session' }).value).toBe('card-term');
+    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
+    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeNull();
+    expect(screen.getByText('No terminal session available.')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Hide terminal' }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
@@ -231,17 +233,17 @@ describe('track route CARDS panel', () => {
     setup();
     await inventoryLabels();
     expect(document.querySelector('[data-nc-card-board]')).toBeNull();
-    await userEvent.click(await screen.findByRole('button', { name: /^Terminal one/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /^Surface/ }));
     expect(document.querySelector('[data-nc-card-board]')).toBeTruthy();
-    expect(document.querySelector('[data-nc-terminal-card]')).toBeTruthy();
+    expect(screen.getByText('surface for card-surface')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
     expect(document.querySelector('[data-nc-card-board]')).toBeTruthy();
   });
 
-  it('closes the open grid on Escape', async () => {
+  it('closes the nonterminal grid on Escape', async () => {
     setup();
-    await userEvent.click(await screen.findByRole('button', { name: /^Terminal one/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /^Surface/ }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
     await userEvent.keyboard('{Escape}');
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
@@ -285,10 +287,9 @@ describe('track route CARDS panel', () => {
     );
     setup([FILE_LINK_REPORT_CARD, UNKNOWN_TERMINAL]);
 
-    await waitFor(() => {
-      expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
-    });
-    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
+    await screen.findByRole('button', { name: 'Hide terminal' });
+    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Terminal session' }).value).toBe('card-term');
+    expect(screen.getByText('No terminal session available.')).toBeTruthy();
     expect(document.querySelector('[data-nc-report-file-viewer]')).toBeNull();
   });
 
@@ -359,8 +360,9 @@ describe('track route TASKS panel', () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
     await userEvent.click(within(await tasks()).getByRole('button', { name: 'Actions for has-adapter' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
-    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
-    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
+    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Terminal session' }).value).toBe('card-term');
+    expect(screen.getByText('No terminal session available.')).toBeTruthy();
+    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeNull();
   });
 
   it('offers the codex card too, now that an entry claims that kind', async () => {

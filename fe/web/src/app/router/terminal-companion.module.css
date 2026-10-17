@@ -1,0 +1,8 @@
+@layer features {
+  .companion { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; background: var(--surface-card); border-radius: var(--radius-lg); overflow: hidden; }
+  .tabs { display: flex; gap: var(--space-2); padding: var(--space-2); border-block-end: 1px solid var(--hairline); }
+  .tabs button { min-block-size: var(--control-h); padding-inline: var(--space-2); }
+  .tabs [aria-pressed="true"] { background: var(--selection-bg); border-radius: var(--radius-highlight); }
+  .content { position: relative; flex: 1; min-block-size: 0; }
+  .companion[hidden], .content[hidden] { display: none; }
+}

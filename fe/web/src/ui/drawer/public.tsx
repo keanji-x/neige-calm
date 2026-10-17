@@ -27,8 +27,11 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null }: {
+export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null, retainCompanion = false, companionVisible: suppliedCompanionVisible }: {
   open: boolean;
+  /** Keep only the independent companion slot mounted when both panes are closed. */
+  retainCompanion?: boolean;
+  companionVisible?: boolean;
   id?: string;
   /** An independent second card displayed below this one, or switched on compact screens. */
   companion?: (group: PaneResizeGroup) => ReactNode;
@@ -66,6 +69,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
 
   const width = compact ? undefined : resize;
   const [closing, setClosing] = useState(false);
+  const companionVisible = suppliedCompanionVisible ?? ((open || closing) && companion !== undefined);
   useLayoutEffect(() => {
     const pane = scrollRef.current;
     if (pane === null || resizeGroup === null) return;
@@ -87,7 +91,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   }, []);
 
 
-  /* The caller drops its selection the instant it asks for a close, so the retracting panel shows its last frame. A ref, not state: it must never cause a render. */
+  /* Retracting panels show their last frame. Resource retention belongs only to the independent companion slot. A ref must never cause a render. */
   const lastFrame = useRef<{
     title: string; mobileBackLabel?: string; children: ReactNode; footer?: ReactNode;
   }>(
@@ -156,16 +160,19 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   }, [open, closing]);
 
   /* Compact pages and reduced motion skip the exit transition, so closing never waits for one the stylesheet does not play. */
-  if (!open && !closing) return null;
+  if (!open && !closing && !(retainCompanion && companion !== undefined) && !companionVisible) return null;
   /* `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by; a CSS Module class cannot be named across modules. It stays on during the closing animation. */
   const card = (
     <>
     <div
       id={id}
+      hidden={!open && !closing}
+      inert={!open && !closing}
+      aria-hidden={(!open && !closing) || undefined}
       ref={panelRef}
       className={`${styles.drawer} ${inline ? styles.embedded : ''} ${closing ? styles.drawerClosing : ''}`}
       role={inline ? "region" : "complementary"}
-      data-nc-drawer=""
+      data-nc-drawer={open || closing ? '' : undefined}
       data-nc-drawer-open={open ? '' : undefined}
       data-nc-escape-layer={open ? '' : undefined}
       data-nc-drawer-resizable={width !== undefined ? '' : undefined}
@@ -219,9 +226,9 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   );
   if (companion === undefined && !stacked) return <LayerDepthProvider>{card}</LayerDepthProvider>;
   return (
-    <div ref={hostRef} className={styles.stack} data-nc-drawer-stack="">
-      <div className={styles.cell}><LayerDepthProvider>{card}</LayerDepthProvider></div>
-      <div className={styles.cell} hidden={companion === undefined}>{companion?.(ownResizeGroup)}</div>
+    <div hidden={!open && !closing && !companionVisible} ref={hostRef} className={styles.stack} data-nc-drawer-stack="">
+      <div className={styles.cell} hidden={!open && !closing}><LayerDepthProvider>{open || closing ? card : null}</LayerDepthProvider></div>
+      <div className={styles.cell} hidden={!companionVisible}>{companion?.(ownResizeGroup)}</div>
       {open && width !== undefined && parentResizeGroup === null
         && <ResizeEdge resize={width} panelRef={hostRef} scrollRef={scrollRef} group={resizeGroup} />}
     </div>
