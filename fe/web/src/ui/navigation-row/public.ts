@@ -9,13 +9,13 @@ export type NavigationRowSpec = Readonly<
 export type NavigationEntrySpec = Extract<NavigationRowSpec, { kind: 'entry' }>;
 
 const kinds = Object.freeze({
-  caption: Object.freeze({ tone: 'secondary' as const, className: styles.caption }),
-  entry: Object.freeze({ tone: 'primary' as const, className: '' }),
+  caption: Object.freeze({ tone: 'secondary' as const }),
+  entry: Object.freeze({ tone: 'primary' as const }),
 });
 
 /** Required content-region schema. CSS alone owns columns and the single depth relationship. */
 export function navigationRowPresentation(presentation: NavigationRowSpec): Readonly<{ className: string; tone: ListTextRole }> {
-  return { className: [styles.row, kinds[presentation.kind].className, presentation.depth === 1 ? styles.nested : ''].filter(Boolean).join(' '),
+  return { className: [styles.row, presentation.kind === 'caption' ? styles.caption : '', presentation.depth === 1 ? styles.nested : ''].filter(Boolean).join(' '),
     tone: kinds[presentation.kind].tone };
 }
 
