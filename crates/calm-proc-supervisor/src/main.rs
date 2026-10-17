@@ -6,6 +6,10 @@ use tokio::sync::oneshot;
 
 #[derive(Debug, Parser)]
 #[command(name = "calm-proc-supervisor", version)]
+#[allow(
+    unexpected_cfgs,
+    reason = "This entry point is also built by calm-server under its fixtures feature."
+)]
 struct Args {
     /// Control Unix socket path. In production callers should use
     /// $CALM_DATA_DIR/proc-supervisor.sock.
@@ -17,6 +21,9 @@ struct Args {
     /// Kernel-owned JSON capability file; never inherited by launched execution.
     #[arg(long, requires = "execution_state_dir")]
     kernel_client_key_file: Option<PathBuf>,
+    #[cfg(any(feature = "test-support", feature = "fixtures"))]
+    #[arg(long, hide = true)]
+    test_output_reader_release: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -34,6 +41,10 @@ fn main() -> anyhow::Result<()> {
         .block_on(serve())
 }
 
+#[allow(
+    unexpected_cfgs,
+    reason = "The shared fixture entry enables the dependency's test-support feature."
+)]
 async fn serve() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -58,6 +69,11 @@ async fn serve() -> anyhow::Result<()> {
         _ => anyhow::bail!("execution journal and client capability must be configured together"),
     };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    #[cfg(any(feature = "test-support", feature = "fixtures"))]
+    let registry = match args.test_output_reader_release {
+        Some(path) => registry.with_output_reader_release_for_test(path)?,
+        None => registry,
+    };
     let listener = bind_control_listener(&args.control_sock)?;
     let serve_task = tokio::spawn(serve_with_listener(
         listener,

@@ -36,6 +36,15 @@ struct Supervisor {
 
 impl Supervisor {
     fn launch(socket: &Path, journal: &Path, key: &Path) -> anyhow::Result<Self> {
+        Self::launch_with_args(socket, journal, key, &[])
+    }
+
+    fn launch_with_args(
+        socket: &Path,
+        journal: &Path,
+        key: &Path,
+        extra: &[std::ffi::OsString],
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             child: Command::new(env!("CARGO_BIN_EXE_terminal-vertical-supervisor-fixture"))
                 .arg("--control-sock")
@@ -44,6 +53,7 @@ impl Supervisor {
                 .arg(journal)
                 .arg("--kernel-client-key-file")
                 .arg(key)
+                .args(extra)
                 .env("TOKIO_WORKER_THREADS", "2")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

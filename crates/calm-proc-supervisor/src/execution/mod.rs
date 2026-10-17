@@ -67,6 +67,8 @@ pub struct Executor {
     records: StdMutex<HashMap<ExecutionId, Journal>>,
     aliases: StdMutex<HashMap<String, AliasSlot>>,
     processes: StdMutex<HashMap<ExecutionId, Arc<process::Process>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    output_reader_release: StdMutex<Option<PathBuf>>,
 }
 
 impl Executor {
@@ -218,6 +220,8 @@ impl Executor {
             records: StdMutex::new(records),
             aliases: StdMutex::new(aliases),
             processes: Default::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            output_reader_release: Default::default(),
         });
         executor.store.write("executor.boot", &executor.boot)?;
         Ok(executor)
@@ -225,6 +229,12 @@ impl Executor {
 
     pub fn boot(&self) -> &ExecutorBootId {
         &self.boot
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_output_reader_release_for_test(&self, path: PathBuf) -> anyhow::Result<()> {
+        *self.output_reader_release.lock().map_err(poison)? = Some(path);
+        Ok(())
     }
     pub fn authenticates(&self, secret: &CapabilityToken) -> bool {
         self.config.kernel_client_secret.matches(secret)
@@ -531,6 +541,19 @@ impl Executor {
         tokio::spawn(async move {
             let mut drained = false;
             while let Some(event) = receive.recv().await {
+                #[cfg(any(test, feature = "test-support"))]
+                if matches!(event.event, scope_helper::HelperEvent::Drained { .. })
+                    && let Some(path) = executor
+                        .output_reader_release
+                        .lock()
+                        .map_err(poison)?
+                        .as_ref()
+                {
+                    std::fs::write(
+                        path.with_extension("drained"),
+                        b"actual helper report received",
+                    )?;
+                }
                 let outcome = executor.apply_event(&id, event).await;
                 match outcome {
                     Ok(true) => {

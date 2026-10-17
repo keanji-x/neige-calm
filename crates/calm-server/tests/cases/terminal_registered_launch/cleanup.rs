@@ -227,3 +227,147 @@ async fn terminal_product_deletion_releases_operation_storage_and_workspace_anch
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn terminal_real_output_eof_precedes_durable_drain_and_final_screen() -> anyhow::Result<()> {
+    let mut fixture = Fixture::start_in(Storage::Disk).await?;
+    let release = fixture._root.path().join("release-output-reader");
+    fixture.supervisor.stop().await;
+    let socket = fixture._sockets.path().join("control.sock");
+    let key = fixture._root.path().join("kernel-key.json");
+    let secret = serde_json::from_slice(&std::fs::read(&key)?)?;
+    fixture.supervisor = Supervisor::launch_with_args(
+        &socket,
+        &fixture.journal,
+        &key,
+        &[
+            "--test-output-reader-release".into(),
+            release.as_os_str().to_owned(),
+        ],
+    )?;
+    fixture.client = fixture.supervisor.connect(&socket, secret).await?;
+    let result = async {
+        let (_, terminal) = fixture.post_terminal(Some("real-reader-eof")).await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !release.with_extension("ready").exists() || !release.with_extension("drained").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.context("actual reader/helper barriers were not reached")?;
+        let json: String = sqlx::query_scalar("SELECT o.execution_request_json FROM operations o JOIN terminals t ON t.launch_operation_id=o.id WHERE t.id=?1")
+            .bind(&terminal.id).fetch_one(fixture.sql.pool()).await?;
+        let request: PrepareExecution = serde_json::from_value(serde_json::from_str::<Value>(&json)?["request"].clone())?;
+        let mut client = observer(&fixture).await?;
+        let reply = client.request(ExecutionRequest::Query(calm_session::control::execution::ConsumeExecution {
+            execution_id: request.identity.execution_id, ticket_id: request.identity.ticket_id, ticket: request.ticket,
+        })).await?;
+        ensure!(matches!(reply, ExecutionReply::Receipt { state: calm_session::control::execution::ExecutionState::Exited { .. }, .. }),
+            "helper drain was published before the actual held reader reached EOF: {reply:?}");
+        let exit: Option<i64> = sqlx::query_scalar("SELECT exit_code FROM terminals WHERE id=?1")
+            .bind(&terminal.id).fetch_one(fixture.sql.pool()).await?;
+        ensure!(exit.is_none(), "product persisted exit before final output was read");
+        std::fs::write(&release, b"read actual PTY")?;
+        let entry = fixture.state.terminal_renderer.get(&terminal.id).context("missing actual renderer")?;
+        ensure!(entry.wait_exit_persisted_for_test(Duration::from_secs(5)).await, "final real output did not complete");
+        ensure!(entry.handle.model_view.lock().unwrap().capture(0)?.0.text.iter().any(|line| line.contains("terminal-vertical-complete")),
+            "durable drain lost the final product screen");
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    // Always release the real reader before orderly process cleanup.
+    std::fs::write(&release, b"release for cleanup")?;
+    fixture.stop().await;
+    result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\n",
+        "EOF handling reissued the process"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_exact_retired_result_replays_after_executor_restart() -> anyhow::Result<()> {
+    use calm_session::control::execution::{EXECUTION_ENVELOPE_VERSION, ObjectRegistrationReceipt};
+    let mut fixture = Fixture::start_in(Storage::Disk).await?;
+    let result = async {
+        let (_, terminal) = fixture.post_terminal(Some("retired-original")).await?;
+        ensure!(fixture.state.terminal_renderer.get(&terminal.id).context("missing actual renderer")?
+            .wait_exit_persisted_for_test(Duration::from_secs(5)).await, "original did not drain");
+        let json: String = sqlx::query_scalar("SELECT o.execution_request_json FROM operations o JOIN terminals t ON t.launch_operation_id=o.id WHERE t.id=?1")
+            .bind(&terminal.id).fetch_one(fixture.sql.pool()).await?;
+        let transfer: AttachRegistration = serde_json::from_value(serde_json::from_str::<Value>(&json)?["registration"].clone())?;
+        let expected = ObjectRegistrationReceipt { contract: EXECUTION_ENVELOPE_VERSION, id: transfer.registration_id.clone(), transfer };
+        let mut client = observer(&fixture).await?;
+        ensure!(matches!(client.request(ExecutionRequest::RetireRegistration(expected.clone())).await?,
+            ExecutionReply::RegistrationRetired { registration } if registration == expected.id), "actual initial retirement failed");
+        fixture.restart_executor().await?;
+        let mut client = observer(&fixture).await?;
+        let mut changed = expected.clone();
+        changed.transfer.nonce = TransferNonce::fresh()?;
+        ensure!(matches!(client.request(ExecutionRequest::RetireRegistration(changed)).await?, ExecutionReply::Refused { .. }),
+            "restart accepted a changed immutable retirement input");
+        let reply = client.request(ExecutionRequest::RetireRegistration(expected.clone())).await?;
+        ensure!(matches!(&reply, ExecutionReply::RegistrationRetired { registration } if *registration == expected.id),
+            "actual prior retirement did not replay across executor restart: {reply:?}");
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    fixture.stop().await;
+    result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\n",
+        "retirement replay reissued the process"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_delete_rollback_retains_screen_and_retries_release_after_restart()
+-> anyhow::Result<()> {
+    let mut fixture = Fixture::start_in(Storage::Disk).await?;
+    let mut server = HttpServer::start(fixture.app.clone()).await?;
+    let result = async {
+        let cookie = login(&server).await?;
+        let (status, _, card) = server.post(format!("/api/tracks/{}/terminal-cards", fixture.track), cookie.clone(), fixture.request_body()).await?;
+        ensure!(status == 201, "original launch failed: {status} {card}");
+        let terminal = fixture.sql.terminal_get_by_card(card["id"].as_str().context("missing card")?).await?.context("missing terminal")?;
+        ensure!(fixture.state.terminal_renderer.get(&terminal.id).context("missing renderer")?
+            .wait_exit_persisted_for_test(Duration::from_secs(5)).await, "original never completed");
+        let original: String = sqlx::query_scalar("SELECT o.execution_request_json FROM operations o JOIN terminals t ON t.launch_operation_id=o.id WHERE t.id=?1")
+            .bind(&terminal.id).fetch_one(fixture.sql.pool()).await?;
+        // Inject only a real transaction failure; the launch/grant/native
+        // request remain products of the actual authenticated HTTP path.
+        sqlx::query("CREATE TRIGGER refuse_terminal_delete_for_test BEFORE DELETE ON terminals BEGIN SELECT RAISE(ABORT,'fixture rollback after quiescence'); END")
+            .execute(fixture.sql.pool()).await?;
+        let (status, _) = delete(&server, &cookie, format!("/api/cards/{}", terminal.card_id)).await?;
+        ensure!(status == 500, "expected actual deletion transaction rollback: {status}");
+        ensure!(fixture.sql.terminal_get(&terminal.id).await?.is_some(), "failed transaction removed the terminal");
+        let entry = fixture.state.terminal_renderer.get(&terminal.id).context("deletion rollback lost the product renderer history")?;
+        ensure!(entry.handle.model_view.lock().unwrap().capture(0)?.0.text.iter().any(|line| line.contains("terminal-vertical-complete")),
+            "deletion rollback erased the original completed screen");
+        drop(entry);
+        server.stop().await?;
+        fixture.rebuild_from_disk().await?;
+        server = HttpServer::start(fixture.app.clone()).await?;
+        let cookie = login(&server).await?;
+        let (socket, snapshot) = open_with_snapshot(&server, &cookie, &terminal.id, 80, 24).await?;
+        ensure!(String::from_utf8_lossy(&snapshot.data).contains("terminal-vertical-complete"),
+            "cold product attach lost output after deletion rollback");
+        disconnect(socket, fixture.state.terminal_renderer.get(&terminal.id).context("missing cold renderer")?).await?;
+        let retained: String = sqlx::query_scalar("SELECT o.execution_request_json FROM operations o JOIN terminals t ON t.launch_operation_id=o.id WHERE t.id=?1")
+            .bind(&terminal.id).fetch_one(fixture.sql.pool()).await?;
+        ensure!(retained == original, "rollback retargeted the original request");
+        sqlx::query("DROP TRIGGER refuse_terminal_delete_for_test").execute(fixture.sql.pool()).await?;
+        fixture.restart_executor().await?;
+        let (status, body) = delete(&server, &cookie, format!("/api/cards/{}", terminal.card_id)).await?;
+        ensure!(status == 204, "retired original release did not replay through actual deletion after restart: {status} {body}");
+        ensure!(fixture.sql.terminal_get(&terminal.id).await?.is_none(), "successful final deletion retained its row");
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    let server_result = server.stop().await;
+    fixture.stop().await;
+    result?;
+    server_result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\n",
+        "deletion rollback/retry reissued the process"
+    );
+    Ok(())
+}

@@ -235,6 +235,18 @@ pub(super) async fn open(
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<Socket> {
+    Ok(open_with_snapshot(server, cookie, terminal, cols, rows)
+        .await?
+        .0)
+}
+
+pub(super) async fn open_with_snapshot(
+    server: &HttpServer,
+    cookie: &str,
+    terminal: &str,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<(Socket, calm_session::RenderSnapshot)> {
     let mut request =
         format!("ws://{}/api/terminals/{}", server.address, terminal).into_client_request()?;
     request.headers_mut().insert("cookie", cookie.parse()?);
@@ -265,17 +277,23 @@ pub(super) async fn open(
         },
     )
     .await?;
-    until(&mut socket, |message| {
-        matches!(
-            message,
-            DaemonMsg::ServerHello {
-                client_role: Role::Owner,
-                ..
-            }
-        )
+    let mut snapshot = None;
+    until(&mut socket, |message| match message {
+        DaemonMsg::ServerHello {
+            client_role: Role::Owner,
+            snapshot: received,
+            ..
+        } => {
+            snapshot = Some(received.clone());
+            true
+        }
+        _ => false,
     })
     .await?;
-    Ok(socket)
+    Ok((
+        socket,
+        snapshot.context("missing actual handshake snapshot")?,
+    ))
 }
 
 async fn exercise(fixture: &mut Fixture, server: &HttpServer) -> anyhow::Result<()> {

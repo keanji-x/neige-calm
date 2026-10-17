@@ -121,13 +121,24 @@ impl Process {
 }
 
 /// std's exec handshake proves spawn errors have reaped the failed executable child.
+#[cfg(test)]
 pub(super) fn spawn(
     helper: &File,
     cwd: &File,
     specification: &ExecutionSpecification,
     context: HelperContext,
 ) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
-    spawn_with_pin(helper, cwd, specification, context, pin_helper)
+    spawn_with_reader_hook(helper, cwd, specification, context, || {})
+}
+
+pub(super) fn spawn_with_reader_hook(
+    helper: &File,
+    cwd: &File,
+    specification: &ExecutionSpecification,
+    context: HelperContext,
+    before_read: impl FnOnce() + Send + 'static,
+) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
+    spawn_with_pin(helper, cwd, specification, context, pin_helper, before_read)
 }
 
 fn spawn_with_pin(
@@ -136,6 +147,7 @@ fn spawn_with_pin(
     specification: &ExecutionSpecification,
     context: HelperContext,
     pin: impl FnOnce(u32) -> anyhow::Result<File>,
+    before_read: impl FnOnce() + Send + 'static,
 ) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
     let (configuration, config_writer) = pipe()?;
     let (reports, report_writer) = pipe()?;
@@ -243,6 +255,7 @@ fn spawn_with_pin(
     });
     let reader_process = process.clone();
     std::thread::spawn(move || {
+        before_read();
         let mut reader = output;
         let mut bytes = [0; 8192];
         loop {
@@ -424,10 +437,17 @@ mod tests {
             replay_bytes: 1024,
         };
         let mut spawned = None;
-        let result = spawn_with_pin(&helper, &cwd, &specification, context, |pid| {
-            spawned = Some(pid);
-            Err(std::io::Error::from_raw_os_error(libc::EMFILE).into())
-        });
+        let result = spawn_with_pin(
+            &helper,
+            &cwd,
+            &specification,
+            context,
+            |pid| {
+                spawned = Some(pid);
+                Err(std::io::Error::from_raw_os_error(libc::EMFILE).into())
+            },
+            || {},
+        );
         assert!(result.is_err());
         let pid = spawned.expect("fault must occur after a successful real spawn");
         let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };

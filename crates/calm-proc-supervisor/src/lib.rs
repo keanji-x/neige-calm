@@ -321,6 +321,15 @@ impl ProcRegistry {
         Ok(self)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_output_reader_release_for_test(self, path: PathBuf) -> anyhow::Result<Self> {
+        self.executor
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing test executor"))?
+            .set_output_reader_release_for_test(path)?;
+        Ok(self)
+    }
+
     fn legacy_gate(&self, alias: &str) -> anyhow::Result<Arc<Mutex<()>>> {
         Ok(self
             .legacy_gates
