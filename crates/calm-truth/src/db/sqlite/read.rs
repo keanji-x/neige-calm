@@ -547,6 +547,15 @@ impl RepoRead for SqlxRepo {
         Ok(rows.into_iter().map(Card::from).collect())
     }
 
+    async fn conversation_archived_at(&self, card_id: &str) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar(
+            "SELECT archived_at_ms FROM assistant_conversation_archives WHERE card_id=?1",
+        )
+        .bind(card_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {
         let row = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at

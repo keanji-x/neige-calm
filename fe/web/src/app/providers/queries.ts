@@ -57,7 +57,7 @@ import {
 } from '../../../../core/domain/track.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
-  plannerRunOperation, createTrackConversationOperation, trackConversationsOperation,
+  plannerRunOperation, createTrackConversationOperation, trackConversationsOperation, setConversationArchiveOperation,
   createSerialWriter, deletePlannerInputOperation, editPlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation, PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT,
@@ -71,6 +71,7 @@ import {
   ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, refusalText, writeFailureOf, writeFailureText,
 } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
+import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type {
   AskAnswer, HarnessItem, PlannerPermissionMode, SetPlannerPermissionModeResponse, UploadAttachmentResponse,
@@ -334,6 +335,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
 import type { SideConversation } from '../../../../core/domain/conversation.ts';
 
 export type ConversationMutations = Readonly<{
+  archive: (cardId: string, archived: boolean) => Promise<void>;
   /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */
   create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
   /** Re-read the list and hand back what it now holds. */
@@ -372,7 +374,17 @@ export function useTrackConversationMutations(
       void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
     },
   });
+  const archive = useRecoveryMutation(transport, {
+    mutationFn: ({ cardId, archived }: { cardId: string; archived: boolean }, transport: ApiTransportPort) =>
+      runOperation(transport, setConversationArchiveOperation(trackId, cardId, archived), unauthorized),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.trackConversations(trackId) });
+    },
+  });
+  const changeArchive = useCommittedCallback(trackId,
+    (cardId: string, archived: boolean) => archive.mutateAsync({ cardId, archived }));
   return {
+    archive: changeArchive,
     create: (text, idempotencyKey, provider, selection, side) => create.mutateAsync({ text, idempotencyKey, provider, selection, side }),
     refresh: () => client.fetchQuery({
       ...trackConversationsQueryOptions(transport, trackId, unauthorized),

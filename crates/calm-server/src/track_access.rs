@@ -31,6 +31,23 @@ pub(crate) async fn require_detail_access(
     Ok(facts.area.id)
 }
 
+/// Resolve the current parent and authorize protected work in its committing transaction.
+pub(crate) async fn require_detail_access_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &str,
+    principal: &Principal,
+) -> Result<AreaId> {
+    let track = crate::db::sqlite::track_get_tx(tx, &track_id.to_string().into()).await?;
+    crate::organization_access::require_area_access_tx(
+        tx,
+        track.area_id.as_str(),
+        principal,
+        AreaAccess::Collaborate,
+    )
+    .await?;
+    Ok(track.area_id)
+}
+
 pub(crate) fn require_same_area(expected: &AreaId, actual: &AreaId) -> Result<()> {
     if expected != actual {
         return Err(CalmError::Forbidden(

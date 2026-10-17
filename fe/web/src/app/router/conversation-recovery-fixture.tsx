@@ -19,7 +19,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
   let sentText = RECOVERY_TEXT;
   let failedReads = false;
   let holdPost = false;
-  let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; lastTurnCompletedAt: null } | null = null;
+  let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; archivedAt: null, lastTurnCompletedAt: null } | null = null;
   const heldReads: (() => void)[] = [];
   const heldPosts: (() => void)[] = [];
   let holdCapabilities = false;
@@ -61,7 +61,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
       if (request.path.endsWith('/conversations')) {
         const key = request.headers?.['Idempotency-Key'];
         if (key === undefined) throw new Error('A create must carry its original key.');
-        created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, lastTurnCompletedAt: null };
+        created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
         return { status: 201, statusText: 'Created', body: created };
       }
       return ok({ card_id: 'second-planner', worker_session_id: 'runtime' });

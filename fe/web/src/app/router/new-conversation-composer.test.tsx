@@ -56,7 +56,7 @@ function renderApp(managed = false) {
         if (request.method !== 'POST') return Promise.resolve(ok(rows));
         const row = {
           id: trackConversationCardId(trackId, request.headers?.['Idempotency-Key'] ?? ''),
-          trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, lastTurnCompletedAt: null,
+          trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, archivedAt: null, lastTurnCompletedAt: null,
         };
         minted.set(trackId, [...rows, row]);
         return Promise.resolve({ status: 201, statusText: 'Created', body: row });
