@@ -16,6 +16,8 @@ export type ConversationStore = Readonly<{
   stopping: boolean;
   stopFeedback: ConversationStopFeedback | null;
   sending: boolean;
+  /** The local outgoing message whose request is pending, not a model execution fact. */
+  sendingMessageId: string | null;
   sendBlocked: boolean;
   /** The addressable page of the harness pending queue. */
   pendingQueue: readonly PendingQueueEntry[];

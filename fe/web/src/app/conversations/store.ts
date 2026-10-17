@@ -36,6 +36,7 @@ export function useConversationStore(
   routeIntent: ConversationRouteIntent,
 ): ConversationStore {
   const registry = useConversationRegistry();
+  const { remember, turnsOf: rememberedTurnsOf, conversations: rememberedConversations } = registry;
   const cardId = scope?.cardId ?? '';
   const trackId = scope?.id;
   const provider = scope?.provider;
@@ -126,11 +127,12 @@ export function useConversationStore(
        once any query data exists the server wins, even when empty. */
   /* An entry the queue region is currently listing is drawn there and nowhere else;
        only the rendered transcript is filtered, `serverTurns` still sees the row. */
+  const rememberedEntries = history.data === undefined ? rememberedTurnsOf(cardId) : null;
   const serverEntries = useMemo(
-    () => history.data === undefined
-      ? registry.turnsOf(cardId).filter((entry) => !isOptimisticConversationTurn(entry))
+    () => rememberedEntries !== null
+      ? rememberedEntries.filter((entry) => !isOptimisticConversationTurn(entry))
       : buildTranscript(items.filter((row) => row.item_uuid === null || !pendingQueueIds.has(row.item_uuid))),
-    [cardId, history.data, items, pendingQueueIds, registry],
+    [items, pendingQueueIds, rememberedEntries],
   );
   const serverTurns = useMemo(
     () => history.data === undefined
@@ -200,8 +202,8 @@ export function useConversationStore(
     /* Server rows enter the registry only under the Track that supplied them. */
     if (durableConversation.trackId !== rememberOn) return;
     /* What the reads showed; the registry adds this conversation's confirmed sends back from its outbox. */
-    registry.remember(durableConversation, serverEntries);
-  }, [serverEntries, durableConversation, registry, rememberOn]);
+    remember(durableConversation, serverEntries);
+  }, [serverEntries, durableConversation, remember, rememberOn]);
   useEffect(() => {
     /* A `'rows'` route remembers every row it lists; `rememberOn` is compared against
          each row so another Track's row cannot write into this scope. */
@@ -215,13 +217,13 @@ export function useConversationStore(
                forgotten on refresh. A title the server does send wins. */
       /* `updatedAt` never goes backwards: the listed row's time does not move when a
                turn is added, but the drawer knows and wrote it here. */
-      const known = registry.conversations.find((candidate) => candidate.id === row.id);
-      registry.remember(
+      const known = rememberedConversations.find((candidate) => candidate.id === row.id);
+      remember(
         withRememberedConversation(row, known),
-        registry.turnsOf(row.id),
+        rememberedTurnsOf(row.id),
       );
     }
-  }, [conversation?.id, registry, rememberOn, serverRows, ownedCardIds]);
+  }, [conversation?.id, rememberedConversations, rememberedTurnsOf, remember, rememberOn, serverRows, ownedCardIds]);
 
   const listedConversations = useMemo(
     () => serverRows.map((row) => withRememberedTitle(
@@ -266,6 +268,7 @@ export function useConversationStore(
     stopping,
     stopFeedback,
     sending: view.sending,
+    sendingMessageId: outbox.sendingMessageId,
     sendBlocked: view.blocked,
     pendingQueue,
     pendingQueueOverflow,

@@ -2860,7 +2860,7 @@ describe('track conversations', () => {
     expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(1);
   });
 
-  it('[F6] stops claiming Working when the runtime wedges during an unanswered send', async () => {
+  it('[F6] keeps dispatch distinct from Working when the runtime wedges during an unanswered send', async () => {
     let phase = 'idle';
     let release!: (value: ApiTransportResponse) => void;
     const held = new Promise<ApiTransportResponse>((resolve) => { release = resolve; });
@@ -2872,7 +2872,8 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     await write('Keep the pending message');
-    expect(drawerWorkingMark()).not.toBeNull();
+    expect(drawerWorkingMark()).toBeNull();
+    expect(screen.getByText('Sending…')).toBeTruthy();
     phase = 'wedged';
     await act(async () => { await client.invalidateQueries({ queryKey: ['planner-run', ASSISTANT_CARD.id] }); });
     expect(await screen.findByRole('button', { name: 'Paused', expanded: false })).toBeTruthy();

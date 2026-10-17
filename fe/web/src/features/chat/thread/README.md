@@ -68,3 +68,21 @@ position cache or history windowing. Gap and compact timestamps share one locale
 formatter per style and thread timezone. Its stable identity lets unchanged rows
 skip formatting during live updates; browser timezone changes are observed on
 render and invalidate the formatters.
+
+`ChatThread` uses React's default prop memoization. The app supplies committed,
+view-scoped action callbacks and stable history inputs; it never suppresses a
+changed callback or reading-state update with a custom comparator. Composer
+updates therefore leave an unchanged thread alone. An empty/nonempty draft may
+still change whether Edit is available, and real history/live/status changes
+still update the thread immediately.
+
+The outbox explicitly supplies `sendingMessageId` for local outgoing entry
+motion. One pane-level shared spring targets that entry, rather than installing
+animation lifecycles on every stored message. `DraftMessage` uses the same
+presentation while the first conversation is being created. The motion changes
+opacity and a spacing-token translation, leaves text unscaled, and releases on
+settlement, unmount or reduced motion. Its completion does not settle delivery.
+Local Sending feedback describes the pending request; Running requires the
+existing run query or kernel activity. Stop remains available during a send to
+an already running conversation. No DOM windowing or delayed network dispatch
+is involved.

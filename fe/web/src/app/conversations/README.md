@@ -63,3 +63,11 @@ Ordinary updates after mounting are not deferred, so visible actions keep their
 existing transcript and command alignment. See the
 [admission contract](../../ui/content-presentation/README.md), the Chat thread README
 for feature integration and the production `conversation-switch` browser regression.
+
+History derivation and confirmed-memory effects depend on the registry's stable
+history/remember operations and relevant rows, rather than its whole context
+value. Typing still updates the one retained composer; it does not invalidate
+unchanged history. Outbox operations remain authoritative for dispatch, keyed
+retry, queue visibility, refusal/unknown restoration and attachments. The store
+exposes a pending local message id only as a presentation input. The app keeps
+local Sending feedback separate from run/activity evidence of execution.

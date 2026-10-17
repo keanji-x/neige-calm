@@ -1,6 +1,6 @@
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 /** Production router/component probe. Durations are diagnostic, never a CI speed threshold. */
-import { Profiler, type ProfilerOnRenderCallback } from 'react';
+import { memo, Profiler, type ProfilerOnRenderCallback } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, render } from '@testing-library/react';
@@ -37,10 +37,10 @@ vi.mock(import('../../features/chat/thread/public.tsx'), async (original) => {
     metrics.commits.push({ id, phase, duration, base });
   };
   return { ...actual,
-    ChatThread: (props: Parameters<typeof Thread>[0]) => {
+    ChatThread: memo((props: Parameters<typeof Thread>[0]) => {
       metrics.renders['transcript'] = (metrics.renders['transcript'] ?? 0) + 1;
       return <Profiler id="transcript" onRender={onRender}><Thread {...props} /></Profiler>;
-    },
+    }),
     ChatComposer: (props: Parameters<typeof Composer>[0]) => {
       metrics.renders['composer'] = (metrics.renders['composer'] ?? 0) + 1;
       return <Profiler id="composer" onRender={onRender}><Composer {...props} /></Profiler>;
