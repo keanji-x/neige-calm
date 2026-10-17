@@ -13,7 +13,7 @@ import { ListText } from '../../ui/list-typography/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { NavTarget } from '../router/navigation.ts';
 import styles from './shell.module.css';
-import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
+import { navigationRowClass as rowLayout, navigationRowPresentation, type NavigationEntrySpec } from '../../ui/navigation-row/public.ts';
 import ownStyles from './area-group.module.css';
 
 export type RowProps = Readonly<{
@@ -100,6 +100,8 @@ export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = 
   const pendingRevealRef = useRef(false);
   const limited = limitAreaTracks(tracks, AREA_TRACK_LIMIT, activeTrackId);
   const rows = showAll ? tracks : limited.rows;
+  const entryPresentation: NavigationEntrySpec = { kind: 'entry', depth: group.level === 'area' ? 1 : 0 };
+  const revealPresentation = navigationRowPresentation(entryPresentation);
   useEffect(() => {
     if (!pendingRevealRef.current) return;
     pendingRevealRef.current = false;
@@ -114,7 +116,7 @@ export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = 
         unread={isUnread(track)}
         areaName={areas === undefined ? undefined : areaOf(track.areaId, areas)?.name}
         variant="rail"
-        presentation={{ kind: 'entry', depth: group.level === 'area' ? 1 : 0 }}
+        presentation={entryPresentation}
         nowMs={nowMs}
         active={markCurrent && track.id === activeTrackId}
         onOpen={(trackId) => onGo({ name: 'track', trackId })}
@@ -126,10 +128,10 @@ export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = 
         ref={toggleRef}
         type="button"
         data-nc-role="row"
-        className={`${ownStyles.showMore} ${rowLayout('labelStart')}`}
+        className={`${ownStyles.showMore} ${revealPresentation.className} ${rowLayout('labelStart')}`}
         aria-label={showAll ? `Show less in ${group.title}` : `Show ${limited.hiddenCount} more in ${group.title}`}
         onClick={() => { pendingRevealRef.current = showAll; setShowAll(!showAll); }}
-      >{showAll ? 'Show less' : `Show ${limited.hiddenCount} more`}</button>}
+      ><ListText tone={revealPresentation.tone} className={ownStyles.showMoreLabel}>{showAll ? 'Show less' : `Show ${limited.hiddenCount} more`}</ListText></button>}
     </div>}
   </SidebarGroup>;
 }

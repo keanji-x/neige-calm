@@ -64,7 +64,7 @@ profile仅引用step、family、weight；等值配方共用profile，语义role�
 语义不同的table、reading、input等role保持独立，即使绑定同一profile。
 完整文字角色使用 `font: var(--type-role)` 与对应 `--type-role-tracking`。
 局部字号、行高和字距修饰消费同源step投影，保留inherit、强调与数值格式语义，不重设其余字体属性。
-Sidebar通过required NavigationRow spec选择caption或entry：caption使用metadata，entry使用content；深度只改变文字与选中背景缩进，不移动状态列。其他列表保留自身group语义，host不再分别覆盖font和tracking。
+Sidebar通过required NavigationRow presentation选择caption或entry：caption使用metadata，entry使用content；深度只改变文字与选中背景缩进，不移动状态列。其他列表保留自身group语义，host不再分别覆盖font和tracking。
 
 有限几何例外：编辑器代码保留12/20、等宽紧凑标签与固定双行数字槽保留12/12。
 这些例外也只在 `typography.exceptions` 中成对定义。终端12.5px、ANSI色板、宿主RGB、

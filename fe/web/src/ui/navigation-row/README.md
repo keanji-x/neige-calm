@@ -1,6 +1,6 @@
 # Navigation row regions
 
-`navigationRowPresentation` accepts a required spec: `{ kind: 'caption', depth: 0 }`
+`navigationRowPresentation` accepts a required presentation: `{ kind: 'caption', depth: 0 }`
 or `{ kind: 'entry', depth: 0 | 1 }`. A frozen kind table selects the actual ListText
 tone: captions use secondary metadata, entries use primary content. Hosts apply that
 tone to their label, not merely the outer container. Domain membership, disclosure,

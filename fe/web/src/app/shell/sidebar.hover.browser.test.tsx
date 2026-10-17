@@ -164,8 +164,11 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
     );
     expect(areaContrast).toBeGreaterThanOrEqual(4.5);
     expect(areaContrast).toBeCloseTo(primaryTextContrast, 3);
-    expect(getComputedStyle(areaName).fontWeight).toBe('400');
-    expect(getComputedStyle(first.querySelector<HTMLElement>('[title="First"]')!).fontWeight).toBe('500');
+    const font = (element: Element) => {
+      const style = getComputedStyle(element);
+      return [style.fontFamily, style.fontSize, style.fontWeight, style.lineHeight, style.letterSpacing];
+    };
+    expect(font(areaName)).toEqual(font(first.querySelector<HTMLElement>('[title="First"]')!));
   }
   document.documentElement.dataset.theme = 'light';
   const restColor = getComputedStyle(areaName).color;

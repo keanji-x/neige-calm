@@ -18,50 +18,63 @@ function text(value, label) {
   if (typeof value !== 'string' || !value.trim() || /[;{}\n\r]/.test(value)) throw new Error(`Invalid ${label}`);
   return value;
 }
-function declarations(values, label) {
-  return Object.entries(object(values, label)).map(([name, value]) => {
-    if (!/^--[a-z][a-z0-9-]*$/.test(name)) throw new Error(`Invalid token ${name}`);
-    return `    ${name}: ${text(value, name)};`;
-  });
-}
-
 function rem(value) { return `${value / 16}rem`; }
 
 function roleProfile(type, name) { return type.profiles[type.roles[name]]; }
 function roleStep(type, name) { return { ...type.scale, ...type.exceptions }[roleProfile(type, name).step]; }
 
-function typographyTokens(config) {
+/** Every emitted token keeps its semantic category and inherited-family dependency. */
+function tokenRegistry() {
+  const records = new Map();
+  /** @param {string} name @param {string} value @param {string | null} category */
+  const add = (name, value, category = null, fontDependency = false) => {
+    if (records.has(name)) throw new Error(`Duplicate token ${name}`);
+    if (!/^--[a-z][a-z0-9-]*$/.test(name)) throw new Error(`Invalid token ${name}`);
+    records.set(name, { name, value: text(value, name), category, fontDependency });
+  };
+  return { add, values: () => [...records.values()] };
+}
+
+function typographyRecords(config) {
   const type = typographySchema.parse(config.typography);
   const familyTokens = { ui: '--font-sans', reading: '--font-serif', code: '--font-mono' };
-  const generated = {};
-  for (const [name, token] of Object.entries(familyTokens)) generated[token] = text(type.families[name], name);
+  const registry = tokenRegistry();
+  for (const [name, token] of Object.entries(familyTokens)) registry.add(token, type.families[name]);
   for (const [name, key] of Object.entries({ normal: 'regular', medium: 'medium', semibold: 'semibold', bold: 'bold' })) {
-    generated[`--weight-${name}`] = String(type.weights[key]);
+    registry.add(`--weight-${name}`, String(type.weights[key]));
   }
   for (const name of Object.keys(type.roles)) {
     const profile = roleProfile(type, name), step = roleStep(type, name);
     const family = `var(${familyTokens[profile.family]})`;
-    generated[`--type-${name}`] = `${type.weights[profile.weight]} ${rem(step.size)}/${rem(step.line)} ${family}`;
-    generated[`--type-${name}-tracking`] = `${step.tracking}em`;
-    // Complete paired projections serve partial formatting and the vendor's unitless-leading protocol.
-    for (const [field, value] of Object.entries({ family, size: rem(step.size), line: rem(step.line), leading: String(step.line / step.size) })) {
-      generated[`--type-${name}-${field}`] = value;
-    }
+    registry.add(`--type-${name}`, `${type.weights[profile.weight]} ${rem(step.size)}/${rem(step.line)} ${family}`, 'TypographyToken', true);
+    registry.add(`--type-${name}-tracking`, `${step.tracking}em`, 'TrackingToken');
+    registry.add(`--type-${name}-family`, family, 'FontProjectionToken', true);
+    registry.add(`--type-${name}-size`, rem(step.size), 'TypeScaleToken');
+    registry.add(`--type-${name}-line`, rem(step.line), 'LeadingToken');
+    registry.add(`--type-${name}-leading`, String(step.line / step.size), 'LeadingToken');
   }
   for (const [name, step] of Object.entries(type.scale)) {
-    for (const [field, value] of Object.entries(step)) generated[`--font-step-${name}-${field}`] = field === 'tracking' ? `${value}em` : rem(value);
+    registry.add(`--font-step-${name}-size`, rem(step.size), 'TypeScaleToken');
+    registry.add(`--font-step-${name}-line`, rem(step.line), 'LeadingToken');
+    registry.add(`--font-step-${name}-tracking`, `${step.tracking}em`, 'TrackingToken');
   }
-  return generated;
+  return registry.values();
 }
 
-/** Build-time owner: no runtime imports, selector scanning or state overrides. */
-export function renderTheme(input) {
+function themeRecords(input) {
   const config = object(input, 'theme');
   if (config.version !== 2) throw new Error('Unsupported theme version');
   keys(config, ['version', 'typography', 'navigation', 'shared', 'light', 'dark', 'hostRgb', 'terminal', 'terminalText', 'spacing'], 'theme');
-  const generated = typographyTokens(config);
+  const registry = tokenRegistry();
+  for (const [name, value] of Object.entries(object(config.shared, 'shared'))) {
+    registry.add(name, value, name === '--leading-none' ? 'LeadingToken' : null,
+      ['--font-display', '--font-numeric', '--font-code'].includes(name));
+  }
+  for (const record of typographyRecords(config)) registry.add(record.name, record.value, record.category, record.fontDependency);
   keys(config.spacing, ['0', 'px', 'half', '1', '2', '3', '4', '5', '6', '7', '8', '9'], 'spacing');
-  for (const [name, value] of Object.entries(config.spacing)) generated[`--space-${name}`] = value === 0 ? '0' : `${number(value, 0, 64, `spacing.${name}`)}px`;
+  for (const [name, value] of Object.entries(config.spacing)) {
+    registry.add(`--space-${name}`, value === 0 ? '0' : `${number(value, 0, 64, `spacing.${name}`)}px`, 'SpacingToken');
+  }
   const nav = object(config.navigation, 'navigation');
   const navLimits = { railWidth: [200, 400], rowHeight: [24, 48], headerHeight: [32, 56], moduleRowHeight: [20, 40], railMix: [0, 100] };
   keys(nav, [...Object.keys(navLimits), 'groupGap', 'sectionGap', 'labelInset'], 'navigation');
@@ -70,46 +83,45 @@ export function renderTheme(input) {
   if (nav.rowHeight < roleStep(config.typography, 'ui').line) throw new Error('Navigation row clips its text line');
   for (const [name, value] of Object.entries(nav)) {
     if (name === 'railMix') continue;
-    generated[`--navigation-${name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`] = Object.hasOwn(navLimits, name) ? rem(value) : `var(--space-${value})`;
+    registry.add(`--navigation-${name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`,
+      Object.hasOwn(navLimits, name) ? rem(value) : `var(--space-${value})`, 'NavigationToken');
   }
-  generated['--surface-navigation'] = `color-mix(in srgb, var(--surface-rail) ${nav.railMix}%, var(--bg))`;
-  const shared = object(config.shared, 'shared');
-  for (const name of Object.keys(generated)) if (Object.hasOwn(shared, name)) throw new Error(`Duplicate token ${name}`);
+  registry.add('--surface-navigation', `color-mix(in srgb, var(--surface-rail) ${nav.railMix}%, var(--bg))`);
   const light = object(config.light, 'light'), dark = object(config.dark, 'dark');
   if (Object.keys(light).sort().join() !== Object.keys(dark).sort().join()) throw new Error('Light/dark token inventory differs');
-  for (const name of Object.keys(light)) if (Object.hasOwn(shared, name) || Object.hasOwn(generated, name)) throw new Error(`Themed token overlaps shared token ${name}`);
-  return `/* Generated from theme.config.json. Run npm run theme:generate; do not edit. */\n@layer tokens {\n  :root {\n${declarations({ ...shared, ...generated, ...light }, 'root').join('\n')}\n  }\n\n  [data-theme="dark"] {\n${declarations(dark, 'dark').join('\n')}\n  }\n}\n`;
+  for (const [name, value] of Object.entries(light)) registry.add(name, value);
+  const darkRegistry = tokenRegistry();
+  for (const [name, value] of Object.entries(dark)) darkRegistry.add(name, value);
+  return { root: registry.values(), dark: darkRegistry.values() };
 }
 
-/** Recompute font-dependent roles only at an explicit inherited-family scope. */
+function recordDeclarations(records) { return records.map(({ name, value }) => `    ${name}: ${text(value, name)};`); }
+
+/** Build-time owner: validate the complete registry before any output is written. */
+export function renderTheme(input) {
+  const records = themeRecords(input);
+  return `/* Generated from theme.config.json. Run npm run theme:generate; do not edit. */\n@layer tokens {\n  :root {\n${recordDeclarations(records.root).join('\n')}\n  }\n\n  [data-theme="dark"] {\n${recordDeclarations(records.dark).join('\n')}\n  }\n}\n`;
+}
+
+/** Recompute exactly the emissions that depend on an inherited font family. */
 export function renderTypographyScope(input) {
-  renderTheme(input);
-  const fonts = typographyTokens(input);
-  const values = {};
-  for (const name of Object.keys(input.typography.roles)) values[`--type-${name}`] = fonts[`--type-${name}`];
-  for (const [name, value] of Object.entries(fonts)) if (name.endsWith('-family')) values[name] = value;
-  for (const name of ['--font-display', '--font-numeric', '--font-code']) values[name] = input.shared[name];
-  return `/* Generated from theme.config.json. Run npm run theme:generate; do not edit. */\n@layer ui {\n  .scope {\n${declarations(values, 'typography scope').join('\n')}\n  }\n}\n`;
+  const records = themeRecords(input).root.filter(record => record.fontDependency);
+  return `/* Generated from theme.config.json. Run npm run theme:generate; do not edit. */\n@layer ui {\n  .scope {\n${recordDeclarations(records).join('\n')}\n  }\n}\n`;
 }
 
-/** Closed generated type families; no hand-maintained role or field inventory. */
+/** Closed public types and inventory consume emission metadata, never token-name suffixes. */
 export function renderTypographyTypes(input) {
-  renderTheme(input);
-  const type = typographyTokens(input);
-  const allNames = Object.keys(type);
-  const roles = Object.keys(input.typography.roles);
-  const groups = {
-    TypographyToken: roles.map(name => `--type-${name}`),
-    TypeScaleToken: allNames.filter(name => name.endsWith('-size')),
-    LeadingToken: ['--leading-none', ...allNames.filter(name => /-(?:line|leading)$/.test(name))],
-    TrackingToken: allNames.filter(name => name.endsWith('-tracking')),
-    FontProjectionToken: allNames.filter(name => name.endsWith('-family')),
-    SpacingToken: Object.keys(input.spacing).map(name => `--space-${name}`),
-    NavigationToken: Object.keys(input.navigation).filter(name => name !== 'railMix').map(name => `--navigation-${name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`),
-  };
-  const declarations = Object.entries(groups).map(([name, values]) => `export type ${name} =\n  ${values.map(value => JSON.stringify(value)).join(' | ')};`);
-  const inventory = Object.values(groups).flat().sort();
-  return `/* Generated from theme.config.json. Run npm run theme:generate; do not edit. */\n${declarations.join('\n\n')}\n\nexport const GENERATED_TOKEN_INVENTORY = Object.freeze(${JSON.stringify(inventory, null, 2)} as const);\n`;
+  const groups = new Map();
+  const records = themeRecords(input).root.filter(record => record.category !== null);
+  for (const { category, name } of records) {
+    if (!groups.has(category)) groups.set(category, []);
+    groups.get(category).push(name);
+  }
+  const inventory = records.map(record => record.name).sort();
+  const categories = [...groups].map(([name, values]) => `  ${name}: Object.freeze(${JSON.stringify(values)} as const),`);
+  const declarations = [...groups.keys()].map(name => `export type ${name} = (typeof GENERATED_TOKEN_CATEGORIES.${name})[number];`);
+  return `/* Generated from theme.config.json. Run npm run theme:generate; do not edit. */\nexport const GENERATED_TOKEN_CATEGORIES = Object.freeze({\n${categories.join('\n')}\n});\n\n${declarations.join('\n')}\n\nexport const GENERATED_TOKEN_INVENTORY = Object.freeze(${JSON.stringify(inventory, null, 2)} as const);\n`;
+
 }
 
 /** Static host values live in the styles leaf; no runtime theme resolution. */

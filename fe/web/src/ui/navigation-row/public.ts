@@ -14,9 +14,9 @@ const kinds = Object.freeze({
 });
 
 /** Required content-region schema. CSS alone owns columns and the single depth relationship. */
-export function navigationRowPresentation(spec: NavigationRowSpec): Readonly<{ className: string; tone: ListTextRole }> {
-  return { className: [styles.row, spec.depth === 1 ? styles.nested : ''].filter(Boolean).join(' '),
-    tone: kinds[spec.kind].tone };
+export function navigationRowPresentation(presentation: NavigationRowSpec): Readonly<{ className: string; tone: ListTextRole }> {
+  return { className: [styles.row, presentation.depth === 1 ? styles.nested : ''].filter(Boolean).join(' '),
+    tone: kinds[presentation.kind].tone };
 }
 
 /** Geometry-only slots remain available for surrounding chrome. */

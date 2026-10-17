@@ -188,7 +188,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     onMouseDown={(event) => { if (!showingView && event.target === event.currentTarget) onClose(); }}>
     {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the dialog panel owns its required focus trap and click-through guard. */}
     <div ref={panelRef} className={showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'} data-nc-escape-layer=""
-      style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-3))` }}
+      style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-6))` }}
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
       aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
       tabIndex={-1} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onPanelKeyDown}>

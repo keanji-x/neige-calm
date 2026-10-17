@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { renderTheme, renderThemeValues, renderTypographyScope, renderTypographyTypes } from './generate-theme.mjs';
 
@@ -71,6 +72,33 @@ describe('central theme generation', () => {
     config.typography.roles['fixture-role'] = config.typography.roles.reading;
     expect(renderTypographyTypes(config)).toContain('"--type-fixture-role"');
     expect(renderTypographyScope(config)).toContain('--type-fixture-role:');
+  });
+  it.each(['size', 'family', 'line', 'leading', 'tracking'])('rejects a role colliding with the emitted %s field', field => {
+    const config = source();
+    config.typography.roles[`ui-${field}`] = config.typography.roles.ui;
+    for (const emit of [renderTheme, renderTypographyTypes, renderTypographyScope, renderThemeValues]) {
+      expect(() => emit(config)).toThrow(`Duplicate token --type-ui-${field}`);
+    }
+  });
+  it.each(['size', 'family', 'line', 'leading', 'tracking'])('classifies a noncolliding %s-suffixed role by its emission kind', async field => {
+    const config = source();
+    const role = `fixture-${field}`;
+    config.typography.roles[role] = config.typography.roles.ui;
+    const generated = renderTypographyTypes(config);
+    const javascript = ts.transpileModule(generated, { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText;
+    const output = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString('base64')}`) as {
+      GENERATED_TOKEN_CATEGORIES: Record<string, readonly string[]>; GENERATED_TOKEN_INVENTORY: readonly string[];
+    };
+    expect(output.GENERATED_TOKEN_CATEGORIES.TypographyToken).toContain(`--type-${role}`);
+    for (const category of ['TypeScaleToken', 'LeadingToken', 'TrackingToken', 'FontProjectionToken']) {
+      expect(output.GENERATED_TOKEN_CATEGORIES[category]).not.toContain(`--type-${role}`);
+    }
+    expect(new Set(output.GENERATED_TOKEN_INVENTORY).size).toBe(output.GENERATED_TOKEN_INVENTORY.length);
+    const scope = renderTypographyScope(config);
+    expect(scope).toContain(`--type-${role}:`);
+    expect(scope).toContain(`--type-${role}-family:`);
+    expect(scope).not.toContain(`--type-${role}-size:`);
+
   });
   it('preserves the independently pinned interface, reading and editor font stacks', () => {
     expect(source().typography.families).toEqual({

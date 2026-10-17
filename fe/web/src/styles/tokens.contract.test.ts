@@ -3,7 +3,7 @@
 /// <reference types="node" />
 
 import { readFileSync } from 'node:fs';
-import { GENERATED_TOKEN_INVENTORY } from './typography.generated.ts';
+import { GENERATED_TOKEN_INVENTORY, GENERATED_TOKEN_CATEGORIES } from './typography.generated.ts';
 
 import { describe, expect, it } from 'vitest';
 
@@ -42,14 +42,14 @@ const PROSE_SURFACES = ['--surface-terminal', '--surface-code'] as const;
 const OVERLAYS = [
   '--overlay-hover-faint', '--overlay-hover', '--overlay-hover-strong', '--overlay-active',
 ] as const;
-const TYPE_SCALE = GENERATED_TOKEN_INVENTORY.filter(name => name.endsWith('-size'));
-const TYPE_LINES = GENERATED_TOKEN_INVENTORY.filter(name => name.endsWith('-line'));
-const LEADING = GENERATED_TOKEN_INVENTORY.filter(name => name === '--leading-none' || name.endsWith('-leading'));
-const TRACKING = GENERATED_TOKEN_INVENTORY.filter(name => name.endsWith('-tracking'));
+const TYPE_SCALE = GENERATED_TOKEN_CATEGORIES.TypeScaleToken;
+const TYPE_LINES = GENERATED_TOKEN_CATEGORIES.LeadingToken.filter(name => name.endsWith('-line'));
+const LEADING = GENERATED_TOKEN_CATEGORIES.LeadingToken.filter(name => !name.endsWith('-line'));
+const TRACKING = GENERATED_TOKEN_CATEGORIES.TrackingToken;
 const RADIUS = [
   '--radius-sm', '--radius-md', '--radius-lg', '--radius-pill',
 ] as const;
-const SPACING = GENERATED_TOKEN_INVENTORY.filter(name => name.startsWith('--space-'));
+const SPACING = GENERATED_TOKEN_CATEGORIES.SpacingToken;
 const MOTION = [
   '--motion-instant', '--motion-quick', '--motion-snappy', '--motion-medium', '--motion-slow',
   '--motion-pulse',

@@ -10,8 +10,6 @@
    * it is not a Track.
    */
   .showMore {
-    font-size: var(--font-step-2-size);
-    line-height: var(--font-step-2-line);
     display: flex;
     align-items: center;
     inline-size: 100%;
@@ -23,6 +21,8 @@
     text-align: start;
     cursor: pointer;
   }
+
+  .showMoreLabel { color: inherit; }
 
   .showMore:hover,
   .showMore:focus-visible {
