@@ -20,20 +20,12 @@ use std::sync::{Arc, OnceLock};
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
 
-/// This invocation's outcome, not a credential or a promise to start execution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::routes::tracks) enum HumanTrackCreationDisposition {
-    Fresh,
-    Replayed,
-}
-
 #[derive(Debug)]
 pub(in crate::routes::tracks) struct HumanTrackCreationResult {
     pub ack: HumanTrackCreationAck,
     /// The finite response view read under the same Area/resource decision.
     /// It is transient output, never another persisted acceptance authority.
     pub track: crate::model::Track,
-    pub disposition: HumanTrackCreationDisposition,
 }
 
 /// All preparation values are data. This entry obtains authority again and
@@ -208,14 +200,12 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
         Ok(((ack, track), _)) => Ok(HumanTrackCreationResult {
             ack,
             track,
-            disposition: HumanTrackCreationDisposition::Fresh,
         }),
         Err(error @ CalmError::Conflict(_)) => replay_rx
             .try_recv()
             .map(|(ack, track)| HumanTrackCreationResult {
                 ack,
                 track,
-                disposition: HumanTrackCreationDisposition::Replayed,
             })
             .map_err(|_| error),
         Err(error) => Err(error),
