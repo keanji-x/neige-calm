@@ -197,16 +197,10 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     // Acceptance is already committed. Native availability/wake/report is not
     // part of this acknowledgement and cannot turn it back into "unaccepted".
     match result {
-        Ok(((ack, track), _)) => Ok(HumanTrackCreationResult {
-            ack,
-            track,
-        }),
+        Ok(((ack, track), _)) => Ok(HumanTrackCreationResult { ack, track }),
         Err(error @ CalmError::Conflict(_)) => replay_rx
             .try_recv()
-            .map(|(ack, track)| HumanTrackCreationResult {
-                ack,
-                track,
-            })
+            .map(|(ack, track)| HumanTrackCreationResult { ack, track })
             .map_err(|_| error),
         Err(error) => Err(error),
     }
