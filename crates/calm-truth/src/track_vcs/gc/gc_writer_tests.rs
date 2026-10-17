@@ -23,7 +23,11 @@ pub(super) struct Pause {
     next: AtomicUsize,
 }
 tokio::task_local! { static SWEEP_PAUSE: Arc<Pause>; }
+tokio::task_local! { pub(super) static DELETE_VALIDATIONS: Arc<AtomicUsize>; }
 pub(super) async fn at_phase(phase: Phase) {
+    if phase == Phase::BeforeDelete {
+        let _ = DELETE_VALIDATIONS.try_with(|counter| counter.fetch_add(1, Ordering::SeqCst));
+    }
     let Ok(pause) = SWEEP_PAUSE.try_with(Arc::clone) else {
         return;
     };

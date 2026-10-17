@@ -9,7 +9,8 @@ use std::time::Duration;
 
 const OBJECT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const OBJECT_SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
-const OBJECT_PAGE_SIZE: i64 = 256;
+const OBJECT_SCAN_PAGE_SIZE: i64 = 256;
+const DELETE_BATCH_SIZE: usize = 256;
 const TREE_READ_BATCH: usize = 32;
 const INLINE_TREE_LIMIT: usize = 32;
 const INLINE_BYTE_LIMIT: u64 = 1024 * 1024;
@@ -99,15 +100,21 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
     let mut observed = Observed::default();
     observe_external(pool, &initial, &mut observed).await?;
     let mut cursor = String::new();
+    // Index pages and deletion batches have different costs. Accumulate actual old orphan
+    // candidates across sparse live pages before paying for the full ancestry proof.
+    let mut pending = Vec::new();
     loop {
         let page: Vec<String> = sqlx::query_scalar(
             "SELECT hash FROM track_vcs_objects WHERE hash > ?1 ORDER BY hash LIMIT ?2",
         )
         .bind(&cursor)
-        .bind(OBJECT_PAGE_SIZE)
+        .bind(OBJECT_SCAN_PAGE_SIZE)
         .fetch_all(pool)
         .await?;
         let Some(last) = page.last() else {
+            if !pending.is_empty() {
+                flush_candidates(pool, cutoff, pending, &mut observed, deleted).await?;
+            }
             return Ok(());
         };
         cursor.clone_from(last);
@@ -120,19 +127,38 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
         if unmarked.is_empty() {
             continue;
         }
-        let candidates = old_candidates(pool, cutoff, &unmarked).await?;
-        if candidates.is_empty() {
-            continue;
-        }
-        match delete_validated_batch(pool, cutoff, candidates, &mut observed).await? {
-            Some(count) => *deleted += count,
-            None => {
-                tracing::info!(
-                    deleted = *deleted,
-                    "track_vcs: object sweep deferred remaining candidates after repeated closure changes"
-                );
+        pending.extend(old_candidates(pool, cutoff, &unmarked).await?);
+        // Before extending, pending held fewer than DELETE_BATCH_SIZE entries; a scan page
+        // adds at most OBJECT_SCAN_PAGE_SIZE. Keep the remainder and consume each batch even
+        // if fresh live marks or age changes make its committed deletion count zero.
+        while pending.len() >= DELETE_BATCH_SIZE {
+            let remainder = pending.split_off(DELETE_BATCH_SIZE);
+            let candidates = std::mem::replace(&mut pending, remainder);
+            if !flush_candidates(pool, cutoff, candidates, &mut observed, deleted).await? {
                 return Ok(());
             }
+        }
+    }
+}
+
+async fn flush_candidates(
+    pool: &SqlitePool,
+    cutoff: i64,
+    candidates: Vec<String>,
+    observed: &mut Observed,
+    deleted: &mut u64,
+) -> Result<bool> {
+    match delete_validated_batch(pool, cutoff, candidates, observed).await? {
+        Some(count) => {
+            *deleted += count;
+            Ok(true)
+        }
+        None => {
+            tracing::info!(
+                deleted = *deleted,
+                "track_vcs: object sweep deferred remaining candidates after repeated closure changes"
+            );
+            Ok(false)
         }
     }
 }

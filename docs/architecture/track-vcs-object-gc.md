@@ -28,7 +28,11 @@ The candidate scan first reads hash-only keyset pages of 256 through the
 covering primary-key index, and excludes the observed reference union before
 loading age metadata. Only remaining hashes are looked up by primary key with
 the fixed cutoff. This avoids reading large live objects' records just for the
-age column after their payload. A scan with no candidates returns zero
+age column after their payload. Actual old orphan candidates accumulate across
+index pages into independent deletion batches of 256, with one final partial
+batch at EOF. A sparse population must not pay for a full ancestry proof once
+per live-object index page. The buffer holds at most 511 candidates before a
+flush. A scan with no candidates returns zero
 without acquiring the writer. It can safely miss concurrently created garbage;
 it cannot delete anything.
 
@@ -49,10 +53,11 @@ garbage. There is no full-payload fallback under the writer or new scheduler.
 After extending observations, candidate hashes are filtered again against both
 tree and blob references. The DELETE addresses only those hashes and rechecks
 `created_at` against the call's fixed one-hour grace cutoff. The writer is
-released between pages, and normal calls continue until the old-object scan is
+released between candidate batches, and normal calls continue until the object scan is
 exhausted. Concurrently detached trees already observed can conservatively retain
 some garbage until the next call. The keyset cursor advances even when newly
-observed references or a refreshed age make a candidate batch delete zero rows.
+observed references or a refreshed age make a candidate batch delete zero rows;
+that batch is consumed rather than requeued.
 
 ## Failure and concurrency semantics
 

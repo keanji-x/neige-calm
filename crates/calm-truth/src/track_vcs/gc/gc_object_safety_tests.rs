@@ -379,3 +379,85 @@ async fn object_sweep_restored_cycle_and_duplicate_states_keep_reachable_objects
     }
     assert!(!f.exists(&orphan).await);
 }
+
+#[tokio::test]
+async fn object_sweep_sparse_orphans_share_one_candidate_validation_batch() {
+    use super::gc_writer_tests::DELETE_VALIDATIONS;
+    use crate::track_vcs::{ManifestEntry, commit_tree, put_blob};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let f = Fixture::new().await;
+    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut entries = BTreeMap::new();
+    for n in 0..1024 {
+        let text = format!("retained sparse-GC document {n}");
+        let hash = put_blob(&mut tx, "blob", text.as_bytes()).await.unwrap();
+        entries.insert(
+            format!("documents/{n}.md"),
+            ManifestEntry {
+                blob_hash: hash,
+                byte_len: text.len() as u64,
+                content_type: "text/markdown".into(),
+            },
+        );
+    }
+    let live = crate::track_vcs::store::store_tree(&mut tx, 1, entries, now_ms())
+        .await
+        .unwrap();
+    commit_tree(
+        &mut tx,
+        &f.track,
+        None,
+        &live,
+        None,
+        "sparse orphan fixture",
+        1,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mut orphans = BTreeSet::new();
+    for n in 0..16 {
+        orphans.insert(f.orphan(&format!("scattered old orphan {n}")).await);
+    }
+    let hashes: Vec<String> =
+        sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    // Prove this fixture exercises sparse candidates across multiple current 256-row index
+    // pages. The performance assertion below counts actual production validation attempts.
+    let pages: BTreeSet<_> = hashes
+        .iter()
+        .enumerate()
+        .filter(|(_, hash)| orphans.contains(*hash))
+        .map(|(rank, _)| rank / 256)
+        .collect();
+    assert!(
+        pages.len() >= 3,
+        "orphans must be scattered across multiple live-object pages"
+    );
+    let counter = Arc::new(AtomicUsize::new(0));
+    let deleted = DELETE_VALIDATIONS
+        .scope(
+            counter.clone(),
+            track_vcs::sweep_unreferenced_objects_once(f.repo.pool()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted, 16);
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "a sparse candidate batch must not revalidate ancestry once per index page"
+    );
+    assert!(f.exists(&live.tree_hash).await);
+    for entry in live.manifest.entries.values() {
+        assert!(f.exists(&entry.blob_hash).await);
+    }
+    for orphan in orphans {
+        assert!(!f.exists(&orphan).await);
+    }
+}
