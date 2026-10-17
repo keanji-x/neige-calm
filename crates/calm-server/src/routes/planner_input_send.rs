@@ -51,8 +51,8 @@ pub struct SendPlannerInputResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub worker_session_id: String,
-    /// Canonical message identity or the original historical queue entry.
-    /// A folded historical entry retains its original optional acknowledgement.
+    /// Canonical message identity or a real addressable new historical entry.
+    /// Stored historical acknowledgements retain their original optional ID.
     pub entry_id: Option<String>,
 }
 
