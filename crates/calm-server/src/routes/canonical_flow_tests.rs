@@ -241,6 +241,7 @@ async fn post(app: &axum::Router, cookie: &str, uri: &str, key: &str, body: Valu
 
 mod cold_recovery_tests;
 mod historical_compatibility_tests;
+mod source_readmission_tests;
 
 async fn original_input_flow(
     native_initially_available: bool,

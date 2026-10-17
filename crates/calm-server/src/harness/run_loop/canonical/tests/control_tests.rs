@@ -138,6 +138,82 @@ async fn canonical_budget_warns_once_and_hard_stops_the_actual_original_executio
     fx.harness.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn accepted_stop_drains_its_original_target_after_native_gate_failure_and_logout() {
+    let fx = Fixture::with_config(HarnessConfig {
+        interrupt_completion_budget: Duration::from_millis(100),
+        ..HarnessConfig::default()
+    })
+    .await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
+    running(&fx, &mut peer).await;
+    let original = fx.frame().await;
+    let gate =
+        crate::shared_codex_appserver::native_owner_tests::hold_connected_client_gate(&fx.daemon)
+            .await;
+    let stop = tokio::spawn({
+        let harness = fx.harness.clone();
+        let source = fx.source.clone();
+        async move { harness.stop_canonical(source).await }
+    });
+    fx.wait_phase(HarnessPhaseTag::IssuingInterrupt).await;
+    let held = fx.wait_phase(HarnessPhaseTag::Wedged).await;
+    assert!(held.header.interruption_intent.is_some());
+    assert_eq!(held.canonical_inputs, original.canonical_inputs);
+    fx.auth.sessions.remove(&fx.session).unwrap();
+    assert!(fx.source.current_principal().is_err());
+    drop(gate);
+    let call = tokio::time::timeout(Duration::from_secs(2), request(&mut peer)).await;
+    if call.is_err() {
+        assert!(stop.await.unwrap().is_err());
+        peer.close(None).await.unwrap();
+        fx.harness.shutdown().await.unwrap();
+        panic!("the already committed Stop must still drain its original target after failure");
+    }
+    let call = call.unwrap();
+    assert_eq!(call["method"], "turn/interrupt");
+    assert_eq!(
+        call["params"]["threadId"],
+        original.header.last_thread_id.as_deref().unwrap()
+    );
+    assert_eq!(
+        call["params"]["turnId"],
+        original.header.last_turn_id.as_deref().unwrap()
+    );
+    send(&mut peer, json!({"id":call["id"],"result":{}})).await;
+    stop.await.unwrap().unwrap();
+    assert_eq!(fx.frame().await.header.phase, HarnessPhaseTag::Wedged);
+    notify_thread(
+        &fx.daemon,
+        &mut peer,
+        original.header.last_thread_id.as_deref().unwrap(),
+        "turn/completed",
+        json!({"id":original.header.last_turn_id,"status":"interrupted"}),
+    )
+    .await;
+    let ended = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+    assert!(ended.canonical_inputs.active.is_none());
+    assert_eq!(
+        ended.canonical_inputs.attempts,
+        original.canonical_inputs.attempts
+    );
+    let row = fx
+        .original
+        .repo
+        .session_projection_by_id(&fx.harness.inner.worker_session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, calm_types::worker::WorkerSessionState::Failed);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), request(&mut peer))
+            .await
+            .is_err()
+    );
+    peer.close(None).await.unwrap();
+    fx.harness.shutdown().await.unwrap();
+}
+
 async fn pending(fx: &Fixture) -> MessageRevisionRef {
     let mut tx = begin_immediate_tx(fx.original.repo.pool()).await.unwrap();
     let mut carrier = crate::db::sqlite::conversation::current_input_content_carrier_tx(
@@ -181,6 +257,28 @@ async fn failed_stays_failed_after_end(
     );
     let thread = original.header.last_thread_id.as_deref().unwrap();
     let turn = original.header.last_turn_id.as_deref().unwrap();
+    send(peer,json!({"method":"item/completed","params":{
+        "threadId":thread,"turnId":turn,
+        "item":{"id":"late-failed-reply","type":"agentMessage","text":"Original result after failure"}
+    }})).await;
+    let late_reply = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let stored: Option<String> = sqlx::query_scalar(
+                "SELECT i.params FROM conversation_presentations p
+                 JOIN harness_items i ON i.id=p.native_item_row_id
+                 WHERE p.card_id=?1 AND i.item_uuid='late-failed-reply'",
+            )
+            .bind(fx.harness.inner.card_id.as_str())
+            .fetch_optional(fx.original.repo.pool())
+            .await
+            .unwrap();
+            if let Some(stored) = stored {
+                break stored;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
     notify_thread(
         &fx.daemon,
         peer,
@@ -256,6 +354,12 @@ async fn failed_stays_failed_after_end(
     );
     peer.close(None).await.unwrap();
     fx.harness.shutdown().await.unwrap();
+    let stored = late_reply
+        .expect("a Failed carrier must preserve the original native reply and its presentation");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stored).unwrap()["item"]["text"],
+        "Original result after failure"
+    );
 }
 
 #[tokio::test]
