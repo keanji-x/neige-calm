@@ -33,6 +33,11 @@ its bounded width. Hosts retain layout/overflow ownership and use `text-overflow
 clip` instead of an ellipsis when opting in. Full DOM text, native title and
 accessible names are preserved; resize and content updates remeasure overflow,
 and the observer disconnects on unmount. Short labels receive no mask.
+Each opted-in element keeps its resize subscription for its mounted lifetime.
+A scoped content observer also measures committed text, child and attribute
+changes, including child updates that do not render the host. Recreated JSX
+with the same DOM does not reconnect observers or read geometry. Both observers
+disconnect when fading is disabled, the host tag changes or the element unmounts.
 
 Named tones own a complete font/tracking pair. Hosts choose a tone rather than overriding
 font and tracking independently. Navigation-row's required content schema selects
