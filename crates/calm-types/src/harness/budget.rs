@@ -31,6 +31,11 @@ impl From<PlannerTurnBudget> for u16 {
 }
 
 impl PlannerTurnBudget {
+    /// Convert the validated minute value to its execution duration.
+    pub fn limit(self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.0) * 60)
+    }
+
     pub fn parse(value: &str) -> Result<Self, String> {
         if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
             return Err(format!(

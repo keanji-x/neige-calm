@@ -14,7 +14,6 @@ pub enum LoadError {
 }
 
 pub(crate) trait PlannerTurnBudgetExt: Sized {
-    fn limit(self) -> Duration;
     fn warning_remaining(self) -> Duration;
     fn warning_input(self) -> String;
     fn initial_input(self) -> String;
@@ -22,9 +21,6 @@ pub(crate) trait PlannerTurnBudgetExt: Sized {
 }
 
 impl PlannerTurnBudgetExt for PlannerTurnBudget {
-    fn limit(self) -> Duration {
-        Duration::from_secs(u64::from(u16::from(self)) * 60)
-    }
     fn warning_remaining(self) -> Duration {
         Duration::from_secs(300).min(self.limit() / 5)
     }
