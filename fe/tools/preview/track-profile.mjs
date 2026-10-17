@@ -362,14 +362,14 @@ try {
     const desktop = activePage.getByRole('button', { name: `Track ${item.title}`, exact: true });
     if (await desktop.isVisible()) return desktop;
     await activePage.getByRole('button', { name: 'Open workspace', exact: true }).click();
-    await activePage.getByRole('button', { name: area.name, exact: true }).click();
+    const areaControl = activePage.getByRole('button', { name: area.name, exact: true });
+    if (await areaControl.isVisible()) await areaControl.click();
     return activePage.getByRole('button', { name: item.title, exact: true });
   }
   /** @param {import('@playwright/test').Locator} control */
   async function clickControl(control) {
-    const box = await control.boundingBox();
-    if (box === null) throw new Error('Selected Track navigation control is not visible');
-    await activePage.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    // Native workspace pages move during entry: wait for the real control's actionability.
+    await control.click();
   }
   /** @param {string} id */
   async function waitForTrack(id) {
