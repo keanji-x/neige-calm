@@ -21,6 +21,8 @@ mod auth_origin;
 mod briefing_in_mint_tx;
 #[path = "cases/card_cascade_semantics.rs"]
 mod card_cascade_semantics;
+#[path = "cases/canonical_ingress.rs"]
+mod canonical_ingress;
 #[path = "cases/cards_deletable.rs"]
 mod cards_deletable;
 #[path = "cases/claude_ingest.rs"]
