@@ -6,15 +6,19 @@ import styles from './panel-card.module.css';
 
 /* Each projection marker channel is its own opt-in prop: a rest-prop spread reaches only the outermost element, and unconditional marking would put module markers in trees whose view model has none. The attribute names are literals because `ui/**` may not import `core/view/panel.ts`. */
 
-export function PanelCard({ children, fill = false }: { children: ReactNode; fill?: boolean }) {
-  return <div className={[styles.card, fill ? styles.fill : ''].filter(Boolean).join(' ')}>{children}</div>;
+export function PanelCard({ children, fill = false, className }: { children: ReactNode; fill?: boolean; className?: string }) {
+  return <div className={[styles.card, fill ? styles.fill : '', className].filter(Boolean).join(' ')}>{children}</div>;
 }
 
-export function PanelModule({ title, icon, action, children, grow = false, className, moduleMarker, titleFieldMarker }: {
+export function PanelModule({ title, icon, action, children, bare = false, revealActions = false, grow = false, className, moduleMarker, titleFieldMarker }: {
   title: string;
   icon?: IconName;
+  /** A named section without visible header or inset, composed inside another module. */
+  bare?: boolean;
   className?: string;
   action?: ReactNode;
+  /** Reveal low-frequency header actions on hover/focus; touch keeps them visible. */
+  revealActions?: boolean;
   children: ReactNode;
   /** Allow this module body to shrink and share a bounded card. */
   grow?: boolean;
@@ -25,11 +29,11 @@ export function PanelModule({ title, icon, action, children, grow = false, class
 }) {
   return (
     <section
-      className={[styles.module, grow ? styles.grow : '', className].filter(Boolean).join(' ')}
+      className={[styles.module, bare ? styles.bare : '', revealActions ? styles.revealActions : '', grow ? styles.grow : '', className].filter(Boolean).join(' ')}
       {...(moduleMarker === undefined ? {} : { 'data-nc-module': moduleMarker })}
     >
       <div className={styles.head}>
-        <ListText as="h2" tone="section"
+        <ListText as="h2" tone="section" emphasis="medium"
           className={styles.title}
           {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
         >{icon !== undefined && <span className={styles.iconSlot}><Icon name={icon} size="sm" /></span>}{title}</ListText>

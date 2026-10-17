@@ -19,6 +19,7 @@
     overscroll-behavior: contain;
   }
 
+
   /* The row recipe, at the panel's density. Same shape as every other row in
      the app: no border, no background of its own, a 6px leading state column
      and a fixed trailing column for the age (§6.0). */

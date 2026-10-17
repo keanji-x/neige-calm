@@ -10,7 +10,7 @@ import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import { MARKER } from '../../../../../core/view/panel.ts';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
-import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
+import { deriveTrackPageView, executionActivityLabelOf } from '../../../../../core/view/track-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeMobilePainter } from './mobile-painter.tsx';
 import pageSource from './public.tsx?raw';
@@ -262,11 +262,14 @@ describe('the rendered mobile Tasks page projects its view model faithfully', ()
 
 /* The projection checker does not read `PanelRow.activity`, so the indicator is held by a same-set comparison over the two panel subtrees; the page head is excluded because the mobile head paints no indicator. */
 describe('mobile and desktop paint the same data-nc-activity set', () => {
-  const VOCABULARY = /^(Working|Needs input|Needs attention|Unread updates)$/;
+  const VOCABULARY = /^(Working|Needs input|Needs attention|Unread updates|Execution failed|Execution awaiting input)$/;
   const activityByRow = (root: Element): Record<string, [string | null, string | null]> => Object.fromEntries(
     [...root.querySelectorAll('[data-nc-row]')].map((row): [string, [string | null, string | null]] => {
       const state = row.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
-      const spoken = within(row as HTMLElement).queryByText(VOCABULARY)?.textContent ?? null;
+      const words = within(row as HTMLElement).queryAllByText(VOCABULARY).filter(element => element.closest('[aria-hidden="true"]') === null || element.getAttribute('data-nc-field') === null);
+      const metadata = row.querySelector('[data-nc-inventory-metadata]');
+      const metadataWord = metadata === null ? null : within(metadata as HTMLElement).queryByText(VOCABULARY);
+      const spoken = metadataWord?.textContent ?? words[0]?.textContent ?? null;
       return [row.getAttribute('data-nc-row') ?? '', [state, spoken]];
     }),
   );
@@ -278,16 +281,25 @@ describe('mobile and desktop paint the same data-nc-activity set', () => {
     const desktop = activityByRow(container.querySelector('[data-nc-desktop-panel]')!);
     const module = new Set((panel === 'cards' ? cardsModule(CARDS) : tasksModule(TASKS))
       .flatMap((view) => view.rows.map((row) => row.id)));
-    const desktopModule = Object.fromEntries(Object.entries(desktop).filter(([id]) => module.has(id)));
+    const prefix = panel === 'tasks' ? 'task:' : 'tool:';
+    const desktopModule = Object.fromEntries(Object.entries(desktop)
+      .filter(([id]) => id.startsWith(prefix) && module.has(id.slice(prefix.length)))
+      .map(([id, state]) => [id.slice(prefix.length), state]));
     /* Non-vacuous: the fixture reaches a working card, a failed worker-card
        task, and rows with no verdict at all. */
     expect(Object.values(desktopModule).map(([state]) => state)).toContain(panel === 'cards' ? 'working' : 'failed');
     expect(Object.values(desktopModule).map(([state]) => state)).toContain(null);
-    /* Each side speaks exactly its own verdict, in the one vocabulary. */
-    for (const [state, spoken] of [...Object.values(desktopModule), ...Object.values(mobile)]) {
+    /* Desktop background details use observational wording; mobile retains its inventory wording.
+       Both surfaces must still carry exactly the same underlying verdict for every row. */
+    for (const [state, spoken] of Object.values(desktopModule)) {
+      expect(spoken).toBe(executionActivityLabelOf(state as ActivityState | null));
+    }
+    for (const [state, spoken] of Object.values(mobile)) {
       expect(spoken).toBe(state === null ? null : activityLabelOf(state as ActivityState));
     }
-    expect(mobile).toEqual(desktopModule);
+    const states = (entries: Record<string, [string | null, string | null]>) =>
+      Object.fromEntries(Object.entries(entries).map(([id, [state]]) => [id, state]));
+    expect(states(mobile)).toEqual(states(desktopModule));
   });
 });
 

@@ -29,8 +29,8 @@ export function InventoryGroups<T>({ groups, noun, renderRows }: Readonly<{
         setOpened(previous => previous[group.id] === open ? previous : { ...previous, [group.id]: open });
       }} data-nc-inventory-group={group.key}>
       <summary className={styles.summary} aria-label={`${group.label}, ${group.rows.length} ${noun}${group.rows.length === 1 ? '' : 's'}${attentionLabel(group.attentionCount)}`}>
-        <ListText tone="group" className={styles.label}>{group.label}</ListText>
-        <ListText tone="count" aria-hidden="true">{group.rows.length}{group.attentionCount > 0 ? ` · ${group.attentionCount} alert${group.attentionCount === 1 ? '' : 's'}` : ''}</ListText>
+        <ListText tone="secondary" className={styles.label}>{group.label}</ListText>
+        <ListText tone="count" className={styles.count} aria-hidden="true">{group.rows.length}{group.attentionCount > 0 ? ` · ${group.attentionCount} alert${group.attentionCount === 1 ? '' : 's'}` : ''}</ListText>
         <SpringRotation className={styles.chevron} angle={group.open ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
       </summary>
       <div className={styles.content}>{renderRows(group.rows)}</div>

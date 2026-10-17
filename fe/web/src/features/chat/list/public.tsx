@@ -2,12 +2,10 @@
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { useId } from 'react';
-import {
-  activityLabelOf, activityStateOf, attentionOfCard, cardActivityOf, type CardActivity,
-} from '../../../../../core/domain/activity.ts';
-import {
-  byRecency, conversationName, type Conversation,
-} from '../../../../../core/domain/conversation.ts';
+import { activityLabelOf, type CardActivity } from '../../../../../core/domain/activity.ts';
+import { CONVERSATION_KIND_LABEL, PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../../core/domain/conversation.ts';
+import { deriveConversationList } from '../../../../../core/view/conversation-list.ts';
+import { ContextIconSlot, ContextItem, ContextList } from '../../../ui/panel-card/context.tsx';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
 import styles from './list.module.css';
@@ -23,38 +21,46 @@ export type ChatListProps = Readonly<{
   activeId?: string | null;
   /** Whether to name the track on each row — false when the page *is* a track. */
   showTrack?: boolean;
+  /** Contextual entries reuse the ordinary list activity fold. */
+  context?: boolean;
   unreadIds?: ReadonlySet<string>;
+  /** Explicit question ownership from the host, independent of per-card execution activity. */
+  awaitingInputIds?: ReadonlySet<string>;
   /** `null` when no row is open. */
   local?: ChatListLocalEcho | null;
   onOpen: (conversation: Conversation) => void;
 }>;
 
 export function ChatList({
-  conversations, cards, activeId = null, showTrack = true, onOpen, unreadIds, local = null,
+  conversations, cards, activeId = null, showTrack = true, onOpen, unreadIds, awaitingInputIds, local = null, context = false,
 }: ChatListProps) {
   const descriptionPrefix = useId();
-  if (conversations.length === 0) {
-    return <PanelEmpty>No conversations yet.</PanelEmpty>;
-  }
+  const rows = deriveConversationList({ conversations, cards, unreadIds, awaitingInputIds, local });
+  if (rows.length === 0) return context ? null : <PanelEmpty>No conversations yet.</PanelEmpty>;
 
+  const List = context ? ContextList : 'ul';
   return (
-    <ul className={styles.list}>
-      {conversations.toSorted(byRecency).map((conversation) => {
-        /* The dot, accessible name and description derive from one fold of the card verdict, the receipt and the local echo — never from `conversation.state`, which stays `turn_pending`/`running` long after a turn ended. */
-        const verdict = cardActivityOf({ cards }, conversation.id);
-        const echo = local !== null && local.id === conversation.id ? local : null;
-        const unread = unreadIds?.has(conversation.id) ?? false;
-        const activity = activityStateOf({
-          working: verdict === 'working' || (echo?.working ?? false),
-          attention: echo?.stalled ? 'failed' : attentionOfCard(verdict),
-          unread,
-        });
+    <List className={context ? undefined : styles.list}>
+      {rows.map(({ conversation, activity, unread, name }) => {
         const description = activity === 'working' ? null : activityLabelOf(activity);
         const descriptionId = `${descriptionPrefix}-${encodeURIComponent(conversation.id)}`;
         const active = conversation.id === activeId;
         const trackTitle = conversation.trackTitle;
         const turns = conversation.turns;
-        const name = conversationName(conversation);
+        if (context) {
+          const role = CONVERSATION_KIND_LABEL[conversation.kind];
+          const contextDescription = [role, description].filter(Boolean).join(' · ');
+          return <li key={conversation.id}>
+          <ContextItem icon={conversation.kind === PLANNER_CONVERSATION_KIND ? 'tasks' : 'chat'} label={name}
+            trailing={activity === 'quiet' ? undefined : <ContextIconSlot><ActivityIndicator state={activity} /></ContextIconSlot>} unread={unread} selected={active} buttonProps={{
+            'aria-label': `Conversation ${name}${activity === 'working' ? ', working' : ''}`,
+            'aria-current': active ? 'true' : undefined,
+            'aria-describedby': descriptionId,
+            title: `${role}: ${name}`,
+            onClick: () => onOpen(conversation),
+          }} metadata={<span hidden id={descriptionId}>{contextDescription}</span>} />
+        </li>;
+        }
         return (
           <li key={conversation.id} className={styles.item}>
             <button
@@ -83,6 +89,6 @@ export function ChatList({
           </li>
         );
       })}
-    </ul>
+    </List>
   );
 }

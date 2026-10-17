@@ -9,11 +9,13 @@ export type CurrentTaskExecution = Readonly<{
   statusDetail: string | null;
   workerCardId: string | null;
   blockingReason: string | null;
+  createdAtMs: number;
+  finishedAtMs: number | null;
 }>;
 
 export function currentTaskExecution(view: TaskRecoveryView | undefined): CurrentTaskExecution | undefined {
   const current = view?.current ?? undefined;
   if (current === undefined) return undefined;
   return { attemptId: current.attempt_id, generation: current.generation, status: current.status,
-    label: attemptStatusLabel(current.status), statusDetail: current.status_detail, workerCardId: current.worker_card_id, blockingReason: current.blocking_reason };
+    label: attemptStatusLabel(current.status), statusDetail: current.status_detail, workerCardId: current.worker_card_id, blockingReason: current.blocking_reason, createdAtMs: current.created_at_ms, finishedAtMs: current.finished_at_ms };
 }

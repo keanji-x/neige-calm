@@ -96,8 +96,6 @@ import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../provide
 import { useMentionSearch } from '../providers/mentions.ts';
 import { DELETE_CARD_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
-import { Icon } from '../../ui/icon/public.tsx';
-import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
@@ -858,20 +856,15 @@ function useConversationPane(
   const receipts = useReadReceipts();
   const unreadIds = useMemo(() => new Set(rows.filter(row => receipts.isUnread('conversation', row.id,
     row.lastTurnCompletedAt ?? null)).map(row => row.id)), [rows, receipts]);
-  const listNode = useMemo(() => (
-      <ChatList
-        conversations={store.conversations}
-        cards={source.cards}
-        unreadIds={unreadIds}
-        activeId={existingId}
-        /* The two local echoes for the open row only, handed over as facts: the list
-                   reads nothing off `Conversation.state`. */
-        local={existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled }}
-        showTrack={options?.showTrack ?? true}
-        onOpen={openConversation}
-      />
-  ), [store.conversations, source.cards, unreadIds, existingId, store.working, store.stalled,
-    options?.showTrack, openConversation]);
+  const pendingInputCardId = source.planner !== null && source.planner.asks.length > 0 ? source.planner.cardId : null;
+  const listProps = useMemo(() => ({
+    conversations: store.conversations, cards: source.cards, unreadIds, activeId: existingId,
+    awaitingInputIds: new Set(pendingInputCardId === null ? [] : [pendingInputCardId]),
+    local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled },
+    showTrack: options?.showTrack ?? true, onOpen: openConversation,
+  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, options?.showTrack, openConversation]);
+  const listNode = useMemo(() => <ChatList {...listProps} />, [listProps]);
+  const contextList = useMemo(() => <ChatList {...listProps} context />, [listProps]);
 
   const dockViewId = JSON.stringify([sourceScopeId, dockRowId]);
   const openDockHistory = useCommittedCallback(dockViewId, () => {
@@ -900,8 +893,8 @@ function useConversationPane(
     isOpen: open !== null || draftOpen,
     close: closeDrawer,
     list: listNode,
+    contextList,
     openConversation,
-    action: <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     startConversation: start,
     drawer: renderDrawer(),
     drawerFor: renderDrawer,
@@ -1396,8 +1389,8 @@ function TrackRouteBody({
          it too, so the reader can hand the destination to somebody else. */
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
-      cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} />}
-      recentFiles={<RecentFiles
+      cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} label="Tools" icon="more" />}
+      recentFiles={recentFilePaths.length === 0 ? undefined : <RecentFiles inline
         paths={recentFilePaths}
         onOpen={(path) => openReportFile({ path })}
       />}
@@ -1476,9 +1469,9 @@ function TrackRouteBody({
           ]}
         />}
       >{reportEvidence}</TrackReportRegion>}
-      backlinks={backlinks !== undefined && backlinks.backlinks.length > 0
+      backlinks={backlinks !== undefined && (backlinks.backlinks.length > 0 || backlinks.truncated || backlinks.skipped_sources > 0)
         ? (
-          <ReportBacklinks
+          <ReportBacklinks inline
             trackId={track.id}
             backlinks={backlinks}
             onOpen={(trackId, blockId) => {
@@ -1490,8 +1483,8 @@ function TrackRouteBody({
         )
         : undefined}
       mobileChatComposer={chat.dock}
+      conversationContextList={chat.contextList}
       conversationList={chat.list}
-      conversationAction={chat.action}
       onStartConversation={chat.startConversation}
       conversationOpen={chat.isOpen}
       inputNotifications={inputNotifications}

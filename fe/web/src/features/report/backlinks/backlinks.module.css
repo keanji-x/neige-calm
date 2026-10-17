@@ -25,6 +25,10 @@
     cursor: pointer;
   }
 
+  .backlinks > ul { margin: 0; padding: 0; list-style: none; }
+
+  .context { margin-inline: 0; gap: 0; }
+
   .row:hover,
   .row:focus-visible {
     background: var(--overlay-hover);

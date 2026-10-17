@@ -19,6 +19,8 @@ import { sha256Hex } from './sha256.js';
 /** A frozen discussion source; does not name a provider session. */
 export type SideConversation = Readonly<{ source_card_id: string; context: string }>;
 
+export const PLANNER_CONVERSATION_KIND = 'shared-spec' as const;
+
 /** What kind of thing the conversation is; `'track-assistant'` is derived server-side from the card's own marker. */
 export type ConversationKind =
   | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'track-assistant';

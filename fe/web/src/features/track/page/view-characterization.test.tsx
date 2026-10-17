@@ -7,7 +7,7 @@ import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
-import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { captureContextProjection, card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /* The fixture has to give the assertion teeth: a titled and an untitled card, a deletable card with `onDeleteCard` passed, a kernel-owned untitled card, a task with a `statusDetail`, a withdrawn task, a task with a kind and a worker card. Titles, kinds and badge texts are not substrings of one another. */
 const CARDS: readonly CardWire[] = [
@@ -42,7 +42,7 @@ const TASKS: readonly ReportTaskRow[] = [
 
 /** Where each module's rows live in the desktop panel today; literal selectors because `no-class-dom-query` requires a static one. */
 function renderedRows(container: Element, key: RowModuleView['key']): readonly Element[] {
-  return key === 'cards'
+  return key === 'work' ? [...container.querySelectorAll('[data-nc-work-inventory] [data-nc-row]')] : key === 'cards'
     ? [...container.querySelectorAll('[data-nc-card-inventory] li')]
     : [...container.querySelectorAll('[data-nc-task-inventory] li')];
 }
@@ -121,19 +121,20 @@ function expectFieldsPresent(text: string, fields: readonly string[], where: str
 }
 
 describe('deriveTrackPageView against the rendered desktop panel', () => {
-  it('renders every derived module title, and every row field inside its own row', () => {
+  it('renders every derived module title, and every row field inside its own row', async () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
     const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
-    const whole = visibleText(container);
+    const snapshot = await captureContextProjection(container);
+    const whole = visibleText(snapshot);
 
     /* The fixture invariant the untitled-card arm rests on: `card-2` has no title, so its row prints its kind exactly once, and it is not deletable, so no × carries `Delete card harness`. */
     expect(CARDS[1]).toMatchObject({ title: null, deletable: false });
 
-    for (const module of view.rowModules) {
+    for (const module of view.desktop.rowModules) {
       expect(whole).toContain(module.title);
       expect(whole).not.toContain(module.empty);
 
-      const rendered = renderedRows(container, module.key);
+      const rendered = renderedRows(snapshot, module.key);
       expect(rendered.length, `${module.key}: rendered rows`).toBe(module.rows.length);
 
       module.rows.forEach((row, index) => {
@@ -152,7 +153,7 @@ describe('deriveTrackPageView against the rendered desktop panel', () => {
     const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
     const whole = visibleText(container);
 
-    for (const module of view.rowModules) {
+    for (const module of view.desktop.rowModules) {
       expect(module.rows).toEqual([]);
       expect(whole).toContain(module.empty);
       expect(renderedRows(container, module.key).length).toBe(0);

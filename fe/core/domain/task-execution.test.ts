@@ -12,7 +12,7 @@ it('presents the current attempt of the history, and nothing without one', () =>
   expect(currentTaskExecution(undefined)).toBeUndefined();
   expect(currentTaskExecution({ key: 'b', current: null, attempts: [] })).toBeUndefined();
   expect(currentTaskExecution(view('later', 2))).toEqual({ attemptId: 'later', generation: 2, status: 'failed',
-    label: 'Failed', statusDetail: 'validation failed', workerCardId: 'later-worker', blockingReason: null });
+    createdAtMs: 1000, finishedAtMs: 2000, label: 'Failed', statusDetail: 'validation failed', workerCardId: 'later-worker', blockingReason: null });
 });
 
 it('uses only the blocker belonging to the current attempt', () => {

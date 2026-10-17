@@ -1,4 +1,3 @@
-import { PLANNER_CONVERSATION_KIND } from '../conversations/planner-row.ts';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { useCallback, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
@@ -10,7 +9,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { Icon } from '@astryxdesign/core/Icon';
 import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
-import { conversationName } from '../../../../core/domain/conversation.ts';
+import { PLANNER_CONVERSATION_KIND, conversationName } from '../../../../core/domain/conversation.ts';
 import { Icon as UiIcon } from '../../ui/icon/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import styles from './mobile-history.module.css';

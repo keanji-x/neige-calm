@@ -79,7 +79,7 @@ describe('TrackPage delete confirm contract', () => {
       cards: [card({ id: 'k1' }), card({ id: 'k2', title: null, deletable: false })],
       tasks: taskRows(),
     });
-    expect(container.querySelectorAll('[data-nc-task-inventory] li').length).toBe(4);
+    expect(container.querySelectorAll('[data-nc-work-inventory] [data-nc-row^="task:"]').length).toBe(4);
     expect(container.querySelectorAll('a').length).toBe(0);
   });
 
@@ -91,7 +91,7 @@ describe('TrackPage delete confirm contract', () => {
       board: <div>grid</div>,
       onCloseBoard: () => undefined,
     });
-    expect(container.querySelectorAll('[data-nc-task-inventory] button').length).toBe(5);
+    expect(container.querySelectorAll('[data-nc-work-inventory] [data-nc-row^="task:"] button').length).toBe(5);
     expect(container.querySelectorAll('button button').length).toBe(0);
   });
 

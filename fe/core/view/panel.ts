@@ -47,12 +47,14 @@ export type PanelRow = Readonly<{
 }>;
 
 export type RowModuleView = Readonly<{
-  key: 'cards' | 'tasks';
+  key: 'cards' | 'tasks' | 'work';
   title: string;
   rows: readonly PanelRow[];
   /** What the module says when it has no rows. */
   empty: string;
 }>;
+
+export type InventoryModuleView = Readonly<Omit<RowModuleView, 'key'> & { key: 'cards' | 'tasks' }>;
 
 export type TrackPageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
 

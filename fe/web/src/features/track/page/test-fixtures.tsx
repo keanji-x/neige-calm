@@ -72,3 +72,30 @@ export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResul
   };
   return render(<PanelHost props={props} />);
 }
+
+/** Capture real lazy menu contents after opening them; never synthesize projection fields or actions. */
+export async function captureContextProjection(root: Element): Promise<Element> {
+  const { default: userEvent } = await import('@testing-library/user-event');
+  const { waitFor } = await import('@testing-library/react');
+  const snapshot = root.cloneNode(true) as Element;
+  const originals = [...root.querySelectorAll('[data-nc-row]')];
+  const copies = [...snapshot.querySelectorAll('[data-nc-row]')];
+  for (const [index, row] of originals.entries()) {
+    const trigger = row.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]');
+    if (trigger === null) continue;
+    await userEvent.click(trigger);
+    const menu = await waitFor(() => {
+      const element = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
+      if (element === null) throw new Error('The row menu did not mount');
+      return element;
+    });
+    // A portal may already occur elsewhere in the initial snapshot. Re-home only this
+    // trigger's aria-controls target; unowned action nodes remain for the oracle to reject.
+    for (const candidate of snapshot.querySelectorAll('[role="menu"]')) {
+      if (candidate.id === menu.id) candidate.remove();
+    }
+    copies[index].append(menu.cloneNode(true));
+    await userEvent.keyboard('{Escape}');
+  }
+  return snapshot;
+}

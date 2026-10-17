@@ -1,12 +1,16 @@
 // `REFERENCED BY` — who cites this track: one row per citing track, the count when there is more
 // than one, and the citing sentence as the row's tooltip. `truncated` and `skipped_sources` are rendered, not dropped.
 
+import { ListText } from '../../../ui/list-typography/public.tsx';
+import { ContextItem } from '../../../ui/panel-card/context.tsx';
 import type { TrackBacklink, TrackBacklinks } from '../../../../../core/domain/report.ts';
 import { groupBacklinks } from '../../../../../core/domain/report.ts';
 import styles from './backlinks.module.css';
 
 export type ReportBacklinksProps = Readonly<{
   trackId: string;
+  /** Relation metadata for a shared Related list instead of a module heading. */
+  inline?: boolean;
   backlinks: TrackBacklinks;
   /** Open the citing track, landing on the block the citation is written in. */
   onOpen: (trackId: string, blockId: string) => void;
@@ -29,17 +33,20 @@ function mentions(entries: readonly TrackBacklink[]): string[] {
   });
 }
 
-export function ReportBacklinks({ trackId, backlinks, onOpen }: ReportBacklinksProps) {
+export function ReportBacklinks({ trackId, backlinks, onOpen, inline = false }: ReportBacklinksProps) {
   const groups = groupBacklinks(backlinks.backlinks, trackId);
 
   return (
-    <div className={styles.backlinks}>
+    <div className={`${styles.backlinks} ${inline ? styles.context : ''}`}>
       <ul>
         {groups.map((group) => {
           const quotes = mentions(group.entries);
           return (
             <li key={group.trackId}>
-              <button
+              {inline ? <ContextItem icon="link" label={group.title} trailing={<ListText tone="secondary">References this</ListText>} buttonProps={{
+                'aria-label': `Referenced by ${group.title}`, title: `References this work\n\n${quotes.join('\n\n')}`,
+                onClick: () => onOpen(group.trackId, group.entries[0]?.src_block_id ?? ''),
+              }} /> : <button
                 type="button"
                 className={styles.row}
                 title={quotes.join('\n\n')}
@@ -47,7 +54,7 @@ export function ReportBacklinks({ trackId, backlinks, onOpen }: ReportBacklinksP
               >
                 <span className={styles.title}>{group.title}</span>
                 {quotes.length > 1 && <span className={styles.count}>{quotes.length}</span>}
-              </button>
+              </button>}
             </li>
           );
         })}
