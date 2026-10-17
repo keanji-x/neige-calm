@@ -678,3 +678,6 @@ mod source_fault;
 
 #[path = "terminal_registered_launch/unknown.rs"]
 mod unknown;
+
+#[path = "terminal_registered_launch/cleanup.rs"]
+mod cleanup;

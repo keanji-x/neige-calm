@@ -9,6 +9,8 @@ enum CrashWindow {
     Intent,
     SourceAttached,
     RequestReserved,
+    OperationAttached,
+    Prepared,
 }
 impl CrashWindow {
     fn seam(self) -> &'static str {
@@ -16,6 +18,8 @@ impl CrashWindow {
             Self::Intent => "workspace-source-intent-committed",
             Self::SourceAttached => "terminal-source-attached-before-request",
             Self::RequestReserved => "terminal-request-reserved-before-prepare",
+            Self::OperationAttached => "terminal-operation-attached-before-prepare",
+            Self::Prepared => "terminal-prepared-before-launch",
         }
     }
 }
@@ -119,7 +123,13 @@ async fn exercise(fixture: &Fixture, window: CrashWindow) -> anyhow::Result<()> 
     let (operation,request):(String,Option<String>)=sqlx::query_as("SELECT id,execution_request_json FROM operations WHERE kind='terminal-create' AND idempotency_key=?1")
         .bind(KEY).fetch_one(fixture.sql.pool()).await?;
     ensure!(
-        request.is_some() == matches!(window, CrashWindow::RequestReserved),
+        request.is_some()
+            == matches!(
+                window,
+                CrashWindow::RequestReserved
+                    | CrashWindow::OperationAttached
+                    | CrashWindow::Prepared
+            ),
         "original request persistence crossed the wrong boundary at {seam}"
     );
     let frozen_request = request;
@@ -133,11 +143,48 @@ async fn exercise(fixture: &Fixture, window: CrashWindow) -> anyhow::Result<()> 
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<std::io::Result<Vec<_>>>()?;
     ensure!(
-        !entries.iter().any(|path| path
+        entries.iter().any(|path| path
             .extension()
-            .is_some_and(|extension| extension == "execution")),
-        "first kernel prepared or launched a process before {seam}"
+            .is_some_and(|extension| extension == "execution"))
+            == matches!(window, CrashWindow::Prepared),
+        "first kernel crossed the wrong execution preparation boundary at {seam}"
     );
+    if matches!(window, CrashWindow::Prepared) {
+        let request: PrepareExecution = serde_json::from_value(
+            serde_json::from_str::<Value>(
+                frozen_request
+                    .as_ref()
+                    .context("missing prepared request")?,
+            )?["request"]
+                .clone(),
+        )?;
+        let secret = serde_json::from_slice(&std::fs::read(
+            fixture._root.path().join("kernel-key.json"),
+        )?)?;
+        let mut observer = RegisteredExecutorConnection::connect_with_query(
+            fixture._sockets.path().join("control.sock"),
+            secret,
+        )
+        .await?;
+        ensure!(
+            matches!(
+                observer
+                    .request(ExecutionRequest::Query(
+                        calm_session::control::execution::ConsumeExecution {
+                            execution_id: request.identity.execution_id,
+                            ticket_id: request.identity.ticket_id,
+                            ticket: request.ticket,
+                        }
+                    ))
+                    .await?,
+                ExecutionReply::Receipt {
+                    state: calm_session::control::execution::ExecutionState::Prepared,
+                    receipt: None
+                }
+            ),
+            "first kernel did not leave the original positively Prepared ticket"
+        );
+    }
     let retained = entries.iter().any(|path| {
         path.extension()
             .is_some_and(|extension| extension == "registration")
@@ -216,6 +263,18 @@ async fn terminal_attached_source_before_request_recovers_original_http_launch_a
 async fn terminal_original_request_before_prepare_recovers_same_ticket_after_kernel_crash()
 -> anyhow::Result<()> {
     run(CrashWindow::RequestReserved).await
+}
+
+#[tokio::test]
+async fn terminal_original_operation_attach_recovers_same_ticket_after_kernel_crash()
+-> anyhow::Result<()> {
+    run(CrashWindow::OperationAttached).await
+}
+
+#[tokio::test]
+async fn terminal_original_prepared_ticket_recovers_same_launch_after_kernel_crash()
+-> anyhow::Result<()> {
+    run(CrashWindow::Prepared).await
 }
 
 #[tokio::test]
