@@ -807,12 +807,22 @@
       "query invalidation adapter removes mapped keys for a remove effect",
       "query invalidation adapter turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup",
       "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve",
-      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations",
+      "replaces initial detail metadata for deleted (transport abort=false)",
+      "replaces initial detail metadata for edited (transport abort=false)",
+      "replaces initial detail metadata for cleared (transport abort=false)",
+      "replaces initial detail metadata for persisted (transport abort=false)",
+      "replaces initial detail metadata for deleted (transport abort=true)",
+      "replaces initial detail metadata for edited (transport abort=true)",
+      "replaces initial detail metadata for cleared (transport abort=true)",
+      "replaces initial detail metadata for persisted (transport abort=true)",
+      "keeps adjacent detail input events scoped and the latest replacement authoritative",
+      "marks inactive detail metadata stale without eagerly reading it"
     ],
     "selection_paths": [
       "web/src/app/composition.test.tsx"
     ],
-    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter. The harness-phase contract also fails because Planner activity now requires the same Track-detail invalidation; CI measured this additional witness."
+    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter. The harness-phase contract also fails because Planner activity now requires the same Track-detail invalidation; CI measured this additional witness. The production detail-query witnesses also require this mapping for each input event, adjacent replacement, and inactive staleness; list witnesses remain green because their separate mapping is intact."
   },
   {
     "mutation_id": "events-driver-drop-all-epoch-protection",
@@ -1170,13 +1180,17 @@
     "expected_red": [
       "invalidation plan behavior plans each harness event against the projections it can change",
       "invalidation plan behavior refreshes metadata for persisted user input but not agent/tool/turn items",
-      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations",
+      "replaces initial detail metadata for persisted (transport abort=false)",
+      "replaces initial detail metadata for persisted (transport abort=true)",
+      "replaces initial list metadata for persisted (transport abort=false)",
+      "replaces initial list metadata for persisted (transport abort=true)"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.test.ts",
       "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
-    "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path."
+    "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path. The four initial-read witnesses use production query options and a held transport (both abort behaviors); removing the persisted-user event plan also prevents their replacement metadata read."
   },
   {
     "mutation_id": "app-adapter-drops-harness-items",

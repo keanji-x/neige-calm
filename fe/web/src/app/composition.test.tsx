@@ -56,7 +56,7 @@ describe('event composition', () => {
     render(<EventBridge client={client} stream={composition.stream} syncEventVersion={3} dbInstanceId="db-a" cursor={composition.store} />);
     await waitFor(() => expect(fake.constructionCount).toBe(1));
     fake.sockets[0].open(); fake.sockets[0].message(cardAdded(1, 'track-live'));
-    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['track', 'track-live']);
+    await waitFor(() => expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['track', 'track-live']));
   });
 
   it('T-B3 snapshot-required clears once and bounces to exactly one since-zero socket', async () => {

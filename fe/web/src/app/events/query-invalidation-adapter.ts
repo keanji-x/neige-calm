@@ -17,10 +17,12 @@ export interface QueryCachePort extends QueryRefreshPort {
 
 /**
  * TanStack reuses an in-flight initial fetch even after `invalidateQueries`, and the stale response
- * then clears `isInvalidated`; task verdicts do not all poll, so cancel the report fetch first.
+ * then clears `isInvalidated`. Reports, overlays and conversation metadata need a replacement
+ * read started after the event, even when the transport ignores abort.
  */
 function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
-  const cancelFirst = queryKey[0] === 'track-report'
+  const cancelFirst = queryKey[0] === 'track' || queryKey[0] === 'track-conversations'
+    || queryKey[0] === 'track-report'
     || (queryKey[0] === 'overlays' && queryKey[1] === 'track');
   if (!cancelFirst) {
     void client.invalidateQueries({ queryKey });

@@ -2,6 +2,7 @@ import '../../styles/entry.css';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { HARNESS_ITEMS_PAGE_LIMIT as PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 import { EventBridge } from '../events/event-bridge.tsx';
@@ -175,3 +176,50 @@ it.each(['agent-only pending', 'confirmed input', 'attachment-only'] as const)(
     await expect.element(page.getByRole('button', { name: 'Conversation Manual name', exact: true })).toBeVisible();
   },
 );
+
+for (const surface of ['detail', 'list'] as const) {
+  it.each(['Edited before first response', null])(
+    `replaces cold ${surface} metadata through the event bridge with %s without opening history`, async next => {
+      await page.viewport(1400, 900);
+      let title: string | null = 'Obsolete first input';
+      let releaseOld: (() => void) | undefined;
+      let reads = 0;
+      const heldPath = surface === 'detail' ? '/api/tracks/daily' : '/api/tracks/daily/conversations';
+      const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, reply: request => {
+        let response: ApiTransportResponse;
+        if (request.path === '/api/tracks/daily') response = { status: 200, statusText: 'OK', body: {
+          track: { id: 'daily', area_id: 'daily-area', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
+          can_reopen: false, can_admin: false, can_close: false, overlays: [],
+          cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title, sort: 0,
+            payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
+        } };
+        else if (request.path === '/api/tracks/daily/conversations') response = { status: 200, statusText: 'OK', body: [
+          { id: 'second-planner', trackId: 'daily', title, kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null },
+        ] };
+        else return undefined;
+        // Capture old server data now; this transport deliberately ignores abort.
+        if (request.path === heldPath && ++reads === 1) return new Promise(resolve => { releaseOld = () => resolve(response); });
+        return response;
+      } });
+      let sink: EventStreamSink | undefined;
+      const stream = EventStream.create('ws://fixture/events', {
+        start: (_configuration, _url, value) => { sink = value; }, stop: () => undefined,
+      });
+      render(<EventBridge client={fixture.client} stream={stream} syncEventVersion={20} dbInstanceId="fixture"
+        cursor={{ read: () => null, write: () => undefined, adopt: () => undefined, clear: () => undefined }} />);
+      await expect.poll(() => releaseOld !== undefined && sink !== undefined).toBe(true);
+      title = next;
+      const decoded = decodeEventFrame({ ev: 'harness.queue.changed', _id: 1, eventVersion: 20,
+        data: { track_id: 'daily', card_id: 'daily-planner', worker_session_id: 'runtime', entry_id: 'first', change: next === null ? 'deleted' : 'edited', actor: { kind: 'User' } } });
+      expect(decoded.status).toBe('ready');
+      if (decoded.status === 'ready') await act(async () => { sink?.frame(decoded.frame); await Promise.resolve(); });
+      // Release only after the replacement has become visible: the obsolete response must lose.
+      await expect.element(page.getByRole('button', { name: `Conversation ${next ?? 'Assistant'}`, exact: true }).last()).toBeVisible();
+      await act(async () => { releaseOld?.(); await Promise.resolve(); });
+      await expect.element(page.getByRole('button', { name: `Conversation ${next ?? 'Planner'}`, exact: true }).first()).toBeVisible();
+      await expect.element(page.getByRole('button', { name: `Conversation ${next ?? 'Assistant'}`, exact: true }).last()).toBeVisible();
+      expect(reads).toBe(2);
+      expect(fixture.requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(0);
+    },
+  );
+}
