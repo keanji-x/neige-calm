@@ -93,6 +93,35 @@ it('indents Area tracks beyond the Area label and preserves the selected inset',
   expect(selected.getAttribute('aria-current')).toBe('page');
 });
 
+it.each(['light', 'dark'])('uses the same rail background bounds for hover and selection in %s', async (theme) => {
+  await scene(true);
+  document.documentElement.dataset.theme = theme;
+  const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
+  const group = page.getByRole('group', { name: 'area Work', exact: true });
+  const selected = group.getByRole('button', { name: /^Track Build frontend/ });
+  const idle = group.getByRole('button', { name: /^Track Next task/ });
+  for (const width of ['15rem', '11rem']) {
+    rail.style.inlineSize = width;
+    const bounds = (element: Element) => {
+      const paint = getComputedStyle(element, '::before');
+      return [paint.insetInlineStart, paint.insetInlineEnd, paint.width, paint.height, paint.borderRadius];
+    };
+    await page.getByRole('button', { name: 'Go to Today' }).hover();
+    const expected = bounds(selected.element());
+    expect(parseFloat(expected[0])).toBeGreaterThan(0);
+    for (const row of [idle, selected]) {
+      await row.hover();
+      expect(bounds(row.element())).toEqual(expected);
+      expect(getComputedStyle(row.element()).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+      expect(getComputedStyle(row.element(), '::before').backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    }
+    const shortcut = page.getByRole('group', { name: 'Pinned', exact: true }).getByRole('button', { name: /^Track Build frontend/ });
+    await shortcut.hover();
+    expect(getComputedStyle(shortcut.element(), '::before').insetInlineStart).toBe('0px');
+    expect(getComputedStyle(shortcut.element()).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+  }
+});
+
 it('keeps activity markers before their own Track text at every hierarchy level', async () => {
   const { today } = await scene(true);
   await today.hover();

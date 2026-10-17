@@ -19,6 +19,8 @@
   }
 
   .row {
+    --track-row-background: transparent;
+    background: var(--track-row-background);
     display: grid;
     grid-template-columns: var(--dot-sm) minmax(0, 1fr) auto;
     column-gap: var(--space-1);
@@ -37,11 +39,11 @@
   .row:not(.variantRail) { padding-inline: var(--space-1); }
 
   .row:hover {
-    background: var(--overlay-hover);
+    --track-row-background: var(--overlay-hover);
   }
 
   .row:active {
-    background: var(--overlay-active);
+    --track-row-background: var(--overlay-active);
     transition: none;
   }
 
@@ -56,35 +58,32 @@
      rule 4, which says a border may never carry importance. The row keeps its
      transparent 1px so dropping the colour changes no geometry. */
   .rowActive {
-    background: var(--selection-bg);
+    --track-row-background: var(--selection-bg);
   }
 
-  /* Label indentation never shifts the global status gutter. Selected fill
-     follows its own host-declared inset while the row remains full width. */
-  .rowActive.variantRail {
+  /* Every rail state paints the same inset surface. The hit target and global
+     status gutter remain full width; navigation-row owns the depth geometry. */
+  .variantRail {
     position: relative;
     isolation: isolate;
     background: transparent;
   }
 
-  .rowActive.variantRail::before {
+  .variantRail::before {
     content: '';
     position: absolute;
     z-index: -1;
     inset-block: 0;
     inset-inline: var(--navigation-selection-inset, 0px) 0;
     border-radius: inherit;
-    background: var(--selection-bg);
+    background: var(--track-row-background);
+    transition: inherit;
     pointer-events: none;
   }
 
-  .rowActive.variantRail:hover::before {
-    background: var(--selection-hover-bg);
-  }
-
-  /* Both list surfaces share the same selected and selected-hover paints. */
-  .rowActive:hover:not(.variantRail) {
-    background: var(--selection-hover-bg);
+  /* Selection retains its own paint while sharing hover geometry with idle rows. */
+  .rowActive:hover {
+    --track-row-background: var(--selection-hover-bg);
   }
 
   /* The leading 6px column. It spans both lines and centres against the row,
