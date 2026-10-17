@@ -946,7 +946,6 @@ fn task_report_surfaces_name_the_execution_id_attempt_id() {
                     .expect("allowed prompt exists")
         })
     });
-    files.push(crate_dir.join("src/mcp_server/cli/help.rs"));
     assert!(files.len() >= 40, "scan is vacuous: {} files", files.len());
     for file in &files {
         let text = std::fs::read_to_string(file)
@@ -957,6 +956,30 @@ fn task_report_surfaces_name_the_execution_id_attempt_id() {
                 !text.contains(name),
                 "{} calls the task execution id `{name}`; name it `attempt_id`",
                 file.display()
+            );
+        }
+    }
+    // CLI creation now has a real caller-chosen dedupe key. Inspect each served help
+    // against its schema rather than treating every literal in the help source as a task id.
+    // A future command joins through COMMANDS; no second tool-name exemption list is needed.
+    let descriptors = REGISTRY.descriptors();
+    for command in COMMANDS {
+        let descriptor = descriptors.iter().find(|d| d.name == command.tool).unwrap();
+        let properties = &descriptor.input_schema["properties"];
+        let caller_key =
+            properties.get("idempotency_key").is_some() && properties.get("attempt_id").is_none();
+        let (object, action) = command.words();
+        let text = help::render(help::HelpRequest::Command(object, action))
+            .expect("served command help")
+            .to_lowercase();
+        for name in RETIRED_NAMES {
+            if caller_key && name.starts_with("idempotency") {
+                continue;
+            }
+            assert!(
+                !text.contains(name),
+                "{} help calls the task execution id `{name}`; name it `attempt_id`",
+                command.spelling()
             );
         }
     }

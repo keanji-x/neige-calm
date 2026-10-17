@@ -766,3 +766,9 @@ mod admin;
 
 #[path = "track_add/close_admin.rs"]
 mod close_admin;
+
+#[path = "track_add/rebuild.rs"]
+mod rebuild;
+
+#[path = "track_add/workspace.rs"]
+mod rebuild_workspace;

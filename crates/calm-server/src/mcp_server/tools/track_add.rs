@@ -1,9 +1,9 @@
-//! `neige_track_add` (#2104 K1): a Planner opens an ordinary top-level Track from a stored recipe,
+//! `neige_track_add`: an Admin Planner opens an ordinary top-level Track from a template or recipe,
 //! under a key of its own, and the new row records which Track created it and under which key.
 //!
 //! The create is the keyed create `POST /api/tracks` runs, reached through
 //! [`AppContext::track_creator`]. This module owns who may call it and what the key binds: the
-//! caller's role and the fingerprint of the five inputs. The create transaction checks Admin authority.
+//! caller's role and the request fingerprint. The create transaction checks Admin authority.
 
 use crate::error::CalmError;
 use crate::ids::{ActorId, CardId};
@@ -27,11 +27,22 @@ const MAX_TITLE_CHARS: usize = 200;
 /// verbatim as `tracks.creator_key`.
 const MAX_KEY_BYTES: usize = crate::routes::idempotency_key::IDEMPOTENCY_KEY_MAX_LEN;
 
-/// The tool's five inputs, all required. Exactly these are the request fingerprint.
+/// Closed creation inputs. Optional fields retain absence for the versioned fingerprint.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TrackAddArgs {
-    pub recipe_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipe_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_input: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attach_folder: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_cross_area_cwd: Option<Value>,
     pub title: String,
     pub idempotency_key: String,
     /// The first message to the new Track's Planner, verbatim.
@@ -56,9 +67,23 @@ pub struct TrackAddRequest {
 }
 
 impl TrackAddRequest {
-    /// What the key binds: the five inputs, nothing derived from the caller or from current state.
+    /// Bind supplied inputs, preserving the original five-field shape for legacy requests.
     pub fn fingerprint(&self) -> Result<String, CalmError> {
-        crate::routes::idempotency_key::stable_payload_hash(&self.args)
+        let args = &self.args;
+        if args.recipe_id.is_some()
+            && args.template_id.is_none()
+            && args.template_input.is_none()
+            && args.cwd.is_none()
+            && args.attach_folder.is_none()
+            && args.allow_cross_area_cwd.is_none()
+        {
+            // The original five-field serialized object, including the trimmed audit note.
+            crate::routes::idempotency_key::stable_payload_hash(args)
+        } else {
+            crate::routes::idempotency_key::stable_payload_hash(
+                &json!({"version": 2, "request": args}),
+            )
+        }
     }
 }
 
@@ -92,7 +117,7 @@ impl From<CalmError> for TrackAddRefusal {
 
 /// The keyed create, bound at boot by the route layer that owns it.
 #[async_trait::async_trait]
-pub trait TrackCreator: Send + Sync {
+pub trait TrackCreator: super::track_sources::TrackCatalog + Send + Sync {
     /// Mint the Track, or resume the one this request's key already minted.
     async fn add(&self, request: TrackAddRequest) -> Result<Track, TrackAddRefusal>;
 }
@@ -126,10 +151,19 @@ fn track_add_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "required": ["recipe_id", "title", "idempotency_key", "text", "message"],
+            "required": ["title", "idempotency_key", "text", "message"],
             "additionalProperties": false,
             "properties": {
                 "recipe_id": text,
+                "template_id": text,
+                "template_input": {"type": "object"},
+                "cwd": text,
+                "attach_folder": {"type": "boolean"},
+                "allow_cross_area_cwd": {
+                    "type": "object", "required": ["folder_id", "area_id"],
+                    "additionalProperties": false,
+                    "properties": {"folder_id": {"type": "integer"}, "area_id": text}
+                },
                 "title": text,
                 "idempotency_key": text,
                 "text": text,
@@ -161,10 +195,58 @@ fn parse_args(args: Value) -> Result<TrackAddArgs, RpcError> {
     // `message` is every write tool's audit note, parsed the one shared way (trimmed, non-empty,
     // `lifecycle` refused); the trimmed note is what the key binds and the event carries.
     let message = parse_write_args(&args, TOOL_TRACK_ADD)?;
+    for key in [
+        "recipe_id",
+        "template_id",
+        "template_input",
+        "cwd",
+        "attach_folder",
+        "allow_cross_area_cwd",
+    ] {
+        if args.get(key).is_some_and(Value::is_null) {
+            return Err(invalid(format!("`{key}` must not be null")));
+        }
+    }
     let mut args: TrackAddArgs = serde_json::from_value(args).map_err(invalid)?;
+    if args.recipe_id.is_some() == args.template_id.is_some() {
+        return Err(invalid("give exactly one of `recipe_id` or `template_id`"));
+    }
+    for id in [&args.recipe_id, &args.template_id].into_iter().flatten() {
+        if id.trim().is_empty() {
+            return Err(invalid("source id must not be blank"));
+        }
+    }
+    if args.template_input.is_some() && args.template_id.is_none() {
+        return Err(invalid("`template_input` requires `template_id`"));
+    }
+    if args
+        .template_input
+        .as_ref()
+        .is_some_and(|input| !input.is_object())
+    {
+        return Err(invalid("`template_input` must be an object"));
+    }
+    if args
+        .cwd
+        .as_ref()
+        .is_some_and(|cwd| !cwd.starts_with('/') || cwd.contains('\0'))
+    {
+        return Err(invalid("`cwd` must be an absolute path without NUL"));
+    }
+    if args.cwd.is_none() && (args.attach_folder.is_some() || args.allow_cross_area_cwd.is_some()) {
+        return Err(invalid("attachment/authorization requires explicit `cwd`"));
+    }
+    if let Some(authorization) = &args.allow_cross_area_cwd {
+        serde_json::from_value::<crate::routes::tracks::CrossAreaCwdAuthorization>(
+            authorization.clone(),
+        )
+        .map_err(invalid)?;
+        return Err(invalid(
+            "cross-area MCP creation is unsupported: no human-confirmation receipt contract",
+        ));
+    }
     args.message = message;
     for (name, value) in [
-        ("recipe_id", &args.recipe_id),
         ("title", &args.title),
         ("idempotency_key", &args.idempotency_key),
     ] {
@@ -287,6 +369,7 @@ fn refusal_error(creator: &Track, refusal: TrackAddRefusal) -> RpcError {
                 RpcError::conflict(format!("{TOOL_TRACK_ADD}: {m}"))
             }
             CalmError::BadRequest(m) | CalmError::IdempotencyKeyInvalid(m) => invalid(m),
+            CalmError::InvalidField { field, reason } => invalid(format!("{field}: {reason}")),
             CalmError::NotFound(m) => RpcError::not_found(format!("{TOOL_TRACK_ADD}: {m}")),
             // A retry that found another start of the added Track's Planner still running.
             CalmError::ServiceUnavailable(m) => {
@@ -303,7 +386,12 @@ mod tests {
 
     fn args() -> TrackAddArgs {
         TrackAddArgs {
-            recipe_id: "recipe-1".into(),
+            recipe_id: Some("recipe-1".into()),
+            template_id: None,
+            template_input: None,
+            cwd: None,
+            attach_folder: None,
+            allow_cross_area_cwd: None,
             title: "US:SPY 研究".into(),
             idempotency_key: "invest-US-SPY-1".into(),
             text: "Start the research.".into(),
@@ -337,7 +425,7 @@ mod tests {
         assert_eq!(other_actor.fingerprint().unwrap(), codex);
 
         let edits: [fn(&mut TrackAddArgs); 5] = [
-            |a| a.recipe_id.push('x'),
+            |a| a.recipe_id.as_mut().unwrap().push('x'),
             |a| a.title.push('x'),
             |a| a.idempotency_key.push('x'),
             |a| a.text.push('x'),
@@ -357,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_is_planner_only_closed_and_requires_all_five_inputs() {
+    fn descriptor_is_planner_only_closed_and_requires_common_inputs() {
         let descriptor = track_add_descriptor();
         assert_eq!(descriptor.name, TOOL_TRACK_ADD);
         assert_eq!(descriptor.roles, &[CardRole::Planner]);
@@ -367,7 +455,7 @@ mod tests {
         );
         assert_eq!(
             descriptor.input_schema["required"],
-            json!(["recipe_id", "title", "idempotency_key", "text", "message"])
+            json!(["title", "idempotency_key", "text", "message"])
         );
     }
 

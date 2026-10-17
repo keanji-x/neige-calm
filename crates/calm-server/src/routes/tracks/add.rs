@@ -1,24 +1,22 @@
 //! The route half of `neige_track_add` (#2104 K1): the keyed create `POST /api/tracks` runs, for a
-//! Planner that adds an ordinary top-level Track from a stored recipe, and the creator's cap on
+//! Planner that adds an ordinary top-level Track from a template or recipe, and the creator's cap on
 //! open Tracks it added. This half checks Admin authority atomically with creation.
 
 use std::sync::{Arc, OnceLock};
 
 use sqlx::{Sqlite, Transaction};
 
-use crate::db::sqlite::TrackWorkspacePlan;
 use crate::error::{CalmError, Result};
 use crate::mcp_server::tools::track_add::{
     OpenAddedTrack, TrackAddRefusal, TrackAddRequest, TrackCreator,
 };
 use crate::model::{NewTrack, RequestTheme, Track};
-use crate::routes::area_folders::normalize_path;
 use crate::routes::codex_cards::default_cwd;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::RouteState;
 
 use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, SendPath, TRACK_ADD_KEY_PREFIX};
-use super::{CreateTrackOptions, FolderClaim, TrackInit};
+use super::{CreateTrackOptions, preparation};
 
 enum AdmissionRefusal {
     NotAdmin,
@@ -178,7 +176,8 @@ impl TrackCreator for RouteTrackCreator {
                 "the creator's Planner provider {refusal}"
             )));
         }
-        let cwd = normalize_path(&default_cwd());
+        let cwd_omitted = args.cwd.is_none();
+        let cwd = args.cwd.clone().unwrap_or_else(default_cwd);
         let refused = Arc::new(OnceLock::new());
         let p = NewTrack {
             area_id: area_id.clone().into(),
@@ -187,10 +186,21 @@ impl TrackCreator for RouteTrackCreator {
             cwd: cwd.clone(),
             template_id: None,
             plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
+            template_input: args.template_input,
+            attach_folder: args.attach_folder.unwrap_or(false),
             theme: RequestTheme::default_dark(),
         };
+        let named_source =
+            preparation::NamedSource::from_request(args.template_id, args.recipe_id, None)?;
+        let preparation::PreparedCreate {
+            p,
+            folder_claim,
+            body_area_id,
+            normalized_cwd,
+            init,
+            workspace_plan,
+            ..
+        } = preparation::prepare(s, p, named_source, cwd_omitted, None).await?;
         let options = CreateTrackOptions {
             admin: false,
             managed_identity: None,
@@ -204,13 +214,11 @@ impl TrackCreator for RouteTrackCreator {
             planner_provider,
             model: None,
             reasoning_effort: None,
-            folder_claim: FolderClaim::Skip,
-            body_area_id: area_id,
-            normalized_cwd: cwd,
-            init: TrackInit::Recipe {
-                recipe_id: args.recipe_id,
-            },
-            workspace_plan: TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
+            folder_claim,
+            body_area_id,
+            normalized_cwd,
+            init,
+            workspace_plan,
             // Set by `create_track_with_first_message` from the plan.
             idempotency_claim: None,
         };
@@ -224,5 +232,21 @@ impl TrackCreator for RouteTrackCreator {
                 },
                 None => error.into(),
             })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::mcp_server::tools::track_sources::TrackCatalog for RouteTrackCreator {
+    async fn list_sources(
+        &self,
+        request: crate::routes::track_catalog::ListSources,
+    ) -> Result<serde_json::Value> {
+        crate::routes::track_catalog::list(&self.route, request).await
+    }
+    async fn get_source(
+        &self,
+        request: crate::routes::track_catalog::GetSource,
+    ) -> Result<serde_json::Value> {
+        crate::routes::track_catalog::get(&self.route, request).await
     }
 }

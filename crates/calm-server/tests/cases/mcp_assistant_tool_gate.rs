@@ -1,6 +1,6 @@
 //! The full role verdict for a `CardRole::Assistant` MCP token. Discovery is not inspected:
-//! `tools/call` routes by name regardless, so each denied tool gets a raw call asserting `-32403`
-//! AND the role-refusal message. The lists are the reviewed expectation: they must equal the
+//! `tools/call` routes by name regardless. Kernel denials assert `-32403` and the role message;
+//! compiled components unavailable in this fixture keep the earlier availability refusal. The lists are the reviewed expectation: they must equal the
 //! tools whose declared `roles` admit the Assistant, so a declaration change is a reviewed diff here.
 
 #![cfg(unix)]
@@ -56,10 +56,17 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "plugin_gitforge_publish",
     // Rerunning failed CI jobs, once the user approves it, is a Planner action (#2617).
     "plugin_gitforge_gh_run_rerun",
+    // External history is restricted to its bound Planner.
+    "plugin_opencodehistory_source_ls",
+    "plugin_opencodehistory_session_ls",
+    "plugin_opencodehistory_message_ls",
+    "plugin_opencodehistory_message_cat",
     // Closing the track is a Planner action; only the user reopens.
     "neige_track_close",
     // Opening a top-level Track from a recipe is a Planner action.
     "neige_track_add",
+    "neige_catalog_ls",
+    "neige_catalog_cat",
     // Asking the user is a planner action.
     "neige_user_ask",
     // Mail between the Tracks of an Area wakes another Planner (#2130).
@@ -193,11 +200,11 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
         let error = resp
             .get("error")
             .unwrap_or_else(|| panic!("`{tool}` must refuse an assistant caller, got: {resp:#?}"));
-        if tool.starts_with("plugin_gitforge_") {
+        if calm_server::builtin_plugins::owner(tool).is_some() {
             assert_eq!(
                 error["code"].as_i64(),
                 Some(-32601),
-                "development tools outside this Track are undiscoverable: {resp:#?}"
+                "compiled tools unavailable to this fixture are undiscoverable: {resp:#?}"
             );
             continue;
         }

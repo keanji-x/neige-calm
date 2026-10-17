@@ -12,8 +12,6 @@ use crate::{
     operation::{OperationOutcome, forge_action_adapter::NOT_LANDED_ERROR_CLASSES},
 };
 use async_trait::async_trait;
-#[cfg(test)]
-pub(crate) use plugin::builtin::gitforge::publish::PUBLISH;
 use plugin::builtin::gitforge::publish::{self, Candidate, Destination, ExecuteOutcome, Services};
 use std::{
     path::{Path, PathBuf},

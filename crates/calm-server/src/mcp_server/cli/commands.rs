@@ -144,6 +144,55 @@ pub(crate) fn option_flag(key: &str) -> String {
 
 pub(crate) const COMMANDS: &[Command] = &[
     Command {
+        tool: crate::mcp_server::tools::track_sources::TOOL_SOURCES_LIST,
+        positionals: &[],
+        options: &[
+            opt("--kind", "kind", OptValue::Text, true),
+            opt("--limit", "limit", OptValue::Integer, true),
+            opt("--cursor", "cursor", OptValue::Text, false),
+        ],
+        confirm: None,
+        render: Render::Raw,
+    },
+    Command {
+        tool: crate::mcp_server::tools::track_sources::TOOL_SOURCE_GET,
+        positionals: &[],
+        options: &[
+            opt("--kind", "kind", OptValue::Text, true),
+            opt("--source-id", "source_id", OptValue::Text, true),
+        ],
+        confirm: None,
+        render: Render::Raw,
+    },
+    Command {
+        tool: crate::mcp_server::tools::track_add::TOOL_TRACK_ADD,
+        positionals: &[],
+        options: &[
+            opt("--recipe-id", "recipe_id", OptValue::Text, false),
+            opt("--template-id", "template_id", OptValue::Text, false),
+            opt(
+                "--template-input",
+                "template_input",
+                OptValue::JsonOrText,
+                false,
+            ),
+            opt("--title", "title", OptValue::Text, true),
+            opt("--idempotency-key", "idempotency_key", OptValue::Text, true),
+            opt("--text", "text", OptValue::Text, true),
+            opt("--message", "message", OptValue::Text, true),
+            opt("--cwd", "cwd", OptValue::Text, false),
+            opt("--attach-folder", "attach_folder", OptValue::Flag, false),
+            opt(
+                "--allow-cross-area-cwd",
+                "allow_cross_area_cwd",
+                OptValue::JsonOrText,
+                false,
+            ),
+        ],
+        confirm: None,
+        render: Render::Raw,
+    },
+    Command {
         tool: track_file::TOOL_TRACK_LS,
         positionals: &[pos("path", false)],
         options: &[opt("-l", "long", OptValue::View, false)],
