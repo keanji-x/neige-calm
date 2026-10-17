@@ -1,4 +1,4 @@
-import { act, cleanup, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, screen, waitFor, within } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 import { renderRecoveryFixture, RECOVERY_TEXT } from './conversation-recovery-fixture.tsx';
@@ -221,6 +221,21 @@ it.each(['new-conversation', 'edited-text'] as const)('keeps recovery focus when
       await userEvent.type(field(), 'Edited recovery text.');
       await page.getByRole('button', { name: 'Send', exact: true }).click();
     }
+    const createdId = await waitFor(() => {
+      const id = view.createdId();
+      if (id === undefined) throw new Error('The accepted create has not returned its conversation identity.');
+      return id;
+    });
+    await waitFor(() => expect(view.client.getQueryData<readonly { id: string }[]>(queryKeys.trackConversations('daily'))?.some(row => row.id === createdId)).toBe(true));
+    await waitFor(() => expect(view.requests.some(request => request.method === 'GET'
+      && request.path.startsWith(`/api/cards/${encodeURIComponent(createdId)}/harness/items?`))).toBe(true));
+    await waitFor(() => {
+      const pane = document.getElementById(`conversation-${createdId}`);
+      expect(pane).not.toBeNull();
+      const transcript = pane?.querySelector<HTMLElement>('[data-nc-thread]');
+      expect(transcript).not.toBeNull();
+      expect(within(transcript!).getByText(mode === 'edited-text' ? 'Edited recovery text.' : RECOVERY_TEXT, { exact: true })).toBeDefined();
+    });
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
     expect(document.activeElement).toBe(field());
     expect(new Set(view.requests.filter(request => request.method === 'POST').map(request => request.headers?.['Idempotency-Key'])).size).toBe(2);
