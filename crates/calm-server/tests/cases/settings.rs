@@ -81,9 +81,7 @@ async fn repo_round_trips_settings_kv() {
 #[tokio::test]
 async fn get_settings_returns_empty_bag_initially() {
     let (state, _repo) = fresh_state().await;
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .with_state(state);
+    let app = routes::application_router(state, super::auth::dev_auth_state());
 
     let resp = app
         .oneshot(
@@ -105,9 +103,7 @@ async fn get_settings_returns_empty_bag_initially() {
 #[tokio::test]
 async fn put_then_get_round_trips_proxy() {
     let (state, _repo) = fresh_state().await;
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .with_state(state);
+    let app = routes::application_router(state, super::auth::dev_auth_state());
 
     let body = serde_json::json!({
         "settings": {
@@ -160,9 +156,7 @@ async fn put_with_empty_or_null_clears_key() {
         .await
         .unwrap();
 
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .with_state(state);
+    let app = routes::application_router(state, super::auth::dev_auth_state());
 
     let body = serde_json::json!({
         "settings": {
@@ -207,9 +201,7 @@ async fn settings_loader_picks_up_proxy_for_codex_spawn() {
 async fn settings_proxy_update_marks_needs_respawn() {
     let (state, _repo) = fresh_state().await;
     let shared = state.shared_codex_appserver.clone();
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .with_state(state);
+    let app = routes::application_router(state, super::auth::dev_auth_state());
 
     let body = serde_json::json!({
         "settings": {
@@ -240,9 +232,7 @@ async fn settings_proxy_update_with_unchanged_value_does_not_mark() {
         .await
         .unwrap();
     let shared = state.shared_codex_appserver.clone();
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .with_state(state);
+    let app = routes::application_router(state, super::auth::dev_auth_state());
 
     let body = serde_json::json!({
         "settings": {
@@ -270,9 +260,7 @@ async fn settings_proxy_update_with_unchanged_value_does_not_mark() {
 async fn planner_turn_budget_invalid_patch_writes_nothing() {
     let (state, repo) = fresh_state().await;
     let shared = state.shared_codex_appserver.clone();
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .with_state(state);
+    let app = routes::application_router(state, super::auth::dev_auth_state());
     for value in [
         "0",
         "241",
@@ -312,9 +300,7 @@ async fn planner_turn_budget_invalid_patch_writes_nothing() {
 #[tokio::test]
 async fn planner_turn_budget_canonical_reset_and_corrupt_get() {
     let (state, repo) = fresh_state().await;
-    let app = axum::Router::new()
-        .merge(routes::router())
-        .with_state(state);
+    let app = routes::application_router(state, super::auth::dev_auth_state());
     for (value, expected) in [
         (serde_json::json!("0001"), Some("1")),
         (serde_json::json!("240"), Some("240")),
@@ -353,5 +339,226 @@ async fn planner_turn_budget_canonical_reset_and_corrupt_get() {
             rows.iter()
                 .any(|(k, v)| k == "unknown" && v == "unchanged semantics")
         );
+    }
+}
+
+async fn area_owner_session() -> (axum::Router, AppState, Arc<SqlxRepo>, String) {
+    let (state, repo) = fresh_state().await;
+    let auth = super::auth::live_auth_state("owner", "fixture-password");
+    let user = "settings-alice";
+    let mut tx = repo.pool().begin().await.unwrap();
+    calm_server::db::sqlite::area_membership::application_user_register(&mut tx, user, "Alice")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let token = auth.sessions.create(
+        calm_server::auth::SessionIdentity {
+            user_id: user.into(),
+            // These credential-bound labels still do not confer deployment ownership.
+            display_name: "Owner".into(),
+            role: calm_server::auth::OWNER_ROLE.into(),
+        },
+        calm_server::auth::SessionAuthority::PasswordLogin,
+    );
+    let cookie = format!("{}={token}", calm_server::auth::SESSION_COOKIE);
+    let app = routes::application_router(state.clone(), auth);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/areas")
+                .header("content-type", "application/json")
+                .header("cookie", &cookie)
+                .body(Body::from(r##"{"name":"Alice's Area","color":"#abc"}"##))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let area: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let membership = repo
+        .area_require_access(
+            area["id"].as_str().unwrap(),
+            user,
+            calm_types::organization::AreaAccess::Delete,
+        )
+        .await
+        .unwrap();
+    assert_eq!(membership.id.as_str(), area["id"].as_str().unwrap());
+    (app, state, repo, cookie)
+}
+
+fn nonowner_request(method: &str, cookie: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri("/api/settings")
+        .header("content-type", "application/json")
+        .header("cookie", cookie)
+        .header("x-calm-actor", "user")
+        .header("x-calm-user-id", calm_server::auth::OWNER_USER_ID)
+        .header("x-calm-role", calm_server::auth::OWNER_ROLE)
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn settings_nonowner_cannot_read_installation_values() {
+    let (app, _state, repo, cookie) = area_owner_session().await;
+    repo.settings_upsert(
+        "http_proxy",
+        "http://fixture-user:fixture-secret@proxy.invalid:3128",
+    )
+    .await
+    .unwrap();
+    repo.settings_upsert("private_setting", "installation-only-value")
+        .await
+        .unwrap();
+    let response = app
+        .oneshot(nonowner_request("GET", &cookie, serde_json::json!({})))
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        status == 403
+            && !text.contains("fixture-secret")
+            && !text.contains("installation-only-value"),
+        "nonowner status={status}, leaked installation values: {text}"
+    );
+}
+
+#[tokio::test]
+async fn settings_nonowner_cannot_write_or_reconfigure_installation() {
+    let (app, state, repo, cookie) = area_owner_session().await;
+    repo.settings_upsert("http_proxy", "http://original.invalid:3128")
+        .await
+        .unwrap();
+    let before = repo.settings_get_all().await.unwrap();
+    for duration in ["30", "not-a-duration"] {
+        let response = app
+            .clone()
+            .oneshot(nonowner_request(
+                "PUT",
+                &cookie,
+                serde_json::json!({"settings": {
+                    "http_proxy":"http://changed.invalid:3128", "aaa_unknown":"must not write",
+                    "planner_max_turn_duration_minutes":duration
+                }}),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        let after = repo.settings_get_all().await.unwrap();
+        let respawn = state
+            .shared_codex_appserver
+            .needs_respawn_on_next_thread_start_for_test();
+        assert!(
+            status == 403 && before == after && !respawn,
+            "nonowner duration={duration}, status={status}, rows_changed={}, respawn={respawn}",
+            before != after
+        );
+    }
+}
+
+#[tokio::test]
+async fn settings_password_owner_reads_and_updates_installation_values() {
+    let (state, repo) = fresh_state().await;
+    let shared = state.shared_codex_appserver.clone();
+    let app = routes::application_router(
+        state,
+        super::auth::live_auth_state("owner", "fixture-password"),
+    );
+    let login = app
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/login")
+                .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    4444,
+                ))))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"username":"owner","password":"fixture-password"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let response = app.clone().oneshot(Request::put("/api/settings")
+        .header("content-type", "application/json").header("cookie", &cookie)
+        .body(Body::from(r#"{"settings":{"HTTPS_PROXY":"http://owner.invalid:3128","private_setting":"owner-value"}}"#)).unwrap()).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(shared.needs_respawn_on_next_thread_start_for_test());
+    assert_eq!(
+        routes::settings::load_settings(repo.as_ref())
+            .await
+            .unwrap()
+            .https_proxy
+            .as_deref(),
+        Some("http://owner.invalid:3128")
+    );
+    let response = app
+        .oneshot(
+            Request::get("/api/settings")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let bag: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bag["settings"]["private_setting"], "owner-value");
+}
+
+#[tokio::test]
+async fn settings_requires_a_live_session_for_reads_and_writes() {
+    let (state, repo) = fresh_state().await;
+    let shared = state.shared_codex_appserver.clone();
+    let app = routes::application_router(
+        state,
+        super::auth::live_auth_state("owner", "fixture-password"),
+    );
+    repo.settings_upsert("private_setting", "session-protected-value")
+        .await
+        .unwrap();
+    let before = repo.settings_get_all().await.unwrap();
+    let unknown = format!("{}=unknown-session", calm_server::auth::SESSION_COOKIE);
+    for cookie in [None, Some(unknown.as_str())] {
+        for method in ["GET", "PUT"] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri("/api/settings")
+                .header("content-type", "application/json");
+            if let Some(cookie) = cookie {
+                request = request.header("cookie", cookie);
+            }
+            let response = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(Body::from(
+                            r#"{"settings":{"http_proxy":"http://must-not-write.invalid:3128"}}"#,
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 401);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(!String::from_utf8_lossy(&bytes).contains("session-protected-value"));
+            assert_eq!(repo.settings_get_all().await.unwrap(), before);
+            assert!(!shared.needs_respawn_on_next_thread_start_for_test());
+        }
     }
 }

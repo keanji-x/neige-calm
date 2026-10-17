@@ -35,7 +35,7 @@ async fn insert_owner_principal(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     request.extensions_mut().insert(Principal {
-        user_id: "owner".into(),
+        user_id: LEGACY_OWNER_USER_ID.into(),
         display_name: "owner".into(),
         role: "owner".into(),
         session_id: "planner-queue-fixture".into(),

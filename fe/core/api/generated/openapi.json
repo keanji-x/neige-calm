@@ -7766,6 +7766,16 @@
               }
             }
           },
+          "403": {
+            "description": "Deployment owner required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -7825,7 +7835,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "description": "Deployment owner required or cross-origin request rejected",
             "content": {
               "application/json": {
                 "schema": {

@@ -832,3 +832,6 @@ mod restart;
 
 #[path = "mobile_pairing/github_preview.rs"]
 mod github_preview;
+
+#[path = "mobile_pairing/settings.rs"]
+mod settings;

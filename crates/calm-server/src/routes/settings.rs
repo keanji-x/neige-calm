@@ -1,6 +1,7 @@
 //! `/api/settings` — app-global key/value settings. `null` and `""` both delete a key;
 //! empty rows are never stored.
 
+use crate::auth::Principal;
 use crate::error::{ErrorBody, Result};
 use crate::extract::{Json, JsonBody};
 use crate::state::{AppState, CodexShellState, RouteState};
@@ -32,10 +33,15 @@ pub struct SettingsPutBody {
     tag = "settings",
     responses(
         (status = 200, description = "Current settings map (string→string)", body = SettingsBag),
+        (status = 403, description = "Deployment owner required", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn get_settings(State(s): State<RouteState>) -> Result<Json<SettingsBag>> {
+pub(crate) async fn get_settings(
+    principal: Principal,
+    State(s): State<RouteState>,
+) -> Result<Json<SettingsBag>> {
+    crate::organization_access::require_deployment_owner(&principal)?;
     let rows = s.repo.settings_get_all().await?;
     Ok(Json(SettingsBag {
         settings: rows.into_iter().collect(),
@@ -50,14 +56,17 @@ pub(crate) async fn get_settings(State(s): State<RouteState>) -> Result<Json<Set
     responses(
         (status = 200, description = "Settings replaced; returns the resulting bag", body = SettingsBag),
         (status = 400, description = "Invalid setting value", body = ErrorBody),
+        (status = 403, description = "Deployment owner required or cross-origin request rejected", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn put_settings(
+    principal: Principal,
     State(s): State<RouteState>,
     State(cs): State<CodexShellState>,
     JsonBody(mut p): JsonBody<SettingsPutBody>,
 ) -> Result<Json<SettingsBag>> {
+    crate::organization_access::require_deployment_owner(&principal)?;
     // Validate the complete incoming patch before any write or proxy side effect. Do not
     // decode stored budgets here: a corrupt value must remain readable and resettable.
     if let Some(Some(value)) = p.settings.get_mut(crate::planner_turn_budget::KEY)
