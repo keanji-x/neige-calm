@@ -1,0 +1,60 @@
+@layer ui {
+  .frame { position: relative; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3); }
+  .frameHead { display: flex; align-items: center; justify-content: flex-end; min-block-size: var(--row-h); }
+  .frameAction { display: flex; align-items: center; opacity: 0; }
+  .actionRail { display: flex; align-items: center; flex: none; gap: var(--space-1); }
+  .endSlot { display: grid; place-items: center; flex: none; inline-size: var(--control-h-sm); block-size: var(--control-h-sm); }
+  .frame:hover .frameAction, .frame:focus-within .frameAction, .frame:has([aria-expanded="true"]) .frameAction { opacity: 1; }
+  @media (hover: none) { .frameAction { opacity: 1; } }
+
+  .list { margin: 0 calc(var(--space-1) * -1); padding: 0; list-style: none; max-block-size: calc(var(--row-h) * 8); overflow-y: auto; overscroll-behavior: contain; }
+  .item { position: relative; min-inline-size: 0; border-radius: var(--radius-highlight); }
+  .item:hover, .item:focus-within { background: var(--overlay-hover); }
+  .open {
+    display: grid;
+    grid-template-columns: var(--glyph-sm) minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-2);
+    inline-size: 100%;
+    min-inline-size: 0;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-1);
+    border-radius: inherit;
+    text-align: start;
+    cursor: pointer;
+  }
+  .open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .trailing { display: flex; align-items: center; justify-content: flex-end; min-inline-size: var(--control-h-sm); overflow: hidden; white-space: nowrap; }
+  .trailing > * { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
+  .withTrailing { grid-template-columns: var(--glyph-sm) minmax(0, 1fr) fit-content(40%); }
+  .withMenu { padding-inline-end: calc(var(--control-h-sm) + var(--space-1)); }
+  .withMenu.withTrailing { padding-inline-end: var(--space-1); }
+  /* Hover-capable devices share the status slot with the intent-revealed menu. */
+  @media (hover: hover) {
+    .item:hover .withMenu > .trailing, .item:focus-within .withMenu > .trailing,
+    .item:has([aria-expanded="true"]) .withMenu > .trailing { opacity: 0; }
+  }
+  .name { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu { position: absolute; inset-inline-end: var(--space-1); inset-block-start: var(--space-1); opacity: 0; }
+  .trigger { inline-size: var(--control-h-sm); block-size: var(--control-h-sm); border-radius: var(--radius-highlight); }
+  .item:hover .menu, .item:focus-within .menu, .item:has([aria-expanded="true"]) .menu { opacity: 1; }
+  .selected { background: var(--selection-bg); }
+  .selected:hover, .selected:focus-within { background: var(--selection-hover-bg); }
+  .head { display: flex; align-items: center; justify-content: space-between; min-block-size: var(--row-h); gap: var(--space-2); }
+  .title { margin: 0; color: var(--text-2); }
+  .head svg { color: var(--text-3); }
+  summary.head { cursor: pointer; list-style: none; border-radius: var(--radius-highlight); }
+  summary.head::-webkit-details-marker { display: none; }
+  summary.head:hover { background: var(--overlay-hover); }
+  .group[open] > .head > .endSlot > svg { rotate: 90deg; }
+  .action { display: flex; align-items: center; opacity: 0; }
+  .alwaysAction { opacity: 1; }
+  .group:hover .action, .group:focus-within .action { opacity: 1; }
+  @media (hover: none) {
+    .menu, .action { opacity: 1; }
+    /* Persistent actions get a separate column; all state rows stay aligned. */
+    .withMenu.withTrailing, .frame:has(.menu) .open {
+      padding-inline-end: calc(var(--control-h-sm) + var(--space-1) * 2);
+    }
+  }
+}

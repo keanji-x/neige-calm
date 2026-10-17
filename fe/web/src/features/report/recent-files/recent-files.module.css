@@ -34,6 +34,8 @@
     outline-offset: -2px;
   }
 
+  .context { gap: 0; }
+
   .name {
     font-size: var(--font-step-2-size);
     overflow: hidden;

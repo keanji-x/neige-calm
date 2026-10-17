@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ReportTaskRow } from '../domain/report.js';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../domain/track.js';
-import { deriveTrackPageView, parkedWorkerNotices, taskStatusPhrase, type TrackPageActivity } from './track-page.js';
+import { deriveTrackPageView, parkedWorkerNotices, progressStatusLabel, taskStatusPhrase, type TrackPageActivity } from './track-page.js';
 
 function card(overrides: Partial<CardWire> = {}): CardWire {
   return {
@@ -255,7 +255,7 @@ describe('deriveTrackPageView tasks', () => {
     const [failed, working] = tasksModule([
       task({ blockId: 'b-f', key: 'k-f', kind: 'claude', workerCardId: 'card-9', status: 'running' }),
       { ...task({ blockId: 'b-w', key: 'k-w', kind: 'codex', workerCardId: 'stale', status: 'dispatched' }), execution: {
-        attemptId: 'a1', generation: 1, status: 'running', label: 'Running', statusDetail: null,
+        attemptId: 'a1', generation: 1, createdAtMs: 1000, finishedAtMs: null, status: 'running', label: 'Running', statusDetail: null,
         workerCardId: 'card-7', blockingReason: null,
       } },
     ], activity, new Set()).rows;
@@ -372,7 +372,7 @@ it('labels a superseded worker card’s live status as its session’s, leaving 
       card({ id: 'new-worker', title: 'alpha-task', kind: 'codex', runtime: { worker_session_id: 's2', kind: 'codex', status: 'running' } }),
     ],
     tasks: [{ ...task({ key: 'alpha-task', status: 'done', kind: 'codex', workerCardId: 'old-worker' }), execution: {
-      attemptId: 'a2', generation: 2, status: 'done', label: 'Done', statusDetail: null, workerCardId: 'new-worker', blockingReason: null,
+      attemptId: 'a2', generation: 2, createdAtMs: 1000, finishedAtMs: null, status: 'done', label: 'Done', statusDetail: null, workerCardId: 'new-worker', blockingReason: null,
     } }],
     activity: NEUTRAL_ACTIVITY,
     openableCards: new Set(),
@@ -387,7 +387,7 @@ it('labels a superseded worker card’s live status as its session’s, leaving 
 });
 
 it('separates an execution label from its actual explanation', () => {
-  const execution = { attemptId: 'a1', generation: 1, status: 'failed', label: 'Failed',
+  const execution = { attemptId: 'a1', generation: 1, createdAtMs: 1000, finishedAtMs: null, status: 'failed', label: 'Failed',
     statusDetail: 'Gate exited with code 1', workerCardId: null, blockingReason: null };
   const [detailed, labelOnly] = tasksModule([
     { ...task({ blockId: 'detail' }), execution },
@@ -427,7 +427,7 @@ describe('parkedWorkerNotices (#2526)', () => {
   });
 
   it('reads the loaded execution over the report verdict', () => {
-    const execution = { attemptId: 'a2', generation: 2, status: 'running', label: 'Running',
+    const execution = { attemptId: 'a2', generation: 2, createdAtMs: 1000, finishedAtMs: null, status: 'running', label: 'Running',
       statusDetail: null, workerCardId: 'card-w', blockingReason: null };
     expect(parkedWorkerNotices([{ ...worker('done'), execution }]).size).toBe(0);
     expect(parkedWorkerNotices([{ ...worker('running'), execution: { ...execution, status: 'failed' } }]).get('card-w'))
@@ -437,4 +437,115 @@ describe('parkedWorkerNotices (#2526)', () => {
   it('lets a live claim on the card win over a parked one', () => {
     expect(parkedWorkerNotices([worker('done', 'card-w', 'a'), worker('running', 'card-w', 'b')]).size).toBe(0);
   });
+});
+
+it('keeps a unified entry’s task context and status on the same selected task, without guessing from titles', () => {
+  const view = deriveTrackPageView({
+    cards: [card({ id: 'shared', title: 'Work' }), card({ id: 'independent', title: 'Current task' })],
+    tasks: [
+      task({ blockId: 'old', key: 'Previous task', status: 'done', workerCardId: 'shared' }),
+      task({ blockId: 'current', key: 'Current task', status: 'running', workerCardId: 'shared' }),
+    ], activity: NEUTRAL_ACTIVITY, openableCards: new Set(['shared', 'independent']),
+  });
+  const rows = view.rowModules.find(module => module.key === 'cards')!.rows;
+  expect(rows.find(row => row.id === 'shared')).toMatchObject({
+    status: { token: 'running' }, badges: [],
+  });
+  expect(rows.find(row => row.id === 'independent')!.badges).toEqual([]);
+});
+
+it('joins only drawable current workers, preserves maintenance actions, and isolates desktop identities', () => {
+  const view = deriveTrackPageView({
+    cards: [card({ id: 'worker', title: 'Runtime' }), card({ id: 'same', title: 'Independent terminal' }),
+      card({ id: 'unknown', title: 'Unsupported worker', kind: 'unknown-kind' })],
+    tasks: [task({ blockId: 'same', key: 'Current task', kind: 'codex', status: 'done', workerCardId: 'worker' }),
+      task({ blockId: 'unopenable', key: 'Unopenable task', kind: 'codex', status: 'running', workerCardId: 'unknown' })],
+    activity: { cards: { worker: 'input' } }, openableCards: new Set(['worker', 'same']),
+  });
+  expect(view.rowModules.find(module => module.key === 'cards')!.rows).toHaveLength(3);
+  const rows = view.desktop.rowModules[0].rows;
+  expect(rows.map(row => row.id)).toEqual(['task:unopenable', 'tool:same', 'tool:unknown', 'task:same']);
+  const joined = rows.find(row => row.id === 'task:same')!;
+  expect(joined.actions).toContainEqual({ kind: 'delete-card', cardId: 'worker', label: 'Delete card Runtime', hint: 'Delete card', description: null });
+  expect(joined.actions.some(action => action.kind === 'reveal-block' && action.blockId === 'same')).toBe(true);
+});
+
+it('gives an independent tool its exact session status as the primary action description', () => {
+  const view = deriveTrackPageView({ cards: [card({ id: 'failed', title: 'Build log', kind: 'terminal',
+    runtime: { worker_session_id: 'session', kind: 'terminal', status: 'failed' } })],
+    tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set(['failed']) });
+  const row = view.desktop.rowModules[0].rows[0];
+  expect(row.actions.find(action => action.kind === 'open-card')?.description).toBe('session failed');
+});
+
+it('keeps shared-worker activity and maintenance on the selected task without reviving its history', () => {
+  const view = deriveTrackPageView({ cards: [card({ id: 'shared', title: 'Shared runtime' })],
+    tasks: [task({ blockId: 'old', key: 'Old task', kind: 'codex', status: 'done', workerCardId: 'shared' }),
+      task({ blockId: 'current', key: 'Current task', kind: 'codex', status: 'running', workerCardId: 'shared' })],
+    activity: { cards: { shared: 'input' } }, openableCards: new Set(['shared']) });
+  const rows = view.desktop.rowModules[0].rows;
+  const current = rows.find(row => row.id === 'task:current')!;
+  const old = rows.find(row => row.id === 'task:old')!;
+  expect(current.activity).toBe('attention');
+  expect(current.actions.map(action => action.kind)).toEqual(['reveal-block', 'open-card', 'delete-card']);
+  expect(old.activity).toBeNull();
+  expect(old.status?.token).toBe('done');
+  expect(old.actions.map(action => action.kind)).toEqual(['reveal-block']);
+});
+
+
+it('orders live progress by existing runtime times and keeps terminal executions last regardless of activity', () => {
+  const view = deriveTrackPageView({
+    cards: [
+      card({ id: 'older', updated_at: 10, runtime: { worker_session_id: 's1', kind: 'terminal', status: 'running', updated_at_ms: 300 } }),
+      card({ id: 'newer', updated_at: 999, runtime: { worker_session_id: 's2', kind: 'terminal', status: 'running', updated_at_ms: 600 } }),
+      card({ id: 'ended', updated_at: 900, runtime: { worker_session_id: 's3', kind: 'terminal', status: 'exited', updated_at_ms: 1000 } }),
+    ],
+    tasks: [task({ blockId: 'older', status: 'running', kind: 'codex', workerCardId: 'older' }),
+      task({ blockId: 'newer', status: 'running', kind: 'codex', workerCardId: 'newer' }),
+      task({ blockId: 'ended', status: 'done', kind: 'codex', workerCardId: 'ended' })],
+    activity: { cards: { ended: 'input' } }, openableCards: new Set(['older', 'newer', 'ended']),
+  });
+  expect(view.desktop.rowModules[0].rows.map(row => row.id)).toEqual(['task:newer', 'task:older', 'task:ended']);
+});
+
+it('orders independent resources by recency within live and ended partitions', () => {
+  const cards = [card({ id: 'old', updated_at: 100 }), card({ id: 'latest', updated_at: 600 }),
+    card({ id: 'failed', updated_at: 900, runtime: { worker_session_id: 'sf', kind: 'terminal', status: 'failed' } }),
+    card({ id: 'finished', updated_at: 700, runtime: { worker_session_id: 'sd', kind: 'terminal', status: 'exited' } })];
+  const view = deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set(cards.map(card => card.id)) });
+  expect(view.desktop.rowModules[0].rows.map(row => row.id)).toEqual(['tool:latest', 'tool:old', 'tool:failed', 'tool:finished']);
+});
+
+
+it('uses attempt end evidence for finished tasks without borrowing a reused worker’s later activity', () => {
+  const ended = (blockId: string, finish: number | null): ReportTaskRow => ({ ...task({ blockId, kind: 'codex', status: 'done', workerCardId: 'shared' }),
+    ...(finish === null ? {} : { execution: { attemptId: blockId, generation: 1, status: 'done', label: 'Completed',
+      statusDetail: null, blockingReason: null, workerCardId: 'shared', createdAtMs: 0, finishedAtMs: finish } }),
+  });
+  const view = deriveTrackPageView({ cards: [card({ id: 'shared', updated_at: 9000 })],
+    tasks: [ended('old', 100), ended('unknown-a', null), ended('recent', 500), ended('unknown-b', null),
+      task({ blockId: 'current', kind: 'codex', status: 'running', workerCardId: 'shared' })],
+    activity: NEUTRAL_ACTIVITY, openableCards: new Set(['shared']),
+  });
+  expect(view.desktop.rowModules[0].rows.map(row => row.id))
+    .toEqual(['task:current', 'task:recent', 'task:old', 'task:unknown-a', 'task:unknown-b']);
+});
+
+it('retains zero timestamps and stable ties without a request-time substitute', () => {
+  const view = deriveTrackPageView({ cards: [card({ id: 'zero-a', updated_at: 0 }), card({ id: 'zero-b', updated_at: 0 })],
+    tasks: [task({ blockId: 'unknown-a', status: 'running' }), task({ blockId: 'unknown-b', status: 'running' })],
+    activity: NEUTRAL_ACTIVITY, openableCards: new Set(),
+  });
+  expect(view.desktop.rowModules[0].rows.map(row => row.id))
+    .toEqual(['tool:zero-a', 'tool:zero-b', 'task:unknown-a', 'task:unknown-b']);
+});
+
+
+it('does not describe a live harness turn_pending state as queued work', () => {
+  const view = deriveTrackPageView({ cards: [card({ runtime: { worker_session_id: 'live', kind: 'codex', status: 'turn_pending' } })],
+    tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
+  const row = view.desktop.rowModules[0].rows[0];
+  expect(row.status?.token).toBe('turn_pending');
+  expect(progressStatusLabel(row)).toBe('Working');
 });

@@ -72,3 +72,14 @@ export function inventorySections<T>(rows: readonly T[], groupOf: (row: T) => In
   }
   return sections.map(section => inventoryGroup(section.key, section.rows, attentionOf));
 }
+
+/** Finished work can be tucked away without hiding failures or requests for input. */
+export function isFinishedTaskGroup(group: InventoryGroupKey): boolean {
+  return group === 'done' || group === 'canceled';
+}
+
+/** Task lifecycle, not Worker attention, determines whether a Progress entry has ended. */
+export function progressRowFinished(row: PanelRow): boolean {
+  const state = panelRowGroup(row, 'tasks');
+  return isFinishedTaskGroup(state) || state === 'failed';
+}

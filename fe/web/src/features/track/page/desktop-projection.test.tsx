@@ -13,7 +13,7 @@ import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeDesktopPainter } from './desktop-painter.tsx';
 import pageSource from './public.tsx?raw';
-import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { captureContextProjection, card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 
@@ -113,24 +113,24 @@ describe('fixture shape guard', () => {
 });
 
 describe('the rendered desktop panel projects its view model faithfully', () => {
-  it('with cards and tasks, a delete handler, and every row shape above', () => {
+  it('with cards and tasks, a delete handler, and every row shape above', async () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
     const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
-    expect(checkProjectionIn(painter(), view.rowModules, desktopPanel(container))).toEqual([]);
+    expect(checkProjectionIn(painter(), view.desktop.rowModules, await captureContextProjection(desktopPanel(container)))).toEqual([]);
   });
 
-  it('with both modules empty', () => {
+  it('with both modules empty', async () => {
     const { container } = renderPage({ cards: [], tasks: [] });
     const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
-    expect(checkProjectionIn(painter(), view.rowModules, desktopPanel(container))).toEqual([]);
+    expect(checkProjectionIn(painter(), view.desktop.rowModules, await captureContextProjection(desktopPanel(container)))).toEqual([]);
   });
 
-  it('with no delete handler, so no row carries a delete action', () => {
+  it('with no delete handler, so no row carries a delete action', async () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS });
     const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
     const noDelete = makeDesktopPainter({ onOpenCard: vi.fn(), onOpenTask: vi.fn() });
-    expect(checkProjectionIn(noDelete, view.rowModules, desktopPanel(container))).toEqual([]);
-    expect(view.rowModules.find(module => module.key === 'cards')!.rows.some((row) =>
+    expect(checkProjectionIn(noDelete, view.desktop.rowModules, await captureContextProjection(desktopPanel(container)))).toEqual([]);
+    expect(view.desktop.rowModules.find(module => module.key === 'work')!.rows.some((row) =>
       row.actions.some((action) => action.kind === 'delete-card'))).toBe(true);
     expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull();
   });
@@ -140,8 +140,8 @@ describe('the rendered desktop panel projects its view model faithfully', () => 
     const root = desktopPanel(container);
     expect(MARKER.row).toBe('data-nc-row');
     expect(MARKER.module).toBe('data-nc-module');
-    expect(root.querySelectorAll('[data-nc-row]').length).toBe(CARDS.length + TASKS.length);
-    expect(root.querySelectorAll('[data-nc-module]').length).toBe(2);
+    expect(root.querySelectorAll('[data-nc-row]').length).toBe(CARDS.length + TASKS.length - 1);
+    expect(root.querySelectorAll('[data-nc-module]').length).toBe(1);
   });
 });
 

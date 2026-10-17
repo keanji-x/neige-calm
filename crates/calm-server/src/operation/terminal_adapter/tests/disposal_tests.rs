@@ -413,7 +413,7 @@ async fn exercise(history: History, disposal: Disposal) {
             steps: vec![],
         };
         operations
-            .set_compensating(&op, &state, output)
+            .set_compensating(&op, &state)
             .await
             .unwrap()
             .unwrap();

@@ -151,13 +151,14 @@ function setup(
 }
 
 async function inventoryLabels(): Promise<string[]> {
-  // `[data-nc-card-inventory]` is the CARDS module's own list, not the page's other lists.
+  // `[data-nc-work-inventory]` is the CARDS module's own list, not the page's other lists.
   const list = await waitFor(() => {
-    const found = document.querySelector('[data-nc-card-inventory]');
+    const found = document.querySelector('[data-nc-work-inventory]');
     if (found === null) throw new Error('card inventory has not rendered');
     return found as HTMLElement;
   });
-  return within(list).getAllByRole('listitem').map((row) => row.textContent ?? '');
+  return [...list.querySelectorAll('[data-nc-row^="tool:"]')].map(row =>
+    (row.querySelector('[data-nc-field="title"]')?.textContent ?? '') + (row.querySelector('[data-nc-field="kind"]')?.textContent ?? ''));
 }
 
 beforeEach(() => {
@@ -268,10 +269,8 @@ describe('track route CARDS panel', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     expect(window.location.search).toBe('');
     await waitFor(() => { expect(document.activeElement).toBe(opener); });
-    expect(await screen.findByRole('heading', { name: 'Recent files' })).toBeTruthy();
-    expect([...document.querySelectorAll('[data-nc-desktop-panel] h2')]
-      .map((heading) => heading.textContent).slice(0, 3))
-      .toEqual(['Tasks', 'Tools', 'Recent files']);
+    await userEvent.click(await screen.findByText('Related', { exact: true }));
+    expect(document.querySelector('[data-nc-recent-files]')).not.toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Open fe/web/src/app/router/public.tsx' }));
     await waitFor(() => {
       expect(document.querySelector('[data-nc-report-file-viewer]')).toBeTruthy();
@@ -327,7 +326,8 @@ describe('track route CARDS panel', () => {
 
   it('[INV-CARD-226] shows the empty state when every card the track has is headless', async () => {
     setup([PLANNER_CARD, REPORT_CARD], { withVisibleFixture: false });
-    expect(await screen.findByText('No tools yet.')).toBeTruthy();
+    expect(await inventoryLabels()).toEqual([]);
+    expect(screen.getByRole('button', { name: /Conversation Planner chat/ })).toBeTruthy();
   });
 
   it('preserves titled tools and gives anonymous terminals a distinct numbered name', async () => {
@@ -348,7 +348,7 @@ describe('track route TASKS panel', () => {
   /** Scoped to the TASKS module: `terminal` and `codex` are also words the CARDS module prints. */
   async function tasks(): Promise<HTMLElement> {
     return waitFor(() => {
-      const found = document.querySelector('[data-nc-task-inventory]');
+      const found = document.querySelector('[data-nc-work-inventory]');
       if (found === null) throw new Error('task inventory has not rendered');
       return found as HTMLElement;
     });
@@ -357,14 +357,16 @@ describe('track route TASKS panel', () => {
   /* The control is the row's kind, not the row; the row itself always reveals the block. */
   it('opens the worker card from the kind of a task the registry can draw', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    await userEvent.click(within(await tasks()).getByRole('button', { name: 'terminal' }));
+    await userEvent.click(within(await tasks()).getByRole('button', { name: 'Actions for has-adapter' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
   });
 
   it('offers the codex card too, now that an entry claims that kind', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    await userEvent.click(within(await tasks()).getByRole('button', { name: 'codex' }));
+    await userEvent.click(within(await tasks()).getByRole('button', { name: 'Actions for codex-adapter' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-codex"]')).toBeTruthy();
   });
@@ -385,7 +387,7 @@ describe('track route TASKS panel', () => {
 
   it('reveals the block from the row even when the task has an openable card', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
     const row = await taskRow(/^has-adapter/);
     expect(row.getAttribute('title')).toBeNull();
     await userEvent.click(row);
@@ -396,8 +398,8 @@ describe('track route TASKS panel', () => {
   /* The registry decides where a kind can go, not whether the kernel's verdict is reported. */
   it('reports the run on both rows, whichever card the work landed on', async () => {
     setup(TASK_CARDS, { taskDiagnostics: TASK_DIAGNOSTICS });
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-unknown"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
   });
 
   /* Identity and openability are two facts: the task keeps its `workerCardId` (the
@@ -408,13 +410,13 @@ describe('track route TASKS panel', () => {
       overlays: [activityOverlay([{ card_id: UNCLAIMED_CARD.id, state: 'working' }])],
     });
     const list = within(await tasks());
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [data-nc-activity]')
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-unknown"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('working'));
     expect(list.getByText('claude')).toBeTruthy();
     expect(list.queryByRole('button', { name: 'claude' })).toBeNull();
-    expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-unknown"] [title^="Open the worker card"]')).toBeNull();
+    expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-unknown"] [title^="Open the worker card"]')).toBeNull();
     // The CARDS row for the same card reads the same verdict.
-    expect(document.querySelector('[data-nc-card-inventory] [data-nc-row="card-unclaimed"] [data-nc-activity]')
+    expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="tool:card-unclaimed"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('working');
   });
 
@@ -423,9 +425,10 @@ describe('track route TASKS panel', () => {
       taskDiagnostics: TASK_DIAGNOSTICS,
       overlays: [activityOverlay([{ card_id: UNKNOWN_TERMINAL.id, state: 'failed' }])],
     });
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-activity]')
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-activity]')
       ?.getAttribute('data-nc-activity')).toBe('failed'));
-    const control = within(await tasks()).getByRole('button', { name: 'terminal' });
+    await userEvent.click(within(await tasks()).getByRole('button', { name: 'Actions for has-adapter' }));
+    const control = (await screen.findByRole('menuitem', { name: 'View execution' })).querySelector('[title]')!;
     expect(control.getAttribute('title')).toBe('Open the worker card for has-adapter');
   });
 
@@ -434,7 +437,7 @@ describe('track route TASKS panel', () => {
       blockId: 'b-term', key: 'has-adapter', schedulable: true,
       status: 'failed', statusDetail: 'gate-red', workerCardId: 'card-term',
     }] });
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('failed — gate-red'));
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('failed — gate-red'));
     const row = await taskRow(/^has-adapter$/);
     await userEvent.click(row);
     const block = document.querySelector('#b-term [data-nc-task-state]');
@@ -507,20 +510,21 @@ describe('track route TASKS panel convergence', () => {
     let verdicts: readonly unknown[] = dispatched;
     setup(TASK_CARDS, { taskDiagnostics: () => verdicts });
     // Pre-stamp: the verdict carries no `workerCardId` yet, so there is nothing to open.
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('dispatched'));
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('dispatched'));
     expect(screen.queryByRole('button', { name: 'terminal' })).toBeNull();
 
     verdicts = running;
     await vi.advanceTimersByTimeAsync(3_000);
 
-    const converged = await waitFor(() => screen.getByRole('button', { name: 'terminal' }));
-    expect(converged.getAttribute('title')).toBe('Open the worker card for has-adapter');
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
+    const converged = await screen.findByRole('button', { name: 'Actions for has-adapter' });
+    await userEvent.click(converged);
+    expect((await screen.findByRole('menuitem', { name: 'View execution' })).querySelector('[title]')?.getAttribute('title')).toBe('Open the worker card for has-adapter');
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('running'));
   });
 
   it('stops polling once every task is terminal, so a settled track costs nothing', async () => {
     const { reportReads } = setup(TASK_CARDS, { taskDiagnostics: () => done });
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('done'));
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-term"] [data-nc-row-action="reveal-block"]')?.getAttribute('aria-description')).toBe('done'));
     const afterFirstRead = reportReads();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(reportReads()).toBe(afterFirstRead);
@@ -567,7 +571,7 @@ describe('track route worker card notice', () => {
   it('draws no notice while the attempt runs', async () => {
     window.history.replaceState({}, '', `${APP_BASEPATH}/track/w1?card=${ORDINARY_CODEX.id}`);
     setup([...TASK_CARDS, PLAIN_TERMINAL], { taskDiagnostics: verdicts('running') });
-    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-codex"] [data-nc-row-action="reveal-block"]')
+    await waitFor(() => expect(document.querySelector('[data-nc-work-inventory] [data-nc-row="task:b-codex"] [data-nc-row-action="reveal-block"]')
       ?.getAttribute('aria-description')).toBe('running'));
     expect(cell(ORDINARY_CODEX.id)).toBeTruthy();
     expect(document.querySelectorAll('[data-nc-terminal-notice]')).toHaveLength(0);

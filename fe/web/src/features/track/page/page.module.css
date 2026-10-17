@@ -643,11 +643,42 @@
     margin-block-start: var(--space-0);
   }
 
+  /* Injected panel modules own their existing inline inset. */
+  .panelContext { min-inline-size: 0; margin-inline: calc(var(--space-3) * -1); }
+
+  .workCard { flex-shrink: 0; }
+
+  .relatedContent { display: flex; flex-direction: column; gap: 0; margin-inline: calc(var(--space-1) * -1); }
+
+  .workspaceConversations {
+    position: relative;
+    padding-inline-end: var(--control-h-sm);
+  }
+
+  .conversationAction {
+    position: absolute;
+    inset-inline-end: 0;
+    inset-block-start: 0;
+    min-block-size: var(--row-h);
+    display: flex;
+    align-items: center;
+    opacity: 0;
+  }
+
+  .workspaceConversations:hover .conversationAction,
+  .workspaceConversations:focus-within .conversationAction { opacity: 1; }
+  @media (hover: none) { .conversationAction { opacity: 1; } }
+
   .cards {
     display: flex;
     flex-direction: column;
     gap: 0;
-    margin-inline: 0;
+    margin-inline: calc(var(--space-1) * -1);
+    /* Flat tools own their scrollport; task groups keep their shared budget. */
+    max-block-size: calc(var(--row-h) * 8);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
   }
 
   /* Shared metadata measures keep both inventories on the same column lines. */
@@ -726,15 +757,36 @@
     grid-row: 1;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: var(--space-2);
+    column-gap: var(--space-2);
     align-items: center;
     min-inline-size: 0;
     min-block-size: var(--row-h);
   }
 
+  .toolStatuses {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
   .toolStatus {
     white-space: nowrap;
     text-transform: capitalize;
+  }
+
+  .cardMeta {
+    grid-column: 1 / -1;
+    display: flex;
+    min-inline-size: 0;
+    padding-block-end: var(--space-1);
+    text-transform: capitalize;
+  }
+
+  .cardContext {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-transform: none;
   }
 
   .cardNameRemovable {
@@ -747,36 +799,6 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-  }
-
-  /*
-   * ── A module's list scrolls before it evicts its neighbours ──────────────
-   *
-   * `.panel` already caps at the viewport and scrolls, but that scrolls the
-   * *card*: a track with thirty cards pushed TASKS and CONVERSATIONS below the
-   * fold, and the panel's whole point is that those modules are readable at
-   * once without leaving the document.
-   *
-   * CONVERSATIONS is not listed here because it already does this —
-   * `features/chat/list`'s `.list` carries the identical cap, and its note
-   * ("one busy area pushed the conversation module below the fold") is this
-   * same defect found from the other end. CARDS was the module that never got
-   * the treatment; TASKS is new and would have repeated the omission.
-   *
-   * Eight rows, the same count and the same arithmetic as that list rather than
-   * a second invented number: eight `--row-h-sm` rows plus the seven
-   * `--space-1` gaps between them, so the cap lands exactly on a row boundary
-   * and a ninth row is visibly cut rather than ambiguously clipped. A list
-   * shorter than that is untouched — `max-block-size`, not `block-size`, so
-   * nothing reserves space it is not using.
-   *
-   * `overscroll-behavior: contain` so reaching the end of a module's list does
-   * not then scroll the panel, and then the page, under the reader's pointer.
-   */
-  .cards,
-  .tasks {
-    /* The disclosed group owns the scrollport, including its inset. */
-    margin-inline: 0;
   }
 
   /*
@@ -1277,10 +1299,6 @@
     .desktopChatAction:focus-visible {
       background: var(--accent-soft);
       border-color: var(--accent);
-    }
-
-    .desktopPanelSurface [data-nc-module] {
-      padding-block: var(--space-2);
     }
 
     .taskSummary {

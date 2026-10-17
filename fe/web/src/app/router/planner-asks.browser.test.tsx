@@ -275,3 +275,15 @@ it('renders grant_admin choices and posts the grant click only to the ask answer
   expect(requests.some(request => request.method === 'PATCH')).toBe(false);
   expect(answer?.body).toEqual({ answers: [{ option: 0 }] });
 });
+
+
+it('marks a real pending question on its Planner conversation even without a per-card input verdict', async () => {
+  await page.viewport(1400, 900);
+  setup('light');
+  const row = page.getByRole('button', { name: 'Conversation Planner', exact: true });
+  await expect.element(row).toBeVisible();
+  const button = row.element();
+  expect(button.closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('attention');
+  const description = document.getElementById(button.getAttribute('aria-describedby') ?? '');
+  expect(description?.textContent).toContain('Needs input');
+});

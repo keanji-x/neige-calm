@@ -175,6 +175,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
       paint: (moduleKey) => {
         if (moduleKey === 'cards') return cardRow(row);
         if (moduleKey === 'tasks') return taskRow(row, deps);
+        if (moduleKey === 'work') throw new Error('The desktop work list has no mobile inventory page');
         const unknown: never = moduleKey;
         throw new Error(`the mobile painter has no ${String(unknown)} row`);
       },

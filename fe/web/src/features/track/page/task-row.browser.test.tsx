@@ -51,8 +51,8 @@ function renderTasks(
     </div>,
   );
   // These cases inspect row hit targets after the reader discloses their group.
-  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-task-inventory] details:not([open]) > summary')) summary.click();
-  return document.querySelector<HTMLElement>('[data-nc-task-inventory] li')!;
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-work-inventory] details:not([open]) > summary')) summary.click();
+  return document.querySelector<HTMLElement>('[data-nc-work-inventory] li')!;
 }
 
 function controlAt(x: number, y: number): Element | null {
@@ -70,14 +70,14 @@ function tooltipAt(x: number, y: number): string | null {
 }
 
 describe('a compact desktop TASKS row', () => {
-  it('shows only the name and leading worker icon', async () => {
+  it('shows the name, leading worker icon and trailing status on one line', async () => {
     await browserPage.viewport(1200, 800);
     const row = renderTasks([assigned]);
     const status = row.querySelector<HTMLElement>('[data-nc-task-status-text]')!;
-    const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
+    const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
     const rowBox = row.getBoundingClientRect();
     const statusBox = status.getBoundingClientRect();
-    const kindBox = kind.getBoundingClientRect();
+    const revealBox = reveal.getBoundingClientRect();
 
     expect(rowBox.width).toBeGreaterThan(100);
     expect(status.textContent).toBe('running');
@@ -86,8 +86,8 @@ describe('a compact desktop TASKS row', () => {
     expect(statusBox.width).toBeGreaterThan(0);
     expect(status.closest<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
     expect(row.querySelector('[role="img"][data-nc-status]')).toBeNull();
-    expect(kindBox.left - rowBox.left).toBeCloseTo(4, 0);
-    const icon = kind.querySelector('svg')!.getBoundingClientRect();
+    expect(revealBox.left).toBeCloseTo(rowBox.left, 0);
+    const icon = reveal.querySelector('svg')!.getBoundingClientRect();
     const name = row.querySelector<HTMLElement>('[data-nc-field="title"]')!.getBoundingClientRect();
     expect(icon.width).toBe(14);
     expect(name.left - icon.right).toBeCloseTo(8, 0);
@@ -115,35 +115,31 @@ describe('a compact desktop TASKS row', () => {
     expect(reveal.getAttribute('aria-description')).toBe(`pending — ${message}`);
   });
 
-  it('keeps name and row space as reveal, and only the worker kind as card open', async () => {
+  it('keeps the full row as reveal and the execution destination in its menu', async () => {
     await browserPage.viewport(1200, 800);
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
     const row = renderTasks([assigned], onOpenCard, onOpenTask);
     const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
-    const status = reveal;
-    const kind = row.querySelector<HTMLElement>('button[title^="Open the worker card"]')!;
-    const statusBox = status.getBoundingClientRect();
-    const kindBox = kind.getBoundingClientRect();
-
-    expect(controlAt(statusBox.left + statusBox.width / 2, statusBox.top + statusBox.height / 2)).toBe(reveal);
-    expect(controlAt(kindBox.left + kindBox.width / 2, kindBox.top + kindBox.height / 2)).toBe(kind);
-    await userEvent.click(status);
+    const box = reveal.getBoundingClientRect();
+    expect(controlAt(box.left + box.width / 2, box.top + box.height / 2)).toBe(reveal);
+    await userEvent.click(reveal);
     expect(onOpenTask).toHaveBeenCalledWith('b-bench');
     expect(onOpenCard).not.toHaveBeenCalled();
-    await userEvent.click(kind);
+    await userEvent.hover(row);
+    await browserPage.getByRole('button', { name: 'Actions for bench-harness', exact: true }).click();
+    await browserPage.getByRole('menuitem', { name: 'View execution', exact: true }).click();
     expect(onOpenCard).toHaveBeenCalledWith('c-4');
     expect(onOpenTask).toHaveBeenCalledTimes(1);
   });
 
-  it('gives a non-clickable kind label to the row reveal action', async () => {
+  it('keeps the provider icon within the reveal action when there is no execution', async () => {
     await browserPage.viewport(1200, 800);
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
     const row = renderTasks([{ ...assigned, kind: 'codex', workerCardId: null }], onOpenCard, onOpenTask);
     const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
-    const label = [...row.querySelectorAll<HTMLElement>('span')]
-      .find((span) => span.textContent === 'codex')!;
+    const label = reveal.querySelector<SVGElement>('svg')!;
     const box = label.getBoundingClientRect();
 
     expect(row.querySelector('button[title^="Open the worker card"]')).toBeNull();
@@ -153,10 +149,10 @@ describe('a compact desktop TASKS row', () => {
     expect(onOpenCard).not.toHaveBeenCalled();
   });
 
-  it('leaves no dead trailing lane after removing the icon', async () => {
+  it('leaves no dead trailing lane when no secondary destination exists', async () => {
     await browserPage.viewport(1200, 800);
     const onOpenTask = vi.fn();
-    const row = renderTasks([{ ...assigned, status: null, declaration: 'Not ready' }], vi.fn(), onOpenTask);
+    const row = renderTasks([{ ...assigned, status: null, declaration: 'Not ready', workerCardId: null }], vi.fn(), onOpenTask);
     const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
     const rowBox = row.getBoundingClientRect();
     const middle = rowBox.top + rowBox.height / 2;
@@ -167,25 +163,26 @@ describe('a compact desktop TASKS row', () => {
     expect(onOpenTask).toHaveBeenCalledWith('b-bench');
   });
 
-  it('highlights the row for keyboard focus and not for a pointer click', async () => {
+  it('draws a visible focus ring for keyboard navigation', async () => {
     await browserPage.viewport(1200, 800);
     const row = renderTasks([assigned]);
     const reveal = row.querySelector<HTMLElement>('button[data-nc-row-action="reveal-block"]')!;
-    const background = () => getComputedStyle(row).backgroundColor;
-    const resting = background();
+    const outline = () => getComputedStyle(reveal).outlineStyle;
 
     await userEvent.click(reveal);
     await userEvent.unhover(row);
     expect(row.matches(':focus-within')).toBe(true);
-    expect(background()).toBe(resting);
+    expect(reveal.matches(':focus-visible')).toBe(false);
 
     (document.activeElement as HTMLElement | null)?.blur();
     for (let index = 0; index < 40 && document.activeElement !== reveal; index += 1) await userEvent.tab();
     expect(document.activeElement).toBe(reveal);
-    expect(background()).not.toBe(resting);
+    expect(reveal.matches(':focus-visible')).toBe(true);
+    expect(outline()).toBe('solid');
+    expect(getComputedStyle(reveal).outlineWidth).toBe('2px');
   });
 
-  it('preserves runtime metadata and full descriptions without displaying state labels', async () => {
+  it('preserves full runtime descriptions alongside compact state labels', async () => {
     await browserPage.viewport(1200, 800);
     renderTasks([
       { ...assigned, blockId: 'b-running', key: 'running-task' },

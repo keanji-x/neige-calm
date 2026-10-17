@@ -67,7 +67,7 @@ it.each([1000, 768, 600])('shares one right sidebar card between calendar and in
   const surface = document.querySelector('[data-nc-desktop-panel]')!;
   expect(surface.contains(calendar.element())).toBe(true);
   const card = surface.firstElementChild!;
-  expect(calendar.element().parentElement?.parentElement?.parentElement).toBe(card);
+  expect(card.contains(calendar.element())).toBe(true);
   expect(card.contains(page.getByRole('heading', { name: 'Conversations', exact: true }).element())).toBe(true);
   const report = page.getByText('Prioritize the release.', { exact: false }).element();
   expect(calendar.element().getBoundingClientRect().left).toBeGreaterThan(report.getBoundingClientRect().right);
@@ -130,11 +130,16 @@ it.each(['light', 'dark'])('uses the sidebar text roles and surfaces in %s theme
     expect(date.lineHeight).toBe('20px');
     await expect.element(page.getByText('No tasks for this day.')).toBeVisible();
     const empty = getComputedStyle(page.getByText('No tasks for this day.').element());
-    const metadata = getComputedStyle(page.getByText('No tools yet.', { exact: true }).element());
-    expect(empty.fontFamily).toBe(metadata.fontFamily);
-    expect(empty.fontSize).toBe(metadata.fontSize);
-    expect(empty.lineHeight).toBe('16px');
-    expect(empty.color).toBe(metadata.color);
+    const reference = document.createElement('span');
+    reference.style.cssText = 'font:var(--type-metadata);color:var(--text-3)';
+    document.body.append(reference);
+    try {
+      const metadata = getComputedStyle(reference);
+      expect(empty.fontFamily).toBe(metadata.fontFamily);
+      expect(empty.fontSize).toBe(metadata.fontSize);
+      expect(empty.lineHeight).toBe('16px');
+      expect(empty.color).toBe(metadata.color);
+    } finally { reference.remove(); }
     const surface = document.querySelector('[data-nc-desktop-panel]')!.firstElementChild!;
     const cardBox = surface.getBoundingClientRect();
     const switchBox = page.getByRole('radio', { name: 'Month', exact: true }).element().getBoundingClientRect();
@@ -324,4 +329,15 @@ it.each([1024, 1440])('aligns reading and chat dividers with the first sidebar c
     return Math.abs(box.top - (window.innerHeight - box.bottom));
   }).toBeLessThanOrEqual(1);
   expect(page.getByRole('button', { name: '讨论这项工作', exact: true }).query()).toBeNull();
+});
+
+it('keeps conversations ahead of the Today calendar without changing the calendar owner', async () => {
+  await page.viewport(1440, 1000);
+  renderDailyFixture();
+  await expect.element(page.getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
+  const root = document.querySelector<HTMLElement>('[data-nc-desktop-panel]')!;
+  const conversations = root.querySelector<HTMLElement>('section[aria-label="Conversations"]')!;
+  const calendar = page.getByRole('heading', { name: 'Calendar', exact: true }).element();
+  expect(conversations.getBoundingClientRect().top).toBeLessThan(calendar.getBoundingClientRect().top);
+  expect(calendar.getBoundingClientRect().left).toBe(conversations.querySelector('h2')!.getBoundingClientRect().left);
 });

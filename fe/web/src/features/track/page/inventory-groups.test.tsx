@@ -9,22 +9,20 @@ function task(blockId: string, status: string): ReportTaskRow {
   return { blockId, key: blockId, status, statusDetail: null, kind: null, workerCardId: null,
     state: 'ready', declaration: null, pendingReason: null };
 }
-it('shows working tasks and discloses completed tasks with their original actions', () => {
+it('keeps execution folded and discloses current and completed tasks with their original actions', () => {
   const onOpenTask = vi.fn();
   const view = render(<TrackPage track={track()} tasks={[task('finished-a', 'done'), task('active-a', 'running'), task('finished-b', 'done')]}
     cards={[]} openableCards={new Set()} mobilePanelObscured={false} canReopenTrack={false} canCloseTrack={false} adminGrantedAt={null} onRenameTrack={vi.fn()} onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} onOpenTask={onOpenTask} />);
-  const working = view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="working"]')!;
-  const completed = view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="done"]')!;
-  expect(working.open).toBe(true);
+  const completed = view.container.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
   expect(completed.open).toBe(false);
-  expect(completed.querySelector('summary')?.getAttribute('aria-label')).toBe('Completed, 2 tasks');
+  expect(completed.querySelector('summary')?.textContent).toBe('Progress');
   fireEvent.click(completed.querySelector('summary')!);
   expect(completed.open).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'finished-a' }));
   expect(onOpenTask).toHaveBeenCalledWith('finished-a');
 });
 
-it('exposes problem groups and keeps explanations in the task description', () => {
+it('keeps failed executions folded while retaining explanations in the task description', () => {
   const onOpenTask = vi.fn();
   const view = render(<TrackPage track={track()} tasks={[
     { ...task('verify-layout', 'failed'), statusDetail: 'Gate exited with code 1' },
@@ -32,8 +30,10 @@ it('exposes problem groups and keeps explanations in the task description', () =
   ]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} adminGrantedAt={null} onRenameTrack={vi.fn()}
     onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} onOpenTask={onOpenTask} />);
-  expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="failed"]')?.open).toBe(true);
-  expect(view.container.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="attention"]')?.open).toBe(true);
+  const progress = view.container.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
+  expect(progress.open).toBe(false);
+  fireEvent.click(progress.querySelector('summary')!);
+  expect(screen.getByRole('button', { name: 'verify-layout' }).getAttribute('aria-description')).toBe('failed — Gate exited with code 1');
   expect(screen.queryByText('Gate exited with code 1', { exact: true })).toBeNull();
   expect(screen.getByRole('button', { name: 'verify-layout' }).getAttribute('aria-description')).toContain('Gate exited with code 1');
   fireEvent.click(screen.getByRole('button', { name: 'verify-layout' }));
@@ -50,12 +50,12 @@ it('keeps a failure without additional detail in one compact status line', () =>
 
 it('shows a label-only failed execution without inventing an explanation', () => {
   const view = render(<TrackPage track={track()} tasks={[{ ...task('verify', 'failed'), execution: {
-    attemptId: 'attempt-1', generation: 1, status: 'failed', label: 'Failed',
+    attemptId: 'attempt-1', generation: 1, createdAtMs: 1000, finishedAtMs: null, status: 'failed', label: 'Failed',
     statusDetail: null, workerCardId: null, blockingReason: null,
   } }]} cards={[]} openableCards={new Set()} mobilePanelObscured={false}
     canReopenTrack={false} canCloseTrack={false} adminGrantedAt={null} onRenameTrack={vi.fn()}
     onReopenTrack={vi.fn()} onCloseTrack={vi.fn()} onDeleteTrack={vi.fn()} onTrackDeleted={vi.fn()} />);
-  const row = view.container.querySelector('[data-nc-row="verify"]')!;
-  expect(row.querySelectorAll('[aria-hidden="true"]')).toHaveLength(1);
+  const row = view.container.querySelector('[data-nc-row="task:verify"]')!;
+  expect(row.querySelector('[data-nc-task-status-text]')?.getAttribute('aria-hidden')).toBe('true');
   expect(screen.getAllByText('failed')).toHaveLength(1);
 });

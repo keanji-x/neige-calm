@@ -359,7 +359,7 @@ function CodeTab({ state, selectedPath, theme, rawUrl, onRetry, onImageError }: 
   return <LoadedFile path={state.path} text={state.text} truncated={state.truncated} theme={theme} />;
 }
 
-/** One file and the find bar over it; the bar is React's and the matching CodeMirror's, meeting at `PaneSearchAdapter`. `/` opens it from inside the editor, where focus is. */
+/** One file and its own find row; the bar is React's and the matching CodeMirror's, meeting at `PaneSearchAdapter`. `/` opens it from inside the editor, where focus is. */
 function LoadedFile({ path, text, truncated, theme }: {
   path: string; text: string; truncated: boolean; theme: PaneTheme;
 }) {
@@ -395,16 +395,6 @@ function LoadedFile({ path, text, truncated, theme }: {
   return (
     <div className="fv-code-wrap">
       {truncated && <p className="fv-banner">Showing the first 2 MiB of this file.</p>}
-      <Suspense fallback={<p className="fv-state">Loading editor…</p>}>
-        <LazyCodePane
-          path={path}
-          text={text}
-          theme={theme}
-          onSearchAdapterReady={onAdapter}
-          onSearchCount={onCount}
-          onSlashOpen={() => setBarOpen(true)}
-        />
-      </Suspense>
       {barOpen && (
         <SearchBar
           query={query}
@@ -420,6 +410,16 @@ function LoadedFile({ path, text, truncated, theme }: {
           onClose={closeBar}
         />
       )}
+      <Suspense fallback={<p className="fv-state">Loading editor…</p>}>
+        <LazyCodePane
+          path={path}
+          text={text}
+          theme={theme}
+          onSearchAdapterReady={onAdapter}
+          onSearchCount={onCount}
+          onSlashOpen={() => setBarOpen(true)}
+        />
+      </Suspense>
     </div>
   );
 }

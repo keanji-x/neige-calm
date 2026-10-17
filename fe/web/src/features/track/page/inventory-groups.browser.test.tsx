@@ -7,7 +7,7 @@ import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/trac
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { PanelCard } from '../../../ui/panel-card/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
-import { card, openableCardsOf } from './test-fixtures.tsx';
+import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['kind']>): ReportTaskRow => ({
@@ -18,7 +18,7 @@ const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['
 const derive = (input: { cards: readonly CardWire[]; tasks: readonly ReportTaskRow[] }) =>
   deriveTrackPageView({ ...input, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(input.cards, input.tasks) });
 
-it('keeps tool types stable and displays each real status after disclosure', async () => {
+it('lists tool names and their real statuses without type subgroups', async () => {
   await page.viewport(1200, 900);
   const onOpenCard = vi.fn();
   const view = derive({ cards: [
@@ -27,10 +27,7 @@ it('keeps tool types stable and displays each real status after disclosure', asy
     card({ id: 'exited-agent', kind: 'codex', title: 'Review', runtime: { worker_session_id: 'three', kind: 'codex', status: 'exited' } }),
   ], tasks: [] });
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
-  const groups = document.querySelectorAll<HTMLDetailsElement>('[data-nc-module="cards"] details');
-  expect([...groups].map(group => group.getAttribute('data-nc-inventory-group'))).toEqual(['terminals', 'agents']);
-  expect([...groups].every(group => !group.open)).toBe(true);
-  for (const group of groups) await userEvent.click(group.querySelector('summary')!);
+  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(0);
   const statuses = [...document.querySelectorAll<HTMLElement>('[data-nc-module="cards"] [data-nc-status]')];
   expect(statuses.map(status => status.textContent)).toEqual(['running', 'exited', 'exited']);
   for (const status of statuses) expect(status.getBoundingClientRect().width).toBeGreaterThan(1);
@@ -38,16 +35,13 @@ it('keeps tool types stable and displays each real status after disclosure', asy
   expect(onOpenCard).toHaveBeenCalledWith('exited-terminal');
 });
 
-it('expands a tool type containing explicit attention and makes its count visible', async () => {
+it('keeps failed tool status visible without a disclosure', async () => {
   await page.viewport(1200, 900);
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), derive({
     cards: [card({ id: 'failed-terminal', title: 'Build', runtime: { worker_session_id: 'one', kind: 'terminal', status: 'failed' } })], tasks: [],
   }))}</PanelCard></div>);
-  const group = document.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="terminals"]')!;
-  expect(group.open).toBe(true);
-  expect(group.querySelector('summary')?.textContent).toContain('1 · 1 alert');
-  expect(group.querySelector('summary')?.getAttribute('aria-label')).toBe('Terminals, 1 card, 1 needs attention');
-  expect(group.querySelector<HTMLElement>('[data-nc-status]')?.textContent).toBe('failed');
+  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(0);
+  expect(document.querySelector<HTMLElement>('[data-nc-row="failed-terminal"] [data-nc-status]')?.textContent).toBe('failed');
 });
 
 it('keeps task metadata hidden while tool status remains visible', async () => {
@@ -189,11 +183,13 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
   const taskRow = document.querySelector<HTMLElement>('[data-nc-row="work"]')!;
   const cardKind = cardRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
   const taskKind = taskRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
-  const cardIcon = cardKind.querySelector('svg')!.getBoundingClientRect();
+  const cardIcon = cardRow.querySelector('svg')!.getBoundingClientRect();
+  expect(cardKind.textContent).toBe('codex');
+  expect(cardKind.getBoundingClientRect().width).toBeGreaterThan(1);
   const taskIcon = taskKind.querySelector('svg')!.getBoundingClientRect();
   expect(cardIcon.left).toBeCloseTo(taskIcon.left, 0);
-  for (const [row, kind] of [[cardRow, cardKind], [taskRow, taskKind]]) {
-    const icon = kind.querySelector('svg')!.getBoundingClientRect();
+  for (const row of [cardRow, taskRow]) {
+    const icon = row.querySelector('svg')!.getBoundingClientRect();
     const name = row.querySelector<HTMLElement>('[data-nc-field="title"]')!.getBoundingClientRect();
     expect(icon.width).toBe(14);
     expect(name.left - icon.right).toBeCloseTo(8, 0);
@@ -255,4 +251,89 @@ it('keeps a visible task anchored when rows above it are inserted and removed', 
   await frame();
   expect(anchor.isConnected).toBe(true);
   expect(anchor.getBoundingClientRect().top).toBeCloseTo(before, 0);
+});
+
+
+it('lists tools directly while keeping kernel attention visible', async () => {
+  await page.viewport(1200, 900);
+  const worker = card({ id: 'attention-worker', title: 'Needs a reply', kind: 'codex' });
+  const view = deriveTrackPageView({ cards: [worker], tasks: [],
+    activity: { cards: { 'attention-worker': 'input' } }, openableCards: new Set([worker.id]) });
+  const onOpenCard = vi.fn();
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
+  const inventory = document.querySelector<HTMLElement>('[data-nc-module="cards"]')!;
+  expect(inventory.querySelectorAll('details')).toHaveLength(0);
+  expect(inventory.textContent).toContain('Needs input');
+  await page.getByRole('button', { name: 'Needs a reply' }).click();
+  expect(onOpenCard).toHaveBeenCalledWith(worker.id);
+});
+
+
+it('reveals module actions on hover and keyboard focus', async () => {
+  await page.viewport(1200, 900);
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({
+    cardsAction: <button type="button" aria-label="Add a tool">+</button>,
+  }), derive({ cards: [card()], tasks: [] }))}</PanelCard></div>);
+  const action = document.querySelector<HTMLElement>('[aria-label="Add a tool"]')!;
+  await page.elementLocator(document.body).hover();
+  expect(getComputedStyle(action).opacity).toBe('0');
+  action.focus();
+  expect(getComputedStyle(action).opacity).toBe('1');
+  action.blur();
+  await page.elementLocator(action.closest('section')!).hover();
+  expect(getComputedStyle(action).opacity).toBe('1');
+});
+
+
+it('bounds the flat tool list and keeps the last tool reachable', async () => {
+  await page.viewport(1200, 800);
+  const onOpenCard = vi.fn();
+  const cards = Array.from({ length: 40 }, (_, index) => card({ id: `tool-${index}`, title: `Tool ${index + 1}` }));
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }),
+    derive({ cards, tasks: [] }))}<div data-testid="after-tools">Conversations</div></PanelCard></div>);
+  const list = document.querySelector<HTMLElement>('[data-nc-module="cards"] ul')!;
+  expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
+  expect(list.clientHeight).toBeLessThan(300);
+  expect(document.querySelector('[data-testid="after-tools"]')!.getBoundingClientRect().top).toBeLessThan(440);
+  list.scrollTop = list.scrollHeight;
+  await page.getByRole('button', { name: 'Tool 40' }).click();
+  expect(onOpenCard).toHaveBeenCalledWith('tool-39');
+});
+
+it('groups work and conversation entries in the real page without duplicating status labels', async () => {
+  await page.viewport(1400, 900);
+  const openConversation = vi.fn();
+  const newConversation = vi.fn();
+  renderPage({
+    cards: [card({ title: 'Development server' })], tasks: [task('Review layout', 'running', 'codex')],
+    conversationList: <button type="button" onClick={openConversation}>Planner conversation</button>,
+    cardsAction: <button type="button" onClick={newConversation}>New</button>,
+  });
+  const desktop = document.querySelector<HTMLElement>('[data-nc-desktop-panel]')!;
+  expect([...desktop.querySelectorAll('h2')].map(title => title.textContent)).toEqual(['Conversations', 'Workspace']);
+  const entries = desktop;
+  const conversation = [...entries.querySelectorAll('button')].find(button => button.textContent === 'Planner conversation')!;
+  await userEvent.click(conversation);
+  expect(openConversation).toHaveBeenCalledOnce();
+  const create = [...entries.querySelectorAll('button')].find(button => button.textContent === 'New')!;
+  create.focus();
+  expect(getComputedStyle(create.parentElement!).opacity).toBe('1');
+  await userEvent.keyboard('{Enter}');
+  expect(newConversation).toHaveBeenCalledOnce();
+});
+
+it.each(['input', 'failed'] as const)('keeps kernel %s visible alongside a running tool session', async (activity) => {
+  await page.viewport(1200, 900);
+  const worker = card({ id: 'busy-worker', title: 'Preview', runtime: {
+    worker_session_id: 'busy-session', kind: 'terminal', status: 'running',
+  } });
+  const view = deriveTrackPageView({ cards: [worker], tasks: [],
+    activity: { cards: { [worker.id]: activity } }, openableCards: new Set([worker.id]) });
+  render(<PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard>);
+  const name = document.querySelector('[data-nc-row="busy-worker"] > button > span:first-child')!;
+  const expected = activity === 'input' ? 'Needs input' : 'Needs attention';
+  const label = [...name.querySelectorAll('span')].find(element => element.textContent === expected);
+  expect(label, 'attention must be in the visible name area, outside clipped metadata').toBeDefined();
+  expect(label!.getBoundingClientRect().width).toBeGreaterThan(1);
+  expect(name.querySelector('[data-nc-status]')?.textContent).toBe('running');
 });

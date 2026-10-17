@@ -384,12 +384,14 @@ describe('TrackPage task inventory', () => {
         runtime: { worker_session_id: 'ws-stale', kind: 'codex', status: 'running' } }),
       card({ id: 'asking', title: 'Asking worker', kind: 'claude',
         runtime: { worker_session_id: 'ws-asking', kind: 'claude', status: 'running' } }),
+      card({ id: 'independent', title: 'Independent stale resource', kind: 'terminal',
+        runtime: { worker_session_id: 'ws-independent', kind: 'terminal', status: 'running' } }),
     ];
     const tasks = [
       running('impl', 'running', 'busy'),
       running('gate', 'running', null),
       { ...running('doc', 'dispatched', 'stale'), execution: {
-        attemptId: 'a1', generation: 1, status: 'running', label: 'Running', statusDetail: null,
+        attemptId: 'a1', generation: 1, createdAtMs: 1000, finishedAtMs: null, status: 'running', label: 'Running', statusDetail: null,
         workerCardId: 'stale', blockingReason: null,
       } },
     ];
@@ -406,15 +408,16 @@ describe('TrackPage task inventory', () => {
       row.getAttribute('data-nc-row') ?? '', row.querySelector('[data-nc-status]')?.getAttribute('data-nc-status') ?? null,
     ]));
     expect(indicators).toEqual({
-      busy: 'working', asking: 'attention',
-      /* `runtime.status: 'running'` with no verdict: the word, no spinner. */
-      stale: null,
+      'tool:asking': 'attention',
+      /* An independent running resource cannot inherit a verdict from its session. */
+      'tool:independent': null,
       /* Tasks: by worker card — none for a task without one, none for a
          running execution whose card the kernel did not list. */
-      'b-impl': 'working', 'b-doc': null, 'b-gate': null,
+      'task:b-impl': 'working', 'task:b-doc': null, 'task:b-gate': null,
     });
     expect(statuses).toEqual({
-      busy: 'running', asking: 'running', stale: 'running', 'b-impl': 'running', 'b-doc': 'running', 'b-gate': 'running',
+      'tool:asking': 'running', 'tool:independent': 'running',
+      'task:b-impl': 'running', 'task:b-doc': 'running', 'task:b-gate': 'running',
     });
   });
 
@@ -437,13 +440,11 @@ describe('TrackPage task inventory', () => {
       if (found === undefined) throw new Error(`no row ${id}`);
       return found as HTMLElement;
     };
-    expect(within(row('busy')).getByText('Working')).toBeTruthy();
-    expect(within(row('broken')).getByText('Needs attention')).toBeTruthy();
-    expect(within(row('b-impl')).getByText('Working')).toBeTruthy();
-    expect(within(row('b-doc')).getByText('Needs attention')).toBeTruthy();
-    expect(row('busy').querySelectorAll('[data-nc-activity]')).toHaveLength(1);
-    expect(within(row('busy')).getByText('Working').getAttribute('data-nc-activity')).toBeNull();
-    for (const id of ['quiet', 'b-plain']) {
+    expect(within(row('task:b-impl')).getByText('Working')).toBeTruthy();
+    expect(within(row('task:b-doc').querySelector<HTMLElement>('[data-nc-inventory-metadata]')!).getByText('Execution failed')).toBeTruthy();
+    expect(row('task:b-impl').querySelectorAll('[data-nc-activity]')).toHaveLength(1);
+    expect(within(row('task:b-impl')).getByText('Working').getAttribute('data-nc-activity')).toBeNull();
+    for (const id of ['tool:quiet', 'task:b-plain']) {
       expect(within(row(id)).queryByText(/^(Working|Needs input|Needs attention|Unread updates)$/)).toBeNull();
     }
   });
@@ -451,12 +452,12 @@ describe('TrackPage task inventory', () => {
   it('has no Folder module: nobody chooses a track cwd any more', () => {
     renderPage({ tasks: [] });
     expect(screen.queryByText('Folder')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Workspace' })).toBeTruthy();
   });
 
   it('says no tasks are declared yet when the report has none', () => {
     renderPage({ tasks: [] });
-    expect(screen.getByText('No tasks declared yet.')).toBeTruthy();
+    expect(screen.getByText('Nothing to show yet.')).toBeTruthy();
   });
 
   it('names only the states that are not the ordinary one', () => {
@@ -508,18 +509,19 @@ describe('TrackPage task inventory', () => {
     const { container } = renderPage({
       tasks: [running('alpha', 'running', 'card-9', 'terminal'), queued],
     });
-    const inventory = container.querySelector('[data-nc-module="tasks"]');
+    const inventory = container.querySelector('[data-nc-module="work"]');
     expect(inventory).not.toBeNull();
     expect([...inventory!.querySelectorAll('[data-nc-task-status-text]')].map((node) => node.textContent))
       .toEqual(['running', 'pending']);
     expect(inventory!.querySelector('[data-nc-task-status-text=""][title="pending — Track busy"]')).not.toBeNull();
-    expect(container.querySelector('[data-nc-module="tasks"] h2')?.parentElement?.textContent).toContain('2');
+    expect(inventory!.querySelectorAll('[data-nc-row]')).toHaveLength(2);
     expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });
 
   it('includes canceled tasks in the compact status totals', () => {
     renderPage({ tasks: [running('stopped', 'canceled', null)] });
-    expect(screen.getByText('Canceled').closest('summary')?.getAttribute('aria-label')).toBe('Canceled, 1 task');
+    expect(screen.getByText('Progress').closest('details')?.open).toBe(false);
+    expect(document.querySelector('[data-nc-row="task:b-stopped"] [data-nc-status]')?.textContent).toBe('canceled');
   });
 
   /* The compact carrier prints the bare word and keeps the full kernel reason
@@ -531,7 +533,7 @@ describe('TrackPage task inventory', () => {
         running('delta', 'failed', 'card-4', 'codex', 'track 9a4c is not a git repository'),
       ],
     });
-    const status = container.querySelector('[data-nc-row="b-delta"] [data-nc-task-status-text]');
+    const status = container.querySelector('[data-nc-row="task:b-delta"] [data-nc-task-status-text]');
     expect(status?.textContent).toBe('failed');
     expect(status?.getAttribute('title')).toBe('failed — track 9a4c is not a git repository');
     expect(status?.getAttribute('data-nc-status')).toBe('failed');
@@ -561,11 +563,12 @@ describe('TrackPage task inventory', () => {
     expect(screen.queryAllByRole('img', { name: /^Status: / })).toEqual([]);
   });
 
-  it('opens the worker card from the kind, and only from the kind', async () => {
+  it('opens the executor from the item menu without revealing the task', async () => {
     const onOpenCard = vi.fn();
     const onOpenTask = vi.fn();
     renderPage({ tasks: [running('alpha', 'running', 'card-9', 'terminal')], onOpenCard, onOpenTask });
-    await userEvent.click(screen.getByRole('button', { name: 'terminal' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for alpha' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'View execution' }));
     expect(onOpenCard).toHaveBeenCalledWith('card-9');
     expect(onOpenTask).not.toHaveBeenCalled();
   });
@@ -599,10 +602,10 @@ describe('TrackPage task inventory', () => {
 
   it('strikes through a withdrawn declaration but not an ordinary one', () => {
     renderPage({ tasks: [task('gone', 'withdrawn')] });
-    expect(screen.getByText('Withdrawn').className).toContain('taskWithdrawn');
+    expect(screen.getByText('gone').className).toContain('taskWithdrawn');
     cleanup();
     renderPage({ tasks: [task('beta', 'not-ready')] });
-    expect(screen.getByText('Not ready').className).not.toContain('taskWithdrawn');
+    expect(screen.getByText('beta').className).not.toContain('taskWithdrawn');
   });
 });
 
@@ -711,7 +714,6 @@ describe('TrackPage card inventory', () => {
     const onQuickChat = vi.fn();
     renderPage({
       conversationList: <button type="button">Previous conversation</button>,
-      conversationAction: <button type="button" aria-label="New conversation" onClick={onQuickChat}>Chat</button>,
       onStartConversation: onQuickChat,
     });
     const reportChat = document.querySelector<HTMLButtonElement>('[data-nc-mobile-report-chat]');
@@ -765,14 +767,14 @@ describe('TrackPage card inventory', () => {
 
   it('says the track has no cards yet when the list is empty', () => {
     renderPage({ cards: [] });
-    expect(screen.getByText('No tools yet.')).toBeTruthy();
+    expect(screen.getByText('Nothing to show yet.')).toBeTruthy();
   });
 
   it('labels a card by its title and keeps the kind beside it', () => {
     renderPage({ cards: [card({ id: 'k1', kind: 'terminal', title: 'Build log' })] });
     expect(screen.getByText('Build log')).toBeTruthy();
     expect(screen.getByText('terminal')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Build log.?terminal$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Build log$/ })).toBeTruthy();
   });
 
   it('invokes onOpenCard with the wire id', async () => {
@@ -834,7 +836,8 @@ describe('TrackPage card inventory', () => {
       onDeleteCard,
       onOpenCard,
     });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete card Notes' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for Notes' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete card Notes' }));
     expect(onDeleteCard).toHaveBeenCalledWith('k2');
     expect(onDeleteCard).toHaveBeenCalledTimes(1);
     // The row button itself must not have fired: the delete is a sibling of it, so one gesture cannot do two things.
@@ -850,12 +853,12 @@ describe('TrackPage card inventory', () => {
       onDeleteCard: vi.fn(),
     });
     expect(screen.queryByRole('button', { name: 'Delete card Track report' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Delete card Build log' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Actions for Build log' })).toBeTruthy();
   });
 
   it('names the delete after the kind when the card has no title', () => {
     renderPage({ cards: [card({ id: 'k1', kind: 'notes', title: null })], onDeleteCard: vi.fn() });
-    expect(screen.getByRole('button', { name: 'Delete card notes' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Actions for notes' })).toBeTruthy();
   });
 
   it('does not apologise for unbuilt slices in the card panel', () => {

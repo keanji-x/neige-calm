@@ -98,7 +98,10 @@ describe('a lost answer shows the write’s fixed state, never transport text', 
       await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     }, 'The delete is unconfirmed.'],
     ['card delete', '/track/w1', async () => {
-      await userEvent.click(await screen.findByRole('button', { name: 'Delete card Build log' }));
+      const progress = await screen.findByText('Progress', { exact: true });
+      if (!progress.closest('details')!.open) await userEvent.click(progress);
+      await userEvent.click(await screen.findByRole('button', { name: 'Actions for Build log' }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete card Build log' }));
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
     }, 'The delete is unconfirmed.'],
     ['area edit', '/', async () => {
@@ -167,13 +170,16 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       return Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'card not found', code: 'not_found' } });
     });
     const deleteCard = async () => {
-      await userEvent.click(await screen.findByRole('button', { name: 'Delete card Build log' }));
+      const progress = await screen.findByText('Progress', { exact: true });
+      if (!progress.closest('details')!.open) await userEvent.click(progress);
+      await userEvent.click(await screen.findByRole('button', { name: 'Actions for Build log' }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete card Build log' }));
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
     };
     await deleteCard();
     expect(await screen.findByText('The delete is unconfirmed.')).toBeTruthy();
     await deleteCard();
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Actions for Build log' })).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);
     expect(writes.map((request) => `${request.method} ${request.path}`)).toEqual(['DELETE /api/cards/k1', 'DELETE /api/cards/k1']);
   });

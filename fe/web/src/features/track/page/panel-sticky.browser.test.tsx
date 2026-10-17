@@ -1,5 +1,8 @@
 /* The panel card stays while the document scrolls under it. Sticky may only travel inside its containing block, and jsdom computes no layout, so the fixture is the page's own production nesting. */
-import { InventoryGroups } from './inventory-groups.tsx';
+import { NEUTRAL_ACTIVITY } from '../../../../../core/domain/track.ts';
+import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
+import { PanelCard } from '../../../ui/panel-card/public.tsx';
+import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { cleanup, render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -70,12 +73,14 @@ describe('the panel card, against a scrolling report', () => {
             <div className={styles.content}>
               <div className={styles.doc} />
               <aside className={styles.panel} data-nc-panel="">
-                <InventoryGroups noun="card" groups={[{
-                  key: 'working', label: 'In progress', attentionCount: 0, expanded: true,
-                  rows: Array.from({ length: 30 }, (_, index) => index),
-                }]} renderRows={rows => <ul className={styles.cards}>
-                  {rows.map(index => <li key={index}><button type="button" className={styles.cardRow}>card {index}</button></li>)}
-                </ul>} />
+                <PanelCard>{paintDesktopPanel(makeDesktopPainter({}), deriveTrackPageView({
+                  cards: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set(),
+                  tasks: Array.from({ length: 30 }, (_, index) => ({
+                    blockId: `task-${index}`, key: `Task ${index}`, state: 'ready',
+                    declaration: null, status: 'running', statusDetail: null,
+                    kind: 'codex', workerCardId: null, pendingReason: null,
+                  })),
+                }))}</PanelCard>
               </aside>
             </div>
           </div>

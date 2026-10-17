@@ -4,7 +4,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Conversation } from '../../../../../core/domain/conversation.ts';
+import { PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../../core/domain/conversation.ts';
 import { ChatList, type ChatListProps } from './public.tsx';
 
 afterEach(cleanup);
@@ -85,4 +85,20 @@ describe('conversation rows read activity.cards, not session state', () => {
     const elsewhere = draw({ cards: {}, activeId: 'c2', local: { id: 'c2', working: true, stalled: false } });
     expect(elsewhere.indicator).toBeUndefined();
   });
+});
+
+
+it('distinguishes Planner and Assistant by their declared role even when their names are swapped', () => {
+  const onOpen = vi.fn();
+  const planner = conversation({ id: 'planner', title: 'Assistant', kind: PLANNER_CONVERSATION_KIND });
+  const assistant = conversation({ id: 'assistant', title: 'Planner', kind: 'track-assistant' });
+  render(<ChatList context cards={{}} showTrack={false} conversations={[planner, assistant]} onOpen={onOpen} />);
+  const plannerRow = screen.getByRole('button', { name: 'Conversation Assistant' });
+  const assistantRow = screen.getByRole('button', { name: 'Conversation Planner' });
+  const description = (row: HTMLElement) => document.getElementById(row.getAttribute('aria-describedby') ?? '')?.textContent;
+  expect(description(plannerRow)).toBe('Planner');
+  expect(description(assistantRow)).toBe('Assistant');
+  expect(plannerRow.querySelector('svg')?.innerHTML).not.toBe(assistantRow.querySelector('svg')?.innerHTML);
+  plannerRow.click(); assistantRow.click();
+  expect(onOpen.mock.calls).toEqual([[planner], [assistant]]);
 });

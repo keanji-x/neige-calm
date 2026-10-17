@@ -322,22 +322,19 @@
     color: var(--text-2);
   }
 
-  /* Over the editor's trailing corner, where it covers the least text. Raised
-     by shadow alone and drawn on the card's own surface — the same "colour and
-     radius, no outline" rule `ui/panel-card` states for every raised box in
-     this product. */
+  /* A separate row before the editor: controls take their real height and can
+     never cover the current match. The input takes the remaining inline space;
+     count and action controls retain their intrinsic widths on narrow cards. */
   .fv-search-bar {
-    position: absolute;
-    inset-block-start: var(--space-1);
-    inset-inline-end: var(--space-2);
-    z-index: var(--z-overlay);
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
     align-items: center;
     gap: var(--space-1);
+    flex: none;
     padding: var(--space-1);
-    border-radius: var(--radius-md);
     background: var(--surface-card);
-    box-shadow: var(--shadow-float);
   }
 
   .fv-search-count {
@@ -374,7 +371,7 @@
   }
 
   /* CodeMirror's search panel is replaced by an empty node (see `emptyPanel` in
-     `systems/fs-viewers/code-pane.tsx`) — the bar over the editor is React's.
+     `systems/fs-viewers/code-pane.tsx`) — the row before the editor is React's.
      The node still has to be taken out of the layout, and the panel *strip*
      CodeMirror wraps it in has to go with it, or the editor keeps a blank rail
      where a search box used to be. */

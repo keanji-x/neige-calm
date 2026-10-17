@@ -382,23 +382,26 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByRole('button', { name: 'Conversation Planner chat' })).toBeNull();
   });
 
-  it('follows a card swapped out and back, counting whichever row is open', async () => {
+  it('follows a card swapped out and back, showing the transcript of whichever row is open', async () => {
     const { client } = setup((request) => request.path.includes('/harness/items')
       ? ok(harnessRows(3)) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
-    /* Waiting for the count is also how we know the transcript has arrived before the card is swapped. */
-    await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
+    /* Wait for all transcript messages before swapping the selected conversation. */
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    await waitFor(() => expect(within(drawerElement()).getAllByText(/^reply \d$/)).toHaveLength(3));
 
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
       track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD_SAME_TRACK], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
-    await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
+    const otherDrawer = await screen.findByRole('complementary', { name: 'Other chat' });
+    await waitFor(() => expect(within(otherDrawer).getAllByText(/^reply \d$/)).toHaveLength(3));
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
       track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
-    await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
+    await screen.findByRole('complementary', { name: 'Planner chat' });
+    await waitFor(() => expect(within(drawerElement()).getAllByText(/^reply \d$/)).toHaveLength(3));
   });
 
   it('renders a server-sent reply from the history fixture', async () => {
@@ -1127,7 +1130,7 @@ describe('planner conversation regressions', () => {
                    would read as "waiting for you". */
         const row = screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
         expect(row.closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('failed');
-        expect(document.getElementById(row.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
+        expect(document.getElementById(row.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Planner · Needs attention');
         /* The overlay says `working`, the local wedge says stuck, and stuck wins in both places. */
         expect(row.getAttribute('aria-label')).not.toContain(', working');
         expect(drawerElement().querySelector('[data-nc-activity="working"]')).toBeNull();

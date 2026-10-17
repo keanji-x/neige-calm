@@ -18,18 +18,6 @@
     padding-block-end: var(--nc-inventory-footer-inset);
   }
 
-  /* The heading stays put on expansion; only the content below it gains room. */
-  .group[open]::before {
-    content: '';
-    position: absolute;
-    inset-block: var(--space-half);
-    inset-inline: 0;
-    z-index: -1;
-    border-radius: inherit;
-    background: var(--bg);
-    pointer-events: none;
-  }
-
   .content {
     /* Expanded groups share one module's room, keeping the next module reachable. */
     max-block-size: max(var(--row-h), min(10rem, calc(
@@ -62,20 +50,14 @@
     cursor: pointer;
     list-style: none;
   }
+  .count { opacity: 0; }
+  .summary:hover .count,
+  .summary:focus-visible .count { opacity: 1; }
+  @media (hover: none) { .count { opacity: 1; } }
   .summary::-webkit-details-marker { display: none; }
   .summary:hover { background: var(--overlay-hover); color: var(--text-2); }
   .summary:focus-visible { outline-offset: -2px; }
   .group[open] > .summary { color: var(--text-2); }
-  /* Place the divider in the existing gap so expansion keeps its row rhythm. */
-  .group[open] > .summary::after {
-    content: '';
-    position: absolute;
-    inset-inline: var(--space-1);
-    inset-block-end: calc(var(--space-half) * -1);
-    block-size: 1px;
-    background: var(--hairline);
-    pointer-events: none;
-  }
   .label {
     display: flex;
     align-items: center;

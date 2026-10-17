@@ -112,7 +112,10 @@ const withEmpty: readonly RowModuleView[] = Object.freeze([cards, emptyTasks]);
 const withEmptyCards: readonly RowModuleView[] = Object.freeze([emptyCards, tasks]);
 
 /** The canonical fixture lists whose aggregate shape is guarded; `cohostView` and `tapView` are deliberately not registered here. */
-const FIXTURES: readonly (readonly RowModuleView[])[] = Object.freeze([view, withEmpty, withEmptyCards]);
+const work: RowModuleView = Object.freeze({ key: 'work', title: 'Workspace', empty: 'Nothing to show yet.', rows: Object.freeze([...cards.rows, ...tasks.rows]) });
+const FIXTURES: readonly (readonly RowModuleView[])[] = Object.freeze([view, withEmpty, withEmptyCards,
+  Object.freeze([work]), Object.freeze([{ ...work, rows: Object.freeze([]) }]),
+]);
 
 const ALL_MODULES: readonly RowModuleView[] = FIXTURES.flatMap((fixture) => [...fixture]);
 const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module.rows]);
@@ -122,7 +125,7 @@ const ACTION_KINDS: readonly RowAction['kind'][] =
 
 /** The module-key domain in full, typed as an exhaustive `Record`: deriving it from the fixtures would only ever check the keys that already appear. */
 const MODULE_KEY_TABLE: Readonly<Record<RowModuleView['key'], true>> =
-  Object.freeze({ cards: true, tasks: true });
+  Object.freeze({ cards: true, tasks: true, work: true });
 const MODULE_KEYS = Object.keys(MODULE_KEY_TABLE) as readonly RowModuleView['key'][];
 
 /** The capability table the action-shape clauses are stated against. Support is

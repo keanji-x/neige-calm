@@ -757,7 +757,8 @@ describe('track conversations', () => {
 
       /* Another track's route, then back: the conversation's store mounts afresh. */
       await act(async () => { await router.navigate({ to: '/track/w2' }); });
-      await screen.findByText('No conversations yet.');
+      await screen.findByRole('button', { name: 'New conversation' });
+      await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Conversation / })).toHaveLength(0));
       await act(async () => { await router.navigate({ to: '/track/w1' }); });
       fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
       await screen.findByRole('complementary', { name: 'Assistant' });
@@ -2900,7 +2901,8 @@ describe('track conversations', () => {
       return request.path === BARE_CONVERSATIONS ? ok([...minted]) : undefined;
     });
     await act(async () => { await router.navigate({ to: '/track/w2' }); });
-    await screen.findByText('No conversations yet.');
+    await screen.findByRole('button', { name: 'New conversation' });
+      await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Conversation / })).toHaveLength(0));
     await openDraft();
     /* Nothing is minted by opening the drawer; the card is minted by the first message. */
     expect(creates(requests, BARE_CONVERSATIONS)).toHaveLength(0);
@@ -2948,7 +2950,8 @@ describe('track conversations', () => {
     await screen.findByRole('button', { name: 'Try again' });
 
     await act(async () => { await router.navigate({ to: '/track/w2' }); });
-    await screen.findByText('No conversations yet.');
+    await screen.findByRole('button', { name: 'New conversation' });
+      await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Conversation / })).toHaveLength(0));
     await openDraft();
     await write('words for track two');
     await screen.findByRole('button', { name: 'Try again' });
@@ -2969,7 +2972,8 @@ describe('track conversations', () => {
     ]);
 
     await act(async () => { await router.navigate({ to: '/track/w2' }); });
-    await screen.findByText('No conversations yet.');
+    await screen.findByRole('button', { name: 'New conversation' });
+      await waitFor(() => expect(screen.queryAllByRole('button', { name: /^Conversation / })).toHaveLength(0));
     await openDraft();
     expect(screen.getByText('words for track two')).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
@@ -3145,12 +3149,13 @@ describe('track conversations', () => {
    * claim the card and put an empty terminal in this panel. */
   it('keeps assistant cards out of the CARDS panel, listing only the worker', async () => {
     setup();
-    /* `[data-nc-card-inventory]` is the CARDS module's own list. */
+    /* The unified work list contains only the independently openable worker. */
     const list = await waitFor(() => {
-      const found = document.querySelector('[data-nc-card-inventory]');
+      const found = document.querySelector('[data-nc-work-inventory]');
       if (found === null) throw new Error('card inventory has not rendered');
       return found as HTMLElement;
     });
+    fireEvent.click(within(list).getByText('Progress', { exact: true }));
     const labels = within(list).getAllByRole('listitem').map((row) => row.textContent ?? '');
     /* Title then kernel kind; the assistant card is absent entirely. */
     expect(labels).toEqual(['Workercodex']);
@@ -4125,7 +4130,7 @@ it('the injected planner row reads activity.cards and last_turn_completed_ms', a
   await refetch();
   await waitFor(() => expect(indicator()).toBe('failed'));
   expect(row().getAttribute('aria-label')).toBe('Conversation Planner chat');
-  expect(document.getElementById(row().getAttribute('aria-describedby') ?? '')?.textContent).toBe('Needs attention');
+  expect(document.getElementById(row().getAttribute('aria-describedby') ?? '')?.textContent).toBe('Planner · Needs attention');
 });
 
 it('an edited conversation retry cannot cross recovery after its reconciliation read completed', async () => {

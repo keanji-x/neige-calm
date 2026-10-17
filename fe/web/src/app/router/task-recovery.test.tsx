@@ -128,12 +128,14 @@ it('refreshes collapsed current execution through task events without reopening 
   await act(() => { advance('running'); return Promise.resolve(); });
   await waitFor(() => expect(disclosure.querySelector('summary')!.textContent).toContain('Running'));
   expect(disclosure.open).toBe(false);
-  expect(document.querySelector('[data-nc-module="tasks"] [data-nc-inventory-group="working"] summary')?.getAttribute('aria-label')).toBe('In progress, 1 task');
+  await userEvent.click(screen.getByText('Progress', { exact: true }));
+  const progressTask = document.querySelector('[data-nc-module="work"] [data-nc-row="task:b-task"]')!;
+  expect(progressTask.textContent).toContain('Running');
   await userEvent.click(screen.getByTitle('Open the worker card for b'));
   await waitFor(() => expect(router.state.location.href).toContain('card=new-worker'));
   await act(() => { advance('done'); return Promise.resolve(); });
   await waitFor(() => expect(disclosure.querySelector('summary')!.textContent).toContain('Completed'));
-  expect(document.querySelector('[data-nc-module="tasks"] [data-nc-inventory-group="done"] summary')?.getAttribute('aria-label')).toBe('Completed, 1 task');
+  await waitFor(() => expect(progressTask.textContent).toContain('Finished'));
   expect(disclosure.open).toBe(false);
 });
 

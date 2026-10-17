@@ -1,7 +1,5 @@
-import type { Conversation } from '../../../../core/domain/conversation.ts';
+import { PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../core/domain/conversation.ts';
 import { plannerProviderOf, type TrackDetailWire } from '../../../../core/domain/track.ts';
-
-export const PLANNER_CONVERSATION_KIND = 'shared-spec' as const;
 
 /** One projection shared by the open conversation and workspace history. */
 export function plannerConversationRow(trackId: string, trackTitle: string,

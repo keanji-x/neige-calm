@@ -7,7 +7,7 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { deriveTrackPageView } from '../../../../core/view/track-page.ts';
 import { makeDesktopPainter, paintDesktopPanel } from '../../features/track/page/desktop-painter.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
-import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
+import { PanelCard } from '../../ui/panel-card/public.tsx';
 import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { MobileTrackList } from './mobile-track-list.tsx';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
@@ -42,11 +42,11 @@ function draw(selected = false) {
       tracks={tracks} currentPath={selected ? '/track/track-0' : '/'} onGo={vi.fn()} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
       onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={vi.fn()} onDeleteTrack={vi.fn()}
       onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} /></div>
-    <div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '2' }), view)}
-      <PanelModule title="Conversations"><ChatList activeId={selected ? 'chat-0' : null} showTrack={false} onOpen={vi.fn()} cards={{}}
+    <div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '2',
+      cardEntries: <ChatList activeId={selected ? 'chat-0' : null} showTrack={false} onOpen={vi.fn()} cards={{}}
         conversations={['Chat first', 'Chat second'].map((title, i) => ({ provider: 'codex' as const, id: `chat-${i}`, trackId: 'track-0', title,
-          kind: 'track-assistant', state: 'idle', updatedAt: 1 }))} /></PanelModule>
-    </PanelCard></div>
+          kind: 'track-assistant', state: 'idle', updatedAt: 1 }))} />,
+    }), view)}</PanelCard></div>
   </div>));
   return { tracks };
 }
@@ -75,18 +75,17 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   const group = element(document.querySelector<HTMLElement>('[title="Work"]'));
   assertRole(group, '--type-content');
   const inventoryGroup = element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary > span:first-child'));
-  assertRole(inventoryGroup, '--type-ui');
-  expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(inventoryGroup));
-  const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Tools', 'Tasks', 'Conversations'].includes(node.textContent ?? ''));
-  expect(panelTitles).toHaveLength(3);
+  assertRole(inventoryGroup, '--type-metadata');
+  expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(primary[0]));
+  const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Tools', 'Tasks'].includes(node.textContent ?? ''));
+  expect(panelTitles).toHaveLength(2);
   for (const title of panelTitles) assertRole(title, '--type-navigation-label');
   assertRole(element(document.querySelector<HTMLElement>('[title="Areas"]')), '--type-metadata');
 
 });
 
-it('uses configured sidebar density without changing the panel row rhythm', async () => {
+it('uses configured sidebar density and reserves a metadata line for unified tool entries', async () => {
   await page.viewport(1400, 900); draw();
-  document.querySelector<HTMLElement>('[data-nc-inventory-group="terminals"] > summary')!.click();
   const area = element(document.querySelector<HTMLElement>('[aria-label="Collapse area Work"]'));
   const rows = [
     element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]')),
@@ -95,12 +94,12 @@ it('uses configured sidebar density without changing the panel row rhythm', asyn
     element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')),
     element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary')),
   ];
-  for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 32 : 28, 0);
+  for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 32 : index === 1 ? 40 : 28, 0);
   expect(area.getBoundingClientRect().height).toBeCloseTo(32, 0);
   const sidebarHeader = element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2')).parentElement!;
   expect(area.getBoundingClientRect().top - sidebarHeader.getBoundingClientRect().bottom).toBeCloseTo(0, 0);
   const panelHeader = element(document.querySelector<HTMLElement>('[data-nc-module="cards"] h2')).parentElement!;
-  expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-inventory-group]')).getBoundingClientRect().top
+  expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-card-inventory]')).getBoundingClientRect().top
     - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(8, 0);
 
   expect(element(document.querySelector<HTMLElement>('[title="Work"]')).getBoundingClientRect().left).toBeCloseTo(element(document.querySelector<HTMLElement>('[title="Left first"]')).getBoundingClientRect().left, 1);
@@ -110,7 +109,7 @@ it('uses configured sidebar density without changing the panel row rhythm', asyn
     [element(document.querySelector<HTMLElement>('[data-nc-row="task-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="task-1"]'))],
     [element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')), element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat second"]'))],
   ];
-  for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 32 : 28, 0);
+  for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 32 : index === 1 ? 40 : 28, 0);
 
 });
 

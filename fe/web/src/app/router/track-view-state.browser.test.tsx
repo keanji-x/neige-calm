@@ -112,11 +112,14 @@ it('resumes independent report and grid positions through real sidebar navigatio
 
 });
 
-it('shows a visible icon beside Recent files in the desktop panel', async () => {
+it('keeps recent files as typed entries within Related', async () => {
   await page.viewport(1280, 900);
-  renderPage({ recentFiles: <RecentFiles paths={['README.md']} onOpen={() => undefined} /> });
-  const heading = page.getByRole('heading', { name: 'Recent files', exact: true }).element();
-  const icon = heading.querySelector('svg');
+  renderPage({ recentFiles: <RecentFiles inline paths={['README.md']} onOpen={() => undefined} /> });
+  await page.getByText('Related', { exact: true }).click();
+  const entry = page.getByRole('button', { name: 'Open README.md', exact: true });
+  await expect.element(entry).toBeVisible();
+  expect(entry.element().textContent).toContain('Recent');
+  const icon = entry.element().querySelector('svg');
   expect(icon).not.toBeNull();
   expect(icon!.getAttribute('aria-hidden')).toBe('true');
   expect(icon!.getBoundingClientRect().width).toBeGreaterThan(0);

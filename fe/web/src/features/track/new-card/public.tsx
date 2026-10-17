@@ -13,7 +13,7 @@ import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu'
 
 import type { CardAddMenuEntry } from '../../../systems/cards/public.js';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
-import { Icon } from '../../../ui/icon/public.tsx';
+import { Icon, type IconName } from '../../../ui/icon/public.tsx';
 import { DirectoryField } from '../../../ui/schema-form/fields/DirectoryField/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './new-card.module.css';
@@ -22,20 +22,22 @@ export type NewCardValues = Readonly<Record<string, string>>;
 
 export type AddCardMenuProps = Readonly<{
   entries: readonly CardAddMenuEntry[];
+  label?: string;
+  icon?: IconName;
   /** Fired with the picked entry. The caller decides between "create now" and
    *  "collect its fields first" — this menu never creates anything. */
   onSelect: (entry: CardAddMenuEntry) => void;
 }>;
 
 /** The `+` in the module head, and the kinds behind it. An empty registry still renders the `+` with one disabled row: a build with no creatable kind is a defect, not a design choice. */
-export function AddCardMenu({ entries, onSelect }: AddCardMenuProps) {
+export function AddCardMenu({ entries, onSelect, label = 'Add card', icon = 'plus' }: AddCardMenuProps) {
   return (
     <DropdownMenu
       placement="below"
       alignment="end"
       button={{
-        label: 'Add card',
-        icon: <Icon name="plus" />,
+        label,
+        icon: <Icon name={icon} size="sm" />,
         isIconOnly: true,
         variant: 'ghost',
         size: 'sm',

@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { EditorState } from '@codemirror/state';
-import { getSearchQuery } from '@codemirror/search';
+import { getSearchQuery, SearchQuery, setSearchQuery } from '@codemirror/search';
 import { resolveCodeLanguage } from '../../ui/code/public.tsx';
 import { EditorView } from '@codemirror/view';
 import { language } from '@codemirror/language';
@@ -83,6 +83,84 @@ it('retains the full file pane search adapter and slash shortcut', async () => {
   content.dispatchEvent(slash);
   expect(slash.defaultPrevented).toBe(true);
   expect(open).toHaveBeenCalledOnce();
+});
+
+it('avoids recounting an unchanged match set while navigating near its start', async () => {
+  const ready: { adapter: PaneSearchAdapter | null } = { adapter: null };
+  const count = vi.fn();
+  let visited = 0;
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke this canonical cursor with the original query receiver through apply below.
+  const original = SearchQuery.prototype.getCursor;
+  vi.spyOn(SearchQuery.prototype, 'getCursor').mockImplementation(function (this: SearchQuery, ...args) {
+    const cursor = original.apply(this, args);
+    return { next: () => {
+      const step = cursor.next();
+      if (!step.done) visited += 1;
+      return step;
+    } };
+  });
+  render(<CodePane path="notes.txt" text={'needle and other text\n'.repeat(800)} theme="dark"
+    onSearchAdapterReady={adapter => { ready.adapter = adapter; }} onSearchCount={count} />);
+  await waitFor(() => { expect(ready.adapter).not.toBeNull(); });
+  ready.adapter?.setQuery('needle');
+  expect(count).toHaveBeenLastCalledWith(1, 800);
+  visited = 0;
+  ready.adapter?.next();
+  expect(count).toHaveBeenLastCalledWith(2, 800);
+  ready.adapter?.next();
+  expect(count).toHaveBeenLastCalledWith(3, 800);
+  ready.adapter?.prev();
+  expect(count).toHaveBeenLastCalledWith(2, 800);
+  expect(visited).toBeLessThan(800);
+});
+
+it('keeps exact counts across wrapping, arbitrary selection and document or query changes', async () => {
+  const ready: { adapter: PaneSearchAdapter | null } = { adapter: null };
+  const count = vi.fn();
+  const { container } = render(<CodePane path="notes.txt" text="value VALUE other value" theme="dark"
+    onSearchAdapterReady={adapter => { ready.adapter = adapter; }} onSearchCount={count} />);
+  await waitFor(() => { expect(ready.adapter).not.toBeNull(); });
+  const content = container.querySelector<HTMLElement>('[role="textbox"]');
+  const view = content === null ? null : EditorView.findFromDOM(content);
+  if (view === null) throw new Error('Full file view missing');
+  ready.adapter?.setQuery('value');
+  expect(count).toHaveBeenLastCalledWith(1, 3);
+  ready.adapter?.prev();
+  expect(count).toHaveBeenLastCalledWith(3, 3);
+  ready.adapter?.next();
+  expect(count).toHaveBeenLastCalledWith(1, 3);
+  view.dispatch({ selection: { anchor: 12 } });
+  ready.adapter?.next();
+  expect(count).toHaveBeenLastCalledWith(3, 3);
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'value value' }, selection: { anchor: 0 } });
+  ready.adapter?.next();
+  expect(count).toHaveBeenLastCalledWith(1, 2);
+  view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: 'missing' })) });
+  ready.adapter?.next();
+  expect(count).toHaveBeenLastCalledWith(0, 0);
+  ready.adapter?.setQuery('');
+  expect(count).toHaveBeenLastCalledWith(0, 0);
+  ready.adapter?.setQuery('value');
+  expect(count).toHaveBeenLastCalledWith(2, 2);
+});
+
+it.each([
+  ['café CAFÉ cafe\u0301', 'café', 3],
+  ['aaaaa', 'aa', 2],
+  ['a.b a.b', 'a.b', 2],
+  ['😀 😀', '😀', 2],
+])('preserves editor matching for %s while reusing its total', async (text, query, total) => {
+  const ready: { adapter: PaneSearchAdapter | null } = { adapter: null };
+  const count = vi.fn();
+  render(<CodePane path="notes.txt" text={text} theme="dark"
+    onSearchAdapterReady={adapter => { ready.adapter = adapter; }} onSearchCount={count} />);
+  await waitFor(() => { expect(ready.adapter).not.toBeNull(); });
+  ready.adapter?.setQuery(query);
+  expect(count).toHaveBeenLastCalledWith(1, total);
+  for (let index = 0; index < total * 2; index += 1) {
+    ready.adapter?.next();
+    expect(count).toHaveBeenLastCalledWith((index + 1) % total + 1, total);
+  }
 });
 
 it('retains both diff views and expanded context when the grammar arrives', async () => {

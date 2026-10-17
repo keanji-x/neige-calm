@@ -1,3 +1,4 @@
+import { ContextAction, ContextFrame, ContextGroup } from '../../../ui/panel-card/context.tsx';
 import { TrackTitle } from '../title/public.tsx';
 // The `/track/$trackId` surface. Presentational: every mutation and navigation leaves through a callback,
 // and there is no `<a href>` anywhere on this page.
@@ -28,7 +29,7 @@ import { PageHeader } from '../../../ui/page-header/public.tsx';
 import {
   OperationFeedback, useDeleteConfirm, useOperationFeedback,
 } from '../../../ui/operation-feedback/public.tsx';
-import { PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
+import { PanelCard } from '../../../ui/panel-card/public.tsx';
 import { relativeTime } from '../row/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
@@ -41,7 +42,7 @@ import { MobileTitleReadView } from './mobile-title-read-view.tsx';
 import styles from './page.module.css';
 
 /** The mobile drill-down pages: two that are not row modules, plus one per row module the view model names. The renderer special-cases exactly those two and sends every other member through `paintMobileModule`. */
-type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
+type MobilePanelKind = 'outline' | Exclude<RowModuleView['key'], 'work'> | 'conversations';
 
 /** One row of the Notifications aside — the route's projection of one item of `TrackActivity.attentionItems`. */
 export type TrackInputNotification = Readonly<{
@@ -105,8 +106,9 @@ export type TrackPageProps = Readonly<{
   /** `REFERENCED BY` — omitted entirely when nothing cites this track. */
   backlinks?: ReactNode;
   conversationList?: ReactNode;
+  /** App-composed desktop conversation items; mobile retains its own history list. */
+  conversationContextList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
-  conversationAction?: ReactNode;
   mobileChatComposer?: ReactNode;
   /** Everything the kernel says is addressed to the user on this track, projected by
    *  the route from the activity overlay's items (`attentionItems`). */
@@ -168,12 +170,8 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
   return found;
 }
 
-function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
-  return tasks.length === 0 ? null : String(tasks.length);
-}
-
 export function TrackPage({ mobileReportIntro, mobileChatComposer,
-  panelContent, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
+  panelContent, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -290,13 +288,10 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   /* `activity` is the track itself: `Track` carries the overlay-derived
      `cards` verdicts, and that field is all the derivation is typed to read. */
   const panelView = deriveTrackPageView({ cards, tasks, activity: track, openableCards });
-  const desktopPainter = makeDesktopPainter({
-    onOpenCard,
-    onOpenTask,
-    onDeleteCard,
-    cardsAction,
-    taskSummary: taskInventorySummary(tasks),
-    afterCards: recentFiles,
+  const desktopConversations = conversationContextList ?? conversationList;
+  const hasDesktopConversations = desktopConversations !== undefined || onStartConversation !== undefined;
+  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard,
+    suppressEmpty: desktopConversations !== undefined || onStartConversation !== undefined || recentFiles !== undefined || backlinks !== undefined,
   });
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
   const desktopActionsRef = useRef<HTMLButtonElement | null>(null);
@@ -554,14 +549,19 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
             aria-hidden={mobilePanelOpen ? true : undefined}
             inert={mobilePanelOpen}
           >
-          <PanelCard>
-            {!compactViewport && panelContent}
-            {paintDesktopPanel(desktopPainter, panelView)}
-            {/* `REFERENCED BY` is absent, not empty, when nothing cites this track. */}
-            {backlinks !== undefined && (
-              <PanelModule title="Referenced by">{backlinks}</PanelModule>
-            )}
-            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
+          <PanelCard className={styles.workCard}>
+            <ContextFrame action={hasDesktopConversations ? undefined : cardsAction}>
+              {hasDesktopConversations && <ContextGroup title="Conversations" secondaryAction={cardsAction}
+                actionVisibility="always" action={onStartConversation === undefined ? undefined : <ContextAction
+                  label="New conversation" icon="plus" onClick={onStartConversation} />}>
+                {desktopConversations}
+              </ContextGroup>}
+              {!compactViewport && panelContent !== undefined && <div className={styles.panelContext}>{panelContent}</div>}
+              {paintDesktopPanel(desktopPainter, panelView.desktop)}
+              {(recentFiles !== undefined || backlinks !== undefined) && <ContextGroup title="Related" collapsible>
+                <div className={styles.relatedContent}>{recentFiles}{backlinks}</div>
+              </ContextGroup>}
+            </ContextFrame>
           </PanelCard>
           </div>
         </aside>
