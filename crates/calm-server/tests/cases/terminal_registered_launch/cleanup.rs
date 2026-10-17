@@ -405,7 +405,7 @@ async fn terminal_delete_retains_rows_until_actual_registration_borrower_release
             executor_boot: transfer.executor_boot.clone(), registration: transfer.registration_id.clone(), nonce: nonce.clone(),
         }))), &[]).await?;
         let (reply, objects) = rights::receive::<ControlReply>(&stream).await?;
-        ensure!(matches!(reply, ControlReply::Execution(reply) if matches!(*reply, ExecutionReply::Exported { receipt, .. } if receipt.transfer == transfer)) && !objects.is_empty(),
+        ensure!(matches!(reply, ControlReply::Execution(reply) if matches!(&*reply, ExecutionReply::Exported { receipt, .. } if receipt.transfer == transfer)) && !objects.is_empty(),
             "actual reverse Export did not retain the original source lease");
         let (status, body) = delete(&server, &cookie, format!("/api/cards/{}", terminal.card_id)).await?;
         ensure!(status == 409 && body.contains("in-flight export"),
