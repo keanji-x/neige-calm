@@ -241,7 +241,7 @@ The worker report carries the frozen gate verdict and full log reference. This
 local verification does not claim Planner review convergence or remote CI green.
 
 
-## Final gate block: inherited FE recovery
+## r9 checkpoint: inherited FE recovery
 
 Run 1 passed API 7/7, truth 15/15, Rust quick (including OpenAPI drift), text,
 all contract groups (195/195, 178/178, 13/13), and FE lint/build including ownership.
@@ -269,7 +269,7 @@ One decisive focused rerun from `fe` reproduced exactly the same two failures:
 Vitest reported 2 failed / 2 passed / 183 skipped; no all-green result is claimed.
 Log: `/tmp/title-r9-fe-recovery-red.log`. Both tests use the injected
 `ApiTransportPort` in `setup`/`mountRecovery`, so they never execute the new Rust
-transaction. The FE tree remains byte-identical to the original changing commit.
+transaction. At the r9 checkpoint, the FE tree remained byte-identical to the original changing commit.
 
 The inherited r5 rejection branch in
 [queries.ts](../fe/web/src/app/providers/queries.ts) calls `refreshAfterSend`
@@ -286,6 +286,65 @@ above is still only follow-up evidence and remains unchanged.
 Full kernel evidence:
 `runs/7793bd62565c450282032faa12a61fbe:fix-title-safe-transaction-r9/gates/1.log`,
 or `/home/kenji/.local/share/neige-next/data/gate-logs/7793bd62565c450282032faa12a61fbe:fix-title-safe-transaction-r9-r1.log`.
-The final post-gate change is only this truthful documentation update; its text
-gates and links are checked separately. No all-green gate, final CI result, or
-formal-review convergence is claimed.
+At that checkpoint the only post-gate change was this documentation update.
+The r9 run did not establish an all-green gate, final CI result, or formal-review convergence.
+
+
+## r10 send recovery correction
+
+The real router reproduction above was repeated unchanged: 2 failed, 2 passed,
+183 skipped (`/tmp/title-r10-red.log`). The pre-metadata production implementation
+of `usePlannerMutations.send` refreshed run/history only after success; it had no
+rejection refresh handler. The r5 handler extended that cancellation to refusals
+and unknown outcomes, causing both observed router regressions.
+
+[The query owner](../fe/web/src/app/providers/queries.ts) now shares a narrow
+metadata-only helper across send, queue edit, delete and steer. An admitted
+failure refreshes only the scoped track detail and conversation list. It never
+cancels or rereads run/history. Success still calls `answered` first and replaces
+run/history reads without awaiting them, so reconciliation cannot retain the send
+lease. Queue mutations retain their existing run/history refresh on every outcome.
+The event dependency graph and its frozen ownership files are unchanged.
+
+For offline, expired admission or 401, metadata is marked stale without cancelling
+or starting a read. The existing
+[recovery coordinator](../fe/web/src/app/providers/recovery-queries.ts) resumes
+observed stale queries once reads are permitted again. No intent is queued for
+later delivery. The original `runOperation` rejection is rethrown: notably a
+synchronous unauthorized notification that expires the permit still returns its
+existing checkpoint error; a 401 without that subscriber remains the original
+`ApiError`. Neither is replaced by a reconciliation error.
+
+| Send outcome | Metadata | Existing run/history | Answer / delivery |
+| --- | --- | --- | --- |
+| Success | Scoped reconciliation | Cancel then reread | `answered` before reads; no read wait |
+| Refused / stale 409 / gone 404 | Scoped reconciliation while admitted | Preserved, including held initial reads | Original rejection; no `answered` |
+| Unknown transport outcome online | Scoped reconciliation while admitted | Preserved | Existing keyed retry / unknown semantics |
+| Offline / expired / local denial | Stale, no business read until recovery | Preserved | Original checkpoint rejection; no `answered` |
+| 401 | Stale, no immediate read | Preserved | Existing unauthorized/checkpoint behavior |
+| Held refresh after success | Read may remain pending | Success refresh remains independent | Send lease settles without waiting |
+
+Worker verification used only the requested focused surfaces:
+
+- Original router failure filter: 4 passed, 183 skipped
+  (`/tmp/title-r10-green-router.log`), with both assertions unchanged.
+- Local constant-phase metadata UI filter: 1 passed, 186 skipped
+  (`/tmp/title-r10-local-ui.log`).
+- `queries.contract.test.ts -t 'input metadata'`: 9 passed, 74 skipped
+  (`/tmp/title-r10-restored.log`). Active observers distinguish metadata from
+  run/history; foreign scope and no global cache clear assertions remain.
+  The prior inactive-history assertion was retained and strengthened, not deleted.
+  The recovery cases use the production transport, query options and coordinator.
+
+Exclusive single-factor mutation changed only the metadata helper's permission
+branch to always refetch. Before execution the complete expected red set named
+all four recovery cases and the standalone 401 case. The whole input metadata
+filter produced exactly those five failures, with the other four passing.
+Production bytes were safely restored and the whole filter returned to 9 passed.
+Evidence: `/tmp/title-r10-mutation-prediction.txt`,
+`/tmp/title-r10-mutation.log`, `/tmp/title-r10-mutation-result.txt`, and
+`/tmp/title-r10-restored.log`. No Rust, scanner, provider, preview or broad worker
+suite was changed or run. The complete 15-step kernel gate and subsequent formal
+L2 review have separate task evidence; worker results do not substitute for them.
+This is an L2 correction because it touches recovery admission and lifecycle
+boundaries. It adds no permanent list, check, pin or retry mechanism.

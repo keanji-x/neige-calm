@@ -246,16 +246,25 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     ]).catch(() => undefined);
     return result;
   };
-  const refreshInputAfter = <T,>(result: T): T => {
+  const refreshInputMetadata = (admitted: ApiTransportPort = transport, error?: unknown) => {
+    let canRead = !(error instanceof ApiError && error.failure.kind === 'unauthorized');
+    try { admitted.recovery?.capture(); } catch { canRead = false; }
     for (const queryKey of conversationInputMetadata(trackId)) {
-      void cancelThenInvalidate(client, queryKey);
+      // Recovery owns read admission and resumption. Retain stale metadata while denied;
+      // do not turn a refused/unknown write into a business read outside that permission.
+      if (canRead) void cancelThenInvalidate(client, queryKey);
+      else void client.invalidateQueries({ queryKey, refetchType: 'none' }).catch(() => undefined);
     }
+  };
+  const refreshInputAfter = <T,>(result: T): T => {
+    refreshInputMetadata();
     return refreshAfter(result);
   };
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
      flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
   const refreshAfterSend = <T,>(result: T): T => {
-    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId), ...conversationInputMetadata(trackId)]) void cancelThenInvalidate(client, queryKey);
+    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) void cancelThenInvalidate(client, queryKey);
+    refreshInputMetadata();
     return result;
   };
   return {
@@ -266,7 +275,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
         .then((sent) => { answered(); return refreshAfterSend(sent); }, (error: unknown) => {
           // A refusal may expose a stale revision; a lost answer may follow a durable write.
-          refreshAfterSend(undefined);
+          refreshInputMetadata(admitted, error);
           throw error;
         }),
     /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
