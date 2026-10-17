@@ -2,7 +2,11 @@
 use super::{ws::*, *};
 use calm_session::control::execution::{ConsumeExecution, ExecutionState};
 
-async fn exercise(fixture: &mut Fixture, server: &HttpServer) -> anyhow::Result<()> {
+async fn exercise(
+    fixture: &mut Fixture,
+    server: &HttpServer,
+    attempted_body: Value,
+) -> anyhow::Result<()> {
     install_interactive_program(fixture)?;
     let cookie = login(server).await?;
     let key = "terminal-executor-restart-original";
@@ -79,7 +83,7 @@ async fn exercise(fixture: &mut Fixture, server: &HttpServer) -> anyhow::Result<
             server.address,
             format!("/api/tracks/{}/terminal-cards", fixture.track),
             cookie.clone(),
-            fixture.request_body(),
+            attempted_body.clone(),
             Some(key.into()),
         )
         .await?;
@@ -140,7 +144,8 @@ async fn terminal_executor_restart_unknown_blocks_new_source_without_reissuing_o
 -> anyhow::Result<()> {
     let mut fixture = Fixture::start_in(Storage::Disk).await?;
     let mut server = HttpServer::start(fixture.app.clone()).await?;
-    let result = exercise(&mut fixture, &server).await;
+    let body = fixture.request_body();
+    let result = exercise(&mut fixture, &server, body).await;
     let server_result = server.stop().await;
     fixture.stop().await;
     result?;
@@ -148,6 +153,27 @@ async fn terminal_executor_restart_unknown_blocks_new_source_without_reissuing_o
     ensure!(
         std::fs::read_to_string(&fixture.count)? == "executed\n",
         "executor Unknown or original ACK replay duplicated the process"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_registered_explicit_cwd_cannot_bypass_unknown_selected_source()
+-> anyhow::Result<()> {
+    let mut fixture = Fixture::start_in(Storage::Disk).await?;
+    let mut server = HttpServer::start(fixture.app.clone()).await?;
+    // One wire-field difference from the existing Unknown sibling: the user
+    // explicitly names the same directory that the real owner selected.
+    let mut body = fixture.request_body();
+    body["cwd"] = json!(fixture.cwd);
+    let result = exercise(&mut fixture, &server, body).await;
+    let server_result = server.stop().await;
+    fixture.stop().await;
+    result?;
+    server_result?;
+    ensure!(
+        std::fs::read_to_string(&fixture.count)? == "executed\n",
+        "explicit cwd bypass issued another real process"
     );
     Ok(())
 }
