@@ -2871,6 +2871,15 @@ async fn teardown_track_deletion(
     {
         seals.seal(thread_id);
     }
+    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+        CalmError::Internal("track source release requires sqlite-backed repo".into())
+    })?;
+    crate::workspace_service::execution_sources::release_track_source(
+        &pool,
+        plan.track_id.as_str(),
+        &w.daemon.execution,
+    )
+    .await?;
     Ok(seals.retain())
 }
 

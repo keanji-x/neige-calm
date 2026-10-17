@@ -484,6 +484,17 @@ impl PreparedAreaDeletion {
                 seals.seal(thread_id);
             }
         }
+        let pool = worker.repo.sqlite_pool().ok_or_else(|| {
+            CalmError::Internal("area source release requires sqlite-backed repo".into())
+        })?;
+        for track in &self.tracks {
+            crate::workspace_service::execution_sources::release_track_source(
+                &pool,
+                track.id.as_str(),
+                &worker.daemon.execution,
+            )
+            .await?;
+        }
         Ok(QuiescedAreaDeletion {
             prepared: self,
             terminal_ids,

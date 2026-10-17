@@ -355,3 +355,89 @@ pub(crate) async fn restore_registered_source(
         )),
     }
 }
+
+/// Release the current selection's shared source only after its owning end
+/// flow has quiesced every execution, while the operation and track fences are
+/// still held. Keep the original intent: a rolled-back delete must recover by
+/// advancing its generation, never by recreating generation one.
+pub(crate) async fn release_track_source(
+    pool: &SqlitePool,
+    track_id: &str,
+    transport: &crate::state::TerminalExecutionTransport,
+) -> Result<()> {
+    let source: Option<(String, i64, i64, String)> = sqlx::query_as(
+        "SELECT b.workspace_id,b.selection_version,s.selection_version,s.registration_intent_json \
+         FROM track_workspace_bindings b JOIN workspace_execution_sources s \
+         ON s.workspace_id=b.workspace_id WHERE b.track_id=?1",
+    )
+    .bind(track_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((workspace_id, selection_version, source_version, json)) = source else {
+        // An unconverted selection has no executor-owned shared anchor.
+        return Ok(());
+    };
+    let original: AttachRegistration = serde_json::from_str(&json)?;
+    if source_version != selection_version
+        || !matches!(
+            &original.registration,
+            ExecutionRegistration::Worktree {
+                workspace_id: registered,
+                binding_version,
+                ..
+            } if registered.as_str() == workspace_id.as_str()
+                && u64::try_from(selection_version).ok() == Some(*binding_version)
+        )
+    {
+        return Err(CalmError::Conflict(
+            "workspace source does not match its owning selection".into(),
+        ));
+    }
+    let crate::state::TerminalExecutionTransport::Registered(config) = transport else {
+        return Err(CalmError::Conflict(
+            "workspace source requires its configured registered executor for release".into(),
+        ));
+    };
+    let expected = ObjectRegistrationReceipt {
+        contract: EXECUTION_ENVELOPE_VERSION,
+        id: original.registration_id.clone(),
+        transfer: original,
+    };
+    let mut client = config.connect().await?;
+    // The constructed request is not a receipt of retirement. Only the native
+    // exact ACK ends ownership. Existing lifecycle rights must not depend on
+    // reopening or validating the source's current named path.
+    let registration = expected.id.clone();
+    let failure = match client
+        .request(ExecutionRequest::RetireRegistration(expected))
+        .await
+    {
+        Ok(ExecutionReply::RegistrationRetired {
+            registration: retired,
+        }) if retired == registration => return Ok(()),
+        Ok(ExecutionReply::Refused { reason }) => {
+            CalmError::Conflict(format!("workspace source release was refused: {reason}"))
+        }
+        Ok(_) => CalmError::Conflict("workspace source release acknowledgement mismatched".into()),
+        Err(error) => error.into(),
+    };
+    // A lost ACK or a different boot is not absence. Only QueryV1's exact
+    // current-boot/id/nonce Unwitnessed fact can prove this holder is absent;
+    // every other outcome preserves the original retirement failure.
+    let observation: std::io::Result<RegistrationExport> = async {
+        let mut query = config.connect().await?;
+        let executor_boot = query.executor_boot().clone();
+        query
+            .export(ExportRegistration {
+                executor_boot,
+                registration,
+                nonce: TransferNonce::fresh()?,
+            })
+            .await
+    }
+    .await;
+    match observation {
+        Ok(RegistrationExport::Unwitnessed) => Ok(()),
+        _ => Err(failure),
+    }
+}
