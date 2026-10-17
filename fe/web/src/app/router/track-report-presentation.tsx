@@ -50,7 +50,7 @@ function ReportRead({ trackId, activityAt, openedAt, enabled, children }: Readon
 
 export function TrackReportRegion({ presentation, trackId, activityAt, openedAt, children, ...documentProps }: ReportRegionProps) {
   const { resource, visible, presentable, current } = presentation;
-  return <section aria-label="Track report" aria-busy={resource.status !== 'failed' && !current}>
+  return <section aria-label="Track report" tabIndex={-1} aria-busy={resource.status !== 'failed' && !current}>
     {resource.status === 'failed'
       ? <ErrorBox message="The report could not be loaded." onRetry={resource.retry}
         description={presentable ? 'The last available report is still shown.' : undefined} />

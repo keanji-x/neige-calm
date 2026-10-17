@@ -6,6 +6,7 @@ import { commands, page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { trackReportLinkUrl, type TrackReport } from '../../../../core/domain/report.ts';
+import { filePathFromLocation } from './navigation.ts';
 import { queryKeys } from '../providers/queries.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -192,7 +193,7 @@ it('serves pending and repeated anchor navigation after current content and does
   await settle(); expect(reportPage().scrollTop).toBe(0);
   await replaceReport(client, serverCards, 3);
   await expect.poll(() => control.jobs.length).toBe(2);
-  await act(() => (page.getByRole('button', { name: 'Jump to paragraph', exact: true }).element() as HTMLButtonElement).click());
+  act(() => { (page.getByRole('button', { name: 'Jump to paragraph', exact: true }).element() as HTMLButtonElement).click(); });
   await settle(); expect(reportPage().scrollTop).toBe(0);
   await control.release(1);
   await expect.element(page.getByText('Paragraph 49. A long report to read and return to. Revision 3.', { exact: true })).toBeVisible();
@@ -222,12 +223,12 @@ it('does not replay a served report hash when a same-Track panel destination cha
   await settle(); expect(reportPage().scrollTop).toBeGreaterThan(700);
   reportPage().scrollTop = 100; await settle();
   // Activate the actual report file link: its owner pushes a file entry retaining hash.
-  await act(() => (page.getByRole('button', { name: 'Read file', exact: true }).element() as HTMLButtonElement).click());
-  await expect.poll(() => router.state.location.search.file).toBe('README.md');
+  act(() => { (page.getByRole('button', { name: 'Read file', exact: true }).element() as HTMLButtonElement).click(); });
+  await expect.poll(() => filePathFromLocation(router.state.location)).toBe('README.md');
   await settle(); expect(reportPage().scrollTop).toBe(100);
   const file = page.getByRole('region', { name: 'File README.md', exact: true }).element();
   await act(() => file.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-  await expect.poll(() => router.state.location.search.file).toBeUndefined();
+  await expect.poll(() => filePathFromLocation(router.state.location)).toBeNull();
   await settle(); expect(reportPage().scrollTop).toBe(100);
   await act(() => router.navigate({ to: '/track/a', search: { card: 'a-card-7' }, hash: true }));
   await settle(); expect(reportPage().scrollTop).toBe(100);

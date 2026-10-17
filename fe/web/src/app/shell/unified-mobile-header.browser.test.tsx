@@ -584,6 +584,7 @@ describe('shared desktop primary header', () => {
     await page.viewport(1440, 600);
     setup('/track/w1', AREA.name, () => undefined, 'Responsive mobile UI', { longLists: true, longReport: true, viewportRoot: true });
     await page.getByRole('button', { name: 'Rename track', exact: true }).findElement();
+    await expect.poll(() => document.querySelector('[data-nc-report]')).not.toBeNull();
     const rail = document.querySelector<HTMLElement>('nav[aria-label="Workspace"]')!;
     const today = rail.querySelector<HTMLElement>('[aria-label="Go to Today"]')!;
     const collapse = rail.querySelector<HTMLElement>('[aria-label="Collapse sidebar"]')!;

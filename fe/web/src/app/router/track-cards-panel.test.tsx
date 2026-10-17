@@ -1,4 +1,4 @@
-import { prepareReportDocument } from '../../features/report/document/preparation.ts';
+import { prepareReportDocument, type ReportPreparationPort } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The track route's CARDS panel, driven through the real route, registry and built-ins.
 
@@ -96,11 +96,17 @@ function setup(
   cards: readonly CardWire[] = CARDS,
   {
     withVisibleFixture = true,
+    prepareReport = prepareReportDocument,
     /* A thunk, so a test can change the kernel's answer between reads. */
-    taskDiagnostics = [] as readonly unknown[] | (() => readonly unknown[]),
+    taskDiagnostics = [],
     /* The track detail's overlay rows; the `kernel/track/activity` row is what every indicator reads. */
-    overlays = [] as readonly unknown[],
-  } = {},
+    overlays = [],
+  }: Readonly<{
+    withVisibleFixture?: boolean;
+    prepareReport?: ReportPreparationPort;
+    taskDiagnostics?: readonly unknown[] | (() => readonly unknown[]);
+    overlays?: readonly unknown[];
+  }> = {},
 ) {
   let reportReads = 0;
   const requests: string[] = [];
@@ -137,7 +143,7 @@ function setup(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
   const runtime = bootTestCardRuntime();
   if (withVisibleFixture) runtime.registry.register(SURFACE_FIXTURE_ENTRY as unknown as CardEntry);
-  const router = createAppRouter({ prepareReport: prepareReportDocument, transport, unauthorized, client, cards: runtime, onSignOut: vi.fn() });
+  const router = createAppRouter({ prepareReport, transport, unauthorized, client, cards: runtime, onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -287,21 +293,29 @@ describe('track route CARDS panel', () => {
     expect(document.querySelector('[data-nc-report-file-viewer]')).toBeNull();
   });
 
-  it('returns focus to the Report on closing a cold-start file deep link', async () => {
+  it('returns focus to the stable report region while cold content is pending and does not steal it later', async () => {
     window.history.replaceState(
       {},
       '',
       `${APP_BASEPATH}/track/w1?file=fe%2Fweb%2Fsrc%2Fapp%2Frouter%2Fpublic.tsx`,
     );
-    setup([FILE_LINK_REPORT_CARD]);
+    let release!: () => void;
+    setup([FILE_LINK_REPORT_CARD], { prepareReport: report => new Promise(resolve => { release = () => resolve(prepareReportDocument(report)); }) });
     await screen.findByRole('region', {
       name: 'File fe/web/src/app/router/public.tsx',
     });
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     await waitFor(() => {
-      expect(document.activeElement).toBe(document.querySelector('[data-nc-report]'));
+      expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Track report', exact: true }));
     });
+    expect(document.querySelector('[data-nc-report]')).toBeNull();
+    const action = screen.getByRole('button', { name: 'Rename track' });
+    action.focus();
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    release();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Track report', exact: true }).getAttribute('aria-busy')).toBe('false'));
+    expect(document.activeElement).toBe(action);
   });
 
   it('[INV-CARD-226] keeps a card with a surface, so the filter is headless-only and not adapter-only', async () => {

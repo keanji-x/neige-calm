@@ -20,7 +20,7 @@ import { DELETE_FAILURES, DELETE_TEXT, NotSentError, writeFailureText } from '..
 import {
   createRootRoute, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
-import { useCallback, useEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
 import { TrackReportRegion, useTrackReportPresentation, useTrackReportArrival } from './track-report-presentation.tsx';
 import type { ReportPreparationPort } from '../../features/report/document/preparation.ts';
@@ -1009,18 +1009,17 @@ function TrackRouteBody({
   );
   const fileReturnFocusRef = useRef<HTMLElement | null>(null);
   const previousFilePathRef = useRef(requestedFilePath);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = previousFilePathRef.current;
     previousFilePathRef.current = requestedFilePath;
     if (previous === null || requestedFilePath !== null) return;
-    requestAnimationFrame(() => {
-      const opener = fileReturnFocusRef.current;
-      fileReturnFocusRef.current = null;
-      const target = opener?.isConnected === true
-        ? opener
-        : document.querySelector<HTMLElement>('[data-nc-report]');
-      target?.focus({ preventScroll: true });
-    });
+    const opener = fileReturnFocusRef.current;
+    fileReturnFocusRef.current = null;
+    // The stable region exists even when report preparation has not completed.
+    const target = opener?.isConnected === true
+      ? opener
+      : document.querySelector<HTMLElement>('section[aria-label="Track report"]');
+    target?.focus({ preventScroll: true });
   }, [requestedFilePath]);
   /* The URL is turned into props here: `features-no-app` keeps `TrackPage` a pure
    * renderer. A live `?card=` wins over a hand-edited `?panel=`. */

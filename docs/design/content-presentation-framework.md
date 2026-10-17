@@ -81,6 +81,8 @@ TrackReportContent is the app-owned committed subtree. Its read effect captures 
 
 ### Reading and anchor readiness
 
+File return focus targets its connected opener or the stable focusable report region after the file closes. That region exists while preparation is pending and on empty/error results. No delayed frame callback outlives the route, and later content completion does not steal focus.
+
 Reading state records URL destinations immediately. For F2 the full ReportDocument mounts atomically once prepared/admitted; its report-readiness value is observed in a layout effect after that same commit, not at shell arrival. Restore the report scrollport only then. Panel/grid continue at their own actual mounted readiness with the existing selected-card reveal coordination; no extra generic guessed-frame retries. Pending shell must not clamp/remember report offset0. Refresh retaining an already-mounted R1 does not restart initial restoration. Explicit hash destinations beat saved offsets.
 
 Record explicit pending reader input in the owning scrollport (wheel/touch/scrolling keys/scrollbar gesture) to suppress deferred automatic restoration, rather than treating any offset change as intent. Capture input from shell mount, but do not save placeholder geometry as a new reading position. Keep the existing feature reading owner for selection/native Find; do not globally intercept browser Find.
