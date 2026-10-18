@@ -4,13 +4,6 @@ use crate::{InputItem, TurnModelSelection};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CorrelationKey(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeSessionRef(pub String);
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionTarget {
-    CurrentBinding,
-    Native(NativeSessionRef),
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TurnIdentity {
     Native(String),
     Local(CorrelationKey),
@@ -28,11 +21,6 @@ impl TurnIdentity {
             Self::Local(key) => key.0,
         }
     }
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TurnTarget {
-    pub session: SessionTarget,
-    pub turn: TurnIdentity,
 }
 #[derive(Clone, Debug)]
 pub struct InputRequest {
@@ -58,7 +46,6 @@ pub struct InterruptRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubmissionEvidence {
     NotWritten,
-    LocalWrite,
     WriteMayHaveReachedPeer,
     Unobserved,
 }
@@ -69,9 +56,6 @@ pub enum SteerOutcome<E> {
     },
     NotTaken {
         error: E,
-    },
-    NoRunningTarget {
-        target: TurnTarget,
     },
     Unknown {
         error: E,
@@ -86,7 +70,6 @@ pub enum SubmissionBasis {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompactNotSubmitted {
     NativeRefusal,
-    InvalidRequest,
     PreparationFailed,
 }
 #[derive(Debug)]

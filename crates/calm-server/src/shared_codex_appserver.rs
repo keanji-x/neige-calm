@@ -1569,11 +1569,7 @@ impl SharedCodexAppServer {
         }
         let client = match self.connected_client().await {
             Ok(client) => client,
-            Err(
-                error @ (ControlError::Refused(_)
-                | ControlError::InvalidRequest(_)
-                | ControlError::Unanswered(_)),
-            ) => {
+            Err(error @ (ControlError::Refused(_) | ControlError::Unanswered(_))) => {
                 return provider::control::InterruptOutcome::Unconfirmed {
                     error: error.into(),
                     evidence: provider::control::SubmissionEvidence::Unobserved,

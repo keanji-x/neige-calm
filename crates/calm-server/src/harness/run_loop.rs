@@ -1732,10 +1732,6 @@ async fn handle_steer(
             let message = error.to_string();
             (error, SteerRefused::Unanswered { message, phase })
         }
-        SteerOutcome::NoRunningTarget { .. } => {
-            rebuffer_head(inner, vec![entry]).await;
-            return Ok(Err(SteerRefused::NoRunningTurn { phase }));
-        }
     };
 
     // Refused, unreachable, or timed out: the sentence goes back. No row was written and the

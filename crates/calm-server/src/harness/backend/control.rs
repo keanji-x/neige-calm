@@ -10,12 +10,10 @@ pub(super) fn steer_outcome(
             turn: TurnIdentity::Native(turn),
         },
         Err(ControlError::Refused(error)) => SteerOutcome::NotTaken { error },
-        Err(ControlError::InvalidRequest(error) | ControlError::Unanswered(error)) => {
-            SteerOutcome::Unknown {
-                error,
-                evidence: SubmissionEvidence::Unobserved,
-            }
-        }
+        Err(ControlError::Unanswered(error)) => SteerOutcome::Unknown {
+            error,
+            evidence: SubmissionEvidence::Unobserved,
+        },
     }
 }
 
@@ -29,10 +27,6 @@ pub(super) fn codex_compact_submission(
         Err(ControlError::Refused(error)) => CompactSubmission::NotSubmitted {
             error,
             reason: CompactNotSubmitted::NativeRefusal,
-        },
-        Err(ControlError::InvalidRequest(error)) => CompactSubmission::NotSubmitted {
-            error,
-            reason: CompactNotSubmitted::InvalidRequest,
         },
         Err(ControlError::Unanswered(error)) => CompactSubmission::Unconfirmed {
             error,
@@ -57,13 +51,6 @@ mod tests {
                 "native refusal".into(),
             ),
             (
-                Err(ControlError::InvalidRequest(CalmError::BadRequest(
-                    "bad".into(),
-                ))),
-                "unknown",
-                CalmError::BadRequest("bad".into()).to_string(),
-            ),
-            (
                 Err(ControlError::Unanswered(CalmError::CodexAppServer(
                     "unanswered".into(),
                 ))),
@@ -80,9 +67,9 @@ mod tests {
         ];
         for (input, expected, reader) in cases {
             let diagnostic = input.as_ref().err().map(|e| match e {
-                ControlError::Refused(e)
-                | ControlError::InvalidRequest(e)
-                | ControlError::Unanswered(e) => (std::mem::discriminant(e), e.to_string()),
+                ControlError::Refused(e) | ControlError::Unanswered(e) => {
+                    (std::mem::discriminant(e), e.to_string())
+                }
             });
             let (actual, error) = match steer_outcome(input) {
                 SteerOutcome::Taken {
@@ -127,12 +114,6 @@ mod tests {
                 Some(CompactNotSubmitted::NativeRefusal),
             ),
             (
-                Err(ControlError::InvalidRequest(CalmError::BadRequest(
-                    "invalid".into(),
-                ))),
-                Some(CompactNotSubmitted::InvalidRequest),
-            ),
-            (
                 Err(ControlError::Unanswered(CalmError::Conflict(
                     "sealed before RPC".into(),
                 ))),
@@ -147,9 +128,9 @@ mod tests {
         ];
         for (input, reason) in cases {
             let original = input.as_ref().err().map(|e| match e {
-                ControlError::Refused(e)
-                | ControlError::InvalidRequest(e)
-                | ControlError::Unanswered(e) => (std::mem::discriminant(e), e.to_string()),
+                ControlError::Refused(e) | ControlError::Unanswered(e) => {
+                    (std::mem::discriminant(e), e.to_string())
+                }
             });
             let error = match codex_compact_submission(input) {
                 CompactSubmission::Submitted { basis } => {

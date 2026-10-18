@@ -6,7 +6,6 @@ use crate::error::CalmError;
 #[derive(Debug)]
 pub enum ControlError {
     Refused(CalmError),
-    InvalidRequest(CalmError),
     Unanswered(CalmError),
 }
 
@@ -23,9 +22,7 @@ impl From<provider::codex::error::Error> for ControlError {
 impl From<ControlError> for CalmError {
     fn from(error: ControlError) -> Self {
         match error {
-            ControlError::Refused(error)
-            | ControlError::InvalidRequest(error)
-            | ControlError::Unanswered(error) => error,
+            ControlError::Refused(error) | ControlError::Unanswered(error) => error,
         }
     }
 }
@@ -64,9 +61,6 @@ mod tests {
                         error,
                         CalmError::CodexAppServer(_) | CalmError::Serde(_)
                     ));
-                }
-                ControlError::InvalidRequest(error) => {
-                    panic!("native RPC did not produce an invalid request: {error}")
                 }
             }
             let diagnostic = CalmError::from(fact);
