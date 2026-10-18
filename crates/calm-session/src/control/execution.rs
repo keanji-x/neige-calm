@@ -17,14 +17,16 @@ pub mod rights;
 #[path = "execution/rights_unsupported.rs"]
 pub mod rights;
 mod transferred_directory;
+mod watch;
 pub use attachment::*;
 pub use directory_relation::*;
 pub use transferred_directory::*;
+pub use watch::ExecutionWatcher;
 
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 3;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionHandshake {
@@ -78,7 +80,36 @@ pub struct ExecutionSpecification {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PreparedSource {
+    Registered,
+    Private(Box<AttachRegistration>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BusyReason {
+    OutputOpen,
+}
+
+/// Immutable, secret-free execution history. Unknown-id revocation has no source or slot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionTombstone {
+    pub execution_id: ExecutionId,
+    pub ticket_id: LaunchTicketId,
+    pub registration: Option<ObjectRegistrationId>,
+    pub directory: Option<ExternalDirectoryId>,
+    pub slot: Option<(String, u64)>,
+    pub outcome: TombstoneOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TombstoneOutcome {
+    Revoked,
+    Retired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrepareExecution {
+    pub source: PreparedSource,
     pub identity: ExecutionIdentity,
     pub ticket: CapabilityToken,
     pub control_tokens: ExecutionControlTokens,
@@ -119,6 +150,12 @@ pub enum ExecutionRequest {
     Launch(ConsumeExecution),
     Revoke(ConsumeExecution),
     Control(ExecutionControl),
+    Inspect(ExecutionId),
+    Watch,
+    Retire {
+        execution_id: ExecutionId,
+        lifecycle: CapabilityToken,
+    },
     ObserveDirectories(Box<DirectoryRelationRequest>),
     /// Release this exact immutable lease after its executor references settle.
     RetireRegistration(ObjectRegistrationReceipt),
@@ -147,7 +184,6 @@ pub enum ProcessAction {
         pixel_h: u16,
     },
     Signal(ProcSignal),
-    Cleanup,
     /// Idempotent scope TERM followed by KILL after the executor grace period.
     Stop,
 }
@@ -183,6 +219,22 @@ impl ExecutionState {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ExecutionReply {
+    Absent,
+    Inspected {
+        receipt: Option<ExecutionReceipt>,
+        state: ExecutionState,
+        output_end: OutputEnd,
+    },
+    Retired(ExecutionTombstone),
+    Watching {
+        boot: ExecutorBootId,
+        seq: u64,
+    },
+    Changed {
+        seq: u64,
+        id: ExecutionId,
+    },
+    Busy(BusyReason),
     Handshake {
         envelope_version: u32,
         executor_boot: ExecutorBootId,
@@ -377,8 +429,13 @@ impl RegisteredExecutorConnection {
         Ok(())
     }
     pub async fn request(&mut self, request: ExecutionRequest) -> std::io::Result<ExecutionReply> {
-        if matches!(request, ExecutionRequest::Handshake(_)) {
-            return Err(std::io::Error::other("connection already negotiated"));
+        if matches!(
+            request,
+            ExecutionRequest::Handshake(_) | ExecutionRequest::Watch
+        ) {
+            return Err(std::io::Error::other(
+                "use a dedicated connection for Watch; handshake already negotiated",
+            ));
         }
         self.begin()?;
         rights::send(

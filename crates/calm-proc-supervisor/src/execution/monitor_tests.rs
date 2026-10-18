@@ -1,10 +1,8 @@
 use super::*;
-use calm_session::control::IoMode;
 use std::{fs::File, io::Write, time::Duration};
-use workspace::identity::WorkspaceCwd;
 
 #[tokio::test]
-async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_child() {
+async fn retire_waits_output_open() {
     let temp = tempfile::tempdir().unwrap();
     let executor = Executor::open(ExecutorConfig {
         journal_directory: temp.path().join("journal"),
@@ -12,35 +10,11 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
         kernel_client_secret: CapabilityToken::fresh().unwrap(),
     })
     .unwrap();
-    let identity = ExecutionIdentity {
-        execution_id: ExecutionId::fresh().unwrap(),
-        executor_boot: executor.boot.clone(),
-        ticket_id: LaunchTicketId::fresh().unwrap(),
-        source_registration: ObjectRegistrationId::fresh().unwrap(),
-        source_incarnation: SourceObjectIncarnation::ExternalDir(
-            ExternalDirectoryIncarnationId::fresh().unwrap(),
-        ),
-        authority: ExecutionAuthority {
-            grant_id: ExecutionGrantId::fresh().unwrap(),
-            authorization_binding: AuthorizationBindingId::fresh().unwrap(),
-            authorization_version: 1,
-        },
-        scope: ExecutionScope::ExternalDir {
-            directory_id: ExternalDirectoryId::fresh().unwrap(),
-            registration_version: 1,
-            cwd: WorkspaceCwd::root(),
-        },
-        operation_id: "monitor-owned-child".into(),
-        specification_id: SpecificationId::fresh().unwrap(),
-        process_alias: "monitor-owned-child".into(),
-    };
-    let specification = ExecutionSpecification {
-        program: "/bin/true".into(),
-        args: vec![],
-        environment: vec![],
-        io_mode: IoMode::Pipe,
-        replay_bytes: 1024,
-    };
+    let (request, held) = protocol_tests::private(&executor, temp.path());
+    protocol_tests::prepare(&executor, &request, &held).await;
+    drop(held);
+    let identity = request.identity.clone();
+    let specification = request.specification.clone();
     let context = scope_helper::HelperContext {
         execution_id: identity.execution_id.clone(),
         executor_boot: executor.boot.clone(),
@@ -66,28 +40,13 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
         process: native,
         scope_mechanism: executor.mechanism.clone(),
     };
-    let tokens = ExecutionControlTokens::fresh().unwrap();
-    let control = ExecutionControl {
-        capability: ExecutionCapability {
-            identity: identity.clone(),
-            slot_version: 1,
-            token: tokens.lifecycle.clone(),
-            purpose: ExecutionControlPurpose::Lifecycle,
-        },
-        action: ProcessAction::Cleanup,
-    };
+    let lifecycle = request.control_tokens.lifecycle.clone();
     executor
         .persist(Journal {
             version: journal::JOURNAL_VERSION,
             host_boot_id: executor.host_boot_id.clone(),
             output_end: OutputEnd::Open,
-            request: PrepareExecution {
-                identity: identity.clone(),
-                ticket: CapabilityToken::fresh().unwrap(),
-                control_tokens: tokens,
-                handoff: None,
-                specification,
-            },
+            request,
             phase: Phase::Spawned(receipt),
             interactive_revoked: false,
             pending_persistence: false,
@@ -141,12 +100,16 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
         executor.store.load().unwrap()[0].output_end,
         OutputEnd::Open
     );
+    protocol_tests::assert_released(&executor);
     assert!(matches!(
-        executor.control(control).await.unwrap(),
-        ExecutionReply::ActionComplete
+        executor
+            .retire_execution(identity.execution_id.clone(), lifecycle.clone())
+            .await
+            .unwrap(),
+        ExecutionReply::Busy(BusyReason::OutputOpen)
     ));
     assert!(
-        !executor
+        executor
             .processes
             .lock()
             .unwrap()
@@ -176,8 +139,36 @@ async fn execution_monitor_cleanup_after_drained_before_wait_still_reaps_exact_c
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "Cleanup discarded the concrete reap owner"
+            "Retire discarded the concrete reap owner"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    loop {
+        match executor
+            .retire_execution(identity.execution_id.clone(), lifecycle.clone())
+            .await
+            .unwrap()
+        {
+            ExecutionReply::Retired(_) => break,
+            ExecutionReply::Busy(BusyReason::OutputOpen) => {
+                assert!(tokio::time::Instant::now() < deadline);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            other => panic!("retire failed: {other:?}"),
+        }
+    }
+    assert!(
+        !executor
+            .records
+            .lock()
+            .unwrap()
+            .contains_key(&identity.execution_id)
+    );
+    assert!(
+        !executor
+            .outputs
+            .lock()
+            .unwrap()
+            .contains_key(&identity.execution_id)
+    );
 }

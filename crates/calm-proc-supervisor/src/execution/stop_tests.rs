@@ -98,6 +98,7 @@ async fn stop_before_started_deadline_and_shutdown() {
             host_boot_id: executor.host_boot_id.clone(),
             output_end: OutputEnd::Open,
             request: PrepareExecution {
+                source: PreparedSource::Registered,
                 identity: identity.clone(),
                 ticket: CapabilityToken::fresh().unwrap(),
                 control_tokens: tokens,
