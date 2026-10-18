@@ -1,5 +1,6 @@
 //! Native exact-thread operations under the daemon's existing transition/replay boundary.
 use super::*;
+use crate::harness::backend::factory::RecoveryTarget;
 use serde_json::Value;
 #[cfg(feature = "fixtures")]
 use serde_json::json;
@@ -36,12 +37,13 @@ pub(crate) struct RecoveryThread<'a> {
 impl SharedCodexAppServer {
     pub(crate) async fn with_exact_thread<T>(
         &self,
-        thread_id: &str,
-        card_id: &str,
+        target: &RecoveryTarget,
         run: impl for<'scope> AsyncFnOnce(RecoveryThread<'scope>) -> Result<T>,
     ) -> Result<T> {
         let _transition = self.transition_serial.lock().await;
         let _replay = self.resume_replay_serial.lock().await;
+        let thread_id = target.thread_id();
+        let card_id = target.card_id();
         if self.thread_seals.is_sealed(thread_id) {
             return Err(CalmError::Conflict("conversation is being deleted".into()));
         }

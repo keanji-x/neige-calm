@@ -14,6 +14,7 @@ use crate::thread_seals::ThreadSeals;
 
 mod codex;
 mod recovery;
+pub(crate) use recovery::RecoveryTarget;
 
 /// Preserve the existing operation vs HTTP refusal classes, with one readiness decision.
 pub(crate) enum ReadinessFor {

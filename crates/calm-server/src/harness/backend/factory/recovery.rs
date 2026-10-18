@@ -11,8 +11,9 @@ use crate::session_projection_repo::WorkerSessionProjection;
 use crate::shared_codex_appserver::ThreadConfig;
 use serde_json::Value;
 
-/// Original carrier identity, captured and consumed only within this recovery owner.
-struct RecoveryTarget {
+/// Original carrier identity, constructed and consumed only within this recovery owner.
+/// The daemon can read this opaque target but cannot construct or retarget it.
+pub(crate) struct RecoveryTarget {
     thread_id: String,
     card_id: String,
 }
@@ -33,6 +34,12 @@ impl RecoveryTarget {
             card_id: runtime.card_id.clone(),
         })
     }
+    pub(crate) fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+    pub(crate) fn card_id(&self) -> &str {
+        &self.card_id
+    }
 }
 
 impl PlannerFactory<'_> {
@@ -44,7 +51,7 @@ impl PlannerFactory<'_> {
         let target = RecoveryTarget::active(runtime)?;
         let daemon = self.daemon()?;
         daemon
-            .with_exact_thread(&target.thread_id, &target.card_id, async |native| {
+            .with_exact_thread(&target, async |native| {
                 Self::restore_active(native, repo, runtime).await
             })
             .await
@@ -69,7 +76,7 @@ impl PlannerFactory<'_> {
             .ok_or_else(|| CalmError::Conflict("conversation changed during recovery".into()))?;
         let daemon = self.daemon()?;
         daemon
-            .with_exact_thread(&target.thread_id, &target.card_id, async |native| {
+            .with_exact_thread(&target, async |native| {
                 Self::restore_failed(native, repo, &runtime).await
             })
             .await
