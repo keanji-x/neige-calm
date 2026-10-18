@@ -252,3 +252,50 @@ and unconfirmed releases and Unknown. A new different claim is independent. Orig
 immutable journals/audit/proof are retained, including original-key reads. No new
 executor, approval bit, or progress journal is allowed. New normal requests retain
 the existing single workflow and never enter this boundary.
+
+## Irreversible compensation boundary (L2)
+
+The original A431065 review identified a V2 window that B431114's pass and the
+268-test replay did not exclude. An original live begin can remain after its
+Intent checkpoint, lose its SQL lease, and send after another runtime's serial
+Resolve has returned Unknown but before Finished. Cancellation of that future
+in the previous interrupted-intent test removed the critical observer.
+
+The single authority is the existing workflow Compensating state, made monotone
+through Finished. Its entry is the existing operation lease/output CAS transaction,
+not a send-time lease check. It revokes both immutable original PauseRequests before
+any Resolve. The final worker-session snapshot UPDATE consumes that durable fact.
+A live capability cannot recreate a revoked exact claim. No new persistent field
+is needed: original input already binds both claims and Compensating/Finished
+already distinguishes irrevocable compensation from live preparation.
+
+| Owner / side (source and target independently) | Transaction order / evidence | Allowed settlement |
+| --- | --- | --- |
+| V2 original or adopted workflow | Revocation commits before original pause snapshot | Reject creation of that exact claim; serial Resolve Unknown may establish Untouched |
+| V2 original or adopted workflow | Original pause snapshot commits before revocation | Preserve receipt; serial owner resolves/releases that same claim; HealthyReleased permits Finished |
+| Either writer starts concurrently | SQLite IMMEDIATE writer serialization chooses one of the two orders above | No interval in which successful absence allows a new original claim |
+| Legacy Finished or adopted coordinator | Existing immutable original request and Finished/adoption mapping revoke before workflow Resolve | Same final-writer guard and existing-receipt reconciliation; no live eligibility |
+| Any revoked owner | Exact paused receipt already exists | Preserve fault/health writes and typed release; revocation does not erase its effect |
+| Any owner, either side | Revocation error, ignored checkpoint, unknown commit or failed Resolve | No absence settlement, no inactive reservation; recover original operation/generation |
+| Any owner, either side | Faulted or recovery-unconfirmed typed release | Retain exclusion and NeedsRecovery; released is not healthy |
+| Different fresh claim / ordinary harness snapshot | No exact revoked request match | Existing ordinary snapshot/current-binding/CAS rules apply |
+| Finished / Activated | Real settlement / forward activation already committed | Absorbing historical result; no new claim or reinstall |
+
+0174 replaces the terminal-only V2 guard and separate legacy guard with one
+creation-only guard, retaining the existing-receipt exception for health/release.
+It replaces the two legacy-only indexes with two partial exact-request expression
+indexes over the domain's two protocol kinds. No whole-history scan is needed for
+ordinary eligible snapshot updates: each side uses its exact indexed request.
+Monotonicity also freezes the revoked owner kind and original claim bindings, so
+later output/technical phase writes cannot restore execution eligibility. Existing
+keyed-row permanence and adopted-journal immutability remain authoritative.
+
+Permanent cost: two index entries per original/adopted workflow or legacy
+coordinator, replacing two legacy entries; each eligible claim-creation UPDATE
+performs at most two indexed lookups and legacy adoption primary-key lookups.
+State checkpoints update the existing journal only, with no additional normal-path
+checkpoint, new table, duplicate field, registry, queue or executor. Ordinary new
+tests/providers require no new inventory. A migration still changes its SQL file
+and the existing head-schema filename inventory. Existing six gate steps each
+execute once per gate run; only the specified focused suite is intentionally
+replayed after worker verification. Migrations through 0173 stay byte-frozen.

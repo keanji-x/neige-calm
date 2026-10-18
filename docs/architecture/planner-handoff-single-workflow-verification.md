@@ -358,3 +358,152 @@ Normal workflow queries retain their existing entry point. No deferred-read
 allowlist entries or new permanent pins are added. The removed mechanism is the
 separate cutover read-back wrapper, not the existing transaction primitive. The
 final kernel focused replay rechecks pure reads and every integrated recovery path.
+
+## Compensation revocation correction
+
+This slice continues rejected f0086f2ed63329d20148f393d8f0577098c6757d,
+without a mainline sync. It remains L2: the original claim's execution authority
+and persistent settlement boundary change. Original source reviews are
+`handoff-legacy-settlement-review-a` (completed event 431065, blocking) and
+`handoff-legacy-settlement-review-b` (completed event 431114, pass). The decision
+uses the production call path and a new failing interleaving, not review votes.
+
+The unified [revocation and settlement matrix](planner-handoff-single-workflow.md#irreversible-compensation-boundary-l2)
+uses existing Compensating progress as permanent revocation. Its existing
+lease/output CAS transaction commits before Resolve; an error or ignored UPDATE
+cannot reach the absence branch. The new 0174 migration makes this state monotone,
+freezes the original request bindings after revocation, and combines 0172's
+terminal-only V2 fence and 0173's separate legacy fence into one creation guard.
+Existing exact paused claims retain fault/health and typed-release authority.
+The final full-snapshot UPDATE consumes this fact for both source and target.
+No send-time memory lease check, driver mutex, TTL, new executor or new field is
+used as the commit fence.
+
+### Actual first red
+
+Both runs used the complete specified focused command (not a Python SQL model).
+`/tmp/handoff-revocation-first-red.log` selected 270 tests: the original 268 passed,
+and only these two newly added tests failed with
+`late original pause committed after absence`:
+
+- `handoff_coordinator_live_source_intent_cannot_land_after_serial_absence`
+- `handoff_coordinator_live_target_intent_cannot_land_after_serial_absence`
+
+That first fixture used the existing unstarted harness's production command handler
+and serial admission lock. To exclude a fixture-only explanation, both harnesses
+were then changed to actual running harness loops and the entire selection rerun
+before the fix. `/tmp/handoff-revocation-running-first-red.log` again selected
+270 = 268 passed + exactly the same two failures, for the same assertion.
+
+Both runtimes use the same registry and SQLite file; the second runtime actually
+reopens the file and invokes ordinary `drive()` / `claim_drive`. The only lease
+fixture is `lease_until_ms=0`, the same deadline seam used by repository claim
+tests. Neither lease owner nor operation phase/output is manually claimed or
+changed. Each test verifies the production claim changed the owner, the original
+begin future is still live, Intent has reached Compensating/Untouched after real
+serial Unknown, and reservation remains active while settlement is stopped.
+It then releases that same original future's send, waits for its actual pause SQL,
+and lets the second runtime commit Finished. Before the fix this yielded a paused
+original session with active=0. No original future is aborted, no successful receipt
+is authored, and no business progress is injected in these V2 reproductions.
+
+### Maintenance and limits
+
+Removed mechanisms: the V2 terminal-only creation fence and the parallel legacy
+creation fence; their two legacy-only indexes are replaced by two partial indexes
+covering the two domain protocol kinds. Removed assumption: a past serial absence
+alone grants future terminalization while an unsent original command remains live.
+No registration, repeated persistent field or normal checkpoint is added. Retain
+one journal, thin reservation, original scope/claims, ABA generations, immutable
+resource/adoption proof and full-row snapshot/CAS for their existing independent
+identity, exclusion, Unknown, health and queue/floor/ACK responsibilities.
+
+An initial OR query plan scanned a partial index. The implemented UNION ALL
+candidate projection gives two `SEARCH ... (<expr>=?)` exact index plans and a
+legacy-adoption primary-key lookup (`/tmp/handoff-revocation-index-plan.txt`). It
+stores no new projection or queue. Ordinary later tests/providers require no new
+list; a migration still updates its SQL file and the existing schema inventory.
+0173 and all earlier migration bytes remain frozen. The kernel owns all six gate
+steps; the worker only executes the full focused selection and necessary formatter
+or lint fixes. The focused replay is the one intended duplicate check.
+
+No actual old binary, real provider inference, Tier 2, UI/browser, remote CI or broad
+workspace suite is claimed. The legacy wire-conversion fixtures remain explicit
+protocol-boundary fixtures, rather than historical binary execution. Native calls
+use the established daemon stub. New fixture seams only stop the real compensation
+entry and committed revocation checkpoints; they do not synthesize execution state.
+
+The additional matrix tests use both source and target. Controlled final-write
+orders stop the real original pause after staging but before its final snapshot
+transaction, and stop the second leased runtime before and after revocation.
+Pause-first preserves the actual receipt and reconciles HealthyReleased;
+revocation-first rejects creation. A separate SQLite-file test releases both
+writers behind a third IMMEDIATE transaction and accepts either winner, asserting
+real Finished never leaves either session paused. The legacy post-intent/adoption
+fixture now exercises target as well as source, preserving its original assertions
+and byte-frozen old journal. Its target's source receipt comes from the real
+previous source pause, not a constructed proof.
+
+Ignored-revocation tests inject an actual RAISE(IGNORE) on the Compensating UPDATE,
+verify persisted Intent and active exclusion remain, release the still-live old
+send, then repair storage, reopen the file and explicitly retry the original
+operation/generation to release its actual receipt. The existing checkpoint ABORT
+regression remains. Another test loses only the compensating future after the
+real revocation commit but before Resolve, reopens the file, and verifies the
+uncancelled original future still cannot create its claim. It expires only the
+new dead owner's lease to drive actual recovery. This models lost-driver/answer
+recovery after a known commit, not an injected indeterminate SQLite COMMIT I/O.
+The latter remains a source-level fail-closed argument: any checkpoint/commit error
+returns before Resolve; only a later successful leased checkpoint can settle.
+
+Fault and recovered-health tests change the existing exact paused claim *after*
+revocation commits. Real notification and full-row recovery owners can still
+persist FaultedPaused/RecoveryHealthUnconfirmed and typed release on either side;
+nonhealthy release retains NeedsRecovery and active exclusion. Ordinary fresh
+claims remain available. The original normal single-owner, Activated absorbing,
+Unknown-no-remint, full snapshot, rewind, ACK/floor and worker/approval-history
+coverage stays in the same complete focused selection.
+
+### Final focused and single-factor mutation evidence
+
+Worker green runs are `/tmp/handoff-revocation-green-1.log` (273/273), then
+`/tmp/handoff-revocation-green-2.log` (275/275 after the concurrent writers,
+post-revocation owner loss and legacy target extensions). All use the complete
+specified selection, including both integration binaries. They preserve the old
+268 observers; they are not offered as proof without the new failing interleaving.
+
+The final production mutation changes only 0174's workflow creation predicate
+from `compensating/finished/activated` to `finished/activated`. It leaves the
+monotone transition, original binding protection, legacy and terminal guards
+intact. Tests and fixtures are unchanged. Before writing, the complete predicted
+red set was recorded by full test name:
+
+- `harness::run_loop::handoff_coordinator_revocation_tests::handoff_coordinator_live_source_intent_cannot_land_after_serial_absence`
+- `harness::run_loop::handoff_coordinator_revocation_tests::handoff_coordinator_live_target_intent_cannot_land_after_serial_absence`
+- `harness::run_loop::handoff_coordinator_revocation_tests::handoff_coordinator_final_pause_and_revocation_transactions_serialize_both_orders`
+- `harness::run_loop::handoff_coordinator_revocation_tests::handoff_coordinator_revocation_survives_owner_loss_and_file_reopen`
+
+`/tmp/handoff-revocation-mutation-red.log` actually ran all 275: 271 passed and
+exactly those four failed (exit 100). The comparison rejects missing or additional
+failures. `/tmp/handoff-revocation-mutation-restored.log` ran the entire selection
+after byte restoration: 275/275 passed (exit 0). Mutation ran with one exclusive
+writer and no concurrent review. The 0174 source SHA256 before and after restore
+is `03289033eb96feed477fae885e4111d6b94a81575749f925d9de33f0fb42a411`;
+the mutant is `053a1ea1c3527589926c8a5ae70b8b0fe3a0d254dcd8b3289b759efa235e12d2`.
+Complete tracked/untracked file maps, pre-write prediction and proposal, applied
+single-file check, actual red-set comparison and post-green restoration checks
+are `/tmp/handoff-revocation-mutation.json`, `.proposal.diff`, `.before.diff`,
+`.applied.diff` and `.restored.diff`. Before, restored and post-green tree hashes
+all equal `523573faf6d4a6320b1579c8a6393d1a3cf33645d68b19056d7bf714f06016a4`;
+the full diff hash in all three is
+`d193b06d0484f6e842121bc8474b9c0e6eb4af8210e8e2c13eabd3096b54318a`.
+Only this final verification text is appended after that exact restoration check;
+production and test bytes stay identical for the kernel's frozen-target replay.
+The complete 173-file pre-0174 migration equality/hash record is
+`/tmp/handoff-revocation-frozen-migrations.json`.
+
+No API schema, generated binding input, frontend file or visible UI changed in
+this slice, so no generator, ownership-change trailer or browser preview is
+required for its delta. Earlier whole-Track frontend changes retain their own
+ownership history; this statement does not erase them. Kernel results belong in
+the task report and exact gate log, rather than an edit after its passed run.

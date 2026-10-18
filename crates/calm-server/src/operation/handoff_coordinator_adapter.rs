@@ -287,6 +287,10 @@ impl HandoffCoordinatorAdapter {
         mut claims: Claims,
         reason: String,
     ) -> Result<AppServerInteractOutcome> {
+        self.seam(op, "BeforeCompensation").await;
+        // This lease/output CAS commits the irreversible revocation of both original
+        // claims. The final snapshot SQL consumes it, even if the old begin is live.
+        // An error/ignored write returns before any absence barrier or settlement.
         self.checkpoint(
             ctx,
             op,
@@ -297,6 +301,7 @@ impl HandoffCoordinatorAdapter {
             },
         )
         .await?;
+        self.seam(op, "Compensating").await;
         for source in [false, true] {
             let claim = if source {
                 &claims.source

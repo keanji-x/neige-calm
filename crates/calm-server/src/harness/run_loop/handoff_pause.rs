@@ -101,8 +101,9 @@ impl PlannerHarness {
         }
     }
 
-    /// Serial barrier behind every accepted original command. Unknown here proves no
-    /// persisted effect only for this still-current, open original owner; no new pause.
+    /// Serial barrier behind accepted commands on this still-current, open owner.
+    /// A domain may settle Unknown as absence only after durable execution revocation:
+    /// commands not yet sent are outside this barrier and must be fenced at SQL commit.
     pub(crate) async fn resolve_original_handoff_pause(
         &self,
         request: PauseRequest,

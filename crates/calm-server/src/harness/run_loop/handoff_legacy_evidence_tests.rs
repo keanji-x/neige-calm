@@ -169,12 +169,12 @@ async fn handoff_coordinator_legacy_finished_requires_explicit_original_claim_se
         if landed {
             // Emulate the pre-0173 boundary only during the real original command.
             let trigger: String = sqlx::query_scalar(
-                "SELECT sql FROM sqlite_master WHERE name='planner_handoff_legacy_no_late_pause'",
+                "SELECT sql FROM sqlite_master WHERE name='planner_handoff_no_new_revoked_claim'",
             )
             .fetch_one(a.repo.pool())
             .await
             .unwrap();
-            sqlx::query("DROP TRIGGER planner_handoff_legacy_no_late_pause")
+            sqlx::query("DROP TRIGGER planner_handoff_no_new_revoked_claim")
                 .execute(a.repo.pool())
                 .await
                 .unwrap();
@@ -420,49 +420,58 @@ async fn handoff_coordinator_legacy_activated_ignored_reservation_reopens_origin
 
 #[tokio::test]
 async fn handoff_coordinator_legacy_source_intent_expired_driver_cannot_relock_after_adoption() {
-    use crate::operation::handoff_coordinator as handoff;
-    let a = Fixture::new().await;
-    let b = a.sibling(CardRole::Assistant).await;
-    let (runtime, _) = runtime(&a, &b);
-    let approval = request(&a, &b).await;
-    let admitted = crate::test_seams::PausePoint::default();
-    crate::test_seams::install_pause_for_test(
-        "handoff-begin-admitted",
-        &approval.key,
-        admitted.clone(),
-    );
-    let drive = {
-        let runtime = runtime.clone();
-        let approval = approval.clone();
-        tokio::spawn(async move { handoff::begin(&runtime, approval).await })
-    };
-    super::handoff_coordinator_tests::entered(&admitted).await;
-    let id = runtime
-        .find_by_kind_and_idempotency("handoff-workflow", &approval.key)
-        .await
-        .unwrap()
-        .unwrap()
-        .id;
-    let hook = super::handoff_coordinator_tests::hook(&id, "SourceIntent");
-    admitted.release.notify_one();
-    super::handoff_coordinator_tests::entered(&hook).await;
-    let mut input: serde_json::Value = serde_json::from_str(
-        &sqlx::query_scalar::<_, String>("SELECT payload_json FROM operations WHERE id=?1")
-            .bind(&id)
-            .fetch_one(a.repo.pool())
+    for source in [true, false] {
+        use crate::operation::handoff_coordinator as handoff;
+        let a = Fixture::new().await;
+        let b = a.sibling(CardRole::Assistant).await;
+        let (runtime, _) = runtime(&a, &b);
+        let approval = request(&a, &b).await;
+        let admitted = crate::test_seams::PausePoint::default();
+        crate::test_seams::install_pause_for_test(
+            "handoff-begin-admitted",
+            &approval.key,
+            admitted.clone(),
+        );
+        let drive = {
+            let runtime = runtime.clone();
+            let approval = approval.clone();
+            tokio::spawn(async move { handoff::begin(&runtime, approval).await })
+        };
+        super::handoff_coordinator_tests::entered(&admitted).await;
+        let id = runtime
+            .find_by_kind_and_idempotency("handoff-workflow", &approval.key)
             .await
-            .unwrap(),
-    )
-    .unwrap();
-    input.as_object_mut().unwrap().remove("version");
-    let output = crate::operation::TxOutput::new(
-        "track",
-        Some(approval.track_id.to_string()),
-        serde_json::json!({"stage":"source_intent","source_attempted":true,"target_attempted":false,"source_receipt":null,"target_receipt":null,"source_release":null,"target_release":null,"plan":null,"committed":null,"reason":null}),
-    );
-    // Use the public production post-intent pause seam. This storage representation change
-    // models a V1 intent, not execution of a historical binary or a second compensation algorithm.
-    sqlx::query(concat!(
+            .unwrap()
+            .unwrap()
+            .id;
+        let hook = super::handoff_coordinator_tests::hook(
+            &id,
+            if source {
+                "SourceIntent"
+            } else {
+                "TargetIntent"
+            },
+        );
+        admitted.release.notify_one();
+        super::handoff_coordinator_tests::entered(&hook).await;
+        let mut input: serde_json::Value = serde_json::from_str(
+            &sqlx::query_scalar::<_, String>("SELECT payload_json FROM operations WHERE id=?1")
+                .bind(&id)
+                .fetch_one(a.repo.pool())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        input.as_object_mut().unwrap().remove("version");
+        let source_receipt = a.stored().await.handoff_pause.receipt().cloned();
+        let output = crate::operation::TxOutput::new(
+            "track",
+            Some(approval.track_id.to_string()),
+            serde_json::json!({"stage":if source { "source_intent" } else { "target_intent" },"source_attempted":true,"target_attempted":!source,"source_receipt":source_receipt,"target_receipt":null,"source_release":null,"target_release":null,"plan":null,"committed":null,"reason":null}),
+        );
+        // Use the public production post-intent pause seam. This storage representation change
+        // models a V1 intent, not execution of a historical binary or a second compensation algorithm.
+        sqlx::query(concat!(
         "UPDATE operations SET kind='handoff-coordinator',payload_json=?1,tx_output_json=?2,",
         "lease_until_ms=0,lease_owner=NULL,phase='stuck',",
         "phase_detail_json='{\"reason\":\"Legacy handoff requires explicit adoption\",\"since\":0,",
@@ -474,50 +483,53 @@ async fn handoff_coordinator_legacy_source_intent_expired_driver_cannot_relock_a
     .execute(a.repo.pool())
     .await
     .unwrap();
-    // A separate process-equivalent runtime serially resolves the exact request to absence.
-    let (recovery, _) = self::runtime(&a, &b);
-    let settling = crate::test_seams::PausePoint::default();
-    crate::test_seams::install_pause_for_test(
-        "handoff-coordinator-before-settlement",
-        &approval.source_session_id,
-        settling.clone(),
-    );
-    let retry = {
-        let approval = approval.clone();
-        tokio::spawn(async move { handoff::retry(&recovery, &approval, 0).await })
-    };
-    super::handoff_coordinator_tests::entered(&settling).await;
-    // The actual old command arrives after serial absence but BEFORE terminal persistence.
-    // Adoption must fence this interval; a terminal-only guard would be too late.
-    assert_eq!(active(&a).await, 1);
-    let frozen: (String, String, String) =
-        sqlx::query_as("SELECT payload_json,tx_output_json,phase FROM operations WHERE id=?1")
+        // A separate process-equivalent runtime serially resolves the exact request to absence.
+        let (recovery, _) = self::runtime(&a, &b);
+        let settling = crate::test_seams::PausePoint::default();
+        crate::test_seams::install_pause_for_test(
+            "handoff-coordinator-before-settlement",
+            &approval.source_session_id,
+            settling.clone(),
+        );
+        let retry = {
+            let approval = approval.clone();
+            tokio::spawn(async move { handoff::retry(&recovery, &approval, 0).await })
+        };
+        super::handoff_coordinator_tests::entered(&settling).await;
+        // The actual old command arrives after serial absence but BEFORE terminal persistence.
+        // Adoption must fence this interval; a terminal-only guard would be too late.
+        assert_eq!(active(&a).await, 1);
+        let frozen: (String, String, String) =
+            sqlx::query_as("SELECT payload_json,tx_output_json,phase FROM operations WHERE id=?1")
+                .bind(&id)
+                .fetch_one(a.repo.pool())
+                .await
+                .unwrap();
+        hook.release.notify_one();
+        let _old_answer = drive.await.unwrap();
+        assert_eq!(
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT payload_json,tx_output_json,phase FROM operations WHERE id=?1"
+            )
             .bind(&id)
             .fetch_one(a.repo.pool())
             .await
-            .unwrap();
-    hook.release.notify_one();
-    let _old_answer = drive.await.unwrap();
-    assert_eq!(
-        sqlx::query_as::<_, (String, String, String)>(
-            "SELECT payload_json,tx_output_json,phase FROM operations WHERE id=?1"
-        )
-        .bind(&id)
-        .fetch_one(a.repo.pool())
-        .await
-        .unwrap(),
-        frozen,
-        "old journal remains byte-for-byte frozen"
-    );
-    assert!(!a.stored().await.handoff_pause.is_paused());
-    settling.release.notify_one();
-    assert!(matches!(
-        retry.await.unwrap().unwrap(),
-        handoff::CoordinatorResult::CancelledOrRefused
-    ));
-    assert!(!a.stored().await.handoff_pause.is_paused());
-    assert_eq!(a.daemon.started_thread_params_for_test().len(), 0);
-    assert_eq!(active(&a).await, 0);
+            .unwrap(),
+            frozen,
+            "old journal remains byte-for-byte frozen"
+        );
+        assert!(!a.stored().await.handoff_pause.is_paused());
+        assert!(!b.stored().await.handoff_pause.is_paused());
+        settling.release.notify_one();
+        assert!(matches!(
+            retry.await.unwrap().unwrap(),
+            handoff::CoordinatorResult::CancelledOrRefused
+        ));
+        assert!(!a.stored().await.handoff_pause.is_paused());
+        assert!(!b.stored().await.handoff_pause.is_paused());
+        assert_eq!(a.daemon.started_thread_params_for_test().len(), 0);
+        assert_eq!(active(&a).await, 0);
+    }
 }
 
 #[tokio::test]
