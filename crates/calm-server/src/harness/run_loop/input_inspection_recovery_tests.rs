@@ -29,7 +29,7 @@ pub(super) async fn confirm_projection(
         before.turn_id.is_none(),
         "the real projection is initially provisional"
     );
-    let turn_id = harness.snapshot().await.last_turn_id.unwrap();
+    let turn_id = harness.snapshot().await.unwrap().last_turn_id.unwrap();
     let thread_id = inner.thread_id.read().await.clone().unwrap();
     let mut events = inner.backend.subscribe_events();
     daemon.emit_notification_for_test(crate::codex_appserver::Notification::Item {
@@ -69,6 +69,13 @@ pub(super) async fn confirm_projection(
 }
 
 fn unstarted(fx: &Fixture, id: String, snapshot: HarnessSnapshot) -> PlannerHarness {
+    let backend = crate::harness::backend::PlannerBackend::codex(
+        fx.daemon.clone(),
+        fx.harness.inner.card_id.as_str(),
+        fx.harness.inner.track_id.as_str(),
+        &id,
+    )
+    .unwrap();
     let (harness, _ingress) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
             worker_session_id: id,
@@ -79,10 +86,10 @@ fn unstarted(fx: &Fixture, id: String, snapshot: HarnessSnapshot) -> PlannerHarn
             events: fx.harness.inner.events.clone(),
             card_role_cache: fx.harness.inner.card_role_cache.clone(),
             track_area_cache: fx.harness.inner.track_area_cache.clone(),
-            backend: fx.daemon.clone().into(),
+            backend,
             live_replies: LiveReplies::for_test(),
             config: HarnessConfig::default(),
-            snapshot,
+            snapshot: snapshot.try_into().unwrap(),
         },
         8,
     );
@@ -181,7 +188,12 @@ async fn initial_input_inspection_recovery_does_not_certify_a_predecessors_faile
     fx.daemon.fail_turn_start_for_test();
     fx.issue().await;
     assert_eq!(
-        fx.harness.snapshot().await.projection_client_id.as_ref(),
+        fx.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .projection_client_id
+            .as_ref(),
         Some(&id)
     );
     let successor = transfer_before_issuance(&fx).await;
@@ -360,7 +372,14 @@ async fn initial_input_inspection_recovery_keeps_a_successors_real_provider_conf
     *successor.inner.thread_id.write().await = Some(thread);
     *successor.inner.state.lock().await = HarnessState::Idle;
     maybe_issue_turn(&successor.inner).await.unwrap();
-    assert!(successor.snapshot().await.pending_entries().is_empty());
+    assert!(
+        successor
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .is_empty()
+    );
     assert_eq!(
         successor.inspect_input(id.clone()).await.unwrap(),
         InputInspection::Unavailable(Reason::RuntimeUnavailable)
