@@ -114,9 +114,7 @@ impl CardStartFence {
             .await?
         {
             if op.kind == PLANNER_HARNESS_START
-                && super::assistant_start_wire::StartInput::decode(&op.payload)?
-                    .payload
-                    .planner_card_id
+                && super::planner_harness_start_adapter::operation_card_id(&op.payload)?
                     == self.card_id
             {
                 return Err(CalmError::Conflict(

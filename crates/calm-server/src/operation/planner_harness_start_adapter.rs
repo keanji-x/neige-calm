@@ -105,6 +105,9 @@ pub struct PlannerHarnessStartAdapter {
     invocation: StartInvocation,
 }
 
+mod target;
+pub(super) use target::operation_card_id;
+
 impl PlannerHarnessStartAdapter {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
