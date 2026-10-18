@@ -72,6 +72,87 @@ async fn transcript_refresh_reprepares_after_hook_append_without_stale_publicati
 }
 
 #[tokio::test]
+async fn transcript_refresh_reuses_unchanged_card_after_hook_append() {
+    let fx = Fixture::new().await;
+    let unchanged = fx
+        .repo
+        .card_create(NewCard {
+            track_id: fx.track.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+            title: None,
+        })
+        .await
+        .unwrap();
+    let bus = crate::event::EventBus::new();
+    for event in [
+        Event::CardAdded(unchanged.clone()),
+        Event::CodexHook {
+            card_id: unchanged.id.clone(),
+            kind: "hook.codex.user_prompt_submit".into(),
+            hook_idempotency_key: "unchanged card retained hook".into(),
+            payload: json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "unchanged card retained hook",
+            }),
+        },
+    ] {
+        fx.repo
+            .log_pure_event(
+                crate::ids::ActorId::Kernel,
+                crate::event::EventScope::Card {
+                    card: unchanged.id.clone(),
+                    track: fx.track.id.clone(),
+                    area: fx.track.area_id.clone(),
+                },
+                None,
+                &bus,
+                fx.repo.card_role_cache(),
+                fx.repo.track_area_cache(),
+                event,
+            )
+            .await
+            .unwrap();
+    }
+    let (pause, task) = start(
+        fx.repo.pool().clone(),
+        fx.track.id.clone(),
+        vec![Phase::BeforeWrite],
+    );
+    pause.entered().await;
+    assert_eq!(pause.reads(), 2);
+    fx.hook("changed card appended hook").await;
+    let parent = head(fx.repo.pool(), &fx.track.id).await.unwrap();
+    pause.release();
+    let commit = finish(task).await.unwrap();
+    for name in ["events.json", "conversation.md"] {
+        assert!(
+            fx.text(&commit, &fx.card.id, name)
+                .await
+                .contains("changed card appended hook")
+        );
+        assert!(
+            fx.text(&commit, &unchanged.id, name)
+                .await
+                .contains("unchanged card retained hook")
+        );
+    }
+    let record = super::super::commit_record(fx.repo.pool(), &commit)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.parent_hash, parent);
+    assert_eq!(pause.attempts(), 2);
+    assert_eq!(fx.refresh_count().await, 1);
+    assert_eq!(
+        pause.reads(),
+        3,
+        "only the changed card must be reinterpreted"
+    );
+}
+
+#[tokio::test]
 async fn transcript_refresh_reprepares_after_selected_hook_delete_with_same_max_and_watermark() {
     let fx = Fixture::new().await;
     let removed = fx.hook("removed middle selected hook").await;

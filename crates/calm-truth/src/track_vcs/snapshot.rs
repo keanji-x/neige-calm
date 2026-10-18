@@ -398,8 +398,8 @@ pub(super) async fn hook_rows_for_card<'e>(
     .await?)
 }
 
-pub(super) async fn hook_ids_for_card_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+pub(super) async fn hook_ids_for_card<'e>(
+    executor: impl Executor<'e, Database = Sqlite>,
     track_id: &TrackId,
     card_id: &CardId,
 ) -> Result<Vec<i64>> {
@@ -407,7 +407,7 @@ pub(super) async fn hook_ids_for_card_tx(
         .bind(track_id.as_str())
         .bind(card_id.as_str())
         .bind(track_fs_view::HOOK_EVENT_TRANSCRIPT_CAP as i64)
-        .fetch_all(&mut **tx)
+        .fetch_all(executor)
         .await?)
 }
 

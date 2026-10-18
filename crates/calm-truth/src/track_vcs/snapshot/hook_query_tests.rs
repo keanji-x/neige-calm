@@ -112,7 +112,7 @@ async fn transcript_hook_selector_caps_mixed_kinds_after_exact_scope_filtering()
     let mut tx = crate::db::sqlite::begin_immediate_tx(fx.repo.pool())
         .await
         .unwrap();
-    let ids = hook_ids_for_card_tx(&mut tx, &fx.track.id, &fx.card.id)
+    let ids = hook_ids_for_card(&mut **tx, &fx.track.id, &fx.card.id)
         .await
         .unwrap();
     tx.rollback().await.unwrap();

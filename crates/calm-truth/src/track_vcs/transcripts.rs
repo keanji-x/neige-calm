@@ -3,7 +3,7 @@ use super::commit::commit_delta_in_tx;
 use super::delta::{PathDelta, add_card_event_paths};
 use super::snapshot::{
     cards_for_track, cards_for_track_tx, content_markdown, conversation_markdown,
-    hook_events_for_card_tx, hook_events_from_rows, hook_events_json, hook_ids_for_card_tx,
+    hook_events_for_card_tx, hook_events_from_rows, hook_events_json, hook_ids_for_card,
     hook_rows_for_card,
 };
 use super::store::{
@@ -109,7 +109,11 @@ impl HookInputs<'_> {
     }
 }
 
-async fn prepare(pool: &SqlitePool, track_id: &TrackId) -> Result<PreparedHooks> {
+async fn prepare(
+    pool: &SqlitePool,
+    track_id: &TrackId,
+    prepared: &mut PreparedHooks,
+) -> Result<()> {
     let visibility = match head(pool, track_id).await? {
         Some(parent) => {
             let manifest = tree_at(pool, &parent).await?.ok_or_else(|| {
@@ -120,8 +124,15 @@ async fn prepare(pool: &SqlitePool, track_id: &TrackId) -> Result<PreparedHooks>
         None => CardVisibility::announced_only(),
     };
     let cards = cards_for_track(pool, track_id, &visibility).await?;
-    let mut prepared = HashMap::new();
+    let current: HashSet<_> = cards.iter().map(|card| &card.card.id).collect();
+    prepared.retain(|card_id, _| current.contains(card_id));
     for card in cards {
+        if let Some(input) = prepared.get(&card.card.id)
+            && hook_ids_for_card(pool, track_id, &card.card.id).await? == input.ids
+        {
+            // This read only permits reuse; the writer still fences every selected ID.
+            continue;
+        }
         // IDs and raw payloads come from one SELECT, so their witness cannot describe another slice.
         let rows = hook_rows_for_card(pool, track_id, &card.card.id).await?;
         let ids = rows.iter().map(|row| row.0).collect();
@@ -136,7 +147,7 @@ async fn prepare(pool: &SqlitePool, track_id: &TrackId) -> Result<PreparedHooks>
         };
         prepared.insert(card.card.id, input);
     }
-    Ok(prepared)
+    Ok(())
 }
 
 async fn inputs_are_current(
@@ -161,7 +172,9 @@ async fn inputs_are_current(
         return Ok(false);
     }
     for card in cards {
-        if hook_ids_for_card_tx(tx, track_id, &card.card.id).await? != prepared[&card.card.id].ids {
+        if hook_ids_for_card(&mut **tx, track_id, &card.card.id).await?
+            != prepared[&card.card.id].ids
+        {
             return Ok(false);
         }
     }
@@ -178,8 +191,9 @@ pub async fn snapshot_transcripts_for_cards_in_track(
     event_id: Option<i64>,
     manifest_schema_version: i64,
 ) -> Result<CommitHash> {
+    let mut prepared = HashMap::new();
     for _ in 0..PREPARATION_ATTEMPTS {
-        let prepared = prepare(pool, track_id).await?;
+        prepare(pool, track_id, &mut prepared).await?;
         #[cfg(test)]
         super::transcript_writer_tests::at_phase(
             super::transcript_writer_tests::Phase::BeforeWrite,
