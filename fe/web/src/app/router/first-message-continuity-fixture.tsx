@@ -62,7 +62,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
           const key = request.headers?.['Idempotency-Key'];
           if (key === undefined) throw new Error('Missing original key');
           created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex',
-            state: options.incomplete ? 'failed' : 'idle', updatedAt: 10, lastTurnCompletedAt: null };
+            state: options.incomplete ? 'failed' : 'idle', updatedAt: 10, archivedAt: null, lastTurnCompletedAt: null };
           await heldCreate;
           if (options.loseReply) throw new Error('The create reply was lost.');
           return { status: 201, statusText: 'Created', body: { ...created, initialInput: options.legacy ? { kind: 'legacy-unavailable' }

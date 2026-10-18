@@ -57,6 +57,34 @@ impl CardStartFence {
             .await?)
     }
 
+    /// Archive admission, while the caller also holds the runtime's drive lock.
+    /// The request fence prevents new submissions; the drive lock freezes preparation,
+    /// provider effects and compensation. A cancelled request leaves its durable start
+    /// behind, so an idle session alone does not establish that the card is settled.
+    pub(crate) async fn require_settled(&self) -> Result<()> {
+        // Reuse the operation owner's recovery inventory: it includes every resumable
+        // start phase and compensation, regardless of lease age. Start has no explicit
+        // retry phase; terminal/stuck operations cannot be driven again.
+        for op in self
+            .operation_runtime
+            .repo
+            .abandoned_running_operations_on_boot()
+            .await?
+        {
+            if op.kind == PLANNER_HARNESS_START
+                && super::assistant_start_wire::StartInput::decode(&op.payload)?
+                    .payload
+                    .planner_card_id
+                    == self.card_id
+            {
+                return Err(CalmError::Conflict(
+                    "Wait for the conversation session start to finish before archiving.".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Submit one `planner-harness-start` for this fence's card and wait for its outcome. The
     /// caller maps the outcome; a payload naming another card is refused before anything is
     /// submitted.

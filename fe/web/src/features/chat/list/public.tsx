@@ -2,8 +2,12 @@
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
 import { useId } from 'react';
+import { useState } from '../../../ui/state/public.ts';
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
+import { Icon } from '../../../ui/icon/public.tsx';
+import { ConversationGroups } from './groups.tsx';
 import { activityLabelOf, type CardActivity } from '../../../../../core/domain/activity.ts';
-import { CONVERSATION_KIND_LABEL, PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../../core/domain/conversation.ts';
+import { conversationName, CONVERSATION_KIND_LABEL, PLANNER_CONVERSATION_KIND, type Conversation } from '../../../../../core/domain/conversation.ts';
 import { deriveConversationList } from '../../../../../core/view/conversation-list.ts';
 import { ContextIconSlot, ContextItem, ContextList } from '../../../ui/panel-card/context.tsx';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
@@ -29,19 +33,20 @@ export type ChatListProps = Readonly<{
   /** `null` when no row is open. */
   local?: ChatListLocalEcho | null;
   onOpen: (conversation: Conversation) => void;
+  onArchive?: (cardId: string, archived: boolean) => Promise<void>;
 }>;
 
 export function ChatList({
-  conversations, cards, activeId = null, showTrack = true, onOpen, unreadIds, awaitingInputIds, local = null, context = false,
+  conversations, cards, activeId = null, showTrack = true, onOpen, onArchive, unreadIds, awaitingInputIds, local = null, context = false,
 }: ChatListProps) {
   const descriptionPrefix = useId();
-  const rows = deriveConversationList({ conversations, cards, unreadIds, awaitingInputIds, local });
-  if (rows.length === 0) return context ? null : <PanelEmpty>No conversations yet.</PanelEmpty>;
+  if (conversations.length === 0) return context ? null : <PanelEmpty>No conversations yet.</PanelEmpty>;
 
   const List = context ? ContextList : 'ul';
   return (
-    <List className={context ? undefined : styles.list}>
-      {rows.map(({ conversation, activity, unread, name }) => {
+    <ConversationGroups enabled={onArchive !== undefined || conversations.some(row => row.archivedAt != null)} conversations={conversations} emptyActive={context ? null : <PanelEmpty>No active conversations.</PanelEmpty>}>
+    {shown => <List className={context ? undefined : styles.list}>
+      {deriveConversationList({ conversations: shown, cards, unreadIds, awaitingInputIds, local }).map(({ conversation, activity, unread, name }) => {
         const description = activity === 'working' ? null : activityLabelOf(activity);
         const descriptionId = `${descriptionPrefix}-${encodeURIComponent(conversation.id)}`;
         const active = conversation.id === activeId;
@@ -51,7 +56,7 @@ export function ChatList({
           const role = CONVERSATION_KIND_LABEL[conversation.kind];
           const contextDescription = [name === role ? null : role, description].filter(Boolean).join(' · ') || null;
           return <li key={conversation.id}>
-          <ContextItem icon={conversation.kind === PLANNER_CONVERSATION_KIND ? 'tasks' : 'chat'} label={name}
+          <ContextConversationItem conversation={conversation} onArchive={onArchive} icon={conversation.kind === PLANNER_CONVERSATION_KIND ? 'tasks' : 'chat'} label={name}
             trailing={activity === 'quiet' ? undefined : <ContextIconSlot><ActivityIndicator state={activity} /></ContextIconSlot>} unread={unread} selected={active} buttonProps={{
             'aria-label': `Conversation ${name}${activity === 'working' ? ', working' : ''}`,
             'aria-current': active ? 'true' : undefined,
@@ -62,7 +67,7 @@ export function ChatList({
         </li>;
         }
         return (
-          <li key={conversation.id} className={styles.item}>
+          <li key={conversation.id} className={`${styles.item} ${onArchive !== undefined && conversation.kind === 'track-assistant' ? styles.withActions : ''}`}>
             <button
               type="button"
               data-nc-role="row"
@@ -83,12 +88,80 @@ export function ChatList({
               </span>
             </button>
             {description !== null && <span hidden id={descriptionId}>{description}</span>}
+            {onArchive !== undefined && conversation.kind === 'track-assistant' && <ConversationArchiveAction conversation={conversation} onArchive={onArchive} className={styles.actions} />}
             {activity !== 'quiet' && <span className={styles.statusSlot} aria-hidden="true">
               <ActivityIndicator state={activity} />
             </span>}
           </li>
         );
       })}
-    </List>
+    </List>}
+    </ConversationGroups>
   );
+}
+
+/** Shared action for desktop lists and mobile history. Failed writes leave the row visible. */
+export function ConversationArchiveAction({ conversation, onArchive, className }: Readonly<{
+  conversation: Conversation;
+  onArchive: (cardId: string, archived: boolean) => Promise<void>;
+  className?: string;
+}>) {
+  const { pending, error, change } = useArchiveAction(conversation, onArchive);
+  const archived = conversation.archivedAt != null;
+  return <>
+    <div className={className}>
+      <DropdownMenu placement="below" alignment="end" button={{
+        label: `Actions for conversation: ${conversationName(conversation)}`, icon: <Icon name="more" size="sm" />,
+        isIconOnly: true, variant: 'ghost', size: 'sm', isDisabled: pending,
+      }}>
+        <DropdownMenuItem label={archived ? 'Restore conversation' : 'Archive conversation'} onClick={() => { void change(); }} />
+      </DropdownMenu>
+    </div>
+    {error !== null && <p role="alert" className={styles.archiveError}>{error}</p>}
+  </>;
+}
+
+
+function useArchiveAction(conversation: Conversation, onArchive: ((cardId: string, archived: boolean) => Promise<void>) | undefined) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const archived = conversation.archivedAt != null;
+  const change = async () => {
+    if (pending) return;
+    setPending(true); setError(null);
+    try { await onArchive?.(conversation.id, !archived); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not update this conversation. Try again.'); }
+    finally { setPending(false); }
+  };
+  return { pending, error, change };
+}
+
+/** Archived history stays readable; restoring does not create a replacement session. */
+export function ArchivedConversationNotice({ conversation, onArchive }: Readonly<{
+  conversation: Conversation;
+  onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+}>) {
+  const { pending, error, change } = useArchiveAction(conversation, onArchive);
+  return <div className={styles.archiveNotice}>
+    <p>This conversation is archived. Restore it to continue.</p>
+    {onArchive !== undefined && <button type="button" disabled={pending} onClick={() => { void change(); }}>
+      {pending ? 'Restoring…' : 'Restore conversation'}
+    </button>}
+    {error !== null && <p role="alert">{error}</p>}
+  </div>;
+}
+
+/** ContextItem owns the current row/menu/status geometry; this feature owns its action. */
+function ContextConversationItem({ conversation, onArchive, ...props }: React.ComponentProps<typeof ContextItem> & Readonly<{
+  conversation: Conversation;
+  onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+}>) {
+  const { pending, error, change } = useArchiveAction(conversation, onArchive);
+  const canArchive = onArchive !== undefined && conversation.kind === 'track-assistant';
+  return <>
+    <ContextItem {...props} menuLabel={`Actions for conversation: ${conversationName(conversation)}`}
+      menu={canArchive ? <DropdownMenuItem label={conversation.archivedAt != null ? 'Restore conversation' : 'Archive conversation'}
+        isDisabled={pending} onClick={() => { void change(); }} /> : undefined} />
+    {error !== null && <p role="alert" className={styles.archiveError}>{error}</p>}
+  </>;
 }

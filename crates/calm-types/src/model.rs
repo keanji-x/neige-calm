@@ -335,6 +335,10 @@ mod runtime_view_tests;
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackConversationSummary {
+    /// Person-owned archive time, or null while the conversation is in the active list.
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schema(required = true, nullable = true)]
+    pub archived_at: Option<i64>,
     pub provider: crate::runtime::AgentProvider,
     /// The source conversation of a discussion branch; absent for ordinary conversations.
     #[serde(default, skip_serializing_if = "Option::is_none")]

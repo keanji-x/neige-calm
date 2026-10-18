@@ -672,6 +672,7 @@ pub(crate) async fn start_harness_card(
     profile: HarnessProfile,
     start: HarnessCardStart,
 ) -> Result<()> {
+    crate::conversation_archive::require_unarchived(s.repo.as_ref(), card.id.as_str()).await?;
     let track = s
         .repo
         .track_get(card.track_id.as_str())

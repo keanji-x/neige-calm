@@ -1106,6 +1106,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
         let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            "conversation-start-prepared",
+            payload.planner_card_id.as_str(),
+        )
+        .await;
         let reset_transcript = payload.reset_harness_items;
         let profile = payload.profile;
         // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).

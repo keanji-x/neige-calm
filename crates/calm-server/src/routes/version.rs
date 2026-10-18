@@ -49,7 +49,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // #2616: 52 -> 53 adds managed Assistant identities and provider negotiation.
 // Child task route is sub-track; older clients must reload before writing reports.
 // #2672 bumps 54 -> 55: template lists require author descriptions and authoritative availability.
-pub const WEB_COMPAT_VERSION: u32 = 55;
+// #2640: 55 -> 56 requires Assistant archive metadata and read-only archived conversations.
+pub const WEB_COMPAT_VERSION: u32 = 56;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

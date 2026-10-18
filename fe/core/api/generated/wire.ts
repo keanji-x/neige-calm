@@ -726,7 +726,11 @@ creator_track_id: string | null,
  */
 creator_key: string | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
-export type TrackConversationCreated = { initialInput: ConversationInitialInputReceiptResult, provider: AgentProvider, 
+export type TrackConversationCreated = { initialInput: ConversationInitialInputReceiptResult, 
+/**
+ * Person-owned archive time, or null while the conversation is in the active list.
+ */
+archivedAt: number | null, provider: AgentProvider, 
 /**
  * The source conversation of a discussion branch; absent for ordinary conversations.
  */
@@ -763,7 +767,11 @@ lastTurnCompletedAt: number | null, };
 /**
  * One row of `GET /api/tracks/{track_id}/conversations`.
  */
-export type TrackConversationSummary = { provider: AgentProvider, 
+export type TrackConversationSummary = { 
+/**
+ * Person-owned archive time, or null while the conversation is in the active list.
+ */
+archivedAt: number | null, provider: AgentProvider, 
 /**
  * The source conversation of a discussion branch; absent for ordinary conversations.
  */

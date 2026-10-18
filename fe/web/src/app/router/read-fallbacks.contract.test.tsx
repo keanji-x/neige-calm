@@ -254,7 +254,7 @@ describe('degraded workspace reads stay usable', () => {
         return ok([{
           id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
           trackId: 'w1', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1,
-          lastTurnCompletedAt: null,
+          archivedAt: null, lastTurnCompletedAt: null,
         }]);
       }
       /* The create that lost its acknowledgement did commit, and the kernel

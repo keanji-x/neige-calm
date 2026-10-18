@@ -33,6 +33,8 @@ export type ConversationState =
 export type Conversation = Readonly<{
   id: string;
   trackId: string;
+  /** Assistant archive metadata; other conversation kinds have no archive lifecycle. */
+  archivedAt?: number | null;
   /** Saved parent of a discussion branch; absent for ordinary conversations. */
   sourceCardId?: string;
   /**
@@ -733,6 +735,7 @@ export const CONVERSATION_TEXT_MAX = 32768;
    rather than in `core/api/schemas.ts` because `kind: 'track-assistant'` is not in the event vocabulary. */
 
 const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.object({
+  archivedAt: z.number().nullable(),
   provider: agentProviderSchema,
   id: z.string(),
   trackId: z.string(),
@@ -752,6 +755,7 @@ const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.ob
 export function toTrackConversation(row: TrackConversationSummary): Conversation {
   return {
     provider: row.provider,
+    archivedAt: row.archivedAt,
     id: row.id,
     trackId: row.trackId,
     ...(row.sourceCardId === undefined ? {} : { sourceCardId: row.sourceCardId }),
@@ -760,6 +764,15 @@ export function toTrackConversation(row: TrackConversationSummary): Conversation
     state: row.state,
     updatedAt: row.updatedAt,
     lastTurnCompletedAt: row.lastTurnCompletedAt,
+  };
+}
+
+/** Idempotent assignment: a retry cannot toggle a conversation back. */
+export function setConversationArchiveOperation(trackId: string, cardId: string, archived: boolean): ApiOperation<undefined> {
+  return {
+    method: 'PATCH',
+    path: `/api/tracks/${encodeURIComponent(trackId)}/conversations/${encodeURIComponent(cardId)}/archive`,
+    body: { archived }, responseSchema: z.undefined(),
   };
 }
 

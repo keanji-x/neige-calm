@@ -20,7 +20,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
   let answers = 0;
   let storedText: string | null = null;
   let canonicalReads = 0;
-  let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; lastTurnCompletedAt: null } | null = null;
+  let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; archivedAt: null, lastTurnCompletedAt: null } | null = null;
   const responseAt = (index: number) => {
     if (replies[index] === undefined) {
       let resolve!: (value: ApiTransportResponse | undefined) => void;
@@ -71,7 +71,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
         if (request.path.endsWith('/conversations')) {
           const key = request.headers?.['Idempotency-Key'];
           if (key === undefined) throw new Error('The create request must carry its key.');
-          created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, lastTurnCompletedAt: null };
+          created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
           return { status: 201, statusText: 'Created', body: { ...created,
             initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } };
         }

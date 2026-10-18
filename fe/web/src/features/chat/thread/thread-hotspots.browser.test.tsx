@@ -103,7 +103,7 @@ it.each(['entry 0', 'entry 40', 'entry 100', 'reversal', 'rest', 'reduced'])(
   if (phase === 'reduced') await commands.emulateReducedMotion(true);
   const history = turns(450);
   const content = (open: boolean) => <div style={{ height: 600, width: 900, position: 'relative' }}>
-    <Drawer open={open} title="Hotspots" onClose={() => {}}><ChatThread conversation={conversation}
+    <Drawer open={open} title="Hotspots" onClose={() => {}}><ChatThread hasPendingMessages={false} conversation={conversation}
       turns={history} cards={{}} stalled={false} canContinue={false} /></Drawer>
   </div>;
   const view = render(content(true));
@@ -146,7 +146,7 @@ it.each(['entry 0', 'entry 40', 'entry 100', 'reversal', 'rest', 'reduced'])(
 it('keeps the sliding active edge in layout pixels near the end during entry', async () => {
   await page.viewport(1400, 900);
   render(<div style={{ height: 600, width: 900, position: 'relative' }}>
-    <Drawer open title="Hotspots" onClose={() => {}}><ChatThread conversation={conversation}
+    <Drawer open title="Hotspots" onClose={() => {}}><ChatThread hasPendingMessages={false} conversation={conversation}
       turns={turns(450)} cards={{}} stalled={false} canContinue={false} /></Drawer>
   </div>);
   for (const animation of document.querySelector<HTMLElement>('[data-nc-drawer]')!.getAnimations()) {
