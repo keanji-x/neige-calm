@@ -8,7 +8,7 @@ use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{TaskAccess, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
-use crate::workspace_service::sweep::WorkspaceTrackSweep;
+use workspace_runtime::sweep::WorkspaceTrackSweep;
 
 use super::forge_action_adapter::FORGE_ACTION_KIND;
 use super::{PhaseTag, TimestampMs, Tx};

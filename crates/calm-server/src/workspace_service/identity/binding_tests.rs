@@ -245,7 +245,12 @@ async fn delete_through_sweep(repo: &SqlxRepo, current: &Track) {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    crate::workspace_service::sweep::sweep_workspace_worktrees_for_tracks(vec![sweep]).await;
+    workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
+        vec![sweep],
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -260,9 +265,13 @@ async fn workspace_identity_owned_create_delete_create_keeps_history_without_res
         TrackWorkspacePlan::AttachedWithTrackWorktree(source.clone()),
     )
     .await;
-    super::super::track_worktree::ensure_track_worktree(&old)
-        .await
-        .unwrap();
+    workspace_runtime::track_worktree::ensure_track_worktree(
+        &old,
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await
+    .unwrap();
     super::observe_for_task(repo.db(), old.id.as_str())
         .await
         .unwrap();
@@ -275,9 +284,13 @@ async fn workspace_identity_owned_create_delete_create_keeps_history_without_res
         TrackWorkspacePlan::AttachedWithTrackWorktree(source.clone()),
     )
     .await;
-    super::super::track_worktree::ensure_track_worktree(&fresh)
-        .await
-        .unwrap();
+    workspace_runtime::track_worktree::ensure_track_worktree(
+        &fresh,
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await
+    .unwrap();
     super::observe_for_task(repo.db(), fresh.id.as_str())
         .await
         .unwrap();

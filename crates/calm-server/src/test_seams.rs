@@ -150,7 +150,12 @@ pub async fn ensure_track_worktree_for_test(
     let path = track.workspace.worktree.as_deref().ok_or_else(|| {
         crate::error::CalmError::BadRequest("track creation did not declare a worktree".into())
     })?;
-    crate::workspace_service::track_worktree::ensure_track_worktree(&track).await?;
+    workspace_runtime::track_worktree::ensure_track_worktree(
+        &track,
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await?;
     crate::workspace_service::identity::observe_for_task(pool, track_id).await?;
     Ok(path.into())
 }

@@ -1,5 +1,5 @@
 //! #2356 S2 — a closed track's worktree drops its ignored files. The worktree itself stays until
-//! track or area delete (`super::track_worktree::remove_track_worktree`), since a track can be
+//! track or area delete (`workspace_runtime::track_worktree::remove_track_worktree`), since a track can be
 //! reopened and its branch and uncommitted work belong to it; but build output (a Rust `target`
 //! is about 9G), `node_modules` and the like are regenerable and would otherwise stay on disk for
 //! every closed track. Time-driven and read-only on the database, so every close writer (route,
@@ -74,7 +74,7 @@ pub(crate) async fn clean_idle_closed_track_worktrees(
         }
         let track_id = key.0.clone();
         let result = tokio::task::spawn_blocking(move || {
-            workspace::worktree::clean_ignored(&track_id, &worktree, super::track_worktree::observe)
+            workspace::worktree::clean_ignored(&track_id, &worktree, super::ports::observe)
         })
         .await
         .map_err(|error| CalmError::Internal(format!("track worktree clean task: {error}")))?;

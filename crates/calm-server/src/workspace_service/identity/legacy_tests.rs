@@ -189,9 +189,13 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
         TrackWorkspacePlan::AttachedWithTrackWorktree(source.clone()),
     )
     .await;
-    crate::workspace_service::track_worktree::ensure_track_worktree(&current)
-        .await
-        .unwrap();
+    workspace_runtime::track_worktree::ensure_track_worktree(
+        &current,
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await
+    .unwrap();
     task(&repo, &current).await;
     let base = workspace::base::resolve_head_base(&old_cwd).unwrap();
     let common = workspace::base::lease_git_common_dir(&old_cwd).unwrap();

@@ -160,12 +160,20 @@ async fn workspace_identity_distinct_owned_worktrees_share_git_metadata_only() {
         TrackWorkspacePlan::AttachedWithTrackWorktree(source.clone()),
     )
     .await;
-    super::super::track_worktree::ensure_track_worktree(&first)
-        .await
-        .unwrap();
-    super::super::track_worktree::ensure_track_worktree(&second)
-        .await
-        .unwrap();
+    workspace_runtime::track_worktree::ensure_track_worktree(
+        &first,
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await
+    .unwrap();
+    workspace_runtime::track_worktree::ensure_track_worktree(
+        &second,
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await
+    .unwrap();
     super::observe_for_task(repo.db(), first.id.as_str())
         .await
         .unwrap();

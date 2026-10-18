@@ -1,5 +1,5 @@
 //! `/api/tracks`, `/api/areas/:id/tracks` — Track CRUD.
-use crate::workspace_service::sweep::{WorkspaceTrackSweep, sweep_workspace_worktrees_for_tracks};
+use workspace_runtime::sweep::{WorkspaceTrackSweep, sweep_workspace_worktrees_for_tracks};
 
 use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
@@ -1514,17 +1514,21 @@ async fn create_track_structure(
         error
     })?;
     // The attached twin of the managed materialization above, with the same contract.
-    crate::workspace_service::track_worktree::ensure_track_worktree(&track)
-        .await
-        .map_err(|error| {
-            tracing::error!(
-                track_id = %track.id,
-                worktree = ?track.workspace.worktree,
-                error = %error,
-                "track create: the track worktree could not be made"
-            );
-            error
-        })?;
+    workspace_runtime::track_worktree::ensure_track_worktree(
+        &track,
+        crate::workspace_service::ports::ServerWorkspacePorts,
+        crate::workspace_service::ports::observe,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(
+            track_id = %track.id,
+            worktree = ?track.workspace.worktree,
+            error = %error,
+            "track create: the track worktree could not be made"
+        );
+        error
+    })?;
 
     Ok((track, created, planner_card_id, report_card_id))
 }
@@ -2985,7 +2989,12 @@ impl RecycledTrackDeletion {
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now
         // authoritative.
-        sweep_workspace_worktrees_for_tracks(sweeps).await;
+        sweep_workspace_worktrees_for_tracks(
+            sweeps,
+            crate::workspace_service::ports::ServerWorkspacePorts,
+            crate::workspace_service::ports::observe,
+        )
+        .await;
         Ok(())
     }
 }

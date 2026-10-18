@@ -3,7 +3,7 @@
 //!
 //! [`refresh_upstream`] runs a bounded `git fetch` of HEAD's one upstream into
 //! the kernel-owned ref [`Upstream::kernel_ref`] before a track worktree's
-//! branch is started (`super::track_worktree::ensure_track_worktree`, #1830) —
+//! branch is started (`workspace_runtime::track_worktree::ensure_track_worktree`, #1830) —
 //! never inside a transaction; the start is then chosen locally
 //! ([`super::upstream::choose_lease_start`]).
 //!

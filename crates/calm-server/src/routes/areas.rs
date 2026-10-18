@@ -1,5 +1,5 @@
 //! `/api/areas` — Area CRUD. `GET` defaults to `kind='user'`; the system area is minted only via the idempotent `POST /api/areas/system` upsert, and `DELETE` refuses a `kind='system'` row.
-use crate::workspace_service::sweep::sweep_workspace_worktrees_for_tracks;
+use workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks;
 
 use crate::actor::Actor;
 use crate::auth::Principal;
@@ -579,7 +579,7 @@ async fn finish_area_deletion(
     actor: ActorId,
     principal: Principal,
 ) -> Result<(
-    Vec<crate::workspace_service::sweep::WorkspaceTrackSweep>,
+    Vec<workspace_runtime::sweep::WorkspaceTrackSweep>,
     Vec<String>,
 )> {
     let scope = EventScope::Area {
@@ -708,7 +708,12 @@ impl RecycledAreaDeletion {
             &area_id,
             &mut self.recycle_report,
         );
-        sweep_workspace_worktrees_for_tracks(sweeps).await;
+        sweep_workspace_worktrees_for_tracks(
+            sweeps,
+            crate::workspace_service::ports::ServerWorkspacePorts,
+            crate::workspace_service::ports::observe,
+        )
+        .await;
         Ok(())
     }
 }

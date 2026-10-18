@@ -658,7 +658,12 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
     // `idempotency_key_exhausted` mapping: that makes the FE rotate the key and mint a second
     // track, while a diverged checkout or a missing commit is the user's to fix.
     if ensure_worktree {
-        crate::workspace_service::track_worktree::ensure_track_worktree(&track).await?;
+        workspace_runtime::track_worktree::ensure_track_worktree(
+            &track,
+            crate::workspace_service::ports::ServerWorkspacePorts,
+            crate::workspace_service::ports::observe,
+        )
+        .await?;
     }
     drop(track_delete_guard);
     Ok(track)
