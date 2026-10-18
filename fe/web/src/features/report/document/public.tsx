@@ -4,7 +4,7 @@ import { useCompactViewport } from '../../../ui/viewport/public.ts';
 import { useEffect, useMemo, type ReactNode } from 'react';
 
 import { PreparedProseBlock, PlainReportText } from './content.tsx';
-export { ProseBlock } from './content.tsx';
+export { ProseBlock, ReportTextLink } from './content.tsx';
 import type { ReferenceRepository } from '../../../../../core/domain/report-references.ts';
 import {
   deriveReportTasks, isTaskBlock,
@@ -99,7 +99,7 @@ export function ReportDocument({
       {prepared.kind === 'legacy'
         ? (
           <div className={styles.row}>
-            <div className={styles.block} data-nc-report-reading="">
+            <div className={styles.block} data-nc-report-reading="" data-nc-link-reading="">
               <PreparedProseBlock
                 prepared={prepared.prose}
                 referenceRepository={referenceRepository} onOpenLink={onOpenLink}
@@ -212,7 +212,7 @@ function BlockSlot({
   const { block, prose } = slot;
   return (
     <div className={styles.row}>
-      <div className={styles.block} id={block.id} data-nc-report-reading="">
+      <div className={styles.block} id={block.id} data-nc-report-reading="" data-nc-link-reading="">
         {prose !== null
           ? <PreparedProseBlock
               prepared={prose}

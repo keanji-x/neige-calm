@@ -199,6 +199,13 @@ pub(crate) async fn spawn_recovered_harness_admitted(
     let Some(card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
+    if repo
+        .conversation_archived_at(card.id.as_str())
+        .await?
+        .is_some()
+    {
+        return Ok(RecoveryOutcome::Skipped);
+    }
     let role = repo.card_role_get(card.id.as_str()).await?;
     let Some(binding) = role.and_then(|role| profile::PlannerBinding::from_card(&card, role))
     else {
@@ -284,6 +291,13 @@ pub(crate) async fn spawn_recovered_harness_admitted(
     let Some(current_track) = repo.track_get(track_id.as_str()).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
+    if repo
+        .conversation_archived_at(current_card.id.as_str())
+        .await?
+        .is_some()
+    {
+        return Ok(RecoveryOutcome::Skipped);
+    }
     if current_card.track_id != track_id {
         return Ok(RecoveryOutcome::Skipped);
     }

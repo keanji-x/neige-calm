@@ -4,6 +4,29 @@
 use super::*;
 
 impl PlannerHarness {
+    /// Hold the existing turn/compaction issuance fence through a lifecycle write.
+    /// Unlike hibernation, this neither stops the owner nor releases native context.
+    pub(crate) async fn lock_if_idle(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+        let guard = tokio::time::timeout(Duration::from_secs(5), self.inner.issuance.lock())
+            .await
+            .map_err(|_| {
+                CalmError::ServiceUnavailable(
+                    "Conversation is still settling; try again shortly.".into(),
+                )
+            })?;
+        let ingress_empty = match &self.inner.observations {
+            ObservationIngress::Running(sender) => sender.capacity() == sender.max_capacity(),
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(sender) => sender.capacity() == sender.max_capacity(),
+        };
+        if self.inner.shutting_down.load(Ordering::SeqCst)
+            || !idle_for_lifecycle(&self.inner, ingress_empty).await?
+        {
+            return Err(CalmError::Conflict("Wait for the reply and queued messages to finish before archiving this conversation.".into()));
+        }
+        Ok(guard)
+    }
+
     pub(crate) async fn hibernate_if_idle(&self) -> Result<bool> {
         self.inner.historical_queue()?;
         let _durable = tokio::time::timeout(
@@ -67,22 +90,7 @@ pub(super) async fn quiesce(
     ingress_empty: bool,
     reply: Option<&oneshot::Sender<Result<bool>>>,
 ) -> Result<bool> {
-    let state = inner.state.lock().await.clone();
-    if !ingress_empty
-        || !matches!(
-            state,
-            HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }
-        )
-        || !inner.historical_queue()?.lock().await.is_empty()
-        || !inner.steered_into_running_turn.lock().await.is_empty()
-    {
-        return Ok(false);
-    }
-    let thread = inner.thread_id.read().await.clone();
-    if thread
-        .as_deref()
-        .is_some_and(|thread| inner.backend.active_turn_id_for_thread(thread).is_some())
-    {
+    if !idle_for_lifecycle(inner, ingress_empty).await? {
         return Ok(false);
     }
     // Persist before closing input: the snapshot writer deliberately skips a
@@ -111,5 +119,27 @@ pub(super) async fn quiesce(
         inner.shutting_down.store(true, Ordering::SeqCst);
     }
     held::release_all(inner);
+    Ok(true)
+}
+
+async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> Result<bool> {
+    let state = inner.state.lock().await.clone();
+    if !ingress_empty
+        || !matches!(
+            state,
+            HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }
+        )
+        || !inner.historical_queue()?.lock().await.is_empty()
+        || !inner.steered_into_running_turn.lock().await.is_empty()
+    {
+        return Ok(false);
+    }
+    let thread = inner.thread_id.read().await.clone();
+    if thread
+        .as_deref()
+        .is_some_and(|thread| inner.backend.active_turn_id_for_thread(thread).is_some())
+    {
+        return Ok(false);
+    }
     Ok(true)
 }

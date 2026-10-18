@@ -139,5 +139,5 @@ it('shows first-message sending feedback while conversation creation is held', a
     expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toBe('The first local message');
     expect(screen.getByText('Sending…')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true);
-  } finally { await response.release({ id: 'created', trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1, lastTurnCompletedAt: null }); cleanup(); view.client.clear(); }
+  } finally { await response.release({ id: 'created', trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1, archivedAt: null, lastTurnCompletedAt: null }); cleanup(); view.client.clear(); }
 });

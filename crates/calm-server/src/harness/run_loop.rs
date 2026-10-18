@@ -763,19 +763,7 @@ impl PlannerHarness {
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                let (ack, checkpoint) = stage_durable_entries(&self.inner, deliveries).await?;
-                if let Err(error) = persist_snapshot_for_durable_send(
-                    &self.inner,
-                    &key,
-                    ack.entry_id.as_ref(),
-                    source,
-                )
-                .await
-                {
-                    restore_durable_user_message(&self.inner, checkpoint).await?;
-                    return Err(error);
-                }
-                Ok(ack)
+                durable_command::handle_durable(&self.inner, deliveries, &key, source).await
             }
         }
     }
@@ -1623,6 +1611,8 @@ async fn run_loop(
             }
             command = observations.recv() => {
                 let Some(command) = command else { break };
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("conversation-command-dequeued", inner.card_id.as_str()).await;
                 match command {
                     HarnessObservationCommand::CanonicalInterrupt { target, source, answer } => {
                         canonical::control::manual(&inner, target, source, answer).await;
@@ -1666,26 +1656,7 @@ async fn run_loop(
                         }
                     }
                     HarnessObservationCommand::Durable { deliveries, key, source, persisted } => {
-                        if let Some(source) = &source
-                            && let Err(error) = source.require_card(inner.repo.as_ref(), inner.card_id.as_str()).await
-                        {
-                            let _ = persisted.send(Err(error));
-                            continue;
-                        }
-                        let result = match stage_durable_entries(&inner, deliveries).await {
-                            Ok((ack, checkpoint)) => {
-                                match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref(), source).await {
-                                    Ok(()) => Ok(ack),
-                                    Err(error) => {
-                                        match restore_durable_user_message(&inner, checkpoint).await {
-                                            Ok(()) => Err(error),
-                                            Err(restore_error) => Err(restore_error),
-                                        }
-                                    }
-                                }
-                            }
-                            Err(error) => Err(error),
-                        };
+                        let result = durable_command::handle_durable(&inner, deliveries, &key, source).await;
                         let _ = persisted.send(result);
                     }
                     HarnessObservationCommand::InspectInput { entry_id, answer } => {
@@ -1710,6 +1681,8 @@ async fn run_loop(
                         let _ = answer.send(outcome);
                     }
                 }
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("conversation-command-completed", inner.card_id.as_str()).await;
             }
             event = events.recv() => {
                 match event {
@@ -3496,6 +3469,16 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Deterministic drain-vs-supersede window. No-op in production.
     wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
     let _issuance_guard = inner.issuance.lock().await;
+    // A lifecycle write holds this fence through its commit. Observations that
+    // arrive later remain queued until the person explicitly restores the card.
+    if inner
+        .repo
+        .conversation_archived_at(inner.card_id.as_str())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -4930,6 +4913,7 @@ pub(crate) mod budget;
 mod compact_command;
 #[cfg(test)]
 mod compact_tests;
+mod durable_command;
 mod held;
 mod hibernation;
 pub(crate) mod input_inspection;

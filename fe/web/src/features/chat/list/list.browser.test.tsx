@@ -36,7 +36,7 @@ function draw(conversations: readonly Conversation[], width = COLUMN) {
       <ChatList conversations={conversations} cards={{}} onOpen={() => undefined} />
     </div>,
   );
-  const row = getByRole('button');
+  const row = getByRole('button', { name: /^Conversation / });
   const label = row.firstElementChild as HTMLElement;
   const parts = [...label.children] as HTMLElement[];
   expect(parts, 'the row is no longer `label > (name, track)`').toHaveLength(2);

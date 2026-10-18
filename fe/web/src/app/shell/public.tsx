@@ -59,6 +59,7 @@ type Scope = Readonly<{
   onClose: () => void;
   onOpen: (conversation: Conversation) => void;
   conversationOpen: boolean;
+  onArchive?: (cardId: string, archived: boolean) => Promise<void>;
 }>;
 const ScopeContext = createContext<Readonly<{ current: Scope | null; register: (scope: Scope | null) => void }> | null>(null);
 
@@ -78,10 +79,12 @@ export function useMobileConversationOwner(owner: Scope) {
   const onNew = useCommittedCallback(track.id, owner.onNew);
   const onClose = useCommittedCallback(track.id, owner.onClose);
   const onOpen = useCommittedCallback(track.id, owner.onOpen);
+  const onArchive = useCommittedCallback(track.id, async (cardId: string, archived: boolean) => { await owner.onArchive?.(cardId, archived); });
+  const canArchive = owner.onArchive !== undefined;
   const scope = useMemo<Scope>(() => ({
     track: { id: track.id, areaId: track.areaId, title: track.title }, conversations, selectedConversationId, conversationOpen,
-    onNew, onClose, onOpen,
-  }), [track.id, track.areaId, track.title, conversations, selectedConversationId, conversationOpen, onNew, onClose, onOpen]);
+    onNew, onClose, onOpen, onArchive: canArchive ? onArchive : undefined,
+  }), [track.id, track.areaId, track.title, conversations, selectedConversationId, conversationOpen, onNew, onClose, onOpen, canArchive, onArchive]);
   useLayoutEffect(() => {
     register?.(scope);
     return () => { register?.(null); };
@@ -383,6 +386,7 @@ export function AppShell({
         trackGroups={trackGroups} currentTrackId={conversationScope?.track.id}
         isUnread={isUnread} tracksLoading={readLoading || workspace.overlaysLoading} tracksError={readError ?? workspaceActivityErrorText(workspace)} onRetryTracks={retryRead}
         onOpenTrack={(trackId) => { conversationScope?.onClose(); go({ name: 'track', trackId }); }}
+        onArchive={conversationScope?.onArchive}
         conversations={history.conversations} loading={history.loading} failed={history.failed} onRetry={history.retry}
         onNew={conversationScope?.onNew ?? null} now={nowMs ?? Date.now()}
         onSelect={(row) => conversationScope?.onOpen(row)}

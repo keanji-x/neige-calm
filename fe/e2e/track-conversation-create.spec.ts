@@ -164,3 +164,53 @@ test('the track conversations endpoint refuses a create it cannot make retryable
   });
   expect(missing.status(), await missing.text()).toBe(404);
 });
+
+test('archives and restores the original Assistant through real HTTP and query invalidation', async ({ page, request }) => {
+  const area = await createArea(request);
+  createdAreaIds.push(area.id);
+  const track = await createTrack(request, area.id, `Archive API e2e ${Date.now()}`);
+  const created = await request.post(`/api/tracks/${track.id}/conversations`, {
+    headers: { 'idempotency-key': `archive-${Date.now()}` },
+    data: { provider: 'codex', text: 'fake-reply: archived answer' },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+  const row = await created.json() as { id: string };
+  const runPath = `/api/cards/${row.id}/planner/run`;
+  await expect.poll(async () => (await (await request.get(runPath)).json() as { phase: string }).phase)
+    .toMatch(/idle|turn_completed/);
+  const before = await (await request.get(runPath)).json() as { worker_session_id: string };
+  const historyPath = `/api/cards/${row.id}/harness/items`;
+  const history = await (await request.get(historyPath)).json() as unknown[];
+  expect(history.length).toBeGreaterThan(0);
+  await page.goto(`/next/track/${track.id}`);
+  const actions = page.getByRole('button', { name: /^Actions for conversation:/ });
+  await actions.click();
+  const [archived] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'PATCH' && response.url().endsWith(`/${row.id}/archive`)),
+    page.getByRole('menuitem', { name: 'Archive conversation', exact: true }).click(),
+  ]);
+  expect(archived.status(), await archived.text()).toBe(204);
+  const listed = await (await request.get(`/api/tracks/${track.id}/conversations`)).json() as { id: string; archivedAt: number | null }[];
+  expect(listed.find(item => item.id === row.id)?.archivedAt).toEqual(expect.any(Number));
+  await page.getByRole('button', { name: 'Archived conversations', exact: true }).click();
+  await page.getByRole('button', { name: 'Conversation Assistant', exact: true }).click();
+  await expect(page.getByText('This conversation is archived. Restore it to continue.')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Message' })).toHaveCount(0);
+  await expect(page.getByText('archived answer', { exact: true })).toBeVisible();
+  expect(await (await request.get(historyPath)).json()).toEqual(history);
+  const refused = await request.post(`/api/cards/${row.id}/planner/input`, {
+    headers: { 'idempotency-key': `archived-refusal-${Date.now()}` }, data: { text: 'must not issue' },
+  });
+  expect(refused.status(), await refused.text()).toBe(409);
+  await page.reload();
+  await expect(page.getByText('This conversation is archived. Restore it to continue.')).toBeVisible();
+  const [restored] = await Promise.all([
+    page.waitForResponse(response => response.request().method() === 'PATCH' && response.url().endsWith(`/${row.id}/archive`)),
+    page.getByRole('button', { name: 'Restore conversation', exact: true }).click(),
+  ]);
+  expect(restored.status(), await restored.text()).toBe(204);
+  await expect(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
+  const after = await (await request.get(runPath)).json() as { worker_session_id: string };
+  expect(after.worker_session_id).toBe(before.worker_session_id);
+  expect(await (await request.get(historyPath)).json()).toEqual(history);
+});

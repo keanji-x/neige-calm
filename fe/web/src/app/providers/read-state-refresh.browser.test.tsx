@@ -2,7 +2,7 @@ import { prepareReportDocument } from '../../features/report/document/preparatio
 import '../../styles/entry.css';
 import { QueryClient } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, within } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import type { ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -73,12 +73,16 @@ it('keeps a visited track read after a page refresh, with nothing kept in browse
   const first = load(kernel, storage, '/track/seen');
   await expect.poll(() => first.marker('Fresh')).toBe('unread');
   await expect.poll(() => kernel.stored('track', 'seen')?.readThroughMs).toBe(100);
-  expect(first.marker('Seen')).toBeNull();
+  await expect.poll(() => within(first.container)
+    .getByRole('button', { name: 'Track Seen' })
+    .parentElement?.querySelector('[data-nc-activity]')).toBeNull();
   first.view.unmount();
 
   const second = load(kernel, storage, '/');
   await expect.poll(() => second.marker('Fresh')).toBe('unread');
-  expect(second.marker('Seen')).toBeNull();
+  await expect.poll(() => within(second.container)
+    .getByRole('button', { name: 'Track Seen' })
+    .parentElement?.querySelector('[data-nc-activity]')).toBeNull();
   expect(readKeys(storage)).toEqual([]);
 });
 
@@ -89,7 +93,9 @@ it('keeps a manual unread after a page refresh', async () => {
   const storage = new Map<string, string>();
   const first = load(kernel, storage, '/');
   await expect.poll(() => first.marker('Fresh')).toBe('unread');
-  expect(first.marker('Seen')).toBeNull();
+  await expect.poll(() => within(first.container)
+    .getByRole('button', { name: 'Track Seen' })
+    .parentElement?.querySelector('[data-nc-activity]')).toBeNull();
   await page.getByRole('button', { name: 'Track Seen', exact: true }).hover();
   await page.getByRole('button', { name: 'Actions for track Seen', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
@@ -98,7 +104,7 @@ it('keeps a manual unread after a page refresh', async () => {
 
   const second = load(kernel, storage, '/');
   await expect.poll(() => second.marker('Fresh')).toBe('unread');
-  expect(second.marker('Seen')).toBe('unread');
+  await expect.poll(() => second.marker('Seen')).toBe('unread');
   expect(readKeys(storage)).toEqual([]);
 });
 
@@ -114,9 +120,13 @@ it('shows a second browser profile the same state once it is focused again', asy
   // The desktop opens Seen; the phone, still in the background, shows what it last read.
   await page.elementLocator(desktop.container).getByRole('button', { name: 'Track Seen', exact: true }).click();
   await expect.poll(() => kernel.stored('track', 'seen')?.readThroughMs).toBe(100);
-  await expect.poll(() => desktop.marker('Seen')).toBeNull();
+  await expect.poll(() => within(desktop.container)
+    .getByRole('button', { name: 'Track Seen' })
+    .parentElement?.querySelector('[data-nc-activity]')).toBeNull();
   expect(phone.marker('Seen')).toBe('unread');
   window.dispatchEvent(new Event('visibilitychange'));
-  await expect.poll(() => phone.marker('Seen')).toBeNull();
+  await expect.poll(() => within(phone.container)
+    .getByRole('button', { name: 'Track Seen' })
+    .parentElement?.querySelector('[data-nc-activity]')).toBeNull();
   expect(phone.marker('Fresh')).toBe('unread');
 });

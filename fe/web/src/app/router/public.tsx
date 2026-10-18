@@ -1,4 +1,5 @@
 import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
+import { useConversationLinks } from './conversation-links.tsx';
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
@@ -57,7 +58,7 @@ import {
   cardCreateEnded, cardCreateFailureText, keyedCardBodyOf, sameCardDraft, sendCardCreate,
   type CardCreatePort, type CardDraft, type KeyedCardBody,
 } from '../../features/track/new-card/create.ts';
-import { ChatList } from '../../features/chat/list/public.tsx';
+import { ArchivedConversationNotice, ChatList } from '../../features/chat/list/public.tsx';
 import { OutgoingMessage } from '../../features/chat/thread/outgoing-message.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread, type ComposerFocusHandle,
@@ -316,7 +317,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
+  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
 ) {
   const registry = useConversationRegistry();
   const compact = useCompactViewport();
@@ -375,7 +376,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationPaneTarget>,
-  options?: { reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
+  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -407,10 +408,11 @@ function useConversationPane(
   });
   const imageRoot = source.workspaceRoot
     ?? (imageTrack.data === undefined ? null : toTrack(imageTrack.data.track).agentCwd);
-  const imageFiles = useMemo(() => imageRoot === null || imageTrackId === null ? null : ({
-    root: imageRoot,
-    files: createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId),
-  }), [imageRoot, imageTrackId, transport, unauthorized]);
+  const conversationFiles = useMemo(() => imageTrackId === null ? null
+    : createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId), [imageTrackId, transport, unauthorized]);
+  const imageFiles = useMemo(() => imageRoot === null || conversationFiles === null ? null : ({
+    root: imageRoot, files: conversationFiles,
+  }), [imageRoot, conversationFiles]);
   const routeIntent: ConversationRouteIntent = {
     rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds, visible: openRowId !== null,
   };
@@ -457,10 +459,33 @@ function useConversationPane(
     queue: { entries: store.pendingQueue, ready: store.runReady && store.runError === null,
       busy: store.queueWriteOut || attachments.busy, save: store.editQueuedEntry } });
   /* The one readiness every response action and the continue guidance share. */
-  const canContinue = store.runReady && store.runError === null && store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
+  const archived = rows.find(row => row.id === composerRowId)?.archivedAt != null;
+  const readError = (store.historyError !== null || store.runError !== null) && (
+              <ErrorBox
+                message={[store.historyError, store.runError].filter((text) => text !== null).join(' ')}
+                pending={(store.historyError !== null && store.historyLoading) || (store.runError !== null && store.runLoading)}
+                actionLabel={store.historyError !== null && store.runError !== null ? 'Reload conversation'
+                  : store.runError !== null ? 'Reload status' : 'Reload history'}
+                description={store.runError === null ? undefined
+                  : 'The last known status may be out of date. Reloading does not restart the conversation.'}
+                onRetry={() => {
+                  if (store.historyError !== null) store.retryHistory();
+                  if (store.runError !== null) store.retryRun();
+                }} />
+            );
+  const canContinue = !archived && store.runReady && store.runError === null && store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
+  const { openFile: openChatWorkspaceFile } = useTrackFileNavigation();
+  const openChatLink = useCallback((target: ReportLinkTarget) => {
+    go({ name: 'track', trackId: target.trackId, blockId: target.blockId ?? undefined });
+  }, [go]);
+  const openChatFile = useCallback((owner: string, target: ReportFileLinkTarget) => {
+    openChatWorkspaceFile(owner, target.path);
+  }, [openChatWorkspaceFile]);
+  const chatLinks = useConversationLinks({ transport, unauthorized, conversationId: openRowId, trackId: imageTrackId,
+    root: imageRoot, files: conversationFiles, onOpenLink: openChatLink, onOpenFile: openChatFile });
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const openTurns = open === null ? [] : store.turnsOf(open.id);
   const hasPendingMessages = store.pendingQueue.length > 0 || store.pendingSends.length > 0 || store.pendingQueueOverflow > 0;
@@ -738,7 +763,9 @@ function useConversationPane(
                   ? current : { ...current, model, provider })}
                 isDisabled={creating || draft.submitted !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />} />
           </>
-        ) : open === null ? undefined : (
+        ) : open === null ? undefined : archived ? (
+          <>{readError}<ArchivedConversationNotice key={open.id} conversation={open} onArchive={options?.onArchive} /></>
+        ) : (
           <>
             {store.sending && !threadPresented && <ChatFooterNotice tone="neutral">Sending…</ChatFooterNotice>}
             {store.initialInputChecking && !(threadPresented && openTurns.length > 0 && threadStatusUnconfirmed)
@@ -747,19 +774,7 @@ function useConversationPane(
               <ChatFooterRemedy onClick={store.retryInitialInput}>Reload conversation</ChatFooterRemedy></ChatFooterNotice>}
             {store.awaitingConversationUpdate && <ChatFooterNotice tone="neutral">Waiting for conversation to update.</ChatFooterNotice>}
             {/* Each query owns its read retry; accepted sends keep their reconciliation fence (#2068). */}
-            {(store.historyError !== null || store.runError !== null) && (
-              <ErrorBox
-                message={[store.historyError, store.runError].filter((text) => text !== null).join(' ')}
-                pending={(store.historyError !== null && store.historyLoading) || (store.runError !== null && store.runLoading)}
-                actionLabel={store.historyError !== null && store.runError !== null ? 'Reload conversation'
-                  : store.runError !== null ? 'Reload status' : 'Reload history'}
-                description={store.runError === null ? undefined
-                  : 'The last known status may be out of date. Reloading does not restart the conversation.'}
-                onRetry={() => {
-                  if (store.historyError !== null) store.retryHistory();
-                  if (store.runError !== null) store.retryRun();
-                }} />
-            )}
+            {readError}
             {store.failedSend !== null && (
               <ChatFooterNotice>
                 {/* An unknown send says only that: why the answer was lost is the global connection indicator's to say. */}
@@ -857,6 +872,7 @@ function useConversationPane(
                 hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
                 imageFiles={imageFiles}
+                renderLink={chatLinks.renderLink}
                 turns={openTurns} editing={edit.marked}
                 sending={store.sending}
                 submissionRequest={submission?.conversationId === open.id ? submission.request : 0}
@@ -880,6 +896,7 @@ function useConversationPane(
             )}
           </>
         )}
+        {chatLinks.sourceDrawer}
       </ConversationSurface>
   );
 
@@ -894,8 +911,8 @@ function useConversationPane(
     conversations: store.conversations, cards: source.cards, unreadIds, activeId: existingId,
     awaitingInputIds: new Set(pendingInputCardId === null ? [] : [pendingInputCardId]),
     local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled || store.executionHeld },
-    showTrack: options?.showTrack ?? true, onOpen: openConversation,
-  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, openConversation]);
+    showTrack: options?.showTrack ?? true, onOpen: openConversation, onArchive: options?.onArchive,
+  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, options?.onArchive, openConversation]);
   const listNode = useMemo(() => <ChatList {...listProps} />, [listProps]);
   const contextList = useMemo(() => <ChatList {...listProps} context />, [listProps]);
 
@@ -921,7 +938,7 @@ function useConversationPane(
   return {
     dock: compactComposer ? <ChatDock text={dockRowId === null ? newConversationText : composer.text}
       onChange={setDockText} onSend={sendFromDock} onBeginInput={openDockHistory}
-      disabled={options?.reportComposer?.ready === false || (dockRowId !== null && (store.sendBlocked || !store.historyReady || edit.held !== null))} /> : undefined,
+      disabled={archived || options?.reportComposer?.ready === false || (dockRowId !== null && (store.sendBlocked || !store.historyReady || edit.held !== null))} /> : undefined,
     selectedConversationId: draftOpen ? null : open?.id ?? dockRowId,
     isOpen: open !== null || draftOpen,
     close: closeDrawer,
@@ -1144,9 +1161,9 @@ function TrackRouteBody({
         role: plannerRole,
       },
     },
-    { showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
+    { onArchive: conversationMutations.archive, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
-  useMobileConversationOwner({ track, conversations: rows, onNew: chat.startConversation,
+  useMobileConversationOwner({ track, conversations: rows, onArchive: conversationMutations.archive, onNew: chat.startConversation,
     selectedConversationId: chat.selectedConversationId, onClose: chat.close, onOpen: chat.openConversation, conversationOpen: chat.isOpen });
   /* The fallback clear: a request for a card this track has, while the list that
    * would open it could not be read. Not "the read failed", which would also

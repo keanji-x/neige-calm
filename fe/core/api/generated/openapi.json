@@ -2696,7 +2696,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Required original message key, at most 128 visible ASCII bytes. The selected conversation contract binds the original request and acknowledgement; canonical receipts additionally bind the verified author.",
+            "description": "Required immutable key (1–128 visible ASCII bytes); canonical bindings include the verified author.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2715,7 +2715,7 @@
         },
         "responses": {
           "200": {
-            "description": "Input committed under its persisted conversation contract, or its original acknowledgement replayed after current source/resource authorization. Canonical acceptance survives native wake failure. Historical input retains its original lazy start, queue entry and acknowledgement semantics.",
+            "description": "Input saved or its original receipt replayed after current authorization; execution may remain pending.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2745,7 +2745,7 @@
             }
           },
           "403": {
-            "description": "Canonical content requires registered current Area collaboration access. Historical public input additionally requires the deployment owner and its existing Private resources, including before key replay",
+            "description": "Area collaboration required; historical input also requires deployment-owner Private-resource access.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2765,7 +2765,7 @@
             }
           },
           "409": {
-            "description": "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses unsupported canonical attachments/history replacement or a missing canonical carrier; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.",
+            "description": "Key conflict or unsupported input; no new message accepted. Reconcile uncertain outcomes with the original key.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3336,7 +3336,7 @@
             }
           },
           "409": {
-            "description": "No live session, changed original execution, or canonical issuance has no confirmed native target; retry Stop once the original turn is running. This refuses new control effects.",
+            "description": "No current native target or original execution changed. Retry Stop once the original turn is running.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3818,7 +3818,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)",
+            "description": "Current run; worker_session_id and phase are null when dormant.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9253,7 +9253,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Required with first_message; optional for message-less resource creation. The original key permanently selects its creation contract. New blank managed Codex inputs use canonical source-bound acceptance; variants requiring historical preparation retain their original fingerprint and delivery attempts under current deployment-owner/Private-resource authorization. An original canonical receipt is never downgraded. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation.",
+            "description": "Required with first_message; keep the original key to reconcile retries under the same creation contract.",
             "required": false,
             "schema": {
               "type": [
@@ -9275,7 +9275,7 @@
         },
         "responses": {
           "201": {
-            "description": "Track created or its original acknowledgement replayed. Canonical first input commits independently of native readiness; historical preparation/start retains its original success contract. Identical authorized retries mint no second Track or message.",
+            "description": "Track created or original receipt replayed. Canonical input is saved independently of native readiness.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9285,7 +9285,7 @@
             }
           },
           "400": {
-            "description": "Invalid create/key/message. Fresh Human first-message creation currently supports a blank managed Track; attached cwd, template, recipe, fork, admin and cross-Area preparation are explicitly unsupported. These mutable preparation checks do not run on an accepted replay.",
+            "description": "Invalid creation request or unsupported canonical first-input preparation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9325,7 +9325,7 @@
             }
           },
           "409": {
-            "description": "Idempotency key reused/concurrent/exhausted, an original resource was deleted, or a resource lifecycle conflict. An unsupported historical key is never converted into new canonical work. Preserve the original accepted identity; this response is not permission to resend under a fresh key.",
+            "description": "Key or resource conflict. Reconcile with the original key; a new key creates a new intent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12078,6 +12078,149 @@
         }
       }
     },
+    "/api/tracks/{track_id}/conversations/{card_id}/archive": {
+      "patch": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "set_conversation_archive",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Owning Track",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Assistant conversation",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationArchiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Archive state saved; repeating the same assignment changes nothing"
+          },
+          "400": {
+            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only the person can archive an Assistant conversation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Track or conversation not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Reply or queued input still in progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Archive state could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Conversation issuance is still settling; retry shortly",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{track_id}/conversations/{card_id}/initial-input": {
       "get": {
         "tags": [
@@ -13579,6 +13722,18 @@
             }
           }
         }
+      },
+      "ConversationArchiveRequest": {
+        "type": "object",
+        "required": [
+          "archived"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "ConversationCursor": {
         "type": "object",
@@ -18710,6 +18865,7 @@
         "type": "object",
         "description": "One row of `GET /api/tracks/{track_id}/conversations`.",
         "required": [
+          "archivedAt",
           "provider",
           "id",
           "trackId",
@@ -18717,6 +18873,14 @@
           "updatedAt"
         ],
         "properties": {
+          "archivedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Person-owned archive time, or null while the conversation is in the active list."
+          },
           "id": {
             "type": "string",
             "description": "The assistant card's id; the conversation's identity everywhere."

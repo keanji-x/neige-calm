@@ -21,7 +21,7 @@ Area is the collaboration boundary. Track organizes work and selects its actual
 workspace. Conversation holds messages; a logical turn consumes fixed versions.
 The sender's identity remains distinct from the execution identity.
 
-The current production execution path is intentionally narrower than this domain:
+The current canonical production execution path is intentionally narrower than this domain:
 only the existing deployment owner can use its Private legacy environment, and
 its live issuer must own the exact Human revisions being dispatched. Area
 membership alone never authorizes that environment.
@@ -50,7 +50,7 @@ membership alone never authorizes that environment.
    login or appended message cannot turn CrossingUnknown, Unknown or Accepted
    into permission to resend. Completed submissions do not block new input.
 
-An accepted Stop binds its original native target and durable intent. That drain
+A canonical accepted Stop binds its original native target and durable intent. That drain
 can finish after logout or failure of new-work admission. A later request must
 pass current authorization, and a stale target cannot stop a later turn. An
 interrupt acknowledgement is not END.
@@ -77,6 +77,7 @@ The existing Workspace identity and executor primitives do not supply a public
 resource resolve/launch/content service or a shared Area environment. #2666's
 closed issue state and the stopped draft #2770 do not establish those capabilities.
 The published executor work in #2795 also does not qualify a shared provider.
+The missing production resource path is tracked in #2818.
 Implementation must consume real delivered contracts rather than define unused
 adapters, construct a fake Ready value or inherit a member's private HOME.
 

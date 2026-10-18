@@ -56,10 +56,10 @@ it('reads only current Track conversations and excludes sibling and other worksp
     if (request.path === '/api/areas/other-area/tracks') return ok([foreign]);
     if (request.path === '/api/tracks/sibling') return ok({ track: sibling, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
     if (request.path === '/api/tracks/project/conversations') return ok([
-      { id: 'first-chat', trackId: 'project', title: 'Older chat', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 10, lastTurnCompletedAt: null },
+      { id: 'first-chat', trackId: 'project', title: 'Older chat', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 10, archivedAt: null, lastTurnCompletedAt: null },
     ]);
     if (request.path === '/api/tracks/sibling/conversations') return ok([
-      { id: 'second-chat', trackId: 'sibling', title: 'Newest chat', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 20, lastTurnCompletedAt: null },
+      { id: 'second-chat', trackId: 'sibling', title: 'Newest chat', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 20, archivedAt: null, lastTurnCompletedAt: null },
     ]);
     return undefined;
   } });
@@ -136,7 +136,7 @@ it.each([320, 390])('switches four sidebar views using current history and real 
     if (request.path === '/api/areas/other-area/tracks') return ok([pinned, unread, failed]);
     if (request.path.startsWith('/api/overlays?')) return ok(overlays);
     if (request.path === '/api/tracks/project/conversations') return ok([
-      { id: 'current-chat', trackId: 'project', title: 'Current history', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 10, lastTurnCompletedAt: null },
+      { id: 'current-chat', trackId: 'project', title: 'Current history', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 10, archivedAt: null, lastTurnCompletedAt: null },
     ]);
     if (request.path === '/api/tracks/pinned') return ok({ track: pinned, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
     return undefined;

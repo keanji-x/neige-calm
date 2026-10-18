@@ -22,6 +22,7 @@ pub mod claude_cards;
 pub mod claude_version;
 pub mod codex;
 pub mod codex_cards;
+pub mod conversation_archive;
 pub mod conversation_initial_input;
 pub(crate) mod conversation_items;
 mod conversation_read;
@@ -81,6 +82,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(read_receipts::router())
         .merge(track_asks::router())
         .merge(track_conversations::router())
+        .merge(conversation_archive::router())
         .merge(track_previews::router())
         .merge(track_report_blocks::router())
         .merge(track_report_series::router())
