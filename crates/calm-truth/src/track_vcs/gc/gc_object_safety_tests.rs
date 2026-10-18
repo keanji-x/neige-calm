@@ -613,3 +613,114 @@ async fn object_sweep_same_tree_head_extensions_reuse_one_complete_proof_across_
         "same-tree head extensions preserve one complete live-tree proof"
     );
 }
+
+#[tokio::test]
+async fn object_sweep_different_tree_head_extensions_reuse_one_complete_proof_across_batches() {
+    use super::object_sweep::DELETE_BATCH_SIZE;
+    use std::collections::BTreeSet;
+
+    let f = Fixture::new().await;
+    let mut retained: BTreeSet<String> =
+        sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+    let roots_before: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+        "SELECT track_id, head_hash, updated_event_id FROM track_vcs_refs ORDER BY track_id",
+    )
+    .fetch_all(f.repo.pool())
+    .await
+    .unwrap();
+    let commits_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id=?1")
+            .bind(f.track.as_str())
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap();
+    let mut orphans = Vec::new();
+    for n in 0..DELETE_BATCH_SIZE * 2 {
+        orphans.push(
+            f.orphan(&format!("different-tree prefix old garbage {n}"))
+                .await,
+        );
+    }
+    let (pause, sweep) = start(
+        f.repo.pool().clone(),
+        vec![Phase::BeforeDelete, Phase::BeforeDelete],
+    );
+    let mut history = Vec::new();
+    let mut parent = f.commit.clone();
+    let mut parent_tree = f.tree.tree_hash.clone();
+    for batch in 0..2 {
+        pause.entered().await;
+        let tree = f
+            .tree(&format!("different-tree prefix document {batch}"), 1)
+            .await;
+        assert_ne!(tree.tree_hash, parent_tree);
+        let commit = f.publish(&tree, Some(&parent)).await;
+        retained.insert(tree.tree_hash.clone());
+        retained.extend(
+            tree.manifest
+                .entries
+                .values()
+                .map(|entry| entry.blob_hash.clone()),
+        );
+        history.push((commit.clone(), parent, tree.tree_hash.clone()));
+        parent = commit;
+        parent_tree = tree.tree_hash;
+        pause.release();
+    }
+    assert_eq!(finish(sweep).await.unwrap(), orphans.len() as u64);
+    for orphan in orphans {
+        assert!(!f.exists(&orphan).await);
+    }
+    let objects_after: BTreeSet<String> =
+        sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+    assert_eq!(objects_after, retained);
+    assert_eq!(history[0].1, f.commit);
+    assert_eq!(history[1].1, history[0].0);
+    for (commit, previous, tree) in &history {
+        assert_ne!(commit, previous);
+        let record = track_vcs::commit_record(f.repo.pool(), commit)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.parent_hash.as_ref(), Some(previous));
+        assert_eq!(&record.tree_hash, tree);
+        assert_eq!(record.event_id, None);
+        assert_eq!(record.message.as_deref(), Some("published"));
+    }
+    let commits_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id=?1")
+            .bind(f.track.as_str())
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(commits_after, commits_before + 2);
+    let mut expected_roots = roots_before;
+    let target = expected_roots
+        .iter_mut()
+        .find(|row| row.0 == f.track.as_str())
+        .unwrap();
+    target.1 = parent;
+    target.2 = None;
+    let roots_after: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+        "SELECT track_id, head_hash, updated_event_id FROM track_vcs_refs ORDER BY track_id",
+    )
+    .fetch_all(f.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(roots_after, expected_roots);
+    assert_eq!(
+        pause.metadata_queries(),
+        1,
+        "different-tree head extensions must not repeat the complete metadata proof"
+    );
+}

@@ -44,40 +44,15 @@ struct TreeMeta {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Revision(i64);
 
-// An equal epoch certifies current reachable trees are covered by conservative parsed marks.
-// History may gain same-tree prefixes; it need not have an identical commit/ref topology.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum Proof {
-    #[default]
-    Unproven,
-    Complete(Revision),
-}
-
-// Metadata can be stable before payload observation is complete; it is not yet a proof.
-enum Bracket {
-    Stable(Revision),
-    Changed,
-}
-
-struct ExternalMetadata {
-    trees: Vec<TreeMeta>,
-    bracket: Bracket,
-}
-
-enum PreparedValidation {
-    Cached(Revision),
-    Fresh {
-        revision: Revision,
-        trees: Vec<TreeMeta>,
-    },
-    Unproven,
-}
+#[path = "gc/frontier.rs"]
+mod frontier;
+use frontier::Certificates;
 
 #[derive(Default)]
 struct Observed {
     trees: BTreeSet<ObjectHash>,
     live: BTreeSet<ObjectHash>,
-    proof: Proof,
+    proof: Certificates,
 }
 impl Observed {
     fn observe(&mut self, hash: String, bytes: &[u8]) -> Result<()> {
@@ -127,15 +102,8 @@ pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
 }
 
 async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Result<()> {
-    // Mutations that can expand reachable trees or invalidate their objects advance the epoch.
-    // An equal outside epoch bracket certifies coverage only after all selected trees are parsed.
-    let before = revision(pool).await?;
-    let initial = external_metadata(pool, before).await?;
     let mut observed = Observed::default();
-    observe_external(pool, &initial.trees, &mut observed).await?;
-    if let Bracket::Stable(revision) = initial.bracket {
-        observed.proof = Proof::Complete(revision);
-    }
+    prepare_full(pool, &mut observed).await?;
     let mut cursor = String::new();
     // Index pages and deletion batches have different costs. Accumulate actual old orphan
     // candidates across sparse live pages before paying for the full ancestry proof.
@@ -234,33 +202,30 @@ async fn revision<'e>(executor: impl Executor<'e, Database = Sqlite>) -> Result<
     Ok(Revision(value))
 }
 
-async fn external_metadata(pool: &SqlitePool, before: Revision) -> Result<ExternalMetadata> {
+// A complete outside observation is the only full-preparation path. Metadata alone is
+// not authority: grant certificates only after every selected payload has been parsed.
+async fn prepare_full(pool: &SqlitePool, observed: &mut Observed) -> Result<()> {
+    let before = frontier::epochs(pool).await?;
+    let snapshot = {
+        let mut connection = pool.acquire().await?;
+        frontier::snapshot(&mut connection).await?
+    };
     let trees = reachable_trees(pool).await?;
     #[cfg(test)]
     super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::AfterMetadata).await;
-    let after = revision(pool).await?;
-    let bracket = if before == after {
-        Bracket::Stable(after)
-    } else {
-        Bracket::Changed
-    };
-    Ok(ExternalMetadata { trees, bracket })
+    observe_external(pool, &trees, observed).await?;
+    let after = frontier::epochs(pool).await?;
+    observed.proof = Certificates::bracket(before, after, snapshot);
+    Ok(())
 }
 
-async fn prepare_validation(pool: &SqlitePool, observed: &Observed) -> Result<PreparedValidation> {
-    let before = revision(pool).await?;
-    if observed.proof == Proof::Complete(before) {
-        return Ok(PreparedValidation::Cached(before));
+async fn prepare_validation(pool: &SqlitePool, observed: &mut Observed) -> Result<()> {
+    let current = frontier::epochs(pool).await?;
+    if !observed.proof.covers(current) {
+        // One outside attempt only. Unknown churn retains the authoritative locked path.
+        prepare_full(pool, observed).await?;
     }
-    // One outside attempt only. Concurrent change keeps the original authoritative writer path.
-    let current = external_metadata(pool, before).await?;
-    Ok(match current.bracket {
-        Bracket::Stable(revision) => PreparedValidation::Fresh {
-            revision,
-            trees: current.trees,
-        },
-        Bracket::Changed => PreparedValidation::Unproven,
-    })
+    Ok(())
 }
 
 async fn reachable_trees<'e>(
@@ -271,20 +236,24 @@ async fn reachable_trees<'e>(
     let rows: Vec<(String, Option<String>, Option<i64>)> =
         sqlx::query_as(REACHABLE_TREES).fetch_all(executor).await?;
     rows.into_iter()
-        .map(|(hash, kind, length)| {
-            if kind.as_deref() != Some("tree") {
-                return Err(CalmError::Internal(format!(
-                    "track_vcs: reachable tree object {hash} is missing or not a tree"
-                )));
-            }
-            let byte_len = length
-                .and_then(|length| u64::try_from(length).ok())
-                .ok_or_else(|| {
-                    CalmError::Internal(format!("track_vcs: invalid reachable tree length {hash}"))
-                })?;
-            Ok(TreeMeta { hash, byte_len })
-        })
+        .map(|(hash, kind, length)| TreeMeta::checked(hash, kind, length))
         .collect()
+}
+
+impl TreeMeta {
+    fn checked(hash: String, kind: Option<String>, length: Option<i64>) -> Result<Self> {
+        if kind.as_deref() != Some("tree") {
+            return Err(CalmError::Internal(format!(
+                "track_vcs: reachable tree object {hash} is missing or not a tree"
+            )));
+        }
+        let byte_len = length
+            .and_then(|length| u64::try_from(length).ok())
+            .ok_or_else(|| {
+                CalmError::Internal(format!("track_vcs: invalid reachable tree length {hash}"))
+            })?;
+        Ok(Self { hash, byte_len })
+    }
 }
 
 async fn observe_external(
@@ -346,21 +315,37 @@ async fn delete_validated_batch(
     observed: &mut Observed,
 ) -> Result<Option<u64>> {
     for attempt in 0..VALIDATION_ATTEMPTS {
-        let prepared = prepare_validation(pool, observed).await?;
+        prepare_validation(pool, observed).await?;
         #[cfg(test)]
         super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::BeforeDelete).await;
         let mut tx = begin_immediate_tx(pool).await?;
-        let locked_revision = revision(&mut **tx).await?;
-        let current = match prepared {
-            // Complete conservative marks cover all current trees at this proof epoch.
-            PreparedValidation::Cached(revision) if revision == locked_revision => Vec::new(),
-            PreparedValidation::Fresh { revision, trees } if revision == locked_revision => trees,
-            // Recompute actual ancestry, including cached-tree validity, after any change.
-            _ => reachable_trees(&mut **tx).await?,
+        let locked = frontier::locked_epochs(&mut tx).await?;
+        let snapshot = frontier::snapshot(&mut tx).await?;
+        let (current, reuse_parsed) = if observed.proof.legacy == Some(locked.legacy) {
+            // Released171 is independently sufficient, even after conservative U bumps.
+            (Vec::new(), true)
+        } else if let Some(proof) = observed.proof.frontier.as_ref()
+            && proof.unknown == locked.unknown
+        {
+            match frontier::reconcile(&mut tx, proof, &snapshot).await? {
+                Some(trees) => (trees, true),
+                None => {
+                    tx.rollback().await?;
+                    if attempt + 1 == VALIDATION_ATTEMPTS {
+                        return Ok(None);
+                    }
+                    prepare_full(pool, observed).await?;
+                    continue;
+                }
+            }
+        } else {
+            // Unknown mutations may change cached object bytes. A full query proves metadata,
+            // but all its payloads must be re-observed before granting a new certificate.
+            (reachable_trees(&mut **tx).await?, false)
         };
         let delta: Vec<_> = current
             .into_iter()
-            .filter(|tree| !observed.trees.contains(&tree.hash))
+            .filter(|tree| !reuse_parsed || !observed.trees.contains(&tree.hash))
             .collect();
         let bytes = delta
             .iter()
@@ -370,7 +355,7 @@ async fn delete_validated_batch(
             if attempt + 1 == VALIDATION_ATTEMPTS {
                 return Ok(None);
             }
-            observe_external(pool, &delta, observed).await?;
+            prepare_full(pool, observed).await?;
             continue;
         }
         // Both count and byte limits are checked before fetching or parsing any inline payload.
@@ -382,7 +367,7 @@ async fn delete_validated_batch(
             .collect();
         if candidates.is_empty() {
             tx.commit().await?;
-            observed.proof = Proof::Complete(locked_revision);
+            observed.proof = Certificates::complete(locked, snapshot);
             return Ok(Some(0));
         }
         let mut query =
@@ -396,9 +381,9 @@ async fn delete_validated_batch(
         let count = query.build().execute(&mut **tx).await?.rows_affected();
         // Only objects proven unreachable were deleted. Their trigger increments preserve this
         // complete live proof, but do not advance its local certificate until COMMIT acknowledges.
-        let after_delete = revision(&mut **tx).await?;
+        let after_delete = frontier::locked_epochs(&mut tx).await?;
         tx.commit().await?;
-        observed.proof = Proof::Complete(after_delete);
+        observed.proof = Certificates::complete(after_delete, snapshot);
         return Ok(Some(count));
     }
     unreachable!("bounded validation either deletes or defers")

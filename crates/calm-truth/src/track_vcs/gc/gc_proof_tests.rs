@@ -66,6 +66,9 @@ async fn object_sweep_fresh_external_proof_avoids_repeating_full_query_under_wri
     );
     pause.entered().await;
     f.publish(&activated, Some(&f.commit)).await;
+    // Fresh direct publications now have a bounded frontier proof. An actual old-row
+    // mutation forces this test's full outside-preparation branch instead.
+    invalidate_frontier(&f).await;
     pause.release();
     pause.entered().await;
     // Initial proof's revision is old. A complete Fresh proof was acquired outside BEGIN.
@@ -94,9 +97,11 @@ async fn object_sweep_unstable_fresh_bracket_uses_complete_writer_fallback() {
     );
     pause.entered().await;
     let first_commit = f.publish(&first, Some(&f.commit)).await;
+    invalidate_frontier(&f).await;
     pause.release();
     pause.entered().await;
     f.publish(&second, Some(&first_commit)).await;
+    invalidate_frontier(&f).await;
     pause.release();
     assert_eq!(finish(sweep).await.unwrap(), 1);
     assert_eq!(pause.metadata_queries(), 3);
@@ -146,4 +151,13 @@ async fn object_sweep_missing_revision_row_fails_closed_before_deletion() {
             .is_err()
     );
     assert!(f.exists(&orphan).await);
+}
+
+// The real storage mutation invalidates both required proofs without changing tree contents.
+async fn invalidate_frontier(f: &Fixture) {
+    sqlx::query("UPDATE track_vcs_commits SET message=message || ' changed' WHERE hash=?1")
+        .bind(&f.commit)
+        .execute(f.repo.pool())
+        .await
+        .unwrap();
 }

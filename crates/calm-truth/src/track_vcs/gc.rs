@@ -351,3 +351,11 @@ mod gc_epoch_tests;
 #[cfg(test)]
 #[path = "gc/gc_epoch_safety_tests.rs"]
 mod gc_epoch_safety_tests;
+
+#[cfg(test)]
+#[path = "gc/gc_frontier_schema_tests.rs"]
+mod gc_frontier_schema_tests;
+
+#[cfg(test)]
+#[path = "gc/gc_frontier_proof_tests.rs"]
+mod gc_frontier_proof_tests;
