@@ -163,12 +163,7 @@ async fn observation_commit_rollback_and_active_drop_have_one_truthful_terminal_
     for record in records {
         assert_eq!(record["attempts"], 1);
         assert_eq!(record["begin_attempts"], 1);
-        assert!(
-            record["source_file"]
-                .as_str()
-                .unwrap()
-                .ends_with("observation_tests.rs")
-        );
+        assert_eq!(record["source_file"].as_str().unwrap(), file!());
         assert!(record["source_line"].as_u64().unwrap() > 0);
         for key in [
             "acquire_ms",

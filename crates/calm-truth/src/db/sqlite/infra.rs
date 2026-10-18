@@ -81,9 +81,9 @@ async fn begin_attempt(
     // Mirrors sqlx 0.8.6 Pool::begin_with exactly, splitting acquisition from BEGIN.
     // This public doc-hidden constructor owns the pooled connection and preserves
     // SQLx cancellation/Drop cleanup. Verify this seam when upgrading sqlx.
-    Transaction::begin(
+    ::sqlx::Transaction::begin(
         connection,
-        Some(std::borrow::Cow::Borrowed("BEGIN IMMEDIATE")),
+        ::std::option::Option::Some(::std::borrow::Cow::Borrowed("BEGIN IMMEDIATE")),
     )
     .await
 }

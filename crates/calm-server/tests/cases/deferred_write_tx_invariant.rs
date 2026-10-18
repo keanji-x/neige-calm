@@ -5,6 +5,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+#[path = "deferred_write_tx_invariant/immediate_constructor.rs"]
+mod owned_constructor;
+
 /// Production files whose every deferred-begin hit is test-gated at the MODULE REGISTRATION site.
 const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
     "calm-truth/src/db/sqlite/runtime_read_flip_support.rs",
@@ -481,7 +484,11 @@ fn scan_deferred_begins(flat: &[(char, usize)]) -> Vec<(usize, &'static str)> {
                     if let Some(p) = prev {
                         if flat[p].0 == '.' {
                             hits.push((line, "deferred `.begin(`"));
-                        } else if flat[p].0 == ':' && p > 0 && flat[p - 1].0 == ':' {
+                        } else if flat[p].0 == ':'
+                            && p > 0
+                            && flat[p - 1].0 == ':'
+                            && !owned_constructor::is_explicit_immediate(flat, start, k)
+                        {
                             hits.push((line, "deferred UFCS `::begin(`"));
                         }
                     }
@@ -697,4 +704,66 @@ fn cfg_gate_matches_standalone_test_token_only() {
     ));
     let lines: Vec<usize> = hits.iter().map(|(l, _)| *l).collect();
     assert_eq!(lines, vec![7], "{hits:?}");
+}
+
+#[test]
+fn scanner_recognizes_canonical_owned_immediate_constructor() {
+    let hits = scan_snippet(concat!(
+        "fn f() { let tx = ::sqlx::Transaction::begin(\n",
+        "    connection,\n",
+        "    ::std::option::Option::Some(\n",
+        "        ::std::borrow::Cow::Borrowed(\"BEGIN IMMEDIATE\"),\n",
+        "    ),\n",
+        ").await; }",
+    ));
+    assert!(
+        hits.is_empty(),
+        "the owned SQLx constructor is explicitly IMMEDIATE: {hits:?}"
+    );
+}
+
+#[test]
+fn scanner_rejects_owned_constructors_without_proven_immediate_statement() {
+    const IMMEDIATE: &str = concat!(
+        "::std::option::Option::Some(",
+        "::std::borrow::Cow::Borrowed(\"BEGIN IMMEDIATE\"))",
+    );
+    for statement in [
+        "None",
+        "statement",
+        "::std::option::Option::None",
+        "::std::option::Option::Some(statement)",
+        "::std::option::Option::Some(::std::borrow::Cow::Borrowed(statement))",
+        "::std::option::Option::Some(::std::borrow::Cow::Borrowed(\"BEGIN\"))",
+        "::std::option::Option::Some(::std::borrow::Cow::Borrowed(\"BEGIN DEFERRED\"))",
+        "Some(::std::borrow::Cow::Borrowed(\"BEGIN IMMEDIATE\"))",
+        "::std::option::Option::Some(Cow::Borrowed(\"BEGIN IMMEDIATE\"))",
+        "::std::option::Option::Some(::evil::std::borrow::Cow::Borrowed(\"BEGIN IMMEDIATE\"))",
+        "::evil::std::option::Option::Some(::std::borrow::Cow::Borrowed(\"BEGIN IMMEDIATE\"))",
+        "::std::option::Option::Some(::std::borrow::Cow::Borrowed(concat!(\"BEGIN \", \"IMMEDIATE\")))",
+        "::std::option::Option::Some(::std::borrow::Cow::Borrowed(\"BEGIN IMMEDIATE\"), extra)",
+        "::std::option::Option::Some(::std::borrow::Cow::Borrowed(\"BEGIN IMMEDIATE\", extra))",
+    ] {
+        let src = format!("fn f() {{ ::sqlx::Transaction::begin(connection, {statement}); }}");
+        assert_eq!(scan_snippet(&src).len(), 1, "must fail closed: {src}");
+    }
+    for src in [
+        "fn f() { ::sqlx::Transaction::begin(connection); }".to_owned(),
+        format!("fn f() {{ ::sqlx::Transaction::begin(connection, {IMMEDIATE}, extra); }}"),
+        format!("fn f() {{ Foo::begin(connection, {IMMEDIATE}); }}"),
+        format!("fn f() {{ Transaction::begin(connection, {IMMEDIATE}); }}"),
+        format!("fn f() {{ ::sqlx::Acquire::begin(connection, {IMMEDIATE}); }}"),
+        format!("fn f() {{ evil::sqlx::Transaction::begin(connection, {IMMEDIATE}); }}"),
+        format!("fn f() {{ ::evil::sqlx::Transaction::begin(connection, {IMMEDIATE}); }}"),
+        format!("fn f() {{ <Q>::sqlx::Transaction::begin(connection, {IMMEDIATE}); }}"),
+    ] {
+        assert_eq!(scan_snippet(&src).len(), 1, "must fail closed: {src}");
+    }
+    // The outer constructor can be safe while its input still starts a deferred transaction.
+    let nested =
+        format!("fn f() {{ ::sqlx::Transaction::begin(\n pool.begin().await, {IMMEDIATE}); }}");
+    assert!(
+        scan_snippet(&nested).iter().any(|(line, _)| *line == 2),
+        "the deferred input must still be detected: {nested}"
+    );
 }

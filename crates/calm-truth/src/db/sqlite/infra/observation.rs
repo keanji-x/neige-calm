@@ -193,5 +193,4 @@ impl DerefMut for ObservedTransaction<'_> {
 }
 
 #[cfg(test)]
-#[path = "observation_tests.rs"]
 mod tests;

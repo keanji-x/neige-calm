@@ -74,17 +74,14 @@ mod gated {
     }
 
     /// Run the role gate against the caller's write-through caches (the `RepoEventWrite` wrappers' entrance), and mint the capability on success.
-    pub(in crate::db::sqlite::events) async fn authorize_with_caches<'a, T>(
-        tx: &mut T,
+    pub(in crate::db::sqlite::events) async fn authorize_with_caches<'a>(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         actor: &'a ActorId,
         scope: &'a EventScope,
         event: &'a Event,
         card_role_cache: &crate::card_role_cache::CardRoleCache,
         track_area_cache: &crate::track_area_cache::TrackAreaCache,
-    ) -> Result<Authorized<'a>>
-    where
-        T: crate::decision_gate::WriteTx + ?Sized + Send,
-    {
+    ) -> Result<Authorized<'a>> {
         crate::decision_gate::enforce_role_resolving_session(
             tx,
             actor,
@@ -353,7 +350,7 @@ impl RepoEventWrite for SqlxRepo {
         };
         // The gate runs after the closure produces an event so the closure can mint per-row roles through the cache first.
         let authorized = match gated::authorize_with_caches(
-            &mut *tx,
+            &mut tx,
             &actor,
             &scope,
             &event,
@@ -430,7 +427,7 @@ impl RepoEventWrite for SqlxRepo {
         let mut authorized_batch = Vec::with_capacity(events.len());
         for (scope, event) in &events {
             match gated::authorize_with_caches(
-                &mut *tx,
+                &mut tx,
                 &actor,
                 scope,
                 event,
@@ -521,7 +518,7 @@ impl RepoEventWrite for SqlxRepo {
         let mut authorized_batch = Vec::with_capacity(events.len());
         for (actor, scope, event) in &events {
             match gated::authorize_with_caches(
-                &mut *tx,
+                &mut tx,
                 actor,
                 scope,
                 event,
@@ -604,7 +601,7 @@ impl RepoEventWrite for SqlxRepo {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         // Pure events have no entity write to populate the cache from, so the role lookup uses the cache's current contents.
         let authorized = match gated::authorize_with_caches(
-            &mut *tx,
+            &mut tx,
             &actor,
             &scope,
             &event,
