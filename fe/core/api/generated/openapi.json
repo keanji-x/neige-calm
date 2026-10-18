@@ -12281,7 +12281,7 @@
         },
         "responses": {
           "201": {
-            "description": "Card + linked terminal created atomically; daemon spawned",
+            "description": "Card + linked terminal created atomically; typed execution admitted or Legacy daemon spawned",
             "content": {
               "application/json": {
                 "schema": {
@@ -12372,6 +12372,16 @@
           },
           "500": {
             "description": "Final for this key: `operation_failed` (spawn failed, the saga rolled back), `operation_stuck` (the card may exist)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`execution_unavailable`: typed execution is unavailable; no rows written",
             "content": {
               "application/json": {
                 "schema": {

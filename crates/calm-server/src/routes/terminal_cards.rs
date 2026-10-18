@@ -63,11 +63,12 @@ pub struct NewTerminalCardBody {
     ),
     request_body(content = NewTerminalCardBody, description = "Body required (theme is mandatory; program/cwd/env optional)"),
     responses(
-        (status = 201, description = "Card + linked terminal created atomically; daemon spawned", body = Card),
+        (status = 201, description = "Card + linked terminal created atomically; typed execution admitted or Legacy daemon spawned", body = Card),
         (status = 400, description = "An `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
+        (status = 503, description = "`execution_unavailable`: typed execution is unavailable; no rows written", body = ErrorBody),
         (status = 500, description = "Final for this key: `operation_failed` (spawn failed, the saga rolled back), `operation_stuck` (the card may exist)", body = ErrorBody),
     ),
 )]
@@ -103,21 +104,22 @@ pub(crate) async fn create_terminal_card(
         planner_hooks: false,
         request,
     })?;
-    let op_id = s
-        .operation_runtime
-        .submit(
-            "terminal-create",
-            OperationKey {
-                operation_key,
-                idempotency_key,
-                payload_hash,
-            },
-            payload,
-        )
-        .await?;
-    keyed_card_answer(
-        s.repo.as_ref(),
-        s.operation_runtime.wait(&op_id).await?.outcome,
+    let key = OperationKey {
+        operation_key,
+        idempotency_key,
+        payload_hash,
+    };
+    let result = crate::operation::terminal_execution_create::create(
+        &s.operation_runtime,
+        &s.events,
+        s.terminal_execution,
+        key,
+        payload,
     )
-    .await
+    .await?;
+    crate::operation::terminal_execution_create::drive_result(
+        s.operation_runtime.execution(),
+        &result,
+    )?;
+    keyed_card_answer(s.repo.as_ref(), result.outcome).await
 }

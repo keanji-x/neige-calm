@@ -89,6 +89,7 @@ pub use calm_truth::state::WriteContext;
 
 #[derive(Clone)]
 pub struct RouteState {
+    pub terminal_execution: bool,
     pub repo: Arc<dyn RouteRepo>,
     /// Root for server-managed track workspaces (`<root>/<area_id>/<track_id>`).
     /// Resolved once at boot; never read from env at request time.
@@ -236,6 +237,7 @@ impl BootState {
             HOOK_INGEST_CACHE_CAPACITY,
         )));
         let route = RouteState {
+            terminal_execution: false,
             terminal_renderer: self.terminal_renderer.clone(),
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
@@ -331,7 +333,7 @@ impl BootState {
 /// `fixtures`-gated [`AppState::raw_repo`].
 #[derive(Clone)]
 pub struct AppState {
-    /// Registered execution engine; no consumers are enabled in E2a.
+    /// Registered execution engine; recovery is independent of consumer opt-ins.
     pub execution: Option<Arc<crate::execution_boot::ExecutionEngine>>,
     /// Sync-domain raw writes are unreachable from this handle — handlers must funnel
     /// them through `db::write_with_event_typed`.
@@ -399,6 +401,7 @@ pub struct AppState {
 }
 
 struct OperationAdapterInputs {
+    execution: crate::execution_quiesce::ExecutionLifecycle,
     route_repo: Arc<dyn RouteRepo>,
     repo: Arc<dyn Repo>,
     plugin: Arc<PluginHost>,
@@ -550,7 +553,18 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.card_role_cache.clone(),
     ));
 
+    let typed_terminal = Arc::new(
+        crate::operation::terminal_execution_create::TerminalExecutionCreate::new(
+            TerminalAdapter::new(
+                input.route_repo.clone(),
+                input.card_role_cache.clone(),
+                input.track_area_cache.clone(),
+            ),
+            input.execution,
+        ),
+    );
     vec![
+        typed_terminal,
         terminal_adapter,
         terminal_worker_adapter,
         codex_adapter,
@@ -571,6 +585,12 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
 }
 
 impl AppState {
+    #[cfg(feature = "fixtures")]
+    pub fn with_terminal_execution(mut self, enabled: bool) -> Self {
+        self.route.terminal_execution = enabled;
+        self
+    }
+
     /// Bypass the sync-domain gate. For test-fixture seeding only — production code MUST
     /// go through `write_with_event_typed` / `log_pure_event`.
     #[cfg(feature = "fixtures")]
@@ -897,7 +917,9 @@ impl AppState {
             ClaudePlannerHost::unconfigured_scratch()
                 .expect("a scratch Claude Planner host for AppState::from_parts"),
         );
+        let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         let adapters = build_operation_adapters(OperationAdapterInputs {
+            execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: repo.clone(),
             plugin: plugin.clone(),
@@ -930,7 +952,8 @@ impl AppState {
                 events.clone(),
                 completion,
             )
-            .with_shared_codex_appserver(shared_codex_appserver.clone()),
+            .with_shared_codex_appserver(shared_codex_appserver.clone())
+            .with_execution(execution),
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
         let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
@@ -1105,7 +1128,9 @@ impl AppState {
             Arc::new(SqlxOperationRepo::new(self.raw.sqlite_pool().expect(
                 "OperationRuntime rebuild requires a sqlite-backed Repo",
             )));
+        let execution = self.operation_runtime.execution().clone();
         let adapters = build_operation_adapters(OperationAdapterInputs {
+            execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: self.raw.clone(),
             plugin: self.plugin.clone(),
@@ -1138,7 +1163,8 @@ impl AppState {
                 self.events.clone(),
                 completion,
             )
-            .with_shared_codex_appserver(self.shared_codex_appserver.clone()),
+            .with_shared_codex_appserver(self.shared_codex_appserver.clone())
+            .with_execution(execution),
         ));
         self.operation_runtime = runtime.clone();
         self.route.operation_runtime = runtime;
@@ -1393,7 +1419,9 @@ impl AppState {
             repo.sqlite_pool()
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
         ));
+        let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         let adapters = build_operation_adapters(OperationAdapterInputs {
+            execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: repo.clone(),
             plugin: plugin.clone(),
@@ -1427,7 +1455,8 @@ impl AppState {
                     events.clone(),
                     completion,
                 )
-                .with_shared_codex_appserver(shared_codex_appserver.clone()),
+                .with_shared_codex_appserver(shared_codex_appserver.clone())
+                .with_execution(execution),
             )
             .await?,
         );
@@ -1543,6 +1572,7 @@ impl AppState {
         };
         let mut state = state.into_app_state();
         state.bind_track_creator(cfg.track_add_max_open);
+        state.route.terminal_execution = cfg.terminal_execution;
         state.execution = crate::execution_boot::recover(cfg, pool).await?;
         if let Some(engine) = &state.execution {
             state.operation_runtime.execution().bind(engine.clone());

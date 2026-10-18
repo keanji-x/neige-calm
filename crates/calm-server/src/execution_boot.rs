@@ -14,7 +14,13 @@ pub async fn recover(
     };
     let secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
     let executor = SessionExecutor::new(cfg.proc_supervisor_sock_resolved(), secret);
-    let engine = Arc::new(Engine::new(SqliteExecutionStore::new(pool), executor));
+    let engine = Arc::new(Engine::new(
+        SqliteExecutionStore::new(pool).with_projection(
+            crate::operation::terminal_execution_create::CONSUMER.into(),
+            Arc::new(crate::operation::terminal_execution_create::TerminalProjection),
+        ),
+        executor,
+    ));
     let report = engine.recover().await;
     if let Some(error) = report.error {
         anyhow::bail!("execution recovery: {}", error.0);
@@ -59,7 +65,10 @@ mod port_contract {
         .unwrap();
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let pool = repo.sqlite_pool().unwrap();
-        let store = SqliteExecutionStore::new(pool.clone());
+        let store = SqliteExecutionStore::new(pool.clone()).with_projection(
+            test_support::TEST_CONSUMER.into(),
+            Arc::new(crate::execution_store::tests::NoopProjection),
+        );
         let intent = test_support::intent(temp.path().to_owned());
         let mut tx = pool.begin().await.unwrap();
         store.insert(&mut tx, &intent).await.unwrap();

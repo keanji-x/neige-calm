@@ -595,6 +595,7 @@ mod tests {
         let cfg = Config {
             emit_kernel_compatibility_json: false,
             kernel_client_key_file: None,
+            terminal_execution: false,
             listen: "127.0.0.1:0".into(),
             db_url: "mock".into(),
             data_dir: None,
@@ -639,6 +640,7 @@ mod tests {
         let cfg = Config {
             emit_kernel_compatibility_json: false,
             kernel_client_key_file: None,
+            terminal_execution: false,
             listen: "127.0.0.1:0".into(),
             db_url: "mock".into(),
             data_dir: None,

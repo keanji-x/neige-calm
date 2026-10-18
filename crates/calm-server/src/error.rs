@@ -178,6 +178,9 @@ pub enum CalmError {
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
 
+    #[error("execution unavailable")]
+    ExecutionUnavailable,
+
     /// 413 — a request body exceeded a route's size gate; `http_body_util::Limited` reports the
     /// overrun as it happens rather than trusting `Content-Length`.
     #[error("payload too large: {0}")]
@@ -237,6 +240,7 @@ impl CalmError {
             CalmError::CodexAppServer(_) => "codex_app_server",
             CalmError::CodexRefused(_) => "codex_refused",
             CalmError::ServiceUnavailable(_) => "service_unavailable",
+            CalmError::ExecutionUnavailable => "execution_unavailable",
             CalmError::PayloadTooLarge(_) => "payload_too_large",
             CalmError::OperationFailed(_) => "operation_failed",
             CalmError::OperationStuck(_) => "operation_stuck",
@@ -272,7 +276,9 @@ impl CalmError {
             | CalmError::InvalidBody(_)
             | CalmError::PlannerResetUnsupportedInSharedMode(_) => StatusCode::UNPROCESSABLE_ENTITY,
             CalmError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            CalmError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            CalmError::ServiceUnavailable(_) | CalmError::ExecutionUnavailable => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             CalmError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             CalmError::Db(_)
             | CalmError::Io(_)
@@ -292,6 +298,7 @@ impl CalmError {
     /// text is all a reader gets; an HTTP answer has `code` beside it.
     pub fn reason(&self) -> String {
         match self {
+            CalmError::ExecutionUnavailable => "execution unavailable".into(),
             CalmError::CodexRefused(m)
             | CalmError::NotFound(m)
             | CalmError::PathNotFound(m)
@@ -512,6 +519,10 @@ impl From<CalmError> for calm_truth::TruthError {
     fn from(err: CalmError) -> Self {
         // Lossy bridge: server-only variants collapse to Internal(500).
         match err {
+            CalmError::ExecutionUnavailable => {
+                calm_types::error::CoreError::ServiceUnavailable("execution unavailable".into())
+                    .into()
+            }
             CalmError::NotFound(m) => calm_types::error::CoreError::NotFound(m).into(),
             CalmError::Conflict(m) => calm_types::error::CoreError::Conflict(m).into(),
             CalmError::IdempotencyCollision(m) => {

@@ -48,6 +48,10 @@ pub struct Config {
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
     pub proc_supervisor_sock: Option<PathBuf>,
 
+    /// Use typed execution for newly created Terminal cards. Existing typed rows always recover.
+    #[arg(long, default_value_t = false)]
+    pub terminal_execution: bool,
+
     /// Kernel-owned executor capability file, shared with the supervisor.
     #[arg(long)]
     pub kernel_client_key_file: Option<PathBuf>,

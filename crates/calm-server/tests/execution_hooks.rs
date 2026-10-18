@@ -59,7 +59,15 @@ impl Fixture {
             stopped,
         ));
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-        let store = SqliteExecutionStore::new(repo.pool().clone());
+        let store = SqliteExecutionStore::new(repo.pool().clone())
+            .with_projection(
+                calm_server::operation::terminal_execution_create::CONSUMER.into(),
+                Arc::new(calm_server::operation::terminal_execution_create::TerminalProjection),
+            )
+            .with_projection(
+                exec::test_support::TEST_CONSUMER.into(),
+                Arc::new(NoopProjection),
+            );
         let engine = Arc::new(Engine::new(
             store.clone(),
             session_executor::SessionExecutor::new(socket.clone(), secret),
@@ -199,6 +207,15 @@ impl Fixture {
         url: &str,
         body: Option<serde_json::Value>,
     ) -> (StatusCode, String) {
+        self.request_keyed(method, url, body, None).await
+    }
+    async fn request_keyed(
+        &self,
+        method: &str,
+        url: &str,
+        body: Option<serde_json::Value>,
+        key: Option<&str>,
+    ) -> (StatusCode, String) {
         let app = calm_server::routes::router()
             .layer(axum::middleware::from_fn_with_state(
                 calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
@@ -214,6 +231,9 @@ impl Fixture {
             ))
             .with_state(self.state.clone());
         let mut req = Request::builder().method(method).uri(url);
+        if let Some(key) = key {
+            req = req.header("idempotency-key", key);
+        }
         let body = if let Some(body) = body {
             req = req.header("content-type", "application/json");
             Body::from(body.to_string())
@@ -745,4 +765,29 @@ async fn orphan_sweep_quiesces_typed_then_retires() {
     f.retired(&id).await;
     assert!(f.repo.terminal_get(&terminal.id).await.unwrap().is_none());
     assert!(f.root.is_dir());
+}
+
+#[path = "execution_hooks/terminal_create.rs"]
+mod terminal_execution_create;
+
+struct NoopProjection;
+#[async_trait::async_trait]
+impl calm_server::execution_store::ExecutionProjection for NoopProjection {
+    async fn spawned(
+        &self,
+        _: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        _: &str,
+        _: i64,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+    async fn settled(
+        &self,
+        _: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        _: &str,
+        _: &Settlement,
+        _: i64,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
 }

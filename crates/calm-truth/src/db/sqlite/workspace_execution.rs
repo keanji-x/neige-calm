@@ -73,14 +73,14 @@ pub async fn load(pool: &SqlitePool, id: &str) -> Result<Option<ExecutionRow>, s
         .bind(id).fetch_optional(pool).await
 }
 
-pub async fn settle(
-    pool: &SqlitePool,
+pub async fn settle_tx(
+    tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     settlement: &str,
     at_ms: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE workspace_executions SET settled_at_ms = ?, settlement_json = ? WHERE execution_id = ? AND settled_at_ms IS NULL")
-        .bind(at_ms).bind(settlement).bind(id).execute(pool).await?;
+        .bind(at_ms).bind(settlement).bind(id).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -153,6 +153,62 @@ pub async fn current(
         .transpose()
 }
 
+/// Load the immutable execution record inside the projection's write transaction.
+pub async fn intent_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<String, sqlx::Error> {
+    sqlx::query_scalar("SELECT intent_json FROM workspace_executions WHERE execution_id = ?")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+}
+
+/// Each session transition is one guarded UPDATE, including replays after settled-worker claims.
+pub async fn terminal_spawned_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    alias: &str,
+    at_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let query = format!(
+        "UPDATE worker_sessions SET state = 'running', updated_at_ms = ? \
+         WHERE state = 'starting' AND terminal_run_id IN \
+         (SELECT id FROM terminals WHERE {TERMINAL_ALIAS_SQL} = ?)"
+    );
+    sqlx::query(&query)
+        .bind(at_ms)
+        .bind(alias)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub async fn terminal_settled_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    alias: &str,
+    exit_code: Option<i32>,
+    at_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let query = format!(
+        "UPDATE terminals SET exit_code = ?, signal_killed = ? WHERE {TERMINAL_ALIAS_SQL} = ?"
+    );
+    sqlx::query(&query)
+        .bind(exit_code)
+        .bind(exit_code.is_none())
+        .bind(alias)
+        .execute(&mut **tx)
+        .await?;
+    let query = format!(
+        "UPDATE worker_sessions SET state = 'exited', updated_at_ms = ?, completed_at_ms = ? \
+         WHERE state IN ('starting','running','idle','turn_pending') AND terminal_run_id IN \
+         (SELECT id FROM terminals WHERE {TERMINAL_ALIAS_SQL} = ?)"
+    );
+    sqlx::query(&query)
+        .bind(at_ms)
+        .bind(at_ms)
+        .bind(alias)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,7 +238,9 @@ mod tests {
         tx.commit().await.unwrap();
         assert!(alias_has_execution(pool, &alias).await.unwrap());
 
-        settle(pool, "history-id", "{}", 1).await.unwrap();
+        let mut tx = super::super::begin_immediate_tx(pool).await.unwrap();
+        settle_tx(&mut tx, "history-id", "{}", 1).await.unwrap();
+        tx.commit().await.unwrap();
         finish(pool, "history-id").await.unwrap();
         assert!(alias_has_execution(pool, &alias).await.unwrap());
     }

@@ -249,9 +249,12 @@ impl Store for MemoryStore {
             .collect())
     }
 }
+pub const TEST_CONSUMER: &str = "port-contract";
+
 pub fn intent(root: std::path::PathBuf) -> ExecutionIntent {
     ExecutionIntent {
         metadata: ExecutionMetadata {
+            consumer: TEST_CONSUMER.into(),
             id: ExecutionId::fresh().unwrap(),
             alias: ProcessAlias(ExecutionId::fresh().unwrap().as_str().into()),
             owner: OperationRef("port-contract".into()),

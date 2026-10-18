@@ -174,7 +174,11 @@ mod tests {
     #[tokio::test]
     async fn require_safe_tx_rejects_unsettled_typed() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let store = crate::execution_store::SqliteExecutionStore::new(repo.pool().clone());
+        let store = crate::execution_store::SqliteExecutionStore::new(repo.pool().clone())
+            .with_projection(
+                test_support::TEST_CONSUMER.into(),
+                std::sync::Arc::new(crate::execution_store::tests::NoopProjection),
+            );
         let intent = test_support::intent("/".into());
         let scope = Scope::Track(intent.metadata.track.0.clone());
         let mut tx = repo.pool().begin().await.unwrap();

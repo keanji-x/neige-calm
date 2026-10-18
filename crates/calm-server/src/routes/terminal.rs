@@ -109,25 +109,43 @@ async fn terminal_renderer_config(
         crate::proc_supervisor::resolve_control_sock(daemon.proc_supervisor_sock.as_deref())
             .await?;
 
-    let envs = terminal_child_envs(env);
     // #1784: `neige` in a PTY resolves to the running kernel's CLI. The prepend runs inside the
     // shell, so the PATH the proc supervisor hands the child stays byte-exact behind it.
     let path_prepend = crate::kernel_bin_path::shell_path_prepend()
         .map_err(|error| CalmError::Internal(format!("terminal PATH: {error}")))?;
 
+    let launch = launch_specification(program, env, &path_prepend);
+    let calm_session::control::IoMode::Pty { cols, rows } = launch.io_mode else {
+        unreachable!("Terminal launch uses a PTY")
+    };
     Ok(RendererConfig {
         terminal_id: term.id.clone(),
-        cols: 80,
-        rows: 24,
-        buffer_bytes: 1 << 20,
+        cols,
+        rows,
+        buffer_bytes: launch.replay_bytes,
         terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
         terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
-        program: "/bin/sh".to_string(),
-        args: vec!["-c".to_string(), format!("{path_prepend}\n{program}")],
-        envs,
+        program: launch.program.to_string_lossy().into_owned(),
+        args: launch.args,
+        envs: launch.environment,
         cwd: cwd.to_string(),
         supervisor_sock: proc_supervisor_sock,
     })
+}
+
+/// Pure Terminal launch policy shared by Legacy renderers and typed admission.
+pub(crate) fn launch_specification(
+    program: &str,
+    env: &serde_json::Value,
+    path_prepend: &str,
+) -> workspace_runtime::execution::ExecutionSpecification {
+    workspace_runtime::execution::ExecutionSpecification {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), format!("{path_prepend}\n{program}")],
+        environment: terminal_child_envs(env),
+        io_mode: calm_session::control::IoMode::Pty { cols: 80, rows: 24 },
+        replay_bytes: 1 << 20,
+    }
 }
 
 /// Overlay `TERM` / `COLORTERM` / `TERM_PROGRAM=neige` so a server launched

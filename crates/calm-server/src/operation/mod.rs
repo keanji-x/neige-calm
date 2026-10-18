@@ -33,6 +33,7 @@ mod task_prompt;
 pub mod task_verify_adapter;
 pub mod terminal_adapter;
 pub(crate) mod terminal_disposal;
+pub mod terminal_execution_create;
 pub(crate) mod terminal_launch;
 pub mod track_recipe_create_adapter;
 mod tx_only;
@@ -85,10 +86,11 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "child-track",
 ];
 
-pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 10] = [
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 11] = [
     card_create_adapter::CARD_CREATE,
     track_recipe_create_adapter::TRACK_RECIPE_CREATE,
     "terminal-create",
+    terminal_execution_create::KIND,
     "codex-create",
     "claude-create",
     "claude-restart",
@@ -296,6 +298,14 @@ impl SpawnCtx {
             shared_codex_appserver: None,
             execution: Default::default(),
         }
+    }
+
+    pub fn with_execution(
+        mut self,
+        execution: crate::execution_quiesce::ExecutionLifecycle,
+    ) -> Self {
+        self.execution = execution;
+        self
     }
 
     pub fn with_shared_codex_appserver(mut self, shared: Arc<SharedCodexAppServer>) -> Self {

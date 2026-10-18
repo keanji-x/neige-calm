@@ -65,6 +65,7 @@ pub struct ExecutionSecrets {
     pub tokens: ExecutionControlTokens,  // observe/interactive/lifecycle
 }
 pub struct ExecutionMetadata {           // 不可变；不含 ticket secret 或 control tokens
+    pub consumer: ExecutionConsumer,     // 消费者拥有的必填注册键；持久化在 intent_json
     pub id: ExecutionId, pub alias: ProcessAlias, // alias 如 "term:<id>"
     pub owner: OperationRef, pub track: TrackId,  // track 是占用谓词的键（§7.2）
     pub source: PrivateSource,
@@ -311,8 +312,10 @@ S2a 不给资源新增保证，只让 typed 执行在**既有**路径中得到 L
 | `worktree_clean.rs:21-26` | 谓词非空时跳过该 Track，不请求 Stop/Retire：**Track close 不是 stop**；settled-worker 回收停止并结算后照常清理 |
 | boot reconcile（calm-server `lib.rs:36-90`） | 跳过有 `workspace_executions` 行的终端：不 Probe、不写 exit 与会话（typed 行未 launch 时 Probe 必为 false） |
 
-**消费者投影**（`SqliteExecutionStore` 按 intent 的 operation kind 注册投影，Terminal 注册一个，与执行写入同一事务）。对
-typed 终端每个投影字段只有一个写者：exit 字段只由 `settle`、会话只由创建事务与 `spawned`/`settle` 写（settled-worker
+**消费者投影**（`SqliteExecutionStore` 按执行记录的 `consumer: ExecutionConsumer` 注册投影，Terminal 在 admission 时设置自己的键，与执行写入同一事务）。
+`insert`/admit 拒绝未注册的 consumer；`spawned`/`settle` 从不可变 intent_json 读取 consumer 与 alias，
+不连接可回收的 operations 行。缺少注册或执行记录时返回 StoreError 并回滚；无投影消费者也须显式注册 no-op。
+0170 migration 保持不变。typed 终端每个投影字段只有一个写者：exit 字段只由 `settle`、会话只由创建事务与 `spawned`/`settle` 写（settled-worker
 认领的 Exited 是唯一例外）；Legacy 的 boot reconcile、attach reader 与 WS ensure 按模式跳过。
 
 - **创建**：创建事务写卡片、`WorkerSessionKind::Terminal` 会话（starting）、`terminals` 行（`pid` NULL）与 admit。每个终端
@@ -435,7 +438,7 @@ S2a 之外的后续里程碑：**resource cutover**（typed 资源、共享 regi
   归属只在 executor；共享安全谓词只报告占用，生命周期动作只在删除/回收调用者；投影的 currentness 在 Terminal 投影 SQL，不进 engine 或 executor；资源与破坏性 effect 留在既有 server 路径。
 - **重复逻辑**：一个 `next_step` 与驱动任务；executor 一个 stop 例程（删除 `stop_known`）与一个私有释放例程；Cleanup 并入
   `Retire`；一个占用谓词、一个 scope 级 quiesce、一个代次；每个投影字段对 typed 终端一个写者；Retire 一个写者；时限只由 `STOP_GRACE + DRAIN_BUDGET` 推导。
-- **硬编码假设**：engine 不知道 Terminal；alias/OperationRef/Track 由调用者给出；投影按 operation kind 注册；`Desired`、
+- **硬编码假设**：engine 不知道 Terminal；alias/OperationRef/Track 由调用者给出；投影按执行记录的 consumer 注册；`Desired`、
   `Fact`、`BusyReason` 是本层闭合集合；`term:<id>` 映射只有一个 helper（calm-truth `workspace_execution.rs`，§10），Terminal 消费者与 boot reconcile 查询共用。
 - **外部合同事实**：进程与 fence 状态取自 executor 回复，宿主重启取自 `boot_id`，PTY EIO 与 bash 忽略 SIGTERM 由测试固
   定；不从 PID、路径或 dev/inode 推导排空或身份。

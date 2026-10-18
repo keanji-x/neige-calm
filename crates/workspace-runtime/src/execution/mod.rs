@@ -23,6 +23,15 @@ pub struct OperationRef(pub String);
 pub struct TrackId(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessAlias(pub String);
+/// Consumer-owned registry key, persisted with the immutable execution intent.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExecutionConsumer(pub String);
+impl From<&str> for ExecutionConsumer {
+    fn from(value: &str) -> Self {
+        Self(value.into())
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PrivateSource {
     pub root: PathBuf,
@@ -35,6 +44,7 @@ pub struct PrivateSource {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionMetadata {
+    pub consumer: ExecutionConsumer,
     pub id: ExecutionId,
     pub alias: ProcessAlias,
     pub owner: OperationRef,

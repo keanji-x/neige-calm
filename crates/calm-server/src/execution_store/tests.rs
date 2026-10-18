@@ -5,7 +5,11 @@ use workspace_runtime::execution::test_support::{self, StoreHarness};
 async fn fixture() -> (SqliteExecutionStore, SqlitePool) {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let pool = repo.sqlite_pool().unwrap();
-    (SqliteExecutionStore::new(pool.clone()), pool)
+    (
+        SqliteExecutionStore::new(pool.clone())
+            .with_projection(test_support::TEST_CONSUMER.into(), Arc::new(NoopProjection)),
+        pool,
+    )
 }
 #[async_trait]
 impl StoreHarness for SqliteExecutionStore {
@@ -209,4 +213,160 @@ async fn store_triggers_reject_rewrites() {
 fn terminal_alias_mapping() {
     assert_eq!(sql::terminal_alias("123"), "term:123");
     assert_eq!(sql::TERMINAL_ALIAS_SQL, "'term:' || terminals.id");
+}
+
+struct RecordingProjection(&'static str);
+#[async_trait]
+impl ExecutionProjection for RecordingProjection {
+    async fn spawned(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        alias: &str,
+        _: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO projection_calls (owner, alias, phase) VALUES (?, ?, 'spawned')")
+            .bind(self.0)
+            .bind(alias)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+    async fn settled(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        alias: &str,
+        _: &Settlement,
+        _: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO projection_calls (owner, alias, phase) VALUES (?, ?, 'settled')")
+            .bind(self.0)
+            .bind(alias)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+}
+// Projection-free consumers must opt in explicitly via registration.
+pub(crate) struct NoopProjection;
+#[async_trait]
+impl ExecutionProjection for NoopProjection {
+    async fn spawned(
+        &self,
+        _: &mut Transaction<'_, Sqlite>,
+        _: &str,
+        _: i64,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+    async fn settled(
+        &self,
+        _: &mut Transaction<'_, Sqlite>,
+        _: &str,
+        _: &Settlement,
+        _: i64,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn projection_registered_per_kind() {
+    let (store, pool) = fixture().await;
+    sqlx::query("CREATE TABLE projection_calls (owner TEXT, alias TEXT, phase TEXT)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let store = store
+        .with_projection("consumer-a".into(), Arc::new(RecordingProjection("a")))
+        .with_projection("consumer-b".into(), Arc::new(RecordingProjection("b")))
+        .with_projection("projection-free".into(), Arc::new(NoopProjection));
+    for kind in ["consumer-a", "consumer-b", "projection-free"] {
+        let mut intent = test_support::intent("/".into());
+        intent.metadata.alias = ProcessAlias(kind.into());
+        intent.metadata.consumer = kind.into();
+        let mut tx = pool.begin().await.unwrap();
+        store.insert(&mut tx, &intent).await.unwrap();
+        tx.commit().await.unwrap();
+        store.spawned(&intent.metadata.id).await.unwrap();
+        store
+            .settle(
+                &intent.metadata.id,
+                &Settlement::Journal(ExecutionState::Revoked),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .load(&intent.metadata.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_settled()
+        );
+    }
+    let calls: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT owner, alias, phase FROM projection_calls ORDER BY owner, phase")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        calls,
+        vec![
+            ("a".into(), "consumer-a".into(), "settled".into()),
+            ("a".into(), "consumer-a".into(), "spawned".into()),
+            ("b".into(), "consumer-b".into(), "settled".into()),
+            ("b".into(), "consumer-b".into(), "spawned".into()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn unregistered_projection_fails_and_rolls_back() {
+    let (store, pool) = fixture().await;
+    let intent = test_support::intent("/".into());
+    let mut tx = pool.begin().await.unwrap();
+    store.insert(&mut tx, &intent).await.unwrap();
+    tx.commit().await.unwrap();
+    let store = SqliteExecutionStore::new(pool.clone());
+    let id = &intent.metadata.id;
+    let spawned = store.spawned(id).await;
+    let settled = store
+        .settle(id, &Settlement::Journal(ExecutionState::Revoked))
+        .await;
+    for result in [spawned, settled] {
+        assert_eq!(
+            result.unwrap_err().0,
+            "missing execution projection for consumer: port-contract"
+        );
+    }
+    let durable: (Option<i64>, Option<String>) = sqlx::query_as(
+        "SELECT settled_at_ms, settlement_json FROM workspace_executions WHERE execution_id = ?",
+    )
+    .bind(id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(durable, (None, None));
+    assert!(!store.load(id).await.unwrap().unwrap().is_settled());
+    assert_eq!(store.pending().await.unwrap(), vec![id.clone()]);
+}
+
+#[tokio::test]
+async fn unregistered_consumer_refused_at_admit() {
+    let (_, pool) = fixture().await;
+    let store = SqliteExecutionStore::new(pool.clone());
+    let engine = Engine::new(
+        store.clone(),
+        test_support::ScriptedExecutor::new(Default::default(), []),
+    );
+    let intent = test_support::intent("/".into());
+    let id = intent.metadata.id.clone();
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        store.insert(&mut tx, &intent).await.unwrap_err().0,
+        "missing execution projection for consumer: port-contract"
+    );
+    assert!(engine.admit(&mut tx, intent).await.is_err());
+    tx.commit().await.unwrap();
+    assert!(store.load(&id).await.unwrap().is_none());
+    assert!(store.pending().await.unwrap().is_empty());
 }
