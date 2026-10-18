@@ -57,6 +57,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 
 [dev-dependencies]
+workspace-runtime = { path = "../workspace-runtime", features = ["session-executor", "test-support"] }
 tempfile = "3"
 proc-macro2 = "1"
 

@@ -9,6 +9,8 @@ mod execution_private;
 #[path = "execution_registration.rs"]
 mod execution_registration;
 mod execution_support;
+#[path = "port_contract.rs"]
+mod port_contract;
 mod proc_probe;
 
 // pin_lost_on_autoreap changes SIGCHLD for the entire process; keep it separate.

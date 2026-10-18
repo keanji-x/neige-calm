@@ -1,0 +1,18 @@
+[package]
+name = "workspace-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+session-executor = []
+test-support = []
+
+[dependencies]
+workspace = { path = "../workspace" }
+calm-session = { path = "../calm-session" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
