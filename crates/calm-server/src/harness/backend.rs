@@ -338,8 +338,8 @@ impl PlannerBackend {
             Arm::Codex(daemon, _) => Ok(steer_outcome(
                 daemon
                     .turn_steer(
-                        control::session_id(&request.target.session, thread_id),
-                        request.target.turn.as_str(),
+                        thread_id,
+                        request.turn.as_str(),
                         request.input.items,
                         Some(&request.input.correlation.0),
                     )
@@ -354,7 +354,6 @@ impl PlannerBackend {
     /// Host selection preflight stays at the existing admission point, after snapshot persistence.
     pub(crate) async fn compact_request(
         &self,
-        thread_id: &str,
         source: &impl SelectionSource,
     ) -> Result<CompactRequest> {
         let selection = match &self.0 {
@@ -375,10 +374,7 @@ impl PlannerBackend {
             }
             Arm::Codex(..) | Arm::Acp(_) => TurnModelSelection::inherit(),
         };
-        Ok(CompactRequest {
-            session: self.session_target(thread_id),
-            selection,
-        })
+        Ok(CompactRequest { selection })
     }
 
     pub(crate) async fn compact_start(
@@ -388,21 +384,12 @@ impl PlannerBackend {
     ) -> Result<CompactSubmission<CalmError>> {
         match &self.0 {
             Arm::Codex(daemon, _) => Ok(codex_compact_submission(
-                daemon
-                    .thread_compact_start(control::session_id(&request.session, thread_id))
-                    .await,
+                daemon.thread_compact_start(thread_id).await,
             )),
             Arm::Claude(session) => Ok(session.compact_start(thread_id, &request.selection).await),
             Arm::Acp(_) => Err(CalmError::BadRequest(
                 "Manual context compaction is available for Codex and Claude conversations.".into(),
             )),
-        }
-    }
-
-    pub(crate) fn session_target(&self, thread_id: &str) -> SessionTarget {
-        match &self.0 {
-            Arm::Codex(..) => SessionTarget::Native(NativeSessionRef(thread_id.to_owned())),
-            Arm::Claude(_) | Arm::Acp(_) => SessionTarget::CurrentBinding,
         }
     }
 
@@ -418,17 +405,14 @@ impl PlannerBackend {
         thread_id: &str,
         request: InterruptRequest,
     ) -> InterruptOutcome<InterruptDiagnostic> {
-        let turn_id = request.target.turn.as_str();
+        let turn_id = request.turn.as_str();
         match &self.0 {
             Arm::Acp(session) => session
                 .turn_interrupt(thread_id, turn_id)
                 .await
                 .map_error(|e| Box::new(e) as InterruptDiagnostic),
             Arm::Codex(daemon, _) => daemon
-                .interrupt_outcome(
-                    control::session_id(&request.target.session, thread_id),
-                    turn_id,
-                )
+                .interrupt_outcome(thread_id, turn_id)
                 .await
                 .map_error(|e| Box::new(e) as InterruptDiagnostic),
             Arm::Claude(session) => session

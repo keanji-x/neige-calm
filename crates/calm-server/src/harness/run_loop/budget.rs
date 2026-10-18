@@ -139,10 +139,7 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
             let send = inner.backend.turn_steer(
                 &thread,
                 super::SteerRequest {
-                    target: super::TurnTarget {
-                        session: inner.backend.session_target(&thread),
-                        turn: inner.backend.turn_identity(turn_id.clone()),
-                    },
+                    turn: inner.backend.turn_identity(turn_id.clone()),
                     input: super::InputRequest {
                         items: input,
                         correlation: super::CorrelationKey(key.clone()),

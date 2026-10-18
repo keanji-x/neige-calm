@@ -1,5 +1,5 @@
 use provider::control::{
-    CorrelationKey, InputRequest, InterruptRequest, SteerOutcome, SteerRequest, TurnTarget,
+    CorrelationKey, InputRequest, InterruptRequest, SteerOutcome, SteerRequest,
 };
 use std::collections::{HashSet, VecDeque};
 #[cfg(feature = "fixtures")]
@@ -1635,10 +1635,7 @@ async fn handle_steer(
         .turn_steer(
             &thread_id,
             SteerRequest {
-                target: TurnTarget {
-                    session: inner.backend.session_target(&thread_id),
-                    turn: inner.backend.turn_identity(turn_id.clone()),
-                },
+                turn: inner.backend.turn_identity(turn_id.clone()),
                 input: InputRequest {
                     items,
                     correlation: CorrelationKey(entry_id.as_str().to_owned()),
@@ -4079,10 +4076,7 @@ async fn issue_interrupt_for_turn(
         .turn_interrupt(
             &thread_id,
             InterruptRequest {
-                target: TurnTarget {
-                    session: inner.backend.session_target(&thread_id),
-                    turn: inner.backend.turn_identity(target_turn_id.clone()),
-                },
+                turn: inner.backend.turn_identity(target_turn_id.clone()),
             },
         )
         .await;

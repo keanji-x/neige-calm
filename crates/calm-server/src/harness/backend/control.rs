@@ -1,43 +1,43 @@
 //! Native-result translation for the existing managed facade.
 use super::*;
+use crate::shared_codex_appserver::control::ControlError;
 
-pub(super) fn steer_outcome(result: Result<TurnId>) -> SteerOutcome<CalmError> {
+pub(super) fn steer_outcome(
+    result: std::result::Result<TurnId, ControlError>,
+) -> SteerOutcome<CalmError> {
     match result {
         Ok(turn) => SteerOutcome::Taken {
             turn: TurnIdentity::Native(turn),
         },
-        Err(error @ CalmError::CodexRefused(_)) => SteerOutcome::NotTaken { error },
-        Err(error) => SteerOutcome::Unknown {
-            error,
-            evidence: SubmissionEvidence::Unobserved,
-        },
+        Err(ControlError::Refused(error)) => SteerOutcome::NotTaken { error },
+        Err(ControlError::InvalidRequest(error) | ControlError::Unanswered(error)) => {
+            SteerOutcome::Unknown {
+                error,
+                evidence: SubmissionEvidence::Unobserved,
+            }
+        }
     }
 }
 
-pub(super) fn codex_compact_submission(result: Result<()>) -> CompactSubmission<CalmError> {
+pub(super) fn codex_compact_submission(
+    result: std::result::Result<(), ControlError>,
+) -> CompactSubmission<CalmError> {
     match result {
         Ok(()) => CompactSubmission::Submitted {
             basis: SubmissionBasis::NativeAck,
         },
-        Err(error @ CalmError::CodexRefused(_)) => CompactSubmission::NotSubmitted {
+        Err(ControlError::Refused(error)) => CompactSubmission::NotSubmitted {
             error,
             reason: CompactNotSubmitted::NativeRefusal,
         },
-        Err(error @ CalmError::BadRequest(_)) => CompactSubmission::NotSubmitted {
+        Err(ControlError::InvalidRequest(error)) => CompactSubmission::NotSubmitted {
             error,
             reason: CompactNotSubmitted::InvalidRequest,
         },
-        Err(error) => CompactSubmission::Unconfirmed {
+        Err(ControlError::Unanswered(error)) => CompactSubmission::Unconfirmed {
             error,
             evidence: SubmissionEvidence::Unobserved,
         },
-    }
-}
-
-pub(super) fn session_id<'a>(target: &'a SessionTarget, current: &'a str) -> &'a str {
-    match target {
-        SessionTarget::CurrentBinding => current,
-        SessionTarget::Native(id) => &id.0,
     }
 }
 
@@ -50,31 +50,40 @@ mod tests {
         let cases = [
             (Ok("native-turn".into()), "taken", "native-turn".into()),
             (
-                Err(CalmError::CodexRefused("native refusal".into())),
+                Err(ControlError::Refused(CalmError::CodexRefused(
+                    "native refusal".into(),
+                ))),
                 "refused",
                 "native refusal".into(),
             ),
             (
-                Err(CalmError::BadRequest("bad".into())),
+                Err(ControlError::InvalidRequest(CalmError::BadRequest(
+                    "bad".into(),
+                ))),
                 "unknown",
                 CalmError::BadRequest("bad".into()).to_string(),
             ),
             (
-                Err(CalmError::CodexAppServer("unanswered".into())),
+                Err(ControlError::Unanswered(CalmError::CodexAppServer(
+                    "unanswered".into(),
+                ))),
                 "unknown",
                 CalmError::CodexAppServer("unanswered".into()).to_string(),
             ),
             (
-                Err(CalmError::Conflict("sealed".into())),
+                Err(ControlError::Unanswered(CalmError::Conflict(
+                    "sealed".into(),
+                ))),
                 "unknown",
                 CalmError::Conflict("sealed".into()).to_string(),
             ),
         ];
         for (input, expected, reader) in cases {
-            let diagnostic = input
-                .as_ref()
-                .err()
-                .map(|e| (std::mem::discriminant(e), e.to_string()));
+            let diagnostic = input.as_ref().err().map(|e| match e {
+                ControlError::Refused(e)
+                | ControlError::InvalidRequest(e)
+                | ControlError::Unanswered(e) => (std::mem::discriminant(e), e.to_string()),
+            });
             let (actual, error) = match steer_outcome(input) {
                 SteerOutcome::Taken {
                     turn: TurnIdentity::Native(turn),
@@ -112,21 +121,36 @@ mod tests {
         let cases = [
             (Ok(()), None),
             (
-                Err(CalmError::CodexRefused("refusal".into())),
+                Err(ControlError::Refused(CalmError::CodexRefused(
+                    "refusal".into(),
+                ))),
                 Some(CompactNotSubmitted::NativeRefusal),
             ),
             (
-                Err(CalmError::BadRequest("invalid".into())),
+                Err(ControlError::InvalidRequest(CalmError::BadRequest(
+                    "invalid".into(),
+                ))),
                 Some(CompactNotSubmitted::InvalidRequest),
             ),
-            (Err(CalmError::Conflict("sealed before RPC".into())), None),
-            (Err(CalmError::CodexAppServer("timeout".into())), None),
+            (
+                Err(ControlError::Unanswered(CalmError::Conflict(
+                    "sealed before RPC".into(),
+                ))),
+                None,
+            ),
+            (
+                Err(ControlError::Unanswered(CalmError::CodexAppServer(
+                    "timeout".into(),
+                ))),
+                None,
+            ),
         ];
         for (input, reason) in cases {
-            let original = input
-                .as_ref()
-                .err()
-                .map(|e| (std::mem::discriminant(e), e.to_string()));
+            let original = input.as_ref().err().map(|e| match e {
+                ControlError::Refused(e)
+                | ControlError::InvalidRequest(e)
+                | ControlError::Unanswered(e) => (std::mem::discriminant(e), e.to_string()),
+            });
             let error = match codex_compact_submission(input) {
                 CompactSubmission::Submitted { basis } => {
                     assert_eq!(basis, SubmissionBasis::NativeAck);

@@ -4,7 +4,9 @@
 #[cfg(target_os = "macos")]
 mod macos_process;
 
+pub mod control;
 mod preserving_recovery;
+use control::ControlError;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod termination_identity_tests;
 mod thread_release;
@@ -1375,7 +1377,7 @@ impl SharedCodexAppServer {
         expected_turn_id: &str,
         items: Vec<InputItem>,
         client_user_message_id: Option<&str>,
-    ) -> Result<TurnId> {
+    ) -> std::result::Result<TurnId, ControlError> {
         self.require_authentication()?;
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
@@ -1403,22 +1405,22 @@ impl SharedCodexAppServer {
                 .expect("fake shared codex reject-steer mutex poisoned")
                 .clone();
             if let Some(message) = scripted {
-                return Err(CalmError::CodexRefused(message));
+                return Err(ControlError::Refused(CalmError::CodexRefused(message)));
             }
             if fake.fail_turn_steer.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
+                return Err(ControlError::Unanswered(CalmError::CodexAppServer(
                     "request turn/steer timed out".into(),
-                ));
+                )));
             }
             return match self.active_turn_id_for_thread(thread_id) {
-                None => Err(CalmError::CodexRefused(
+                None => Err(ControlError::Refused(CalmError::CodexRefused(
                     "turn/steer failed: no active turn to steer (code -32600)".into(),
-                )),
+                ))),
                 Some(active) if active != expected_turn_id => {
-                    Err(CalmError::CodexRefused(format!(
+                    Err(ControlError::Refused(CalmError::CodexRefused(format!(
                         "turn/steer failed: expected active turn id `{expected_turn_id}` but \
                          found `{active}` (code -32600)"
-                    )))
+                    ))))
                 }
                 Some(active) => Ok(active),
             };
@@ -1476,12 +1478,15 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    pub async fn thread_compact_start(&self, thread_id: &str) -> Result<()> {
+    pub async fn thread_compact_start(
+        &self,
+        thread_id: &str,
+    ) -> std::result::Result<(), ControlError> {
         self.require_authentication()?;
         if self.thread_seals.is_sealed(thread_id) {
-            return Err(CalmError::Conflict(
+            return Err(ControlError::Unanswered(CalmError::Conflict(
                 "the conversation is being deleted".into(),
-            ));
+            )));
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = &self.fake {
@@ -1564,9 +1569,13 @@ impl SharedCodexAppServer {
         }
         let client = match self.connected_client().await {
             Ok(client) => client,
-            Err(error) => {
+            Err(
+                error @ (ControlError::Refused(_)
+                | ControlError::InvalidRequest(_)
+                | ControlError::Unanswered(_)),
+            ) => {
                 return provider::control::InterruptOutcome::Unconfirmed {
-                    error,
+                    error: error.into(),
                     evidence: provider::control::SubmissionEvidence::Unobserved,
                 };
             }
@@ -1638,14 +1647,16 @@ impl SharedCodexAppServer {
         });
     }
 
-    fn require_authentication(&self) -> Result<()> {
+    fn require_authentication(&self) -> std::result::Result<(), ControlError> {
         if let Some(reader) = self.authentication_hold() {
             if self.authentication_failed() {
-                return Err(CalmError::CodexRefused(
+                return Err(ControlError::Refused(CalmError::CodexRefused(
                     crate::codex_authentication::SIGN_IN_REFUSAL.into(),
-                ));
+                )));
             }
-            return Err(CalmError::ServiceUnavailable(reader));
+            return Err(ControlError::Unanswered(CalmError::ServiceUnavailable(
+                reader,
+            )));
         }
         Ok(())
     }
@@ -1905,16 +1916,18 @@ impl SharedCodexAppServer {
     }
 
     /// Revalidate after the last connection await, immediately before admitting a native write.
-    async fn authenticated_client(&self) -> Result<Arc<CodexAppServer>> {
+    async fn authenticated_client(&self) -> std::result::Result<Arc<CodexAppServer>, ControlError> {
         let client = self.connected_client().await?;
         self.require_authentication()?;
         Ok(client)
     }
 
-    async fn connected_client(&self) -> Result<Arc<CodexAppServer>> {
-        self.running_client()
-            .await
-            .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
+    async fn connected_client(&self) -> std::result::Result<Arc<CodexAppServer>, ControlError> {
+        self.running_client().await.ok_or_else(|| {
+            ControlError::Unanswered(CalmError::CodexAppServer(
+                "shared app-server is not connected".into(),
+            ))
+        })
     }
 
     /// Caller MUST hold `transition_serial`.

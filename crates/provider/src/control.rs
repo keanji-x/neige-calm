@@ -39,19 +39,21 @@ pub struct InputRequest {
     pub items: Vec<InputItem>,
     pub correlation: CorrelationKey,
 }
+/// Controls the session selected by the receiving facade, never a caller override.
 #[derive(Clone, Debug)]
 pub struct SteerRequest {
-    pub target: TurnTarget,
+    pub turn: TurnIdentity,
     pub input: InputRequest,
 }
+/// Compact the receiving facade's session; selection is the existing host preflight result.
 #[derive(Clone, Debug)]
 pub struct CompactRequest {
-    pub session: SessionTarget,
     pub selection: TurnModelSelection,
 }
+/// Interrupt a turn in the receiving facade's session. Host logical-thread context stays separate.
 #[derive(Clone, Debug)]
 pub struct InterruptRequest {
-    pub target: TurnTarget,
+    pub turn: TurnIdentity,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubmissionEvidence {

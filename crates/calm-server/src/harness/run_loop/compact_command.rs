@@ -66,7 +66,7 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
             });
         }
     }
-    let submission = match inner.backend.compact_request(&thread, inner.as_ref()).await {
+    let submission = match inner.backend.compact_request(inner.as_ref()).await {
         Ok(request) => inner.backend.compact_start(&thread, request).await,
         Err(error) => Err(error),
     };

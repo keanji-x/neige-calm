@@ -2,8 +2,7 @@
 use super::completed_commit_tests::Fixture;
 use super::*;
 use provider::control::{
-    CompactRequest, CompactSubmission, InterruptOutcome, SessionTarget, SubmissionEvidence,
-    TurnIdentity,
+    CompactRequest, CompactSubmission, InterruptOutcome, SubmissionEvidence, TurnIdentity,
 };
 
 #[tokio::test]
@@ -218,10 +217,7 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
             .turn_interrupt(
                 "thread-commit-wake",
                 InterruptRequest {
-                    target: TurnTarget {
-                        session: SessionTarget::CurrentBinding,
-                        turn: TurnIdentity::Native("running".into()),
-                    },
+                    turn: TurnIdentity::Native("running".into()),
                 },
             )
             .await;
@@ -249,7 +245,7 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
         .seal_for_deletion("thread-commit-wake");
     assert!(
         matches!(f.harness.inner.backend.compact_start("thread-commit-wake", CompactRequest {
-        session: SessionTarget::CurrentBinding, selection: crate::planner_model::TurnModelSelection::inherit(),
+        selection: crate::planner_model::TurnModelSelection::inherit(),
     }).await.unwrap(), CompactSubmission::Unconfirmed { error: CalmError::Conflict(message), evidence: SubmissionEvidence::Unobserved } if message == "the conversation is being deleted")
     );
 }
@@ -289,17 +285,12 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
             identity,
             TurnIdentity::Local(CorrelationKey("local-turn".into()))
         );
-        let target = TurnTarget {
-            session: SessionTarget::CurrentBinding,
-            turn: identity,
-        };
+
         assert!(
-            matches!(backend.turn_steer("logical-thread", SteerRequest { target: target.clone(), input: InputRequest { items: vec![], correlation: CorrelationKey("key".into()) } }).await,
+            matches!(backend.turn_steer("logical-thread", SteerRequest { turn: identity.clone(), input: InputRequest { items: vec![], correlation: CorrelationKey("key".into()) } }).await,
             Err(CalmError::Internal(message)) if message == "a Claude Planner cannot steer; the run loop checks supports_steer first")
         );
-        let request = backend
-            .compact_request("logical-thread", inner.as_ref())
-            .await;
+        let request = backend.compact_request(inner.as_ref()).await;
         if provider == AgentProvider::Claude {
             let expected = crate::claude_planner::compact::refused(
                 crate::claude_planner::config::unavailable_message(),
@@ -314,7 +305,7 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
             );
         }
         let outcome = backend
-            .turn_interrupt("logical-thread", InterruptRequest { target })
+            .turn_interrupt("logical-thread", InterruptRequest { turn: identity })
             .await;
         assert!(matches!(outcome, InterruptOutcome::NoTarget));
         assert!(backend.legacy_interrupt_result(outcome).is_ok());
@@ -439,4 +430,70 @@ async fn m1_mapping_interrupt_host_noops_never_issue_native_call() {
         assert!(inner.interrupt_deadline.lock().await.is_none());
         assert!(f.daemon.interrupted_turns_for_test().is_empty());
     }
+}
+
+/// Requests contain no session override: the facade's invocation selects the Codex session,
+/// while local adapters keep their existing host logical-thread context.
+#[tokio::test]
+async fn m1_mapping_target_rule_controls_the_facade_session() {
+    let f = Fixture::new().await;
+    let backend = &f.harness.inner.backend;
+    // A decoy session must receive no native operation, even with the same native turn id.
+    f.daemon.set_active_turn_for_test("decoy", "running");
+    f.daemon.set_active_turn_for_test("selected", "running");
+    assert!(matches!(
+        backend
+            .turn_steer(
+                "selected",
+                SteerRequest {
+                    turn: TurnIdentity::Native("running".into()),
+                    input: InputRequest {
+                        items: vec![],
+                        correlation: CorrelationKey("key".into())
+                    },
+                }
+            )
+            .await
+            .unwrap(),
+        SteerOutcome::Taken { .. }
+    ));
+    assert!(matches!(
+        backend
+            .compact_start(
+                "selected",
+                CompactRequest {
+                    selection: crate::planner_model::TurnModelSelection::inherit(),
+                }
+            )
+            .await
+            .unwrap(),
+        CompactSubmission::Submitted { .. }
+    ));
+    assert!(matches!(
+        backend
+            .turn_interrupt(
+                "selected",
+                InterruptRequest {
+                    turn: TurnIdentity::Native("running".into()),
+                }
+            )
+            .await,
+        InterruptOutcome::NativeAck
+    ));
+    let steered = f.daemon.steered_turns_for_test();
+    assert_eq!(steered.len(), 1);
+    let (session, turn, items, correlation) = &steered[0];
+    assert_eq!(session, "selected");
+    assert_eq!(turn, "running");
+    assert!(items.is_empty());
+    assert_eq!(correlation.as_deref(), Some("key"));
+    assert_eq!(f.daemon.compacted_threads_for_test(), vec!["selected"]);
+    assert_eq!(
+        f.daemon.interrupted_turns_for_test(),
+        vec![("selected".into(), "running".into())]
+    );
+    assert_eq!(
+        f.daemon.active_turn_id_for_thread("decoy").as_deref(),
+        Some("running")
+    );
 }
