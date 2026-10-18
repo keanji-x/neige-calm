@@ -84,6 +84,9 @@ pub struct HarnessSnapshot {
     pub schema_version: u32,
     pub mode: String,
     pub phase: HarnessPhaseTag,
+    /// Internal handoff preparation; absent legacy snapshots are explicitly unpaused.
+    #[serde(default)]
+    pub handoff_pause: super::handoff_pause::PauseState,
     /// Frozen at the start attempt; legacy rows have no claimed budget.
     #[serde(default)]
     pub turn_budget: FrozenBudget,
@@ -185,6 +188,7 @@ impl HarnessSnapshot {
 
     pub fn initial(push_watermark: i64, entries: Vec<QueueEntry>) -> Self {
         let mut snapshot = Self {
+            handoff_pause: Default::default(),
             schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
             phase: HarnessPhaseTag::PendingThreadStart,
@@ -229,6 +233,7 @@ impl HarnessSnapshot {
             _ => None,
         };
         let mut snapshot = Self {
+            handoff_pause: Default::default(),
             schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
             phase,
@@ -324,6 +329,18 @@ impl HarnessSnapshot {
 
     /// The single write point for the pending queue. All four arrays are
     /// rebuilt together, so they are equal-length by construction.
+    /// A handoff must not normalize malformed parallel arrays into a different queue.
+    pub(crate) fn handoff_entries_checked(&self) -> Option<Vec<QueueEntry>> {
+        let entries = self.pending_entries();
+        let mut normalized = self.clone();
+        normalized.set_pending_entries(entries.clone());
+        (self.pending_queue == normalized.pending_queue
+            && self.pending_envelope_ids == normalized.pending_envelope_ids
+            && self.pending_entry_meta == normalized.pending_entry_meta
+            && self.pending_message_ids == normalized.pending_message_ids)
+            .then_some(entries)
+    }
+
     pub fn set_pending_entries(&mut self, entries: Vec<QueueEntry>) {
         let len = entries.len();
         let mut pending_queue = Vec::with_capacity(len);
@@ -367,6 +384,10 @@ impl HarnessSnapshot {
     }
 
     pub fn assert_known_schema(&self) {
+        assert!(
+            self.handoff_pause.valid_checkpoint(self),
+            "invalid handoff pause checkpoint"
+        );
         assert!(
             self.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION,
             "unknown PlannerHarness snapshot schema_version {}; boot recovery must migrate live schemas",
@@ -455,8 +476,9 @@ impl HarnessSnapshot {
     pub(crate) fn parse_known(value: Value) -> Option<Self> {
         let snapshot: Self = serde_json::from_value(value).ok()?;
         (snapshot.schema_version == HARNESS_SNAPSHOT_SCHEMA_VERSION
-            && snapshot.mode == HARNESS_MODE)
-            .then_some(snapshot)
+            && snapshot.mode == HARNESS_MODE
+            && snapshot.handoff_pause.valid_checkpoint(&snapshot))
+        .then_some(snapshot)
     }
 }
 

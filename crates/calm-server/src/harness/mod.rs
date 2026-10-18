@@ -7,6 +7,7 @@ mod codex_events_tests;
 mod codex_selection;
 pub mod compact_outcome;
 pub mod config;
+pub mod handoff_pause;
 pub mod held_requests;
 pub(crate) mod instructions;
 pub(crate) mod issuance;
@@ -85,7 +86,7 @@ pub enum ClaimMode {
     ReplaceIfOpen,
     /// Deferred (post-heal) recovery: an occupied slot means the user already touched this runtime,
     /// so skip without shutting anything down. `expected_generation` is re-checked at the claim
-    /// boundary because the replay before it can be long.
+    /// boundary because eligibility checks before it can be long.
     SkipIfClaimed { expected_generation: u64 },
 }
 
@@ -93,8 +94,8 @@ pub enum RecoveryOutcome {
     Installed(PlannerHarness),
     /// Nothing installed: not recoverable, slot already claimed, or the install lost against a newer claim.
     Skipped,
-    /// [`ClaimMode::SkipIfClaimed`] only: the daemon left Running or changed generation during
-    /// replay; nothing was reserved, the deferred pass must re-arm.
+    /// [`ClaimMode::SkipIfClaimed`] only: the daemon left Running or changed generation.
+    /// Any reservation is released without a snapshot write; the deferred pass must re-arm.
     DaemonIneligible,
 }
 
@@ -201,29 +202,20 @@ pub async fn spawn_recovered_harness(
         );
         return Ok(RecoveryOutcome::Skipped);
     }
-    let Some(state_json) = runtime.handle_state_json.clone() else {
-        return Ok(RecoveryOutcome::Skipped);
-    };
-    if effective_runtime_thread_id(&runtime)
-        .as_deref()
-        .is_some_and(|thread_id| seals.is_sealed(thread_id))
+    if runtime.handle_state_json.is_none()
+        || effective_runtime_thread_id(&runtime)
+            .as_deref()
+            .is_some_and(|thread_id| seals.is_sealed(thread_id))
     {
         return Ok(RecoveryOutcome::Skipped);
     }
-    let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
-    // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
-    // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
-    if role == Some(CardRole::Planner) && provider != AgentProvider::OpenCode {
-        let catch_up_watermark = snapshot.push_watermark;
-        replay_harness_events_since(
-            repo.clone(),
-            &runtime.card_id,
-            &card.track_id,
-            catch_up_watermark,
-            &mut snapshot,
-        )
-        .await?;
-    }
+    // A caller's projection is only an eligibility hint, never snapshot ownership.
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        crate::test_seams::PLANNER_RECOVERY_CAPTURED,
+        card.id.as_str(),
+    )
+    .await;
     let runtime_id = runtime.id.clone();
     let track_id = card.track_id.clone();
     #[cfg(feature = "fixtures")]
@@ -232,8 +224,8 @@ pub async fn spawn_recovered_harness(
         card.id.as_str(),
     )
     .await;
-    // Replay may be long, so claim the lifecycle fence only at the installation boundary and then
-    // revalidate every row DELETE can remove.
+    // Preserve card-start -> track-delete -> registry order; never acquire a card fence here.
+    // No recovery side effect is allowed before lifecycle validation and the registry claim.
     let _track_delete_guard = lock_key(track_delete_locks, track_id.as_str()).await;
     let Some(current_card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
@@ -269,7 +261,7 @@ pub async fn spawn_recovered_harness(
     ) {
         return Ok(RecoveryOutcome::Skipped);
     }
-    // The reservation sits after recovery replay, immediately before handle construction/install.
+    // Reject occupied deferred slots/readiness changes BEFORE replay or any recovery write.
     let reservation = match claim_mode {
         ClaimMode::Replace | ClaimMode::ReplaceIfOpen => {
             registry.reserve_after_shutdown(runtime_id.clone()).await?
@@ -286,7 +278,7 @@ pub async fn spawn_recovered_harness(
                     running = readiness.running,
                     generation = readiness.generation,
                     expected_generation,
-                    "deferred harness recovery: daemon left Running during replay; abandoning claim"
+                    "deferred harness recovery: daemon left Running before recovery claim; abandoning claim"
                 );
                 return Ok(RecoveryOutcome::DaemonIneligible);
             }
@@ -302,6 +294,43 @@ pub async fn spawn_recovered_harness(
             }
         }
     };
+    // Replacing a live owner waits for its ingress/issuance shutdown first. Its last ACK can
+    // be newer than the caller's projection, even when the session id is unchanged.
+    let Some(runtime) = repo.session_projection_by_id(&runtime.id).await? else {
+        return Ok(RecoveryOutcome::Skipped);
+    };
+    let Some(session) = repo
+        .session_get(&calm_types::worker::WorkerSessionId(runtime_id.clone()))
+        .await?
+    else {
+        return Ok(RecoveryOutcome::Skipped);
+    };
+    if profile::live_binding(repo.as_ref(), &session)
+        .await?
+        .as_ref()
+        != Some(&binding)
+    {
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    let Some(source) = runtime.handle_state_json.clone() else {
+        return Ok(RecoveryOutcome::Skipped);
+    };
+    if effective_runtime_thread_id(&runtime)
+        .as_deref()
+        .is_some_and(|thread_id| seals.is_sealed(thread_id))
+    {
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    let mut snapshot = HarnessSnapshot::parse_known(source.clone()).ok_or_else(|| {
+        crate::error::CalmError::Conflict("invalid harness recovery snapshot".into())
+    })?;
+    if let Some(receipt) = snapshot.handoff_pause.receipt()
+        && !receipt.matches_binding(&card.id, &runtime.id, &card.track_id)
+    {
+        return Err(crate::error::CalmError::Conflict(
+            "handoff pause recovery binding mismatch".into(),
+        ));
+    }
     if provider == AgentProvider::Claude {
         record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
@@ -314,17 +343,43 @@ pub async fn spawn_recovered_harness(
             card.track_id.as_str(),
         )
         .await?;
-        if role == Some(CardRole::Planner) {
-            let watermark = snapshot.push_watermark;
-            replay_harness_events_since(
-                repo.clone(),
-                &runtime.card_id,
-                &card.track_id,
-                watermark,
-                &mut snapshot,
-            )
-            .await?;
+    }
+    snapshot.handoff_pause.unconfirm_recovered_health();
+    // Catch-up is Planner-only; reuse the live stream's filters and keep pending <= watermark.
+    if role == Some(CardRole::Planner) {
+        let watermark = snapshot.push_watermark;
+        replay_harness_events_since(
+            repo.clone(),
+            &runtime.card_id,
+            &card.track_id,
+            watermark,
+            &mut snapshot,
+        )
+        .await?;
+    }
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        crate::test_seams::PLANNER_RECOVERY_BEFORE_WRITE,
+        &runtime.card_id,
+    )
+    .await;
+    if let ClaimMode::SkipIfClaimed {
+        expected_generation,
+    } = claim_mode
+    {
+        let readiness = *daemon.readiness_receiver().borrow();
+        if !readiness.running || readiness.generation != expected_generation {
+            return Ok(RecoveryOutcome::DaemonIneligible);
         }
+    }
+    if !persist_recovered_snapshot(repo.clone(), &runtime, &card.track_id, source, &snapshot)
+        .await?
+    {
+        tracing::info!(
+            runtime_id,
+            "harness recovery: source checkpoint changed; skipping stale candidate"
+        );
+        return Ok(RecoveryOutcome::Skipped);
     }
     let backend = PlannerBackend::open(
         provider,
@@ -448,9 +503,6 @@ async fn replay_harness_events_since(
     }
     if replayed > 0 {
         snapshot.set_pending_entries(entries.into());
-        persist_recovered_snapshot(repo, card_id, snapshot).await?;
-    }
-    if replayed > 0 {
         tracing::info!(
             card_id,
             track_id = %track_id,
@@ -462,29 +514,53 @@ async fn replay_harness_events_since(
     Ok(())
 }
 
-async fn persist_recovered_snapshot(
+/// The registry claim quiesces the prior live loop. The transaction also fences writers outside
+/// that loop: compare the COMPLETE captured checkpoint and exact current session, never retarget
+/// a card's newer session. A conflict skips installation; no queue/watermark merge is sound here.
+pub(crate) async fn persist_recovered_snapshot(
     repo: Arc<dyn Repo>,
-    card_id: &str,
+    runtime: &WorkerSessionProjection,
+    track_id: &TrackId,
+    source: serde_json::Value,
     snapshot: &HarnessSnapshot,
-) -> Result<()> {
+) -> Result<bool> {
     let runtime_state = serde_json::to_value(snapshot)?;
-    let runtime_id = snapshot_runtime_id(repo.as_ref(), card_id).await?;
+    let worker_session_id = runtime.id.clone();
+    let card_id = runtime.card_id.clone();
+    let track_id = track_id.to_string();
+    let planner = runtime.kind == WorkerSessionKind::SharedPlanner;
     write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            crate::db::sqlite::session_set_handle_state_tx(tx, &runtime_id, Some(runtime_state))
-                .await?;
-            Ok(())
+            let Some(current) =
+                crate::db::sqlite::session_projection_projectable_for_card_tx(tx, &card_id).await?
+            else {
+                return Ok(false);
+            };
+            if current.id != worker_session_id
+                || current.handle_state_json.as_ref() != Some(&source)
+            {
+                return Ok(false);
+            }
+            if planner
+                && !crate::db::sqlite::session_is_current_planner_tx(
+                    tx,
+                    &worker_session_id,
+                    &card_id,
+                    &track_id,
+                )
+                .await?
+            {
+                return Ok(false);
+            }
+            Ok(crate::db::sqlite::session_set_handle_state_tx(
+                tx,
+                &worker_session_id,
+                Some(runtime_state),
+            )
+            .await?)
         })
     })
     .await
-}
-
-async fn snapshot_runtime_id(repo: &dyn Repo, card_id: &str) -> Result<String> {
-    let runtime = repo
-        .session_projection_active_for_card(&card_id.to_string())
-        .await?
-        .ok_or_else(|| crate::error::CalmError::NotFound(format!("runtime for card {card_id}")))?;
-    Ok(runtime.id)
 }
 
 /// Which recoverable rows a boot pass takes.
@@ -743,7 +819,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 Ok(RecoveryOutcome::Installed(_)) => recovered += 1,
                 Ok(RecoveryOutcome::Skipped) => {}
                 Ok(RecoveryOutcome::DaemonIneligible) => {
-                    // Nothing was reserved; abandon this pass and re-arm so recovery resumes on the next heal.
+                    // Any reservation was released without a snapshot write; re-arm on the next heal.
                     tracing::info!(
                         runtime_id = %runtime_id,
                         "deferred harness recovery: daemon readiness changed at the claim boundary; re-arming"
@@ -1116,6 +1192,7 @@ mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
+        let source = serde_json::to_value(&snapshot).unwrap();
         replay_harness_events_since(
             repo.clone(),
             planner_card.id.as_str(),
@@ -1158,6 +1235,16 @@ mod tests {
         );
         // The gate result is the last row, so the watermark lands on it.
         assert_eq!(snapshot.push_watermark, last_id);
+        let runtime = repo
+            .session_projection_by_id(&runtime_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            persist_recovered_snapshot(repo.clone(), &runtime, &track.id, source, &snapshot)
+                .await
+                .unwrap()
+        );
 
         let runtime = repo
             .session_projection_by_id(&runtime_id)

@@ -1531,6 +1531,41 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
         }
+        // Start replay is also an owner reconstruction. Persist conservative health before
+        // backend installation, using the same complete source CAS as boot/replacement.
+        if matches!(
+            snapshot.handoff_pause,
+            crate::harness::handoff_pause::PauseState::Paused { .. }
+        ) {
+            let row = self
+                .repo
+                .session_projection_by_id(&worker_session_id)
+                .await?
+                .ok_or_else(|| CalmError::Conflict("replayed pause session missing".into()))?;
+            let source = row
+                .handle_state_json
+                .clone()
+                .ok_or_else(|| CalmError::Conflict("replayed pause checkpoint missing".into()))?;
+            if HarnessSnapshot::parse_known(source.clone()).as_ref() != Some(&snapshot) {
+                return Err(CalmError::Conflict(
+                    "replayed pause checkpoint changed".into(),
+                ));
+            }
+            snapshot.handoff_pause.unconfirm_recovered_health();
+            if !crate::harness::persist_recovered_snapshot(
+                self.repo.clone(),
+                &row,
+                &TrackId::from(track_id.clone()),
+                source,
+                &snapshot,
+            )
+            .await?
+            {
+                return Err(CalmError::Conflict(
+                    "replayed pause checkpoint changed".into(),
+                ));
+            }
+        }
         let backend = PlannerBackend::open(
             provider.clone(),
             self.daemon.clone(),
@@ -1862,18 +1897,31 @@ pub mod claude_spawn_failure {
     }
 }
 
-/// Replace a snapshot's pending queue with the one persisted on the runtime's own row, leaving every other field alone.
-fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>) {
+/// Adopt the row-owned queue AND its observation progress together. The operation owns start
+/// decisions (phase/thread), but a replayed output cannot roll back a durable observation ACK.
+fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>) -> Result<()> {
     let Some(state) = row_state else {
-        return;
+        return Ok(());
     };
-    if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE)
-        || !is_harness_snapshot_value(&state)
-    {
-        return;
+    let Some(row) = HarnessSnapshot::parse_known(state.clone()) else {
+        if state.get("handoff_pause").is_some() {
+            return Err(CalmError::Conflict(
+                "invalid persisted handoff pause checkpoint".into(),
+            ));
+        }
+        return Ok(());
+    };
+    if row.handoff_pause.receipt().is_some() {
+        // Replay cannot revive an older start phase over the row's active claim or terminal
+        // result. The same session row owns these facts, including its subsequent phase.
+        *snapshot = row;
+        return Ok(());
     }
-    let row = HarnessSnapshot::from_value_strict(state);
+    snapshot.handoff_pause = row.handoff_pause.clone();
     snapshot.set_pending_entries(row.pending_entries());
+    snapshot.push_watermark = row.push_watermark;
+    snapshot.last_report_body_sha256 = row.last_report_body_sha256;
+    Ok(())
 }
 
 async fn overwrite_queue_from_the_runtimes_own_row(
@@ -1884,8 +1932,7 @@ async fn overwrite_queue_from_the_runtimes_own_row(
     let state = repo
         .session_projection_handle_state_by_id(worker_session_id)
         .await?;
-    adopt_queue_from_row(snapshot, state);
-    Ok(())
+    adopt_queue_from_row(snapshot, state)
 }
 
 /// The same rule inside a transaction, for the writers that run there.
@@ -1897,8 +1944,7 @@ async fn overwrite_queue_from_the_runtimes_own_row_tx(
     let state = session_handle_state_by_id_tx(tx, worker_session_id)
         .await
         .map_err(CalmError::from)?;
-    adopt_queue_from_row(snapshot, state);
-    Ok(())
+    adopt_queue_from_row(snapshot, state)
 }
 
 /// Fail the runtime and return what it harvested, in one transaction: either it commits or none of it happened.
@@ -2445,6 +2491,32 @@ fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessi
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn durable_observation_start_replay_preserves_row_progress() {
+        use super::*;
+        let mut durable = HarnessSnapshot::initial(
+            42,
+            vec![
+                QueueEntry::system(
+                    Observation::TrackGoal {
+                        text: "already ACKed".into(),
+                    },
+                    Some(42),
+                )
+                .unwrap(),
+            ],
+        );
+        durable.last_report_body_sha256 = Some("accepted-report".into());
+        let mut replay = HarnessSnapshot::initial(0, vec![]);
+        adopt_queue_from_row(&mut replay, Some(serde_json::to_value(&durable).unwrap())).unwrap();
+        assert_eq!(replay.pending_entries(), durable.pending_entries());
+        assert_eq!(replay.push_watermark, durable.push_watermark);
+        assert_eq!(
+            replay.last_report_body_sha256,
+            durable.last_report_body_sha256
+        );
+    }
 
     /// `handle_state_json` is free-form TEXT (terminal/Claude runtimes write other dialects, older binaries other shapes); every bad input must yield nothing rather than fail the mint.
     #[test]
@@ -3345,3 +3417,63 @@ mod versioned_input_tests;
 
 #[cfg(test)]
 mod compensation_revision_tests;
+
+#[cfg(test)]
+mod handoff_pause_replay_tests {
+    use super::*;
+
+    #[test]
+    fn handoff_pause_start_replay_preserves_the_owning_rows_claim() {
+        let mut durable = HarnessSnapshot::initial(10, vec![]);
+        durable.phase = HarnessPhaseTag::Idle;
+        let receipt = crate::harness::handoff_pause::PauseRequest::new(
+            "card".into(),
+            "session".into(),
+            "track".into(),
+        );
+        use crate::harness::handoff_pause::{
+            BackendFault, PauseReceipt, PauseState, ReleaseOutcome,
+        };
+        let receipt = PauseReceipt::from_request(receipt);
+        for state in [
+            PauseState::Paused {
+                receipt: receipt.clone(),
+            },
+            PauseState::FaultedPaused {
+                receipt: receipt.clone(),
+                fault: BackendFault::ThreadSystemError,
+            },
+            PauseState::RecoveryHealthUnconfirmed {
+                receipt: receipt.clone(),
+            },
+            PauseState::Released {
+                receipt: receipt.clone(),
+                outcome: ReleaseOutcome::HealthyReleased,
+            },
+            PauseState::Released {
+                receipt: receipt.clone(),
+                outcome: ReleaseOutcome::ReleasedWithBackendFault {
+                    fault: BackendFault::ThreadSystemError,
+                },
+            },
+            PauseState::Released {
+                receipt,
+                outcome: ReleaseOutcome::HealthUnconfirmedAfterRecovery,
+            },
+        ] {
+            durable.handoff_pause = state;
+            let mut replay = HarnessSnapshot::initial(0, vec![]);
+            adopt_queue_from_row(&mut replay, Some(serde_json::to_value(&durable).unwrap()))
+                .unwrap();
+            assert_eq!(replay, durable);
+            assert_eq!(replay.push_watermark, 10);
+        }
+    }
+    #[test]
+    fn handoff_pause_start_replay_rejects_invalid_existing_marker() {
+        let mut row = serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap();
+        row["handoff_pause"] = Value::Null;
+        let mut replay = HarnessSnapshot::initial(0, vec![]);
+        assert!(adopt_queue_from_row(&mut replay, Some(row)).is_err());
+    }
+}

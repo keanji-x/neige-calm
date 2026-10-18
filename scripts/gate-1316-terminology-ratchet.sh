@@ -78,6 +78,11 @@
 # excluded file, pattern, count rule or executable policy is introduced; ordinary additional
 # contract references update this counted baseline without adding a file/test roster.
 
+# Internal Planner handoff bounded contract exception: harness_item/crates 298 -> 306
+# covers three SQL guards on the frozen transcript table and five test-only references
+# to that table/its existing repository method. New domain names use transcript; no
+# count rule, exclusion, provider/test roster or additional CI pass is introduced.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

@@ -46,7 +46,10 @@ pub const CLAUDE_SESSION_ID_PAYLOAD_KEY: &str = "claude_session_id";
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 9] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 12] = [
+    "planner_harness",
+    "planner_history",
+    "handoff_pending_activation",
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
@@ -64,7 +67,10 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
         // Even corrupt snapshots stay protected: startup must report the
         // corruption, not erase it and silently drop the working method.
-        PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY => true,
+        "planner_harness"
+        | "planner_history"
+        | "handoff_pending_activation"
+        | PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY => true,
         // Creation-owned identity stays immutable, including a corrupt stored value.
         PLANNER_PROVIDER_PAYLOAD_KEY
         | ASSISTANT_PROVIDER_PAYLOAD_KEY

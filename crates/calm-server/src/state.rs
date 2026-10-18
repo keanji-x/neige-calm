@@ -564,6 +564,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         child_track_adapter,
         card_create_adapter,
         Arc::new(TrackRecipeCreateAdapter),
+        Arc::new(crate::operation::handoff_cutover::HandoffCutoverAdapter),
     ]
 }
 

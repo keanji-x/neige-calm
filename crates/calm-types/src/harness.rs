@@ -4,6 +4,15 @@
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
 pub const HARNESS_SYSTEM_ERROR_REASON: &str = "system_error";
+pub const HARNESS_RECOVERY_HEALTH_UNCONFIRMED_REASON: &str = "health_unconfirmed_after_recovery";
+
+/// Both reasons require the existing explicit failed-conversation recovery owner.
+pub fn requires_failed_conversation_recovery(reason: &str) -> bool {
+    matches!(
+        reason,
+        HARNESS_SYSTEM_ERROR_REASON | HARNESS_RECOVERY_HEALTH_UNCONFIRMED_REASON
+    )
+}
 pub const HARNESS_INTERRUPT_TIMEOUT_REASON: &str = "interrupt_timeout";
 pub const HARNESS_INTERRUPT_TIMEOUT_MESSAGE: &str =
     "The stop request timed out before the model confirmed that this turn had stopped.";

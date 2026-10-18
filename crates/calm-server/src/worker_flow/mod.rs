@@ -620,6 +620,7 @@ fn worker_provider_from_runtime(runtime: &WorkerSessionProjection) -> WorkerProv
 
 fn liveness_from_runtime(status: WorkerSessionState) -> LivenessTag {
     match status {
+        WorkerSessionState::PendingActivation => LivenessTag::Unknown,
         WorkerSessionState::Starting
         | WorkerSessionState::Running
         | WorkerSessionState::TurnPending => LivenessTag::Alive,

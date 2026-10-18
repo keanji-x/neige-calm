@@ -628,6 +628,10 @@ impl PrincipalFixture {
             &home_track,
             &away_track,
             &[
+                (&planner, "session-root"),
+                (&away_planner, "session-away-planner"),
+            ],
+            &[
                 (
                     "session-root",
                     &planner,
@@ -741,6 +745,7 @@ async fn seed_sessions(
     repo: &SqlxRepo,
     home_track: &TrackId,
     away_track: &TrackId,
+    current_bindings: &[(&CardId, &str)],
     sessions: &[(&str, &CardId, WorkerContract, &TrackId, WorkerSessionState)],
 ) {
     let mut tx = repo.pool().begin().await.unwrap();
@@ -751,6 +756,14 @@ async fn seed_sessions(
         )
         .await
         .unwrap();
+    }
+    for (card, current) in current_bindings {
+        sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+            .bind(current)
+            .bind(card.as_str())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
     }
     // `session-root` stays marked as the home track's root: root-ness alone must not be what any
     // vector's Allow rests on.

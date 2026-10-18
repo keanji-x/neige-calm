@@ -55,7 +55,7 @@ pub const PLANNER_INPUT_REPLAY_MISSED: &str = "planner-input-replay-missed";
 #[cfg(feature = "fixtures")]
 pub const PLANNER_FIRST_START: &str = "planner-first-start";
 
-/// Where harness recovery has replayed its candidate and is about to claim the
+/// Where harness recovery has an eligible candidate and is about to claim the
 /// track lifecycle fence; keyed by card id.
 #[cfg(feature = "fixtures")]
 pub const PLANNER_RECOVERY_INSTALL: &str = "planner-recovery-install";
@@ -318,3 +318,19 @@ pub const PLANNER_HIBERNATION_QUIESCE: &str = "planner-hibernation-quiesce";
 /// Where the loop decided a hibernation request, before replying; keyed by card id.
 #[cfg(feature = "fixtures")]
 pub const PLANNER_HIBERNATION_DECIDED: &str = "planner-hibernation-decided";
+
+/// Durable system queue staging has finished; the owning loop has not started its SQL write.
+#[cfg(feature = "fixtures")]
+pub const DURABLE_OBSERVATION_STAGED: &str = "durable-observation-staged";
+
+/// Recovery has the caller's candidate but has not claimed snapshot ownership; keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_RECOVERY_CAPTURED: &str = "planner-recovery-captured";
+
+/// Recovery has captured/replayed the owned SQL checkpoint, before its final comparison/write.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_RECOVERY_BEFORE_WRITE: &str = "planner-recovery-before-write";
+
+/// Internal pause command holds issuance and snapshot ownership, before its SQL commit.
+#[cfg(feature = "fixtures")]
+pub const HANDOFF_PAUSE_BEFORE_WRITE: &str = "handoff-pause-before-write";

@@ -105,7 +105,7 @@ pub fn policy_for(origin: &WriteOrigin) -> Result<WritePolicy, CalmError> {
             let (author, auto_promote_draft) = match agent.role {
                 CardRole::Planner => (EditAuthor::Planner, true),
                 CardRole::Assistant => (EditAuthor::Assistant, false),
-                role @ (CardRole::Worker | CardRole::ReportCard) => {
+                role @ (CardRole::Worker | CardRole::ReportCard | CardRole::PlannerHistory) => {
                     return Err(CalmError::Forbidden(format!(
                         "card role {role:?} may not write the track report"
                     )));

@@ -94,7 +94,7 @@ pub(crate) fn card_mcp_thread_start_config(
             "neige_terminal_control":{"approval_mode":"approve"},
             "neige_terminal_input":{"approval_mode":"approve"}
         }),
-        CardRole::Worker | CardRole::ReportCard => return config,
+        CardRole::Worker | CardRole::ReportCard | CardRole::PlannerHistory => return config,
     };
     config["mcp_servers"] = serde_json::json!({MCP_SERVER_KEY:{"tools":tools}});
     config
@@ -256,7 +256,7 @@ mod tests {
                         "neige_terminal_input":{"approval_mode":"approve"}
                     }}})
                 ),
-                CardRole::Worker | CardRole::ReportCard => assert!(
+                CardRole::Worker | CardRole::ReportCard | CardRole::PlannerHistory => assert!(
                     cfg.get("mcp_servers").is_none(),
                     "unexpected provider delegation for {role:?}"
                 ),

@@ -263,7 +263,8 @@ pub(super) fn runtime_status_transition_allowed(
                     | WorkerSessionState::Exited
             )
         }
-        WorkerSessionState::Failed
+        WorkerSessionState::PendingActivation
+        | WorkerSessionState::Failed
         | WorkerSessionState::Exited
         | WorkerSessionState::Superseded => false,
     }
@@ -298,7 +299,8 @@ pub fn worker_session_status_transition_allowed(
                     | WorkerSessionState::Exited
             )
         }
-        WorkerSessionState::Failed
+        WorkerSessionState::PendingActivation
+        | WorkerSessionState::Failed
         | WorkerSessionState::Exited
         | WorkerSessionState::Superseded => false,
     }

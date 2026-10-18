@@ -278,8 +278,11 @@ impl Boot {
             Some(id) => id,
             None => {
                 let id = format!("planner-session-{card_id}");
-                self.seed_session(session(&id, track_id, &card_id, WorkerContract::Planner))
-                    .await;
+                self.seed_session(
+                    session(&id, track_id, &card_id, WorkerContract::Planner),
+                    &card_id,
+                )
+                .await;
                 id
             }
         };
@@ -306,12 +309,15 @@ impl Boot {
         )
         .await;
         let session_id = format!("worker-session-{}", card.id);
-        self.seed_session(session(
-            &session_id,
-            track_id,
+        self.seed_session(
+            session(
+                &session_id,
+                track_id,
+                card.id.as_str(),
+                WorkerContract::Executor,
+            ),
             card.id.as_str(),
-            WorkerContract::Executor,
-        ))
+        )
         .await;
         self.caller(track_id, card.id.as_str(), CardRole::Worker, &session_id)
     }
@@ -330,12 +336,19 @@ impl Boot {
         }
     }
 
-    async fn seed_session(&self, session: WorkerSession) {
+    async fn seed_session(&self, session: WorkerSession, current_card: &str) {
+        let current_card = current_card.to_owned();
+        let current_session = session.id.clone();
         calm_server::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
                 session_insert_tx(tx, session)
                     .await
                     .map_err(CalmError::from)?;
+                sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                    .bind(current_session.as_str())
+                    .bind(current_card)
+                    .execute(&mut **tx)
+                    .await?;
                 Ok(())
             })
         })

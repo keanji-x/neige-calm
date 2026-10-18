@@ -27,6 +27,8 @@ export default defineConfig({
     include: [...OPTIMIZED_DEPENDENCIES],
   },
   test: {
+    // Bound fork pressure on shared hosts; retain every test and its normal timeout.
+    maxWorkers: 2,
     projects: [
       {
         resolve: { alias: markdownRuntimeAliases() },

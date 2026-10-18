@@ -19,10 +19,15 @@ pub(super) async fn insert_transcript_row<'e, E: sqlx::Executor<'e, Database = S
     params: &str,
     segments: Option<&str>,
 ) -> Result<i64> {
+    // Current failed owners may still settle their terminal projection. Retirement and
+    // pending activation never authorize a transcript write, including a pre-admitted one.
     let row = sqlx::query(concat!(
         "INSERT INTO harness_items (worker_session_id,card_id,track_id,thread_id,turn_id,",
         "item_uuid,item_type,method,params,input_segments,created_at_ms) ",
-        "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) RETURNING id"
+        "SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11 WHERE EXISTS (",
+        "SELECT 1 FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id ",
+        "AND c.id=ws.card_id AND c.track_id=ws.track_id WHERE ws.id=?1 AND c.id=?2 ",
+        "AND c.track_id=?3 AND ws.state NOT IN ('superseded','pending_activation')) RETURNING id"
     ))
     .bind(worker)
     .bind(card)

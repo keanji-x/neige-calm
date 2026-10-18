@@ -404,7 +404,7 @@ pub async fn ask_answered_tx(
 }
 
 /// The open `hold` asks `session` raised on `track`, oldest first.
-async fn open_hold_asks<'e, E: sqlx::SqliteExecutor<'e>>(
+pub(crate) async fn open_hold_asks<'e, E: sqlx::SqliteExecutor<'e>>(
     executor: E,
     track: &TrackId,
     session: &WorkerSessionId,

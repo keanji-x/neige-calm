@@ -52,6 +52,7 @@ fn assert_role_list_is_complete(roles: &[CardRole]) {
             CardRole::Assistant => "Assistant",
             CardRole::Worker => "Worker",
             CardRole::ReportCard => "ReportCard",
+            CardRole::PlannerHistory => "PlannerHistory",
         }
     }
     let mut labels: Vec<&'static str> = roles.iter().copied().map(label).collect();
@@ -59,7 +60,7 @@ fn assert_role_list_is_complete(roles: &[CardRole]) {
     labels.dedup();
     assert_eq!(
         labels.len(),
-        4,
+        5,
         "every `CardRole` must appear: got {labels:?}"
     );
 }
@@ -89,6 +90,7 @@ fn policy_for_is_total_over_the_origins_a_caller_can_build_here() {
         CardRole::Assistant,
         CardRole::Worker,
         CardRole::ReportCard,
+        CardRole::PlannerHistory,
     ];
     let providers = [AgentProvider::Codex, AgentProvider::Claude];
 
@@ -104,9 +106,9 @@ fn policy_for_is_total_over_the_origins_a_caller_can_build_here() {
                         panic!("{origin:?} must have a policy, got {error:?}")
                     });
                 }
-                CardRole::Worker | CardRole::ReportCard => {
+                CardRole::Worker | CardRole::ReportCard | CardRole::PlannerHistory => {
                     let error = policy_for(&origin)
-                        .expect_err("worker/report-card may not write the report");
+                        .expect_err("worker/report-card/history may not write the report");
                     assert!(
                         matches!(error, CalmError::Forbidden(_)),
                         "{origin:?}: expected Forbidden, got {error:?}"

@@ -2320,12 +2320,13 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         .insert(old_runtime_id.clone(), harness.clone());
     for envelope_id in 1_i64..=3 {
         harness
-            .observe_envelope(
+            .observe_envelope_for_test(
                 Observation::TrackGoal {
                     text: format!("seeded observation {envelope_id}"),
                 },
                 envelope_id,
             )
+            .await
             .unwrap();
     }
     wait_for_harness_watermark(&harness, 3).await;

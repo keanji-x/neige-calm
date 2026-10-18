@@ -21,7 +21,10 @@ pub enum HarnessProfile {
 
 impl HarnessProfile {
     pub(crate) fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
-        if kind != "codex" {
+        if kind != "codex"
+            || payload.get("handoff_pending_activation").is_some()
+            || payload.get("planner_history").is_some()
+        {
             return None;
         }
         match role {
@@ -98,12 +101,70 @@ impl PlannerBinding {
     }
 }
 
+/// Immutable creation configuration for promoting an existing managed conversation.
+/// The target owns model/effort and origin; the source owns validated working instructions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PlannerHandoffConfiguration {
+    pub provider: AgentProvider,
+    pub model: crate::planner_model::CardModelSelection,
+    pub template_context: Option<crate::template_context::TemplateContext>,
+    pub payload: Value,
+}
+
+pub(crate) fn plan_planner_handoff(
+    source: &Card,
+    target: &Card,
+) -> crate::error::Result<PlannerHandoffConfiguration> {
+    let conflict = || {
+        crate::error::CalmError::Conflict("handoff configuration or managed profile changed".into())
+    };
+    let from = PlannerBinding::from_card(source, CardRole::Planner).ok_or_else(conflict)?;
+    let to = PlannerBinding::from_card(target, CardRole::Assistant).ok_or_else(conflict)?;
+    if from.profile != HarnessProfile::Planner
+        || to.profile != HarnessProfile::Assistant
+        || from.provider != to.provider
+    {
+        return Err(conflict());
+    }
+    let model = crate::planner_model::CardModelSelection::from_payload(&target.payload)
+        .map_err(|_| conflict())?;
+    let template_context =
+        crate::template_context::TemplateContext::from_card_payload(&source.payload)?;
+    let mut payload = target.payload.clone();
+    let map = payload.as_object_mut().ok_or_else(conflict)?;
+    map.remove(ASSISTANT_PROVIDER_PAYLOAD_KEY);
+    map.remove("harness_profile");
+    map.insert("planner_harness".into(), Value::Bool(true));
+    map.insert(
+        PLANNER_PROVIDER_PAYLOAD_KEY.into(),
+        serde_json::to_value(&from.provider)?,
+    );
+    match &template_context {
+        Some(context) => {
+            map.insert(
+                crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY.into(),
+                serde_json::to_value(context)?,
+            );
+        }
+        None => {
+            map.remove(crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY);
+        }
+    }
+    crate::planner_permission_mode::mint_at_creation(map);
+    Ok(PlannerHandoffConfiguration {
+        provider: from.provider,
+        model,
+        template_context,
+        payload,
+    })
+}
+
 /// Resolve live row/card identity once for managed issuance and transport authorization.
 async fn persisted_binding(
     repo: &dyn crate::db::RouteRepo,
     session: &calm_types::worker::WorkerSession,
 ) -> crate::error::Result<Option<PlannerBinding>> {
-    use calm_types::worker::{SessionMode, WorkerContract};
     let Some(card_id) = session.card_id.as_ref() else {
         return Ok(None);
     };
@@ -117,19 +178,78 @@ async fn persisted_binding(
     let current = repo
         .card_identity_get_by_session(session.id.as_str())
         .await?;
+    Ok(binding_matches_session(
+        &binding,
+        &card,
+        session,
+        current.is_some_and(|current| {
+            current.card_id == *card_id && current.track_id == session.track_id
+        }),
+    )
+    .then_some(binding))
+}
+
+fn binding_matches_session(
+    binding: &PlannerBinding,
+    card: &Card,
+    session: &calm_types::worker::WorkerSession,
+    current: bool,
+) -> bool {
+    use calm_types::worker::{SessionMode, WorkerContract};
     let contract = match binding.profile {
         HarnessProfile::Planner => WorkerContract::Planner,
         HarnessProfile::Assistant => WorkerContract::Assistant,
         HarnessProfile::PlainChat => WorkerContract::Executor,
     };
-    Ok((session.mode == SessionMode::Resumable
+    current
+        && session.mode == SessionMode::Resumable
         && card.track_id == session.track_id
         && session.contract == contract
         && calm_types::worker::WorkerProviderKind::from(&binding.provider) == session.provider
-        && current.is_some_and(|current| {
-            current.card_id == *card_id && current.track_id == session.track_id
-        }))
-    .then_some(binding))
+}
+
+/// Transactional variant of the live identity owner for internal pause commands.
+pub(crate) async fn current_managed_binding_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    session_id: &str,
+    card_id: &crate::ids::CardId,
+    track_id: &crate::ids::TrackId,
+) -> crate::error::Result<bool> {
+    use calm_types::worker::WorkerSessionId;
+    let Some(session) =
+        crate::db::sqlite::session_get_tx(tx, &WorkerSessionId(session_id.into())).await?
+    else {
+        return Ok(false);
+    };
+    if !session.state.is_active_authority()
+        || session.card_id.as_ref() != Some(card_id)
+        || session.track_id != *track_id
+    {
+        return Ok(false);
+    }
+    let row = sqlx::query_as::<_, crate::db::rows::CardRow>(concat!(
+        "SELECT id, track_id, kind, sort, payload, title, deletable, created_at, updated_at FROM ",
+        "cards WHERE id=?1 AND session_id=?2",
+    ))
+    .bind(card_id.as_str())
+    .bind(session_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(card) = row.map(Card::from) else {
+        return Ok(false);
+    };
+    let role: String = sqlx::query_scalar("SELECT role FROM cards WHERE id=?1")
+        .bind(card_id.as_str())
+        .fetch_one(&mut **tx)
+        .await?;
+    let role: CardRole = serde_json::from_value(Value::String(role))?;
+    let Some(binding) = PlannerBinding::from_card(&card, role) else {
+        return Ok(false);
+    };
+    Ok(matches!(
+        binding.profile,
+        HarnessProfile::Planner | HarnessProfile::Assistant
+    ) && binding_matches_session(&binding, &card, &session, true))
 }
 
 pub(crate) async fn live_binding(
@@ -148,6 +268,11 @@ pub(crate) async fn checked_card_binding(
     card: &Card,
     role: CardRole,
 ) -> crate::error::Result<PlannerBinding> {
+    if card.payload.get("handoff_pending_activation").is_some() {
+        return Err(crate::error::CalmError::Conflict(
+            "Planner identity awaits explicit activation".into(),
+        ));
+    }
     let binding = PlannerBinding::from_card(card, role).ok_or_else(|| {
         crate::error::CalmError::Forbidden("The conversation provider binding is invalid".into())
     })?;

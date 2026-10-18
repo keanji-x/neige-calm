@@ -265,6 +265,8 @@ impl TryFrom<String> for WorkerProviderKind {
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum WorkerSessionState {
+    /// Identity committed; only an explicit future activation owner may start it.
+    PendingActivation,
     Starting,
     Running,
     Idle,
@@ -299,6 +301,7 @@ impl WorkerSessionState {
     /// The snake_case string the `worker_sessions.state` CHECK pins.
     pub fn as_db_str(self) -> &'static str {
         match self {
+            WorkerSessionState::PendingActivation => "pending_activation",
             WorkerSessionState::Starting => "starting",
             WorkerSessionState::Running => "running",
             WorkerSessionState::Idle => "idle",
@@ -315,6 +318,7 @@ impl TryFrom<String> for WorkerSessionState {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.as_str() {
+            "pending_activation" => Ok(WorkerSessionState::PendingActivation),
             "starting" => Ok(WorkerSessionState::Starting),
             "running" => Ok(WorkerSessionState::Running),
             "idle" => Ok(WorkerSessionState::Idle),

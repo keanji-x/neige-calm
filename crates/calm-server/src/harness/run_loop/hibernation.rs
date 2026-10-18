@@ -66,6 +66,9 @@ pub(super) async fn quiesce(
     ingress_empty: bool,
     reply: Option<&oneshot::Sender<Result<bool>>>,
 ) -> Result<bool> {
+    if handoff_pause::require_unpaused(inner).await.is_err() {
+        return Ok(false);
+    }
     let state = inner.state.lock().await.clone();
     if !ingress_empty
         || !matches!(

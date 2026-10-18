@@ -2,6 +2,8 @@
 mod phase2;
 #[path = "planner_provider_recovery.rs"]
 mod planner_provider_recovery;
+#[path = "planner_harness_recovery_snapshot.rs"]
+mod recovery_snapshot;
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;

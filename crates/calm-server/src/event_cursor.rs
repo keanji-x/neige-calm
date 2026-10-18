@@ -1,5 +1,6 @@
 //! Per-card event watermark cache: the highest `events.id` already acted on for a card.
-//! In-memory only; the dispatcher serializes `(get → compare → bump → push)` per track.
+//! In-memory only; Dispatcher serializes SQL floor → prefix ACK → cache publication per track.
+//! This cache is not a durable replay authority and may be reseeded from the current SQL owner.
 
 use crate::ids::CardId;
 use dashmap::DashMap;

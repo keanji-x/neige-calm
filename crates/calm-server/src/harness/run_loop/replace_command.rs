@@ -39,6 +39,7 @@ pub(super) async fn handle_replace(
     key: &SendKey,
 ) -> Result<DurableAck> {
     let _issuance = inner.issuance.lock().await;
+    super::handoff_pause::require_unpaused(inner).await?;
     if let Some(reader) = inner.backend.issuance_hold() {
         return Err(CalmError::Conflict(reader));
     }

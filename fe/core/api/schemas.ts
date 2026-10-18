@@ -92,6 +92,7 @@ export const agentProviderSchema = z.enum(['codex', 'claude', 'opencode']);
 export type AgentProvider = z.infer<typeof agentProviderSchema>;
 
 export const workerSessionStateSchema = z.enum([
+  'pending_activation',
   'starting',
   'running',
   'idle',

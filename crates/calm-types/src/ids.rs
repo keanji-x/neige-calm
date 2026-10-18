@@ -60,7 +60,7 @@ impl ActorId {
         use crate::model::CardRole;
         use crate::runtime::AgentProvider;
         match role {
-            CardRole::Planner => Self::AiPlannerSession(session),
+            CardRole::Planner | CardRole::PlannerHistory => Self::AiPlannerSession(session),
             CardRole::Assistant => Self::AiManagedSession(session),
             CardRole::Worker | CardRole::ReportCard => match provider {
                 AgentProvider::Codex => Self::AiCodexSession(session),

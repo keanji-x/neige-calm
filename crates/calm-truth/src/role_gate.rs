@@ -144,6 +144,11 @@ pub fn enforce_role(
     cache: &CardRoleCache,
     track_area_cache: &TrackAreaCache,
 ) -> Result<(), RoleViolation> {
+    if let EventScope::Card { card, .. } = scope
+        && cache.get(card) == Some(CardRole::PlannerHistory)
+    {
+        return Err(RoleViolation::UnknownCard { card: card.clone() });
+    }
     // (1) Empty-CardId guard: an empty id must never match a real card.
     if let ActorId::AiCodex(c)
     | ActorId::AiClaude(c)
@@ -166,6 +171,15 @@ pub fn enforce_role(
     // acquire worker or Planner authority by changing a card's persisted role.
     if let ActorId::AiManagedCard(card) = actor
         && cache.get(card) != Some(CardRole::Assistant)
+    {
+        return Err(RoleViolation::UnknownCard { card: card.clone() });
+    }
+
+    if let ActorId::AiPlanner(card)
+    | ActorId::AiCodex(card)
+    | ActorId::AiClaude(card)
+    | ActorId::AiManagedCard(card) = actor
+        && cache.get(card) == Some(CardRole::PlannerHistory)
     {
         return Err(RoleViolation::UnknownCard { card: card.clone() });
     }
@@ -502,6 +516,11 @@ pub fn enforce_role(
     {
         match cache.get(card_id) {
             None => {
+                return Err(RoleViolation::UnknownCard {
+                    card: card_id.clone(),
+                });
+            }
+            Some(CardRole::PlannerHistory) => {
                 return Err(RoleViolation::UnknownCard {
                     card: card_id.clone(),
                 });
