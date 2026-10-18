@@ -2,7 +2,7 @@
 use super::*;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 
-async fn login_again(app: &axum::Router) -> String {
+pub(super) async fn login_again(app: &axum::Router) -> String {
     let response = app
         .clone()
         .oneshot(
