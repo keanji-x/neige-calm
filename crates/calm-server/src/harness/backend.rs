@@ -1,24 +1,25 @@
 //! The runtime a Planner harness drives its turns through.
 //!
 //! Every provider-coupled call the run loop makes on a Planner turn goes through
-//! [`PlannerBackend`], including model resolution and shutdown. The deletion seals are not a
+//! the owner-bound `IssueTurnHandle`, with model resolution on [`PlannerBackend`]. The deletion seals are not a
 //! provider's: they live in the shared [`crate::thread_seals::ThreadSeals`].
 //!
-//! `input.correlation` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`]
+//! `input.correlation` on managed start and steer
 //! retains the projection row's key; codex hands it back as `item.clientId`.
 
 use provider::control::*;
 mod control;
+mod managed;
+pub(super) use managed::IssueTurnHandle;
 pub(crate) mod factory;
 mod start;
 use control::{codex_compact_submission, steer_outcome};
+pub use start::StartDiagnostic;
 pub(crate) use start::ordinary_start_result;
-pub use start::{StartDiagnostic, TurnInvocation};
 use start::{codex_start_result, revert_codex_thread};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use tokio::sync::broadcast::{self, error::RecvError};
 use uuid::Uuid;
 
@@ -190,50 +191,6 @@ impl PlannerBackend {
         })
     }
 
-    /// Decide how this provider removes `target` from the conversation, changing nothing. A refusal
-    /// is a `Conflict` the reader is shown. Codex needs no preparation; Claude needs an anchor before
-    /// the turn and a dry run of the cut.
-    pub async fn prepare_rewind(
-        &self,
-        thread_id: &str,
-        target: NativeEditTarget,
-    ) -> Result<EditPreparation<CalmError>> {
-        if let Some(reader) = self.issuance_hold() {
-            return Err(CalmError::Conflict(reader));
-        }
-        match (&self.0, &target) {
-            (Arm::Acp(_), _) => Ok(EditPreparation::Failed {
-                error: CalmError::Conflict("ACP history replacement is unsupported".into()),
-            }),
-            (Arm::Codex(..), NativeEditTarget::BeforeTurn { .. }) => {
-                Ok(EditPreparation::Prepared {
-                    plan: NativeEditPlan { target },
-                })
-            }
-            (
-                Arm::Claude(session),
-                NativeEditTarget::TranscriptCut {
-                    resume_at,
-                    drops_turn,
-                },
-            ) => {
-                session
-                    .check_truncation(
-                        thread_id,
-                        &ResumeTruncation {
-                            at: *resume_at,
-                            drops_turn: *drops_turn,
-                        },
-                    )
-                    .await
-            }
-            (Arm::Codex(..), NativeEditTarget::TranscriptCut { .. })
-            | (Arm::Claude(_), NativeEditTarget::BeforeTurn { .. }) => Err(CalmError::Internal(
-                "an edit target names another provider".into(),
-            )),
-        }
-    }
-
     /// Resolve product transcript anchors in the server, before crossing the native seam.
     pub(crate) fn native_edit_target(
         &self,
@@ -265,156 +222,12 @@ impl PlannerBackend {
         }
     }
 
-    /// The Claude arm passes the stored model and effort as `--model=` and `--effort=` (#1810,
-    /// #1822 6′); no catalog is consulted here, and the CLI judges the model. `rewind` is applied
-    /// first: Codex reverts the thread before `turn/start`, Claude cuts the session in the spawn.
-    /// `permission` is the conversation's permission mode as the card holds it now (#2348), read
-    /// once by the run loop for every arm: Codex sends its approval settings with every turn, the
-    /// Claude spawn runs under it, and ACP answers its permission requests by it.
-    pub async fn turn_start(
-        &self,
-        request: TurnRequest,
-        invocation: TurnInvocation<'_>,
-    ) -> std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
-        if let Some(reader) = self.issuance_hold() {
-            return Err(TurnStartFailure::AwaitingRecovery {
-                error: CalmError::ServiceUnavailable(reader.clone()),
-                reader,
-            });
-        }
-        let TurnRequest {
-            input,
-            selection,
-            permission,
-            edit,
-        } = request;
-        let InputRequest { items, correlation } = input;
-        let thread_id = invocation.thread_id;
-        // The host's stored marker and the request are one invocation, never independent authority.
-        if edit
-            != invocation
-                .rewind
-                .as_deref()
-                .map_or(TurnEdit::NoEdit, BackendRewind::turn_edit)
-        {
-            return Err(mismatched_rewind());
-        }
-        match &self.0 {
-            Arm::Acp(session) => {
-                if invocation.rewind.is_some() {
-                    return Err(mismatched_rewind());
-                }
-                session
-                    .turn_start_control(
-                        thread_id,
-                        items,
-                        &selection,
-                        permission,
-                        &correlation.0,
-                        &invocation.claim,
-                    )
-                    .await
-            }
-            Arm::Codex(daemon, approvals) => {
-                if let Some(rewind) = invocation.rewind {
-                    match (&mut rewind.0, edit) {
-                        (RewindArm::Codex { reverted: true, .. }, TurnEdit::NoEdit) => {}
-                        (
-                            RewindArm::Codex { reverted, .. },
-                            TurnEdit::ApplyNativePlan(NativeEditPlan {
-                                target: NativeEditTarget::BeforeTurn { before_turn_id },
-                            }),
-                        ) => {
-                            if let Some(failure) =
-                                revert_codex_thread(daemon, thread_id, &before_turn_id).await?
-                            {
-                                return Ok(failure);
-                            }
-                            *reverted = true;
-                        }
-                        (RewindArm::Claude { .. }, _) | (RewindArm::Codex { .. }, _) => {
-                            return Err(mismatched_rewind());
-                        }
-                    }
-                }
-                approvals.route(daemon, thread_id);
-                codex_start_result(
-                    daemon
-                        .turn_start_control(
-                            thread_id,
-                            items,
-                            &selection,
-                            TurnApprovals::Explicit(permission),
-                            Some(&correlation.0),
-                        )
-                        .await,
-                )
-            }
-            Arm::Claude(session) => {
-                if matches!(
-                    invocation.rewind.as_deref().map(|rewind| &rewind.0),
-                    Some(RewindArm::Codex { .. })
-                ) {
-                    return Err(mismatched_rewind());
-                }
-                let truncation = match edit {
-                    TurnEdit::NoEdit => None,
-                    TurnEdit::ApplyNativePlan(NativeEditPlan {
-                        target:
-                            NativeEditTarget::TranscriptCut {
-                                resume_at,
-                                drops_turn,
-                            },
-                    }) => Some(ResumeTruncation {
-                        at: resume_at,
-                        drops_turn,
-                    }),
-                    TurnEdit::ApplyNativePlan(NativeEditPlan {
-                        target: NativeEditTarget::BeforeTurn { .. },
-                    }) => return Err(mismatched_rewind()),
-                };
-                session
-                    .turn_start_control(
-                        thread_id,
-                        items,
-                        &selection,
-                        permission,
-                        &correlation.0,
-                        truncation.as_ref(),
-                    )
-                    .await
-            }
-        }
-    }
-
     /// Whether a queued entry can join the running turn (§5.9): the run loop checks this before
     /// it takes the entry out of the queue.
     pub fn supports_steer(&self) -> bool {
         match &self.0 {
             Arm::Codex(..) => true,
             Arm::Claude(_) | Arm::Acp(_) => false,
-        }
-    }
-
-    pub async fn turn_steer(
-        &self,
-        thread_id: &str,
-        request: SteerRequest,
-    ) -> Result<SteerOutcome<CalmError>> {
-        match &self.0 {
-            Arm::Codex(daemon, _) => Ok(steer_outcome(
-                daemon
-                    .turn_steer(
-                        thread_id,
-                        request.turn.as_str(),
-                        request.input.items,
-                        Some(&request.input.correlation.0),
-                    )
-                    .await,
-            )),
-            Arm::Claude(_) | Arm::Acp(_) => Err(CalmError::Internal(
-                "a Claude Planner cannot steer; the run loop checks supports_steer first".into(),
-            )),
         }
     }
 
@@ -444,48 +257,10 @@ impl PlannerBackend {
         Ok(CompactRequest { selection })
     }
 
-    pub(crate) async fn compact_start(
-        &self,
-        thread_id: &str,
-        request: CompactRequest,
-    ) -> Result<CompactSubmission<CalmError>> {
-        match &self.0 {
-            Arm::Codex(daemon, _) => Ok(codex_compact_submission(
-                daemon.thread_compact_start(thread_id).await,
-            )),
-            Arm::Claude(session) => Ok(session.compact_start(thread_id, &request.selection).await),
-            Arm::Acp(_) => Err(CalmError::BadRequest(
-                "Manual context compaction is available for Codex and Claude conversations.".into(),
-            )),
-        }
-    }
-
     pub(crate) fn turn_identity(&self, id: String) -> TurnIdentity {
         match &self.0 {
             Arm::Codex(..) => TurnIdentity::Native(id),
             Arm::Claude(_) | Arm::Acp(_) => TurnIdentity::Local(CorrelationKey(id)),
-        }
-    }
-
-    pub async fn turn_interrupt(
-        &self,
-        thread_id: &str,
-        request: InterruptRequest,
-    ) -> InterruptOutcome<InterruptDiagnostic> {
-        let turn_id = request.turn.as_str();
-        match &self.0 {
-            Arm::Acp(session) => session
-                .turn_interrupt(thread_id, turn_id)
-                .await
-                .map_error(|e| Box::new(e) as InterruptDiagnostic),
-            Arm::Codex(daemon, _) => daemon
-                .interrupt_outcome(thread_id, turn_id)
-                .await
-                .map_error(|e| Box::new(e) as InterruptDiagnostic),
-            Arm::Claude(session) => session
-                .turn_interrupt(thread_id, turn_id)
-                .await
-                .map_error(|e| Box::new(e) as InterruptDiagnostic),
         }
     }
 
@@ -579,65 +354,6 @@ impl PlannerBackend {
         }
     }
 
-    /// Stop this harness's turns. `Err` is the last step that failed, for strict callers; every
-    /// failure is logged here. `last_turn_id` is read only when Codex has a thread to interrupt.
-    pub async fn shutdown(
-        &self,
-        worker_session_id: &str,
-        thread_id: Option<&str>,
-        last_turn_id: &Mutex<Option<String>>,
-    ) -> Result<()> {
-        let mut interrupt_error = None;
-        match &self.0 {
-            Arm::Acp(session) => return session.shutdown().await,
-            // #1791 §5.1: the running turn is recorded `Interrupted` and this waits for `stop`,
-            // whether or not a turn runs or a thread is known.
-            Arm::Claude(session) => {
-                if let Err(e) = session.shutdown().await {
-                    tracing::warn!(
-                        worker_session_id = %worker_session_id,
-                        error = %e,
-                        "planner harness shutdown: the Claude Planner stop did not confirm"
-                    );
-                    interrupt_error = Some(e);
-                }
-            }
-            Arm::Codex(daemon, approvals) => {
-                // The thread's approvals have nowhere to go once this harness stops.
-                approvals.release();
-                if let Some(thread_id) = thread_id {
-                    let last_turn_id = last_turn_id.lock().await.clone();
-                    interrupt_codex_thread(
-                        daemon,
-                        thread_id,
-                        last_turn_id.as_deref(),
-                        |step, e| {
-                            match step {
-                                CodexInterruptStep::ActiveTurn => tracing::warn!(
-                                    thread_id,
-                                    error = %e,
-                                    "planner harness shutdown thread interrupt failed"
-                                ),
-                                CodexInterruptStep::FallbackTurn(last_turn_id) => tracing::warn!(
-                                    thread_id,
-                                    turn_id = %last_turn_id,
-                                    error = %e,
-                                    "planner harness shutdown last-known turn interrupt failed"
-                                ),
-                            }
-                            interrupt_error = Some(e);
-                        },
-                    )
-                    .await;
-                }
-            }
-        }
-        match interrupt_error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    }
-
     /// The registry installed the harness: a Claude or ACP session may start turns from now on,
     /// and the requests a Claude, Codex or ACP Planner's turns pause on go to `held`, the
     /// harness's channel (#2348).
@@ -701,7 +417,7 @@ fn mismatched_rewind() -> TurnStartFailure {
 }
 
 /// Which step of [`interrupt_codex_thread`] failed.
-pub(crate) enum CodexInterruptStep<'a> {
+enum CodexInterruptStep<'a> {
     /// Interrupting the turn the daemon has cached for the thread.
     ActiveTurn,
     /// Interrupting the caller's known turn, tried only when the daemon had none cached.
@@ -711,7 +427,7 @@ pub(crate) enum CodexInterruptStep<'a> {
 /// Codex's shutdown interrupt for one thread: the cached active turn, then `fallback_turn_id`
 /// when the daemon had no turn cached before the first step. Each failure goes to `on_error`
 /// as it happens and does not stop the next step.
-pub(crate) async fn interrupt_codex_thread(
+async fn interrupt_codex_thread(
     daemon: &SharedCodexAppServer,
     thread_id: &str,
     fallback_turn_id: Option<&str>,

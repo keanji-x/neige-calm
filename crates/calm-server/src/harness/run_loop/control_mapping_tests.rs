@@ -211,16 +211,11 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
         f.daemon.fail_turn_interrupt_for_test(fail);
         f.daemon
             .set_active_turn_for_test("thread-commit-wake", "running");
-        let outcome = f
-            .harness
-            .inner
-            .backend
-            .turn_interrupt(
-                "thread-commit-wake",
-                InterruptRequest {
-                    turn: TurnIdentity::Native("running".into()),
-                },
-            )
+        let outcome = IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .turn_interrupt(InterruptRequest {
+                turn: TurnIdentity::Native("running".into()),
+            })
             .await;
         match &outcome {
             InterruptOutcome::NativeAck => assert!(!fail),
@@ -245,7 +240,7 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
         .thread_seals()
         .seal_for_deletion("thread-commit-wake");
     assert!(
-        matches!(f.harness.inner.backend.compact_start("thread-commit-wake", CompactRequest {
+        matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.compact_start(CompactRequest {
         selection: crate::planner_model::TurnModelSelection::inherit(),
     }).await.unwrap(), CompactSubmission::Unconfirmed { error: CalmError::Conflict(message), evidence: SubmissionEvidence::Unobserved } if message == "the conversation is being deleted")
     );
@@ -258,7 +253,7 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
     use crate::session_projection_repo::AgentProvider;
     for provider in [AgentProvider::Claude, AgentProvider::OpenCode] {
-        let f = Fixture::new().await;
+        let mut f = Fixture::new().await;
         let inner = &f.harness.inner;
         let wiring = ClaudePlannerWiring::unconfigured_for_test(f.repo.clone());
         let backend = crate::harness::backend::factory::PlannerFactory::new(
@@ -283,12 +278,15 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
         )
         .await
         .unwrap();
+        Arc::get_mut(&mut f.harness.inner)
+            .expect("exclusive fixture owner")
+            .backend = backend;
+        let inner = &f.harness.inner;
+        let backend = &inner.backend;
         if provider == AgentProvider::OpenCode {
             assert!(matches!(
-                backend
-                    .prepare_rewind(
-                        "logical-thread",
-                        NativeEditTarget::BeforeTurn {
+                IssueTurnHandle::from_reconciliation(&f.harness.inner).await
+            .prepare_rewind(NativeEditTarget::BeforeTurn {
                             before_turn_id: "turn".into()
                         }
                     )
@@ -309,7 +307,7 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
         );
 
         assert!(
-            matches!(backend.turn_steer("logical-thread", SteerRequest { turn: identity.clone(), input: InputRequest { items: vec![], correlation: CorrelationKey("key".into()) } }).await,
+            matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.turn_steer(SteerRequest { turn: identity.clone(), input: InputRequest { items: vec![], correlation: CorrelationKey("key".into()) } }).await,
             Err(CalmError::Internal(message)) if message == "a Claude Planner cannot steer; the run loop checks supports_steer first")
         );
         let request = backend.compact_request(inner.as_ref()).await;
@@ -322,12 +320,13 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
             assert_eq!(request.unwrap_err().to_string(), expected);
         } else {
             assert!(
-                matches!(backend.compact_start("logical-thread", request.unwrap()).await,
+                matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.compact_start(request.unwrap()).await,
                 Err(CalmError::BadRequest(message)) if message == "Manual context compaction is available for Codex and Claude conversations.")
             );
         }
-        let outcome = backend
-            .turn_interrupt("logical-thread", InterruptRequest { turn: identity })
+        let outcome = IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .turn_interrupt(InterruptRequest { turn: identity })
             .await;
         assert!(matches!(outcome, InterruptOutcome::NoTarget));
         assert!(backend.legacy_interrupt_result(outcome).is_ok());
@@ -454,68 +453,148 @@ async fn m1_mapping_interrupt_host_noops_never_issue_native_call() {
     }
 }
 
-/// Requests contain no session override: the facade's invocation selects the Codex session,
-/// while local adapters keep their existing host logical-thread context.
+/// Two real harness owners share one daemon and identical native turn IDs.
 #[tokio::test]
-async fn m1_mapping_target_rule_controls_the_facade_session() {
+async fn m2c_two_owner_decoy_is_untouched_by_managed_operations() {
     let f = Fixture::new().await;
-    let backend = &f.harness.inner.backend;
-    // A decoy session must receive no native operation, even with the same native turn id.
-    f.daemon.set_active_turn_for_test("decoy", "running");
-    f.daemon.set_active_turn_for_test("selected", "running");
-    assert!(matches!(
-        backend
-            .turn_steer(
-                "selected",
-                SteerRequest {
-                    turn: TurnIdentity::Native("running".into()),
-                    input: InputRequest {
-                        items: vec![],
-                        correlation: CorrelationKey("key".into())
-                    },
-                }
+    let mut decoy = Fixture::new().await;
+    Arc::get_mut(&mut decoy.harness.inner).unwrap().backend = f.daemon.clone().into();
+    *decoy.harness.inner.thread_id.write().await = Some("decoy".into());
+    let before = serde_json::to_value(decoy.harness.snapshot().await).unwrap();
+    let selected = "thread-commit-wake";
+    let turn = "fake-turn-0001";
+    f.daemon.set_active_turn_for_test("decoy", turn);
+    let EditPreparation::Prepared { plan } = IssueTurnHandle::from_reconciliation(&f.harness.inner)
+        .await
+        .prepare_rewind(NativeEditTarget::BeforeTurn {
+            before_turn_id: "old-turn".into(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("edit not prepared")
+    };
+    let mut rewind = BackendRewind::from_plan(plan);
+    assert_eq!(
+        IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .issue(
+                vec![InputItem::text("bound start")],
+                &TurnModelSelection::inherit(),
+                PlannerPermissionMode::Never,
+                "projection",
+                &[],
+                Some(&mut rewind)
             )
+            .await
+            .unwrap(),
+        turn
+    );
+    assert_eq!(f.daemon.started_turns_for_test()[0].0, selected);
+    let reverted = f.daemon.reverted_threads_for_test();
+    assert_eq!(reverted.len(), 1);
+    assert_eq!((&*reverted[0].0, &*reverted[0].1), (selected, "old-turn"));
+    f.daemon.set_active_turn_for_test(selected, turn);
+    assert!(matches!(
+        IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .turn_steer(SteerRequest {
+                turn: TurnIdentity::Native(turn.into()),
+                input: InputRequest {
+                    items: vec![],
+                    correlation: CorrelationKey("key".into())
+                },
+            })
             .await
             .unwrap(),
         SteerOutcome::Taken { .. }
     ));
     assert!(matches!(
-        backend
-            .compact_start(
-                "selected",
-                CompactRequest {
-                    selection: crate::planner_model::TurnModelSelection::inherit(),
-                }
-            )
+        IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .compact_start(CompactRequest {
+                selection: TurnModelSelection::inherit(),
+            })
             .await
             .unwrap(),
         CompactSubmission::Submitted { .. }
     ));
     assert!(matches!(
-        backend
-            .turn_interrupt(
-                "selected",
-                InterruptRequest {
-                    turn: TurnIdentity::Native("running".into()),
-                }
-            )
+        IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .turn_interrupt(InterruptRequest {
+                turn: TurnIdentity::Native(turn.into()),
+            })
             .await,
         InterruptOutcome::NativeAck
     ));
+    // The fake interrupt clears its active cache; give shutdown its own live target.
+    f.daemon.set_active_turn_for_test(selected, turn);
+    f.harness.shutdown().await.unwrap();
     let steered = f.daemon.steered_turns_for_test();
     assert_eq!(steered.len(), 1);
-    let (session, turn, items, correlation) = &steered[0];
-    assert_eq!(session, "selected");
-    assert_eq!(turn, "running");
-    assert!(items.is_empty());
-    assert_eq!(correlation.as_deref(), Some("key"));
-    assert_eq!(f.daemon.compacted_threads_for_test(), vec!["selected"]);
+    assert_eq!((&*steered[0].0, &*steered[0].1), (selected, turn));
+    assert!(steered[0].2.is_empty());
+    assert_eq!(steered[0].3.as_deref(), Some("key"));
+    assert_eq!(f.daemon.compacted_threads_for_test(), vec![selected]);
     assert_eq!(
         f.daemon.interrupted_turns_for_test(),
-        vec![("selected".into(), "running".into())]
+        vec![
+            (selected.into(), turn.into()),
+            (selected.into(), turn.into())
+        ]
     );
     assert_eq!(
         f.daemon.active_turn_id_for_thread("decoy").as_deref(),
-        Some("running")
+        Some(turn)
     );
+    assert_eq!(
+        serde_json::to_value(decoy.harness.snapshot().await).unwrap(),
+        before
+    );
+}
+
+/// Ordinary replacement keeps its weak stop contract; strict deletion propagates the same error.
+#[tokio::test]
+async fn m2c_shutdown_error_projection_and_cached_before_persisted_fallback() {
+    for cached in [false, true] {
+        for strict in [false, true] {
+            let f = Fixture::new().await;
+            let thread = "thread-commit-wake";
+            *f.harness.inner.last_turn_id.lock().await = Some("persisted-turn".into());
+            if cached {
+                f.daemon.set_active_turn_for_test(thread, "cached-turn");
+            }
+            f.daemon.fail_turn_interrupt_for_test(true);
+            let result = if strict {
+                f.harness
+                    .shutdown_for_deletion(f.daemon.thread_seals().clone())
+                    .await
+                    .map(|_| ())
+            } else {
+                f.harness.shutdown().await
+            };
+            assert_eq!(result.is_err(), strict);
+            if let Err(error) = result {
+                assert!(matches!(error, CalmError::CodexAppServer(message)
+                    if message == "fixture: turn/interrupt failed"));
+            }
+            assert_eq!(
+                f.daemon.interrupted_turns_for_test(),
+                vec![(
+                    thread.into(),
+                    if cached {
+                        "cached-turn"
+                    } else {
+                        "persisted-turn"
+                    }
+                    .into()
+                )]
+            );
+            assert!(
+                !f.daemon.thread_seals().is_sealed(thread),
+                "failed strict stop releases its seal"
+            );
+        }
+    }
 }

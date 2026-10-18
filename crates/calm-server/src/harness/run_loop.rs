@@ -41,7 +41,10 @@ use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::planner_attachments::bind::BoundAttachment;
-use crate::planner_model::{FailureKind, TurnModelSelection};
+use crate::planner_model::FailureKind;
+#[cfg(test)]
+use crate::planner_model::TurnModelSelection;
+#[cfg(test)]
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::{DeletionThreadSeals, ThreadSeals};
 use crate::track_area_cache::TrackAreaCache;
@@ -175,15 +178,15 @@ pub struct PlannerHarnessParams {
 }
 
 pub(super) struct Inner {
-    worker_session_id: String,
+    pub(super) worker_session_id: String,
     track_id: TrackId,
     card_id: CardId,
-    thread_id: RwLock<Option<String>>,
+    pub(super) thread_id: RwLock<Option<String>>,
     repo: Arc<dyn Repo>,
     events: EventBus,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
-    backend: PlannerBackend,
+    pub(super) backend: PlannerBackend,
     /// Installed with the harness; the run loop holds its writer.
     live_claim: LiveReplyClaim,
     observations: ObservationIngress,
@@ -287,61 +290,14 @@ struct SteeredEntry {
     row_id: Option<i64>,
 }
 
-pub(super) struct IssueTurnHandle<'a> {
-    backend: &'a PlannerBackend,
-}
-
-impl<'a> IssueTurnHandle<'a> {
-    pub(super) fn from_reconciliation(inner: &'a Inner) -> Self {
-        Self {
-            backend: &inner.backend,
-        }
-    }
-
-    /// `selection` and `permission` are required: a default would silently answer which model
-    /// runs this turn, or what it may do without asking. `client_user_message_id` is the
-    /// projection row's key; codex hands it back as `item.clientId`.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn issue(
-        &self,
-        thread_id: &str,
-        input: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        permission: PlannerPermissionMode,
-        client_user_message_id: &str,
-        claim: &[QueueEntry],
-        pending_rewind: Option<&mut BackendRewind>,
-    ) -> std::result::Result<String, TurnStartFailure> {
-        let edit = pending_rewind.as_deref().map_or(
-            provider::control::TurnEdit::NoEdit,
-            BackendRewind::turn_edit,
-        );
-        crate::harness::backend::ordinary_start_result(
-            self.backend
-                .turn_start(
-                    provider::control::TurnRequest {
-                        input: provider::control::InputRequest {
-                            items: input,
-                            correlation: provider::control::CorrelationKey(
-                                client_user_message_id.into(),
-                            ),
-                        },
-                        selection: selection.clone(),
-                        permission,
-                        edit,
-                    },
-                    crate::harness::backend::TurnInvocation {
-                        thread_id,
-                        claim: crate::acp_planner::FrozenClaim(super::submission_claims::freeze(
-                            claim,
-                        )),
-                        rewind: pending_rewind,
-                    },
-                )
-                .await,
-        )
+impl Inner {
+    /// Sample only when the bound Codex stop needs its fallback, under the caller's issuance lock.
+    pub(super) async fn shutdown_last_turn(&self) -> Option<String> {
+        self.last_turn_id.lock().await.clone()
     }
 }
+
+use super::backend::IssueTurnHandle;
 
 #[derive(Clone, Debug)]
 pub struct HarnessObservationDelivery {
@@ -884,23 +840,14 @@ impl PlannerHarness {
             *closed = true;
             self.inner.shutting_down.store(true, Ordering::SeqCst);
         }
-        let thread_id = self.inner.thread_id.read().await.clone();
+        let invocation = IssueTurnHandle::from_reconciliation(&self.inner).await;
         let _ = self.inner.shutdown.send(());
         // If turn/start is already in flight, wait until its id is recorded in
         // the shared daemon cache. If shutdown won first, maybe_issue_turn sees
         // `shutting_down` under this same mutex and never calls the daemon.
         let _issuance_guard = self.inner.issuance.lock().await;
         persist_snapshot(&self.inner).await?;
-        let interrupt_error = self
-            .inner
-            .backend
-            .shutdown(
-                &self.inner.worker_session_id,
-                thread_id.as_deref(),
-                &self.inner.last_turn_id,
-            )
-            .await
-            .err();
+        let interrupt_error = invocation.shutdown().await.err();
         let abort = self
             .inner
             .abort_handle
@@ -1647,18 +1594,15 @@ async fn handle_steer(
         entry_id = %entry_id,
         "calling backend.turn_steer"
     );
-    let steered = inner
-        .backend
-        .turn_steer(
-            &thread_id,
-            SteerRequest {
-                turn: inner.backend.turn_identity(turn_id.clone()),
-                input: InputRequest {
-                    items,
-                    correlation: CorrelationKey(entry_id.as_str().to_owned()),
-                },
+    let steered = IssueTurnHandle::from_reconciliation(inner)
+        .await
+        .turn_steer(SteerRequest {
+            turn: inner.backend.turn_identity(turn_id.clone()),
+            input: InputRequest {
+                items,
+                correlation: CorrelationKey(entry_id.as_str().to_owned()),
             },
-        )
+        })
         .await;
     let (error, mut refusal) = match steered? {
         SteerOutcome::Taken { turn } => {
@@ -3591,8 +3535,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             .await
             .map_err(IssueFailure::ProjectionWrite)?;
         let turn = IssueTurnHandle::from_reconciliation(inner)
+            .await
             .issue(
-                &thread_id,
                 items,
                 &selection,
                 permission,
@@ -4084,14 +4028,11 @@ async fn issue_interrupt_for_turn(
         Instant::now() + inner.config.interrupt_completion_budget,
     ));
     persist_snapshot(inner).await?;
-    let outcome = inner
-        .backend
-        .turn_interrupt(
-            &thread_id,
-            InterruptRequest {
-                turn: inner.backend.turn_identity(target_turn_id.clone()),
-            },
-        )
+    let outcome = IssueTurnHandle::from_reconciliation(inner)
+        .await
+        .turn_interrupt(InterruptRequest {
+            turn: inner.backend.turn_identity(target_turn_id.clone()),
+        })
         .await;
     if let Err(e) = inner.backend.legacy_interrupt_result(outcome) {
         tracing::warn!(

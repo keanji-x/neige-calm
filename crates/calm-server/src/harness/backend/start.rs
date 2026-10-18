@@ -2,13 +2,6 @@
 use super::*;
 use crate::shared_codex_appserver::control::StartError;
 
-/// Product authority and durable state stay in the server, outside the protocol request.
-pub struct TurnInvocation<'a> {
-    pub thread_id: &'a str,
-    pub claim: crate::acp_planner::FrozenClaim,
-    pub rewind: Option<&'a mut BackendRewind>,
-}
-
 /// The reader is required for a refusal/recovery diagnostic, never defaulted for other facts.
 #[derive(Debug)]
 pub struct StartDiagnostic {

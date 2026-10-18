@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    DurableAck, DurableSendBinding, HarnessObservationDelivery, Inner, SendKey,
+    DurableAck, DurableSendBinding, HarnessObservationDelivery, Inner, IssueTurnHandle, SendKey,
     clear_interruption_intent, harness_event_scope, restore_durable_user_message, snapshot_for,
     stage_durable_entries,
 };
@@ -100,7 +100,13 @@ pub(super) async fn handle_replace(
             .map(|_| crate::claude_planner::rewind::anchor(&plan.previous_turn_rows)),
         plan.prompt_client_id.as_deref(),
     );
-    let preparation = async { inner.backend.prepare_rewind(&thread_id, target?).await }.await;
+    let preparation = async {
+        IssueTurnHandle::from_reconciliation(inner)
+            .await
+            .prepare_rewind(target?)
+            .await
+    }
+    .await;
     let prepared = preparation
         .and_then(|preparation| match preparation {
             EditPreparation::Prepared { plan } => Ok(BackendRewind::from_plan(plan)),

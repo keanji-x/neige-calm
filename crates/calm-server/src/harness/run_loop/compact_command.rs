@@ -67,7 +67,12 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     let submission = match inner.backend.compact_request(inner.as_ref()).await {
-        Ok(request) => inner.backend.compact_start(&thread, request).await,
+        Ok(request) => {
+            IssueTurnHandle::from_reconciliation(inner)
+                .await
+                .compact_start(request)
+                .await
+        }
         Err(error) => Err(error),
     };
     let (state, error) = match submission {

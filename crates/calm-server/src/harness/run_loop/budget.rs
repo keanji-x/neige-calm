@@ -136,16 +136,14 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
                 return false;
             }
             let input = vec![super::InputItem::text(segments[0].text.clone())];
-            let send = inner.backend.turn_steer(
-                &thread,
-                super::SteerRequest {
-                    turn: inner.backend.turn_identity(turn_id.clone()),
-                    input: super::InputRequest {
-                        items: input,
-                        correlation: super::CorrelationKey(key.clone()),
-                    },
+            let invocation = super::IssueTurnHandle::from_reconciliation(&inner).await;
+            let send = invocation.turn_steer(super::SteerRequest {
+                turn: inner.backend.turn_identity(turn_id.clone()),
+                input: super::InputRequest {
+                    items: input,
+                    correlation: super::CorrelationKey(key.clone()),
                 },
-            );
+            });
             tokio::pin!(send);
             let sent = loop {
                 tokio::select! {

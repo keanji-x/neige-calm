@@ -1,4 +1,4 @@
-//! Snapshot guard: planner harness turn issuance must stay behind `run_loop::IssueTurnHandle`.
+//! Snapshot guard: planner harness turn issuance must stay behind the private owner-bound `IssueTurnHandle`.
 //! If this test starts failing, audit the new caller: non-reconciliation issuance bypasses the queue/guard invariant.
 
 use std::path::{Path, PathBuf};
@@ -9,42 +9,33 @@ fn harness_turn_start_is_gated() {
     let run_loop_path = manifest_dir.join("src/harness/run_loop.rs");
     let run_loop = std::fs::read_to_string(&run_loop_path).expect("read run_loop.rs");
 
-    let run_loop_turn_start_count = run_loop.matches(".turn_start(").count();
-    assert_eq!(
-        run_loop_turn_start_count, 1,
-        "run_loop.rs should call .turn_start only inside IssueTurnHandle::issue"
-    );
-    assert!(
-        run_loop.contains("IssueTurnHandle::from_reconciliation(inner)"),
-        "maybe_issue_turn should construct IssueTurnHandle from reconciliation"
-    );
-
-    // One issuance per backend arm, inside `PlannerBackend::turn_start`; run_loop reaches it only
-    // through `IssueTurnHandle::issue`.
-    let backend = std::fs::read_to_string(manifest_dir.join("src/harness/backend.rs"))
-        .expect("read harness backend");
-    assert_eq!(
-        backend.matches(".turn_start_control(").count(),
-        3,
-        "harness/backend.rs should call .turn_start once per arm (Codex, Claude, ACP), inside \
-         PlannerBackend::turn_start; bump when a backend arm is added"
-    );
-    // The slice ends where the fn body ends, so a call placed after it is not counted as inside.
-    let turn_start_fn = backend
-        .split("pub async fn turn_start(")
+    assert!(run_loop.contains("IssueTurnHandle::from_reconciliation(inner)"));
+    let managed = std::fs::read_to_string(manifest_dir.join("src/harness/backend/managed.rs"))
+        .expect("read private managed entry");
+    assert!(managed.contains("pub(in crate::harness) struct IssueTurnHandle<'a>"));
+    assert!(managed.contains("owner: &'a Inner"));
+    assert!(!managed.contains("pub thread") && !managed.contains("pub owner"));
+    let turn_start_fn = managed
+        .split("pub(in crate::harness) async fn turn_start(")
         .nth(1)
         .and_then(|rest| rest.split("\n    }\n").next())
-        .expect("PlannerBackend::turn_start present");
+        .expect("owner-bound start present");
+    assert!(
+        !turn_start_fn
+            .split(" -> ")
+            .next()
+            .unwrap()
+            .contains("thread_id")
+    );
     assert_eq!(
+        managed.matches(".turn_start_control(").count(),
         turn_start_fn.matches(".turn_start_control(").count(),
-        3,
-        "every backend .turn_start call should sit inside PlannerBackend::turn_start"
+        "native sends stay inside the private owner-bound start"
     );
 
     let allowed = [
         "src/dispatcher/mod.rs",
-        "src/harness/backend.rs",
-        "src/harness/run_loop.rs",
+        "src/harness/backend/managed.rs",
         "src/operation/codex_adapter/mod.rs",
         "src/shared_codex_appserver.rs",
         "src/claude_planner/session.rs",

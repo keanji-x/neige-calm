@@ -287,38 +287,31 @@ async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model()
             params: json!({"error":{"message":"private-fixture-detail","codexErrorInfo":"unauthorized"}}),
         },
     );
-    let backend: calm_server::harness::backend::PlannerBackend =
-        boot.state.shared_codex_appserver.clone().into();
-    let failure = backend
+    let failure = boot
+        .state
+        .shared_codex_appserver
         .turn_start(
-            provider::control::TurnRequest {
-                input: provider::control::InputRequest {
-                    items: vec![calm_server::codex_appserver::InputItem::text(
-                        "auth regression",
-                    )],
-                    correlation: provider::control::CorrelationKey("fixture-client-id".into()),
-                },
-                selection: calm_server::planner_model::TurnModelSelection::inherit(),
-                permission: calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-                edit: provider::control::TurnEdit::NoEdit,
-            },
-            calm_server::harness::backend::TurnInvocation {
-                thread_id: "auth-reader-thread",
-                claim: calm_server::acp_planner::FrozenClaim(serde_json::json!([])),
-                rewind: None,
-            },
+            "auth-reader-thread",
+            vec![provider::InputItem::text("auth regression")],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
+            Some("fixture-client-id"),
         )
         .await
         .expect_err("a confirmed sign-in failure holds the turn");
-    let calm_server::harness::backend::TurnStartFailure::AwaitingRecovery { error, reader } =
-        failure
-    else {
-        panic!("a definitive authentication failure must not be transient");
-    };
+    assert!(
+        matches!(failure, calm_server::error::CalmError::CodexRefused(message)
+            if message == "codex_sign_in_required"
+        )
+    );
+    let reader = boot
+        .state
+        .shared_codex_appserver
+        .authentication_hold()
+        .expect("sign-in hold");
     assert!(reader.to_lowercase().contains("sign in"));
     assert!(!reader.contains("try another") && !reader.contains("private-fixture-detail"));
     assert!(reader.contains("Your message is still queued"));
-    assert!(!error.to_string().contains("private-fixture-detail"));
     assert!(
         !boot
             .methods_seen()

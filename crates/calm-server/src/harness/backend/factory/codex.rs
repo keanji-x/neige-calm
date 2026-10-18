@@ -8,6 +8,34 @@ use crate::model::CardRole;
 use crate::shared_codex_appserver::{SharedThreadStartParams, ThreadConfig};
 
 impl PlannerFactory<'_> {
+    /// Registry-miss stop uses only the persisted runtime's binding and fallback fact.
+    pub(crate) async fn shutdown_replay(
+        &self,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    ) -> Result<()> {
+        let Some(thread_id) = runtime.thread_id.as_deref() else {
+            return Ok(());
+        };
+        let daemon = self.daemon()?;
+        super::super::interrupt_codex_thread(
+            &daemon,
+            thread_id,
+            runtime.active_turn_id.as_deref(),
+            |step, e| match step {
+                super::super::CodexInterruptStep::ActiveTurn => tracing::warn!(
+                    runtime_id = %runtime.id, thread_id, error = %e,
+                    "planner harness shutdown replay thread interrupt failed"
+                ),
+                super::super::CodexInterruptStep::FallbackTurn(persisted_turn) => tracing::warn!(
+                    runtime_id = %runtime.id, thread_id, turn_id = persisted_turn, error = %e,
+                    "planner harness shutdown replay persisted-turn interrupt failed"
+                ),
+            },
+        )
+        .await;
+        Ok(())
+    }
+
     /// Called only at the existing native-prepare checkpoint, never by construction or open.
     /// The initial thread remains sandboxed with no approval requests; per-turn permission
     /// policy is still read and applied by the harness when a turn is issued.

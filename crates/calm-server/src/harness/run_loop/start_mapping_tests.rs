@@ -2,7 +2,7 @@
 #![cfg(test)]
 use super::completed_commit_tests::Fixture;
 use super::*;
-use crate::harness::backend::{StartDiagnostic, TurnInvocation, ordinary_start_result};
+use crate::harness::backend::{StartDiagnostic, ordinary_start_result};
 use provider::control::*;
 
 fn request(rewind: Option<&BackendRewind>) -> TurnRequest {
@@ -37,7 +37,6 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
         "sealed",
     ] {
         let f = Fixture::new().await;
-        let backend = &f.harness.inner.backend;
         let mut rewind = match case {
             "revert-refused" | "revert-start-failed" => Some(serde_json::from_str::<BackendRewind>(r#"{"provider":"codex","before_turn_id":"old-turn"}"#).unwrap()),
             "applied" => Some(serde_json::from_str(r#"{"provider":"codex","before_turn_id":"old-turn","reverted":true}"#).unwrap()),
@@ -54,14 +53,12 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
             "sealed" => { f.daemon.thread_seals().seal_for_deletion("thread-commit-wake"); },
             _ => {},
         }
-        let result = backend
+        let result = IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
             .turn_start(
                 request(rewind.as_ref()),
-                TurnInvocation {
-                    thread_id: "thread-commit-wake",
-                    claim: crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                    rewind: rewind.as_mut(),
-                },
+                crate::acp_planner::FrozenClaim(serde_json::json!([])),
+                rewind.as_mut(),
             )
             .await;
         match (case, &result) {
@@ -127,7 +124,15 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
                     error: CalmError::ServiceUnavailable(error),
                     reader,
                 }),
-            ) => assert_eq!(error, reader),
+            ) => {
+                assert_eq!(error, reader);
+                assert!(reader.to_lowercase().contains("sign in"));
+                assert!(reader.contains("Your message is still queued"));
+                assert!(
+                    !reader.contains("try another")
+                        && !reader.contains("refresh token was already used")
+                );
+            }
             other => panic!("wrong start row: {other:?}"),
         }
         let old = ordinary_start_result(result);
@@ -141,14 +146,12 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
             let mut restored: BackendRewind = serde_json::from_str(&stored).unwrap();
             f.daemon.clear_turn_start_failure_for_test();
             ordinary_start_result(
-                backend
+                IssueTurnHandle::from_reconciliation(&f.harness.inner)
+                    .await
                     .turn_start(
                         request(Some(&restored)),
-                        TurnInvocation {
-                            thread_id: "thread-commit-wake",
-                            claim: crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                            rewind: Some(&mut restored),
-                        },
+                        crate::acp_planner::FrozenClaim(serde_json::json!([])),
+                        Some(&mut restored),
                     )
                     .await,
             )
@@ -174,8 +177,9 @@ async fn m1_mapping_codex_edit_preparation_and_issue_handle() {
     let f = Fixture::new().await;
     let backend = &f.harness.inner.backend;
     let target = backend.native_edit_target("old-turn", None, None).unwrap();
-    let EditPreparation::Prepared { plan } = backend
-        .prepare_rewind("thread-commit-wake", target)
+    let EditPreparation::Prepared { plan } = IssueTurnHandle::from_reconciliation(&f.harness.inner)
+        .await
+        .prepare_rewind(target)
         .await
         .unwrap()
     else {
@@ -189,8 +193,8 @@ async fn m1_mapping_codex_edit_preparation_and_issue_handle() {
     assert!(f.daemon.reverted_threads_for_test().is_empty());
     let selection = TurnModelSelection::inherit();
     IssueTurnHandle::from_reconciliation(&f.harness.inner)
+        .await
         .issue(
-            "thread-commit-wake",
             vec![InputItem::text("through issue")],
             &selection,
             PlannerPermissionMode::Never,
@@ -216,14 +220,13 @@ async fn m1_mapping_start_post_ack_fence_preserves_interrupt_error_precedence() 
             },
         );
         f.daemon.fail_turn_interrupt_for_test(interrupt_fails);
-        let start = f.harness.inner.backend.turn_start(
-            request(None),
-            TurnInvocation {
-                thread_id: "thread-commit-wake",
-                claim: crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                rewind: None,
-            },
-        );
+        let start = IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .turn_start(
+                request(None),
+                crate::acp_planner::FrozenClaim(serde_json::json!([])),
+                None,
+            );
         let (result, ()) = tokio::join!(start, async {
             entered.notified().await;
             f.daemon
@@ -281,7 +284,7 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
     use crate::session_projection_repo::AgentProvider;
     for provider in [AgentProvider::Claude, AgentProvider::OpenCode] {
-        let f = Fixture::new().await;
+        let mut f = Fixture::new().await;
         let inner = &f.harness.inner;
         let wiring = ClaudePlannerWiring::unconfigured_for_test(f.repo.clone());
         let backend = crate::harness::backend::factory::PlannerFactory::new(
@@ -306,20 +309,21 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
         )
         .await
         .unwrap();
+        Arc::get_mut(&mut f.harness.inner)
+            .expect("exclusive fixture owner")
+            .backend = backend;
         for json in [
             None,
             Some(r#"{"provider":"codex","before_turn_id":"old","reverted":false}"#),
             Some(r#"{"provider":"codex","before_turn_id":"old","reverted":true}"#),
         ] {
             let mut rewind = json.map(|json| serde_json::from_str::<BackendRewind>(json).unwrap());
-            let result = backend
+            let result = IssueTurnHandle::from_reconciliation(&f.harness.inner)
+                .await
                 .turn_start(
                     request(rewind.as_ref()),
-                    TurnInvocation {
-                        thread_id: "thread-commit-wake",
-                        claim: crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                        rewind: rewind.as_mut(),
-                    },
+                    crate::acp_planner::FrozenClaim(serde_json::json!([])),
+                    rewind.as_mut(),
                 )
                 .await;
             match (json, &provider, result) {
@@ -429,4 +433,38 @@ async fn ready_factory_construction_and_open_leave_first_turn_work_lazy() {
         0,
         "no early turn/start"
     );
+}
+
+#[tokio::test]
+async fn m2c_mixed_legacy_and_versioned_input_uses_the_bound_start() {
+    let f = Fixture::new().await;
+    let legacy = QueueEntry::LegacyUser {
+        text: "legacy accepted sentence".into(),
+        envelope_id: None,
+        message_ids: vec![],
+    };
+    let versioned = QueueEntry::user_message("versioned accepted sentence".into(), None, vec![]);
+    let id = versioned.id().unwrap().clone();
+    f.enqueue(vec![legacy.clone(), versioned.clone()]).await;
+    let stored = f.stored().await;
+    assert_eq!(stored.pending_entries(), vec![legacy, versioned]);
+    let restored = HarnessSnapshot::parse_known(serde_json::to_value(stored).unwrap()).unwrap();
+    let entries = restored.pending_entries();
+    assert!(
+        matches!(&entries[0], QueueEntry::LegacyUser { message_ids, .. } if message_ids.is_empty())
+    );
+    assert_eq!(entries[0].id(), None);
+    assert_eq!(entries[1].id(), Some(&id));
+    f.issue().await;
+    let started = f.daemon.started_turns_for_test();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].0, "thread-commit-wake");
+    let InputItem::Text { text } = &started[0].1[0] else {
+        panic!("text input")
+    };
+    assert!(
+        text.find("legacy accepted sentence").unwrap()
+            < text.find("versioned accepted sentence").unwrap()
+    );
+    assert!(f.stored().await.pending_entries().is_empty());
 }

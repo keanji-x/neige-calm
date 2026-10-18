@@ -9,7 +9,7 @@ use crate::db::Repo;
 use crate::db::sqlite::{session_mark_superseded_runtime_tx, session_projection_by_id_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
-use crate::harness::backend::{CodexInterruptStep, interrupt_codex_thread};
+use crate::harness::backend::factory::PlannerFactory;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
@@ -159,30 +159,13 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
                 self.stop_claude_planner(&worker_session_id).await;
                 return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
             }
-            let Some(thread_id) = runtime.thread_id.as_deref() else {
-                return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
-            };
-            interrupt_codex_thread(
-                &self.daemon,
-                thread_id,
-                runtime.active_turn_id.as_deref(),
-                |step, e| match step {
-                    CodexInterruptStep::ActiveTurn => tracing::warn!(
-                        runtime_id = %worker_session_id,
-                        thread_id,
-                        error = %e,
-                        "planner harness shutdown replay thread interrupt failed"
-                    ),
-                    CodexInterruptStep::FallbackTurn(persisted_turn) => tracing::warn!(
-                        runtime_id = %worker_session_id,
-                        thread_id,
-                        turn_id = persisted_turn,
-                        error = %e,
-                        "planner harness shutdown replay persisted-turn interrupt failed"
-                    ),
-                },
+            PlannerFactory::new(
+                Arc::downgrade(&self.daemon),
+                &self.claude_host,
+                &self.acp_host,
             )
-            .await;
+            .shutdown_replay(&runtime)
+            .await?;
         }
         Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
