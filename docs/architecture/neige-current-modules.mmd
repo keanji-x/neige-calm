@@ -1,0 +1,25 @@
+flowchart TB
+  subgraph Server["calm-server · managed conversation 路径"]
+    Root["«module» state / wiring<br/>装配 backend 与 harness"]
+    Harness["«module» harness<br/>队列、轮次协调与投影"]
+    Backend["«module» PlannerBackend<br/>统一入口 / 原生分支"]
+    Native["«module» server 原生集成<br/>shared Codex / claude_planner / acp_planner<br/>凭据、进程、持久回执协调"]
+  end
+  subgraph Provider["provider"]
+    Protocol["«module» codex / claude / acp<br/>wire 协议与翻译"]
+    Events["«module» events / input / held_requests<br/>公共输入、事件与回应契约"]
+  end
+  Truth["«module» calm-truth / Repo<br/>权威状态与持久记录"]
+  Root -->|"构造"| Harness
+  Root -->|"绑定实现"| Backend
+  Harness -->|"调用统一入口"| Backend
+  Harness -->|"写入与恢复"| Truth
+  Harness -->|"消费事件契约"| Events
+  Backend -->|"选择原生集成"| Native
+  Native -->|"使用协议实现"| Protocol
+  Native -->|"提交持久回执"| Truth
+  Protocol -->|"输出中立事件"| Events
+  classDef app fill:#fff4df,stroke:#aa7327,color:#4a3516
+  classDef library fill:#e9f6f1,stroke:#368575,color:#183e35
+  class Root,Harness,Backend,Native,Truth app
+  class Protocol,Events library

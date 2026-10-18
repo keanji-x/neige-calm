@@ -1,0 +1,20 @@
+flowchart TB
+  Root["«module» index.ts<br/>内置组合根"]
+  Registry["«module» registry.ts<br/>Runtime 查找"]
+  Native["«module» runtimes/*<br/>原生协议与 runtime 政策"]
+  Shared["«module» shared/*<br/>公共机制 / session-kernel / sealSession"]
+  Observe["«module» observe/*<br/>记录的纯派生视图"]
+  Contracts["«module» contracts/*<br/>Runtime / Session / record 契约"]
+  Root -->|"装配"| Registry
+  Root -->|"注册实现"| Native
+  Root -->|"导出"| Observe
+  Registry -->|"导入契约"| Contracts
+  Native -->|"复用机制"| Shared
+  Native -->|"实现契约"| Contracts
+  Shared -->|"派生 Session API"| Observe
+  Shared -->|"实现契约"| Contracts
+  Observe -->|"消费记录"| Contracts
+  classDef source fill:#e9f6f1,stroke:#368575,color:#183e35
+  classDef contract fill:#eaf1ff,stroke:#4969b1,color:#1b3460
+  class Root,Registry,Native,Shared,Observe source
+  class Contracts contract

@@ -1,0 +1,40 @@
+classDiagram
+  direction LR
+  class CapabilityViews {
+    <<coordinated handles>>
+    borrowed existing session
+    supported or PendingActivation or unsupported
+  }
+  class TurnControl {
+    <<trait>>
+    start_turn() TurnStartOutcome
+    interrupt() InterruptOutcome
+  }
+  class Steer {
+    <<trait>>
+    steer() SteerOutcome
+  }
+  class Compact {
+    <<trait>>
+    compact() CompactSubmission
+  }
+  class HistoryEdit {
+    <<trait>>
+    prepare_edit() EditPreparation
+    native plan used by next start
+  }
+  class ObservationSource {
+    <<trait>>
+    observe() Stream
+  }
+  class ProviderRequests {
+    <<existing request seam>>
+    request() OneShotResponder
+    cancel_or_connection_lost()
+  }
+  CapabilityViews "1" --> "1" TurnControl : exposes
+  CapabilityViews "1" --> "0..1" Steer : exposes
+  CapabilityViews "1" --> "0..1" Compact : exposes
+  CapabilityViews "1" --> "0..1" HistoryEdit : exposes
+  CapabilityViews "1" --> "1" ObservationSource : exposes
+  CapabilityViews "1" --> "1" ProviderRequests : exposes

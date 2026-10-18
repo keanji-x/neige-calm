@@ -1,0 +1,30 @@
+flowchart TB
+  subgraph Server["calm-server · 产品与集成模块（现有职责保留）"]
+    direction LR
+    Wiring["«module» 组合根 / runtime wiring<br/>注册实现，注入已准入的执行上下文"]
+    Policy["«module» 产品会话策略<br/>持久队列、幂等、审批、恢复准入<br/>harness / operation / integration adapters"]
+    Control["«module» managed 运行集成<br/>AgentRuntime 工厂 / SessionController<br/>复用 backend 与原来的同步边界"]
+    Truth["«module» 持久事实<br/>truth / receipts / transcript"]
+    Resources["«module» 执行资源适配<br/>proc supervisor / sandbox / workspace"]
+  end
+  subgraph Provider["provider · 目标逻辑模块（非新增服务 / 非新增 crate）"]
+    direction LR
+    Adapters["«module» 原生协议实现<br/>codex / claude / acp<br/>wire、翻译与原生请求关联"]
+    Contract["«module» 公共契约<br/>AgentRuntime / Session / capability traits<br/>中立请求、操作结果、原生观察<br/>不包含队列、准备范围或宿主停止结果"]
+  end
+  Wiring -->|"装配产品入口"| Policy
+  Wiring -->|"装配具体运行工厂"| Control
+  Wiring -->|"准备执行上下文"| Resources
+  Policy -->|"依赖运行契约"| Contract
+  Policy -->|"提交与读取事实"| Truth
+  Control -->|"使用原生协议"| Adapters
+  Control -->|"提交原有回执"| Truth
+  Control -->|"调用现有资源 owner"| Resources
+  Adapters -->|"实现协议能力契约"| Contract
+  Control -->|"实现工厂与会话契约"| Contract
+  classDef app fill:#fff4df,stroke:#aa7327,color:#4a3516
+  classDef contract fill:#eaf1ff,stroke:#4969b1,color:#1b3460
+  classDef implementation fill:#e9f6f1,stroke:#368575,color:#183e35
+  class Wiring,Policy,Control,Truth,Resources app
+  class Contract contract
+  class Adapters implementation

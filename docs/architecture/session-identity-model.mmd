@@ -1,0 +1,34 @@
+classDiagram
+  direction TB
+  class Conversation {
+    <<product entity>>
+    CardId
+    history_boundary
+  }
+  class WorkerSession {
+    <<authority carrier>>
+    WorkerSessionId
+    provider / role
+    authority_state
+  }
+  class ControllerInstance {
+    <<runtime object>>
+    binding_evidence
+    Unbound or Recorded or Observed
+    borrowed_backend_handle
+  }
+  class NativeSession {
+    <<native identity>>
+    provider / storage_scope
+    native_id
+  }
+  class Turn {
+    <<execution unit>>
+    correlation_id
+    native_id_when_reported
+    observed_outcome
+  }
+  Conversation "1" -- "0..*" WorkerSession : 历次运行与权限载体
+  WorkerSession "1" -- "0..*" ControllerInstance : 先后接管或恢复
+  WorkerSession "0..*" -- "0..1" NativeSession : 原生绑定
+  NativeSession "1" -- "0..*" Turn : 执行历史中的轮次

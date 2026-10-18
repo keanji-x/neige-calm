@@ -1,0 +1,46 @@
+classDiagram
+  direction TB
+  class AgentRuntime {
+    <<interface>>
+    open(OpenRequest) Session
+    resume(ResumeRequest) Session
+  }
+  class ConcreteRuntime {
+    <<server integration>>
+    existing lazy startup order
+  }
+  class Session {
+    <<interface>>
+    capabilities() CapabilityViews
+    observations() Stream
+    provider_requests() Requests
+    binding() BindingEvidence
+  }
+  class SessionController {
+    <<facade implementation>>
+    native binding may be unbound
+    existing backend handle
+  }
+  class ExistingBackend {
+    <<existing backend implementation>>
+    shared or session scoped
+  }
+  class BackendProtocolState {
+    <<existing backend owned state>>
+    connection_generation
+    pending_requests
+    observed_native_turn
+  }
+  class CapabilityViews {
+    <<coordinated handles>>
+    controller-bound handles
+    pending activation is not unsupported
+  }
+  ConcreteRuntime ..|> AgentRuntime : implements
+  AgentRuntime ..> Session : returns
+  ConcreteRuntime ..> SessionController : creates logical handle
+  SessionController ..|> Session : implements
+  SessionController "0..*" --> "1" ExistingBackend : references existing handle
+  ExistingBackend "1" *-- "1" BackendProtocolState : owns
+  SessionController "1" *-- "1" CapabilityViews : owns
+  CapabilityViews ..> ExistingBackend : delegates through original guards
