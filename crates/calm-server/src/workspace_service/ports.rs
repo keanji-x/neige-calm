@@ -1,10 +1,13 @@
 //! Server adapters for workspace-runtime policy.
+use crate::db::sqlite::{CheckoutOccupancy, checkout_occupancy};
 use crate::error::{CalmError, Result};
 use crate::operation::workspace_lease::upstream::{
     LeaseStart, choose_lease_start, diverged_refusal, head_upstream, set_branch_upstream,
 };
 use async_trait::async_trait;
+use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
+use workspace_runtime::worktree_clean::ClosedWorktreeFacts;
 use workspace_runtime::{sweep::CandidateRefs, track_worktree::TrackBranch};
 
 #[derive(Clone, Copy)]
@@ -56,4 +59,47 @@ pub(crate) fn observe(point: &str, repo_root: &Path) {
     crate::test_seams::blocking_pause_point(point, repo_root.to_str().expect("test repo path"));
     #[cfg(not(feature = "fixtures"))]
     let _ = (point, repo_root);
+}
+
+/// Closed tracks with a worktree and no agent session that may be working in it: the Planner and
+/// conversation agents run there too, and a closed track's idle Planner must not block the clean.
+/// Tasks, leases and deliveries are [`checkout_occupancy`]'s to judge.
+pub(crate) const CLOSED_TRACK_WORKTREES_SQL: &str = "SELECT t.id, t.workspace_worktree_path, t.closed_at \
+       FROM tracks t \
+      WHERE t.closed_at IS NOT NULL AND t.workspace_worktree_path IS NOT NULL \
+        AND NOT EXISTS (SELECT 1 FROM worker_sessions ws WHERE ws.track_id = t.id \
+                         AND ws.state IN ('starting','running','turn_pending')) \
+      ORDER BY t.id";
+
+pub(crate) struct ServerClosedWorktreeFacts {
+    pub(crate) pool: SqlitePool,
+}
+
+#[async_trait]
+impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
+    type Error = CalmError;
+
+    async fn closed_idle_worktrees(&self) -> Result<Vec<(String, String, i64)>> {
+        Ok(sqlx::query_as(CLOSED_TRACK_WORKTREES_SQL)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
+    async fn checkout_free(&self, track: &str) -> Result<bool> {
+        Ok(
+            checkout_occupancy(&mut *self.pool.acquire().await?, track, "").await?
+                == CheckoutOccupancy::Free,
+        )
+    }
+
+    async fn executions_settled(&self, track: &str) -> Result<bool> {
+        Ok(
+            calm_truth::db::sqlite::workspace_execution::unsettled_executions(
+                &mut *self.pool.acquire().await?,
+                calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
+            )
+            .await?
+            .is_empty(),
+        )
+    }
 }

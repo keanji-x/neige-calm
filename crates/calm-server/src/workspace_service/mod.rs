@@ -2,7 +2,6 @@
 pub(crate) mod identity;
 pub(crate) mod ports;
 pub(crate) mod sweep;
-pub(crate) mod worktree_clean;
 
 /// Short digest of a workspace path for an idempotency key: a key that does not name the path turns any
 /// re-point into a permanent 409, since operation rows are never deleted.

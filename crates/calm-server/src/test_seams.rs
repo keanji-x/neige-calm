@@ -109,9 +109,10 @@ pub async fn prepare_worker_lease_for_test(
 pub async fn clean_idle_closed_track_worktrees_for_test(
     pool: &sqlx::SqlitePool,
 ) -> crate::error::Result<usize> {
-    crate::workspace_service::worktree_clean::clean_idle_closed_track_worktrees(
-        pool,
+    workspace_runtime::worktree_clean::clean_idle_closed_track_worktrees(
+        &crate::workspace_service::ports::ServerClosedWorktreeFacts { pool: pool.clone() },
         &mut std::collections::HashSet::new(),
+        crate::workspace_service::ports::observe,
     )
     .await
 }

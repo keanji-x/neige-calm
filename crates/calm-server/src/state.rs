@@ -1595,7 +1595,12 @@ impl AppState {
         if let Some(pool) = state.raw.sqlite_db() {
             crate::track_vcs::spawn_unreferenced_object_sweeper(pool.clone());
             crate::track_vcs::spawn_track_history_pruner(pool.clone());
-            crate::workspace_service::worktree_clean::spawn(pool.read_pool().clone());
+            workspace_runtime::worktree_clean::spawn(
+                crate::workspace_service::ports::ServerClosedWorktreeFacts {
+                    pool: pool.read_pool().clone(),
+                },
+                crate::workspace_service::ports::observe,
+            );
             crate::events_prune::spawn_events_pruner(pool);
         }
 
