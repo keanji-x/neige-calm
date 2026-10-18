@@ -36,8 +36,7 @@ impl Admission {
             #[cfg(any(test, feature = "fixtures"))]
             Self::Fixture => return Ok(()),
         }
-        let runtime =
-            crate::db::sqlite::session_projection_active_for_card_tx(tx, &card.to_owned()).await?;
+        let runtime = crate::db::sqlite::session_projection_active_for_card_tx(tx, card).await?;
         if !runtime.is_some_and(|runtime| runtime.id == worker) {
             return Err(CalmError::Conflict(
                 "historical control runtime was superseded".into(),

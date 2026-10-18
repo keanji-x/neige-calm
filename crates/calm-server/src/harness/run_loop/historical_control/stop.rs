@@ -183,7 +183,7 @@ impl PlannerHarness {
                     .await?;
                 let runtime = crate::db::sqlite::session_projection_active_for_card_tx(
                     tx,
-                    &inner.card_id.to_string(),
+                    inner.card_id.as_str(),
                 )
                 .await?
                 .ok_or_else(|| {
