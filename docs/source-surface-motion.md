@@ -580,3 +580,52 @@ excluding preview-owned content via `data-nc-preview-owner` during preparation,
 admission and retention. Public source props and required fixture fields remain
 explicit. Dialog/Drawer adoption and independent Collapse/RTL issues remain outside
 this first slice.
+
+## Host interaction scope (433519)
+
+The native dialog/body viewport root is a geometry carrier, not the trigger's
+interaction owner. Public Layer provides presentation, safe hosting and invoker
+focus order; LayerDepth provides nesting and shared dismissal accepts a lazy
+`isPresent` fence. None publishes the active panel lifecycle. Hover therefore
+retains a separate bounded DOM-platform scope at its original trigger. This is
+UI-owner interaction authority; Motion's source freeze and source → placement →
+actual → paint graph remain unchanged. No vendor component state is reproduced.
+
+The scope reads connection, exact ancestor identity, native inert/hidden/dialog
+open, computed display/content-visibility and source visibility. It never treats
+a missing rectangle as revocation. Its synchronous reader drains pending mutation records and is shared
+by admission, parent proof, publication, focus, input, pending open and dismissal.
+Loss calls the existing recursive close: revoke generations and descendants,
+cancel timers/focus intent and retain only inert, aria-hidden paint. Re-enabling
+an owner does not renew old requests. Detached sources keep their existing
+geometry carrier and native exit identity; reattachment can resolve a new carrier.
+Host-restored focus or layout-generated pointer enter cannot start them again; a fresh click, ArrowDown, Tab focus or
+physical pointer movement supplies a new intent.
+
+Observation is confined to the trigger's ancestor chain: permission attributes
+(inert/hidden/open/style/class), direct child-list edges, and the document's direct
+root edge without subtree observation. It drains transient disable/re-enable and
+replacement records; while detached, former edges remain observed until a
+connected chain replaces them. A nested preview stops at its declared preview
+owner and consumes the existing typed live parent proof instead of interpreting
+preparation inertness as host revocation. Parent registration reconciles actual
+endpoint identity after relocation and releases on cleanup/StrictMode replay.
+The observer clears dormant DOM permissions at the microtask checkpoint; input
+and publication read current authority before acting, including before that
+checkpoint. It is neither an event-time fallback nor an idle frame pump.
+
+Scope is the current document's light DOM and native dialog composition. Changes
+through external stylesheet rules without an observed attribute or React commit
+are checked on the next authority read, but are not globally monitored. Arbitrary
+shadow-root hosts and CSS-only visibility animation are not added contracts.
+Unobserved intermediate computed CSS states are not lifecycle signals; hosts
+requiring transient-state guarantees publish native inert/hidden/open facts.
+Each mounted trigger keeps one observer over O(ancestor count) targets (the last
+connected plus current chain while detached). Authority reads and delivered
+batches cost O(ancestor count); ancestor sibling mutations can also deliver a
+batch. Quiet idle has no scheduled work. No claim of zero work during unrelated
+DOM churn or compositor-only forwarding is added.
+Ordinary variants edit only owner code/tests; no registry, manifest or dependency
+is added. Each selected browser project discovers its target once; the kernel
+gate performs the declared focused replay and CI owns broad suites. L2 remains
+required because this repairs recursive interaction authority across portals.

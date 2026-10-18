@@ -235,3 +235,27 @@ it('publishes first paint admission to later reservations even when its geometry
   const input = vi.mocked(placePreview).mock.calls.filter(([value]) => value.anchor.left === secondSource.left).at(-1)![0];
   expect(input.obstacles).toEqual([firstSlot.getBoundingClientRect()]);
 });
+
+
+for (const reduced of [false, true]) it(`revokes explicit preparation on host inert and rejects later geometry readiness (${reduced ? 'reduced' : 'normal'})`, async () => {
+  await page.viewport(1200, 900); await commands.emulateReducedMotion(reduced);
+  const { readSurfaceFrame: realFrame } = await vi.importActual<typeof import('../motion/geometry.ts')>('../motion/geometry.ts');
+  vi.mocked(readSurfaceFrame).mockReturnValue(null);
+  render(<section style={{ padding: 80 }}><HoverPreview title="Host preparation"
+    trigger={activate => <button onClick={activate}>Host preparation</button>}>Content</HoverPreview></section>);
+  const trigger = page.getByRole('button', { name: 'Host preparation' });
+  await trigger.click();
+  const card = document.querySelector<HTMLElement>('[aria-label="Preview: Host preparation"]')!;
+  expect(card.inert).toBe(true); expect(card.isConnected).toBe(true);
+  const host = trigger.element().closest('section')!;
+  try {
+    await act(async () => { host.inert = true; await Promise.resolve(); });
+    expect(card.isConnected).toBe(false);
+    host.inert = false; vi.mocked(readSurfaceFrame).mockImplementation(realFrame);
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(document.querySelector('[data-nc-link-preview]')).toBeNull();
+    await trigger.click();
+    await expect.element(page.getByRole('dialog', { name: 'Preview: Host preparation' })).toBeVisible();
+  } finally { host.inert = false; await trigger.unhover(); }
+});

@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { commands, page } from 'vitest/browser';
+import { commands, page, userEvent } from 'vitest/browser';
 import '../../styles/entry.css';
+import { StrictMode } from 'react';
 import { HoverPreview } from './public.tsx';
 
 beforeEach(async () => { await page.viewport(1800, 1000); await commands.emulateReducedMotion(true); vi.useFakeTimers(); });
@@ -183,3 +184,103 @@ it('revokes all nested semantic ownership before paint disposal and clears pendi
   expect(screen.getAllByRole('dialog')).toHaveLength(1);
   expect(screen.getByRole('dialog', { name: 'Preview: Parent' })).not.toBe(cards[0]);
 });
+
+
+for (const reduced of [false, true]) {
+  it.each(['inert', 'hidden', 'dialog close', 'ancestor detach', 'ancestor replacement', 'ancestor relocation', 'trigger replacement'] as const)(
+    `revokes native host scope and descendants without restoring old intent: %s (reduced=${reduced})`, async change => {
+      vi.useRealTimers();
+      await commands.emulateReducedMotion(reduced);
+      const action = vi.fn();
+      const view = render(<StrictMode><dialog open><section style={{ padding: 80 }}>
+        <HoverPreview title="Scope parent" trigger={activate => <button onClick={activate}>Scope parent</button>}>
+          <HoverPreview title="Scope child" trigger={activate => <button onClick={activate}>Scope child</button>}>
+            <button onClick={action}>Scope action</button>
+          </HoverPreview>
+        </HoverPreview>
+      </section></dialog></StrictMode>);
+      const root = page.getByRole('button', { name: 'Scope parent', exact: true });
+      await root.click();
+      await page.getByRole('button', { name: 'Scope child', exact: true }).click();
+      const actionButton = page.getByRole('button', { name: 'Scope action' });
+      await expect.element(actionButton).toBeVisible();
+      (actionButton.element() as HTMLElement).focus();
+      const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-nc-link-preview]'));
+      const trigger = root.element(); const host = trigger.closest('section')!; const dialog = host.closest('dialog')!;
+      const parent = host.parentElement!; const next = host.nextSibling;
+      const replacement = trigger.cloneNode(true) as HTMLElement;
+      const hostReplacement = host.cloneNode(true) as HTMLElement;
+      const destination = document.createElement('section');
+      const restore = () => {
+        host.inert = false; host.hidden = false;
+        if (host.parentElement !== parent) parent.insertBefore(host, next?.parentNode === parent ? next : null);
+        hostReplacement.remove(); destination.remove();
+        if (!trigger.isConnected) replacement.replaceWith(trigger);
+        if (!dialog.open) dialog.show();
+      };
+      try {
+        if (change === 'inert') host.inert = true;
+        if (change === 'hidden') host.hidden = true;
+        if (change === 'dialog close') dialog.close();
+        if (change === 'ancestor detach') host.remove();
+        if (change === 'ancestor replacement') host.replaceWith(hostReplacement);
+        if (change === 'ancestor relocation') { parent.append(destination); destination.append(host); }
+        if (change === 'trigger replacement') trigger.replaceWith(replacement);
+        await Promise.resolve();
+        for (const card of cards) {
+          expect(card.inert).toBe(true);
+          expect(card.hasAttribute('data-nc-link-preview')).toBe(false);
+          expect(card.hasAttribute('data-nc-escape-layer')).toBe(false);
+          expect(card.contains(document.activeElement)).toBe(false);
+          const box = card.getBoundingClientRect();
+          expect(card.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))).toBe(false);
+        }
+        restore();
+        await Promise.resolve();
+        await new Promise(resolve => setTimeout(resolve, 400));
+        expect(document.querySelector('[data-nc-link-preview]')).toBeNull();
+        expect(action).not.toHaveBeenCalled();
+        await root.click();
+        await expect.element(page.getByRole('dialog', { name: 'Preview: Scope parent' })).toBeVisible();
+        expect(document.querySelectorAll('[data-nc-link-preview]')).toHaveLength(1);
+        root.element().focus(); await userEvent.keyboard('{ArrowDown}');
+        await userEvent.keyboard('{Escape}');
+        expect(document.querySelector('[data-nc-link-preview]')).toBeNull();
+      } finally { restore(); view.unmount(); }
+    });
+  it(`fences native focus before host observer delivery (reduced=${reduced})`, async () => {
+    vi.useRealTimers(); await commands.emulateReducedMotion(reduced);
+    const focused = vi.fn();
+    render(<section style={{ padding: 80 }}><HoverPreview title="Focus scope"
+      trigger={activate => <button onClick={activate}>Focus scope</button>}>
+      <button onFocus={focused}>Focus action</button>
+    </HoverPreview></section>);
+    await page.getByRole('button', { name: 'Focus scope' }).click();
+    const action = page.getByRole('button', { name: 'Focus action' }).element() as HTMLElement;
+    const card = action.closest<HTMLElement>('[data-nc-preview-owner]')!;
+    const host = screen.getByRole('button', { name: 'Focus scope' }).closest('section')!;
+    // Native focus runs synchronously, before MutationObserver's checkpoint.
+    host.inert = true; action.focus();
+    expect(focused).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(action);
+    expect(card.inert).toBe(true);
+    expect(card.hasAttribute('data-nc-link-preview')).toBe(false);
+    host.inert = false;
+  });
+  it(`cancels native pending hover across transient host disable (reduced=${reduced})`, async () => {
+    vi.useRealTimers(); await commands.emulateReducedMotion(reduced);
+    render(<><button>Before scope</button><section style={{ padding: 80 }}><HoverPreview title="Pending scope"
+      trigger={activate => <button onClick={activate}>Pending scope</button>}>Body</HoverPreview></section></>);
+    const trigger = page.getByRole('button', { name: 'Pending scope' });
+    await trigger.hover();
+    const host = trigger.element().closest('section')!;
+    host.inert = true; host.inert = false;
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(document.querySelector('[data-nc-link-preview]')).toBeNull();
+    await trigger.unhover();
+    screen.getByRole('button', { name: 'Before scope' }).focus();
+    await userEvent.keyboard('{Tab}');
+    await expect.element(page.getByRole('dialog', { name: 'Preview: Pending scope' })).toBeVisible();
+    await userEvent.keyboard('{Escape}'); await trigger.unhover();
+  });
+}

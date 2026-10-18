@@ -10,6 +10,7 @@ import { useState } from '../state/public.ts';
 import { restoreDrawerFocus } from '../drawer/restore-focus.ts';
 import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_MIN_HEIGHT, type Placement } from './placement.ts';
 import styles from './preview.module.css';
+import { useInteractionScope } from './interaction-scope.ts';
 
 type Phase = 'closed' | 'waiting' | 'open';
 const HOVER_DELAY = 300;
@@ -73,6 +74,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   const body = useRef<HTMLDivElement>(null);
   const focusOnOpen = useRef(false);
   const skipFocus = useRef(false);
+  const focusNeedsInput = useRef(false);
   const travelling = useRef(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -93,11 +95,14 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   }, [layerRef, setLayerHost]);
   // Native hosting follows paint retention; interaction follows post-bind admission.
   useLayoutEffect(() => { if (present) show(); else hide(); }, [present, show, hide]);
-  const readParent = () => parent.current.kind === 'admitted' && parent.current.read() ? parent.current.token : null;
-  const admitted = () => paint.current.kind === 'admitted' && paint.current.cycle === cycle.current
-    && paint.current.part === card.current && paint.current.actual === actual.current
-    && paint.current.ancestor === readParent() && intent.current === 'open'
-    && measurement.readBinding() === paint.current.binding;
+  const admitted = () => {
+    // Host reads may revoke synchronously. Inspect the publication afterwards.
+    const ancestor = readParent(); const current = paint.current;
+    return current.kind === 'admitted' && current.cycle === cycle.current
+      && current.part === card.current && current.actual === actual.current
+      && current.ancestor === ancestor && intent.current === 'open'
+      && measurement.readBinding() === current.binding;
+  };
   const parentView = (): ParentView => {
     const token = paint.current;
     return admitted() ? { kind: 'admitted', token, read: () => paint.current === token && admitted() }
@@ -113,12 +118,6 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     if (openTimer.current !== null) clearTimeout(openTimer.current);
     openTimer.current = null;
   }, []);
-  const focusTrigger = useCallback(() => {
-    skipFocus.current = true;
-    const target = anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]');
-    if (target != null) restoreDrawerFocus(target);
-    skipFocus.current = false;
-  }, []);
   const close = useCallback(() => {
     // Revoke the port before DOM permission, descendant intent and notifications.
     const old = paint.current;
@@ -132,6 +131,35 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     focusOnOpen.current = false;
     setPhase('closed');
   }, [cancelLeave, cancelOpen, setEngaged, setPhase]);
+  const revoke = useCallback(() => {
+    focusNeedsInput.current = true;
+    const focused = document.activeElement;
+    const ownedFocus = focused instanceof HTMLElement && card.current?.contains(focused);
+    close();
+    if (ownedFocus) focused.blur();
+  }, [close]);
+  const readHost = useInteractionScope(anchor, () => {
+    revoke();
+    const element = anchor.current;
+    // Detachment revokes input, but keeps the current geometry carrier and
+    // native paint identity for the already-owned exit/source freeze.
+    if (element?.isConnected) setLayerHost(element.closest('dialog') ?? element.ownerDocument.body);
+  });
+  const readParent = useCallback(() => readHost() && parent.current.kind === 'admitted' && parent.current.read() ? parent.current.token : null, [readHost]);
+  useEffect(() => {
+    const tab = (event: KeyboardEvent) => {
+      if (focusNeedsInput.current && event.key === 'Tab' && !event.defaultPrevented && !isImeKeyEvent(event) && readParent() !== null) focusNeedsInput.current = false;
+    };
+    document.addEventListener('keydown', tab);
+    return () => { document.removeEventListener('keydown', tab); };
+  }, [readParent]);
+  const focusTrigger = useCallback(() => {
+    if (!readHost()) return;
+    skipFocus.current = true;
+    const target = anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]');
+    if (target != null) restoreDrawerFocus(target);
+    skipFocus.current = false;
+  }, [readHost]);
   const dismissLayer = useCallback(() => {
     close();
     if (card.current?.contains(document.activeElement)) focusTrigger();
@@ -159,22 +187,31 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     endpoint.addEventListener(INTERACTION_REGISTER, register);
     return () => { endpoint.removeEventListener(INTERACTION_REGISTER, register); };
   }, []);
+  const registeredParent = useRef<{ endpoint: HTMLElement; child: NestedInteraction } | null>(null);
   useLayoutEffect(() => {
     const trigger = anchor.current!;
     const owner = trigger.closest<HTMLElement>('[data-nc-preview-owner]');
-    if (owner === null) return;
-    const endpoint = trigger.ownerDocument.getElementById(owner.dataset.ncPreviewOwner!);
-    if (endpoint === null) throw new Error('Preview interaction owner is missing');
+    const endpoint = owner === null ? null : trigger.ownerDocument.getElementById(owner.dataset.ncPreviewOwner!);
+    if (owner !== null && endpoint === null) throw new Error('Preview interaction owner is missing');
+    if ((registeredParent.current?.endpoint ?? null) === endpoint) return;
+    if (registeredParent.current !== null) {
+      registeredParent.current.child.release?.(); registeredParent.current = null;
+      revoke(); parent.current = { kind: 'admitted', token: {}, read: () => true };
+    }
+    if (endpoint === null) return;
     const child: NestedInteraction = { release: null, setParent: view => {
       if (parent.current.kind === view.kind && (view.kind !== 'admitted' || parent.current.kind === 'admitted' && parent.current.token === view.token)) return;
       parent.current = view;
-      if (view.kind === 'revoked') close();
+      if (view.kind === 'revoked') revoke();
       schedule();
     } };
     endpoint.dispatchEvent(new CustomEvent(INTERACTION_REGISTER, { detail: child }));
     if (child.release === null) throw new Error('Preview interaction owner did not register child');
-    return () => { child.release?.(); };
-  }, [close, schedule]);
+    registeredParent.current = { endpoint, child };
+  });
+  useLayoutEffect(() => () => {
+    registeredParent.current?.child.release?.(); registeredParent.current = null;
+  }, []);
   const dismissForNavigation = useCallback(() => {
     close();
     // Hand the destination a connected opener before it captures return focus.
@@ -191,15 +228,17 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     return () => { element.removeEventListener(NAVIGATION_DISMISS, dismissForNavigation); };
   }, [requested, layer.isOpen, dismissForNavigation]);
   const activate = useCallback(() => {
-    if (parent.current.kind === 'revoked') return;
+    if (!readHost() || parent.current.kind === 'revoked') return;
+    focusNeedsInput.current = false;
     cancelLeave(); cancelOpen(); intent.current = 'open'; setPhase('open'); schedule();
-  }, [cancelLeave, cancelOpen, setPhase, schedule]);
+  }, [cancelLeave, cancelOpen, setPhase, schedule, readHost]);
   const focusContent = useCallback(() => {
     body.current?.focus({ preventScroll: true });
   }, []);
   const enter = () => {
-    if (readParent() === null) return;
+    if (readParent() === null || focusNeedsInput.current) return;
     cancelLeave();
+    if (intent.current === 'closed') intent.current = 'waiting';
     setEngaged(true);
     setPhase((current) => current === 'closed' ? 'waiting' : current);
   };
@@ -215,11 +254,11 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     if (!engaged || phase !== 'waiting') return;
     const generation = cycle.current;
     const timeout = setTimeout(() => {
-      if (cycle.current === generation && intent.current !== 'open') activate();
+      if (readHost() && cycle.current === generation && intent.current !== 'open') activate();
     }, HOVER_DELAY);
     openTimer.current = timeout;
     return () => { clearTimeout(timeout); if (openTimer.current === timeout) openTimer.current = null; };
-  }, [phase, engaged, activate]);
+  }, [phase, engaged, activate, readHost]);
 
   // All input reads happen before submission. Output equality is exact; updaters
   // are pure. A committed slot is always usable, including while another is queued.
@@ -330,6 +369,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   useEffect(() => {
     if (!requested) return;
     const outsidePress = (event: PointerEvent) => {
+      if (!readHost()) return;
       const target = event.target;
       if (!(target instanceof Node) || anchor.current?.contains(target)) return;
       // Descendant previews are portals; pressing within any preview remains interaction.
@@ -353,7 +393,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       document.removeEventListener('pointerdown', outsidePress, true);
       document.removeEventListener('scroll', scroll, true);
     };
-  }, [requested, focusTrigger, close, cancelLeave]);
+  }, [requested, focusTrigger, close, cancelLeave, readHost]);
 
   const measurement = useSurfacePresence({ parts: { kind: 'single', primary: { element: card, readFrame: () => candidate !== null && candidate === actual.current && (intent.current !== 'open' || readParent() !== null) ? readSurfaceFrame(actual.current) : null } },
     geometry: { kind: 'lift', origin: { kind: 'anchor', anchor: { ref: anchor }, unavailable: 'surface-center' } },
@@ -397,9 +437,20 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   const attachCard = useCallback((node: HTMLDivElement | null) => { card.current = node; if (node !== null) gate(null, null, node, false, false); }, []);
 
   return <span ref={captureAnchor} id={`${id}-owner`} className={styles.anchor} role="presentation"
-    onPointerEnter={(event) => { if (event.pointerType !== 'touch') enter(); }}
-    onPointerLeave={event => { if (readParent() !== null && event.target instanceof Node && anchor.current?.contains(event.target)) leave(); }} onFocus={() => { if (!skipFocus.current) enter(); }}
+    onPointerEnter={(event) => {
+      if (event.pointerType !== 'touch' && event.target instanceof Node && anchor.current?.contains(event.target) && readHost() && !focusNeedsInput.current) {
+        focusNeedsInput.current = false; enter();
+      }
+    }}
+    onPointerMove={event => {
+      if (focusNeedsInput.current && event.pointerType !== 'touch' && (event.movementX !== 0 || event.movementY !== 0)
+        && event.target instanceof Node && anchor.current?.contains(event.target) && readHost()) {
+        focusNeedsInput.current = false; enter();
+      }
+    }}
+    onPointerLeave={event => { if (intent.current !== 'closed' && readParent() !== null && event.target instanceof Node && anchor.current?.contains(event.target)) leave(); }} onFocus={() => { if (!skipFocus.current && !focusNeedsInput.current) enter(); }}
     onBlur={(event) => {
+      if (intent.current === 'closed') return;
       if (readParent() === null || !admitted() && event.target instanceof Node && card.current?.contains(event.target)) return;
       if (event.relatedTarget instanceof Node && (anchor.current?.contains(event.relatedTarget)
         || card.current?.contains(event.relatedTarget))) return;
@@ -409,6 +460,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       if (event.defaultPrevented || isImeKeyEvent(event.nativeEvent)) return;
       // React portals bubble through this span; only its actual trigger owns activation.
       if (!(event.target instanceof Node) || !anchor.current?.contains(event.target)) return;
+      if (!readHost() || parent.current.kind === 'revoked') return;
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         activate();
@@ -419,12 +471,14 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     {trigger(activate, dismissForNavigation)}
     {layerHost !== null && createPortal(layer.render(<LayerDepthProvider>{present && <div ref={attachSlot} className={styles.positioner} data-nc-preview-slot="" inert aria-hidden="true"
       onClickCapture={event => { if (!admitted()) { event.preventDefault(); event.stopPropagation(); } }}
+      onPointerDownCapture={event => { if (!admitted()) { event.preventDefault(); event.stopPropagation(); } }}
+      onFocusCapture={event => { if (!admitted()) { event.stopPropagation(); (event.target as HTMLElement).blur(); } }}
       style={{ left: placement.x, top: placement.y, width: placement.width, height: placement.maxHeight, justifyContent: placement.side === 'above' ? 'flex-end' : 'flex-start' }}>
       <div ref={attachActual} className={styles.actual} style={{ height: Math.min(actualHeight, placement.maxHeight), clipPath: 'inset(50%)' }}>
       <div ref={attachCard} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog" data-nc-preview-owner={`${id}-owner`}
       aria-label={`Preview: ${title}`} id={id} inert aria-hidden="true"
-      onPointerEnter={enter} onPointerLeave={() => { if (admitted()) leave(); }}
-      onFocus={enter} onBlur={(event) => {
+      onPointerEnter={() => { if (intent.current === 'open') enter(); }} onPointerLeave={() => { if (admitted()) leave(); }}
+      onFocus={() => { if (intent.current === 'open') enter(); }} onBlur={(event) => {
         if (!admitted()) return;
         if (event.relatedTarget instanceof Node && card.current?.contains(event.relatedTarget)) return;
         leave();

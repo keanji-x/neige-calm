@@ -35,6 +35,50 @@ function NativeHost({ children, hasScrim = false, purpose = 'info', onClose = ()
 }
 
 describe('preview in a real browser', () => {
+  it.each([true])('revokes the old sheet preview on public handoff (reduced=%s)', async reduced => {
+    await commands.emulateReducedMotion(reduced);
+    await page.viewport(390, 844);
+    const action = vi.fn();
+    let switchSheet: (value: string) => void = () => {};
+    function Sheets() {
+      const [active, setActive] = useState<string | null>('one');
+      switchSheet = setActive;
+      return <BottomSheetSwitcher activeSheet={active} onActiveSheetChange={setActive} hasScrim>
+        <BottomSheet sheetId="one" label="One" height="650px"><div style={{ padding: 40 }}>
+          <HoverPreview title="Old sheet" trigger={activate => <button onClick={activate}>Open old sheet</button>}>
+            <button onClick={action}>Old action</button>
+          </HoverPreview>
+        </div></BottomSheet>
+        <BottomSheet sheetId="two" label="Two" height="650px"><button>New control</button></BottomSheet>
+      </BottomSheetSwitcher>;
+    }
+    render(<Sheets />);
+    const trigger = page.getByRole('button', { name: 'Open old sheet' });
+    await trigger.click();
+    const old = page.getByRole('button', { name: 'Old action' });
+    await expect.element(old).toBeVisible();
+    const button = old.element() as HTMLElement;
+    const card = button.closest<HTMLElement>('[data-nc-preview-owner]')!;
+    try {
+      await act(async () => { switchSheet('two'); await Promise.resolve(); });
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const rect = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      // Exercise the actual native hit when stale paint still owns it. No forced dispatch.
+      if (hit !== null && button.contains(hit)) { await old.hover(); await old.click(); }
+      expect(action).not.toHaveBeenCalled();
+      expect(card.hasAttribute('data-nc-link-preview')).toBe(false);
+      expect(card.inert).toBe(true);
+      await act(async () => { switchSheet('one'); await Promise.resolve(); });
+      await new Promise(resolve => setTimeout(resolve, 400));
+      expect(document.querySelector('[data-nc-link-preview]')).toBeNull();
+      await trigger.click();
+      await expect.element(page.getByRole('button', { name: 'Old action' })).toBeVisible();
+      await userEvent.keyboard('{Escape}');
+      expect(document.querySelector('[data-nc-link-preview]')).toBeNull();
+    } finally { await trigger.unhover(); }
+  });
+
   it.each([false, true])('uses the native Layer host inside public BottomSheetSwitcher (scrim=%s)', async hasScrim => {
     await commands.emulateReducedMotion(hasScrim);
     await page.viewport(390, 844);

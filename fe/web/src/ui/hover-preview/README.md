@@ -199,3 +199,24 @@ while still paused. Hover retains the same source→placePreview→slot path; it
 paint notice never repositions itself. Paused/settled 20-frame zero pump/DOM checks
 and terminal source checks cover this path in preview.browser.test.tsx. This does
 not discover arbitrary externally created CSS animations.
+
+### Original host authority
+
+Viewport geometry hosting does not grant interaction permission. The bounded
+[interaction scope](interaction-scope.ts) reads the original trigger's public DOM
+connection/ancestor identity, inert/hidden/dialog-open and computed
+display/content-visibility/source visibility.
+All authority paths share that current read and the existing typed parent proof.
+Host loss uses recursive close, clearing pending/descendant generations and focus
+before retained inert paint can receive another input. Scope recovery requires
+new input; automatic host focus restoration or layout pointer-enter does not
+renew a revoked hover timer. Actual click/ArrowDown, Tab focus or pointer movement
+can create a new request.
+
+Only ancestor attributes and direct structural edges are observed (no document
+subtree or recurring work). Pending records are drained synchronously at authority
+reads; observer delivery cleans dormant DOM permissions before the next input
+task. Nested preview preparation remains pending through its typed port, not a
+host hide. Relocation reconciles both the DOM scope and nearest port endpoint;
+cleanup releases observation and registration. Geometry/source-freeze stays with
+Motion. See the [design scope and limits](../../../../../docs/source-surface-motion.md#host-interaction-scope-433519).
