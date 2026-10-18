@@ -388,9 +388,8 @@ async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 
 /// Exercise the same transcript read the conversation UI uses.
 async fn conversation_rows(boot: &Boot, card: &Card) -> Vec<Value> {
-    let response = boot
-        .app
-        .clone()
+    let response = support::authenticated_router::application(boot.state.clone())
+        .await
         .oneshot(
             Request::builder()
                 .uri(format!("/api/cards/{}/harness/items", card.id))
