@@ -1,6 +1,7 @@
 //! Actual HTTP commands cross issuer, persistence and native-effect awaits.
 use super::historical_control_admission_tests::{HistoricalFixture, hand_area_to_alice};
 use super::*;
+use crate::db::RepoRead;
 use crate::test_seams::{self, PausePoint};
 
 async fn perform(
