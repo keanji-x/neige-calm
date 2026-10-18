@@ -139,12 +139,12 @@ impl MemoryStore {
     }
     pub fn seed(&self, intent: ExecutionIntent, desired: Desired) {
         self.rows.lock().unwrap().insert(
-            intent.id.clone(),
-            Stored {
-                intent,
+            intent.metadata.id.clone(),
+            Stored::Active {
+                intent: intent.metadata,
+                secrets: intent.secrets,
                 desired,
-                settled: false,
-                finished: false,
+                settlement: None,
             },
         );
     }
@@ -158,12 +158,12 @@ impl Store for MemoryStore {
         intent: &ExecutionIntent,
     ) -> Result<(), StoreError> {
         tx.0.push((
-            intent.id.clone(),
-            Stored {
-                intent: intent.clone(),
+            intent.metadata.id.clone(),
+            Stored::Active {
+                intent: intent.metadata.clone(),
+                secrets: intent.secrets.clone(),
                 desired: Desired::Run,
-                settled: false,
-                finished: false,
+                settlement: None,
             },
         ));
         Ok(())
@@ -181,7 +181,12 @@ impl Store for MemoryStore {
                 .map(|(_, row)| row.clone())
                 .or_else(|| self.rows.lock().unwrap().get(id).cloned())
                 .ok_or_else(|| StoreError("missing intent".into()))?;
-        row.desired = row.desired.max(desired);
+        if let Stored::Active {
+            desired: current, ..
+        } = &mut row
+        {
+            *current = (*current).max(desired);
+        }
         tx.0.push((id.clone(), row));
         Ok(())
     }
@@ -198,9 +203,13 @@ impl Store for MemoryStore {
         self.log.push("spawned");
         Ok(())
     }
-    async fn settle(&self, id: &ExecutionId, _: &Settlement) -> Result<(), StoreError> {
+    async fn settle(&self, id: &ExecutionId, evidence: &Settlement) -> Result<(), StoreError> {
         self.log.push("settle");
-        self.rows.lock().unwrap().get_mut(id).unwrap().settled = true;
+        if let Stored::Active { settlement, .. } = self.rows.lock().unwrap().get_mut(id).unwrap()
+            && settlement.is_none()
+        {
+            *settlement = Some(evidence.clone());
+        }
         let pause = self.settle_pause.lock().unwrap().take();
         if let Some(pause) = pause {
             pause.stop().await;
@@ -209,7 +218,19 @@ impl Store for MemoryStore {
     }
     async fn finish(&self, id: &ExecutionId) -> Result<(), StoreError> {
         self.log.push("finish");
-        self.rows.lock().unwrap().get_mut(id).unwrap().finished = true;
+        let mut rows = self.rows.lock().unwrap();
+        let row = rows.get_mut(id).unwrap();
+        if let Stored::Active {
+            intent, settlement, ..
+        } = row
+        {
+            *row = Stored::Finished {
+                intent: intent.clone(),
+                settlement: settlement
+                    .clone()
+                    .ok_or_else(|| StoreError("finish before settlement".into()))?,
+            };
+        }
         Ok(())
     }
     async fn pending(&self) -> Result<Vec<ExecutionId>, StoreError> {
@@ -218,43 +239,48 @@ impl Store for MemoryStore {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, r)| !r.settled || (r.desired == Desired::Retire && !r.finished))
+            .filter(|(_, r)| {
+                matches!(r, Stored::Active { desired, settlement, .. }
+                if settlement.is_none() || *desired == Desired::Retire)
+            })
             .map(|(id, _)| id.clone())
             .collect())
     }
 }
 pub fn intent(root: std::path::PathBuf) -> ExecutionIntent {
     ExecutionIntent {
-        id: ExecutionId::fresh().unwrap(),
-        alias: ProcessAlias(ExecutionId::fresh().unwrap().as_str().into()),
-        owner: OperationRef("port-contract".into()),
-        track: TrackId("test-track".into()),
-        source: PrivateSource {
-            root,
-            cwd: WorkspaceCwd::root(),
-            registration: ObjectRegistrationId::fresh().unwrap(),
-            nonce: TransferNonce::fresh().unwrap(),
-            directory: ExternalDirectoryId::fresh().unwrap(),
-            incarnation: ExternalDirectoryIncarnationId::fresh().unwrap(),
-            authority: ExecutionAuthority {
-                grant_id: ExecutionGrantId::fresh().unwrap(),
-                authorization_binding: AuthorizationBindingId::fresh().unwrap(),
-                authorization_version: 1,
+        metadata: ExecutionMetadata {
+            id: ExecutionId::fresh().unwrap(),
+            alias: ProcessAlias(ExecutionId::fresh().unwrap().as_str().into()),
+            owner: OperationRef("port-contract".into()),
+            track: TrackId("test-track".into()),
+            source: PrivateSource {
+                root,
+                cwd: WorkspaceCwd::root(),
+                registration: ObjectRegistrationId::fresh().unwrap(),
+                nonce: TransferNonce::fresh().unwrap(),
+                directory: ExternalDirectoryId::fresh().unwrap(),
+                incarnation: ExternalDirectoryIncarnationId::fresh().unwrap(),
+                authority: ExecutionAuthority {
+                    grant_id: ExecutionGrantId::fresh().unwrap(),
+                    authorization_binding: AuthorizationBindingId::fresh().unwrap(),
+                    authorization_version: 1,
+                },
             },
+            program: ExecutionSpecification {
+                program: "/bin/true".into(),
+                args: vec![],
+                environment: vec![],
+                io_mode: calm_session::control::IoMode::Pipe,
+                replay_bytes: 1024,
+            },
+            specification: SpecificationId::fresh().unwrap(),
+            ticket_id: LaunchTicketId::fresh().unwrap(),
         },
-        program: ExecutionSpecification {
-            program: "/bin/true".into(),
-            args: vec![],
-            environment: vec![],
-            io_mode: calm_session::control::IoMode::Pipe,
-            replay_bytes: 1024,
+        secrets: ExecutionSecrets {
+            ticket: CapabilityToken::fresh().unwrap(),
+            tokens: ExecutionControlTokens::fresh().unwrap(),
         },
-        specification: SpecificationId::fresh().unwrap(),
-        ticket: LaunchTicket {
-            id: LaunchTicketId::fresh().unwrap(),
-            secret: CapabilityToken::fresh().unwrap(),
-        },
-        tokens: ExecutionControlTokens::fresh().unwrap(),
     }
 }
 pub fn journal(state: ExecutionState, output: OutputEnd) -> Fact {
@@ -266,8 +292,8 @@ pub fn journal(state: ExecutionState, output: OutputEnd) -> Fact {
 }
 pub fn tombstone(intent: &ExecutionIntent) -> Fact {
     Fact::Retired(ExecutionTombstone {
-        execution_id: intent.id.clone(),
-        ticket_id: intent.ticket.id.clone(),
+        execution_id: intent.metadata.id.clone(),
+        ticket_id: intent.metadata.ticket_id.clone(),
         registration: None,
         directory: None,
         slot: None,
@@ -284,19 +310,25 @@ pub mod port_contract {
     ) {
         let generation = executor.generation().await.unwrap();
         assert!(executor.available());
-        assert_eq!(executor.inspect(&intent.id).await.unwrap(), Fact::Absent);
+        assert_eq!(
+            executor.inspect(&intent.metadata.id).await.unwrap(),
+            Fact::Absent
+        );
         let retired = executor.revoke(&intent.consume()).await.unwrap();
         let Fact::Retired(t) = &retired else {
             panic!("unknown revoke must tombstone")
         };
-        assert_eq!(t.execution_id, intent.id);
-        assert_eq!(t.ticket_id, intent.ticket.id);
+        assert_eq!(t.execution_id, intent.metadata.id);
+        assert_eq!(t.ticket_id, intent.metadata.ticket_id);
         assert_eq!(t.outcome, TombstoneOutcome::Revoked);
         tokio::time::timeout(std::time::Duration::from_secs(2), generation.changed())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(executor.inspect(&intent.id).await.unwrap(), retired);
+        assert_eq!(
+            executor.inspect(&intent.metadata.id).await.unwrap(),
+            retired
+        );
         assert_eq!(executor.revoke(&intent.consume()).await.unwrap(), retired);
         assert!(matches!(
             executor.prepare(intent).await,
@@ -304,13 +336,16 @@ pub mod port_contract {
         ));
         assert_eq!(
             executor
-                .retire(&intent.id, &intent.tokens.lifecycle)
+                .retire(&intent.metadata.id, &intent.secrets.tokens.lifecycle)
                 .await
                 .unwrap(),
             retired
         );
 
-        assert_eq!(executor.inspect(&launch.id).await.unwrap(), Fact::Absent);
+        assert_eq!(
+            executor.inspect(&launch.metadata.id).await.unwrap(),
+            Fact::Absent
+        );
         let prepared = executor.prepare(launch).await.unwrap();
         assert!(matches!(
             prepared,
@@ -321,7 +356,9 @@ pub mod port_contract {
         ));
         assert_eq!(executor.prepare(launch).await.unwrap(), prepared);
         assert_eq!(
-            executor.retire(&launch.id, &launch.tokens.lifecycle).await,
+            executor
+                .retire(&launch.metadata.id, &launch.secrets.tokens.lifecycle)
+                .await,
             Err(ExecError::Busy(BusyReason::OutputOpen))
         );
         let fact = executor.launch(&launch.consume()).await.unwrap();
@@ -332,12 +369,12 @@ pub mod port_contract {
         else {
             panic!("launch must preserve process receipt")
         };
-        assert_eq!(receipt.identity.execution_id, launch.id);
+        assert_eq!(receipt.identity.execution_id, launch.metadata.id);
         let control = ExecutionControl {
             capability: ExecutionCapability {
                 identity: receipt.identity.clone(),
                 slot_version: receipt.slot_version,
-                token: launch.tokens.lifecycle.clone(),
+                token: launch.secrets.tokens.lifecycle.clone(),
                 purpose: ExecutionControlPurpose::Lifecycle,
             },
             action: ProcessAction::Stop,
@@ -348,7 +385,7 @@ pub mod port_contract {
         ));
         loop {
             let generation = executor.generation().await.unwrap();
-            let fact = executor.inspect(&launch.id).await.unwrap();
+            let fact = executor.inspect(&launch.metadata.id).await.unwrap();
             if matches!(
                 fact,
                 Fact::Journal {
@@ -365,18 +402,21 @@ pub mod port_contract {
                 .unwrap();
         }
         let retired = executor
-            .retire(&launch.id, &launch.tokens.lifecycle)
+            .retire(&launch.metadata.id, &launch.secrets.tokens.lifecycle)
             .await
             .unwrap();
         let Fact::Retired(t) = &retired else {
             panic!("retire must tombstone")
         };
-        assert_eq!(t.execution_id, launch.id);
+        assert_eq!(t.execution_id, launch.metadata.id);
         assert_eq!(t.outcome, TombstoneOutcome::Retired);
-        assert_eq!(executor.inspect(&launch.id).await.unwrap(), retired);
+        assert_eq!(
+            executor.inspect(&launch.metadata.id).await.unwrap(),
+            retired
+        );
         assert_eq!(
             executor
-                .retire(&launch.id, &launch.tokens.lifecycle)
+                .retire(&launch.metadata.id, &launch.secrets.tokens.lifecycle)
                 .await
                 .unwrap(),
             retired

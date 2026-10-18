@@ -108,7 +108,7 @@ fn checked(reply: ExecutionReply) -> Result<ExecutionReply, ExecError> {
 impl Executor for SessionExecutor {
     async fn prepare(&self, intent: &ExecutionIntent) -> Result<Fact, ExecError> {
         let mut connection = self.connect().await?;
-        let source = &intent.source;
+        let source = &intent.metadata.source;
         let held = HeldSourceObjects::open(&source.root, false)
             .map_err(|e| ExecError::Refused(e.to_string()))?;
         // Device/inode are wire inputs from the held object's reported facts, never settlement.
@@ -140,9 +140,9 @@ impl Executor for SessionExecutor {
                 },
             })),
             identity: ExecutionIdentity {
-                execution_id: intent.id.clone(),
+                execution_id: intent.metadata.id.clone(),
                 executor_boot: boot,
-                ticket_id: intent.ticket.id.clone(),
+                ticket_id: intent.metadata.ticket_id.clone(),
                 source_registration: source.registration.clone(),
                 source_incarnation: incarnation,
                 authority: source.authority.clone(),
@@ -151,14 +151,14 @@ impl Executor for SessionExecutor {
                     registration_version: 1,
                     cwd: source.cwd.clone(),
                 },
-                operation_id: intent.owner.0.clone(),
-                specification_id: intent.specification.clone(),
-                process_alias: intent.alias.0.clone(),
+                operation_id: intent.metadata.owner.0.clone(),
+                specification_id: intent.metadata.specification.clone(),
+                process_alias: intent.metadata.alias.0.clone(),
             },
-            ticket: intent.ticket.secret.clone(),
-            control_tokens: intent.tokens.clone(),
+            ticket: intent.secrets.ticket.clone(),
+            control_tokens: intent.secrets.tokens.clone(),
             handoff: None,
-            specification: intent.program.clone(),
+            specification: intent.metadata.program.clone(),
         };
         checked(
             connection
@@ -166,7 +166,7 @@ impl Executor for SessionExecutor {
                 .await
                 .map_err(|error| self.transport(error))?,
         )?;
-        self.inspect(&intent.id).await
+        self.inspect(&intent.metadata.id).await
     }
     async fn launch(&self, consume: &ConsumeExecution) -> Result<Fact, ExecError> {
         self.effect(

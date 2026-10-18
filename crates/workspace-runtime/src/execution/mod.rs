@@ -23,11 +23,6 @@ pub struct TrackId(pub String);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessAlias(pub String);
 #[derive(Clone, Debug)]
-pub struct LaunchTicket {
-    pub id: LaunchTicketId,
-    pub secret: CapabilityToken,
-}
-#[derive(Clone, Debug)]
 pub struct PrivateSource {
     pub root: PathBuf,
     pub cwd: WorkspaceCwd,
@@ -38,7 +33,7 @@ pub struct PrivateSource {
     pub authority: ExecutionAuthority,
 }
 #[derive(Clone, Debug)]
-pub struct ExecutionIntent {
+pub struct ExecutionMetadata {
     pub id: ExecutionId,
     pub alias: ProcessAlias,
     pub owner: OperationRef,
@@ -46,15 +41,25 @@ pub struct ExecutionIntent {
     pub source: PrivateSource,
     pub program: ExecutionSpecification,
     pub specification: SpecificationId,
-    pub ticket: LaunchTicket,
+    pub ticket_id: LaunchTicketId,
+}
+/// Capabilities retained only while an execution is active.
+#[derive(Clone, Debug)]
+pub struct ExecutionSecrets {
+    pub ticket: CapabilityToken,
     pub tokens: ExecutionControlTokens,
+}
+#[derive(Clone, Debug)]
+pub struct ExecutionIntent {
+    pub metadata: ExecutionMetadata,
+    pub secrets: ExecutionSecrets,
 }
 impl ExecutionIntent {
     pub fn consume(&self) -> ConsumeExecution {
         ConsumeExecution {
-            execution_id: self.id.clone(),
-            ticket_id: self.ticket.id.clone(),
-            ticket: self.ticket.secret.clone(),
+            execution_id: self.metadata.id.clone(),
+            ticket_id: self.metadata.ticket_id.clone(),
+            ticket: self.secrets.ticket.clone(),
         }
     }
 }
@@ -111,11 +116,25 @@ pub fn next_step(desired: Desired, fact: &Fact) -> Step {
     }
 }
 #[derive(Clone, Debug)]
-pub struct Stored {
-    pub intent: ExecutionIntent,
-    pub desired: Desired,
-    pub settled: bool,
-    pub finished: bool,
+pub enum Stored {
+    Active {
+        intent: ExecutionMetadata,
+        secrets: ExecutionSecrets,
+        desired: Desired,
+        settlement: Option<Settlement>,
+    },
+    Finished {
+        intent: ExecutionMetadata,
+        settlement: Settlement,
+    },
+}
+impl Stored {
+    pub fn is_settled(&self) -> bool {
+        match self {
+            Self::Active { settlement, .. } => settlement.is_some(),
+            Self::Finished { .. } => true,
+        }
+    }
 }
 /// Secret-free settlement evidence, copied directly from Inspect.
 #[derive(Clone, Debug, PartialEq, Eq)]

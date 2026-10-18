@@ -46,7 +46,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         intent: ExecutionIntent,
     ) -> Result<PendingDriveTicket, StoreError> {
         self.0.store.insert(tx, &intent).await?;
-        Ok(PendingDriveTicket(intent.id))
+        Ok(PendingDriveTicket(intent.metadata.id))
     }
     pub async fn request(
         &self,
@@ -136,20 +136,31 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         Ok(true)
     }
     async fn cycle(&self, id: &ExecutionId, notify: &Notify) -> Result<bool, DriveError> {
-        // This snapshot must precede load, Inspect and every Busy-producing attempt.
-        let generation = self.0.executor.generation().await?;
-        let Some(row) = self.0.store.load(id).await? else {
-            return Ok(false);
-        };
-        if row.finished {
+        // Finished rows need no executor connection (including Watch).
+        if !matches!(self.0.store.load(id).await?, Some(Stored::Active { .. })) {
             return Ok(false);
         }
+        // Snapshot before reloading: a concurrent request must not lose its wake.
+        let generation = self.0.executor.generation().await?;
+        let Some(Stored::Active {
+            intent,
+            secrets,
+            desired,
+            settlement,
+        }) = self.0.store.load(id).await?
+        else {
+            return Ok(false);
+        };
+        let intent = ExecutionIntent {
+            metadata: intent,
+            secrets,
+        };
         let fact = match self.0.executor.inspect(id).await {
             Ok(fact) => fact,
             Err(ExecError::Transport(_)) => return self.wait(generation, notify).await,
             Err(error) => return Err(error.into()),
         };
-        let step = next_step(row.desired, &fact);
+        let step = next_step(desired, &fact);
         if matches!(
             fact,
             Fact::Journal {
@@ -160,9 +171,9 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
             self.0.store.spawned(id).await?;
         }
         let result = match step {
-            Step::Prepare => self.0.executor.prepare(&row.intent).await,
-            Step::Launch => self.0.executor.launch(&row.intent.consume()).await,
-            Step::Revoke => self.0.executor.revoke(&row.intent.consume()).await,
+            Step::Prepare => self.0.executor.prepare(&intent).await,
+            Step::Launch => self.0.executor.launch(&intent.consume()).await,
+            Step::Revoke => self.0.executor.revoke(&intent.consume()).await,
             Step::Stop => {
                 // Forking has no receipt yet. The executor's in-flight launch owns the
                 // next transition; wait for its receipt rather than invent a capability.
@@ -171,7 +182,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
                 }
                 let capability = capability(
                     &fact,
-                    &row.intent.tokens.lifecycle,
+                    &intent.secrets.tokens.lifecycle,
                     ExecutionControlPurpose::Lifecycle,
                 )?;
                 self.0
@@ -185,7 +196,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
             }
             Step::Wait => return self.wait(generation, notify).await,
             Step::Settle | Step::Finish => {
-                if !row.settled {
+                if settlement.is_none() {
                     self.0
                         .store
                         .settle(id, &Settlement::from_fact(&fact))
@@ -197,12 +208,12 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
                     self.changed();
                     return Ok(false);
                 }
-                if row.desired != Desired::Retire {
+                if desired != Desired::Retire {
                     return Ok(false);
                 }
                 self.0
                     .executor
-                    .retire(id, &row.intent.tokens.lifecycle)
+                    .retire(id, &intent.secrets.tokens.lifecycle)
                     .await
             }
         };
@@ -213,7 +224,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
                 self.wait(generation, notify).await
             }
             Err(ExecError::Refused(_)) if matches!(step, Step::Prepare | Step::Launch) => {
-                match self.0.executor.revoke(&row.intent.consume()).await {
+                match self.0.executor.revoke(&intent.consume()).await {
                     Ok(_) => Ok(true),
                     Err(ExecError::Transport(_) | ExecError::Busy(_)) => {
                         self.wait(generation, notify).await
@@ -229,7 +240,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         let wait = async {
             loop {
                 let row = self.0.store.load(id).await?.ok_or(DriveError::Missing)?;
-                if row.settled {
+                if row.is_settled() {
                     return Ok(());
                 }
                 if let Some(error) = self.error(id) {
@@ -270,18 +281,22 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         id: &ExecutionId,
         action: ProcessAction,
     ) -> Result<ExecutionReply, DriveError> {
-        let row = self.0.store.load(id).await?.ok_or(DriveError::Missing)?;
+        let Stored::Active { secrets, .. } =
+            self.0.store.load(id).await?.ok_or(DriveError::Missing)?
+        else {
+            return Err(ExecError::Refused("execution has no active capabilities".into()).into());
+        };
         let fact = self.0.executor.inspect(id).await?;
         let (token, purpose) = if matches!(action, ProcessAction::Observe { .. }) {
-            (&row.intent.tokens.observe, ExecutionControlPurpose::Observe)
+            (&secrets.tokens.observe, ExecutionControlPurpose::Observe)
         } else if matches!(action, ProcessAction::Signal(_)) {
             (
-                &row.intent.tokens.lifecycle,
+                &secrets.tokens.lifecycle,
                 ExecutionControlPurpose::Lifecycle,
             )
         } else {
             (
-                &row.intent.tokens.interactive,
+                &secrets.tokens.interactive,
                 ExecutionControlPurpose::Interactive,
             )
         };

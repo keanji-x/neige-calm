@@ -120,13 +120,17 @@ async fn absent_stop_unknown_revoke_finishes() {
     let (intent, store, executor, engine) = setup(Desired::Stop, vec![Ok(Fact::Absent)]);
     executor.push(Ok(tombstone(&intent)));
     executor.push(Ok(tombstone(&intent)));
-    engine.drive(DriveTicket::committed(intent.id.clone()));
-    idle(&engine, &intent.id).await;
-    assert!(store.load(&intent.id).await.unwrap().unwrap().finished);
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    idle(&engine, &intent.metadata.id).await;
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap().unwrap(),
+        Stored::Finished { .. }
+    ));
     assert_eq!(
         executor.log.calls(),
         [
-            "load", "inspect", "revoke", "load", "inspect", "settle", "finish", "load"
+            "load", "load", "inspect", "revoke", "load", "load", "inspect", "settle", "finish",
+            "load"
         ]
     );
 }
@@ -144,16 +148,26 @@ async fn drained_settles_before_retire() {
     );
     let pause = Arc::new(Pause::default());
     *executor.retire_pause.lock().unwrap() = Some(pause.clone());
-    engine.drive(DriveTicket::committed(intent.id.clone()));
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
     bounded(pause.entered.notified()).await;
-    assert!(store.load(&intent.id).await.unwrap().unwrap().settled);
+    assert!(
+        store
+            .load(&intent.metadata.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_settled()
+    );
     executor.push(Ok(drained()));
     executor.push(Ok(tombstone(&intent)));
     executor.push(Ok(tombstone(&intent)));
     executor.changed(); // transition while Busy is in flight must not be lost
     pause.resume.notify_one();
-    idle(&engine, &intent.id).await;
-    assert!(store.load(&intent.id).await.unwrap().unwrap().finished);
+    idle(&engine, &intent.metadata.id).await;
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap().unwrap(),
+        Stored::Finished { .. }
+    ));
     let calls = executor.log.calls();
     assert!(calls.iter().position(|c| c == "settle") < calls.iter().position(|c| c == "retire"));
     assert_eq!(calls.iter().filter(|c| *c == "settle").count(), 1);
@@ -176,12 +190,19 @@ async fn drained_between_inspect_and_wait_wakes() {
     );
     let pause = Arc::new(Pause::default());
     *executor.inspect_pause.lock().unwrap() = Some(pause.clone());
-    engine.drive(DriveTicket::committed(intent.id.clone()));
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
     bounded(pause.entered.notified()).await;
     executor.changed();
     pause.resume.notify_one();
-    idle(&engine, &intent.id).await;
-    assert!(store.load(&intent.id).await.unwrap().unwrap().settled);
+    idle(&engine, &intent.metadata.id).await;
+    assert!(
+        store
+            .load(&intent.metadata.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_settled()
+    );
     assert_eq!(
         executor
             .log
@@ -201,12 +222,15 @@ async fn request_after_park_decision_is_not_lost() {
     executor.push(Ok(tombstone(&intent)));
     let pause = Arc::new(Pause::default());
     *store.settle_pause.lock().unwrap() = Some(pause.clone());
-    engine.drive(DriveTicket::committed(intent.id.clone()));
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
     bounded(pause.entered.notified()).await;
-    request(&engine, &store, &intent.id, Desired::Retire).await;
+    request(&engine, &store, &intent.metadata.id, Desired::Retire).await;
     pause.resume.notify_one();
-    idle(&engine, &intent.id).await;
-    assert!(store.load(&intent.id).await.unwrap().unwrap().finished);
+    idle(&engine, &intent.metadata.id).await;
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap().unwrap(),
+        Stored::Finished { .. }
+    ));
     assert_eq!(
         executor
             .log
@@ -222,7 +246,7 @@ async fn retire_between_load_and_park_drives() {
     let (intent, store, executor, engine) = setup(Desired::Run, vec![Ok(drained()), Ok(drained())]);
     store
         .settle(
-            &intent.id,
+            &intent.metadata.id,
             &Settlement::Journal(ExecutionState::Drained { status: Some(0) }),
         )
         .await
@@ -231,12 +255,15 @@ async fn retire_between_load_and_park_drives() {
     executor.push(Ok(tombstone(&intent)));
     let pause = Arc::new(Pause::default());
     *store.load_pause.lock().unwrap() = Some(pause.clone());
-    engine.drive(DriveTicket::committed(intent.id.clone()));
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
     bounded(pause.entered.notified()).await;
-    request(&engine, &store, &intent.id, Desired::Retire).await;
+    request(&engine, &store, &intent.metadata.id, Desired::Retire).await;
     pause.resume.notify_one();
-    idle(&engine, &intent.id).await;
-    assert!(store.load(&intent.id).await.unwrap().unwrap().finished);
+    idle(&engine, &intent.metadata.id).await;
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap().unwrap(),
+        Stored::Finished { .. }
+    ));
     assert_eq!(
         executor
             .log
@@ -254,11 +281,11 @@ async fn recover_racing_drive_effect_once() {
     executor.push(Ok(tombstone(&intent)));
     let pause = Arc::new(Pause::default());
     *executor.inspect_pause.lock().unwrap() = Some(pause.clone());
-    engine.drive(DriveTicket::committed(intent.id.clone()));
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
     bounded(pause.entered.notified()).await;
     assert_eq!(engine.recover().await.scheduled, 1);
     pause.resume.notify_one();
-    idle(&engine, &intent.id).await;
+    idle(&engine, &intent.metadata.id).await;
     assert_eq!(
         executor
             .log
@@ -277,7 +304,10 @@ async fn recover_racing_drive_effect_once() {
             .count(),
         1
     );
-    assert!(store.load(&intent.id).await.unwrap().unwrap().finished);
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap().unwrap(),
+        Stored::Finished { .. }
+    ));
 }
 #[tokio::test]
 async fn admission_has_no_effect_before_commit_and_desired_never_decreases() {
@@ -285,23 +315,26 @@ async fn admission_has_no_effect_before_commit_and_desired_never_decreases() {
     let fresh = test_support::intent("/unused".into());
     let mut tx = MemoryTx::default();
     let ticket = engine.admit(&mut tx, fresh.clone()).await.unwrap();
-    assert!(store.load(&fresh.id).await.unwrap().is_none());
+    assert!(store.load(&fresh.metadata.id).await.unwrap().is_none());
     assert!(!executor.log.calls().contains(&"prepare".into()));
     drop(ticket); // a rollback discards the pending ticket
     let mut tx = MemoryTx::default();
     let _ = engine
-        .request(&mut tx, &intent.id, Desired::Retire)
+        .request(&mut tx, &intent.metadata.id, Desired::Retire)
         .await
         .unwrap();
     let _ = engine
-        .request(&mut tx, &intent.id, Desired::Run)
+        .request(&mut tx, &intent.metadata.id, Desired::Run)
         .await
         .unwrap();
     store.commit(tx);
-    assert_eq!(
-        store.load(&intent.id).await.unwrap().unwrap().desired,
-        Desired::Retire
-    );
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap().unwrap(),
+        Stored::Active {
+            desired: Desired::Retire,
+            ..
+        }
+    ));
 }
 mod port_contract {
     use super::*;
@@ -323,22 +356,22 @@ mod port_contract {
         let launch = test_support::intent("/unused".into());
         let receipt = ExecutionReceipt {
             identity: ExecutionIdentity {
-                execution_id: launch.id.clone(),
+                execution_id: launch.metadata.id.clone(),
                 executor_boot: ExecutorBootId::fresh().unwrap(),
-                ticket_id: launch.ticket.id.clone(),
-                source_registration: launch.source.registration.clone(),
+                ticket_id: launch.metadata.ticket_id.clone(),
+                source_registration: launch.metadata.source.registration.clone(),
                 source_incarnation: SourceObjectIncarnation::ExternalDir(
-                    launch.source.incarnation.clone(),
+                    launch.metadata.source.incarnation.clone(),
                 ),
-                authority: launch.source.authority.clone(),
+                authority: launch.metadata.source.authority.clone(),
                 scope: ExecutionScope::ExternalDir {
-                    directory_id: launch.source.directory.clone(),
+                    directory_id: launch.metadata.source.directory.clone(),
                     registration_version: 1,
-                    cwd: launch.source.cwd.clone(),
+                    cwd: launch.metadata.source.cwd.clone(),
                 },
-                operation_id: launch.owner.0.clone(),
-                specification_id: launch.specification.clone(),
-                process_alias: launch.alias.0.clone(),
+                operation_id: launch.metadata.owner.0.clone(),
+                specification_id: launch.metadata.specification.clone(),
+                process_alias: launch.metadata.alias.0.clone(),
             },
             slot_version: 1,
             process: NativeProcessIdentity {
@@ -389,3 +422,128 @@ mod port_contract {
 }
 #[cfg(feature = "session-executor")]
 mod watch_tests;
+
+#[tokio::test]
+async fn finished_record_has_no_secrets() {
+    let (intent, store, _, _) = setup(Desired::Retire, vec![]);
+    store
+        .settle(
+            &intent.metadata.id,
+            &Settlement::from_fact(&tombstone(&intent)),
+        )
+        .await
+        .unwrap();
+    store.finish(&intent.metadata.id).await.unwrap();
+    let row = store.load(&intent.metadata.id).await.unwrap().unwrap();
+    let Stored::Finished {
+        intent: metadata,
+        settlement,
+    } = row
+    else {
+        panic!("finish must discard the active record and its secrets");
+    };
+    assert_eq!(metadata.id, intent.metadata.id);
+    assert_eq!(metadata.ticket_id, intent.metadata.ticket_id);
+    assert_eq!(settlement, Settlement::from_fact(&tombstone(&intent)));
+    assert!(store.pending().await.unwrap().is_empty());
+    store.finish(&intent.metadata.id).await.unwrap(); // idempotent
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap(),
+        Some(Stored::Finished { .. })
+    ));
+}
+
+#[tokio::test]
+async fn drive_after_finish_is_noop() {
+    let (intent, store, executor, engine) = setup(Desired::Retire, vec![]);
+    store
+        .settle(
+            &intent.metadata.id,
+            &Settlement::from_fact(&tombstone(&intent)),
+        )
+        .await
+        .unwrap();
+    store.finish(&intent.metadata.id).await.unwrap();
+    let pause = Arc::new(Pause::default());
+    *executor.generation_pause.lock().unwrap() = Some(pause);
+    for _ in 0..2 {
+        engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+        idle(&engine, &intent.metadata.id).await;
+    }
+    assert_eq!(executor.log.calls(), ["settle", "finish", "load", "load"]);
+}
+
+#[tokio::test]
+async fn wait_settled_after_finish_returns_settled() {
+    let (intent, store, _, engine) = setup(Desired::Retire, vec![]);
+    store
+        .settle(
+            &intent.metadata.id,
+            &Settlement::from_fact(&tombstone(&intent)),
+        )
+        .await
+        .unwrap();
+    store.finish(&intent.metadata.id).await.unwrap();
+    assert_eq!(engine.wait_settled(&intent.metadata.id).await, Ok(()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_settled_times_out_unsettled() {
+    let (intent, store, executor, engine) = setup(Desired::Run, vec![]);
+    let start = tokio::time::Instant::now();
+    assert_eq!(
+        engine.wait_settled(&intent.metadata.id).await,
+        Err(DriveError::Timeout)
+    );
+    assert_eq!(start.elapsed(), QUIESCE_DEADLINE);
+    assert!(matches!(
+        store.load(&intent.metadata.id).await.unwrap(),
+        Some(Stored::Active {
+            settlement: None,
+            ..
+        })
+    ));
+    assert_eq!(executor.log.calls(), ["load", "load"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_settled_cancel_keeps_driver() {
+    let (intent, store, executor, engine) = setup(
+        Desired::Run,
+        vec![Ok(journal(
+            ExecutionState::Unknown {
+                reason: "waiting".into(),
+            },
+            OutputEnd::Open,
+        ))],
+    );
+    let inspect = Arc::new(Pause::default());
+    *executor.inspect_pause.lock().unwrap() = Some(inspect.clone());
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    inspect.entered.notified().await;
+    let load = Arc::new(Pause::default());
+    *store.load_pause.lock().unwrap() = Some(load.clone());
+    let waiter = {
+        let engine = engine.clone();
+        let id = intent.metadata.id.clone();
+        tokio::spawn(async move { engine.wait_settled(&id).await })
+    };
+    load.entered.notified().await;
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    assert!(engine.driving(&intent.metadata.id));
+    executor.push(Ok(drained()));
+    executor.changed();
+    inspect.resume.notify_one();
+    idle(&engine, &intent.metadata.id).await;
+    assert_eq!(engine.wait_settled(&intent.metadata.id).await, Ok(()));
+    assert_eq!(
+        executor
+            .log
+            .calls()
+            .iter()
+            .filter(|c| *c == "settle")
+            .count(),
+        1
+    );
+}

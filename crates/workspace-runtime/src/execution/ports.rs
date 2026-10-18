@@ -71,9 +71,11 @@ pub trait Store: Send + Sync {
         id: &ExecutionId,
         desired: Desired,
     ) -> Result<(), StoreError>;
+    /// Finished rows retain metadata and settlement, but cannot carry capabilities.
     async fn load(&self, id: &ExecutionId) -> Result<Option<Stored>, StoreError>;
     async fn spawned(&self, id: &ExecutionId) -> Result<(), StoreError>;
     async fn settle(&self, id: &ExecutionId, settlement: &Settlement) -> Result<(), StoreError>;
+    /// After settlement and an observed tombstone, drop secrets and retain Finished.
     async fn finish(&self, id: &ExecutionId) -> Result<(), StoreError>;
     async fn pending(&self) -> Result<Vec<ExecutionId>, StoreError>;
 }

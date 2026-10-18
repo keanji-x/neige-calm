@@ -56,13 +56,21 @@ executor 也不能链接 kernel 政策，故不合成一个 crate。
 量直接复用 calm-session `control/execution.rs`。
 
 ```rust
-pub struct ExecutionIntent {             // 不可变
+pub struct ExecutionIntent {             // admission/prepare 的完整输入
+    pub metadata: ExecutionMetadata,
+    pub secrets: ExecutionSecrets,
+}
+pub struct ExecutionSecrets {
+    pub ticket: CapabilityToken,
+    pub tokens: ExecutionControlTokens,  // observe/interactive/lifecycle
+}
+pub struct ExecutionMetadata {           // 不可变；不含 ticket secret 或 control tokens
     pub id: ExecutionId, pub alias: ProcessAlias, // alias 如 "term:<id>"
     pub owner: OperationRef, pub track: TrackId,  // track 是占用谓词的键（§7.2）
     pub source: PrivateSource,
     pub program: ExecutionSpecification, // main 类型：argv/显式 env/io_mode/replay_bytes
-    pub ticket: LaunchTicket,            // { id: LaunchTicketId, secret: CapabilityToken }
-    pub tokens: ExecutionControlTokens,  // main 类型：observe/interactive/lifecycle
+    pub specification: SpecificationId,
+    pub ticket_id: LaunchTicketId,
 }
 pub struct PrivateSource {               // 执行私有 registration 的冻结输入（§7.1）
     pub root: PathBuf, pub cwd: WorkspaceCwd,     // 消费者给出，与 Legacy 同一选择；cwd 相对 root
@@ -77,15 +85,23 @@ pub const QUIESCE_DEADLINE: Duration = STOP_GRACE + DRAIN_BUDGET; // 每个结�
 #[must_use] pub struct DriveTicket(ExecutionId);
 impl DriveTicket { pub fn committed(id: ExecutionId) -> Self; } // tx-only 提交结果的接缝
 
+pub enum Stored {
+    Active {
+        intent: ExecutionMetadata, secrets: ExecutionSecrets,
+        desired: Desired, settlement: Option<Settlement>,
+    },
+    Finished { intent: ExecutionMetadata, settlement: Settlement },
+}
+// Settlement 是直接来自 Inspect 的无 secret 证据；Finished 必须已结算且无能力字段。
 #[async_trait]
-pub trait ExecutionStore: Send + Sync {  // insert/request 借用调用者事务
+pub trait Store: Send + Sync {  // insert/request 借用调用者事务
     type Tx<'t>: Send;                   // server：sqlx::Transaction<'t, Sqlite>
     async fn insert(&self, tx: &mut Self::Tx<'_>, intent: &ExecutionIntent) -> Result<(), StoreError>;
     async fn request(&self, tx: &mut Self::Tx<'_>, id: &ExecutionId, d: Desired) -> Result<(), StoreError>;
-    async fn load(&self, id: &ExecutionId) -> Result<Option<Stored>, StoreError>; // intent+desired+settled+finished
+    async fn load(&self, id: &ExecutionId) -> Result<Option<Stored>, StoreError>; // Active 或 Finished；None 只表示无此行
     async fn spawned(&self, id: &ExecutionId) -> Result<(), StoreError>; // 幂等；只驱动消费者投影
     async fn settle(&self, id: &ExecutionId, s: &Settlement) -> Result<(), StoreError>; // 写一次 + 投影
-    async fn finish(&self, id: &ExecutionId) -> Result<(), StoreError>; // 观察到 tombstone：清除 secret
+    async fn finish(&self, id: &ExecutionId) -> Result<(), StoreError>; // 观察到 tombstone：清除 secrets，保留 Finished
     async fn pending(&self) -> Result<Vec<ExecutionId>, StoreError>;
 }
 #[async_trait]
@@ -107,7 +123,7 @@ pub enum Fact {                          // main 的 ExecutionState 原样投影
 pub enum OutputEnd { Open, Complete { final_cursor: u64 }, Incomplete(IncompleteReason) }
 pub enum ExecError { Busy(BusyReason), Refused(String), Transport(TransportLost) }
 pub enum BusyReason { OutputOpen }
-impl<S: ExecutionStore, X: Executor> Engine<S, X> {
+impl<S: Store, X: Executor> Engine<S, X> {
     pub async fn admit(&self, tx: &mut S::Tx<'_>, intent: ExecutionIntent) -> Result<DriveTicket, AdmitError>;
     pub async fn request(&self, tx: &mut S::Tx<'_>, id: &ExecutionId, d: Desired) -> Result<DriveTicket, StoreError>;
     pub fn drive(&self, ticket: DriveTicket);           // 调用者提交后调用
@@ -197,7 +213,8 @@ registration 的资源键是本执行独有的 `ExternalDirectoryId`，因此这
 每个 ExecutionId 至多一个驱动任务（任务表 `Mutex<HashMap<id, Slot{dirty, notify}>>`）：`drive` 在锁内对已有任务置
 `dirty` 并 `notify_one`（Notify 保存许可），否则插入并 spawn。适配器维护**一个 executor 级变更代次**
 `tokio::sync::watch<u64>`：每收到一个 `Changed`（任何执行、tombstone 或 OutputEnd）、每次重连后的 `Watching`、每次 boot
-改变或断流，都加一；`generation()` 只在流已回 `Watching` 后返回当前值。任务每轮：锁内清 `dirty` → 取代次快照 `g` →
+改变或断流，都加一；`generation()` 只在流已回 `Watching` 后返回当前值。任务每轮先锁内清 `dirty`，并预读 `load`：
+不存在或 `Finished` 立即退出，不接触 executor；`Active` 则取代次快照 `g` →
 `load` → `inspect` → `next_step` → 执行一步（Busy 的重试也在快照之后发出）；`Wait` 时 `select`“代次 > g” 与 `notify`；
 退出前在同一把锁内复查 `dirty`，已置则继续，否则移除自身。
 
@@ -374,6 +391,8 @@ CREATE TABLE workspace_executions (
     secrets_json  TEXT CHECK (secrets_json IS NULL OR json_valid(secrets_json)), -- ticket secret 与 tokens
     desired       TEXT NOT NULL CHECK (desired IN ('run', 'stop', 'retire')),
     settled_at_ms INTEGER,
+    settlement_json TEXT CHECK (settlement_json IS NULL OR json_valid(settlement_json)), -- Settlement 原样持久化
+    CHECK ((settled_at_ms IS NULL) = (settlement_json IS NULL)),
     CHECK (secrets_json IS NOT NULL OR settled_at_ms IS NOT NULL)
 );
 CREATE UNIQUE INDEX workspace_executions_current_alias
@@ -381,12 +400,15 @@ CREATE UNIQUE INDEX workspace_executions_current_alias
 CREATE INDEX workspace_executions_unsettled
     ON workspace_executions(track_id) WHERE settled_at_ms IS NULL;
 -- 触发器：execution_id/track_id/alias/intent_json 不可改；desired 只能不降（允许同值重写与
--- run→retire）；settled_at_ms 写一次；secrets_json 只置空一次。
+-- run→retire）；settled_at_ms/settlement_json 同事务写一次；secrets_json 只置空一次。
 ```
 
 `pending()` 是 `settled_at_ms IS NULL OR (desired = 'retire' AND secrets_json IS NOT NULL)`：未结算的行，与已结算但仍待
 retire 的行；已结算、未要求 Retire 的 Run/Stop 行 Park，保留 secret 与当前 alias，直到删除写 Retire。结算与
-`desired` 无关（§6.1）。secret 只经 store port 读取，tombstone 后清除，不进入
+`desired` 无关（§6.1）。`load` 在 `secrets_json IS NOT NULL` 时返回 `Stored::Active`（结算前
+`settlement: None`，结算后 `Some`）；清空后返回 `Stored::Finished`，保留 metadata 与必需的 Settlement，
+不补造 ticket 或 tokens。`wait_settled` 对 Finished 立即返回成功，重复 `drive` 无 executor 调用。
+secret 只经 store port 读取，tombstone 后清除，不进入
 事件、调试产物或 API。SQL 位于 calm-truth `db/sqlite/workspace_execution.rs`，calm-server 的 `SqliteExecutionStore` 包装
 它，`terminal_delete_tx` 与占用谓词复用同一模块；同一模块提供唯一的 Terminal alias helper（Rust 函数与 SQL 片段
 `'term:' || terminals.id`），供 Terminal 消费者、Card/Terminal scope 映射与 boot reconcile 查询共用。
