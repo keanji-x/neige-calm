@@ -892,6 +892,28 @@ impl PlannerHarness {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Fixture projection through the same owner-bound admission as reconciliation.
+    #[cfg(feature = "fixtures")]
+    pub async fn turn_start_for_test(
+        &self,
+        request: provider::control::TurnRequest,
+        claim: &[QueueEntry],
+    ) -> std::result::Result<String, TurnStartFailure> {
+        let _issuance = self.inner.issuance.lock().await;
+        assert_eq!(request.edit, provider::control::TurnEdit::NoEdit);
+        IssueTurnHandle::from_reconciliation(&self.inner)
+            .await
+            .issue(
+                request.input.items,
+                &request.selection,
+                request.permission,
+                &request.input.correlation.0,
+                claim,
+                None,
+            )
+            .await
+    }
+
     /// Fixtures only: the Claude session behind this harness, for its interleaving hooks.
     #[cfg(feature = "fixtures")]
     pub fn claude_session_for_test(

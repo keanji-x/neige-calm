@@ -13,7 +13,7 @@ pub(in crate::harness) struct IssueTurnHandle<'a> {
 }
 
 struct TurnInvocation<'a> {
-    claim: crate::acp_planner::FrozenClaim,
+    claim: &'a [QueueEntry],
     rewind: Option<&'a mut BackendRewind>,
 }
 
@@ -83,7 +83,7 @@ impl<'a> IssueTurnHandle<'a> {
     pub(in crate::harness) async fn turn_start(
         self,
         request: TurnRequest,
-        claim: crate::acp_planner::FrozenClaim,
+        claim: &[QueueEntry],
         rewind: Option<&mut BackendRewind>,
     ) -> std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
         if let Some(reader) = self.owner.backend.issuance_hold() {
@@ -94,15 +94,8 @@ impl<'a> IssueTurnHandle<'a> {
         }
         let thread_id = self.thread().map_err(TurnStartFailure::Transient)?;
         let invocation = TurnInvocation { claim, rewind };
-        let TurnRequest {
-            input,
-            selection,
-            permission,
-            edit,
-        } = request;
-        let InputRequest { items, correlation } = input;
         // The host's stored marker and the request are one invocation, never independent authority.
-        if edit
+        if request.edit
             != invocation
                 .rewind
                 .as_deref()
@@ -116,17 +109,17 @@ impl<'a> IssueTurnHandle<'a> {
                     return Err(mismatched_rewind());
                 }
                 session
-                    .turn_start_control(
-                        thread_id,
-                        items,
-                        &selection,
-                        permission,
-                        &correlation.0,
-                        &invocation.claim,
-                    )
+                    .start_turn(thread_id, request, invocation.claim)
                     .await
             }
             Arm::Codex(daemon, approvals) => {
+                let TurnRequest {
+                    input,
+                    selection,
+                    permission,
+                    edit,
+                } = request;
+                let InputRequest { items, correlation } = input;
                 if let Some(rewind) = invocation.rewind {
                     match (&mut rewind.0, edit) {
                         (RewindArm::Codex { reverted: true, .. }, TurnEdit::NoEdit) => {}
@@ -162,6 +155,13 @@ impl<'a> IssueTurnHandle<'a> {
                 )
             }
             Arm::Claude(session) => {
+                let TurnRequest {
+                    input,
+                    selection,
+                    permission,
+                    edit,
+                } = request;
+                let InputRequest { items, correlation } = input;
                 if matches!(
                     invocation.rewind.as_deref().map(|rewind| &rewind.0),
                     Some(RewindArm::Codex { .. })
@@ -348,7 +348,7 @@ impl IssueTurnHandle<'_> {
                     permission,
                     edit,
                 },
-                crate::acp_planner::FrozenClaim(crate::harness::submission_claims::freeze(claim)),
+                claim,
                 pending_rewind,
             )
             .await,

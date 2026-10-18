@@ -15,6 +15,7 @@ use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
 use calm_types::runtime::AgentProvider;
 use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSessionId};
+use provider::InputItem;
 use provider::acp::{
     Incoming,
     approvals::Approvals,
@@ -22,7 +23,6 @@ use provider::acp::{
     translate::{TurnContext, TurnTranslator},
 };
 use provider::events::{PlannerEvent, PlannerEventKind};
-use provider::{InputItem, TurnModelSelection};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -104,57 +104,33 @@ impl AcpPlannerSession {
             .filter(|active| active.thread == thread)
             .map(|active| active.turn.clone())
     }
-    /// Fixture-facing legacy projection; managed issuance consumes typed control results.
-    #[cfg(feature = "fixtures")]
-    pub async fn turn_start(
+    pub(crate) async fn start_turn(
         &self,
         thread: &str,
-        items: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        permission: PlannerPermissionMode,
-        client: &str,
+        request: provider::control::TurnRequest,
         claim: &[crate::harness::QueueEntry],
-    ) -> std::result::Result<String, TurnStartFailure> {
-        crate::harness::backend::ordinary_start_result(
-            self.turn_start_control(
-                thread,
-                items,
-                selection,
-                permission,
-                client,
-                &super::FrozenClaim(crate::harness::submission_claims::freeze(claim)),
-            )
-            .await,
-        )
-    }
-
-    pub(crate) async fn turn_start_control(
-        &self,
-        thread: &str,
-        items: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        permission: PlannerPermissionMode,
-        client: &str,
-        claim: &super::FrozenClaim,
     ) -> std::result::Result<
         provider::control::TurnStartOutcome<CalmError, crate::harness::backend::StartDiagnostic>,
         TurnStartFailure,
     > {
-        start::start_result(
-            self.issue(thread, items, selection, permission, client, claim)
-                .await,
-        )
+        // Freeze before waiting on the ACP issue lock, as on the original managed path.
+        let claim = crate::harness::submission_claims::freeze(claim);
+        start::start_result(self.issue(thread, request, claim).await)
     }
 
     async fn issue(
         &self,
         thread: &str,
-        items: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        permission: PlannerPermissionMode,
-        client: &str,
-        claim: &super::FrozenClaim,
+        request: provider::control::TurnRequest,
+        claim: Value,
     ) -> std::result::Result<String, StartFailure> {
+        let provider::control::TurnRequest {
+            input: provider::control::InputRequest { items, correlation },
+            selection,
+            permission,
+            edit: _, // The owner-bound managed entry already checked the stored rewind.
+        } = request;
+        let client = &correlation.0;
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
@@ -205,7 +181,7 @@ impl AcpPlannerSession {
                 serde_json::from_str(&receipt.input_json).map_err(CalmError::from)?;
             if receipt.thread_id != thread
                 || row.agent_session_id.as_deref() != Some(&receipt.native_session_id)
-                || issued.get("queue") != Some(&claim.0)
+                || issued.get("queue") != Some(&claim)
             {
                 return Err(refused("ACP receipt ownership or original input changed"));
             }
@@ -394,7 +370,7 @@ impl AcpPlannerSession {
                 thread_id: thread.into(),
                 native_session_id: native.clone(),
                 input_json: serde_json::to_string(
-                    &json!({"input":input,"prompt":blocks,"queue":claim.0}),
+                    &json!({"input":input,"prompt":blocks,"queue":claim}),
                 )
                 .map_err(CalmError::from)?,
                 state: crate::db::sqlite::AcpSubmissionState::Sending,
@@ -806,30 +782,4 @@ fn cancel_outcome(
 }
 
 #[cfg(test)]
-mod control_tests {
-    use super::*;
-    use provider::control::{InterruptOutcome, SubmissionEvidence};
-
-    #[test]
-    fn m1_mapping_acp_interrupt_reports_watch_delivery_not_native_ack() {
-        for receiver_alive in [false, true] {
-            let (tx, rx) = tokio::sync::watch::channel(false);
-            let mut receiver = Some(rx);
-            if !receiver_alive {
-                receiver.take();
-            }
-            match cancel_outcome(tx.send(true)) {
-                InterruptOutcome::LocalSignalDelivered => assert!(receiver_alive),
-                InterruptOutcome::Unconfirmed { error, evidence } => {
-                    assert!(!receiver_alive);
-                    assert!(error.0);
-                    assert_eq!(evidence, SubmissionEvidence::NotWritten);
-                }
-                other => panic!("wrong mapping: {other:?}"),
-            }
-            if let Some(rx) = receiver {
-                assert!(*rx.borrow());
-            }
-        }
-    }
-}
+mod control_tests;

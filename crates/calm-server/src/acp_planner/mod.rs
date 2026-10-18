@@ -10,5 +10,3 @@ mod start;
 #[cfg(feature = "fixtures")]
 pub mod test_seams;
 pub mod wiring;
-
-pub use start::FrozenClaim;

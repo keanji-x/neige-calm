@@ -46,6 +46,23 @@ impl From<StartFailure> for CalmError {
     }
 }
 
+/// Preserve the existing durable ACP receipt codec independently of native prompt encoding.
+pub(super) fn receipt_input(items: &[provider::InputItem]) -> serde_json::Value {
+    serde_json::Value::Array(
+        items
+            .iter()
+            .map(|item| match item {
+                provider::InputItem::Text { text } => {
+                    serde_json::json!({"type":"text","text":text})
+                }
+                provider::InputItem::LocalImage { path } => {
+                    serde_json::json!({"type":"localImage","path":path})
+                }
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,25 +140,4 @@ mod tests {
             }
         }
     }
-}
-
-/// Exact queue proof frozen by the harness; ACP stores and compares it without host queue types.
-#[derive(Debug)]
-pub struct FrozenClaim(pub serde_json::Value);
-
-/// Preserve the existing durable ACP receipt codec independently of native prompt encoding.
-pub(super) fn receipt_input(items: &[provider::InputItem]) -> serde_json::Value {
-    serde_json::Value::Array(
-        items
-            .iter()
-            .map(|item| match item {
-                provider::InputItem::Text { text } => {
-                    serde_json::json!({"type":"text","text":text})
-                }
-                provider::InputItem::LocalImage { path } => {
-                    serde_json::json!({"type":"localImage","path":path})
-                }
-            })
-            .collect(),
-    )
 }

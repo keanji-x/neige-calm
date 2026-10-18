@@ -55,11 +55,7 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
         }
         let result = IssueTurnHandle::from_reconciliation(&f.harness.inner)
             .await
-            .turn_start(
-                request(rewind.as_ref()),
-                crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                rewind.as_mut(),
-            )
+            .turn_start(request(rewind.as_ref()), &[], rewind.as_mut())
             .await;
         match (case, &result) {
             (
@@ -148,11 +144,7 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
             ordinary_start_result(
                 IssueTurnHandle::from_reconciliation(&f.harness.inner)
                     .await
-                    .turn_start(
-                        request(Some(&restored)),
-                        crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                        Some(&mut restored),
-                    )
+                    .turn_start(request(Some(&restored)), &[], Some(&mut restored))
                     .await,
             )
             .unwrap();
@@ -222,11 +214,7 @@ async fn m1_mapping_start_post_ack_fence_preserves_interrupt_error_precedence() 
         f.daemon.fail_turn_interrupt_for_test(interrupt_fails);
         let start = IssueTurnHandle::from_reconciliation(&f.harness.inner)
             .await
-            .turn_start(
-                request(None),
-                crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                None,
-            );
+            .turn_start(request(None), &[], None);
         let (result, ()) = tokio::join!(start, async {
             entered.notified().await;
             f.daemon
@@ -320,11 +308,7 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
             let mut rewind = json.map(|json| serde_json::from_str::<BackendRewind>(json).unwrap());
             let result = IssueTurnHandle::from_reconciliation(&f.harness.inner)
                 .await
-                .turn_start(
-                    request(rewind.as_ref()),
-                    crate::acp_planner::FrozenClaim(serde_json::json!([])),
-                    rewind.as_mut(),
-                )
+                .turn_start(request(rewind.as_ref()), &[], rewind.as_mut())
                 .await;
             match (json, &provider, result) {
                 (

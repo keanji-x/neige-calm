@@ -28,6 +28,11 @@ fn harness_turn_start_is_gated() {
             .contains("thread_id")
     );
     assert_eq!(
+        managed.matches(".start_turn(").count(),
+        turn_start_fn.matches(".start_turn(").count(),
+        "ACP starts stay inside the private owner-bound start"
+    );
+    assert_eq!(
         managed.matches(".turn_start_control(").count(),
         turn_start_fn.matches(".turn_start_control(").count(),
         "native sends stay inside the private owner-bound start"
@@ -55,7 +60,9 @@ fn harness_turn_start_is_gated() {
             continue;
         }
         assert!(
-            !src.contains(".turn_start(") && !src.contains(".turn_start_control("),
+            !src.contains(".turn_start(")
+                && !src.contains(".turn_start_control(")
+                && !src.contains(".start_turn("),
             "unexpected turn_start callsite in {rel}"
         );
     }

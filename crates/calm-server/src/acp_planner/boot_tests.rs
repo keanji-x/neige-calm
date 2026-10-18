@@ -436,28 +436,64 @@ async fn acp_boot_turn_refuses_before_spawn_and_revokes_minted_token() {
     let state = AppState::boot(&cfg).await.unwrap();
     let repo = Arc::new(SqlxRepo::open(&cfg.db_url).await.unwrap());
     let row = owner(&repo, &root, AgentProvider::OpenCode).await;
-    let session = super::session::AcpPlannerSession::open(super::session::SessionParams {
-        host: host(&state),
-        provider: AgentProvider::OpenCode,
-        repo: repo.clone(),
-        seals: state.shared_codex_appserver.thread_seals().clone(),
-        worker_session_id: row.worker.clone(),
-        card_id: row.card.clone(),
-        track_id: row.track.clone(),
-        cwd: root.clone(),
-        instructions: "Fixture".into(),
-    });
-    let (held, _messages) = crate::harness::held_requests::channel();
-    session.mark_installed(held);
-    let result = session
-        .turn_start(
-            &row.thread,
-            vec![provider::InputItem::Text {
-                text: "test".into(),
-            }],
-            &provider::TurnModelSelection::default(),
-            crate::planner_permission_mode::PlannerPermissionMode::Never,
-            &new_id(),
+    use axum::extract::FromRef;
+    let routes = crate::state::RouteState::from_ref(&state);
+    let wiring = crate::harness::wiring::PlannerWiring {
+        claude: routes.claude_planner,
+        acp: routes.acp_planner,
+        plugin: state.plugin.clone(),
+    };
+    let backend = crate::harness::backend::factory::PlannerFactory::new(
+        Arc::downgrade(&state.shared_codex_appserver),
+        &wiring.claude,
+        &wiring.acp,
+    )
+    .open(
+        state.shared_codex_appserver.thread_seals().clone(),
+        &wiring,
+        repo.clone(),
+        crate::harness::wiring::PlannerRow {
+            binding: crate::harness::profile::PlannerBinding {
+                profile: crate::harness::profile::HarnessProfile::Planner,
+                provider: AgentProvider::OpenCode,
+            },
+            worker_session_id: &row.worker,
+            card_id: &row.card,
+            track_id: &row.track,
+            prior_total_tokens: 0,
+        },
+    )
+    .await
+    .unwrap();
+    let (harness, _ingress) = crate::harness::PlannerHarness::run_unstarted_for_test(
+        crate::harness::PlannerHarnessParams {
+            worker_session_id: row.worker.clone(),
+            card_id: row.card.clone().into(),
+            track_id: row.track.clone().into(),
+            thread_id: Some(row.thread.clone()),
+            repo: repo.clone(),
+            events: state.events.clone(),
+            card_role_cache: state.card_role_cache.clone(),
+            track_area_cache: state.track_area_cache.clone(),
+            backend,
+            live_replies: state.harness.live_replies().clone(),
+            config: crate::harness::HarnessConfig::default(),
+            snapshot: crate::harness::HarnessSnapshot::initial(0, vec![]),
+        },
+        8,
+    );
+    harness.mark_installed();
+    let result = harness
+        .turn_start_for_test(
+            provider::control::TurnRequest {
+                input: provider::control::InputRequest {
+                    items: vec![provider::InputItem::text("test")],
+                    correlation: provider::control::CorrelationKey(new_id()),
+                },
+                selection: provider::TurnModelSelection::inherit(),
+                permission: crate::planner_permission_mode::PlannerPermissionMode::Never,
+                edit: provider::control::TurnEdit::NoEdit,
+            },
             &[],
         )
         .await;

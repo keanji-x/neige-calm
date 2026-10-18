@@ -11,6 +11,8 @@ mod acp_planner_cli;
 mod acp_planner_lifecycle;
 #[path = "cases/acp_planner_prompt_error.rs"]
 mod acp_planner_prompt_error;
+#[path = "cases/acp_planner_start.rs"]
+mod acp_planner_start;
 #[path = "cases/acp_planner_transcript.rs"]
 mod acp_planner_transcript;
 #[path = "cases/acp_settlement.rs"]

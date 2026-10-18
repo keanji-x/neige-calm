@@ -150,6 +150,12 @@ for line in sys.stdin:
         current = 'native_' + uuid.uuid4().hex
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
         check_mcp(params['mcpServers'])
+        if (root / 'scenario').read_text().strip() == 'closed-input':
+            # Keep stdout/process alive but remove every reader before setup completes.
+            os.close(0)
+            result(request, {'sessionId': current, **config()})
+            while True:
+                time.sleep(0.01)
         result(request, {'sessionId': current, **config()})
     elif method == 'session/close':
         assert params['sessionId'] == current
