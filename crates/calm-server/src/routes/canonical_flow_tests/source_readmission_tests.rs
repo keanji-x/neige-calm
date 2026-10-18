@@ -130,7 +130,9 @@ async fn original_claim_readmission(cold: bool) {
         .execute(fixture.repo.pool())
         .await
         .unwrap();
-    eprintln!("stage: original immutable key replayed; release marker fault and await original native turn");
+    eprintln!(
+        "stage: original immutable key replayed; release marker fault and await original native turn"
+    );
     // Bound the outer observation before request()'s own five-second timeout,
     // so the missing effect still goes through the explicit fixture cleanup.
     let resumed = tokio::time::timeout(Duration::from_secs(4), async {
