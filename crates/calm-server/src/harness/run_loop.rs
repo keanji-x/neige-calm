@@ -597,7 +597,7 @@ impl PlannerHarness {
     pub async fn run(params: PlannerHarnessParams) -> Result<Self> {
         let loaded = match &params.snapshot.kind {
             RuntimeSnapshotKind::Historical(snapshot) => {
-                LoadedRuntimeSnapshot::Historical(snapshot.clone())
+                LoadedRuntimeSnapshot::Historical((**snapshot).clone())
             }
             RuntimeSnapshotKind::Canonical => {
                 LoadedRuntimeSnapshot::Canonical(canonical::load_current(&params).await?)
@@ -647,7 +647,7 @@ impl PlannerHarness {
         let RuntimeSnapshotKind::Historical(snapshot) = &params.snapshot.kind else {
             panic!("the unstarted historical fixture cannot stand in for a canonical runtime");
         };
-        let loaded = LoadedRuntimeSnapshot::Historical(snapshot.clone());
+        let loaded = LoadedRuntimeSnapshot::Historical((**snapshot).clone());
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
         // No run loop on this path to flush the drop announcements early; the `persist_snapshot_inner`
@@ -1420,7 +1420,7 @@ fn inner_from_params(
         }
         LoadedRuntimeSnapshot::Canonical(frame) => (
             frame.snapshot.header.clone(),
-            RuntimeInputs::Canonical(canonical::CanonicalInputs::new(frame)),
+            RuntimeInputs::Canonical(Box::new(canonical::CanonicalInputs::new(frame))),
             Vec::new(),
             DebounceState::default(),
             VecDeque::new(),
@@ -1489,7 +1489,7 @@ fn inner_from_params(
             },
         )),
         pending_rewind: Mutex::new(header.pending_rewind.map(BackendRewind::from_persisted)),
-        last_turn_base: Mutex::new(header.last_turn_base.map(Into::into)),
+        last_turn_base: Mutex::new(header.last_turn_base),
         rewound_turns: Mutex::new(HashSet::new()),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),

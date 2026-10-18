@@ -399,7 +399,7 @@ pub(in crate::harness::run_loop) async fn warn(
             || Box::pin(admission.admit()) as futures_util::future::BoxFuture<'_, Result<()>>;
         let work = admission.inner.backend.send_budget_notice(
             &notice,
-            BudgetControlScope::Canonical(admission.target.clone()),
+            BudgetControlScope::Canonical(Box::new(admission.target.clone())),
             &admit,
         );
         if !matches!(tokio::time::timeout(Duration::from_secs(2), work).await, Ok(report) if report.outcome().is_ok())

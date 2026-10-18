@@ -94,8 +94,7 @@ pub(crate) async fn send_planner_input(
     State(w): State<WorkerState>,
     State(cs): State<CodexShellState>,
     source: crate::auth::HumanInputSource,
-    actor: Actor,
-    headers: HeaderMap,
+    (actor, headers): (Actor, HeaderMap),
     Path(id): Path<String>,
     JsonBody(body): JsonBody<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {

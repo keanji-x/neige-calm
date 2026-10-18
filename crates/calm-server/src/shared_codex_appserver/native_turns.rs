@@ -82,7 +82,7 @@ impl NativeInput {
 pub(crate) enum NativeSteer {
     Legacy,
     BudgetControl,
-    CanonicalControl(ExecutionEndTarget),
+    CanonicalControl(Box<ExecutionEndTarget>),
 }
 
 /// Consumed by one interrupt RPC on the actual client qualified under this owner.

@@ -99,6 +99,9 @@ enum PromptSource<'a> {
 }
 
 impl SharedCodexAppServer {
+    // Keep the native turn/start protocol fields explicit beside its execution
+    // association and late admission callback; this boundary does not build a second plan.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn turn_start_report<'a>(
         &self,
         thread_id: &str,

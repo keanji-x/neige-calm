@@ -211,7 +211,7 @@ async fn response_track_tx(
     ack: &HumanTrackCreationAck,
 ) -> Result<crate::model::Track> {
     let HumanTrackCreationAck::V1 { track_id, .. } = ack;
-    Ok(crate::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(track_id.clone())).await?)
+    crate::db::sqlite::track_get_tx(tx, &crate::ids::TrackId::from(track_id.clone())).await
 }
 
 async fn require_surviving_allocation_tx(
