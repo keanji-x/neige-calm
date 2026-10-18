@@ -461,3 +461,155 @@ async fn object_sweep_sparse_orphans_share_one_candidate_validation_batch() {
         assert!(!f.exists(&orphan).await);
     }
 }
+
+#[tokio::test]
+async fn object_sweep_stable_graph_reuses_one_complete_metadata_proof_across_batches() {
+    use super::gc_writer_tests::{DELETE_VALIDATIONS, METADATA_QUERIES};
+    use super::object_sweep::DELETE_BATCH_SIZE;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let f = Fixture::new().await;
+    let roots_before: Vec<(String, String)> =
+        sqlx::query_as("SELECT track_id, head_hash FROM track_vcs_refs ORDER BY track_id")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    let retained: Vec<String> =
+        sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    let mut orphans = Vec::new();
+    for n in 0..DELETE_BATCH_SIZE * 2 {
+        orphans.push(f.orphan(&format!("stable proof old garbage {n}")).await);
+    }
+    let validations = Arc::new(AtomicUsize::new(0));
+    let queries = Arc::new(AtomicUsize::new(0));
+    let deleted = DELETE_VALIDATIONS
+        .scope(
+            validations.clone(),
+            METADATA_QUERIES.scope(
+                queries.clone(),
+                track_vcs::sweep_unreferenced_objects_once(f.repo.pool()),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted, orphans.len() as u64);
+    for orphan in orphans {
+        assert!(!f.exists(&orphan).await);
+    }
+    for hash in retained {
+        assert!(f.exists(&hash).await);
+    }
+    let roots_after: Vec<(String, String)> =
+        sqlx::query_as("SELECT track_id, head_hash FROM track_vcs_refs ORDER BY track_id")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(roots_after, roots_before);
+    assert_eq!(validations.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        queries.load(Ordering::SeqCst),
+        1,
+        "a stable graph needs one complete proof, reused across actual deletion batches"
+    );
+}
+
+#[tokio::test]
+async fn object_sweep_same_tree_head_extensions_reuse_one_complete_proof_across_batches() {
+    use super::object_sweep::DELETE_BATCH_SIZE;
+
+    let f = Fixture::new().await;
+    let retained: Vec<String> =
+        sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    let roots_before: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+        "SELECT track_id, head_hash, updated_event_id FROM track_vcs_refs ORDER BY track_id",
+    )
+    .fetch_all(f.repo.pool())
+    .await
+    .unwrap();
+    let commits_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id=?1")
+            .bind(f.track.as_str())
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap();
+    let mut orphans = Vec::new();
+    for n in 0..DELETE_BATCH_SIZE * 2 {
+        orphans.push(f.orphan(&format!("same-tree prefix old garbage {n}")).await);
+    }
+    let (pause, sweep) = start(
+        f.repo.pool().clone(),
+        vec![Phase::BeforeDelete, Phase::BeforeDelete],
+    );
+    let mut history = Vec::new();
+    for batch in 0..2 {
+        pause.entered().await;
+        let mut remaining = 0;
+        for orphan in &orphans {
+            remaining += usize::from(f.exists(orphan).await);
+        }
+        assert_eq!(remaining, DELETE_BATCH_SIZE * (2 - batch));
+        let parent = track_vcs::head(f.repo.pool(), &f.track)
+            .await
+            .unwrap()
+            .unwrap();
+        let commit = f.publish(&f.tree, Some(&parent)).await;
+        history.push((commit, parent));
+        pause.release();
+    }
+    assert_eq!(finish(sweep).await.unwrap(), orphans.len() as u64);
+    for orphan in orphans {
+        assert!(!f.exists(&orphan).await);
+    }
+    let objects_after: Vec<String> =
+        sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(objects_after, retained);
+    assert_eq!(history[0].1, f.commit);
+    assert_eq!(history[1].1, history[0].0);
+    for (commit, parent) in &history {
+        assert_ne!(commit, parent);
+        let record = track_vcs::commit_record(f.repo.pool(), commit)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.parent_hash.as_ref(), Some(parent));
+        assert_eq!(record.tree_hash, f.tree.tree_hash);
+        assert_eq!(record.event_id, None);
+        assert_eq!(record.message.as_deref(), Some("published"));
+    }
+    let commits_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id=?1")
+            .bind(f.track.as_str())
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(commits_after, commits_before + 2);
+    let mut expected_roots = roots_before;
+    let target = expected_roots
+        .iter_mut()
+        .find(|row| row.0 == f.track.as_str())
+        .unwrap();
+    target.1 = history[1].0.clone();
+    target.2 = None;
+    let roots_after: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+        "SELECT track_id, head_hash, updated_event_id FROM track_vcs_refs ORDER BY track_id",
+    )
+    .fetch_all(f.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(roots_after, expected_roots);
+    assert_eq!(
+        pause.metadata_queries(),
+        1,
+        "same-tree head extensions preserve one complete live-tree proof"
+    );
+}

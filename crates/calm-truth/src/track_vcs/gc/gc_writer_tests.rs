@@ -14,6 +14,7 @@ use tokio::sync::Notify;
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Phase {
     Parse,
+    AfterMetadata,
     BeforeDelete,
 }
 pub(super) struct Pause {
@@ -21,9 +22,15 @@ pub(super) struct Pause {
     release: Notify,
     steps: Vec<Phase>,
     next: AtomicUsize,
+    metadata_queries: AtomicUsize,
 }
 tokio::task_local! { static SWEEP_PAUSE: Arc<Pause>; }
 tokio::task_local! { pub(super) static DELETE_VALIDATIONS: Arc<AtomicUsize>; }
+tokio::task_local! { pub(super) static METADATA_QUERIES: Arc<AtomicUsize>; }
+pub(super) fn record_metadata_query() {
+    let _ = METADATA_QUERIES.try_with(|counter| counter.fetch_add(1, Ordering::SeqCst));
+    let _ = SWEEP_PAUSE.try_with(|pause| pause.metadata_queries.fetch_add(1, Ordering::SeqCst));
+}
 pub(super) async fn at_phase(phase: Phase) {
     if phase == Phase::BeforeDelete {
         let _ = DELETE_VALIDATIONS.try_with(|counter| counter.fetch_add(1, Ordering::SeqCst));
@@ -42,6 +49,9 @@ pub(super) async fn pause_before_manifest_parse() {
     at_phase(Phase::Parse).await;
 }
 impl Pause {
+    pub(super) fn metadata_queries(&self) -> usize {
+        self.metadata_queries.load(Ordering::SeqCst)
+    }
     pub(super) async fn entered(&self) {
         tokio::time::timeout(Duration::from_secs(10), self.entered.notified())
             .await
@@ -63,6 +73,7 @@ pub(super) fn start(
         release: Notify::new(),
         steps,
         next: AtomicUsize::new(0),
+        metadata_queries: AtomicUsize::new(0),
     });
     let task = tokio::spawn(SWEEP_PAUSE.scope(pause.clone(), async move {
         track_vcs::sweep_unreferenced_objects_once(&pool).await
@@ -148,6 +159,39 @@ impl Fixture {
             commit,
         }
     }
+    pub(super) async fn exhaust_revision(&self) {
+        // Seed the otherwise valid representable final integer state without 2^63 writes;
+        // restore the exact real migration-created guard SQL before exercising mutation.
+        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let guard: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='track_vcs_gc_state_monotonic'")
+        .fetch_one(&mut **tx).await.unwrap();
+        sqlx::query("DROP TRIGGER track_vcs_gc_state_monotonic")
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE track_vcs_gc_state SET revision=9223372036854775807")
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        sqlx::query(&guard).execute(&mut **tx).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    pub(super) async fn remove_required_revision(&self) {
+        // Isolated corruption fixture: supported DML cannot remove this required state.
+        // Schema-sensitive steps share one physical connection and commit atomically.
+        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        sqlx::query("DROP TRIGGER track_vcs_gc_state_no_delete")
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM track_vcs_gc_state")
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
     pub(super) async fn tree(&self, label: &str, count: usize) -> TreeSnapshot {
         let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
         let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();

@@ -3,14 +3,14 @@ use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::model::now_ms;
 use crate::track_vcs::{ObjectHash, TreeManifest};
-use sqlx::{Executor, QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{Executor, QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 const OBJECT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const OBJECT_SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
 const OBJECT_SCAN_PAGE_SIZE: i64 = 256;
-const DELETE_BATCH_SIZE: usize = 256;
+pub(super) const DELETE_BATCH_SIZE: usize = 256;
 const TREE_READ_BATCH: usize = 32;
 const INLINE_TREE_LIMIT: usize = 32;
 const INLINE_BYTE_LIMIT: u64 = 1024 * 1024;
@@ -41,10 +41,43 @@ struct TreeMeta {
     byte_len: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Revision(i64);
+
+// An equal epoch certifies current reachable trees are covered by conservative parsed marks.
+// History may gain same-tree prefixes; it need not have an identical commit/ref topology.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Proof {
+    #[default]
+    Unproven,
+    Complete(Revision),
+}
+
+// Metadata can be stable before payload observation is complete; it is not yet a proof.
+enum Bracket {
+    Stable(Revision),
+    Changed,
+}
+
+struct ExternalMetadata {
+    trees: Vec<TreeMeta>,
+    bracket: Bracket,
+}
+
+enum PreparedValidation {
+    Cached(Revision),
+    Fresh {
+        revision: Revision,
+        trees: Vec<TreeMeta>,
+    },
+    Unproven,
+}
+
 #[derive(Default)]
 struct Observed {
     trees: BTreeSet<ObjectHash>,
     live: BTreeSet<ObjectHash>,
+    proof: Proof,
 }
 impl Observed {
     fn observe(&mut self, hash: String, bytes: &[u8]) -> Result<()> {
@@ -94,11 +127,15 @@ pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
 }
 
 async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Result<()> {
-    // One statement is a coherent metadata snapshot. It performs no deferred transaction or
-    // read-to-write upgrade; every later delete revalidates the closure in its own IMMEDIATE.
-    let initial = reachable_trees(pool).await?;
+    // Mutations that can expand reachable trees or invalidate their objects advance the epoch.
+    // An equal outside epoch bracket certifies coverage only after all selected trees are parsed.
+    let before = revision(pool).await?;
+    let initial = external_metadata(pool, before).await?;
     let mut observed = Observed::default();
-    observe_external(pool, &initial, &mut observed).await?;
+    observe_external(pool, &initial.trees, &mut observed).await?;
+    if let Bracket::Stable(revision) = initial.bracket {
+        observed.proof = Proof::Complete(revision);
+    }
     let mut cursor = String::new();
     // Index pages and deletion batches have different costs. Accumulate actual old orphan
     // candidates across sparse live pages before paying for the full ancestry proof.
@@ -175,9 +212,62 @@ async fn old_candidates(pool: &SqlitePool, cutoff: i64, hashes: &[String]) -> Re
     Ok(query.build_query_scalar().fetch_all(pool).await?)
 }
 
+// Missing, malformed or negative required state is an error, never a cache miss.
+async fn revision<'e>(executor: impl Executor<'e, Database = Sqlite>) -> Result<Revision> {
+    let row = sqlx::query(
+        "SELECT revision, typeof(revision) AS revision_type FROM track_vcs_gc_state WHERE singleton = 1",
+    )
+    .fetch_one(executor)
+    .await?;
+    let kind: String = row.try_get("revision_type")?;
+    if kind != "integer" {
+        return Err(CalmError::Internal(
+            "track_vcs: invalid GC revision type".into(),
+        ));
+    }
+    let value: i64 = row.try_get("revision")?;
+    if value < 0 {
+        return Err(CalmError::Internal(
+            "track_vcs: invalid negative GC revision".into(),
+        ));
+    }
+    Ok(Revision(value))
+}
+
+async fn external_metadata(pool: &SqlitePool, before: Revision) -> Result<ExternalMetadata> {
+    let trees = reachable_trees(pool).await?;
+    #[cfg(test)]
+    super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::AfterMetadata).await;
+    let after = revision(pool).await?;
+    let bracket = if before == after {
+        Bracket::Stable(after)
+    } else {
+        Bracket::Changed
+    };
+    Ok(ExternalMetadata { trees, bracket })
+}
+
+async fn prepare_validation(pool: &SqlitePool, observed: &Observed) -> Result<PreparedValidation> {
+    let before = revision(pool).await?;
+    if observed.proof == Proof::Complete(before) {
+        return Ok(PreparedValidation::Cached(before));
+    }
+    // One outside attempt only. Concurrent change keeps the original authoritative writer path.
+    let current = external_metadata(pool, before).await?;
+    Ok(match current.bracket {
+        Bracket::Stable(revision) => PreparedValidation::Fresh {
+            revision,
+            trees: current.trees,
+        },
+        Bracket::Changed => PreparedValidation::Unproven,
+    })
+}
+
 async fn reachable_trees<'e>(
     executor: impl Executor<'e, Database = Sqlite>,
 ) -> Result<Vec<TreeMeta>> {
+    #[cfg(test)]
+    super::gc_writer_tests::record_metadata_query();
     let rows: Vec<(String, Option<String>, Option<i64>)> =
         sqlx::query_as(REACHABLE_TREES).fetch_all(executor).await?;
     rows.into_iter()
@@ -256,12 +346,18 @@ async fn delete_validated_batch(
     observed: &mut Observed,
 ) -> Result<Option<u64>> {
     for attempt in 0..VALIDATION_ATTEMPTS {
+        let prepared = prepare_validation(pool, observed).await?;
         #[cfg(test)]
         super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::BeforeDelete).await;
         let mut tx = begin_immediate_tx(pool).await?;
-        // Recompute actual ancestry, not just HEAD equality. A restored ancestor can make an
-        // old tree live without moving HEAD. Check existence/kind even for cached trees.
-        let current = reachable_trees(&mut **tx).await?;
+        let locked_revision = revision(&mut **tx).await?;
+        let current = match prepared {
+            // Complete conservative marks cover all current trees at this proof epoch.
+            PreparedValidation::Cached(revision) if revision == locked_revision => Vec::new(),
+            PreparedValidation::Fresh { revision, trees } if revision == locked_revision => trees,
+            // Recompute actual ancestry, including cached-tree validity, after any change.
+            _ => reachable_trees(&mut **tx).await?,
+        };
         let delta: Vec<_> = current
             .into_iter()
             .filter(|tree| !observed.trees.contains(&tree.hash))
@@ -286,6 +382,7 @@ async fn delete_validated_batch(
             .collect();
         if candidates.is_empty() {
             tx.commit().await?;
+            observed.proof = Proof::Complete(locked_revision);
             return Ok(Some(0));
         }
         let mut query =
@@ -297,7 +394,11 @@ async fn delete_validated_batch(
         }
         separated.push_unseparated(")");
         let count = query.build().execute(&mut **tx).await?.rows_affected();
+        // Only objects proven unreachable were deleted. Their trigger increments preserve this
+        // complete live proof, but do not advance its local certificate until COMMIT acknowledges.
+        let after_delete = revision(&mut **tx).await?;
         tx.commit().await?;
+        observed.proof = Proof::Complete(after_delete);
         return Ok(Some(count));
     }
     unreachable!("bounded validation either deletes or defers")

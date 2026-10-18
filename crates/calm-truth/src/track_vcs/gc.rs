@@ -335,3 +335,19 @@ pub use object_sweep::{spawn_unreferenced_object_sweeper, sweep_unreferenced_obj
 #[cfg(test)]
 #[path = "gc/gc_object_safety_tests.rs"]
 mod gc_object_safety_tests;
+
+#[cfg(test)]
+#[path = "gc/gc_revision_tests.rs"]
+mod gc_revision_tests;
+
+#[cfg(test)]
+#[path = "gc/gc_proof_tests.rs"]
+mod gc_proof_tests;
+
+#[cfg(test)]
+#[path = "gc/gc_epoch_tests.rs"]
+mod gc_epoch_tests;
+
+#[cfg(test)]
+#[path = "gc/gc_epoch_safety_tests.rs"]
+mod gc_epoch_safety_tests;
