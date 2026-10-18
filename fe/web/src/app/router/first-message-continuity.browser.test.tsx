@@ -13,7 +13,7 @@ afterEach(async () => {
 it.each([{ width: 1280, reduce: false }, { width: 390, reduce: false }, { width: 390, reduce: true }])(
   'keeps one readable first message across real draft/preview/thread commits ($width px, reduced=$reduce)', async ({ width, reduce }) => {
     await page.viewport(width, 900); await commands.emulateReducedMotion(reduce);
-    const occurrences = () => [...document.querySelectorAll('[data-nc-turn="you"]')]
+    const occurrences = () => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')]
       .filter(element => element.textContent === FIRST_MESSAGE);
     let sawWords = false;
     const commits: number[] = [];
@@ -66,7 +66,7 @@ it.each([1280, 390])('keeps the first bubble in place through native admission w
   await page.viewport(width, 900);
   await commands.emulateReducedMotion(false);
   const fixture = renderFirstMessageFixture({ mobile: width === 390, holdHistory: true, holdRun: true, harvestedInput: false });
-  const bubbles = () => [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE);
+  const bubbles = () => [...document.querySelectorAll<HTMLElement>(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === FIRST_MESSAGE);
   const offset = () => {
     const bubble = bubbles()[0];
     const scroller = bubble?.closest<HTMLElement>('[data-nc-drawer-scroll]');
@@ -128,7 +128,7 @@ it.each([1280, 390])('keeps real first-input queue controls readable while histo
     expect(document.querySelector('[data-nc-pending-entry="first-entry"] [aria-label="Delete this message"]')).not.toBeNull();
     await expect.element(page.getByRole('button', { name: 'Edit queued message', exact: true })).toBeVisible();
     await expect.element(page.getByText('Loading conversation…', { exact: true })).not.toBeInTheDocument();
-    const bubble = document.querySelector<HTMLElement>('[data-nc-pending-entry="first-entry"] [data-nc-turn="you"]');
+    const bubble = document.querySelector<HTMLElement>('[data-nc-pending-entry="first-entry"] :is([data-nc-turn="you"], [data-nc-turn="unknown"])');
     expect(bubble).not.toBeNull();
     const box = bubble!.getBoundingClientRect();
     expect(box.left).toBeGreaterThanOrEqual(0); expect(box.right).toBeLessThanOrEqual(width);
@@ -142,7 +142,7 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
   await commands.emulateReducedMotion(false);
   const fixture = renderFirstMessageFixture({ mobile: width === 390 });
   const canonical = edited ? 'Edited canonical first input after the real queue drains.' : FIRST_MESSAGE;
-  const originalWords = () => [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE);
+  const originalWords = () => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === FIRST_MESSAGE);
   try {
     if (width === 390) {
       await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
@@ -159,9 +159,9 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
     fixture.clearQueue(); fixture.project(edited ? 1 : 0, canonical);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
-    await expect.poll(() => [...document.querySelectorAll('[data-nc-entry] [data-nc-turn="you"]')]
+    await expect.poll(() => [...document.querySelectorAll('[data-nc-entry] :is([data-nc-turn="you"], [data-nc-turn="unknown"])')]
       .filter(node => node.textContent === canonical).length).toBe(1);
-    const drawn = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === canonical);
+    const drawn = [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === canonical);
     const original = originalWords();
     await page.screenshot({ path: `../../../../test-results/first-message-native-canonical-handoff-${width}-${edited}.png` });
     expect(drawn).toHaveLength(1);
@@ -192,7 +192,7 @@ it.each([{ width: 1280, steer: false }, { width: 390, steer: false }, { width: 1
       await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['conversation-initial-input', 'daily', cardId] }); });
       await page.getByRole('button', { name: steer ? 'Say it now' : 'Delete this message', exact: true }).click();
       await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
-      const copies = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE).length;
+      const copies = [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === FIRST_MESSAGE).length;
       await page.screenshot({ path: `../../../../test-results/first-message-local-write-${width}-${steer}.png` });
       expect(copies).toBe(steer ? 1 : 0);
     } finally { cleanup(); fixture.client.clear(); }
@@ -218,7 +218,7 @@ it.each([1280, 390])('keeps one accepted fallback when a real queue update arriv
     fixture.clearQueue();
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
     await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
-    const count = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE).length;
+    const count = [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === FIRST_MESSAGE).length;
     await page.screenshot({ path: `../../../../test-results/first-message-fallback-before-canonical-${width}.png` });
     expect(count).toBe(1);
   } finally { cleanup(); fixture.client.clear(); }
@@ -228,7 +228,7 @@ it.each([1280, 390])('keeps one accepted fallback when a real queue update arriv
 it.each([1280, 390])('keeps an acknowledged first edit readable with real post-write reads held (%ipx)', async width => {
   await page.viewport(width, 900); await commands.emulateReducedMotion(false);
   const edited = 'An acknowledged first edit must stay readable while reads are held.';
-  const copies = (text: string) => [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === text);
+  const copies = (text: string) => [...document.querySelectorAll<HTMLElement>(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === text);
   let sawEdited = false; const commits: number[] = [];
   const fixture = renderFirstMessageFixture({ mobile: width === 390, holdHistory: true, holdRun: true, harvestedInput: false, onCommit: () => {
     const count = copies(edited).length; if (count > 0) sawEdited = true; if (sawEdited) commits.push(count);
@@ -284,7 +284,7 @@ it.each([{ width: 1280, restore: true }, { width: 390, restore: true }, { width:
     const external = 'A real externally changed source before the restoring local write.';
     const acknowledged = 'The earlier acknowledged body before a later queue version.';
     const latest = restore ? FIRST_MESSAGE : 'The later actual queue version must remain the only current body.';
-    const copies = (text: string) => [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === text);
+    const copies = (text: string) => [...document.querySelectorAll<HTMLElement>(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === text);
     let sawLatest = false; const commits: number[] = []; let hasAck = () => false;
     const fixture = renderFirstMessageFixture({ mobile: width === 390, holdHistory: true, holdRun: true, harvestedInput: false, onCommit: () => {
       const count = copies(latest).length; if (hasAck() && count > 0) sawLatest = true; if (sawLatest) commits.push(count);

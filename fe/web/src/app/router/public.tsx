@@ -86,6 +86,7 @@ import {
 import type { ReportSourceLinkTarget } from '../../../../core/domain/report-source.ts';
 import {
   conversationName,
+  isUserConversationTurn,
   trackConversationCardId,
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation,
@@ -492,8 +493,8 @@ function useConversationPane(
   const threadAvailable = open !== null
     && (store.historyReady || openTurns.length > 0 || hasPendingMessages || store.stalled || store.stopFeedback !== null);
   const threadPresented = useContentAdmission(open?.id ?? null, threadAvailable);
-  const outgoingPreview = open === null || threadPresented ? undefined : openTurns.findLast((entry): entry is ConversationTurn =>
-    entry.author === 'you' && entry.text !== '' && (entry.attachments?.length ?? 0) === 0);
+  const outgoingPreview = open === null || threadPresented ? undefined : openTurns.findLast((entry): entry is ConversationTurn & { author: 'you' | 'human' | 'unknown' } =>
+    isUserConversationTurn(entry) && entry.text !== '' && (entry.attachments?.length ?? 0) === 0);
   const conversationBodyVisible = hasPendingMessages || (threadPresented ? openTurns.length > 0 : outgoingPreview !== undefined);
   const threadStatusUnconfirmed = !store.runReady || store.runError !== null;
   const sideSourceReady = threadPresented && store.historyReady;
@@ -865,7 +866,7 @@ function useConversationPane(
                           `ChatThread` draws its empty state (with the live dot) for an empty list.
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
-            {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker="you" text={outgoingPreview.text} mobile={compactViewport} />}
+            {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker={outgoingPreview.author} text={outgoingPreview.text} mobile={compactViewport} />}
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
               <ChatThread readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}

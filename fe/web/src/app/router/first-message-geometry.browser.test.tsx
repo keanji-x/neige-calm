@@ -3,6 +3,7 @@ import { act, cleanup } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { commands, page, userEvent } from 'vitest/browser';
 import { queryKeys } from '../providers/queries.ts';
+import { historicalConversationPage, historicalConversationRun, conversationCardId } from './conversation-read-data.ts';
 import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-continuity-fixture.tsx';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 
@@ -17,7 +18,7 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
   const fixture = renderFirstMessageFixture({ mobile: width === 390, harvestedInput: false });
   const text = edited ? 'An edited first input remains in the same place through handoff.' : FIRST_MESSAGE;
   const bubble = () => {
-    const nodes = [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === text);
+    const nodes = [...document.querySelectorAll<HTMLElement>(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === text);
     expect(nodes).toHaveLength(1);
     return nodes[0];
   };
@@ -66,12 +67,21 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
     await expect.poll(() => fixture.outbox().some(op => op.phase === 'initial-accepted' && op.sourceWitness?.itemId === 7)).toBe(true);
     expectGeometry(queued);
+    await expect.element(page.getByText('Unknown author', { exact: true })).toBeVisible();
+    await page.screenshot({ path: `../../../../test-results/first-message-stable-handoff-${width}-${edited}.png` });
+    const reply = Array.from({ length: 30 }, (_, index) => `Follow-up reply paragraph ${index + 1}.`).join('\n\n');
+    fixture.appendReply(reply);
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
+    await expect.element(page.getByText('Follow-up reply paragraph 30.', { exact: true })).toBeVisible();
+    const scroller = bubble().closest<HTMLElement>('[data-nc-drawer-scroll]');
+    if (scroller === null) throw new Error('The reply has no actual conversation scroller.');
+    await expect.poll(() => scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop).toBeLessThanOrEqual(1);
+    expectGeometry(queued);
     await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     expect(frames.length).toBeGreaterThan(1);
     for (const sampled of frames) for (const key of ['top', 'left', 'width', 'height'] as const) {
       expect(Math.abs(sampled[key] - queued[key])).toBeLessThanOrEqual(1);
     }
-    await page.screenshot({ path: `../../../../test-results/first-message-stable-handoff-${width}-${edited}.png` });
   } finally { if (frame !== null) cancelAnimationFrame(frame); cleanup(); fixture.client.clear(); }
 });
 
@@ -85,10 +95,10 @@ it.each([1280, 390])('keeps the last ordinary deleted queue row in place until i
       pending = [];
       return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', entry_id: 'ordinary-last', rev: 0, text: null });
     }
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
+    if (request.path.endsWith('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: conversationCardId(request.path), worker_session_id: 'runtime',
       phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
       pending, pending_overflow: 0, manual_compact_supported: true, compact_outcome: null,
-      context_usage_invalidated: false, running_turn: null });
+      context_usage_invalidated: false, running_turn: null }, 'idle', true));
     return undefined;
   } });
   try {
@@ -98,7 +108,7 @@ it.each([1280, 390])('keeps the last ordinary deleted queue row in place until i
     } else await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Delete this message', exact: true })).toBeVisible();
     await expect.poll(() => document.querySelector('[data-nc-thread] [data-nc-pending-entry="ordinary-last"]')).not.toBeNull();
-    const bubble = document.querySelector<HTMLElement>('[data-nc-pending-entry="ordinary-last"] [data-nc-turn="you"]')!;
+    const bubble = document.querySelector<HTMLElement>('[data-nc-pending-entry="ordinary-last"] :is([data-nc-turn="you"], [data-nc-turn="unknown"])')!;
     const exit = bubble.closest<HTMLElement>('[data-nc-collapse-presence]')!;
     const scroller = bubble.closest<HTMLElement>('[data-nc-drawer-scroll]')!;
     const offset = () => bubble.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
@@ -132,7 +142,7 @@ it.each([
 ])('keeps one first bubble in place through provisional withdrawal and same-revision retry ($label)', async ({ width, reduced }) => {
   await page.viewport(width, 900); await commands.emulateReducedMotion(reduced);
   const commits: number[] = []; let capture = false;
-  const nodes = () => [...document.querySelectorAll<HTMLElement>('[data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE);
+  const nodes = () => [...document.querySelectorAll<HTMLElement>(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === FIRST_MESSAGE);
   const fixture = renderFirstMessageFixture({ mobile: width === 390, harvestedInput: false, holdHistory: true, holdRun: true,
     onCommit: () => { if (capture) commits.push(nodes().length); } });
   const geometry = () => {
@@ -158,7 +168,7 @@ it.each([
     fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable'); fixture.answerCreate();
     await expect.poll(() => fixture.historyCount()).toBe(1); await expect.poll(() => fixture.runCount()).toBe(1);
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
-    await expect.poll(() => document.querySelector('[data-nc-entry] [data-nc-turn="you"]')?.textContent).toBe(FIRST_MESSAGE);
+    await expect.poll(() => document.querySelector('[data-nc-entry] :is([data-nc-turn="you"], [data-nc-turn="unknown"])')?.textContent).toBe(FIRST_MESSAGE);
     await expect.poll(() => [...document.querySelectorAll('[data-nc-size-motion]')].flatMap(node => node.getAnimations()).length).toBe(0);
     const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
     const readSource = async (kind: 'history' | 'run') => {
@@ -197,16 +207,16 @@ it.each([1280, 390])('keeps the ordinary queue exit spring when displayed bound 
   let pending = [{ entry_id: 'ordinary-shared', rev: 1, text: currentText, queued_at_ms: 1 }];
   const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
   const fixture = renderDailyFixture({ reply: request => {
-    if (request.path.includes('/daily-planner/harness/items')) return ok([{ id: 7, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily',
+    if (request.path.includes('/daily-planner/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [{ id: 7, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily',
       thread_id: 'thread', turn_id: 'older-provider-turn', item_uuid: 'old-bound-row', item_type: 'userMessage', method: 'item/completed',
       params: '{}', created_at_ms: 1, turn_error_text: null, input_segments: [{ presentation: 'user', text: oldText, attachments: [],
-        origin: { observation: 'user', event_id: null, queue_entry: { id: 'ordinary-shared', rev: 0 } } }] }]);
+        origin: { observation: 'user', event_id: null, queue_entry: { id: 'ordinary-shared', rev: 0 } } }] }], null));
     if (request.method === 'DELETE' && request.path.endsWith('/planner/input/ordinary-shared')) {
       pending = []; return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', entry_id: 'ordinary-shared', rev: 1, text: null });
     }
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null,
+    if (request.path.endsWith('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: conversationCardId(request.path), worker_session_id: 'runtime', phase: 'idle', model: null,
       reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending, pending_overflow: 0,
-      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     return undefined;
   } });
   try {
@@ -216,7 +226,7 @@ it.each([1280, 390])('keeps the ordinary queue exit spring when displayed bound 
     } else await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();
     await expect.element(page.getByRole('button', { name: 'Delete this message', exact: true })).toBeEnabled();
     await expect.element(page.getByText(oldText, { exact: true })).toBeVisible();
-    const bubble = document.querySelector<HTMLElement>('[data-nc-pending-entry="ordinary-shared"] [data-nc-turn="you"]');
+    const bubble = document.querySelector<HTMLElement>('[data-nc-pending-entry="ordinary-shared"] :is([data-nc-turn="you"], [data-nc-turn="unknown"])');
     if (bubble === null) throw new Error('The real ordinary queue row was not mounted.');
     const exit = bubble.closest<HTMLElement>('[data-nc-collapse-presence]');
     if (exit === null) throw new Error('The ordinary row has no existing presence owner.');

@@ -5,7 +5,7 @@ import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-contin
 import { queryKeys } from '../providers/queries.ts';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
-const copies = (text: string) => [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === text);
+const copies = (text: string) => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === text);
 
 async function queuedFirst() {
   const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
@@ -48,8 +48,8 @@ it('keeps the actual acknowledged first edit readable while both post-ACK reads 
     await act(async () => { await fixture.router.navigate({ to: '/settings' }); });
     await act(async () => { await fixture.router.navigate({ to: '/track/daily' }); });
     await screen.findByRole('combobox', { name: 'Message' });
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.plannerRun(cardId))?.status).toBe('error'));
-    expect(fixture.client.getQueryData<{ pending: readonly { rev: number }[] }>(queryKeys.plannerRun(cardId))?.pending[0].rev).toBe(0);
+    await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.plannerRun(cardId), exact: false })?.state?.status).toBe('error'));
+    expect(fixture.client.getQueriesData<{ pending: readonly { rev: number }[] }>({ queryKey: queryKeys.plannerRun(cardId) })[0]?.[1]?.pending[0].rev).toBe(0);
     expect(copies(edited)).toHaveLength(1); expect(copies(FIRST_MESSAGE)).toHaveLength(0);
   } finally { cleanup(); fixture.client.clear(); }
 });
@@ -61,12 +61,12 @@ it('keeps a same-revision acknowledged Delete hidden after route remount when th
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ localWrite: { entry_id: 'first-entry', rev: 0, text: null } }]));
     expect(fixture.requests.find(request => request.method === 'DELETE')?.body).toEqual({ if_entry_rev: 0 });
     await waitFor(() => expect(copies(FIRST_MESSAGE)).toHaveLength(0));
-    expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(1);
+    expect(fixture.client.getQueriesData<{ pending: readonly unknown[] }>({ queryKey: queryKeys.plannerRun(cardId) })[0]?.[1]?.pending).toHaveLength(1);
     fixture.failRun();
     await act(async () => { await fixture.router.navigate({ to: '/settings' }); });
     await act(async () => { await fixture.router.navigate({ to: '/track/daily' }); });
     await screen.findByRole('combobox', { name: 'Message' });
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.plannerRun(cardId))?.status).toBe('error'));
+    await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.plannerRun(cardId), exact: false })?.state?.status).toBe('error'));
     expect(fixture.outbox()).toMatchObject([{ localWrite: { rev: 0, text: null } }]);
     expect(copies(FIRST_MESSAGE)).toHaveLength(0);
     expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull();
@@ -90,7 +90,7 @@ it('hands the actual edited ACK body from queue to plain accepted display while 
     act(() => { runRead = fixture.client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }); });
     await waitFor(() => expect(fixture.runCount()).toBe(4));
     await act(async () => { fixture.releaseRun(3); await runRead; });
-    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
+    await waitFor(() => expect(fixture.client.getQueriesData<{ pending: readonly unknown[] }>({ queryKey: queryKeys.plannerRun(cardId) })[0]?.[1]?.pending).toHaveLength(0));
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull());
     expect(copies(FIRST_MESSAGE)).toHaveLength(0); expect(copies(edited)).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Edit queued message' })).toBeNull();
@@ -144,7 +144,7 @@ it('keeps an actual PATCH restoring submitted words after a different external u
     fixture.queueAtRevision(external, 1); await readHeldRun(fixture, cardId);
     await saveQueuedBody(fixture, FIRST_MESSAGE, 2);
     fixture.clearQueue(); await readHeldRun(fixture, cardId);
-    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
+    await waitFor(() => expect(fixture.client.getQueriesData<{ pending: readonly unknown[] }>({ queryKey: queryKeys.plannerRun(cardId) })[0]?.[1]?.pending).toHaveLength(0));
     expect(copies(FIRST_MESSAGE)).toHaveLength(1); expect(copies(external)).toHaveLength(0);
     expect(copies(FIRST_MESSAGE)[0].closest('[data-nc-pending-queue]')).toBeNull();
   } finally { cleanup(); fixture.client.clear(); }
@@ -160,7 +160,7 @@ it('keeps a later actual queue revision after a local ACK when the run then omit
     await waitFor(() => expect(copies(later)).toHaveLength(1));
     expect(copies(acknowledged)).toHaveLength(0);
     fixture.clearQueue(); await readHeldRun(fixture, cardId);
-    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
+    await waitFor(() => expect(fixture.client.getQueriesData<{ pending: readonly unknown[] }>({ queryKey: queryKeys.plannerRun(cardId) })[0]?.[1]?.pending).toHaveLength(0));
     expect(copies(later)).toHaveLength(1); expect(copies(acknowledged)).toHaveLength(0);
   } finally { cleanup(); fixture.client.clear(); }
 });
@@ -179,7 +179,7 @@ it('retains a real identity-bearing CAS revision hint as queue knowledge without
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ localWrite: { rev: 1, text: acknowledged }, inputFact: { rev: 2, text: latest } }]));
     expect(fixture.requests.findLast(request => request.method === 'PATCH')?.body).toEqual({ text: 'Refused local proposal', if_entry_rev: 1 });
     fixture.clearQueue(); await readHeldRun(fixture, cardId);
-    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(0));
+    await waitFor(() => expect(fixture.client.getQueriesData<{ pending: readonly unknown[] }>({ queryKey: queryKeys.plannerRun(cardId) })[0]?.[1]?.pending).toHaveLength(0));
     expect(copies(latest)).toHaveLength(1); expect(copies(acknowledged)).toHaveLength(0);
     expect(fixture.outbox()).toMatchObject([{ localWrite: { rev: 1, text: acknowledged } }]);
   } finally { cleanup(); fixture.client.clear(); }
@@ -198,7 +198,7 @@ it('keeps one first input through provisional withdrawal, same-revision rebuffer
     fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
-    await waitFor(() => expect(document.querySelector('[data-nc-entry] [data-nc-turn="you"]')?.textContent).toBe(FIRST_MESSAGE));
+    await waitFor(() => expect(document.querySelector('[data-nc-entry] :is([data-nc-turn="you"], [data-nc-turn="unknown"])')?.textContent).toBe(FIRST_MESSAGE));
     const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
     const readHistory = async () => {
       const next = fixture.historyCount(); let read: Promise<void> | null = null;
