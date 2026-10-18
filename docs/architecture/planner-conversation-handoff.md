@@ -1,6 +1,7 @@
 # Planner conversation handoff
 
-Status: internal identity cutover commits PendingActivation; activation remains future work. The transaction
+Status: internal identity cutover and explicit forward activation are implemented internally;
+final frozen-target verification is recorded in the per-attempt kernel gate logs. The transaction
 write-authorization slice and durable system-observation acknowledgement foundation are
 implemented, together with the internal durable pause preparation primitive described below.
 This revision supersedes the blank-conversation
@@ -145,6 +146,77 @@ and target admission (using separate isolation cases so one guard cannot mask th
 gate owns text, quick, contracts, focused replay and transaction authorization regression.
 The Planner arranges the two independent L2 reviews, and CI owns broad suites.
 
+## Explicit forward activation contract
+
+Review tier L2: activation crosses authority, credential and durable resource boundaries.
+The accepted cutover result is the sole authority source. An internal explicit operation
+binds its original succeeded cutover row, validated plan and user audit, exact new current
+Planner session, root, ordinary open Track and frozen configuration. An operation row alone
+is not approval. No REST/MCP/AI/UI entry or two-pause coordinator is added. Generic startup,
+reset, lazy recovery and ACP recovery keep rejecting PendingActivation and history.
+
+| State | Durable evidence | Explicit next action |
+| --- | --- | --- |
+| CommittedPendingActivation | original cutover result and inert new snapshot | register the one activation for that cutover |
+| Blocked | provider owner's readiness/authentication refusal; no resources granted | explicitly retry the original activation generation after owner clears hold |
+| Preparing | trusted briefing and complete pending queue/watermark frozen before issuance | check exact binding and owner readiness before effects |
+| ResourceRequestRecorded | durable intent before native RPC | a crash or missing reply is Unknown; never repeat an unproven request |
+| ResourcesCheckpointed | returned provider identity and fresh credential binding committed with operation checkpoint | reuse only this proven resource, catch up queue and install |
+| NeedsRecovery / Unknown | original operation and last known checkpoint remain queryable | explicit forward recovery; never restore old roles, tokens or task identities |
+| Activated | final SQL binding/resource/checkpoint proof and successful harness installation | ordinary issuance contract, including later asynchronous authentication holds |
+
+The adapter exposes internal `activate`, read-only `query`, and generation-fenced `retry`.
+`query` reads the original operation without driving it, including accepted Pending and
+stored recovery failures. The operation's original audited cutover, prepared briefing and
+resource proof are permanent. The new session stays PendingActivation through Blocked or
+Unknown before binding. Resource binding commits Starting, credentials, transport metadata
+and the operation checkpoint together. Starting is an active SQL binding, not an installation
+success. `Activated` records a completed installation and final exact SQL validation; it is
+historical evidence, not a promise of current provider readiness. Blocked separately records
+whether resources were already checkpointed. Later authentication holds still fence issuance.
+
+Cancellation or a dropped reply never deletes accepted durable work. A post-cutover
+failure has no backward compensation. Native resource side effects and SQL commit cannot
+be one atomic transaction: installation/cache publication does not authorize the final SQL
+write, and a missing RPC result proves neither success nor absence. Codex thread/start has
+no durable client-key receipt in the current public contract; an interrupted request must
+remain Unknown until a separate explicit recovery can prove its result. Local providers
+retain their existing first-turn native creation and credential ownership.
+
+| Briefing / queue input | Owner and persistence rule |
+| --- | --- |
+| Source/target identity | original cutover plan/result; label both cards and retired sessions plus new session |
+| Report, template and task facts | existing Report/template/task repositories; server reads only, never caller JSON authority |
+| History excerpts | existing transcript repository, read only; combined <=12000 Unicode characters with source references and explicit truncation boundary |
+| First input | trusted SystemContext, <=32768 Unicode characters total, durable in new snapshot before any issuance; explicitly says context reconstructed and native history not retained |
+| Pending observations <= cutover floor | preserve entire cutover queue, deduplicate by existing envelope ownership; never discard merely because watermark covers them |
+| Activation suffix | existing eligible-prefix event reader and complete source-checkpoint CAS; re-read after quiescence, never overwrite an ACK |
+| Reopen / replay | row-owned snapshot wins over operation's older capture; first briefing is inserted once and never reinserted after ACK |
+
+The shared start adapter owns minting, transport payload normalization and harness installation.
+Its registry reservation quiesces any prior installed owner before activation catch-up and
+complete source CAS; row adoption then precedes installation under that same reservation.
+The final Activated result is also checkpointed before advancing OperationRuntime, respecting
+its existing refusal to overwrite a third callback checkpoint. Generic startup keeps its
+original admission and does not request activation catch-up. Migration 0170 narrows only the
+explicit transition and permanently fences both retired identities; 0169 is unchanged.
+A pending claim alone, a native cache entry, or registry installation never grants SQL authority.
+
+The new direct binding snapshot write joins the existing writer classification as row-owned.
+Preparation uses the existing snapshot writer, with complete source comparison and read-back
+under BEGIN IMMEDIATE; an ordinary later direct writer updates that inventory once. Migration 0170 joins the existing
+head-schema fixture once. Adapter registration updates the existing non-task classification.
+These existing checks keep their existing CI pass count; no new scan or growing provider/test
+list is introduced. Existing large start-adapter methods are extracted in their owning module
+so both callers share them; new responsibility and test files remain below 800 lines.
+
+Worker focused verification uses real OperationRuntime, SQLite, registered backend stubs
+and notification seams. Critical production mutations cover exact authorization, unknown
+resource non-repetition and durable queue/briefing ownership with predicted complete red
+sets. Kernel owns quick/text/contracts/focused replay and generated consumer gates; CI
+owns broad suites. Planner owns independent L2 review. No growing test/provider allowlist
+or extra CI pass is introduced by this contract.
+
 ## Atomic cutover scope and stages
 
 Review tier L2: the internal kernel changes persisted identity and write authority.
@@ -169,9 +241,10 @@ identities are outside this transaction's write set.
    such readiness promise; activation and issuance retain their own hold checks.
    Faulted, recovered-unconfirmed and released claims cannot authorize cutover.
    Snapshot CAS, native submission checks and final SQL authorization fence stale work.
-3. **Activated:** a separate future owner creates a fresh provider thread and token on
-   the new current session, then installs its harness. This slice does not perform this
-   stage. Activation failure requires forward recovery and cannot restore old roles.
+3. **Activated:** the separate internal `handoff-activation` operation consumes this
+   committed result, creates fresh resources through the shared Planner start owner on
+   the fixed new session, and installs its harness. Activation failure requires forward
+   recovery and cannot restore old roles. No external entry or two-pause coordinator exists.
 
 The sole commit demotes source to explicit planner_history before promoting target,
 retaining the unique Planner index. History has no write, startup or recovery profile.

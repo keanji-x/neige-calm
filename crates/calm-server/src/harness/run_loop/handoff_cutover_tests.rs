@@ -42,7 +42,7 @@ fn runtime_for_repo(repo: Arc<crate::db::sqlite::SqlxRepo>) -> Arc<OperationRunt
 
 /// Data-only before-image of the actual SQLite store, including task/worker/claim/gate rows.
 /// Discover columns from SQLite so later schema additions cannot silently escape the oracle.
-async fn data_image(pool: &sqlx::SqlitePool) -> Vec<(String, Vec<String>)> {
+pub(super) async fn data_image(pool: &sqlx::SqlitePool) -> Vec<(String, Vec<String>)> {
     let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(pool).await.unwrap();
     let mut image = vec![];
@@ -761,5 +761,29 @@ async fn handoff_cutover_competing_operation_has_one_identity_winner() {
         .await
         .unwrap(),
         1
+    );
+}
+
+#[tokio::test]
+async fn handoff_activation_registered_operation_accepts_only_original_committed_cutover() {
+    let a = Fixture::new().await;
+    let b = a.sibling(CardRole::Assistant).await;
+    let plan = plan(&a, &b).await;
+    let result = commit(&a, plan).await.unwrap();
+    let handoff_cutover::CutoverResult::CutoverCommittedPendingActivation { operation_id, .. } =
+        result;
+    let runtime = runtime(&a);
+    let payload = serde_json::json!({"cutover_operation_id":operation_id});
+    let key = crate::operation::OperationKey {
+        operation_key: operation_id.clone(),
+        idempotency_key: Some(operation_id),
+        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
+    };
+    assert!(
+        runtime
+            .submit("handoff-activation", key, payload)
+            .await
+            .is_ok(),
+        "the registered internal operation must accept its original persisted cutover"
     );
 }

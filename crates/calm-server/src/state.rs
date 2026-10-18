@@ -506,22 +506,21 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
     ));
-    let planner_harness_start_adapter: Arc<dyn ProviderAdapter> =
-        Arc::new(PlannerHarnessStartAdapter::new(
-            input.repo.clone(),
-            input.shared_codex_appserver.clone(),
-            input.shared_codex_appserver.thread_seals().clone(),
-            input.harness.clone(),
-            input.plugin.clone(),
-            input.card_role_cache.clone(),
-            input.track_area_cache.clone(),
-            input
-                .mcp_server
-                .as_ref()
-                .map(|server| server.shim_config.socket_path.clone()),
-            input.claude_planner.clone(),
-            input.acp_planner.clone(),
-        ));
+    let planner_harness_start_adapter = Arc::new(PlannerHarnessStartAdapter::new(
+        input.repo.clone(),
+        input.shared_codex_appserver.clone(),
+        input.shared_codex_appserver.thread_seals().clone(),
+        input.harness.clone(),
+        input.plugin.clone(),
+        input.card_role_cache.clone(),
+        input.track_area_cache.clone(),
+        input
+            .mcp_server
+            .as_ref()
+            .map(|server| server.shim_config.socket_path.clone()),
+        input.claude_planner.clone(),
+        input.acp_planner.clone(),
+    ));
     let planner_harness_interrupt_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(PlannerHarnessInterruptAdapter::new(input.harness.clone()));
     let planner_harness_shutdown_adapter: Arc<dyn ProviderAdapter> =
@@ -555,6 +554,11 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         claude_adapter,
         claude_worker_adapter,
         claude_restart_adapter,
+        Arc::new(
+            crate::operation::handoff_activation::HandoffActivationAdapter {
+                start: planner_harness_start_adapter.clone(),
+            },
+        ),
         planner_harness_start_adapter,
         planner_harness_interrupt_adapter,
         planner_harness_shutdown_adapter,

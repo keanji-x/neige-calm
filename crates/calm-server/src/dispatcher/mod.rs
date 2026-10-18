@@ -449,6 +449,11 @@ fn dispatcher_operation_runtime(
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
+            Arc::new(
+                crate::operation::handoff_activation::HandoffActivationAdapter {
+                    start: planner_harness_start_adapter.clone(),
+                },
+            ),
             planner_harness_start_adapter,
             planner_harness_interrupt_adapter,
             planner_harness_shutdown_adapter,

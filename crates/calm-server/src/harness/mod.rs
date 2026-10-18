@@ -464,7 +464,7 @@ async fn record_interrupted_claude_turn(
     Ok(())
 }
 
-async fn replay_harness_events_since(
+pub(crate) async fn replay_harness_events_since(
     repo: Arc<dyn Repo>,
     card_id: &str,
     track_id: &TrackId,

@@ -4878,3 +4878,12 @@ mod interrupt_command;
 
 #[cfg(test)]
 mod handoff_pause_lifecycle_tests;
+
+#[cfg(test)]
+mod handoff_activation_tests;
+
+#[cfg(test)]
+mod handoff_activation_test_support;
+
+#[cfg(test)]
+mod handoff_activation_recovery_tests;

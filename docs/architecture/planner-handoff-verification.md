@@ -390,3 +390,8 @@ all tests, their existing timeouts, assertions and audit policy. This is the onl
 change beyond the byte-identical replay; it changes test scheduling, not runtime behavior.
 It requires no growing test roster and adds no CI pass. Final full gate results must validate
 that scheduling fix; the diagnostic selection alone is not acceptance evidence.
+
+## Explicit forward activation
+
+The activation attempt and its focused, mutation and kernel evidence are recorded in
+[Planner handoff activation verification](planner-handoff-activation-verification.md).

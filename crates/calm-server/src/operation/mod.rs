@@ -1,3 +1,6 @@
+pub(crate) mod handoff_activation;
+mod handoff_activation_briefing;
+mod handoff_activation_sql;
 pub(crate) mod handoff_cutover;
 mod handoff_cutover_sql;
 #[cfg(test)]
@@ -87,7 +90,7 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "child-track",
 ];
 
-pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 10] = [
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 12] = [
     card_create_adapter::CARD_CREATE,
     track_recipe_create_adapter::TRACK_RECIPE_CREATE,
     "terminal-create",
@@ -95,6 +98,8 @@ pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 10] = [
     "claude-create",
     "claude-restart",
     "planner-harness-start",
+    handoff_cutover::HANDOFF_CUTOVER,
+    handoff_activation::HANDOFF_ACTIVATION,
     "planner-harness-interrupt",
     "planner-harness-shutdown",
     "forge-action",

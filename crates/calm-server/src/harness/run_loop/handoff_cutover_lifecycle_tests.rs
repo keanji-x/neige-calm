@@ -94,7 +94,7 @@ async fn handoff_cutover_preserves_queue_floor_then_reads_only_suffix_from_exist
 }
 
 #[tokio::test]
-async fn handoff_cutover_registered_providers_pause_and_commit_without_native_start() {
+async fn handoff_activation_registered_providers_keep_backend_owned_readiness() {
     for provider in crate::harness::backend::PlannerBackend::registered_providers() {
         let mut a = Fixture::new().await;
         let mut b = a.sibling(CardRole::Assistant).await;
@@ -188,6 +188,53 @@ async fn handoff_cutover_registered_providers_pause_and_commit_without_native_st
                 .unwrap(),
             0
         );
+        let (runtime, registry) = super::handoff_activation_test_support::runtime(&a);
+        let crate::operation::handoff_cutover::CutoverResult::CutoverCommittedPendingActivation {
+            operation_id,
+            ..
+        } = commit(&a, plan.clone()).await.unwrap();
+        let receipt = crate::operation::handoff_activation::activate(&runtime, operation_id)
+            .await
+            .unwrap();
+        let result = match receipt {
+            crate::operation::OperationReceipt::AwaitingRetry { output, .. } => output.result,
+            crate::operation::OperationReceipt::Settled(crate::operation::OperationResult {
+                outcome: crate::operation::OperationOutcome::Succeeded { result },
+                ..
+            }) => result,
+            other => panic!("expected backend-owned readiness result: {other:?}"),
+        };
+        let result: crate::operation::handoff_activation::ActivationResult =
+            serde_json::from_value(result).unwrap();
+        if crate::harness::backend::PlannerBackend::metadata(&provider).requires_codex_daemon {
+            assert!(matches!(
+                result,
+                crate::operation::handoff_activation::ActivationResult::Activated { .. }
+            ));
+            registry
+                .shutdown_and_remove(&plan.scope.new_session_id)
+                .await
+                .unwrap();
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    crate::operation::handoff_activation::ActivationResult::Blocked { .. }
+                ),
+                "unconfigured native backend must retain its owner's refusal"
+            );
+            let row = a
+                .repo
+                .session_get_by_id(&plan.scope.new_session_id.as_str().into())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                row.state,
+                crate::session_projection_repo::WorkerSessionState::PendingActivation
+            );
+            assert!(row.thread_id.is_none() && row.mcp_token_hash.is_none());
+        }
         drop(ingress);
     }
 }
