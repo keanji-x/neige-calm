@@ -21,7 +21,7 @@ pub struct RunReadQuery {
 #[serde(untagged)]
 pub enum PlannerRunReadResponse {
     Historical(GetPlannerRunResponse),
-    Conversation(ConversationRunResponse),
+    Conversation(Box<ConversationRunResponse>),
 }
 
 // Negotiated responses extend the old view, so both schemas may match: anyOf,
@@ -173,7 +173,7 @@ pub(super) async fn read(
                 "Delivery could not be confirmed. This message is held to avoid sending it twice.".into()))
                 .or_else(|| (!pending_messages.is_empty() && handle_fence.is_none())
                     .then(|| "Message saved. Execution has not started.".into()));
-        Json(PlannerRunReadResponse::Conversation(
+        Json(PlannerRunReadResponse::Conversation(Box::new(
             ConversationRunResponse {
                 native_turn_id: (header.phase == crate::harness::HarnessPhaseTag::TurnRunning)
                     .then(|| header.last_turn_id.clone())
@@ -206,7 +206,7 @@ pub(super) async fn read(
                 pending_messages,
                 active_input,
             },
-        ))
+        )))
         .into_response()
     } else {
         let Json(run) = super::planner_cards::historical_planner_run(s.clone(), id.clone()).await?;
@@ -223,7 +223,7 @@ pub(super) async fn read(
             let edit_handle = run.worker_session_id.as_ref().and(handle_fence.as_ref());
             let history_replacement_supported =
                 historical_edit_capability(&s, &principal, source, &scope, edit_handle).await?;
-            Json(PlannerRunReadResponse::Conversation(
+            Json(PlannerRunReadResponse::Conversation(Box::new(
                 ConversationRunResponse {
                     native_turn_id: run.running_turn.as_ref().map(|turn| turn.turn_id.clone()),
                     run,
@@ -234,7 +234,7 @@ pub(super) async fn read(
                     pending_messages: vec![],
                     active_input: None,
                 },
-            ))
+            )))
             .into_response()
         } else {
             Json(PlannerRunReadResponse::Historical(run)).into_response()

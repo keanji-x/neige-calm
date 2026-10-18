@@ -35,7 +35,6 @@ pub mod report_source_links;
 pub mod report_sources;
 pub mod runtime;
 pub mod runtime_paths;
-pub mod storage_upgrade;
 pub mod tailnet;
 pub mod task_recovery;
 pub mod task_result;
