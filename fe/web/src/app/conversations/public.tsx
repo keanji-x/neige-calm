@@ -501,7 +501,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const rememberedTurnsOf = useCallback((conversationId: string) => entries[conversationId]?.turns ?? NO_TURNS, [entries]);
   const turnsOf = useCallback(
     (conversationId: string) => withConfirmedSends(entries[conversationId]?.turns ?? NO_TURNS, outboxes[conversationId] ?? NO_SENDS,
-      spentRows[conversationId] ?? NO_ROWS),
+      spentRows[conversationId] ?? NO_ROWS, conversationId),
     [entries, outboxes, spentRows],
   );
   const value = useMemo<ConversationRegistry>(

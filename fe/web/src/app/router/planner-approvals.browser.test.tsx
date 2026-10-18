@@ -60,7 +60,7 @@ function setup({ theme = 'light', mode = 'never', asks = [], putMode, answer }: 
         payload: { schemaVersion: 4, working: false, attention: asks.length > 0 ? 'input' : 'none', activity_at_ms: 5, items: asks, cards: [] } }] };
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: PLANNER.id, worker_session_id: 'session',
       phase: asks.length > 0 ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: stored,
-      blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: asks.length > 0 ? { turn_id: 'turn-1', elapsed_ms: 42_000 } : null, attachments_supported: true }, 'idle');
+      blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: asks.length > 0 ? { turn_id: 'turn-1', elapsed_ms: 42_000 } : null, attachments_supported: true }, 'idle', true);
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
     if (request.path.includes('/harness/items')) body = historicalConversationPage(conversationCardId(request.path), [{ id: 1, worker_session_id: 'session', card_id: PLANNER.id,
       track_id: TRACK.id, thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage',

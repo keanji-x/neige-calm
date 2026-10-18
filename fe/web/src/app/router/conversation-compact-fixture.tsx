@@ -24,8 +24,8 @@ export function renderCompactFixture(provider: AgentProvider, supported: boolean
     params: JSON.stringify({ id: 'turn', status: 'completed', error: null }), created_at_ms: 3,
   }];
   return { run, ...renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, plannerProvider: provider, reply: request => {
-    if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({ ...run, card_id: 'second-planner', worker_session_id: 'runtime2', compact_outcome: null, context_usage_invalidated: false, token_usage: null }, 'idle') };
-    if (request.path.includes('/planner/run?contract=conversation_v1')) return { status: 200, statusText: 'OK', body: historicalConversationRun(run, 'idle') };
+    if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({ ...run, card_id: 'second-planner', worker_session_id: 'runtime2', compact_outcome: null, context_usage_invalidated: false, token_usage: null }, 'idle', true) };
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return { status: 200, statusText: 'OK', body: historicalConversationRun(run, 'idle', true) };
     if (request.path.endsWith('/planner/compact')) return compactReply ?? { status: 200, statusText: 'OK', body: { card_id: run.card_id, started: true } };
     if (request.path.includes('/harness/items')) return historyReady
       ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) }

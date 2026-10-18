@@ -1,4 +1,4 @@
-import type { AgentProvider, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
+import type { AgentProvider, HarnessTimeoutEvidence, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
 import type { Conversation, CreatedConversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerQueueEditOutcome, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { FailedSendOp, PendingQueueSend, ReplacedTurn, QueueDisplayAccounting } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
@@ -13,6 +13,8 @@ export type ConversationStore = Readonly<{
   pending: ReadonlySet<string>;
   working: boolean;
   stalled: boolean;
+  /** Canonical content acceptance remains separate from a held execution. */
+  inputStalled: boolean;
   /** Actual current session is terminal; display hold does not prevent saving new content. */
   executionHeld: boolean;
   stopping: boolean;
@@ -85,6 +87,7 @@ export type ConversationStore = Readonly<{
   loadEarlier: () => void;
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
   blockedReason: string | null;
+  terminalTimeout: HarnessTimeoutEvidence | null;
   /** What this conversation's turns run with. */
   model: ModelSelection;
   /** What may be chosen, or `null` until the catalog has answered once. */

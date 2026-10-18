@@ -1,4 +1,4 @@
-import { historicalConversationRun } from './conversation-read-data.ts';
+import { historicalConversationRun, historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // An existing Track's Role picker in its Planner conversation's composer, on the production router: the value is the
@@ -49,7 +49,8 @@ function setup({ adminGrantedAt, canAdmin, patch }: Kernel) {
     if (request.path === '/api/tracks/w1') {
       return ok({ track, can_reopen: false, can_close: true, can_admin: canAdmin, cards: [PLANNER], overlays: [] });
     }
-    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun(PLANNER_RUN, 'idle'));
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun(PLANNER_RUN, 'idle', true));
+    if (request.path.includes('/harness/items?contract=conversation_v1')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
     if (request.path === '/api/settings') return ok({});
     return ok([]);
   } };

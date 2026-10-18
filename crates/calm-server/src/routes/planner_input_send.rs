@@ -94,8 +94,7 @@ pub(crate) async fn send_planner_input(
     State(w): State<WorkerState>,
     State(cs): State<CodexShellState>,
     source: crate::auth::HumanInputSource,
-    actor: Actor,
-    headers: HeaderMap,
+    (actor, headers): (Actor, HeaderMap),
     Path(id): Path<String>,
     JsonBody(body): JsonBody<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
@@ -422,6 +421,7 @@ async fn live_planner_harness(
         card_id,
     )
     .await;
+    crate::conversation_archive::require_unarchived(s.repo.as_ref(), card_id.as_str()).await?;
     let runtime = s
         .repo
         .session_projection_active_for_card(&card_id.to_string())

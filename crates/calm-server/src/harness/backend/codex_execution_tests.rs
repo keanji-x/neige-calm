@@ -238,9 +238,11 @@ async fn codex_budget_notice_inflight_blocks_observation_but_never_replaces_init
     .unwrap();
     let task = tokio::spawn(async move {
         backend
-            .send_budget_notice(&notice, BudgetControlScope::Canonical(scope), &|| {
-                Box::pin(async { Ok(()) })
-            })
+            .send_budget_notice(
+                &notice,
+                BudgetControlScope::Canonical(Box::new(scope)),
+                &|| Box::pin(async { Ok(()) }),
+            )
             .await
     });
     let req = request(&mut peer).await;

@@ -255,7 +255,7 @@ describe('degraded workspace reads stay usable', () => {
         return ok([{
           id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
           trackId: 'w1', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1,
-          lastTurnCompletedAt: null,
+          archivedAt: null, lastTurnCompletedAt: null,
         }]);
       }
       /* The create that lost its acknowledgement did commit, and the kernel
@@ -299,11 +299,11 @@ describe('degraded workspace reads stay usable', () => {
     await userEvent.click(within(drawer).getByRole('button', { name: 'Try again' }));
     /* The adopted conversation is the original create's: its row names the
        drawer (the conversation name is derived from the first confirmed
-       user turn) and is its one `you` line. The edited words were never
+       user turn) and is its one historical line with an unknown author. The edited words were never
        posted and are nowhere in it. */
     const adopted = await screen.findByRole('complementary', { name: 'Original uncertain intent' });
     await waitFor(() => expect(
-      [...adopted.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+      [...adopted.querySelectorAll('[data-nc-turn="unknown"]')].map((turn) => turn.textContent),
     ).toEqual(['Original uncertain intent']));
     expect(within(adopted).queryByText('Edited offline intent')).toBeNull();
     expect(creates).toHaveLength(1);

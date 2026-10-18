@@ -14,7 +14,7 @@ export function historicalConversationPage(card:string,rows:readonly unknown[],n
       source:{kind:'historical_raw',item}};
   }),next_cursor:next};
 }
-export function historicalConversationRun<T extends object>(run:T, runtimeState:WorkerSessionState|null) {
-  return {...run,input_contract:'historical' as const,runtime_state:runtimeState,pending_messages:[],active_input:null,
+export function historicalConversationRun<T extends object>(run:T, runtimeState:WorkerSessionState|null, historyReplacementSupported:boolean) {
+  return {...run,history_replacement_supported:historyReplacementSupported,terminal_timeout:null,input_contract:'historical' as const,runtime_state:runtimeState,pending_messages:[],active_input:null,
     native_turn_id:(run as {running_turn?:{turn_id:string}|null}).running_turn?.turn_id ?? null};
 }

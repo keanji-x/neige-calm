@@ -249,7 +249,7 @@ function harness(options: {
         return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationRun({
           card_id: 'card-planner', worker_session_id: 'runtime', phase: 'idle',
           model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-        }, 'idle') });
+        }, 'idle', true) });
       }
       if (request.method === 'GET' && request.path.includes('/harness/items')) {
         return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [...(options.plannerItems ?? [])], null) });
@@ -1239,7 +1239,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     const drawer = await screen.findByRole('complementary', { name: 'Planner' });
     await waitFor(() => expect(
-      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+      [...drawer.querySelectorAll('[data-nc-turn="unknown"]')].map((turn) => turn.textContent),
     ).toEqual(['Read it']));
     expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
     const items = sent.filter((request) => request.path.includes('/harness/items'));
@@ -1258,7 +1258,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     const drawer = await screen.findByRole('complementary', { name: 'Planner' });
     await waitFor(() => expect(drawer.querySelector('[data-nc-thread-empty]')).not.toBeNull());
-    expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0);
+    expect(drawer.querySelectorAll('[data-nc-turn="unknown"]')).toHaveLength(0);
   });
 
   it('navigates before the track detail lands, and opens the drawer when it does', async () => {

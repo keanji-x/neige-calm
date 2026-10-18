@@ -160,7 +160,7 @@ pub(crate) fn decode_revision(
     payload_json: &str,
     created_at_ms: i64,
 ) -> Result<StoredMessageRevision> {
-    let payload: PrivateHistoryPayload<HumanPayload> = serde_json::from_str(&payload_json)?;
+    let payload: PrivateHistoryPayload<HumanPayload> = serde_json::from_str(payload_json)?;
     if let PrivateHistoryPayload::Present { value } = &payload
         && digest(value)? != body_sha256
     {

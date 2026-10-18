@@ -604,7 +604,7 @@ impl PlannerHarness {
     pub async fn run(params: PlannerHarnessParams) -> Result<Self> {
         let loaded = match &params.snapshot.kind {
             RuntimeSnapshotKind::Historical(snapshot) => {
-                LoadedRuntimeSnapshot::Historical(snapshot.clone())
+                LoadedRuntimeSnapshot::Historical((**snapshot).clone())
             }
             RuntimeSnapshotKind::Canonical => {
                 LoadedRuntimeSnapshot::Canonical(canonical::load_current(&params).await?)
@@ -654,7 +654,7 @@ impl PlannerHarness {
         let RuntimeSnapshotKind::Historical(snapshot) = &params.snapshot.kind else {
             panic!("the unstarted historical fixture cannot stand in for a canonical runtime");
         };
-        let loaded = LoadedRuntimeSnapshot::Historical(snapshot.clone());
+        let loaded = LoadedRuntimeSnapshot::Historical((**snapshot).clone());
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
         // No run loop on this path to flush the drop announcements early; the `persist_snapshot_inner`
@@ -770,19 +770,7 @@ impl PlannerHarness {
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                let (ack, checkpoint) = stage_durable_entries(&self.inner, deliveries).await?;
-                if let Err(error) = persist_snapshot_for_durable_send(
-                    &self.inner,
-                    &key,
-                    ack.entry_id.as_ref(),
-                    source,
-                )
-                .await
-                {
-                    restore_durable_user_message(&self.inner, checkpoint).await?;
-                    return Err(error);
-                }
-                Ok(ack)
+                durable_command::handle_durable(&self.inner, deliveries, &key, source).await
             }
         }
     }
@@ -1034,6 +1022,13 @@ impl PlannerHarness {
             .backend
             .mark_installed(&self.inner.held_request_sender);
         self.inner.live_claim.install();
+    }
+
+    /// The bound execution backend's ability, independent of the caller's authority.
+    pub(crate) fn history_replacement_supported(&self) -> bool {
+        PlannerBackend::metadata(&self.inner.backend.provider())
+            .capabilities
+            .history_replacement
     }
 
     /// Which provider runs this harness's turns.
@@ -1366,7 +1361,7 @@ fn inner_from_params(
         }
         LoadedRuntimeSnapshot::Canonical(frame) => (
             frame.snapshot.header.clone(),
-            RuntimeInputs::Canonical(canonical::CanonicalInputs::new(frame)),
+            RuntimeInputs::Canonical(Box::new(canonical::CanonicalInputs::new(frame))),
             Vec::new(),
             DebounceState::default(),
             VecDeque::new(),
@@ -1435,7 +1430,7 @@ fn inner_from_params(
             },
         )),
         pending_rewind: Mutex::new(header.pending_rewind.map(BackendRewind::from_persisted)),
-        last_turn_base: Mutex::new(header.last_turn_base.map(Into::into)),
+        last_turn_base: Mutex::new(header.last_turn_base),
         rewound_turns: Mutex::new(HashSet::new()),
         debounce: Mutex::new(debounce),
         interrupt_deadline: Mutex::new(None),
@@ -1557,6 +1552,8 @@ async fn run_loop(
             }
             command = observations.recv() => {
                 let Some(command) = command else { break };
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("conversation-command-dequeued", inner.card_id.as_str()).await;
                 match command {
                     HarnessObservationCommand::HistoricalInterrupt { plan, answer } => {
                         historical_control::stop::handle(&inner, *plan, answer).await;
@@ -1603,26 +1600,7 @@ async fn run_loop(
                         }
                     }
                     HarnessObservationCommand::Durable { deliveries, key, source, persisted } => {
-                        if let Some(source) = &source
-                            && let Err(error) = source.require_card(inner.repo.as_ref(), inner.card_id.as_str()).await
-                        {
-                            let _ = persisted.send(Err(error));
-                            continue;
-                        }
-                        let result = match stage_durable_entries(&inner, deliveries).await {
-                            Ok((ack, checkpoint)) => {
-                                match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref(), source).await {
-                                    Ok(()) => Ok(ack),
-                                    Err(error) => {
-                                        match restore_durable_user_message(&inner, checkpoint).await {
-                                            Ok(()) => Err(error),
-                                            Err(restore_error) => Err(restore_error),
-                                        }
-                                    }
-                                }
-                            }
-                            Err(error) => Err(error),
-                        };
+                        let result = durable_command::handle_durable(&inner, deliveries, &key, source).await;
                         let _ = persisted.send(result);
                     }
                     HarnessObservationCommand::InspectInput { entry_id, answer } => {
@@ -1647,6 +1625,8 @@ async fn run_loop(
                         let _ = answer.send(outcome);
                     }
                 }
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("conversation-command-completed", inner.card_id.as_str()).await;
             }
             event = events.recv() => {
                 match event {
@@ -3454,6 +3434,16 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Deterministic drain-vs-supersede window. No-op in production.
     wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
     let _issuance_guard = inner.issuance.lock().await;
+    // A lifecycle write holds this fence through its commit. Observations that
+    // arrive later remain queued until the person explicitly restores the card.
+    if inner
+        .repo
+        .conversation_archived_at(inner.card_id.as_str())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -4914,6 +4904,7 @@ pub(crate) mod budget;
 mod compact_command;
 #[cfg(test)]
 mod compact_tests;
+mod durable_command;
 mod held;
 mod hibernation;
 pub(crate) mod input_inspection;

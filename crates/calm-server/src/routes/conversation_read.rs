@@ -9,7 +9,7 @@ use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 pub(crate) struct ReadScope {
     card: String,
     pub track: String,
-    area: AreaId,
+    pub area: AreaId,
 }
 impl ReadScope {
     pub async fn check(repo: &dyn RouteRepo, card: &str, principal: &Principal) -> Result<Self> {

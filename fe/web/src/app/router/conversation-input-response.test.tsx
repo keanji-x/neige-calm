@@ -53,7 +53,7 @@ function mount({ phase = 'idle', input }: { phase?: string; input?: Promise<ApiT
     }]);
     if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return ok(historicalConversationRun({ card_id: 'second-planner', worker_session_id: 'runtime',
       phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true,
-      compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     if (request.path.includes('/second-planner/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), Array.from({ length: 120 }, (_, index) => ({
       id: index + 1, worker_session_id: 'runtime', card_id: 'second-planner', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
@@ -139,5 +139,5 @@ it('shows first-message sending feedback while conversation creation is held', a
     expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toBe('The first local message');
     expect(screen.getByText('Sending…')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true);
-  } finally { await response.release({ id: 'created', trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1, lastTurnCompletedAt: null }); cleanup(); view.client.clear(); }
+  } finally { await response.release({ id: 'created', trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1, archivedAt: null, lastTurnCompletedAt: null }); cleanup(); view.client.clear(); }
 });

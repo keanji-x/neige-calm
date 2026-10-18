@@ -8,6 +8,8 @@ import { renderDailyFixture } from './daily-planner-fixture.tsx';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { useLayoutEffect } from 'react';
 import { useConversationRegistry, type ConversationRegistry } from '../conversations/public.tsx';
+import { conversationCursorSchema } from '../../../../core/api/schemas.ts';
+import { historicalConversationPage, historicalConversationRun, conversationCardId } from './conversation-read-data.ts';
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 export const FIRST_MESSAGE = 'Keep the first sentence readable through adoption.';
@@ -62,7 +64,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
           const key = request.headers?.['Idempotency-Key'];
           if (key === undefined) throw new Error('Missing original key');
           created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex',
-            state: options.incomplete ? 'failed' : 'idle', updatedAt: 10, lastTurnCompletedAt: null };
+            state: options.incomplete ? 'failed' : 'idle', updatedAt: 10, archivedAt: null, lastTurnCompletedAt: null };
           await heldCreate;
           if (options.loseReply) throw new Error('The create reply was lost.');
           return { status: 201, statusText: 'Created', body: { ...created, initialInput: options.legacy ? { kind: 'legacy-unavailable' }
@@ -89,10 +91,17 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         return result;
       }
       if (created !== null && request.path.includes(`/${created.id}/harness/items`)) {
-        const cursor = new URL(request.path, 'http://fixture.test').searchParams.get('after_id');
-        if (cursor === null) throw new Error('The history request lacks its declared cursor.');
-        const page = Number(cursor) > 0 ? earlierHistory.filter(row => row.id < Number(cursor)) : history;
-        const result = failHistory ? { status: 500, statusText: 'Error', body: { error: 'History unavailable.' } } : ok(page);
+        const parameters = new URL(request.path, 'http://fixture.test').searchParams;
+        if (parameters.get('contract') !== 'conversation_v1') throw new Error('The history request lacks its declared contract.');
+        const rawCursor = parameters.get('cursor');
+        const cursor = rawCursor === null ? null : conversationCursorSchema.parse(JSON.parse(rawCursor));
+        if (cursor !== null && (cursor.card_id !== created.id || cursor.source !== 'historical_raw')) throw new Error('Wrong historical cursor scope.');
+        const page = cursor === null ? history : earlierHistory.filter(row => row.id < cursor.position);
+        const boundary = page.length === HARNESS_ITEMS_PAGE_LIMIT ? page[0] : undefined;
+        const next = boundary === undefined ? null : { contract: 'conversation_v1' as const, source: 'historical_raw' as const,
+          card_id: created.id, position: boundary.id };
+        const result = failHistory ? { status: 500, statusText: 'Error', body: { error: 'History unavailable.' } }
+          : ok(historicalConversationPage(created.id, page, next));
         if (options.holdHistory) return await new Promise<ApiTransportResponse>(resolve => { heldHistory.push(() => { resolve(result); }); });
         return result;
       }
@@ -132,11 +141,12 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         pending = pending.filter(candidate => candidate.entry_id !== entry.entry_id);
         return ok({ card_id: created?.id, entry_id: entry.entry_id, steered: true, turn_id: 'running-first-input' });
       }
-      if (request.path.endsWith('/planner/run')) {
+      if (created !== null && request.path.endsWith('/planner/run?contract=conversation_v1')
+        && conversationCardId(request.path) === created.id) {
         if (failRun && created !== null && request.path.includes(`/${created.id}/`)) return { status: 500, statusText: 'Error', body: { error: 'Run unavailable.' } };
-        const result = ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime',
+        const result = ok(historicalConversationRun({ card_id: conversationCardId(request.path), worker_session_id: 'runtime',
         phase: options.running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
-        manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false, running_turn: options.running ? { turn_id: 'running-first-input', elapsed_ms: 1 } : null, pending, pending_overflow: 0 });
+        manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false, running_turn: options.running ? { turn_id: 'running-first-input', elapsed_ms: 1 } : null, pending, pending_overflow: 0 }, options.running ? 'running' : 'idle', true));
         if (options.holdRun && created !== null && request.path.includes(`/${created.id}/`)) {
           return await new Promise<ApiTransportResponse>(resolve => { heldRun.push(() => { resolve(result); }); });
         }
@@ -178,6 +188,13 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
     historyCount: () => heldHistory.length,
     releaseHistory: (index: number) => { heldHistory[index](); },
     clearHistory: () => { history = []; earlierHistory = []; },
+    appendReply: (text: string) => {
+      if (created === null) throw new Error('No created conversation for its provider reply.');
+      history = [...history, { id: 8, card_id: created.id, worker_session_id: 'runtime', track_id: 'daily',
+        thread_id: 'thread', turn_id: 'accepted-first-turn', item_uuid: 'first-provider-reply',
+        item_type: 'agentMessage', method: 'item/completed', params: JSON.stringify({ item: { text } }),
+        created_at_ms: 9, turn_error_text: null }];
+    },
     advanceHistoryWindow: () => {
       if (created === null) throw new Error('No created conversation for a later page.');
       const cardId = created.id; earlierHistory = history;

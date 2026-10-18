@@ -105,6 +105,9 @@ pub struct PlannerHarnessStartAdapter {
     invocation: StartInvocation,
 }
 
+mod target;
+pub(super) use target::operation_card_id;
+
 impl PlannerHarnessStartAdapter {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1155,6 +1158,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             return self.retained_interact(&wire, output, op, ctx).await;
         }
         let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            "conversation-start-prepared",
+            payload.planner_card_id.as_str(),
+        )
+        .await;
         self.admit_historical(payload.planner_card_id.as_str())
             .await?;
         let reset_transcript = payload.reset_harness_items;

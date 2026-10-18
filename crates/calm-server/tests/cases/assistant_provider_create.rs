@@ -563,3 +563,84 @@ async fn images_false_refuses(check_upload: bool) {
     assert_eq!(requests(&root, "session/prompt").len(), 1);
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn assistant_archive_survives_cold_boot_and_restores_the_same_native_context() {
+    let root = Root::new("exit");
+    let stack = boot_acp(&root).await;
+    let (track, _) = stack
+        .create_claude_track_with(json!({"planner_provider":"opencode"}))
+        .await;
+    let (status, row) = create(
+        &stack,
+        &track,
+        "archive-cold-boot",
+        json!({"provider":"opencode","text":"saved context"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{row}");
+    let card = row["id"].as_str().unwrap();
+    stack.wait_outcomes(card, 1).await;
+    let original = stack.runtime(card).await;
+    stack.wait_phase(&original.id, "turn_completed").await;
+    let path = format!("/api/tracks/{track}/conversations/{card}/archive");
+    assert_eq!(
+        stack
+            .send("PATCH", &path, Some(json!({"archived":true})))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let history = stack
+        .send("GET", &format!("/api/cards/{card}/harness/items"), None)
+        .await
+        .1;
+    let prompts = requests(&root, "session/prompt").len();
+    let loads = requests(&root, "session/load").len();
+    // This tears down the old AppState, MCP listener and every live harness before production boot.
+    stack.shutdown().await;
+    let stack = boot_acp(&root).await;
+    assert!(stack.state.harness.get(&original.id).is_none());
+    assert_eq!(requests(&root, "session/prompt").len(), prompts);
+    assert_eq!(requests(&root, "session/load").len(), loads);
+    let (_, listed) = stack
+        .send("GET", &format!("/api/tracks/{track}/conversations"), None)
+        .await;
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == card)
+            .unwrap()["archivedAt"]
+            .is_number()
+    );
+    assert_eq!(
+        stack.post_input(card, "refused while archived").await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        stack
+            .send("GET", &format!("/api/cards/{card}/harness/items"), None)
+            .await
+            .1,
+        history
+    );
+    assert_eq!(
+        stack
+            .send("PATCH", &path, Some(json!({"archived":false})))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let restored = stack.runtime(card).await;
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.session_id, original.session_id);
+    assert_eq!(restored.thread_id, original.thread_id);
+    let (status, body) = stack.post_input(card, "continue saved context").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    stack.wait_outcomes(card, 2).await;
+    assert_eq!(stack.runtime(card).await.session_id, original.session_id);
+    assert_eq!(requests(&root, "session/prompt").len(), prompts + 1);
+    stack.shutdown().await;
+}

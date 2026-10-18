@@ -108,6 +108,7 @@ async fn executor_boundary(
         )
         .await?;
     let request = PrepareExecution {
+        source: PreparedSource::Registered,
         identity: ExecutionIdentity {
             execution_id: ExecutionId::fresh()?,
             executor_boot: client.executor_boot().clone(),
@@ -173,13 +174,14 @@ async fn executor_boundary(
         ticket: request.ticket.clone(),
     };
     let launched = client.request(ExecutionRequest::Launch(consume())).await?;
+    let cwd_refusal = held
+        .qualify_local()?
+        .open_cwd(&WorkspaceCwd::try_from("mounted".to_owned()).map_err(|e| anyhow::anyhow!(e))?)
+        .err()
+        .map(|e| e.to_string());
     let launch_cross_mount_unsupported = matches!(
-        launched,
-        ExecutionReply::ObjectQualificationFailed {
-            failure: ObjectQualificationFailure::Unsupported(
-                ObjectQualificationUnsupported::CwdMountBoundary { .. }
-            )
-        }
+        &launched,
+        ExecutionReply::Refused { reason } if Some(reason) == cwd_refusal.as_ref()
     );
     // A mutation must still drain any unexpectedly created execution before the outer assertion.
     if let ExecutionReply::Receipt {

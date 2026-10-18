@@ -227,6 +227,13 @@ function WorkspaceImage({ path, label, files, context }: {
   return <Destination destination={path} label={label} body={image} image context={{ ...context, fileBasePath: '' }} />;
 }
 
+/** Narrow link capability for app composition; all admission remains in Destination. */
+export function ReportTextLink({ href, children, label, ...context }: ReportTextContext & Readonly<{
+  href: string; children: ReactNode; label: string;
+}>) {
+  return <Destination destination={href} label={label} body={children} context={context} />;
+}
+
 function Destination({ destination, label, body, image = false, context }: {
   destination: string; label: string; body: ReactNode; image?: boolean; context: ReportTextContext;
 }) {

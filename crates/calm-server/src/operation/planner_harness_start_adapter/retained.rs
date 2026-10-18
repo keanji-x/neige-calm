@@ -26,6 +26,10 @@ pub(super) struct RetainedPayload {
 }
 
 impl RetainedPayload {
+    pub(super) fn card_id(&self) -> &str {
+        &self.card_id
+    }
+
     pub(super) fn decode(value: &Value) -> Result<Option<Self>> {
         if value.get("canonical_activation_version").is_none() {
             return Ok(None);

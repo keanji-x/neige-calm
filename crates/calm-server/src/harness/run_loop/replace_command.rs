@@ -45,6 +45,8 @@ pub(super) async fn handle_replace_admitted(
             .require_card(inner.repo.as_ref(), inner.card_id.as_str())
             .await?;
     }
+    crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
+        .await?;
     if let Some(reader) = inner.backend.issuance_hold() {
         return Err(CalmError::Conflict(reader));
     }

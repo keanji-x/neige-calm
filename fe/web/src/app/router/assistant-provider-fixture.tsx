@@ -36,7 +36,7 @@ export function renderAssistantProviderFixture(options: {
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const rows: Conversation[] = options.existingProvider === undefined ? [] : [{
     id: 'dormant', trackId: track.id, title: 'Saved Assistant', kind: 'track-assistant',
-    provider: options.existingProvider, state: null, updatedAt: 2, lastTurnCompletedAt: null,
+    provider: options.existingProvider, state: null, updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null,
   }];
   const catalog = { models: [{ id: 'selected', model: 'selected', display_name: 'Selected model', resolved_model: null,
     description: '', is_default: false, default_reasoning_effort: 'high',
@@ -66,11 +66,16 @@ export function renderAssistantProviderFixture(options: {
         const input = request.body as { provider: AgentProvider; side?: { source_card_id: string } };
         const created: Conversation = { id: trackConversationCardId(track.id, request.headers?.['Idempotency-Key'] ?? ''),
           trackId: track.id, provider: input.provider, title: 'Created Assistant', kind: 'track-assistant',
-          state: null, updatedAt: 3, lastTurnCompletedAt: null,
+          state: null, updatedAt: 3, archivedAt: null, lastTurnCompletedAt: null,
           ...(input.side === undefined ? {} : { sourceCardId: input.side.source_card_id }) };
         rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } }; status = 201;
         if (options.landFirstCreate && attempts === 1) return { status: 503, statusText: 'Unavailable', body: { code: 'service_unavailable', error: 'Unconfirmed' } };
-      } else body = options.hideLanded ? [] : rows;
+      } else body = options.hideLanded ? [] : rows.map(row => ({ ...row }));
+    }
+    if (request.method === 'PATCH' && request.path === `/api/tracks/${track.id}/conversations/dormant/archive`) {
+      const index = rows.findIndex(row => row.id === 'dormant');
+      if (index >= 0) rows[index] = { ...rows[index], archivedAt: (request.body as { archived: boolean }).archived ? 123 : null };
+      status = 204; body = undefined;
     }
     if (request.path.endsWith('/initial-input')) {
       const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
@@ -84,7 +89,7 @@ export function renderAssistantProviderFixture(options: {
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: cardId, worker_session_id: restarted ? 'replacement' : null,
       phase: 'idle', model: selectedModel, reasoning_effort: null, permission_mode: null, blocked_reason: null,
       attachments_supported: options.runAttachmentsSupported ?? false, manual_compact_supported: false, compact_outcome: null,
-      context_usage_invalidated: false, running_turn: null }, 'idle');
+      context_usage_invalidated: false, running_turn: null }, 'idle', options.answers.find(answer => answer.availability.provider === rows.find(row => row.id === cardId)?.provider)?.capabilities.history_replacement === true);
     if (request.path.endsWith('/planner/model')) {
       const input = request.body as { model: string | null; reasoning_effort: string | null };
       selectedModel = input.model;

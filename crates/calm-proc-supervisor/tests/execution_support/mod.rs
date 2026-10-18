@@ -193,6 +193,7 @@ pub(super) fn prepare(
         })
         .expect("test launch requires a real attachment receipt");
     PrepareExecution {
+        source: PreparedSource::Registered,
         identity: ExecutionIdentity {
             execution_id: ExecutionId::fresh().unwrap(),
             executor_boot: client.executor_boot().clone(),

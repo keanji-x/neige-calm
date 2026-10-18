@@ -3,6 +3,8 @@ import type { HarnessItem } from '../api/generated/wire.js';
 import { harnessInputSegmentSchema, harnessItemsOperation, harnessItemToTurns, type ConversationTurn } from './conversation.js';
 import { matchSendOps, outboxView, type SendOp } from './conversation-outbox.js';
 
+const RAW_SCOPE = Object.freeze({ cardId: 'card', threadId: 'thread' });
+
 const accepted = (key: string, entryId: string, queueRevision: number | null): SendOp & { phase: 'confirmed' } => ({
   key, phase: 'confirmed', queueRevision, fromComposer: true, replaces: null,
   echo: { id: `echo-${key}`, author: 'you', text: 'same', atMs: 2,
@@ -25,25 +27,25 @@ describe('canonical queue entry provenance', () => {
 
   it('does not spend a different known entry merely because its words are equal', () => {
     const earlier = { id: '7:0', author: 'you', text: 'same', atMs: 1, queueEntryId: 'first-input' } as const;
-    expect([...matchSendOps([earlier], [accepted('later-send', 'later-input', null)], [])]).toEqual([]);
+    expect([...matchSendOps([earlier], [accepted('later-send', 'later-input', null)], [], 'card')]).toEqual([]);
   });
 
   it('lets folded accepted operations share their exact carrier even when it already retired another op', () => {
     const carrier: ConversationTurn & { queueEntryId: string } = {
       id: '7:1', author: 'you', text: 'combined words', atMs: 1, queueEntryId: 'surviving-entry',
-      inputSource: { itemId: 7, segmentIndex: 1, turnId: 'real-folded-turn', entryRev: 1 },
+      inputSource: { ...RAW_SCOPE, itemId: 7, segmentIndex: 1, turnId: 'real-folded-turn', entryRev: 1 },
     };
-    expect([...matchSendOps([carrier], [accepted('create', 'surviving-entry', 0), accepted('folded', 'surviving-entry', 1)], ['7:1'])])
+    expect([...matchSendOps([carrier], [accepted('create', 'surviving-entry', 0), accepted('folded', 'surviving-entry', 1)], ['7:1'], 'card')])
       .toEqual([['create', '7:1'], ['folded', '7:1']]);
   });
 
   it('does not let an already-seen same-origin projection consume a later ordinary folded submission', () => {
     const prior = { id: '7:1', author: 'you', text: 'same', atMs: 1, queueEntryId: 'surviving-entry',
-      inputSource: { itemId: 7, segmentIndex: 1, turnId: null, entryRev: 1 } } as const;
+      inputSource: { ...RAW_SCOPE, itemId: 7, segmentIndex: 1, turnId: null, entryRev: 1 } } as const;
     const folded = accepted('later-fold', 'surviving-entry', 1);
     const op: SendOp = { ...folded, echo: { ...folded.echo, serverHighWaterBefore: 7 } };
-    expect([...matchSendOps([prior], [op], [])]).toEqual([]);
-    expect([...matchSendOps([prior, { ...prior, id: '9:1', text: 'same\n\nsame', inputSource: { ...prior.inputSource, itemId: 9, entryRev: 2, turnId: 'folded-provider-turn' } }], [op], ['9:1'])]).toEqual([['later-fold', '9:1']]);
+    expect([...matchSendOps([prior], [op], [], 'card')]).toEqual([]);
+    expect([...matchSendOps([prior, { ...prior, id: '9:1', text: 'same\n\nsame', inputSource: { ...prior.inputSource, itemId: 9, entryRev: 2, turnId: 'folded-provider-turn' } }], [op], ['9:1'], 'card')]).toEqual([['later-fold', '9:1']]);
   });
 });
 
@@ -52,8 +54,8 @@ it('does not let an older unbound source retire an ordinary queued edit whose re
   const original = accepted('ordinary', 'known', null);
   const op: SendOp = { ...original, queueRevision: 2, echo: { ...original.echo, text: 'Actual revision two' } };
   const stale: ConversationTurn = { id: '7:0', author: 'you', text: 'Older revision zero', atMs: 1, queueEntryId: 'known',
-    inputSource: { itemId: 7, segmentIndex: 0, turnId: null, entryRev: 0 } };
-  const shown = outboxView({ serverEntries: [stale], serverTurns: [stale], queuedEntryIds: new Set(), stalled: false,
+    inputSource: { ...RAW_SCOPE, itemId: 7, segmentIndex: 0, turnId: null, entryRev: 0 } };
+  const shown = outboxView({ cardId: 'card', serverEntries: [stale], serverTurns: [stale], queuedEntryIds: new Set(), stalled: false,
     ops: [op], spent: [], landed: { transcript: 1, run: 1 }, liveReplies: [] });
   expect(shown.retire).toEqual([]);
   expect(shown.transcript.map(entry => 'text' in entry ? entry.text : entry.author)).toEqual(['Actual revision two']);
@@ -89,16 +91,16 @@ it('keeps an ordinary send with unknown revision until bounded body matching or 
   const op = { ...accepted('fresh-fold', 'surviving-entry', null), echo: { ...accepted('fresh-fold', 'surviving-entry', null).echo,
     text: 'Newly accepted body B', serverHighWaterBefore: 3 } };
   const older: ConversationTurn = { id: '7:0', author: 'you', text: 'Older retained body A', atMs: 1, queueEntryId: 'surviving-entry',
-    inputSource: { itemId: 7, segmentIndex: 0, turnId: null, entryRev: 0 } };
-  const shown = outboxView({ serverEntries: [older], serverTurns: [older], queuedEntryIds: new Set(), stalled: false,
+    inputSource: { ...RAW_SCOPE, itemId: 7, segmentIndex: 0, turnId: null, entryRev: 0 } };
+  const shown = outboxView({ cardId: 'card', serverEntries: [older], serverTurns: [older], queuedEntryIds: new Set(), stalled: false,
     ops: [op], spent: [], landed: { transcript: 1, run: 1 }, liveReplies: [] });
   expect(shown.retire).toEqual([]);
   expect(shown.transcript.some(entry => 'text' in entry && entry.text === op.echo.text)).toBe(true);
-  const current = { ...older, id: '8:0', text: op.echo.text, inputSource: { itemId: 8, segmentIndex: 0, turnId: 'real-turn', entryRev: 1 } };
-  expect([...matchSendOps([current], [op], [])]).toEqual([[op.key, current.id]]);
-  expect([...matchSendOps([{ ...current, queueEntryId: 'different-entry' }], [op], [])]).toEqual([]);
+  const current = { ...older, id: '8:0', text: op.echo.text, inputSource: { ...RAW_SCOPE, itemId: 8, segmentIndex: 0, turnId: 'real-turn', entryRev: 1 } };
+  expect([...matchSendOps([current], [op], [], 'card')]).toEqual([[op.key, current.id]]);
+  expect([...matchSendOps([{ ...current, queueEntryId: 'different-entry' }], [op], [], 'card')]).toEqual([]);
   const known = { ...op, queueRevision: 1 };
-  expect([...matchSendOps([{ ...older, text: op.echo.text }], [known], [])]).toEqual([]);
-  expect([...matchSendOps([{ ...current, inputSource: { ...current.inputSource, entryRev: null } }], [known], [])]).toEqual([]);
-  expect([...matchSendOps([{ ...current, text: `Older retained body A\n\n${op.echo.text}` }], [known], [])]).toEqual([[op.key, current.id]]);
+  expect([...matchSendOps([{ ...older, text: op.echo.text }], [known], [], 'card')]).toEqual([]);
+  expect([...matchSendOps([{ ...current, inputSource: { ...current.inputSource, entryRev: null } }], [known], [], 'card')]).toEqual([]);
+  expect([...matchSendOps([{ ...current, text: `Older retained body A\n\n${op.echo.text}` }], [known], [], 'card')]).toEqual([[op.key, current.id]]);
 });

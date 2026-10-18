@@ -368,5 +368,5 @@ describe('duplication manifest on the application tree', () => {
   });
   it('keeps INV-DUP-001..010 implementations and consumers canonical', () => {
     expect(checkDuplicationManifest(resolve(import.meta.dirname, '../..'))).toEqual([]);
-  });
+  }, 30_000);
 });

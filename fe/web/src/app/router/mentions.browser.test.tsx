@@ -22,7 +22,7 @@ afterEach(async () => { cleanup(); await page.viewport(1280, 720); });
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER_CARD = { id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
-const ASSISTANT_ROW = { id: 'conv-assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 30, lastTurnCompletedAt: null };
+const ASSISTANT_ROW = { id: 'conv-assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 30, archivedAt: null, lastTurnCompletedAt: null };
 const BLOCK_INSERT = '@`area/reports/Deploy notes.md#b_1a2b`';
 const CANDIDATES: MentionCandidates = {
   tags: [{ label: '部署', track_count: 2, insert: '@`tag:部署`' }],
@@ -53,7 +53,7 @@ function mount(path: string, storedText: string | null = null, pluginDescription
     if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [PLANNER_CARD], overlays: [] }));
     if (request.path === '/api/tracks/w1/conversations') return Promise.resolve(ok([ASSISTANT_ROW]));
     if (request.path.includes('/planner/run?contract=conversation_v1')) {
-      return Promise.resolve(ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle')));
+      return Promise.resolve(ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true)));
     }
     if (request.path.endsWith('/planner/input')) {
       storedText = (request.body as { text: string }).text;

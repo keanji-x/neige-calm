@@ -351,6 +351,7 @@ async fn load_track_conversation_summaries(
     // evaluates, so planner and assistant rows read one definition of "the last turn ended".
     let sql = format!(
         r#"SELECT c.id                                   AS id,
+                  ca.archived_at_ms                       AS archived_at,
                   json_extract(c.payload, '$.side_source_card_id') AS source_card_id,
                   c.track_id                              AS track_id,
                   json_extract(c.payload, '$.assistant_provider') AS provider,
@@ -359,6 +360,7 @@ async fn load_track_conversation_summaries(
                   COALESCE(ws.updated_at_ms, c.updated_at) AS updated_at,
                   {LAST_TURN_COMPLETED_MS_SUBQUERY}       AS last_turn_completed_at
              FROM cards c
+             LEFT JOIN assistant_conversation_archives ca ON ca.card_id=c.id
              LEFT JOIN worker_sessions ws
                     ON ws.id = (SELECT inner_ws.id
                                   FROM worker_sessions inner_ws
@@ -389,6 +391,7 @@ async fn load_track_conversation_summaries(
 
 #[derive(sqlx::FromRow)]
 struct TrackConversationRow {
+    archived_at: Option<i64>,
     provider: String,
     source_card_id: Option<String>,
     id: String,
@@ -410,6 +413,7 @@ impl TryFrom<TrackConversationRow> for TrackConversationSummary {
             .map_err(CalmError::Internal)?;
         let provider = serde_json::from_value(serde_json::Value::String(row.provider))?;
         Ok(TrackConversationSummary {
+            archived_at: row.archived_at,
             provider,
             source_card_id: row.source_card_id,
             id: row.id,

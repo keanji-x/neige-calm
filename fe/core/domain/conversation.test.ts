@@ -165,7 +165,7 @@ describe('conversationNameFrom', () => {
 describe('track conversations', () => {
   const row = {
     id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant', provider: 'codex' as const,
-    state: 'starting' as const, updatedAt: 7, lastTurnCompletedAt: null,
+    state: 'starting' as const, updatedAt: 7, archivedAt: null, lastTurnCompletedAt: null,
   };
 
   it('preserves the declared provider on a dormant Assistant', () => {
@@ -178,9 +178,9 @@ describe('track conversations', () => {
     expect(operation.path).toBe('/api/tracks/track%201/conversations');
     expect(operation.responseSchema.parse([row])).toEqual([{
       id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant', provider: 'codex',
-      state: 'starting', updatedAt: 7, lastTurnCompletedAt: null,
+      state: 'starting', updatedAt: 7, archivedAt: null, lastTurnCompletedAt: null,
     }]);
-    expect(operation.responseSchema.parse([{ ...row, lastTurnCompletedAt: 9 }])[0].lastTurnCompletedAt).toBe(9);
+    expect(operation.responseSchema.parse([{ ...row, archivedAt: null, lastTurnCompletedAt: 9 }])[0].lastTurnCompletedAt).toBe(9);
   });
 
   it('requires the declared provider even without a live session', () => {
@@ -195,8 +195,8 @@ describe('track conversations', () => {
     const withoutField: Partial<typeof row> = { ...row };
     delete withoutField.lastTurnCompletedAt;
     expect(schema.safeParse([withoutField]).success).toBe(false);
-    expect(schema.safeParse([{ ...row, lastTurnCompletedAt: null }]).success).toBe(true);
-    expect(schema.safeParse([{ ...row, lastTurnCompletedAt: 1000 }]).success).toBe(true);
+    expect(schema.safeParse([{ ...row, archivedAt: null, lastTurnCompletedAt: null }]).success).toBe(true);
+    expect(schema.safeParse([{ ...row, archivedAt: null, lastTurnCompletedAt: 1000 }]).success).toBe(true);
     expect(schema.safeParse([{ ...row, lastTurnCompletedAt: '1000' }]).success).toBe(false);
   });
 
@@ -319,7 +319,7 @@ describe('transcriptRowToMessages', () => {
       item_type: 'userMessage',
       input_segments: [{ presentation: 'user', text: '', attachments: [attachment] }],
       params: '{}',
-    }))).toEqual([{ id: '7', author: 'you', text: '', atMs: 50, attachments: [attachment], inputSource: { itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
+    }))).toEqual([{ id: '7', author: 'you', text: '', atMs: 50, attachments: [attachment], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
 
     expect(transcriptRowToMessages(item({
       item_type: 'userMessage',
@@ -337,7 +337,7 @@ describe('transcriptRowToMessages', () => {
       item_type: 'userMessage',
       input_segments: [{ presentation: 'user', text: 'User says:\nlook', attachments: [attachment] }],
       params: '{}',
-    }))).toEqual([{ id: '7', author: 'you', text: 'look', atMs: 50, attachments: [attachment], inputSource: { itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
+    }))).toEqual([{ id: '7', author: 'you', text: 'look', atMs: 50, attachments: [attachment], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
   });
 
   it('maps completed agent messages', () => {
@@ -359,7 +359,7 @@ describe('transcriptRowToMessages', () => {
       input_segments: [{ presentation: 'user', text: 'User says:\nhello from the queue', attachments: [] }],
     });
     expect(transcriptRowToMessages(projection)).toEqual([
-      { id: '7', author: 'you', text: 'hello from the queue', atMs: 50, attachments: [], inputSource: { itemId: 7, segmentIndex: 0, turnId: null, entryRev: null } },
+      { id: '7', author: 'you', text: 'hello from the queue', atMs: 50, attachments: [], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: null, entryRev: null } },
     ]);
     /* The same row after the completed echo upgraded it in place. */
     const upgraded = item({
@@ -373,7 +373,7 @@ describe('transcriptRowToMessages', () => {
       }),
     });
     expect(transcriptRowToMessages(upgraded)).toEqual([
-      { id: '7', author: 'you', text: 'hello from the queue', atMs: 99, attachments: [], inputSource: { itemId: 7, segmentIndex: 0, turnId: 'turn-1', entryRev: null } },
+      { id: '7', author: 'you', text: 'hello from the queue', atMs: 99, attachments: [], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: 'turn-1', entryRev: null } },
     ]);
     expect(buildTranscript([projection]).map((entry) => entry.id)).toEqual(['7']);
     expect(buildTranscript([upgraded]).map((entry) => entry.id)).toEqual(['7']);
@@ -1335,4 +1335,13 @@ it('edits the same queued entry with the exact observed revision and requires st
   expect(operation.body).toEqual({ text: 'revised middle message', if_entry_rev: 7 });
   expect(operation.responseSchema.safeParse({ card_id: 'card/a', entry_id: 'entry/b', rev: 8, text: null }).success).toBe(false);
   expect(operation.responseSchema.safeParse({ card_id: 'card/a', entry_id: 'entry/b', rev: 8, text: 'revised middle message' }).success).toBe(true);
+});
+
+it('requires archive metadata on Assistant summaries and retains a saved timestamp', () => {
+  const schema = trackConversationsOperation('track').responseSchema;
+  const row = {id:'card',trackId:'track',title:null,kind:'track-assistant',provider:'claude',state:null,
+    updatedAt:1,lastTurnCompletedAt:null,archivedAt:42};
+  expect(schema.parse([row])[0].archivedAt).toBe(42);
+  const missing: Record<string, unknown> = {...row}; delete missing.archivedAt;
+  expect(schema.safeParse([missing]).success).toBe(false);
 });

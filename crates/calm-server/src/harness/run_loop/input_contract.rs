@@ -10,7 +10,7 @@ pub struct HarnessRuntimeSnapshot {
 
 #[derive(Clone, Debug)]
 pub(super) enum RuntimeSnapshotKind {
-    Historical(HarnessSnapshot),
+    Historical(Box<HarnessSnapshot>),
     Canonical,
 }
 
@@ -21,7 +21,7 @@ pub(super) enum LoadedRuntimeSnapshot {
 
 pub(super) enum RuntimeInputs {
     Historical(Mutex<VecDeque<QueueEntry>>),
-    Canonical(super::canonical::CanonicalInputs),
+    Canonical(Box<super::canonical::CanonicalInputs>),
 }
 
 impl RuntimeInputs {
@@ -45,11 +45,11 @@ impl RuntimeInputs {
 impl HarnessRuntimeSnapshot {
     pub fn decode(value: Value) -> Result<Self> {
         let kind = match value.get("schema_version").and_then(Value::as_u64) {
-            Some(1) => {
-                RuntimeSnapshotKind::Historical(HarnessSnapshot::parse_known(value).ok_or_else(
-                    || CalmError::Conflict("invalid historical harness snapshot".into()),
-                )?)
-            }
+            Some(1) => RuntimeSnapshotKind::Historical(Box::new(
+                HarnessSnapshot::parse_known(value).ok_or_else(|| {
+                    CalmError::Conflict("invalid historical harness snapshot".into())
+                })?,
+            )),
             Some(2) => {
                 // The actual current frame/fence is loaded by run under SQL.
                 // Retaining this caller's older pending list would make it a
@@ -82,7 +82,7 @@ impl TryFrom<HarnessSnapshot> for HarnessRuntimeSnapshot {
             ));
         }
         Ok(Self {
-            kind: RuntimeSnapshotKind::Historical(snapshot),
+            kind: RuntimeSnapshotKind::Historical(Box::new(snapshot)),
         })
     }
 }

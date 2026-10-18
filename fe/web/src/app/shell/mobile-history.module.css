@@ -1,4 +1,8 @@
 @layer features {
+  .conversationRow { position: relative; }
+  .conversationRow + .conversationRow { margin-block-start: var(--space-2); }
+  .conversationActions button { min-inline-size: var(--control-h-touch); min-block-size: var(--control-h-touch); }
+  .conversationActions { position: absolute; inset-inline-end: 0; inset-block-start: var(--space-3); }
   .footer > div { inline-size: 100%; }
   .drawer { border: 0 !important; padding: 0 !important; }
   .drawer > div { background: var(--surface-rail) !important; inline-size: 334px !important; max-inline-size: calc(100vw - var(--space-6)) !important; }
@@ -27,12 +31,13 @@
   .group { font-size: var(--font-step-2-size); font-weight: var(--weight-medium); line-height: var(--font-step-2-line); margin-block: var(--space-4) var(--space-2); color: var(--text-3); }
   .row { display: flex; flex-direction: column; gap: var(--space-1); inline-size: 100%; min-block-size: calc(var(--rail-w-collapsed) + var(--space-4) + var(--space-1) - var(--space-px) * 2); padding: var(--space-3) var(--space-3) calc(var(--space-3) / 2); border-radius: var(--radius-highlight); text-align: start; cursor: pointer; }
   .row + .row { margin-block-start: var(--space-2); }
-  .list > section + section .group { margin-block-start: var(--space-5); }
+  .dateGroup + .dateGroup .group { margin-block-start: var(--space-5); }
   .row:hover, .row:focus-visible { background: var(--overlay-hover); }
   .title { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); font-weight: var(--weight-medium); color: var(--text); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .meta, .empty { font-size: var(--font-step-2-size); line-height: var(--font-step-2-line); color: var(--text-3); }
   .row[aria-current='true'] { background: var(--selection-bg); }
   .row[aria-current='true']:hover { background: var(--selection-hover-bg); }
+  .conversationRow:has(.conversationActions) .row { padding-inline-end: var(--space-10); }
   .avatar.avatar { font-size: var(--font-step-2-size); display: grid; place-items: center; inline-size: var(--space-6) !important; block-size: var(--space-6) !important; flex: none; border-radius: var(--radius-pill); background: var(--overlay-hover); color: var(--text-2); }
   .footer { flex: none; display: flex; flex-direction: column; align-items: stretch; gap: var(--space-2); padding-block-start: 0; border-block-start: 1px solid var(--hairline); padding-block-end: env(safe-area-inset-bottom); }
   .drawer > div > div:first-child button svg, .drawer > div > div:first-child button span:has(> svg) { inline-size: var(--glyph-xl) !important; block-size: var(--glyph-xl) !important; }

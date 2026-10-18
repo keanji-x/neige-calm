@@ -21,7 +21,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
   let answers = 0;
   let storedText: string | null = null;
   let canonicalReads = 0;
-  let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; lastTurnCompletedAt: null } | null = null;
+  let created: { id: string; trackId: string; title: null; kind: string; provider: string; state: null; updatedAt: number; archivedAt: null, lastTurnCompletedAt: null } | null = null;
   const responseAt = (index: number) => {
     if (replies[index] === undefined) {
       let resolve!: (value: ApiTransportResponse | undefined) => void;
@@ -45,7 +45,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
     }]);
     if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return ok(historicalConversationRun({ card_id: 'second-planner', worker_session_id: 'runtime',
       phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     if (request.path.endsWith('/harness/live')) return ok({ turn_id: 'running-turn', items: [] });
     if (request.path.includes('/second-planner/harness/items')) {
       if (storedText !== null) canonicalReads++;
@@ -72,7 +72,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
         if (request.path.endsWith('/conversations')) {
           const key = request.headers?.['Idempotency-Key'];
           if (key === undefined) throw new Error('The create request must carry its key.');
-          created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, lastTurnCompletedAt: null };
+          created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
           return { status: 201, statusText: 'Created', body: { ...created,
             initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } };
         }

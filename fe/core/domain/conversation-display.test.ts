@@ -16,14 +16,14 @@ describe('canonical conversation display',()=>{
   it('keeps two actual authors and reconciles only the exact message and UID',()=>{
     const turns=buildConversationTranscript([human('message-b','alice',1),human('message-a','jian',2)],'jian').filter(isConversationMessage);
     expect(turns.map(turn=>turn.author)).toEqual(['human','you']);
-    expect(matchSendOps(turns.slice(0,1),[op],[]).size).toBe(0);
-    expect([...matchSendOps(turns,[op],[])]).toEqual([['key','human:message-a']]);
+    expect(matchSendOps(turns.slice(0,1),[op],[],'card').size).toBe(0);
+    expect([...matchSendOps(turns,[op],[],'card')]).toEqual([['key','human:message-a']]);
     expect(buildConversationTranscript([human('message-a','jian',1)],null)[0].author).toBe('human');
   });
   it('retires acknowledged optimistic text when the first GET already sees a removal',()=>{
     const item:ConversationDisplayItem={cursor:cursor(2),source:{kind:'removed',identity:{kind:'human',message_id:'message-a'}}};
     const entries=buildConversationTranscript([item],'jian');
-    const facts=outboxFactsWithRemovedInputs({serverEntries:entries,serverTurns:[],queuedEntryIds:new Set(),
+    const facts=outboxFactsWithRemovedInputs({cardId:'card',serverEntries:entries,serverTurns:[],queuedEntryIds:new Set(),
       stalled:false,ops:[op],spent:[],landed:{transcript:1,run:1}},removedHumanIds([item]));
     expect(facts.shown).toEqual([]);expect(facts.confirmed).toEqual([]);expect(facts.echoes).toEqual([]);
     expect(facts.retire).toEqual([{key:'key',row:null}]);
@@ -49,7 +49,7 @@ describe('canonical conversation display',()=>{
 });
 
 it('refuses a canonical run with missing current runtime state instead of treating null as Idle',()=>{
-  const value={input_contract:'canonical',runtime_state:null,pending_messages:[],active_input:null,native_turn_id:null};
+  const value={input_contract:'canonical',history_replacement_supported:false,terminal_timeout:null,runtime_state:null,pending_messages:[],active_input:null,native_turn_id:null};
   expect(conversationRunMetadataSchema.safeParse(value).success).toBe(false);
   expect(conversationRunMetadataSchema.safeParse({...value,runtime_state:'failed'}).success).toBe(true);
   expect(conversationRunMetadataSchema.safeParse({...value,input_contract:'historical'}).success).toBe(true);

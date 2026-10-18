@@ -19,6 +19,6 @@
   .messages { block-size: 100%; overflow: auto; overscroll-behavior: contain; padding: var(--space-4); box-sizing: border-box; }
   .scrollOverlay { position: absolute; inset-inline: 0; inset-block-end: 0; pointer-events: none; z-index: var(--z-raised); }
 
-  .footer { position: fixed; inset-inline: 0; inset-block-end: 0; background: transparent; pointer-events: none; }
+  .footer { z-index: var(--z-raised); position: fixed; inset-inline: 0; inset-block-end: 0; background: transparent; pointer-events: none; }
   .footer > * { pointer-events: auto; }
 }

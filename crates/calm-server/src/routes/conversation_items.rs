@@ -3,7 +3,7 @@ use super::conversation_read::{ReadScope, current_frame};
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path, Query};
-use crate::model::HarnessItem;
+use crate::model::HarnessItem as TranscriptRow;
 use crate::state::RouteState;
 use axum::{
     extract::State,
@@ -36,7 +36,7 @@ pub struct HarnessItemsQuery {
 #[derive(Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum HarnessItemsReadResponse {
-    Historical(Vec<HarnessItem>),
+    Historical(Vec<TranscriptRow>),
     Conversation(ConversationPage),
 }
 
@@ -120,19 +120,14 @@ pub(crate) async fn get_harness_items(
         if q.contract.is_none() {
             Json(HarnessItemsReadResponse::Historical(rows)).into_response()
         } else {
-            let next_cursor = (rows.len() == limit as usize).then(|| {
-                ConversationCursor::new(
-                    &id,
-                    mode,
-                    if descending {
-                        rows.first()
-                    } else {
-                        rows.last()
-                    }
-                    .expect("nonempty page")
-                    .id,
-                )
-            });
+            let boundary = if descending {
+                rows.first()
+            } else {
+                rows.last()
+            };
+            let next_cursor = boundary
+                .filter(|_| rows.len() == limit as usize)
+                .map(|item| ConversationCursor::new(&id, mode, item.id));
             let items = rows
                 .into_iter()
                 .map(|item| ConversationDisplayItem {

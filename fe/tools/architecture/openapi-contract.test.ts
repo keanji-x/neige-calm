@@ -10,6 +10,9 @@ const PATH_ITEM_FIELDS = new Set([...METHODS, 'summary', 'description', 'servers
  * declared in a calm-server route module is typed by a hand-written zod schema in `core/domain/**` instead. */
 const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'ErrorBody', 'GetPlannerRunResponse', 'GitDiffResponse', 'GitStatusResponse',
+  // Route-owned negotiated adapters, decoded by conversation-display.ts and queries.ts.
+  // Their exact composition is pinned below; component wire models remain generated.
+  'HarnessItemsReadResponse', 'HarnessLiveReadResponse', 'PlannerRunReadResponse',
   'InterruptPlannerCardResponse', 'ListdirResponse', 'ModelsResponse', 'PluginDetail', 'PluginListItem',
   'PlannerInputMutationResponse', 'PlannerInputStaleBody',
   'PlannerSteerResponse', 'PlannerSteerConflictBody',
@@ -203,6 +206,57 @@ describe('generated OpenAPI integrity', () => {
     };
     expect(() => validateDocument(document, '')).toThrow('response schema wire types missing: MissingWire');
   });
+});
+
+const NEGOTIATED_RESPONSE_ADAPTERS = Object.freeze([
+  'HarnessItemsReadResponse', 'HarnessLiveReadResponse', 'PlannerRunReadResponse',
+] as const);
+
+it('pins negotiated route adapters to their actual generated component schemas', () => {
+  const document = JSON.parse(readFileSync(new URL('../../core/api/generated/openapi.json', import.meta.url), 'utf8')) as {
+    components: { schemas: Record<string, JsonObject> };
+  };
+  const schemas = document.components.schemas;
+  expect(schemas.HarnessItemsReadResponse).toEqual({ oneOf: [
+    { type: 'array', items: { $ref: '#/components/schemas/HarnessItem' } },
+    { $ref: '#/components/schemas/ConversationPage' },
+  ] });
+  expect(schemas.HarnessLiveReadResponse).toEqual({ oneOf: [
+    { $ref: '#/components/schemas/HarnessLiveReplies' },
+    { $ref: '#/components/schemas/ConversationLiveReplies' },
+  ] });
+  // The negotiated run extends the historical object, so a valid answer can
+  // match both shapes. oneOf would reject that overlap.
+  expect(Object.keys(schemas.PlannerRunReadResponse)).toEqual(['anyOf']);
+  const branches = array(schemas.PlannerRunReadResponse.anyOf);
+  expect(branches).toHaveLength(2);
+  expect(branches[0]).toEqual(schemas.GetPlannerRunResponse);
+  if (!object(branches[1])) throw new Error('Missing negotiated run composition');
+  const composition = array(branches[1].allOf);
+  expect(composition).toHaveLength(2);
+  expect(composition[0]).toEqual({ $ref: '#/components/schemas/GetPlannerRunResponse' });
+  if (!object(composition[1]) || !object(composition[1].properties)) throw new Error('Missing run metadata');
+  const fields = ['active_input', 'history_replacement_supported', 'input_contract',
+    'native_turn_id', 'pending_messages', 'runtime_state', 'terminal_timeout'];
+  expect(Object.keys(composition[1].properties).sort()).toEqual(fields);
+  expect(array(composition[1].required).toSorted()).toEqual(fields);
+  expect(composition[1].properties.history_replacement_supported).toMatchObject({ type: 'boolean' });
+  expect(composition[1].properties.input_contract).toEqual({ $ref: '#/components/schemas/ConversationInputContract' });
+  expect(composition[1].properties.pending_messages).toEqual({ type: 'array',
+    items: { $ref: '#/components/schemas/ConversationPendingMessage' } });
+});
+
+it.each(NEGOTIATED_RESPONSE_ADAPTERS)('does not exempt an undeclared adapter resembling %s', (name) => {
+  const undeclared = `Undeclared${name}`;
+  const document = {
+    paths: {
+      '/a': { get: { responses: { 200: { content: { 'application/json': {
+        schema: { $ref: `#/components/schemas/${undeclared}` },
+      } } } } } },
+    },
+    components: { schemas: { [undeclared]: { type: 'object' } } },
+  };
+  expect(() => validateDocument(document, '')).toThrow(`response schema wire types missing: ${undeclared}`);
 });
 
 it('pins the server DTO outside the generated wire type roster', () => {

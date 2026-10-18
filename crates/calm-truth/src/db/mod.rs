@@ -275,6 +275,8 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>>;
     async fn track_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
+    /// Person-owned conversation archive time; independent of native session lifetime.
+    async fn conversation_archived_at(&self, card_id: &str) -> Result<Option<i64>>;
     /// Atomic single-row fetch of a card with its opaque CRDT blob (`cards.body_crdt`), so a concurrent persist can never tear payload vs. CRDT.
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     /// Read-time task diagnostics, evaluated in one read transaction with the

@@ -4,6 +4,8 @@ use crate::harness::backend::CompactStartFailure;
 
 pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
     let _issuance = inner.issuance.lock().await;
+    crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
+        .await?;
     if let Some(reader) = inner.backend.issuance_hold() {
         return Err(CalmError::Conflict(reader));
     }

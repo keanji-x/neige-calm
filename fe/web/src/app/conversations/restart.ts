@@ -25,8 +25,10 @@ export type RestartStrip = Readonly<{
  * that was answered leaves its notice in the registry for the card it was made in, whichever is shown by then; its
  * failure is said only while that card is shown.
  */
-export function useConversationRestart({ cardId, stalled, restart }: {
+export function useConversationRestart({ cardId, enabled, stalled, restart }: {
   cardId: string;
+  /** This existing fresh-session recovery is declared only by the historical input contract. */
+  enabled: boolean;
   /** The run is `wedged`: Send is disabled until a fresh session starts. */
   stalled: boolean;
   /** `POST …/planner/restart` for this card, settled once the run state read after it has landed. */
@@ -39,12 +41,13 @@ export function useConversationRestart({ cardId, stalled, restart }: {
   const notice = cardId === '' ? null : editNoticeOf(cardId);
   const error = failure?.cardId === cardId ? failure.message : null;
   const errors = error === null ? [] : [error];
-  const offered = notice?.kind === 'dormant' || stalled;
+  const paused = enabled && stalled;
+  const offered = enabled && (notice?.kind === 'dormant' || paused);
   const strip: RestartStrip | null = notice?.kind === 'dormant' ? {
-    tone: 'error', errors, action: RESTART_ACTION,
+    tone: 'error', errors, action: enabled ? RESTART_ACTION : null,
     /* An Edit's replace was refused: a Send now adds a new message, as for any refused replace. */
     lines: notice.edit && !isComposerEmpty(composerOf(cardId)) ? [DORMANT_NOTICE, REFILLED_NOTE] : [DORMANT_NOTICE],
-  } : stalled ? { tone: error === null ? 'neutral' : 'error', lines: [PAUSED_NOTICE], errors, action: RESTART_ACTION }
+  } : paused ? { tone: error === null ? 'neutral' : 'error', lines: [PAUSED_NOTICE], errors, action: RESTART_ACTION }
     : notice?.kind === 'restarted' ? { tone: 'neutral', lines: [RESTARTED_NOTICE], errors: [], action: null }
     : null;
 

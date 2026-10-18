@@ -17,14 +17,16 @@ pub mod rights;
 #[path = "execution/rights_unsupported.rs"]
 pub mod rights;
 mod transferred_directory;
+mod watch;
 pub use attachment::*;
 pub use directory_relation::*;
 pub use transferred_directory::*;
+pub use watch::ExecutionWatcher;
 
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 3;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionHandshake {
@@ -78,7 +80,36 @@ pub struct ExecutionSpecification {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PreparedSource {
+    Registered,
+    Private(Box<AttachRegistration>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BusyReason {
+    OutputOpen,
+}
+
+/// Immutable, secret-free execution history. Unknown-id revocation has no source or slot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionTombstone {
+    pub execution_id: ExecutionId,
+    pub ticket_id: LaunchTicketId,
+    pub registration: Option<ObjectRegistrationId>,
+    pub directory: Option<ExternalDirectoryId>,
+    pub slot: Option<(String, u64)>,
+    pub outcome: TombstoneOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TombstoneOutcome {
+    Revoked,
+    Retired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrepareExecution {
+    pub source: PreparedSource,
     pub identity: ExecutionIdentity,
     pub ticket: CapabilityToken,
     pub control_tokens: ExecutionControlTokens,
@@ -123,6 +154,12 @@ pub enum ExecutionRequest {
     /// Release this exact immutable lease after its executor references settle.
     RetireRegistration(ObjectRegistrationReceipt),
     ObserveTransferredDirectories(Box<TransferredDirectoryRelationRequest>),
+    Inspect(ExecutionId),
+    Watch,
+    Retire {
+        execution_id: ExecutionId,
+        lifecycle: CapabilityToken,
+    },
 }
 
 /// All process actions, including future variants, must first resolve this exact capability.
@@ -147,10 +184,17 @@ pub enum ProcessAction {
         pixel_h: u16,
     },
     Signal(ProcSignal),
-    Cleanup,
+    /// Reserved released ordinal: Cleanup is no longer accepted or serializable.
+    #[doc(hidden)]
+    ReservedCleanup(RemovedCleanup),
     /// Idempotent scope TERM followed by KILL after the executor grace period.
     Stop,
 }
+
+/// Uninhabited payload reserves the released Cleanup tag while rejecting it on decode.
+#[doc(hidden)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RemovedCleanup {}
 
 /// Output settlement is independent of process scope settlement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +273,22 @@ pub enum ExecutionReply {
     ObjectQualificationFailed {
         failure: workspace::execution::objects::ObjectQualificationFailure,
     },
+    Absent,
+    Inspected {
+        receipt: Option<ExecutionReceipt>,
+        state: ExecutionState,
+        output_end: OutputEnd,
+    },
+    Retired(ExecutionTombstone),
+    Watching {
+        boot: ExecutorBootId,
+        seq: u64,
+    },
+    Changed {
+        seq: u64,
+        id: ExecutionId,
+    },
+    Busy(BusyReason),
 }
 
 /// Explicit worktree compatibility, qualified by the released v2 Probe contract or v3 handshake.
@@ -377,8 +437,13 @@ impl RegisteredExecutorConnection {
         Ok(())
     }
     pub async fn request(&mut self, request: ExecutionRequest) -> std::io::Result<ExecutionReply> {
-        if matches!(request, ExecutionRequest::Handshake(_)) {
-            return Err(std::io::Error::other("connection already negotiated"));
+        if matches!(
+            request,
+            ExecutionRequest::Handshake(_) | ExecutionRequest::Watch
+        ) {
+            return Err(std::io::Error::other(
+                "use a dedicated connection for Watch; handshake already negotiated",
+            ));
         }
         self.begin()?;
         rights::send(

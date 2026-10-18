@@ -26,7 +26,10 @@ const FIRST_BODY: &str = "Preserve this accepted input through native activation
 const THREAD: &str = "http-canonical-original-thread";
 const TURN: &str = "http-canonical-original-turn";
 
+mod archive_start_inventory_tests;
 mod control_tests;
+mod presentation_capability_tests;
+mod presentation_read_feedback_tests;
 
 struct Fixture {
     repo: Arc<SqlxRepo>,
@@ -245,6 +248,7 @@ mod historical_compatibility_tests;
 mod historical_control_admission_tests;
 mod historical_control_race_tests;
 mod historical_interrupt_recovery_tests;
+mod native_attempt_recovery_tests;
 mod source_readmission_tests;
 
 async fn original_input_flow(

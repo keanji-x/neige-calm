@@ -33,12 +33,10 @@ pub(in crate::harness::run_loop) async fn on_notification(
             // raw start events cannot change phase, delivery or active claims.
             if current.snapshot.header.phase == HarnessPhaseTag::TurnRunning
                 && current.snapshot.header.last_turn_id.as_deref() == Some(turn_id.as_str())
+                && let Some(thread) = source_thread.filter(|thread| !thread.is_empty())
+                && current.snapshot.header.last_thread_id.as_deref() == Some(thread)
             {
-                if let Some(thread) = source_thread.filter(|thread| !thread.is_empty())
-                    && current.snapshot.header.last_thread_id.as_deref() == Some(thread)
-                {
-                    live.turn_started_native(thread, &turn_id);
-                }
+                live.turn_started_native(thread, &turn_id);
             }
             consume_end(inner).await?;
         }

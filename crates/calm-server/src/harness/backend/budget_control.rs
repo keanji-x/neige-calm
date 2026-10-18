@@ -12,7 +12,7 @@ pub(crate) enum ControlDelivery {
 
 pub(crate) enum BudgetControlScope {
     Historical,
-    Canonical(ExecutionEndTarget),
+    Canonical(Box<ExecutionEndTarget>),
 }
 
 pub(crate) struct ControlAttemptReport {

@@ -3,7 +3,7 @@ import { memo } from 'react';
 import type { ConversationTurn } from '../../../../../core/domain/conversation.ts';
 import { OutgoingMessage } from './outgoing-message.tsx';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
-import { Reply, type ReplyImageFiles } from './reply.tsx';
+import { Reply, type ReplyImageFiles, type ReplyLinkRenderer } from './reply.tsx';
 import styles from './thread.module.css';
 
 /** Only the declared visual inputs of one ordinary message. Transcript grouping,
@@ -27,14 +27,15 @@ type MessageEntryProps = Readonly<{
   replacement: boolean;
   working: boolean;
   imageFiles: ReplyImageFiles | null;
+  renderLink?: ReplyLinkRenderer;
 }>;
 
 export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, human, text, attachments,
-  opens, gapLabel, queued, edited, replacement, working, imageFiles, mobile, atMs, timestampFormatter,
+  opens, gapLabel, queued, edited, replacement, working, imageFiles, renderLink, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   return (
     <div
-      className={[opens ? styles.exchange : '', mobile && author === 'you' ? mobileStyles.userTurn : ''].filter(Boolean).join(' ') || undefined}
+      className={[opens ? styles.exchange : '', mobile && author !== 'agent' ? mobileStyles.userTurn : ''].filter(Boolean).join(' ') || undefined}
       data-nc-entry={entryKey}
       {...(opens ? { 'data-nc-exchange': id } : {})}
     >
@@ -44,8 +45,9 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, h
       )}
       {author !== 'agent' ? (
         <>
-          {author !== 'you' && <p>{author === 'human' ? human?.displayName : 'Unknown author'}</p>}
           <OutgoingMessage speaker={author} text={text} mobile={mobile} queued={queued} edited={edited} replacement={replacement} />
+          {/* Attribution follows the bubble so a real source handoff preserves its position. */}
+          {author !== 'you' && <p className={styles.queuedNote}>{author === 'human' ? human?.displayName : 'Unknown author'}</p>}
           {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
           {(attachments ?? []).length > 0 && (
             <ul className={styles.attachments} data-nc-turn-attachments="" {...(edited ? { 'data-nc-editing': '' } : {})}>
@@ -66,7 +68,7 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, h
         </>
       ) : (
         <div className={`${styles.reply} ${mobile ? mobileStyles.reply : ''}`} data-nc-turn="agent">
-          <Reply text={text} imageFiles={imageFiles} />
+          <Reply text={text} imageFiles={imageFiles} renderLink={renderLink} />
           {timestampFormatter !== null && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{timestampFormatter.format(atMs)}</time>}
           {working && <ActivityIndicator state="working" motion="thinking" />}
         </div>

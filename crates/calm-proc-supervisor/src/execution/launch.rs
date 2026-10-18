@@ -13,6 +13,20 @@ impl Executor {
         request: ConsumeExecution,
         before_final_validation: impl FnOnce(),
     ) -> anyhow::Result<ExecutionReply> {
+        let id_gate = self.id_gate(&request.execution_id)?;
+        let _id = id_gate.lock().await;
+        if let Some(t) = self
+            .tombstones
+            .lock()
+            .map_err(poison)?
+            .get(&request.execution_id)
+        {
+            anyhow::ensure!(
+                t.ticket_id == request.ticket_id,
+                "tombstone ticket mismatch"
+            );
+            return Self::replay_retired(&self.store, t);
+        }
         let first = self.record(&request.execution_id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;
         let _fence = gate.lock().await;
@@ -29,7 +43,19 @@ impl Executor {
             record.request.identity.executor_boot == self.boot,
             "executor boot changed"
         );
-        let root = self.resolve(&record.request.identity, true)?;
+        let root = match self.resolve(&record.request.identity, true) {
+            Ok(root) => root,
+            Err(error) if matches!(record.request.source, PreparedSource::Private(_)) => {
+                record.phase = Phase::NoChild {
+                    slot_version: record.phase.slot_version(),
+                    reason: format!("private root validation failed: {error}"),
+                };
+                record = self.latch(record)?;
+                self.persist(record.clone())?;
+                return Ok(reply(&record));
+            }
+            Err(error) => return Err(error),
+        };
         let cwd = root.launch_cwd(scope_cwd(&record.request.identity.scope))?;
         let previous_state = record
             .request
@@ -224,6 +250,7 @@ mod tests {
             other => panic!("attachment failed: {other:?}"),
         };
         let request = PrepareExecution {
+            source: PreparedSource::Registered,
             identity: ExecutionIdentity {
                 execution_id: ExecutionId::fresh().unwrap(),
                 executor_boot: executor.boot.clone(),

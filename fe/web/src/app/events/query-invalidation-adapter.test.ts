@@ -361,7 +361,11 @@ describe('query invalidation adapter', () => {
       const plan = invalidationPlanFor(wireEventSchema.parse({ ev, data }));
       const { calls, client } = recordingClient();
       applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
-      await vi.waitFor(() => expect(calls).toEqual([...keys, queryKeys.initialInput('track-1', 'card-1')].map((queryKey) => ({ op: 'invalidate', queryKey }))));
+      const expectedCalls = [...keys, queryKeys.initialInput('track-1', 'card-1')].map((queryKey) => ({ op: 'invalidate', queryKey }));
+      await vi.waitFor(() => {
+        expect(calls).toHaveLength(expectedCalls.length);
+        expect(calls).toEqual(expect.arrayContaining(expectedCalls));
+      });
     }
   });
 

@@ -2,8 +2,8 @@
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 import { conversationCursorSchema, workerSessionStateSchema } from '../api/schemas.js';
-import type { ConversationCursor, ConversationDisplayItem, ConversationPage, HarnessItem } from '../api/generated/wire.js';
-import { buildTranscript, retireFollowedThoughts, harnessItemSchema, HARNESS_ITEMS_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
+import type { ConversationCursor, ConversationDisplayItem, ConversationPage, HarnessItem as TranscriptRow } from '../api/generated/wire.js';
+import { buildTranscript, retireFollowedThoughts, harnessTimeoutEvidenceSchema, harnessItemSchema as transcriptRowSchema, HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
 
 const attachment = z.object({ id: z.string(), size: z.number(), url: z.string(), contentType:z.string() });
 const identity = z.discriminatedUnion('kind', [
@@ -16,14 +16,14 @@ export const conversationPageSchema: z.ZodType<ConversationPage> = z.object({
     z.object({ kind: z.literal('human'), message_id: z.string(), revision: z.number().int().positive(),
       author: z.object({ user_id: z.string(), display_name: z.string() }).strict(), text: z.string(),
       attachments: z.array(attachment), created_at_ms: z.number() }).strict(),
-    z.object({ kind: z.literal('native'), item: harnessItemSchema }).strict(),
-    z.object({ kind: z.literal('historical_raw'), item: harnessItemSchema }).strict(),
+    z.object({ kind: z.literal('native'), item: transcriptRowSchema }).strict(),
+    z.object({ kind: z.literal('historical_raw'), item: transcriptRowSchema }).strict(),
     z.object({ kind: z.literal('removed'), identity }).strict(),
   ]) }).strict()), next_cursor: conversationCursorSchema.nullable(),
 }).strict();
 
 export function conversationItemsOperation(card: string, cursor: ConversationCursor | null): ApiOperation<ConversationPage> {
-  return { method:'GET', path:`/api/cards/${encodeURIComponent(card)}/harness/items?contract=conversation_v1&direction=desc&limit=${HARNESS_ITEMS_PAGE_LIMIT}${cursor === null ? '' : `&cursor=${encodeURIComponent(JSON.stringify(cursor))}`}`,
+  return { method:'GET', path:`/api/cards/${encodeURIComponent(card)}/harness/items?contract=conversation_v1&direction=desc&limit=${TRANSCRIPT_PAGE_LIMIT}${cursor === null ? '' : `&cursor=${encodeURIComponent(JSON.stringify(cursor))}`}`,
     responseSchema:conversationPageSchema.refine(page => page.items.every(item => item.cursor.card_id === card
       && item.cursor.source === page.source && (page.source === 'historical_raw'
         ? item.source.kind === 'historical_raw' : item.source.kind !== 'historical_raw'))
@@ -32,7 +32,7 @@ export function conversationItemsOperation(card: string, cursor: ConversationCur
 }
 
 /** Only real Native/raw observations may retire a streamed native item. */
-export function nativeDisplayRows(items: readonly ConversationDisplayItem[]): readonly HarnessItem[] {
+export function nativeDisplayRows(items: readonly ConversationDisplayItem[]): readonly TranscriptRow[] {
   return items.flatMap(({ source }) => source.kind === 'native' || source.kind === 'historical_raw' ? [source.item] : []);
 }
 export function removedHumanIds(items: readonly ConversationDisplayItem[]): ReadonlySet<string> {
@@ -67,6 +67,8 @@ export function buildConversationTranscript(items: readonly ConversationDisplayI
 export const conversationRunMetadataSchema = z.object({
   input_contract:z.enum(['canonical','historical']),
   runtime_state:workerSessionStateSchema.nullable(),
+  history_replacement_supported:z.boolean(),
+  terminal_timeout:harnessTimeoutEvidenceSchema.nullable(),
   pending_messages:z.array(z.object({ message_id:z.string(),revision:z.number().int().positive(),
     queue_position:z.number().int().nonnegative(),queued_at_ms:z.number() }).strict()),
   active_input:z.object({ logical_turn_id:z.string(),submissions:z.array(z.object({

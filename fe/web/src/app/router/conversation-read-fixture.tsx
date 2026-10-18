@@ -14,7 +14,7 @@ export function renderConversationReadFixture(initialFailure = true) {
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: async (request) => {
     if (request.path.includes('/planner/run?contract=conversation_v1')) {
       await runGate;
-      return unavailable ? failure : { status: 200, statusText: 'OK', body: historicalConversationRun(run, 'idle') };
+      return unavailable ? failure : { status: 200, statusText: 'OK', body: historicalConversationRun(run, 'idle', true) };
     }
     if (request.path.includes('/harness/items')) return historyUnavailable ? failure : { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [{
       id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 'thread',

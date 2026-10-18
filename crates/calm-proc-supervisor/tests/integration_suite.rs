@@ -4,6 +4,8 @@ mod execution_attachment;
 mod execution_contract;
 #[path = "execution_lifecycle.rs"]
 mod execution_lifecycle;
+#[path = "execution_private.rs"]
+mod execution_private;
 #[path = "execution_registration.rs"]
 mod execution_registration;
 mod execution_support;
