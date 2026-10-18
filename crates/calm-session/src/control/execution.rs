@@ -21,6 +21,9 @@ pub use attachment::*;
 pub use directory_relation::*;
 pub use transferred_directory::*;
 
+pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
+
 pub const EXECUTION_ENVELOPE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -145,6 +148,16 @@ pub enum ProcessAction {
     },
     Signal(ProcSignal),
     Cleanup,
+    /// Idempotent scope TERM followed by KILL after the executor grace period.
+    Stop,
+}
+
+/// Output settlement is independent of process scope settlement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OutputEnd {
+    Open,
+    Complete { final_cursor: u64 },
+    Incomplete { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +207,7 @@ pub enum ExecutionReply {
         state: ExecutionState,
         cursor: u64,
         output: Vec<u8>,
+        output_end: OutputEnd,
     },
     /// Durable exact-ticket revocation; a spawned process still requires independent drain evidence.
     RevocationAcknowledged {

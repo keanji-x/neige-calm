@@ -218,7 +218,7 @@ impl Observation {
             origin: Some(HarnessInputOrigin {
                 observation: self.type_tag().to_string(),
                 event_id,
-                queue_entry_id: None,
+                queue_entry: None,
             }),
         }
     }

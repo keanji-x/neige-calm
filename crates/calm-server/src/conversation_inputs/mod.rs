@@ -20,10 +20,7 @@ pub(crate) use execution::{
     claim_human_initial_tx, human_source_inputs_tx,
 };
 
-use calm_types::conversation::{
-    HumanPayload, LogicalTurnId, MessageRevisionRef, PrivateHistoryOperationId,
-    SubmissionRenderPlan,
-};
+use calm_types::conversation::{HumanPayload, MessageRevisionRef, SubmissionRenderPlan};
 use calm_types::organization::AreaAccess;
 use sqlx::{Sqlite, Transaction};
 
@@ -32,7 +29,6 @@ use crate::db::sqlite::conversation::{
     self, AcceptedPendingInput, ClaimedSubmission, CurrentInputCarrier,
 };
 use crate::error::{CalmError, Result};
-use crate::harness::PlannerBackend;
 
 pub(crate) async fn authorize_human_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -57,68 +53,4 @@ pub(crate) async fn accept_human_tx(
 ) -> Result<AcceptedPendingInput> {
     authorize_human_tx(tx, principal, carrier.card_id()).await?;
     Ok(conversation::accept_pending_human_tx(tx, carrier, &principal.user_id, payload).await?)
-}
-
-pub(crate) async fn edit_human_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    principal: &Principal,
-    carrier: &mut CurrentInputCarrier,
-    expected: &MessageRevisionRef,
-    payload: HumanPayload,
-) -> Result<MessageRevisionRef> {
-    authorize_human_tx(tx, principal, carrier.card_id()).await?;
-    Ok(
-        conversation::edit_pending_human_tx(tx, carrier, &principal.user_id, expected, payload)
-            .await?,
-    )
-}
-
-pub(crate) async fn withdraw_human_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    principal: &Principal,
-    carrier: &mut CurrentInputCarrier,
-    expected: &MessageRevisionRef,
-    operation_id: &PrivateHistoryOperationId,
-) -> Result<()> {
-    authorize_human_tx(tx, principal, carrier.card_id()).await?;
-    Ok(conversation::withdraw_pending_human_tx(
-        tx,
-        carrier,
-        &principal.user_id,
-        expected,
-        operation_id,
-    )
-    .await?)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn claim_human_supplemental_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    source: &HumanInputSource,
-    carrier: &mut CurrentInputCarrier,
-    backend: &PlannerBackend,
-    logical_turn_id: &LogicalTurnId,
-    expected_native_turn_id: &str,
-    plan: SubmissionRenderPlan,
-) -> Result<ClaimedSubmission> {
-    let (execution, _) = authorize_human_execution_tx(tx, source, carrier, &plan).await?;
-    let calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
-        deployment_owner_user_id,
-        provider,
-        ..
-    } = execution;
-    if provider != backend.provider() || !backend.supports_steer() {
-        return Err(CalmError::Forbidden(
-            "this provider does not support Supplemental input".into(),
-        ));
-    }
-    Ok(conversation::claim_supplemental_submission_tx(
-        tx,
-        carrier,
-        &deployment_owner_user_id,
-        logical_turn_id,
-        expected_native_turn_id,
-        plan,
-    )
-    .await?)
 }

@@ -11976,11 +11976,11 @@
         },
         "responses": {
           "201": {
-            "description": "Conversation card minted, harness started, first message delivered — all three in the mint operation's own transaction, so a 201 means the message is on the assistant's queue and not merely that a card exists. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).",
+            "description": "Created or replayed with immutable first-input acceptance; query current presence separately.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TrackConversationSummary"
+                  "$ref": "#/components/schemas/TrackConversationCreated"
                 }
               }
             }
@@ -12067,6 +12067,95 @@
           },
           "500": {
             "description": "Internal error, including a shared Codex app-server that is not running. The message rides inside the mint operation, so the card and the delivery fail together: a terminally failed attempt is compensated (no card, no session) and the same `Idempotency-Key` retries under a `#N` operation key, re-deriving the same card id and delivering the message again. The `harness.user_message.enqueued` row a failed attempt already committed is NOT rolled back — `events` is append-only — and records only that a delivery was attempted, never that one happened. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it; there the card survives with the message still queued on a runtime that never started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tracks/{track_id}/conversations/{card_id}/initial-input": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "get_conversation_initial_input",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Conversation card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Required original conversation creation key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Receipt-bound observation from the current queue owner; unavailable never means absent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationInitialInputObservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or missing creation key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Conversation does not belong to this track/key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Read failed; no presence conclusion",
             "content": {
               "application/json": {
                 "schema": {
@@ -13709,6 +13798,194 @@
           }
         }
       },
+      "ConversationInitialInputObservation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "receipt",
+              "runtimeId",
+              "entryId",
+              "rev",
+              "text",
+              "textSha256",
+              "kind"
+            ],
+            "properties": {
+              "entryId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "queued"
+                ]
+              },
+              "receipt": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceipt"
+              },
+              "rev": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "runtimeId": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "textSha256": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "receipt",
+              "runtimeId",
+              "itemId",
+              "segmentIndex",
+              "entryRev",
+              "kind"
+            ],
+            "properties": {
+              "entryRev": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "itemId": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "projected"
+                ]
+              },
+              "receipt": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceipt"
+              },
+              "runtimeId": {
+                "type": "string"
+              },
+              "segmentIndex": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "receipt",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "$ref": "#/components/schemas/InitialInputUnavailableReason"
+              },
+              "receipt": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ConversationInitialInputReceipt",
+                    "description": "Required nullable evidence: unknown presence does not erase proven acceptance."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Exact current queue ownership or provider-confirmed projection; no absence\nconclusion is available from an empty queue and incomplete retained history.\nOutbound only; the client decoder enforces reason/receipt correlation."
+      },
+      "ConversationInitialInputReceipt": {
+        "type": "object",
+        "description": "Immutable mint evidence. It does not assert that the input is still queued or visible.",
+        "required": [
+          "version",
+          "entryId",
+          "entryRev",
+          "queuedAtMs",
+          "textSha256",
+          "initialRuntimeId"
+        ],
+        "properties": {
+          "entryId": {
+            "type": "string"
+          },
+          "entryRev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "initialRuntimeId": {
+            "type": "string",
+            "description": "The original carrier; later recovery may move the same entry to another runtime."
+          },
+          "queuedAtMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "textSha256": {
+            "type": "string"
+          },
+          "version": {
+            "$ref": "#/components/schemas/InitialInputReceiptVersion"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConversationInitialInputReceiptResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "receipt",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "known"
+                ]
+              },
+              "receipt": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceipt"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A successful historical operation did not record an exact entry binding.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "legacy-unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
       "ConversationInputContract": {
         "type": "string",
         "enum": [
@@ -14772,10 +15049,11 @@
       },
       "HarnessInputOrigin": {
         "type": "object",
-        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.\nAn optional `queue_entry_id` names the actual addressable input. Older and non-addressable\ninputs have none. A native batch alias never identifies its individual inputs.",
+        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.",
         "required": [
           "observation",
-          "event_id"
+          "event_id",
+          "queue_entry"
         ],
         "properties": {
           "event_id": {
@@ -14790,10 +15068,15 @@
             "type": "string",
             "description": "The observation's serde `type` tag, e.g. `task_completed`, `track_wake`, `user_message`."
           },
-          "queue_entry_id": {
-            "type": [
-              "string",
-              "null"
+          "queue_entry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HarnessQueueEntryRef",
+                "description": "Identity and actual revision are one fact. Null for non-user/legacy entries;\nreleased historical origins without this metadata remain unversioned."
+              }
             ]
           }
         }
@@ -15053,6 +15336,24 @@
           "wedged"
         ]
       },
+      "HarnessQueueEntryRef": {
+        "type": "object",
+        "description": "The actual addressable queue entry and the revision its input was built from.",
+        "required": [
+          "id",
+          "rev"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "HarnessTimeoutEvidence": {
         "oneOf": [
           {
@@ -15130,6 +15431,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "InitialInputReceiptVersion": {
+        "type": "string",
+        "enum": [
+          "initial-input-v1"
+        ]
+      },
+      "InitialInputUnavailableReason": {
+        "type": "string",
+        "enum": [
+          "legacy-operation",
+          "creation-incomplete",
+          "runtime-unavailable",
+          "runtime-changed",
+          "shutting-down",
+          "legacy-projection",
+          "integrity"
+        ]
       },
       "InstallBody": {
         "type": "object",
@@ -16353,8 +16672,6 @@
                 "type": "object",
                 "required": [
                   "input_contract",
-                  "history_replacement_supported",
-                  "terminal_timeout",
                   "runtime_state",
                   "pending_messages",
                   "active_input",
@@ -16370,10 +16687,6 @@
                         "$ref": "#/components/schemas/ConversationActiveInput"
                       }
                     ]
-                  },
-                  "history_replacement_supported": {
-                    "type": "boolean",
-                    "description": "Current historical edit affordance; every write rechecks its actual source."
                   },
                   "input_contract": {
                     "$ref": "#/components/schemas/ConversationInputContract"
@@ -16398,17 +16711,6 @@
                       {
                         "$ref": "#/components/schemas/WorkerSessionState",
                         "description": "Actual current worker row state. Canonical is always present; null means no current historical runtime."
-                      }
-                    ]
-                  },
-                  "terminal_timeout": {
-                    "oneOf": [
-                      {
-                        "type": "null"
-                      },
-                      {
-                        "$ref": "#/components/schemas/HarnessTimeoutEvidence",
-                        "description": "Confirmed timeout for this exact current execution, independent of execution admission."
                       }
                     ]
                   }
@@ -18372,6 +18674,24 @@
           }
         }
       },
+      "TrackConversationCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TrackConversationSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "initialInput"
+            ],
+            "properties": {
+              "initialInput": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceiptResult"
+              }
+            }
+          }
+        ]
+      },
       "TrackConversationSummary": {
         "type": "object",
         "description": "One row of `GET /api/tracks/{track_id}/conversations`.",
@@ -19595,6 +19915,7 @@
           "areaCreateIdempotency",
           "conversationCreateModel",
           "conversationSide",
+          "conversationInitialInput",
           "kernelVersion",
           "apiVersion",
           "syncEventVersion",
@@ -19628,6 +19949,10 @@
           "conversationCreateModel": {
             "type": "boolean",
             "description": "First-message model selection is part of atomic conversation creation."
+          },
+          "conversationInitialInput": {
+            "type": "boolean",
+            "description": "Exact first-input receipt and coherent current-carrier inspection."
           },
           "conversationSide": {
             "type": "boolean",

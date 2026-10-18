@@ -427,9 +427,42 @@ pub struct HarnessInputSegment {
     pub origin: Option<HarnessInputOrigin>,
 }
 
+/// The actual addressable queue entry and the revision its input was built from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct HarnessQueueEntryRef {
+    pub id: String,
+    pub rev: u32,
+}
+
+#[cfg(test)]
+mod input_ref_tests {
+    use super::HarnessInputOrigin;
+    use serde_json::json;
+
+    #[test]
+    fn versioned_input_origin_requires_both_members_and_emits_legacy_null() {
+        let historical = json!({"observation":"user_message","event_id":null});
+        let origin: HarnessInputOrigin = serde_json::from_value(historical).unwrap();
+        assert!(origin.queue_entry.is_none());
+        assert_eq!(
+            serde_json::to_value(origin).unwrap(),
+            json!({
+                "observation":"user_message","event_id":null,"queue_entry":null,
+            })
+        );
+        for partial in [json!({"id":"entry"}), json!({"rev":3})] {
+            assert!(
+                serde_json::from_value::<HarnessInputOrigin>(json!({
+                    "observation":"user_message","event_id":null,"queue_entry":partial,
+                }))
+                .is_err()
+            );
+        }
+    }
+}
+
 /// Why a segment was in the turn: the observation that produced it and the event behind it.
-/// An optional `queue_entry_id` names the actual addressable input. Older and non-addressable
-/// inputs have none. A native batch alias never identifies its individual inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessInputOrigin {
@@ -439,11 +472,11 @@ pub struct HarnessInputOrigin {
     /// `null` when no event did, e.g. a user message or the Track goal seed.
     #[schema(required = true, nullable = true)]
     pub event_id: Option<i64>,
-    // Preserve the released origin bytes when this optional identity is absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>)]
-    #[ts(optional, type = "string")]
-    pub queue_entry_id: Option<crate::harness::snapshot::QueueEntryId>,
+    /// Identity and actual revision are one fact. Null for non-user/legacy entries;
+    /// released historical origins without this metadata remain unversioned.
+    #[serde(default)]
+    #[schema(required = true, nullable = true)]
+    pub queue_entry: Option<HarnessQueueEntryRef>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]

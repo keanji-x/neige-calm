@@ -62,6 +62,8 @@ export type ChatThreadProps = Readonly<{
   turns: readonly TranscriptEntry[];
   /** Waiting inputs follow the current status without interleaving with its reply. */
   pendingMessages?: ReactNode;
+  /** Current pending inputs or their retained exit content; the mounted node alone does not declare presence. */
+  hasPendingMessages: boolean;
   /** Current work confirmed by the run query while the activity overlay catches up. */
   pending?: boolean;
   /** Local dispatch is pending, independently of model execution and the displayed message. */
@@ -95,7 +97,7 @@ export type ChatThreadProps = Readonly<{
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -270,7 +272,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     );
   };
 
-  const empty = turns.length === 0 && noticeKind === null;
+  const empty = turns.length === 0 && noticeKind === null && !hasPendingMessages;
 
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
     {scrollOverlay === null && <div className={styles.scrollBlur} aria-hidden="true" />}

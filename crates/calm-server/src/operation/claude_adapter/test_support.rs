@@ -199,9 +199,12 @@ pub(super) async fn try_prepare_claude_worker(
         .find(|op| op.id == op_id)
         .unwrap();
     let claimed_op_id = op.id.clone();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = harness.adapter.prepare_tx(&mut tx, &payload, &op).await?;
-    tx.commit().await.unwrap();
+    let output = crate::operation::tests::prepare_claimed_adapter(
+        harness.repo.clone(),
+        &harness.adapter,
+        &op,
+    )
+    .await?;
     Ok((output, claimed_op_id))
 }
 
@@ -227,10 +230,18 @@ pub(super) async fn prepare_claude_worker_as_scheduled(
         .unwrap();
     let op = op_repo.claim_drive_batch(1).await.unwrap().remove(0);
     assert_eq!(op.id, op_id);
+    let evidence = crate::operation::tests::collect_claimed_preparation(
+        harness.repo.clone(),
+        &harness.adapter,
+        &op,
+    )
+    .await
+    .unwrap();
     let (op, _) = op_repo
-        .prepare_tx_and_advance(&op, &harness.adapter)
+        .prepare_tx_and_advance(&op, &harness.adapter, evidence)
         .await
         .unwrap()
+        .committed()
         .unwrap();
     op.tx_output.unwrap()
 }

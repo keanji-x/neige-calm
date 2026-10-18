@@ -249,3 +249,157 @@ async fn admin_close_refuses_an_in_flight_forge_action() {
     assert!(error.message.contains("forge-action"), "{error:?}");
     unchanged(&boot, &target, before).await;
 }
+
+async fn plugin_template_track(boot: &Boot, admin: bool) -> (String, Caller) {
+    let (status, track) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/tracks",
+        Some(json!({"planner_provider":"codex", "area_id":boot.area_id,
+            "template_id":"dev", "admin":admin,
+            "theme":{"fg":[255,255,255],"bg":[0,0,0]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{track}");
+    assert_eq!(track["plugin_scope"], "gitforge");
+    assert_eq!(track["template_id"], "dev");
+    assert_eq!(track["admin_granted_at"].is_i64(), admin);
+    let id = track["id"].as_str().unwrap().to_string();
+    let caller = boot.planner_of(&id).await;
+    (id, caller)
+}
+
+async fn plugin_admin_lifecycle(boot: &Boot, id: &str, planner: &Caller) {
+    let target = boot.added(planner, "plugin-added").await;
+    let retained = boot.added(planner, "plugin-retained").await;
+    close(boot, planner, &target).await.unwrap();
+    assert!(
+        !boot
+            .repo
+            .track_get(&target)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
+    let (status, body) = send(
+        boot.app.clone(),
+        "PATCH",
+        &format!("/api/tracks/{id}"),
+        Some(json!({"admin":false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let events = boot
+        .count("SELECT COUNT(*) FROM events WHERE kind IN ('track.created','track.updated')")
+        .await;
+    let tracks = boot.track_count().await;
+    let error = boot
+        .add(planner, boot.args("plugin-revoked"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.data.unwrap()["refusal"], "not_admin");
+    let error = close(boot, planner, &retained).await.unwrap_err();
+    assert_eq!(error.data.unwrap()["refusal"], "not_admin");
+    assert!(
+        boot.repo
+            .track_get(&retained)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_open()
+    );
+    assert_eq!(boot.track_count().await, tracks);
+    assert_eq!(
+        boot.count("SELECT COUNT(*) FROM events WHERE kind IN ('track.created','track.updated')")
+            .await,
+        events
+    );
+    let (_, detail) = send(boot.app.clone(), "GET", &format!("/api/tracks/{id}"), None).await;
+    assert_eq!(detail["can_admin"], true, "{detail}");
+    let stored = boot.repo.track_get(id).await.unwrap().unwrap();
+    assert_eq!(stored.plugin_scope.as_deref(), Some("gitforge"));
+    assert!(stored.admin_granted_at.is_none());
+}
+
+#[tokio::test]
+async fn plugin_template_admin_post_grant_add_close_and_revoke() {
+    let boot = boot_with_plugins(16, None, true).await;
+    let (id, planner) = plugin_template_track(&boot, true).await;
+    plugin_admin_lifecycle(&boot, &id, &planner).await;
+}
+
+#[tokio::test]
+async fn plugin_template_admin_patch_requires_explicit_grant() {
+    let boot = boot_with_plugins(16, None, true).await;
+    let (id, planner) = plugin_template_track(&boot, false).await;
+    let events = boot
+        .count("SELECT COUNT(*) FROM events WHERE kind IN ('track.created','track.updated')")
+        .await;
+    let tracks = boot.track_count().await;
+    let error = boot
+        .add(&planner, boot.args("ungranted"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.data.unwrap()["refusal"], "not_admin");
+    assert_eq!(
+        boot.count("SELECT COUNT(*) FROM events WHERE kind IN ('track.created','track.updated')")
+            .await,
+        events
+    );
+    assert_eq!(boot.track_count().await, tracks);
+    let (status, body) = send(
+        boot.app.clone(),
+        "PATCH",
+        &format!("/api/tracks/{id}"),
+        Some(json!({"admin":true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["admin_granted_at"].is_i64(), "{body}");
+    plugin_admin_lifecycle(&boot, &id, &planner).await;
+}
+
+#[tokio::test]
+async fn plugin_template_admin_ask_requires_user_answer() {
+    use calm_server::mcp_server::tools::user_ask::TOOL_USER_ASK;
+    let boot = boot_with_plugins(16, None, true).await;
+    let (id, planner) = plugin_template_track(&boot, false).await;
+    let ask = boot.registry.lookup(TOOL_USER_ASK).unwrap()(
+        boot.ctx.clone(),
+        planner.identity.clone(),
+        json!({"action":"grant_admin","questions":[{"title":"Manage Tracks?"}]}),
+    )
+    .await
+    .unwrap()
+    .into_structured();
+    assert!(
+        boot.repo
+            .track_get(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .admin_granted_at
+            .is_none()
+    );
+    let error = boot.add(&planner, boot.args("pending")).await.unwrap_err();
+    assert_eq!(error.data.unwrap()["refusal"], "not_admin");
+    let (status, body) = send(
+        boot.app.clone(),
+        "POST",
+        &format!("/api/tracks/{id}/asks/{}/answer", ask["ask_id"]),
+        Some(json!({"answers":[{"option":0}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(
+        boot.repo
+            .track_get(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .admin_granted_at
+            .is_some()
+    );
+    plugin_admin_lifecycle(&boot, &id, &planner).await;
+}

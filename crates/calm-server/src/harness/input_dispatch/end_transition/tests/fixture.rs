@@ -264,7 +264,6 @@ impl Fixture {
             &self.backend,
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            None,
         )
         .await
         .unwrap();

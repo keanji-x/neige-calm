@@ -567,8 +567,9 @@ async fn prepare_to_tx_committed(
     let op = claim_one(boot, &op_id).await?;
     let prepared = boot
         .operation_repo
-        .prepare_tx_and_advance(&op, &adapter)
+        .prepare_tx_and_advance(&op, &adapter, None)
         .await?
+        .committed()
         .expect("operation prepares");
     assert_eq!(prepared.0.phase, Phase::TxCommitted);
     Ok(op_id)

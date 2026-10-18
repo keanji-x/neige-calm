@@ -221,6 +221,7 @@ async fn queue_changes(boot: &Boot) -> Vec<(String, String)> {
 async fn a_queued_entry_is_steered_into_the_running_turn_and_its_row_is_upgraded_by_the_echo() {
     let boot = boot_with_a_running_turn().await;
     let entry_id = queue_one(&boot, "second, now").await;
+    let entry_rev = pending(&boot).await[0]["rev"].clone();
     assert_eq!(
         pending(&boot).await.len(),
         1,
@@ -309,7 +310,7 @@ async fn a_queued_entry_is_steered_into_the_running_turn_and_its_row_is_upgraded
     );
     assert_eq!(
         projection["input_segments"][0]["origin"],
-        json!({"observation": "user_message", "event_id": null}),
+        json!({"observation": "user_message", "event_id": null, "queue_entry": {"id":entry_id,"rev":entry_rev}}),
         "#2206: the steered segment names the entry it came from"
     );
     let projection_db_id = projection["id"].as_i64().unwrap();

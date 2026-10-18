@@ -65,7 +65,7 @@ import {
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation, PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT,
   type Conversation, type ModelCatalogScope, type ModelSelection, type ModelSelectionResult,
-  type PlannerQueueWriteOutcome, type PlannerQueueEditOutcome, type PendingQueueEntry,
+  type PlannerQueueWriteOutcome, type PlannerQueueEditOutcome, type PendingQueueEntry, type PlannerInputMutation,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
 import { setPlannerPermissionModeOperation } from '../../../../core/domain/planner-permission-mode.ts';
@@ -109,6 +109,9 @@ export async function runOperation<T>(
 
 // Key shapes match the legacy app so a cache dump reads the same in both.
 export const queryKeys = Object.freeze({
+  initialInputPrefix: () => ['conversation-initial-input'] as const,
+  initialInputTrack: (trackId: string) => ['conversation-initial-input', trackId] as const,
+  initialInput: (trackId: string, cardId: string) => ['conversation-initial-input', trackId, cardId] as const,
   serverVersion: () => ['server-version'] as const,
   areas: () => ['areas'] as const,
   areaFolders: (areaId: string) => ['area-folders', areaId] as const,
@@ -244,23 +247,26 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
            turn an accepted send into a failed write. Not awaited: a hung read must not retain the send lease. */
     void Promise.all([
       refreshTranscript(),
+      cancelThenInvalidate(client, queryKeys.initialInputPrefix()),
       client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }),
     ]).catch(() => undefined);
     return result;
   };
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
-     flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
-  const refreshAfterSend = <T,>(result: T): T => {
-    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) void cancelThenInvalidate(client, queryKey);
+     flight from before the answer; input acceptance must reconcile against actual reads started after its ACK. */
+  const refreshAfterInput = <T,>(result: T): T => {
+    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId), queryKeys.initialInputPrefix()]) void cancelThenInvalidate(client, queryKey);
     return result;
   };
+  const refreshAfterQueueWrite = <T extends Readonly<{ kind: string }>>(result: T): T =>
+    result.kind === 'done' ? refreshAfterInput(result) : refreshAfter(result);
   return {
     /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again.
        `answered` runs when the 200 is in hand, before the refresh starts its reads. */
     send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
       admitted: ApiTransportPort, answered: () => void) =>
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
-        .then((sent) => { answered(); return refreshAfterSend(sent); }),
+        .then((sent) => { answered(); return refreshAfterInput(sent); }),
     /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
     compact: () => Promise.resolve().then(() => admitTransport(transport))
       .then((admitted) => runOperation(admitted, compactPlannerOperation(cardId), unauthorized)).then(refreshAfter),
@@ -279,28 +285,28 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     },
     /* Resolves rather than rejects on a refusal: a lost compare-and-swap and a drained entry are answers
      * the reader has to be shown. The refresh runs on every path — a 409 proves the cached page is behind. */
-    editQueued: (entry: PendingQueueEntry, text: string): Promise<PlannerQueueEditOutcome> =>
+    editQueued: (entry: PendingQueueEntry, text: string, answered: (saved: PlannerInputMutation & Readonly<{ text: string }>) => void): Promise<PlannerQueueEditOutcome> =>
       runOperation(transport, editPlannerInputOperation(cardId, entry.entry_id, text, entry.rev), unauthorized)
-        .then((saved): PlannerQueueEditOutcome => ({ kind: 'done', entry: { ...entry, text: saved.text, rev: saved.rev } }))
+        .then((saved): PlannerQueueEditOutcome => { answered(saved); return { kind: 'done', entry: { ...entry, text: saved.text, rev: saved.rev } }; })
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not edit the queued message.',
-        )).then(refreshAfter),
-    deleteQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+        )).then(refreshAfterQueueWrite),
+    deleteQueued: (entryId: string, ifEntryRev: number, answered: (removed: PlannerInputMutation) => void): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, deletePlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
-        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .then((removed): PlannerQueueWriteOutcome => { answered(removed); return { kind: 'done' }; })
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not remove the queued message.',
         ))
-        .then(refreshAfter),
+        .then(refreshAfterQueueWrite),
     /* Same classification as the delete, plus the steer's own 409s (`not_running`, `unanswered`); on a
      * 200 the refresh is what makes the transcript pick up the row the kernel wrote. */
-    steerQueued: (entryId: string, ifEntryRev: number): Promise<PlannerQueueWriteOutcome> =>
+    steerQueued: (entryId: string, ifEntryRev: number, answered: () => void): Promise<PlannerQueueWriteOutcome> =>
       runOperation(transport, steerPlannerInputOperation(cardId, entryId, ifEntryRev), unauthorized)
-        .then((): PlannerQueueWriteOutcome => ({ kind: 'done' }))
+        .then((): PlannerQueueWriteOutcome => { answered(); return { kind: 'done' }; })
         .catch((error: unknown) => plannerQueueWriteFailure(
           error instanceof ApiError ? error.failure : null, 'Could not send the queued message now.',
         ))
-        .then(refreshAfter),
+        .then(refreshAfterQueueWrite),
     /* The stored selection is read back from `planner-run`; the catalog goes with it because the default
      * this card follows is part of that answer. */
     setModel: (selection: ModelSelection): Promise<ModelSelectionResult> =>
@@ -334,13 +340,17 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   };
 }
 
-import type { SideConversation } from '../../../../core/domain/conversation.ts';
+import { initialInputObservationOperation } from '../../../../core/domain/conversation-initial-input.ts';
+import type { ConversationInitialInputObservation } from '../../../../core/api/generated/wire.ts';
+import type { SideConversation, CreatedConversation } from '../../../../core/domain/conversation.ts';
 
 export type ConversationMutations = Readonly<{
   /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */
-  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined,
+    answered: (result: CreatedConversation) => void) => Promise<CreatedConversation>;
+  inspect: (cardId: string, idempotencyKey: string) => Promise<ConversationInitialInputObservation>;
   /** Re-read the list and hand back what it now holds. */
-  refresh: () => Promise<Conversation[]>;
+  refresh: (beforePublish: (rows: readonly Conversation[]) => void) => Promise<Conversation[]>;
 }>;
 
 /** One track's assistant conversations; the event bridge already maps this key, so the list is live the moment it mounts. */
@@ -360,9 +370,11 @@ export function useTrackConversationMutations(
 ): ConversationMutations {
   const client = useQueryClient();
   const create = useRecoveryMutation(transport, {
-    mutationFn: ({ text, idempotencyKey, provider, selection, side }: { text: string; idempotencyKey: string; provider: AgentProvider; selection: ModelSelection; side?: SideConversation }, transport: ApiTransportPort) =>
+    mutationFn: ({ text, idempotencyKey, provider, selection, side }: { text: string; idempotencyKey: string; provider: AgentProvider; selection: ModelSelection; side?: SideConversation; answered: (result: CreatedConversation) => void }, transport: ApiTransportPort) =>
       runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey, provider, selection, side), unauthorized),
-    onSuccess: (row) => {
+    onSuccess: (result, { answered }) => {
+      answered(result);
+      const row = result.conversation;
       /* Written through as well as invalidated: the drawer switches to this row in the same tick. */
       client.setQueryData<Conversation[]>(queryKeys.trackConversations(trackId), (current) => {
         const rows = current ?? [];
@@ -376,17 +388,27 @@ export function useTrackConversationMutations(
     },
   });
   return {
-    create: (text, idempotencyKey, provider, selection, side) => create.mutateAsync({ text, idempotencyKey, provider, selection, side }),
-    refresh: () => client.fetchQuery({
-      ...trackConversationsQueryOptions(transport, trackId, unauthorized),
-      staleTime: 0,
-    }),
+    create: (text, idempotencyKey, provider, selection, side, answered) => create.mutateAsync({ text, idempotencyKey, provider, selection, side, answered }),
+    inspect: (cardId, key) => runOperation(transport, initialInputObservationOperation(trackId, cardId, key), unauthorized),
+    refresh: async (beforePublish) => {
+      const admitted = admitTransport(transport);
+      const rows = await runOperation(admitted, trackConversationsOperation(trackId), unauthorized);
+      admitted.recovery?.checkpoint()();
+      // A manual cache write does not stop the list's older retryer from overwriting it.
+      // Fence that existing read before receipt adoption and its canonical row publish together.
+      await client.cancelQueries({ queryKey: queryKeys.trackConversations(trackId) });
+      admitted.recovery?.checkpoint()();
+      beforePublish(rows);
+      client.setQueryData(queryKeys.trackConversations(trackId), rows);
+      return rows;
+    },
   };
 }
 
 const serverVersionSchema = z.object({
   assistantProviders: z.boolean().optional(),
   conversationCreateModel: z.boolean().optional(),
+  conversationInitialInput: z.boolean().optional(),
   conversationSide: z.boolean().optional(),
   webCompatVersion: z.number(),
   minWebCompatVersion: z.number(),

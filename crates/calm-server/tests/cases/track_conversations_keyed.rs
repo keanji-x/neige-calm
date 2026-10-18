@@ -15,6 +15,48 @@ use tokio::sync::Notify;
 use super::boot;
 
 #[tokio::test]
+async fn initial_input_receipt_is_the_minted_entry_and_survives_success_replay() {
+    let b = boot().await;
+    let track_id = b.create_track("initial-input-receipt").await;
+    let text = "  The actual first receipt sentence. 👋\n";
+    let (status, first) = b.create_conversation(&track_id, "receipt-key", text).await;
+    let (replay_status, replay) = b.create_conversation(&track_id, "receipt-key", text).await;
+    let key = derive_track_conversation_operation_key_for_test(&track_id, "receipt-key");
+    let journal: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE idempotency_key = ?1")
+            .bind(key)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    b.shutdown_harnesses().await;
+
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    assert_eq!(replay_status, StatusCode::CREATED, "{replay}");
+    assert_eq!(first["initialInput"]["kind"], "known", "{first}");
+    assert_eq!(first["initialInput"], replay["initialInput"]);
+    let output: serde_json::Value = serde_json::from_str(&journal).unwrap();
+    let snapshot = calm_server::harness::HarnessSnapshot::from_value_strict(
+        output["data"]["snapshot"].clone(),
+    );
+    let entries = snapshot.pending_entries();
+    let actual = entries
+        .iter()
+        .find_map(|entry| entry.user_view().filter(|entry| entry.text == text))
+        .expect("the mint journal carries the actual first user entry");
+    let receipt = &first["initialInput"]["receipt"];
+    assert_eq!(receipt["version"], "initial-input-v1");
+    assert_eq!(
+        receipt["textSha256"], "9c24b3cf171db26f32ff9d0ebea5da5fa418bf2ea72a059b6a1b0d6d60830461",
+        "digest preserves exact whitespace and UTF-8"
+    );
+    assert_eq!(receipt["entryId"], actual.id.as_str());
+    assert_eq!(receipt["entryRev"], actual.rev);
+    assert_eq!(receipt["queuedAtMs"], actual.queued_at_ms);
+    assert_eq!(receipt["initialRuntimeId"], output["data"]["runtime_id"]);
+    assert_eq!(receipt, &output["data"]["initial_input_receipt"]);
+}
+
+#[tokio::test]
 async fn an_over_long_key_is_invalid_and_mints_nothing() {
     let b = boot().await;
     let track_id = b.create_track("keyed-too-long").await;

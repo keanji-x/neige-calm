@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { agentProviderSchema } from '../api/schemas.js';
 
 import type {
-  AgentProvider, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
+  AgentProvider, ConversationInitialInputReceiptResult, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
   HarnessInterruptionReason, HarnessTimeoutEvidence,
   PlannerAttachment, PlannerPermissionMode, TrackConversationSummary, UploadAttachmentResponse,
 } from '../api/generated/wire.js';
@@ -15,6 +15,7 @@ import {
 import { classifyFailure, failureReason, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
 import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { sha256Hex } from './sha256.js';
+import { initialInputReceiptResultSchema } from './conversation-initial-input.js';
 
 /** A frozen discussion source; does not name a provider session. */
 export type SideConversation = Readonly<{ source_card_id: string; context: string }>;
@@ -55,6 +56,8 @@ export type Conversation = Readonly<{
   /** Turn count, or absent when the surface that produced the row cannot count. */
   turns?: number;
 }>;
+
+export type CreatedConversation = Readonly<{ conversation: Conversation; initialInput: ConversationInitialInputReceiptResult }>;
 
 /** What a session is called when it has no name of its own. */
 export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>> = Object.freeze({
@@ -107,8 +110,6 @@ export type ConversationTurn = Readonly<{
   author: TurnAuthor;
   /** Present only for actual canonical Human identity; native user echoes have none. */
   human?: Readonly<{ userId: string; displayName: string; messageId: string; revision: number }>;
-  /** Actual legacy input correlation; it never identifies an author or grants edit permission. */
-  legacyInput?: Readonly<{ cardId: string; threadId: string; entryId: string }>;
   displayPosition?: number;
   /** Verbatim. Line breaks are the author's and are preserved on render. */
   text: string;
@@ -117,6 +118,10 @@ export type ConversationTurn = Readonly<{
   attachments?: readonly PlannerAttachment[];
   /** Set when the agent asked this through `neige_user_ask`; the quiet-sync fold keeps it outside the fold. */
   origin?: 'ask';
+  /** Exact input provenance, including a known acceptance receipt; only inputSource names raw stored source. */
+  queueEntryId?: string | null;
+  /** Canonical structured-input source; rendered ids remain the renderer's separate identity. */
+  inputSource?: Readonly<{ cardId: string; threadId: string; itemId: number; segmentIndex: number; turnId: string | null; entryRev: number | null }>;
 }>;
 
 /**
@@ -172,13 +177,22 @@ const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
   id: z.string(), contentType: z.string(), size: z.number(), url: z.string(),
 });
 
+// Released origins contained only observation/event_id. Normalize their absent pair to unknown;
+// a present queue_entry still has to satisfy the current required nullable contract.
+const harnessInputOriginSchema = z.preprocess(value => {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'queue_entry')
+    && Object.keys(value).every(key => key === 'observation' || key === 'event_id')) return { ...value, queue_entry: null };
+  return value;
+}, z.object({ observation: z.string(), event_id: z.number().nullable(),
+  queue_entry: z.object({ id: z.string().min(1), rev: z.number().int().nonnegative() }).nullable() }));
+
 export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.object({
   presentation: harnessInputPresentationSchema,
   text: z.string(),
   /* Defaulted rather than required: older segments have no such key, and a row that fails to decode disappears. */
   attachments: z.array(plannerAttachmentSchema).optional().default([]),
   /* Absent on segments recorded before the kernel named each segment's observation and event. */
-  origin: z.object({ observation: z.string(), event_id: z.number().nullable(), queue_entry_id: z.string().optional() }).optional(),
+  origin: harnessInputOriginSchema.optional(),
 });
 
 export const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
@@ -652,7 +666,7 @@ const plannerInputStaleSchema = z.object({ text: z.string(), rev: z.number(), en
  */
 export type PlannerQueueWriteOutcome =
   | Readonly<{ kind: 'done' }>
-  | Readonly<{ kind: 'stale'; text: string; rev: number }>
+  | Readonly<{ kind: 'stale'; entryId: string; text: string; rev: number }>
   | Readonly<{ kind: 'gone' }>
   | Readonly<{ kind: 'not_running' }>
   | Readonly<{ kind: 'unanswered' }>
@@ -685,7 +699,7 @@ export function plannerQueueWriteFailure(
 ): Exclude<PlannerQueueWriteOutcome, { kind: 'done' }> {
   const kind = classifyFailure(failure, PLANNER_QUEUE_WRITE_FAILURES);
   const stale = kind === 'stale' && failure?.kind === 'http' ? plannerInputStaleSchema.safeParse(failure.body) : null;
-  if (stale?.success === true) return { kind: 'stale', text: stale.data.text, rev: stale.data.rev };
+  if (stale?.success === true) return { kind: 'stale', entryId: stale.data.entry_id, text: stale.data.text, rev: stale.data.rev };
   if (kind === 'failed' || kind === 'stale') {
     return { kind: 'failed', message: failure?.kind === 'http' && failure.message !== '' ? failureReason(failure) : fallback };
   }
@@ -767,7 +781,7 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
  */
 export function createTrackConversationOperation(
   trackId: string, text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation,
-): ApiOperation<Conversation> {
+): ApiOperation<CreatedConversation> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
@@ -777,7 +791,8 @@ export function createTrackConversationOperation(
       ...(selection.model === null ? {} : { model: selection.model }),
       ...(selection.reasoning_effort === null ? {} : { reasoning_effort: selection.reasoning_effort }),
     },
-    responseSchema: trackConversationSummarySchema.transform(toTrackConversation),
+    responseSchema: trackConversationSummarySchema.and(z.object({ initialInput: initialInputReceiptResultSchema }))
+      .transform((row) => ({ conversation: toTrackConversation(row), initialInput: row.initialInput })),
   };
 }
 
@@ -988,10 +1003,9 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
       const id = segments.length === 1
         ? String(item.id) : `${item.id}:${index}`;
       if (segment.presentation === 'user') {
-        const entryId = segment.origin?.queue_entry_id;
         return [{ id, author: 'you' as const, text, atMs, attachments,
-          ...(entryId === undefined ? {} : { legacyInput: { cardId: item.card_id, threadId: item.thread_id, entryId } }),
-        }];
+          inputSource: { cardId: item.card_id, threadId: item.thread_id, itemId: item.id, segmentIndex: index, turnId: item.turn_id, entryRev: segment.origin?.queue_entry?.rev ?? null },
+          ...(segment.origin === undefined ? {} : { queueEntryId: segment.origin.queue_entry?.id ?? null }) }];
       }
       return [{
         id, author: 'system' as const,
@@ -1283,18 +1297,15 @@ const turnOutcomeParamsSchema = z.object({
 
 /** The released cause-only string and complete v1 proof; never read unprotected `harness_timeout`. */
 export const harnessTimeoutEvidenceSchema: z.ZodType<HarnessTimeoutEvidence> = z.object({
-    version: z.literal('v1'),
-    request: z.strictObject({
-      session_id: z.string(), card_id: z.string(), track_id: z.string(), thread_id: z.string(), turn_id: z.string(),
-      reason: z.literal('max_turn_duration'), requested_at_ms: z.number().int(),
-      effective_elapsed_ms: z.number().int().nonnegative(), budget_ms: z.number().int().nonnegative(),
-    }),
-    ended_at_ms: z.number().int(),
-  });
-
-const harnessInterruptionSchema = z.union([
-  z.literal('max_turn_duration'), harnessTimeoutEvidenceSchema,
-]);
+  version: z.literal('v1'),
+  request: z.strictObject({
+    session_id: z.string(), card_id: z.string(), track_id: z.string(), thread_id: z.string(), turn_id: z.string(),
+    reason: z.literal('max_turn_duration'), requested_at_ms: z.number().int(),
+    effective_elapsed_ms: z.number().int().nonnegative(), budget_ms: z.number().int().nonnegative(),
+  }),
+  ended_at_ms: z.number().int(),
+});
+const harnessInterruptionSchema = z.union([z.literal('max_turn_duration'), harnessTimeoutEvidenceSchema]);
 
 /** A recorded duration only when it is a finite, non-negative integer; anything else is unknown, not 0. */
 function recordedDurationMs(value: unknown): number | null {
@@ -1468,6 +1479,11 @@ function userAttachmentsMatchEcho(
   return echoIds.every((attachment) => rowIds.has(attachment.id));
 }
 
+/** Body qualification is separate from identity, attribution and source-version evidence. */
+export function inputBodyMatchesEcho(turn: ConversationTurn, echo: ConversationTurn): boolean {
+  return userTextMatchesEcho(turn.text, echo.text) || userAttachmentsMatchEcho(turn, echo);
+}
+
 /** Reconcile recent persisted user rows with optimistic echoes one-to-one. */
 export function reconcileUserEchoes(
   serverTurns: readonly ConversationMessage[],
@@ -1479,7 +1495,7 @@ export function reconcileUserEchoes(
   return echoes.filter((echo) => {
     const match = userTurns.findIndex((turn, index) =>
       !matchedUserIndexes.has(index)
-      && (userTextMatchesEcho(turn.text, echo.text) || userAttachmentsMatchEcho(turn, echo)));
+      && inputBodyMatchesEcho(turn, echo));
     if (match < 0) return true;
     matchedUserIndexes.add(match);
     return false;

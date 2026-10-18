@@ -12,11 +12,12 @@ use crate::track_report::TrackReportPayload;
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Executor, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
 
 use super::runs::{EventRow, project_runs_tx, track_event_from_row};
 use super::store::{CommitTreeMeta, commit_tree_at_tx, put_rendered_entry, store_tree};
+use super::transcripts::HookInputs;
 use super::types::{BlobContent, CardProjection, CardVisibility};
 use super::{MANIFEST_SCHEMA_VERSION, ManifestEntry, TreeSnapshot};
 
@@ -59,6 +60,7 @@ async fn backfill_existing_tracks_tx(tx: &mut Transaction<'_, Sqlite>) -> Result
             created_at,
             &Some(track.clone()),
             &CardVisibility::AllRows,
+            HookInputs::Live,
         )
         .await?;
         commit_tree_at_tx(
@@ -93,6 +95,7 @@ pub async fn snapshot_tree(
         now_ms(),
         &None,
         &CardVisibility::announced_only(),
+        HookInputs::Live,
     )
     .await
 }
@@ -104,6 +107,7 @@ pub(super) async fn snapshot_tree_at_tx(
     object_created_at: i64,
     prefetched_track: &Option<Track>,
     card_visibility: &CardVisibility,
+    hooks: HookInputs<'_>,
 ) -> Result<TreeSnapshot> {
     let track = match prefetched_track {
         Some(track) => track.clone(),
@@ -169,23 +173,9 @@ pub(super) async fn snapshot_tree_at_tx(
             object_created_at,
         )
         .await?;
-        let hook_events = hook_events_for_card_tx(tx, track_id, &card.card.id).await?;
-        put_rendered_entry(
-            tx,
-            &mut entries,
-            format!("cards/{card_id}/events.json"),
-            hook_events_json(&hook_events)?,
-            object_created_at,
-        )
-        .await?;
-        put_rendered_entry(
-            tx,
-            &mut entries,
-            format!("cards/{card_id}/conversation.md"),
-            content_markdown(conversation_markdown(&card.card.id, &hook_events)),
-            object_created_at,
-        )
-        .await?;
+        hooks
+            .put_card(tx, &mut entries, track_id, &card.card.id, object_created_at)
+            .await?;
     }
 
     insert_run_entries(tx, &mut entries, &runs, object_created_at).await?;
@@ -272,6 +262,14 @@ pub(super) async fn cards_for_track_tx(
     track_id: &TrackId,
     visibility: &CardVisibility,
 ) -> Result<Vec<CardProjection>> {
+    cards_for_track(&mut **tx, track_id, visibility).await
+}
+
+pub(super) async fn cards_for_track<'e>(
+    executor: impl Executor<'e, Database = Sqlite>,
+    track_id: &TrackId,
+    visibility: &CardVisibility,
+) -> Result<Vec<CardProjection>> {
     // ORDER BY must stay aligned with SqlxRepo::cards_by_track.
     let rows = sqlx::query(
         r#"SELECT id, track_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
@@ -287,7 +285,7 @@ pub(super) async fn cards_for_track_tx(
            ORDER BY sort ASC, id ASC"#,
     )
     .bind(track_id.as_str())
-    .fetch_all(&mut **tx)
+    .fetch_all(executor)
     .await?;
     let mut out = Vec::new();
     for row in rows {
@@ -360,26 +358,61 @@ pub(super) async fn hook_events_for_card_tx(
     track_id: &TrackId,
     card_id: &CardId,
 ) -> Result<Vec<HookEventProjection>> {
-    let rows: Vec<EventRow> = sqlx::query_as(
-        r#"SELECT id, kind, payload, actor, at,
-                  scope_kind, scope_area, scope_track, scope_card
-           FROM (
-               SELECT id, kind, payload, actor, at,
-                      scope_kind, scope_area, scope_track, scope_card
-               FROM events
-               WHERE scope_track = ?1
-                 AND scope_card = ?2
-                 AND kind IN ('codex.hook', 'claude.hook')
-               ORDER BY id DESC
-               LIMIT ?3
-           )
-           ORDER BY id ASC"#,
-    )
+    hook_events_from_rows(hook_rows_for_card(&mut **tx, track_id, card_id).await?).await
+}
+
+// The identity intersection is covering on both existing event relations. In particular,
+// checking the track through its covering index avoids loading records whose payload precedes
+// scope_card on disk. If that index is intentionally renamed/removed, update this owner query.
+fn hook_ids_query() -> &'static str {
+    r#"SELECT id FROM (
+           SELECT e.id
+           FROM events AS e
+           WHERE e.scope_card = ?2
+             AND e.kind IN ('codex.hook', 'claude.hook')
+             AND EXISTS (
+                 SELECT 1
+                 FROM events AS t INDEXED BY idx_events_scope_track
+                 WHERE t.scope_track = ?1 AND t.id = e.id
+             )
+           ORDER BY e.id DESC
+           LIMIT ?3
+       ) ORDER BY id ASC"#
+}
+
+pub(super) async fn hook_rows_for_card<'e>(
+    executor: impl Executor<'e, Database = Sqlite>,
+    track_id: &TrackId,
+    card_id: &CardId,
+) -> Result<Vec<EventRow>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT id, kind, payload, actor, at, scope_kind, scope_area, scope_track, scope_card \
+         FROM events WHERE id IN ({}) ORDER BY id ASC",
+        hook_ids_query(),
+    ))
     .bind(track_id.as_str())
     .bind(card_id.as_str())
     .bind(track_fs_view::HOOK_EVENT_TRANSCRIPT_CAP as i64)
-    .fetch_all(&mut **tx)
-    .await?;
+    .fetch_all(executor)
+    .await?)
+}
+
+pub(super) async fn hook_ids_for_card_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &TrackId,
+    card_id: &CardId,
+) -> Result<Vec<i64>> {
+    Ok(sqlx::query_scalar(hook_ids_query())
+        .bind(track_id.as_str())
+        .bind(card_id.as_str())
+        .bind(track_fs_view::HOOK_EVENT_TRANSCRIPT_CAP as i64)
+        .fetch_all(&mut **tx)
+        .await?)
+}
+
+pub(super) async fn hook_events_from_rows(rows: Vec<EventRow>) -> Result<Vec<HookEventProjection>> {
+    #[cfg(test)]
+    super::transcript_writer_tests::pause_before_hook_interpretation().await;
 
     rows.into_iter()
         .map(track_event_from_row)
@@ -522,3 +555,7 @@ fn blob_from_fs_content(content: track_fs_view::TrackFsContent) -> BlobContent {
 pub(crate) fn run_blob_bytes(run: &RunProjection) -> Result<Vec<u8>> {
     Ok(run_json(run)?.bytes)
 }
+
+#[cfg(test)]
+#[path = "snapshot/hook_query_tests.rs"]
+mod hook_query_tests;

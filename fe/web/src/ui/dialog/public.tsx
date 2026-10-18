@@ -1,3 +1,4 @@
+import { presenceDepthFrame } from '../motion/depth.ts';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../icon/public.tsx';
@@ -50,10 +51,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
   const titleId = `${useId()}-title`;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-  useSpringPresence(panelRef, null, open, open, true, () => {}, value => ({
-    opacity: Math.max(0, Math.min(1, value)),
-    translate: `0 calc(var(--space-2) * ${1 - value})`,
-  }));
+  useSpringPresence(panelRef, null, open, open, true, () => {}, presenceDepthFrame);
   const popView = useCallback(() => setViews((current) => current.slice(0, -1)), [setViews]);
   const pushView = useCallback((view: DialogChildView) => {
     const id = ++nextViewId.current;

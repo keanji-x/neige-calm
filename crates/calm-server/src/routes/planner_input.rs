@@ -153,6 +153,11 @@ async fn resolve(
 
 fn refusal_response(card_id: &CardId, refused: MutationRefused) -> Response {
     match refused {
+        MutationRefused::RevisionExhausted { .. } => CalmError::Conflict(
+            "This queued message cannot be revised further; delete it and send a new message."
+                .into(),
+        )
+        .into_response(),
         MutationRefused::NotFound => CalmError::NotFound(format!(
             "planner input entry for card {card_id}: it is no longer in the pending queue",
         ))

@@ -116,3 +116,9 @@ mod mcp_report_read_diagnostics;
 
 #[path = "cases/mcp_report_anchor_knowledge.rs"]
 mod mcp_report_anchor_knowledge;
+
+#[path = "cases/opencode_history_handoff.rs"]
+mod opencode_history_handoff;
+
+#[path = "cases/opencode_history_host.rs"]
+mod opencode_history_host;

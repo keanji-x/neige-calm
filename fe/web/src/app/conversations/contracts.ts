@@ -1,6 +1,6 @@
 import type { AgentProvider, HarnessTimeoutEvidence, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
-import type { Conversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerQueueEditOutcome, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import type { FailedSendOp, PendingQueueSend, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
+import type { Conversation, CreatedConversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerQueueEditOutcome, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import type { FailedSendOp, PendingQueueSend, ReplacedTurn, QueueDisplayAccounting } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import type { UploadAttachment } from '../../features/planner/attachments.tsx';
@@ -13,7 +13,7 @@ export type ConversationStore = Readonly<{
   pending: ReadonlySet<string>;
   working: boolean;
   stalled: boolean;
-  /** Historical paused queues refuse input; canonical content remains independently saveable. */
+  /** Canonical content acceptance remains separate from a held execution. */
   inputStalled: boolean;
   /** Actual current session is terminal; display hold does not prevent saving new content. */
   executionHeld: boolean;
@@ -23,9 +23,14 @@ export type ConversationStore = Readonly<{
   sendBlocked: boolean;
   /** Existing outbox reconciliation gate, with read errors left to their explicit retry surface. */
   awaitingConversationUpdate: boolean;
+  initialInputChecking: boolean;
+  initialInputError: string | null;
+  retryInitialInput: () => void;
   /** The addressable page of the harness pending queue. */
   pendingQueue: readonly PendingQueueEntry[];
   pendingSends: readonly PendingQueueSend[];
+  /** Versioned displayed carriers and intentional owner suppression; never suppresses an alive queue row. */
+  queueDisplayAccounting: QueueDisplayAccounting;
   editQueuedEntry: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueEditOutcome>;
   /** Queued messages that exist but carry no id to address them by. */
   pendingQueueOverflow: number;
@@ -82,7 +87,6 @@ export type ConversationStore = Readonly<{
   loadEarlier: () => void;
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
   blockedReason: string | null;
-  /** Confirmed result for this exact execution; feedback never gates new content. */
   terminalTimeout: HarnessTimeoutEvidence | null;
   /** What this conversation's turns run with. */
   model: ModelSelection;
@@ -100,6 +104,7 @@ export type ConversationStore = Readonly<{
 export type ConversationRouteIntent = Readonly<{
   /** Open panes own their live rows; list refreshes must not overwrite them. */
   ownedCardIds?: readonly string[];
+  visible?: boolean;
   rows: readonly Conversation[];
   rememberOn: string;
 }>;
@@ -124,6 +129,8 @@ export type PlannerConversationScope = Readonly<{
 /** First-message creation, its deterministic identity and its recovery read. */
 export type ConversationCreationSource = Readonly<{
   derivedCardId: (idempotencyKey: string) => string;
-  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
-  refresh: () => Promise<readonly Conversation[]>;
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side: SideConversation | undefined,
+    answered: (result: CreatedConversation) => void) => Promise<CreatedConversation>;
+  inspect: (cardId: string, idempotencyKey: string) => Promise<import('../../../../core/api/generated/wire.ts').ConversationInitialInputObservation>;
+  refresh: (beforePublish: (rows: readonly Conversation[]) => void) => Promise<readonly Conversation[]>;
 }>;

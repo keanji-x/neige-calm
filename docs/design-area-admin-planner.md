@@ -14,6 +14,8 @@ Paths are under `crates/calm-server/src/` unless named otherwise.
 
 ## 1. What exists today
 
+This section records the historical pre-Admin baseline; current grant eligibility is in D1.
+
 | Capability | Today | Evidence |
 |---|---|---|
 | Add a Track | Every Planner on an unbound, top-level Track that no Track added. Keyed and replayable. At most `--track-add-max-open` (16) open added Tracks per creator, checked in the create transaction. | `mcp_server/tools/track_add.rs:142` (roles), `:201-206` (closed creator), `:255-290` (`authorize_creator`); `routes/tracks/add.rs:36-60`; `config.rs:175-182` |
@@ -41,10 +43,12 @@ column, the 0147 form: `track_admin_is_top_level CHECK (admin_granted_at IS NULL
 (parent_track_id IS NULL AND creator_track_id IS NULL AND COALESCE(purpose,'') <> 'area-chat'))`.
 
 **Eligibility** is one function, `area_admin::eligible_tx(tx, track)`, used by every grant
-writer and by `can_admin`. A Track is eligible when it is unbound
-(`tracks.plugin_scope IS NULL`, the column `resolve_track_owner_binding` reads as Unbound,
-`track_binding/mod.rs:105-111`; read in the transaction, no plugin host needed), top level, not added, not an area chat, not in the system
-Area (`AreaKind::System`, `routes/tracks.rs:937`), and has no `managed_track_identities` row.
+writer and by `can_admin`. A Track is eligible when it is top level, not added, not an area
+chat, not in the system Area (`AreaKind::System`, `routes/tracks.rs:937`), and has no
+`managed_track_identities` row. Plugin scope and a person's explicit Admin grant are
+orthogonal: a plugin-template Track may receive Admin without changing its plugin-tool
+isolation. Removing that eligibility restriction does not automatically grant Admin or
+change the frozen historical backfill below.
 `authorize_creator` (`track_add.rs:255-290`) is deleted; its three rules are part of this list.
 Eligibility gates the **grant** only; revoking is always allowed.
 
@@ -221,6 +225,9 @@ Resolved in this revision, where both reviews agreed: unbound-only eligibility, 
 backfill, no Admin spawning Admins, several Admins per Area allowed (with own-added close they
 are isolated).
 
+The historical unbound-only decision above is superseded by D1: an otherwise eligible
+plugin-bound Track may receive a person's explicit Admin grant, preserving plugin-tool isolation.
+
 ## Follow-up issue (draft)
 
 **Title:** Area Admin: deferred edge cases and hardening after v1 (add + close own-added)
@@ -247,6 +254,5 @@ deferred; each needs its own design or test before it is built.
 - Forge-action check before close is a non-transactional read with a TOCTOU window.
 - Keyed `neige_track_add` replay after revoke returns the recorded Track; confirm it starts no
   new work.
-- Admin on template-bound Tracks, if a template needs to manage its Area.
 - The add path proves Admin through `admit_tx` but runs no decision-recorder probe, so a
   superseded-but-live Planner session can still add; consider the recorder probe on add.

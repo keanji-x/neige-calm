@@ -116,10 +116,7 @@ async fn boot() -> Boot {
         ))
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                username: None,
-                password: None,
-                dev_autologin: true,
-                display_name: "Owner".into(),
+                username: None, password: None, dev_autologin: true, display_name: "Owner".into(),
             }),
             calm_server::auth::require_session,
         ))
@@ -246,7 +243,7 @@ async fn transcript_route_returns_strict_structured_input_segments() {
             origin: Some(HarnessInputOrigin {
                 observation: "report_edited".into(),
                 event_id: Some(17),
-                queue_entry_id: None,
+                queue_entry: None,
             }),
         },
         // Stored before #2206: no `origin` key at all.
@@ -304,7 +301,7 @@ async fn transcript_route_returns_strict_structured_input_segments() {
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(
         body[0]["input_segments"][0]["origin"],
-        json!({"observation": "report_edited", "event_id": 17})
+        json!({"observation": "report_edited", "event_id": 17, "queue_entry": null})
     );
     assert_eq!(
         body[0]["input_segments"][1],

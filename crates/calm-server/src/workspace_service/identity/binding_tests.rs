@@ -377,9 +377,11 @@ async fn workspace_identity_concurrent_terminal_hooks_converge_identical_facts()
     };
     let first = payload("first");
     let second = payload("second");
+    let first_op = super::legacy_tests::pending_terminal_operation(&ctx, &first).await;
+    let second_op = super::legacy_tests::pending_terminal_operation(&ctx, &second).await;
     let (a, b) = tokio::join!(
-        adapter.prepare_external(&first, &ctx),
-        adapter.prepare_external(&second, &ctx)
+        adapter.prepare_external(&first, &first_op, &ctx),
+        adapter.prepare_external(&second, &second_op, &ctx)
     );
     a.expect("first legitimate pending terminal observation");
     b.expect("second legitimate pending terminal observation");

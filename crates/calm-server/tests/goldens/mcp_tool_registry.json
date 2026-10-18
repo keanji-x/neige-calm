@@ -64,6 +64,81 @@
     ]
   },
   {
+    "name": "neige_catalog_cat",
+    "description_sha256": "f62d84ca55de27d9dece86c7af37eca55efb61872ee583166f10fb1cd7b3ecf7",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "template",
+            "recipe"
+          ],
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "neige_catalog_ls",
+    "description_sha256": "2bc744776ee05dc54541a1aa4dea20c87e03a248a679d467a87c2cbe7e8143d5",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "template",
+            "recipe"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_link_ls",
     "description_sha256": "3575a4736e718132e74fa64044e1182b82c40210d56e48d92ff4320b2f469283",
     "input_schema": {
@@ -1422,10 +1497,32 @@
   },
   {
     "name": "neige_track_add",
-    "description_sha256": "70b521cabaa6da529af208faa5c8b4b1a8d4a624f8b69c2b8acd71baedaa6f96",
+    "description_sha256": "77487825aeddb3766347f09e0b70fadbee442a99da4084d2ef4cfc8dd9acd7eb",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "allow_cross_area_cwd": {
+          "additionalProperties": false,
+          "properties": {
+            "area_id": {
+              "type": "string"
+            },
+            "folder_id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "folder_id",
+            "area_id"
+          ],
+          "type": "object"
+        },
+        "attach_folder": {
+          "type": "boolean"
+        },
+        "cwd": {
+          "type": "string"
+        },
         "idempotency_key": {
           "type": "string"
         },
@@ -1435,6 +1532,12 @@
         "recipe_id": {
           "type": "string"
         },
+        "template_id": {
+          "type": "string"
+        },
+        "template_input": {
+          "type": "object"
+        },
         "text": {
           "type": "string"
         },
@@ -1443,7 +1546,6 @@
         }
       },
       "required": [
-        "recipe_id",
         "title",
         "idempotency_key",
         "text",
@@ -2342,6 +2444,157 @@
       "destructiveHint": false,
       "openWorldHint": false,
       "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_opencodehistory_message_cat",
+    "description_sha256": "34677f9bf9a0156a83643a6e879989a2ca4f78f0a692a7d3d8d4aadc131a60df",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "message_id": {
+          "pattern": "^msg",
+          "type": "string"
+        },
+        "session_id": {
+          "pattern": "^ses",
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "directory",
+        "session_id",
+        "message_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_opencodehistory_message_ls",
+    "description_sha256": "c6bdfcd002197ff1385d7928ac2d187e0ed63af1df4025a34aea42a90aea6870",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "before": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "session_id": {
+          "pattern": "^ses",
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "directory",
+        "session_id",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_opencodehistory_session_ls",
+    "description_sha256": "48cecc3f2d220974d9e6a07567080704839894bd97aa1de8b13d7f48cb86c54b",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "roots": {
+          "type": "boolean"
+        },
+        "search": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "directory",
+        "roots",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_opencodehistory_source_ls",
+    "description_sha256": "8b729747267821ef1bd31c94b6ff4ada2bf4b953bf879c72796e3657d467c75f",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
     },
     "roles": [
       "planner"

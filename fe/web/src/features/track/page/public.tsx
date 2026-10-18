@@ -36,7 +36,7 @@ import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { RowModuleView, TrackPageView } from '../../../../../core/view/panel.ts';
 import { TrackAdminBadge } from '../admin-badge/public.tsx';
 import { TrackClosedBadge } from '../closed-badge/public.tsx';
-import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
+import { makeDesktopPainter, paintDesktopPanel, type DesktopPainterDeps } from './desktop-painter.tsx';
 import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import { MobileTitleReadView } from './mobile-title-read-view.tsx';
 import styles from './page.module.css';
@@ -89,6 +89,8 @@ function notificationGist(text: string): string {
 
 export type TrackPageProps = Readonly<{
   track: Track;
+  /** Visit-scoped choice supplied by the route owner, independently for each Track. */
+  progressDisclosure?: DesktopPainterDeps['progressDisclosure'];
   /** App-composed panel module: shares the desktop card, precedes the report on compact screens. */
   panelContent?: ReactNode;
   cards: readonly CardWire[];
@@ -171,7 +173,7 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
 }
 
 export function TrackPage({ mobileReportIntro, mobileChatComposer,
-  panelContent, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
+  panelContent, progressDisclosure, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -290,7 +292,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   const panelView = deriveTrackPageView({ cards, tasks, activity: track, openableCards });
   const desktopConversations = conversationContextList ?? conversationList;
   const hasDesktopConversations = desktopConversations !== undefined || onStartConversation !== undefined;
-  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard,
+  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, progressDisclosure,
     suppressEmpty: desktopConversations !== undefined || onStartConversation !== undefined || recentFiles !== undefined || backlinks !== undefined,
   });
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);

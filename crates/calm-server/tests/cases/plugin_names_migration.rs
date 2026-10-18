@@ -389,17 +389,44 @@ async fn stored_plugin_ids_and_names_read_back_as_minted() {
             .fetch_all(&f.pool)
             .await
             .unwrap();
+    // Pin migrated rows independently; newly shipped builtins may be reconciled too.
+    let migrated_rows = [
+        ("calendar".to_string(), "builtin:calendar".to_string(), true),
+        (
+            "dev-neige-market".to_string(),
+            "/plugins/dev-neige-market".to_string(),
+            true,
+        ),
+        ("gitforge".to_string(), "builtin:gitforge".to_string(), true),
+    ];
+    for expected in &migrated_rows {
+        assert!(
+            after.contains(expected),
+            "migrated row changed: {expected:?}; {after:?}"
+        );
+    }
+    for (id, path, enabled) in &after {
+        if migrated_rows.iter().any(|row| &row.0 == id) {
+            continue;
+        }
+        let builtin = plugin::builtin::get(id).expect("reconcile added only declared builtins");
+        assert_eq!(path, &format!("builtin:{id}"));
+        assert_eq!(
+            *enabled,
+            !builtin.can_disable(),
+            "new optional builtin defaults off"
+        );
+    }
     assert_eq!(
-        after,
-        [
-            ("calendar".to_string(), "builtin:calendar".to_string(), true),
-            (
-                "dev-neige-market".to_string(),
-                "/plugins/dev-neige-market".to_string(),
-                true
-            ),
-            ("gitforge".to_string(), "builtin:gitforge".to_string(), true),
-        ]
+        after.len(),
+        migrated_rows.len()
+            + plugin::builtin::catalog()
+                .iter()
+                .filter(|builtin| !migrated_rows
+                    .iter()
+                    .any(|row| row.0 == builtin.manifest().id))
+                .count(),
+        "every newly declared builtin is reconciled exactly once"
     );
     let calendar_kv: i64 =
         sqlx::query_scalar("SELECT count(*) FROM plugin_kv WHERE plugin_id = 'calendar'")

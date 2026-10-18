@@ -1,3 +1,4 @@
+import { DepthFeedback } from '../../ui/motion/depth-feedback.tsx';
 import { runWorkerTask } from '../../systems/worker-task/public.ts';
 import type { PreparedReport } from '../../features/report/document/preparation.ts';
 import type { TrackReport } from '../../../../core/domain/report.ts';
@@ -49,11 +50,11 @@ export function ProductionApp({ transport, unauthorized, client, runtime, cursor
     read: (target, signal) => runOperation(transport, githubPreviewOperation(target, signal), unauthorized),
   }), [transport, unauthorized]);
   const content = <GitHubPreviewProvider port={previewPort}><RouterProvider router={router} /></GitHubPreviewProvider>;
-  if (__NC_BUNDLED__) return <StrictMode><RecoveryGate transport={transport} unauthorized={unauthorized} client={client}
+  if (__NC_BUNDLED__) return <StrictMode><DepthFeedback /><RecoveryGate transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={cursorStore} renderLogin={renderLogin} renderEventBridge={renderEventBridge} recovery={recovery}>
     {content}
   </RecoveryGate></StrictMode>;
-  return <StrictMode><SessionGate transport={transport} unauthorized={unauthorized} client={client}
+  return <StrictMode><DepthFeedback /><SessionGate transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={cursorStore}
     renderLogin={renderLogin} renderError={renderError}>
     <AppProviders client={client} runtime={runtime} cursorStore={cursorStore} renderEventBridge={renderEventBridge}>

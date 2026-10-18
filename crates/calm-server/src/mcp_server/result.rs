@@ -4,7 +4,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum Content {
     Text { text: String },
@@ -17,17 +17,34 @@ enum Content {
 #[serde(rename_all = "camelCase")]
 pub struct ToolResult {
     content: Vec<Content>,
-    structured_content: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    structured_content: Option<Value>,
     is_error: bool,
 }
 
 impl ToolResult {
+    /// Preserve a native plugin's text result without introducing a second evidence projection.
+    pub fn from_plugin(
+        result: plugin::mcp::CallToolResult,
+    ) -> Result<Self, super::framing::RpcError> {
+        let wire = serde_json::to_value(result)
+            .map_err(|_| super::framing::RpcError::internal("plugin result encoding"))?;
+        let content = serde_json::from_value(wire["content"].clone()).map_err(|_| {
+            super::framing::RpcError::internal("native plugin requires text content")
+        })?;
+        Ok(Self {
+            content,
+            structured_content: wire.get("structuredContent").cloned(),
+            is_error: wire["isError"] == true,
+        })
+    }
+
     /// Preserve the established JSON-only tool wire contract exactly.
     pub fn structured(value: Value) -> Self {
         let text = value.to_string();
         Self {
             content: vec![Content::Text { text }],
-            structured_content: value,
+            structured_content: Some(value),
             is_error: false,
         }
     }
@@ -38,7 +55,7 @@ impl ToolResult {
     pub fn structured_with_summary(value: Value, summary: String) -> Self {
         Self {
             content: vec![Content::Text { text: summary }],
-            structured_content: value,
+            structured_content: Some(value),
             is_error: false,
         }
     }
@@ -48,7 +65,7 @@ impl ToolResult {
     pub fn structured_error(value: Value, text: String) -> Self {
         Self {
             content: vec![Content::Text { text }],
-            structured_content: value,
+            structured_content: Some(value),
             is_error: true,
         }
     }
@@ -56,7 +73,7 @@ impl ToolResult {
     /// Explicit projection for in-process consumers of a structured tool.
     /// Transport must serialize the whole result.
     pub fn into_structured(self) -> Value {
-        self.structured_content
+        self.structured_content.unwrap_or(Value::Null)
     }
 }
 

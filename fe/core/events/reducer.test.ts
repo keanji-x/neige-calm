@@ -147,7 +147,7 @@ describe('event reducer behavior', () => {
         type: 'invalidate',
         keys: [['tracks', 'area', 'c1'], ['overlays', 'track'], ['tracks-range'], ['track-report']],
       },
-      { type: 'remove', keys: [['track', 'w1'], ['track-report', 'w1']] },
+      { type: 'remove', keys: [['track', 'w1'], ['track-report', 'w1'], ['conversation-initial-input', 'w1']] },
     ]);
   });
 });

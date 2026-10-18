@@ -2,6 +2,7 @@
 
 pub mod calendar;
 pub mod dev;
+pub mod opencode_history;
 
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity, ToolRegistry};
@@ -23,6 +24,7 @@ pub struct BuiltinPlugin {
     router: fn() -> axum::Router<crate::state::AppState>,
     /// Optional background task started once at boot; it must check its own lifecycle.
     background: Option<fn(Arc<AppContext>)>,
+    start: Option<fn(Value) -> StartFuture>,
 }
 
 impl BuiltinPlugin {
@@ -44,6 +46,16 @@ impl BuiltinPlugin {
             instructions,
             router: axum::Router::new,
             background: None,
+            start: None,
+        }
+    }
+    pub async fn start(
+        &'static self,
+        config: Value,
+    ) -> Result<Arc<dyn plugin::host::ports::BuiltinRun>, String> {
+        match self.start {
+            Some(start) => start(config).await,
+            None => Ok(Arc::new(StatelessRun(self))),
         }
     }
     pub fn can_disable(&self) -> bool {
@@ -110,6 +122,7 @@ static CATALOG: LazyLock<Vec<BuiltinPlugin>> = LazyLock::new(|| {
     plugin::builtin::catalog()
         .iter()
         .map(|definition| match definition.binding {
+            plugin::builtin::Binding::OpenCodeHistory => opencode_history::component(definition),
             plugin::builtin::Binding::Calendar => calendar::component(definition),
             plugin::builtin::Binding::Gitforge => dev::component(definition),
         })
@@ -183,7 +196,37 @@ pub fn register_native_tools(registry: &mut ToolRegistry) {
                 let (id, name) = (id.clone(), name.clone());
                 Box::pin(async move { require_bound(&ctx, &identity, &id, &name).await })
             });
-            registry.register_fenced(descriptor, Some(fence), handler);
+            let id = plugin.manifest().id.clone();
+            let local = plugin
+                .definition
+                .tools()
+                .iter()
+                .find(|tool| registry_name(&id, &tool.name) == descriptor.name)
+                .expect("native declaration")
+                .name
+                .clone();
+            let recording: crate::mcp_server::registry::ToolHandler =
+                Arc::new(move |ctx, identity, args| {
+                    let (handler, id, local) = (handler.clone(), id.clone(), local.clone());
+                    Box::pin(async move {
+                        let result = handler(ctx.clone(), identity.clone(), args.clone()).await;
+                        let recorded = result
+                            .as_ref()
+                            .ok()
+                            .and_then(|r| serde_json::to_value(r).ok())
+                            .and_then(|v| serde_json::from_value::<CallToolResult>(v).ok());
+                        crate::mcp_server::plugin_record::record(
+                            &ctx,
+                            &identity,
+                            &id,
+                            &local,
+                            &args,
+                            recorded.as_ref(),
+                        );
+                        result
+                    })
+                });
+            registry.register_fenced(descriptor, Some(fence), recording);
         }
     }
 }
@@ -220,5 +263,27 @@ pub(super) fn descriptor(
         annotations: declaration.annotations,
         roles: declaration.roles,
         listed_for: declaration.listed_for,
+    }
+}
+
+type StartFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Arc<dyn plugin::host::ports::BuiltinRun>, String>>
+            + Send,
+    >,
+>;
+struct StatelessRun(&'static BuiltinPlugin);
+#[async_trait::async_trait]
+impl plugin::host::ports::BuiltinRun for StatelessRun {
+    async fn tools_call(&self, tool: &str, args: &Value) -> Result<CallToolResult, RpcError> {
+        self.0.tools_call(tool, args)
+    }
+    fn forge_tools_call(
+        &self,
+        tool: &str,
+        args: &Value,
+        caller: &ForgeCallerScope,
+    ) -> Result<CallToolResult, RpcError> {
+        self.0.forge_tools_call(tool, args, caller)
     }
 }

@@ -171,18 +171,10 @@ fn a_segment_names_its_observation_and_event() {
             Some(HarnessInputOrigin {
                 observation: observation.type_tag().into(),
                 event_id: Some(42),
-                queue_entry_id: None,
+                queue_entry: None,
             })
         );
     }
     let seed = Observation::TrackGoal { text: "g".into() }.input_segment(None);
     assert_eq!(seed.origin.and_then(|origin| origin.event_id), None);
-}
-
-#[test]
-fn old_input_origin_keeps_missing_addressable_identity_absent() {
-    let old = serde_json::json!({"observation":"user_message","event_id":null});
-    let origin: HarnessInputOrigin = serde_json::from_value(old.clone()).unwrap();
-    assert_eq!(origin.queue_entry_id, None);
-    assert_eq!(serde_json::to_value(origin).unwrap(), old);
 }

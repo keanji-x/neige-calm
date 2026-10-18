@@ -270,10 +270,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
         ))
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                username: None,
-                password: None,
-                dev_autologin: true,
-                display_name: "Owner".into(),
+                username: None, password: None, dev_autologin: true, display_name: "Owner".into(),
             }),
             calm_server::auth::require_session,
         ))
@@ -384,6 +381,7 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         text: "hello from the queue".into(),
     }]);
     let entry_id = entries[0].id().expect("a user entry has an id").to_string();
+    let entry_rev = entries[0].user_view().unwrap().rev;
     let boot = boot(entries, false).await;
     wait_for_turn_start(&boot).await;
 
@@ -399,7 +397,7 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         json!([
             budget,
             {"presentation": "user", "text": "User says:\nhello from the queue", "attachments": [],
-             "origin": {"observation": "user_message", "event_id": null, "queue_entry_id": entry_id}}
+             "origin": {"observation": "user_message", "event_id": null, "queue_entry": {"id":entry_id,"rev":entry_rev}}}
         ])
     );
     let params: Value = serde_json::from_str(projection["params"].as_str().unwrap()).unwrap();
@@ -708,14 +706,6 @@ async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
             .unwrap()
             .contains("typed after the restart")),
         "the sentence rides in the recovered batch's row: {segments:?}"
-    );
-    let user = segments
-        .iter()
-        .find(|segment| segment["presentation"] == "user")
-        .unwrap();
-    assert_eq!(
-        user["origin"]["queue_entry_id"], sentence_id,
-        "the segment names its own entry, never the recovered batch alias"
     );
     // Give a second row every chance to appear.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1032,6 +1022,3 @@ async fn an_echo_of_a_turn_issued_before_the_upgrade_takes_the_snapshots_segment
 
     boot.harness.shutdown().await.unwrap();
 }
-
-#[path = "planner_transcript_projection/entry_identity.rs"]
-mod entry_identity;

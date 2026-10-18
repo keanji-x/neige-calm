@@ -28,8 +28,7 @@ use crate::db::sqlite::conversation::{
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::harness::backend::{
-    BackendRewind, InputAttemptReport, InputDelivery, NativeAcceptanceBasis, NonDispatchBasis,
-    PlannerBackend,
+    InputAttemptReport, InputDelivery, NativeAcceptanceBasis, NonDispatchBasis, PlannerBackend,
 };
 use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
@@ -102,15 +101,8 @@ impl PreparedInputDispatch {
     }
 }
 
-#[derive(Clone)]
-enum Target {
-    Initial,
-    Supplemental { native_turn_id: String },
-}
-
 pub(crate) struct CommittedInputReport {
     pub report: InputAttemptReport,
-    pub snapshot: Value,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -123,7 +115,6 @@ pub(crate) async fn initial(
     backend: &PlannerBackend,
     selection: &TurnModelSelection,
     permission: PlannerPermissionMode,
-    rewind: Option<&BackendRewind>,
 ) -> Result<CommittedInputReport> {
     let mut prepared = prepare(
         repo,
@@ -132,8 +123,6 @@ pub(crate) async fn initial(
         worker_session_id,
         submission_id,
         backend.provider(),
-        Target::Initial,
-        rewind,
     )
     .await?;
     let items = std::mem::take(&mut prepared.items);
@@ -146,7 +135,6 @@ pub(crate) async fn initial(
             items,
             selection,
             permission,
-            rewind,
             &|| Box::pin(prepared.admit(repo)),
         )
         .await;
@@ -160,56 +148,6 @@ pub(crate) async fn initial(
     .await
 }
 
-pub(crate) async fn supplemental(
-    repo: &dyn Repo,
-    source: &HumanInputSource,
-    card_id: &str,
-    worker_session_id: &str,
-    submission_id: &InputSubmissionId,
-    backend: &PlannerBackend,
-    expected_native_turn_id: &str,
-) -> Result<CommittedInputReport> {
-    if !backend.supports_steer() {
-        return Err(CalmError::Conflict(
-            "this provider does not support supplemental input".into(),
-        ));
-    }
-    let mut prepared = prepare(
-        repo,
-        source,
-        card_id,
-        worker_session_id,
-        submission_id,
-        backend.provider(),
-        Target::Supplemental {
-            native_turn_id: expected_native_turn_id.into(),
-        },
-        None,
-    )
-    .await?;
-    let items = std::mem::take(&mut prepared.items);
-    let report = backend
-        .dispatch_supplemental(
-            &prepared.logical_turn_id,
-            prepared.proof.attempt(),
-            &prepared.thread_id,
-            expected_native_turn_id,
-            &prepared.proof,
-            items,
-            &|| Box::pin(prepared.admit(repo)),
-        )
-        .await;
-    settle(
-        repo,
-        card_id,
-        worker_session_id,
-        prepared.proof.attempt(),
-        report,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn prepare(
     repo: &dyn Repo,
     source: &HumanInputSource,
@@ -217,14 +155,11 @@ async fn prepare(
     worker_session_id: &str,
     submission_id: &InputSubmissionId,
     provider: AgentProvider,
-    target: Target,
-    rewind: Option<&BackendRewind>,
 ) -> Result<PreparedInputDispatch> {
     let card_id = card_id.to_owned();
     let source = source.clone();
     let worker_session_id = worker_session_id.to_owned();
     let submission_id = submission_id.clone();
-    let rewind = rewind.map(serde_json::to_value).transpose()?;
     // write_in_tx_typed returns only after the protected write commits. A
     // cancelled provider future therefore leaves a real CrossingUnknown marker.
     write_in_tx_typed(repo, move |tx| {
@@ -259,34 +194,18 @@ async fn prepare(
             }
             let phase: HarnessPhaseTag =
                 serde_json::from_value(carrier.snapshot()["phase"].clone())?;
-            let expected_turn = match target {
-                Target::Initial
-                    if identity.ordinal == 0 && phase == HarnessPhaseTag::IssuingTurn =>
-                {
-                    None
-                }
-                Target::Supplemental { native_turn_id }
-                    if identity.ordinal > 0
-                        && phase == HarnessPhaseTag::TurnRunning
-                        && !native_turn_id.is_empty()
-                        && carrier.snapshot()["last_turn_id"].as_str()
-                            == Some(native_turn_id.as_str()) =>
-                {
-                    Some(native_turn_id)
-                }
-                _ => {
-                    return Err(CalmError::Conflict(
-                        "submission no longer targets this execution phase".into(),
-                    ));
-                }
-            };
-            let stored_rewind = carrier
+            if identity.ordinal != 0 || phase != HarnessPhaseTag::IssuingTurn {
+                return Err(CalmError::Conflict(
+                    "submission no longer targets this execution phase".into(),
+                ));
+            }
+            if carrier
                 .snapshot()
                 .get("pending_rewind")
-                .filter(|value| !value.is_null());
-            if stored_rewind != rewind.as_ref() {
+                .is_some_and(|value| !value.is_null())
+            {
                 return Err(CalmError::Conflict(
-                    "dispatch rewind differs from its durable checkpoint".into(),
+                    "canonical input cannot dispatch with pending history replacement".into(),
                 ));
             }
             let thread_id = carrier
@@ -321,7 +240,7 @@ async fn prepare(
                 // Provider setup can still refuse before exposing a native
                 // session. Its private report refines this when actually known.
                 native_session_id: None,
-                native_turn_id: expected_turn,
+                native_turn_id: None,
                 local_turn_id: None,
                 rpc_request_id: None,
             };
@@ -352,7 +271,7 @@ async fn settle(
     let may_release = matches!(fact.delivery, InputDeliveryFact::NotDispatched { .. });
     let card_id = card_id.to_owned();
     let worker_session_id = worker_session_id.to_owned();
-    let snapshot = write_in_tx_typed(repo, move |tx| {
+    write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut carrier =
                 current_input_fact_carrier_tx(tx, &card_id, &worker_session_id).await?;
@@ -360,11 +279,11 @@ async fn settle(
             if may_release {
                 release_submission_tx(tx, &mut carrier, &fact.attempt).await?;
             }
-            Ok(carrier.snapshot().clone())
+            Ok(())
         })
     })
     .await?;
-    Ok(CommittedInputReport { report, snapshot })
+    Ok(CommittedInputReport { report })
 }
 
 fn report_fact(
@@ -382,14 +301,12 @@ fn report_fact(
             basis: match evidence.basis() {
                 NonDispatchBasis::LocalPreflight => "local_preflight",
                 NonDispatchBasis::TransportBeforeSend => "transport_before_send",
-                NonDispatchBasis::Unsupported => "unsupported",
             }
             .into(),
         },
         InputDelivery::Accepted(receipt) => InputDeliveryFact::Accepted {
             basis: match receipt.basis() {
                 NativeAcceptanceBasis::CodexTurnStart => "codex_turn_start",
-                NativeAcceptanceBasis::CodexTurnSteer => "codex_turn_steer",
             }
             .into(),
             evidence: NativeInputAcceptance::NativeTurn {

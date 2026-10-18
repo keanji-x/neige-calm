@@ -25,7 +25,7 @@ function mount(turns: readonly ConversationTurn[]) {
   const seam = document.createElement('div'); seam.setAttribute('data-nc-drawer-seam', '');
   const pane = document.createElement('div'); pane.setAttribute('data-nc-drawer-scroll', '');
   host.append(pane, seam); document.body.append(host);
-  const view = (rows: readonly ConversationTurn[]) => <ChatThread conversation={conversation} turns={rows}
+  const view = (rows: readonly ConversationTurn[]) => <ChatThread hasPendingMessages={false} conversation={conversation} turns={rows}
     cards={{}} stalled={false} canContinue={false} />;
   const rendered = render(view(turns), { container: pane });
   return { update: (rows: readonly ConversationTurn[]) => rendered.rerender(view(rows)) };

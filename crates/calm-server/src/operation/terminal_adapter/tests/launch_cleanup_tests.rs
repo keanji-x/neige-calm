@@ -205,9 +205,10 @@ async fn exercise(fault: Fault) {
             .find(|op| op.id == id)
             .unwrap();
         op_repo
-            .prepare_tx_and_advance(&claimed, adapter.as_ref())
+            .prepare_tx_and_advance(&claimed, adapter.as_ref(), None)
             .await
             .unwrap()
+            .committed()
             .unwrap();
         let prepared = op_repo.get_operation(&id).await.unwrap().unwrap();
         assert_eq!(prepared.phase, Phase::TxCommitted);

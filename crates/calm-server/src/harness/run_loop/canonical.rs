@@ -587,7 +587,6 @@ async fn dispatch_initial(
         &inner.backend,
         selection,
         permission,
-        None,
     )
     .await?;
     match committed.report.outcome() {

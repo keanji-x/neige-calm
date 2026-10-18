@@ -11,6 +11,7 @@ async fn batched_equal_messages_keep_each_entry_identity_through_the_native_echo
             text: "same words".into(),
         },
     ]);
+    let references = entries.iter().map(|entry| entry.user_ref().unwrap()).collect::<Vec<_>>();
     let ids = entries
         .iter()
         .map(|entry| entry.id().unwrap().to_string())
@@ -28,8 +29,8 @@ async fn batched_equal_messages_keep_each_entry_identity_through_the_native_echo
         .collect::<Vec<_>>();
     assert_eq!(users.len(), 2);
     assert_eq!(users[0]["text"], users[1]["text"]);
-    assert_eq!(users[0]["origin"]["queue_entry_id"], ids[0]);
-    assert_eq!(users[1]["origin"]["queue_entry_id"], ids[1]);
+    assert_eq!(users[0]["origin"]["queue_entry"], serde_json::to_value(&references[0]).unwrap());
+    assert_eq!(users[1]["origin"]["queue_entry"], serde_json::to_value(&references[1]).unwrap());
     let row_id = projection["id"].clone();
     let params: Value = serde_json::from_str(projection["params"].as_str().unwrap()).unwrap();
     boot.daemon.emit_notification_for_test(Notification::Item {

@@ -19,7 +19,7 @@ function Scene() {
 }
 afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 
-it('uses the shared physical spring without scaling text and preserves backdrop feedback', () => {
+it('uses restrained shared depth for text surfaces and preserves backdrop feedback', () => {
   render(<Scene />);
   act(() => { screen.getByRole('button', { name: 'Open dialog' }).click(); });
   const panel = screen.getByRole('dialog', { name: 'Motion dialog' });
@@ -30,7 +30,8 @@ it('uses the shared physical spring without scaling text and preserves backdrop 
   expect(effect.getTiming().easing).toBe('linear');
   const frames = panel.getAnimations().flatMap(animation => (animation.effect as KeyframeEffect).getKeyframes());
   expect(frames.some(frame => frame.scale !== undefined)).toBe(false);
-  expect(frames.some(frame => frame.translate !== undefined)).toBe(true);
+  expect(frames.some(frame => String(frame.transform).includes('scale('))).toBe(true);
+  expect(frames[0].transform).toContain('translateY(0.56px)');
   const backdrop = panel.parentElement!;
   expect(backdrop.getAnimations().length).toBeGreaterThan(0);
   expect(parseFloat(getComputedStyle(backdrop).animationDuration)).toBe(readMotionTransition(backdrop, 'feedback').duration);

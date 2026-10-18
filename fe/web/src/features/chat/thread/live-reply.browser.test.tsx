@@ -32,7 +32,7 @@ function Pane({ turns, width = 640 }: { turns: readonly TranscriptEntry[]; width
     <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none', position: 'relative', inlineSize: width, blockSize: 448 }}>
       <div className={drawerStyles.scroll} data-nc-drawer-scroll="" style={{ blockSize: 400, flex: 'none' }}>
         <div className={drawerStyles.bodyInner}>
-          <ChatThread canContinue={false} cards={{}} stalled={false} pending conversation={conversation} turns={turns} />
+          <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} pending conversation={conversation} turns={turns} />
         </div>
       </div>
     </div>
@@ -178,7 +178,7 @@ describe('jump to the newest message', () => {
   it('keeps the control above the composer in the real mobile drawer', async () => {
     await page.viewport(390, 844);
     render(<Drawer open title="Review" onClose={() => {}} footer={<ChatComposer onSend={() => {}} />}>
-      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={history} />
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={history} />
     </Drawer>);
     const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
     await Promise.all(drawer.getAnimations().map((animation) => animation.finished));

@@ -16,27 +16,16 @@ pub(crate) enum BudgetControlScope {
 }
 
 pub(crate) struct ControlAttemptReport {
-    notice: BudgetControlNotice,
     delivery: ControlDelivery,
-    rpc_failure: Option<NativeRpcFailure>,
     outcome: Result<TurnId>,
 }
 
 impl ControlAttemptReport {
-    pub(crate) fn notice(&self) -> &BudgetControlNotice {
-        &self.notice
-    }
     pub(crate) fn delivery(&self) -> &ControlDelivery {
         &self.delivery
     }
-    pub(crate) fn rpc_failure(&self) -> Option<&NativeRpcFailure> {
-        self.rpc_failure.as_ref()
-    }
     pub(crate) fn outcome(&self) -> &Result<TurnId> {
         &self.outcome
-    }
-    pub(crate) fn into_outcome(self) -> Result<TurnId> {
-        self.outcome
     }
 }
 
@@ -54,9 +43,7 @@ impl PlannerBackend {
     ) -> ControlAttemptReport {
         let Arm::Codex(daemon, owner) = &self.0 else {
             return ControlAttemptReport {
-                notice: notice.clone(),
                 delivery: ControlDelivery::NotDispatched,
-                rpc_failure: None,
                 outcome: Err(CalmError::Conflict(
                     "provider does not support execution-budget control".into(),
                 )),
@@ -69,9 +56,7 @@ impl PlannerBackend {
                     if thread_id == notice.thread_id() && native_turn_id == notice.turn_id()))
         {
             return ControlAttemptReport {
-                notice: notice.clone(),
                 delivery: ControlDelivery::NotDispatched,
-                rpc_failure: None,
                 outcome: Err(CalmError::Conflict(
                     "budget notice names another execution owner".into(),
                 )),
@@ -103,11 +88,8 @@ impl PlannerBackend {
                 native_turn_id: turn_id.clone(),
             },
         };
-        let rpc_failure = native.rpc_failure_ref().map(NativeRpcFailure::from_rpc);
         ControlAttemptReport {
-            notice: notice.clone(),
             delivery,
-            rpc_failure,
             outcome: native.into_outcome(),
         }
     }

@@ -1,17 +1,14 @@
 use crate::db::sqlite::begin_immediate_tx;
-use crate::error::{CalmError, Result};
+use crate::error::Result;
 use crate::ids::TrackId;
-use crate::model::now_ms;
 use serde_json::Value;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use super::store::{head_in_tx, load_commit_record_for_track_tx};
-use super::{CommitHash, CommitRecord, ObjectHash, TreeManifest};
+use super::{CommitHash, CommitRecord};
 
-const OBJECT_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
-const OBJECT_SWEEP_GRACE_MS: i64 = 60 * 60 * 1000;
 pub(super) const TRACK_HISTORY_PRUNE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Commits the periodic pruner keeps per track; `neige admin gc` takes `--keep` explicitly.
 pub const DEFAULT_TRACK_HISTORY_PRUNE_KEEP: usize = 50;
@@ -193,133 +190,6 @@ pub async fn prune_all_tracks_once(pool: &SqlitePool, keep: usize) -> Result<u64
     Ok(total_pruned)
 }
 
-/// Content-addressed objects are not deleted by track/area delete because
-/// blobs can be shared across tracks; this fallback reclaims unreferenced rows.
-pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(OBJECT_SWEEP_INTERVAL);
-        // Skip the immediate boot tick so the server settles before taking the writer lock.
-        tick.tick().await;
-        loop {
-            tick.tick().await;
-            if let Err(e) = sweep_unreferenced_objects_once(&pool).await {
-                tracing::warn!(error = %e, "track_vcs: object sweep failed");
-            }
-        }
-    });
-}
-
-/// One `O(commits)` scan inside the writer transaction to seed live tree
-/// refs; revisit with streaming if commit counts grow.
-pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
-    let cutoff_ms = now_ms().saturating_sub(OBJECT_SWEEP_GRACE_MS);
-    let mut tx = begin_immediate_tx(pool).await?;
-    let res = sweep_unreferenced_objects_tx(&mut tx, cutoff_ms).await;
-    match res {
-        Ok(deleted) => {
-            tx.commit().await?;
-            if deleted > 0 {
-                tracing::info!(deleted, "track_vcs: swept unreferenced objects");
-            }
-            Ok(deleted)
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
-}
-
-async fn sweep_unreferenced_objects_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    cutoff_ms: i64,
-) -> Result<u64> {
-    sqlx::query(
-        r#"CREATE TEMP TABLE IF NOT EXISTS track_vcs_sweep_refs (
-               hash TEXT PRIMARY KEY
-           )"#,
-    )
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query("DELETE FROM track_vcs_sweep_refs")
-        .execute(&mut **tx)
-        .await?;
-    // Rooted on HEAD refs, not `SELECT DISTINCT tree_hash`: tree-rooting would
-    // keep trees of pruned-but-not-yet-swept commits alive across a partial prune.
-    sqlx::query(
-        r#"INSERT OR IGNORE INTO track_vcs_sweep_refs(hash)
-           SELECT DISTINCT c.tree_hash
-           FROM track_vcs_commits AS c
-           WHERE c.hash IN (
-               WITH RECURSIVE reachable(hash) AS (
-                   SELECT head_hash FROM track_vcs_refs
-                   UNION
-                   SELECT c2.parent_hash
-                   FROM track_vcs_commits AS c2
-                   JOIN reachable AS r ON c2.hash = r.hash
-                   WHERE c2.parent_hash IS NOT NULL
-               )
-               SELECT hash FROM reachable
-           )"#,
-    )
-    .execute(&mut **tx)
-    .await?;
-
-    let tree_rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
-        r#"SELECT refs.hash, o.bytes
-           FROM track_vcs_sweep_refs AS refs
-           JOIN track_vcs_objects AS o ON o.hash = refs.hash
-           WHERE o.kind = 'tree'"#,
-    )
-    .fetch_all(&mut **tx)
-    .await?;
-
-    let mut blob_hashes = BTreeSet::new();
-    for (tree_hash, bytes) in tree_rows {
-        let manifest: TreeManifest = serde_json::from_slice(&bytes).map_err(|e| {
-            CalmError::Internal(format!(
-                "track_vcs: parse tree manifest object {tree_hash}: {e}"
-            ))
-        })?;
-        blob_hashes.extend(manifest.entries.into_values().map(|entry| entry.blob_hash));
-    }
-    insert_sweep_refs_tx(tx, blob_hashes).await?;
-
-    let result = sqlx::query(
-        r#"DELETE FROM track_vcs_objects
-           WHERE created_at < ?1
-             AND NOT EXISTS (
-               SELECT 1
-               FROM track_vcs_sweep_refs AS refs
-               WHERE refs.hash = track_vcs_objects.hash
-             )"#,
-    )
-    .bind(cutoff_ms)
-    .execute(&mut **tx)
-    .await?;
-    Ok(result.rows_affected())
-}
-
-async fn insert_sweep_refs_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    hashes: BTreeSet<ObjectHash>,
-) -> Result<()> {
-    const INSERT_CHUNK_SIZE: usize = 500;
-    let hashes = hashes.into_iter().collect::<Vec<_>>();
-    for chunk in hashes.chunks(INSERT_CHUNK_SIZE) {
-        if chunk.is_empty() {
-            continue;
-        }
-        let mut builder: QueryBuilder<'_, Sqlite> =
-            QueryBuilder::new("INSERT OR IGNORE INTO track_vcs_sweep_refs(hash) ");
-        builder.push_values(chunk, |mut row, hash| {
-            row.push_bind(hash);
-        });
-        builder.build().execute(&mut **tx).await?;
-    }
-    Ok(())
-}
-
 async fn insert_prune_keep_refs_tx<'a, I>(tx: &mut Transaction<'_, Sqlite>, hashes: I) -> Result<()>
 where
     I: IntoIterator<Item = &'a CommitHash>,
@@ -453,3 +323,15 @@ fn harness_snapshot_endpoint<'a>(
         Some(_) => Err("invalid issued_turn_head"),
     }
 }
+
+#[cfg(test)]
+#[path = "gc/gc_writer_tests.rs"]
+mod gc_writer_tests;
+
+#[path = "gc_object_sweep.rs"]
+mod object_sweep;
+pub use object_sweep::{spawn_unreferenced_object_sweeper, sweep_unreferenced_objects_once};
+
+#[cfg(test)]
+#[path = "gc/gc_object_safety_tests.rs"]
+mod gc_object_safety_tests;

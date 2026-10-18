@@ -185,7 +185,6 @@ impl Fixture {
             &self.backend,
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            None,
         )
         .await
     }
@@ -198,6 +197,43 @@ impl Fixture {
         let value = carrier.checkpoint().clone();
         tx.commit().await.unwrap();
         value
+    }
+}
+
+#[tokio::test]
+async fn initial_keeps_pending_history_replacement_held_without_an_attempt() {
+    for reverted in [false, true] {
+        let fx = Fixture::new().await;
+        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+            .await
+            .unwrap();
+        let fence = RuntimeExecutionFence::from_carrier(&carrier);
+        let mut header = fence.header().clone();
+        header["pending_rewind"] =
+            serde_json::to_value(calm_types::harness::snapshot::PersistedRewind::CodexV2 {
+                thread_id: "thread".into(),
+                before_turn_id: "prior".into(),
+                reverted,
+            })
+            .unwrap();
+        persist_runtime_frame_tx(&mut tx, &fx.card, &fx.runtime, &fence, header)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let before = fx.checkpoint().await;
+
+        let Err(CalmError::Conflict(reason)) = fx.dispatch().await else {
+            panic!("history replacement must remain held")
+        };
+        assert_eq!(
+            reason,
+            "canonical input cannot dispatch with pending history replacement"
+        );
+        assert_eq!(fx.checkpoint().await, before);
+        assert!(before.attempt(&fx.submission).is_none());
+        assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+        assert!(fx.daemon.reverted_threads_for_test().is_empty());
     }
 }
 
@@ -234,11 +270,16 @@ async fn accepted_input_survives_execution_cleanup_error_and_cannot_dispatch_aga
         checkpoint.attempt(&fx.submission).unwrap().delivery,
         InputDeliveryFact::Accepted { .. }
     ));
+    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+        .await
+        .unwrap();
     assert!(
-        !serde_json::to_string(&settled.snapshot)
+        !serde_json::to_string(carrier.snapshot())
             .unwrap()
             .contains(BODY)
     );
+    tx.commit().await.unwrap();
     assert!(fx.dispatch().await.is_err());
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
 }
@@ -356,8 +397,6 @@ async fn plan_hydrates_exact_revision_and_frozen_author_without_saving_another_b
         &fx.runtime,
         &fx.submission,
         AgentProvider::Codex,
-        Target::Initial,
-        None,
     )
     .await
     .unwrap();

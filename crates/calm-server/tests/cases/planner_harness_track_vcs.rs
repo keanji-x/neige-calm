@@ -525,22 +525,14 @@ async fn log_worker_codex_hook(boot: &Boot, card: &Card, key: &str, prompt: &str
 }
 
 async fn refresh_transcripts(boot: &Boot) -> track_vcs::CommitHash {
-    let mut tx = boot
-        .repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin transcript refresh");
-    let commit = track_vcs::snapshot_transcripts_for_cards_in_track(
-        &mut tx,
+    track_vcs::snapshot_transcripts_for_cards_in_track(
+        boot.repo.pool(),
         &boot.track_id,
         None,
         track_vcs::MANIFEST_SCHEMA_VERSION,
     )
     .await
-    .expect("snapshot transcripts");
-    tx.commit().await.expect("commit transcript refresh");
-    commit
+    .expect("snapshot transcripts")
 }
 
 async fn start_worker_runtime_with_event(
@@ -987,7 +979,7 @@ async fn first_turn_with_last_seen_head_none_has_no_diff_block() {
         json!([
             budget,
             {"presentation": "user", "text": "read the goal", "attachments": [],
-             "origin": {"observation": "track_goal", "event_id": null}}
+             "origin": {"observation": "track_goal", "event_id": null, "queue_entry": null}}
         ])
     );
     assert!(runtime_snapshot(&boot).await.last_seen_head.is_none());

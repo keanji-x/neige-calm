@@ -47,10 +47,31 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['track-report'])).toEqual(queryKeys.trackReportPrefix());
     expect(mapPlannedQueryKey(['track-conversations'])).toEqual(queryKeys.trackConversationsPrefix());
     expect(mapPlannedQueryKey(['track-conversations', 'w1'])).toEqual(queryKeys.trackConversations('w1'));
+    expect(mapPlannedQueryKey(['conversation-initial-input'])).toEqual(['conversation-initial-input']);
+    expect(mapPlannedQueryKey(['conversation-initial-input', 'w1'])).toEqual(['conversation-initial-input', 'w1']);
+    expect(mapPlannedQueryKey(['conversation-initial-input', 'w1', 'card-1'])).toEqual(queryKeys.initialInput('w1', 'card-1'));
     expect(mapPlannedQueryKey(['today-launchpad'])).toEqual(queryKeys.todayLaunchpad());
-    for (const dropped of [['track-files'], ['track-files', 'w1'], ['tracks-range'], ['track-backlinks'], ['nope']]) {
+    for (const dropped of [['conversation-initial-input', undefined], ['conversation-initial-input', 'w1', null], ['conversation-initial-input', 'w1', 'c1', 'extra'], ['track-files'], ['track-files', 'w1'], ['tracks-range'], ['track-backlinks'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
+  });
+
+  it('releases accepted-input query leases for exactly the deleted card, deleted track and database scope', () => {
+    const client = new QueryClient();
+    const first = [...queryKeys.initialInput('w1', 'c1'), 'key-1', 'entry-1'];
+    const second = [...queryKeys.initialInput('w1', 'c2'), 'key-2', 'entry-2'];
+    const third = [...queryKeys.initialInput('w2', 'c3'), 'key-3', 'entry-3'];
+    for (const key of [first, second, third]) client.setQueryData(key, { accepted: true });
+    const card = invalidationPlanFor({ ev: 'card.deleted', data: { id: 'c1', track_id: 'w1' } });
+    applyEventEffects(client, [{ type: 'remove', keys: card.remove }]);
+    expect(client.getQueryData(first)).toBeUndefined();
+    expect(client.getQueryData(second)).toEqual({ accepted: true });
+    const track = invalidationPlanFor({ ev: 'track.deleted', data: { id: 'w1', area_id: 'area' } });
+    applyEventEffects(client, [{ type: 'remove', keys: track.remove }]);
+    expect(client.getQueryData(second)).toBeUndefined();
+    expect(client.getQueryData(third)).toEqual({ accepted: true });
+    applyEventEffects(client, [{ type: 'clear-cache' }]);
+    expect(client.getQueryData(third)).toBeUndefined();
   });
 
   /* Both links are silent when they break: an unmapped key is discarded here without a warning. */
@@ -340,7 +361,7 @@ describe('query invalidation adapter', () => {
       const plan = invalidationPlanFor(wireEventSchema.parse({ ev, data }));
       const { calls, client } = recordingClient();
       applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
-      await vi.waitFor(() => expect(calls).toEqual(keys.map((queryKey) => ({ op: 'invalidate', queryKey }))));
+      await vi.waitFor(() => expect(calls).toEqual([...keys, queryKeys.initialInput('track-1', 'card-1')].map((queryKey) => ({ op: 'invalidate', queryKey }))));
     }
   });
 
@@ -362,6 +383,7 @@ describe('query invalidation adapter', () => {
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
       { op: 'invalidate', queryKey: queryKeys.trackConversations('track-1') },
       { op: 'invalidate', queryKey: queryKeys.trackReport('track-1') },
+      { op: 'invalidate', queryKey: queryKeys.initialInput('track-1', 'card-1') },
     ]);
   });
 
@@ -379,6 +401,7 @@ describe('query invalidation adapter', () => {
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
       { op: 'invalidate', queryKey: queryKeys.trackConversationsPrefix() },
       { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.initialInputPrefix() },
     ]);
   });
 
@@ -397,6 +420,7 @@ describe('query invalidation adapter', () => {
       { op: 'invalidate', queryKey: queryKeys.tracksInArea('c1') },
       { op: 'remove', queryKey: queryKeys.trackDetail('w1') },
       { op: 'remove', queryKey: queryKeys.trackReport('w1') },
+      { op: 'remove', queryKey: queryKeys.initialInputTrack('w1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('track') },
       { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
     ]);

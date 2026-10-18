@@ -8,32 +8,18 @@ use crate::support::mcp::{
 use calm_server::builtin_plugins;
 use calm_server::mcp_server::build_default_registry;
 use calm_server::model::CardRole;
-use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::state::WriteContext;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::sync::Arc;
+
+use crate::support::builtins as configured;
 
 const DEV: &str = "gitforge";
 const PUBLISH: &str = "plugin_gitforge_publish";
 
-async fn fixture() -> (CardBoot, Arc<PluginHost>) {
+async fn fixture() -> (CardBoot, configured::HistoryHost) {
     let boot = boot_shared_daemon_with_planner_thread().await;
-    let host = Arc::new(PluginHost::new_full(
-        Arc::new(PluginRegistry::empty().with_builtins()),
-        boot.repo.clone(),
-        boot._tmp.path().join("plugins"),
-        boot._tmp.path().join("plugin-data"),
-        Vec::new(),
-        boot.events.clone(),
-        WriteContext::new(boot.card_role_cache.clone(), boot.track_area_cache.clone()),
-    ));
-    host.reconcile_builtins().await.unwrap();
-    for component in builtin_plugins::catalog() {
-        host.enable(&component.manifest().id).await.unwrap();
-    }
-    assert!(boot.plugin_host.set(host.clone()).is_ok());
-    (boot, host)
+    let history = configured::running(&boot).await;
+    (boot, history)
 }
 
 async fn bind(boot: &CardBoot, owner: &str) {
@@ -108,7 +94,8 @@ async fn bootstrap_catalog_covers_every_builtin_bound_role_catalog() {
 
 #[tokio::test]
 async fn bootstrap_discovery_does_not_grant_native_call_authority() {
-    let (boot, host) = fixture().await;
+    let (boot, history) = fixture().await;
+    let host = &history.host;
     let daemon = boot.daemon_token.as_deref().unwrap();
     let initial = list(&boot, daemon, None).await;
     assert!(initial.contains(PUBLISH));

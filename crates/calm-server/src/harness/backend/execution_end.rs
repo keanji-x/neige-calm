@@ -27,10 +27,6 @@ impl ExecutionInput {
         })
     }
 
-    pub(crate) fn matches_logical(&self, logical_turn_id: &LogicalTurnId) -> bool {
-        matches!(self, Self::Canonical(actual) if &actual.logical_turn_id == logical_turn_id)
-    }
-
     pub(crate) fn matches(&self, target: &ExecutionEndTarget) -> bool {
         matches!(self, Self::Canonical(actual)
             if actual.logical_turn_id == target.logical_turn_id && actual.proof == target.proof)

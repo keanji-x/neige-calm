@@ -42,7 +42,7 @@ async fn admin_patch_refuses_ai_actor_headers() {
 #[tokio::test]
 async fn admin_patch_refuses_an_ineligible_track() {
     let (state, id, repo) = boot().await;
-    sqlx::query("UPDATE tracks SET plugin_scope='bound' WHERE id=?1")
+    sqlx::query("UPDATE tracks SET purpose='area-chat' WHERE id=?1")
         .bind(&id)
         .execute(&repo.sqlite_pool().unwrap())
         .await
@@ -93,7 +93,7 @@ async fn admin_revoke_is_allowed_when_ineligible() {
             .len(),
         1
     );
-    sqlx::query("UPDATE tracks SET plugin_scope='bound' WHERE id=?1")
+    sqlx::query("UPDATE areas SET kind='system' WHERE id=(SELECT area_id FROM tracks WHERE id=?1)")
         .bind(&id)
         .execute(&repo.sqlite_pool().unwrap())
         .await
@@ -118,7 +118,6 @@ async fn admin_revoke_is_allowed_when_ineligible() {
 async fn admin_eligibility_and_detail_use_storage_facts() {
     use http_body_util::BodyExt;
     for shape in [
-        "plugin_scope='missing-plugin'",
         "purpose='area-chat'",
         "creator_track_id='historical-creator',creator_key='key'",
         "parent_track_id='historical-parent'",
@@ -184,7 +183,7 @@ async fn admin_patch_same_state_succeeds_when_now_ineligible() {
         StatusCode::OK
     );
     let before = repo.track_get(&id).await.unwrap().unwrap();
-    sqlx::query("UPDATE tracks SET plugin_scope='bound' WHERE id=?1")
+    sqlx::query("UPDATE areas SET kind='system' WHERE id=(SELECT area_id FROM tracks WHERE id=?1)")
         .bind(&id)
         .execute(&repo.sqlite_pool().unwrap())
         .await

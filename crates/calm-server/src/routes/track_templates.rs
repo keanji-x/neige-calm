@@ -79,12 +79,16 @@ pub struct TrackTemplateTask {
 pub(crate) async fn list_track_templates(
     State(s): State<RouteState>,
 ) -> Result<Json<Vec<TrackTemplate>>> {
+    Ok(Json(list(&s).await?))
+}
+
+pub(crate) async fn list(s: &RouteState) -> Result<Vec<TrackTemplate>> {
     let roster = s.templates.entries();
     let mut templates = Vec::with_capacity(roster.len());
     for template in s.templates.user_entries() {
         // Same resolver as create-time binding, so a template can never be advertised with a
         // schema the create path would then refuse to validate against.
-        let binding = resolve_template_binding(&s, template).await;
+        let binding = resolve_template_binding(s, template).await;
         let availability = match missing_required_template_owner(template.key(), binding.as_ref()) {
             Some(owner) => TrackTemplateAvailability::RequiresPlugin {
                 plugin_id: owner.manifest().id.clone(),
@@ -110,7 +114,7 @@ pub(crate) async fn list_track_templates(
                 .collect(),
         });
     }
-    Ok(Json(templates))
+    Ok(templates)
 }
 
 /// A template's title and tasks: the roster entry, and nothing else.
@@ -159,17 +163,21 @@ pub(crate) async fn get_track_template(
     State(s): State<RouteState>,
     Path(id): Path<String>,
 ) -> Result<Json<TrackTemplateDetail>> {
+    Ok(Json(detail(&s, &id)?))
+}
+
+pub(crate) fn detail(s: &RouteState, id: &str) -> Result<TrackTemplateDetail> {
     let template = s
         .templates
-        .get(&id)
+        .get(id)
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("template {id}")))?;
-    Ok(Json(TrackTemplateDetail {
+    Ok(TrackTemplateDetail {
         id: template.key().to_string(),
         title: template.title().to_string(),
         description: template.description().map(str::to_string),
         instructions: template.instructions().map(str::to_string),
         body: template.recipe().body,
-    }))
+    })
 }
 
 /// Documentation included by a template, independently of plugin enablement.
@@ -187,9 +195,13 @@ pub(crate) async fn get_template_plugin_guides(
     State(s): State<RouteState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TemplatePluginGuide>>> {
+    Ok(Json(guides(&s, &id)?))
+}
+
+pub(crate) fn guides(s: &RouteState, id: &str) -> Result<Vec<TemplatePluginGuide>> {
     let template = s
         .templates
-        .get(&id)
+        .get(id)
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("template {id}")))?;
     let guide = crate::builtin_plugins::required_owner(template.key())
         .and_then(crate::builtin_plugins::get)
@@ -197,5 +209,5 @@ pub(crate) async fn get_template_plugin_guides(
             id: component.manifest().id.clone(),
             name: component.manifest().display_name.clone(),
         });
-    Ok(Json(guide.into_iter().collect()))
+    Ok(guide.into_iter().collect())
 }

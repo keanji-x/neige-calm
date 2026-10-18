@@ -304,9 +304,10 @@ async fn exercise(history: History, disposal: Disposal) {
             .find(|op| op.id == id)
             .unwrap();
         operations
-            .prepare_tx_and_advance(&claimed, &adapter)
+            .prepare_tx_and_advance(&claimed, &adapter, None)
             .await
             .unwrap()
+            .committed()
             .unwrap();
     } else {
         let submitted = key.clone();

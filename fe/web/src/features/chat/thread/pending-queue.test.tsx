@@ -19,7 +19,7 @@ function entry(overrides: Partial<PendingQueueEntry> = {}): PendingQueueEntry {
 function renderQueue(props: Partial<PendingQueueProps> = {}) {
   const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => done);
   const view = render(<PendingQueue
-    entries={[entry()]}
+    entries={[entry()]} queueDisplayAccounting={{ displayed: [], suppressed: [] }}
     overflow={0}
     busy={false}
     onDelete={onDelete}
@@ -58,7 +58,7 @@ describe('PendingQueue', () => {
 
   it('retries against the revision the server reported, not the stale one', async () => {
     const onDelete = vi.fn<PendingQueueProps['onDelete']>()
-      .mockResolvedValueOnce({ kind: 'stale', text: 'theirs', rev: 9 })
+      .mockResolvedValueOnce({ kind: 'stale', entryId: 'e1', text: 'theirs', rev: 9 })
       .mockResolvedValueOnce({ kind: 'done' });
     renderQueue({ entries: [entry({ rev: 3 })], onDelete });
     await userEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
@@ -73,7 +73,7 @@ describe('PendingQueue', () => {
 
   it('shows a refusal on its own row and not on any other', async () => {
     const onDelete = vi.fn<PendingQueueProps['onDelete']>()
-      .mockResolvedValue({ kind: 'stale', text: 'theirs', rev: 9 });
+      .mockResolvedValue({ kind: 'stale', entryId: 'e2', text: 'theirs', rev: 9 });
     renderQueue({
       entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })],
       onDelete,
@@ -250,7 +250,7 @@ it.each([false, true])('follows authoritative queue order when a steered entry r
   const first = entry({ entry_id: 'a', text: 'A waiting' });
   const middle = entry({ entry_id: 'b', text: 'B waiting' });
   const last = entry({ entry_id: 'c', text: 'C waiting' });
-  const props = { entries: [first, middle, last], overflow: 0, busy: false, onDelete: () => done,
+  const props = { entries: [first, middle, last], queueDisplayAccounting: { displayed: [], suppressed: [] }, overflow: 0, busy: false, onDelete: () => done,
     onEdit: () => undefined, canEdit: true, editingEntryId: null, savedEntry: null, onFocusComposer: () => undefined };
   const view = render(<PendingQueue {...props} />);
   view.rerender(<PendingQueue {...props} entries={[first, last]} />);
@@ -258,4 +258,36 @@ it.each([false, true])('follows authoritative queue order when a steered entry r
   const returned = { ...middle, text: 'B returned to the head', rev: 1 };
   view.rerender(<PendingQueue {...props} entries={[returned, first, last]} />);
   expect(rows().map(row => row.dataset.ncPendingEntry)).toEqual(['b', 'a', 'c']);
+});
+
+
+it('removes only departed source-accounted copies and preserves active rows and ordinary departure motion', () => {
+  const first = entry({ entry_id: 'first', text: 'Canonical carrier now owns this input' });
+  const second = entry({ entry_id: 'second', text: 'An ordinary deleted input still animates' });
+  const props = { entries: [first, second], queueDisplayAccounting: { displayed: [{ id: first.entry_id, rev: first.rev }], suppressed: [] }, overflow: 0, busy: false,
+    onDelete: () => done, onEdit: () => undefined, canEdit: true, editingEntryId: null,
+    savedEntry: null, onFocusComposer: () => undefined };
+  const view = render(<PendingQueue {...props} />);
+  expect(rows()).toHaveLength(2);
+  expect(screen.getAllByRole<HTMLButtonElement>('button', { name: 'Delete this message' }).every(button => !button.disabled && button.getAttribute('aria-disabled') !== 'true')).toBe(true);
+  view.rerender(<PendingQueue {...props} entries={[second]} />);
+  expect(screen.queryByText(first.text)).toBeNull();
+  expect(rows().map(row => row.dataset.ncPendingEntry)).toEqual(['second']);
+  view.rerender(<PendingQueue {...props} entries={[]} />);
+  expect(screen.getByText(second.text).closest('[data-nc-collapse-presence]')?.getAttribute('aria-hidden')).toBe('true');
+});
+
+it('compares the actual saved departing revision with declared carrier versions', () => {
+  const original = entry({ entry_id: 'saved-version', rev: 0, text: 'Earlier cached text' });
+  const saved = { ...original, rev: 1, text: 'Actual acknowledged saved text' };
+  const props = { entries: [original], queueDisplayAccounting: { displayed: [{ id: original.entry_id, rev: 0 }], suppressed: [] },
+    overflow: 0, busy: false, onDelete: () => done, onEdit: () => undefined, canEdit: true,
+    editingEntryId: null, savedEntry: null, onFocusComposer: () => undefined };
+  const view = render(<PendingQueue {...props} />);
+  view.rerender(<PendingQueue {...props} savedEntry={saved} />);
+  view.rerender(<PendingQueue {...props} entries={[]} savedEntry={saved} />);
+  expect(screen.getByText(saved.text).closest('[data-nc-collapse-presence]')?.getAttribute('aria-hidden')).toBe('true');
+  view.rerender(<PendingQueue {...props} entries={[]} savedEntry={saved}
+    queueDisplayAccounting={{ displayed: [{ id: saved.entry_id, rev: saved.rev }], suppressed: [] }} />);
+  expect(screen.queryByText(saved.text)).toBeNull();
 });

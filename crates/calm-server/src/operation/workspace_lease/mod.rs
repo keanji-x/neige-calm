@@ -33,7 +33,7 @@ pub(crate) use release::{
 };
 #[cfg(any(test, feature = "fixtures"))]
 pub(crate) use worker::prepare_worker_lease_as_tx;
-pub(crate) use worker::{WorkerLeasePlan, prepare_worker_lease_tx, worker_branch_tx};
+pub(crate) use worker::{WorkerLeasePlan, worker_branch_tx};
 
 /// The one SELECT list every reader of a lease row uses
 /// (`row_to_workspace_lease` takes columns by name at run time, so a column
@@ -43,7 +43,7 @@ pub(crate) use worker::{WorkerLeasePlan, prepare_worker_lease_tx, worker_branch_
 pub(crate) const WORKSPACE_LEASE_COLUMNS: &str = "lease_id, card_id, track_id, path, state, boot_id, \
      base_sha, base_source, base_attempt_id, canonical_path, git_common_dir, delivery_policy";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WorkspaceLease {
     pub lease_id: String,
     pub card_id: String,
@@ -113,7 +113,7 @@ pub(crate) async fn any_track_has_active_forge_action(
     Ok(exists)
 }
 
-/// INSERT the lease row of one worker attempt at the directory [`prepare_worker_lease_tx`] chose
+/// INSERT the lease row of one worker attempt at the directory [`worker::prepare_worker_lease_tx`] chose
 /// (#1830 S2 D2): `delivery_policy = 'kernel'` and the five base columns in the one INSERT, then
 /// the track's workspace freeze and `workspace.leased`. Nothing is created on disk. A read-only
 /// attempt's row (#1917) records no base, so it has no `delivery_policy` and its release writes no

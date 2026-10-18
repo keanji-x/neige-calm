@@ -78,7 +78,6 @@ impl Fixture {
                     vec![],
                     &TurnModelSelection::inherit(),
                     PlannerPermissionMode::Never,
-                    None,
                     &|| Box::pin(async { Ok(()) }),
                 )
                 .await
@@ -217,7 +216,7 @@ async fn codex_fast_end_is_bound_to_the_actual_row_and_original_initial() {
 }
 
 #[tokio::test]
-async fn codex_supplemental_inflight_blocks_observation_but_never_replaces_initial() {
+async fn codex_budget_notice_inflight_blocks_observation_but_never_replaces_initial() {
     let fx = Fixture::new().await;
     let (_client, mut peer) = connect(&fx.daemon).await;
     fx.accepted(&mut peer, "initial").await;
@@ -229,18 +228,19 @@ async fn codex_supplemental_inflight_blocks_observation_but_never_replaces_initi
     let proof: SubmissionDispatchProof = serde_json::from_value(proof).unwrap();
     let backend = fx.backend.clone();
     let thread = fx.owner.thread.clone();
-    let sent = proof.clone();
+    let scope = target.clone();
+    let notice = crate::planner_turn_budget::BudgetControlNotice::for_turn(
+        10.try_into().unwrap(),
+        &thread,
+        "initial",
+        "original-start",
+    )
+    .unwrap();
     let task = tokio::spawn(async move {
         backend
-            .dispatch_supplemental(
-                &super::dispatch_tests::logical_turn_id(),
-                sent.attempt(),
-                &thread,
-                "initial",
-                &sent,
-                vec![],
-                &|| Box::pin(async { Ok(()) }),
-            )
+            .send_budget_notice(&notice, BudgetControlScope::Canonical(scope), &|| {
+                Box::pin(async { Ok(()) })
+            })
             .await
     });
     let req = request(&mut peer).await;
@@ -260,7 +260,7 @@ async fn codex_supplemental_inflight_blocks_observation_but_never_replaces_initi
     .await;
     assert!(matches!(
         task.await.unwrap().delivery(),
-        InputDelivery::Accepted(_)
+        ControlDelivery::Accepted { native_turn_id } if native_turn_id == "initial"
     ));
     assert!(
         fx.backend
@@ -269,10 +269,10 @@ async fn codex_supplemental_inflight_blocks_observation_but_never_replaces_initi
             .unwrap()
             .is_some()
     );
-    let supplemental = ExecutionEndTarget { proof, ..target };
+    let different_input = ExecutionEndTarget { proof, ..target };
     assert!(
         fx.backend
-            .qualify_execution_end(&supplemental)
+            .qualify_execution_end(&different_input)
             .await
             .unwrap()
             .is_none()

@@ -2,6 +2,7 @@
 //! handshake until its pid triple is recorded, the verdict comes from the WAIT STATUS (the exit file is only a dead-work recovery hint), and gate red / timeout / infra all land `failed`.
 
 mod display;
+mod preparation;
 pub(crate) mod regate;
 mod reuse;
 pub(crate) mod target;
@@ -322,162 +323,27 @@ impl ProviderAdapter for TaskVerifyAdapter {
         Ok(())
     }
 
+    async fn prepare_external(
+        &self,
+        input: &Value,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<Box<dyn super::PreparedTx>>> {
+        preparation::collect(self, input, op, ctx).await
+    }
+
     async fn prepare_tx<'tx>(
         &self,
         tx: &mut super::Tx<'tx>,
         input: &Value,
-        op: &Operation,
+        _op: &Operation,
     ) -> Result<TxOutput> {
+        // Preserve the common task admission fence even for unsupported direct preparation.
         let payload: TaskVerifyOperationPayload = serde_json::from_value(input.clone())?;
         super::refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
-        let key = op
-            .idempotency_key
-            .as_deref()
-            .and_then(parse_attempt_key)
-            .ok_or_else(|| {
-                CalmError::BadRequest(format!(
-                    "task-verify idempotency key must be \"{{task_id}}#g{{N}}\", got {:?}",
-                    op.idempotency_key
-                ))
-            })?;
-        if key != (payload.task_id.as_str(), payload.attempt) {
-            return Err(CalmError::BadRequest(
-                "task-verify idempotency key does not match payload".into(),
-            ));
-        }
-        let attempt = payload.attempt;
-
-        let task = task_get_tx(tx, &payload.task_id)
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("task {}", payload.task_id)))?;
-        if task.status != TaskStatus::Verifying {
-            return Err(CalmError::Conflict(format!(
-                "task {} is not verifying (status {:?}); gate attempt {attempt} is moot",
-                task.id, task.status
-            )));
-        }
-        let gate_json = task
-            .gate_json
-            .as_deref()
-            .ok_or_else(|| CalmError::Conflict(format!("task {} declares no gate", task.id)))?;
-        let gate = GateSpec::parse(&task.id, gate_json)?;
-
-        // Successful workers release their lease before the gate starts, retaining files.
-        let area_id: Option<String> =
-            sqlx::query_scalar("SELECT area_id FROM tracks WHERE id = ?1")
-                .bind(&task.track_id)
-                .fetch_optional(&mut **tx)
-                .await?;
-        let area_id = area_id
-            .ok_or_else(|| CalmError::Conflict(format!("track {} is gone", task.track_id)))?;
-        let cwd = if let Some(cwd) = gate.cwd.as_ref().filter(|c| !c.trim().is_empty()) {
-            cwd.clone()
-        } else if let Some(card_id) = task.worker_card_id.as_deref() {
-            // A missing lease is an infrastructure defect, never a reason to inspect the Track.
-            let worker_cwd: Option<String> = sqlx::query_scalar(
-                "SELECT path FROM workspace_leases WHERE card_id = ?1 AND track_id = ?2 \
-                 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1",
-            )
-            .bind(card_id)
-            .bind(&task.track_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if let Some(cwd) = worker_cwd {
-                cwd
-            } else if task.kind == crate::model::TaskKind::Terminal {
-                // Terminal tasks do not acquire a worktree lease; use the immutable spawn operation, not the mutable card payload.
-                sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT json_extract(tx_output_json, '$.data.cwd') FROM operations \
-                     WHERE kind = 'terminal-worker' AND idempotency_key = ?1 \
-                     AND target_type = 'card' AND target_id = ?2",
-                )
-                .bind(&task.id)
-                .bind(card_id)
-                .fetch_optional(&mut **tx)
-                .await?
-                .flatten()
-                .ok_or_else(|| {
-                    CalmError::Conflict(format!("task {}: bound terminal cwd missing", task.id))
-                })?
-            } else {
-                return Err(CalmError::Conflict(format!(
-                    "task {}: bound worker {card_id} workspace lease missing",
-                    task.id
-                )));
-            }
-        } else {
-            // Legacy/unbound tasks retain their declaration defaults; the track default is where
-            // its tasks run, `agent_cwd()` (#2139 R2).
-            match task.cwd.clone().filter(|c| !c.trim().is_empty()) {
-                Some(cwd) => cwd,
-                None => crate::db::sqlite::track_workspace_read_tx(tx, &task.track_id)
-                    .await?
-                    .agent_cwd()
-                    .to_string(),
-            }
-        };
-        if cwd.trim().is_empty() {
-            return Err(CalmError::BadRequest(format!(
-                "task {}: gate cwd is empty",
-                task.id
-            )));
-        }
-
-        // Guarded attempt bump: exactly one op prepares attempt N.
-        let rows = task_gate_attempt_bump_tx(tx, &task.id, attempt, now_ms()).await?;
-        if rows == 0 {
-            return Err(CalmError::Conflict(format!(
-                "task {} gate attempt {attempt} lost the bump (current attempt {} / status {:?})",
-                task.id, task.gate_attempt, task.status
-            )));
-        }
-
-        // The target check (D3), sampled in this transaction, then reuse (#2464 §4) under the same
-        // sampling deadline; a refusal or a reused run's verdict is written here too.
-        let log_path = self.log_path(&task.id, attempt);
-        let reuse = reuse::Gate {
-            task_id: &task.id,
-            attempt,
-            log_path: &log_path,
-            gate_logs_dir: &self.gate_logs_dir,
-            deadline: tokio::time::Instant::now() + SAMPLE_TIMEOUT,
-        };
-        reuse::unlink_leftover_log(&reuse).await?;
-        let mut prepared =
-            target::prepare_target_tx(tx, &task, &gate, &cwd, attempt, &log_path, reuse.deadline)
-                .await?;
-        reuse::reuse_passing_run_tx(tx, &reuse, &mut prepared).await?;
-        let frozen = FrozenVerify {
-            task_id: task.id.clone(),
-            track_id: task.track_id.clone(),
-            area_id,
-            key: task.key.clone(),
-            attempt,
-            cwd,
-            gate,
-            target: prepared.target,
-        };
-        let mut output = TxOutput::new("task", Some(task.id.clone()), json!({}));
-        output.data = serde_json::to_value(&frozen)?;
-        if let Some(verdict) = &prepared.verdict {
-            output
-                .post_commit_events
-                .extend(apply_gate_result_in_tx(tx, &frozen.result_ctx(), verdict).await?);
-            output.result = serde_json::to_value(verdict)?;
-        }
-        if let Some(card_id) = task.worker_card_id.as_deref() {
-            output.post_commit_events.extend(
-                display::record_gate_cwd_tx(
-                    tx,
-                    card_id,
-                    &frozen.track_id,
-                    &frozen.area_id,
-                    &frozen.cwd,
-                )
-                .await?,
-            );
-        }
-        Ok(output)
+        Err(CalmError::Internal(
+            "task verification requires external preparation".into(),
+        ))
     }
 
     async fn app_server_interact(

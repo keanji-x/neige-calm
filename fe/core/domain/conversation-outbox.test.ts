@@ -6,8 +6,10 @@ import {
   type SendOp, type SendOpPhase,
 } from './conversation-outbox.js';
 
+// The fixture's row 5 carries entry-a; other rows belong to other accepted inputs.
 const row = (id: string, text = 'same'): ConversationTurn => ({ id, author: 'unknown', text, atMs: 1,
-  legacyInput: { cardId: 'card', threadId: 'thread', entryId: id === '5' ? 'entry-a' : `entry-old-${id}` } });
+  queueEntryId: id === '5' ? 'entry-a' : `entry-old-${id}`,
+  inputSource: { cardId: 'card', threadId: 'thread', itemId: Number.parseInt(id, 10), segmentIndex: 0, turnId: 'turn', entryRev: 1 } });
 
 const op = (key: string, phase: SendOpPhase, { before = 4, text = 'same', queued = false, entryId = `entry-${key}` as string | null, atMs = 2 } = {}): SendOp => ({
   key, fromComposer: true, replaces: null,
@@ -22,8 +24,7 @@ const NOTHING_READ = { transcript: 0, run: 0 } as const;
 const NONE_SPENT: readonly string[] = [];
 
 const view = (ops: readonly SendOp[], server: readonly ConversationTurn[] = [], extra: Partial<Parameters<typeof outboxView>[0]> = {}) =>
-  outboxView({
-    cardId: 'card',
+  outboxView({ cardId: 'card',
     serverEntries: server, serverTurns: server, liveReplies: [], queuedEntryIds: new Set(), stalled: false,
     ops, spent: NONE_SPENT, landed: NOTHING_READ, ...extra,
   });
@@ -36,7 +37,7 @@ describe('matching sends to persisted rows', () => {
     expect([...matchSendOps([row('5')], [op('a', CONFIRMED)], NONE_SPENT, 'card')]).toEqual([['a', '5']]);
   });
 
-  it('matches only the exact ID among two identical sends', () => {
+  it('lets one new row stand for only one of two identical sends, the older', () => {
     expect([...matchSendOps([row('5')], [op('b', CONFIRMED, { atMs: 3 }), op('a', CONFIRMED, { atMs: 2 })], NONE_SPENT, 'card')])
       .toEqual([['a', '5']]);
   });
@@ -72,17 +73,6 @@ describe('the outbox view', () => {
     expect(listed.blocked).toBe(false);
   });
 
-  it('leaves an exact drained Unknown input in its queue region until that entry is no longer listed', () => {
-    const drained = row('5');
-    const otherCard = { ...row('6'), legacyInput: { cardId: 'other', threadId: 'thread', entryId: 'entry-a' } };
-    const equalUnknown = { ...row('7'), legacyInput: undefined };
-    const server = [drained, otherCard, equalUnknown];
-    const waiting = view([], server, { queuedEntryIds: new Set(['entry-a']) });
-    expect(waiting.transcript).toEqual([otherCard, equalUnknown]);
-    expect(view([], server).transcript).toEqual(server);
-    expect(drained.author).toBe('unknown');
-  });
-
   it('keeps a replayed send, claiming nothing, until a transcript and a run read started after its answer land', () => {
     const replayed = op('a', { phase: 'replayed', afterRead: 7 }, { entryId: null });
     expect(texts(view([replayed]).transcript)).toEqual(['same']);
@@ -106,15 +96,13 @@ describe('the outbox view', () => {
     expect(texts(view([op('a', UNKNOWN_SPENT)]).transcript)).toEqual(['same']);
   });
 
-  it('keeps an unacknowledged equal Unknown row distinct until the exact entry ID is acknowledged', () => {
+  it('keeps a null-ID echo separate from equal Unknown input until exact identity is acknowledged', () => {
     const unknown = op('a', UNKNOWN_SPENT, { entryId: null });
-    const unacknowledged = view([unknown], [row('5')]);
-    expect(texts(unacknowledged.transcript)).toEqual(['same', 'same']);
-    expect(unacknowledged.failed?.key).toBe('a');
-    const acknowledged = view([{ ...unknown, echo: { ...unknown.echo, entryId: 'entry-a' } }], [row('5')]);
-    expect(acknowledged.transcript).toEqual([row('5')]);
-    expect(acknowledged.failed?.key).toBe('a');
-    expect(acknowledged.retire).toEqual([]);
+    expect(texts(view([unknown], [row('5')]).transcript)).toEqual(['same', 'same']);
+    const known = view([{ ...unknown, echo: { ...unknown.echo, entryId: 'entry-a' } }], [row('5')]);
+    expect(known.transcript).toEqual([row('5')]);
+    expect(known.failed?.key).toBe('a');
+    expect(known.retire).toEqual([]);
   });
 
   it('still blocks on a sending op a read already shows', () => {
@@ -188,9 +176,8 @@ describe('a send that replaces a turn', () => {
   const replace = (phase: SendOpPhase): SendOp => ({
     ...op('r', phase, { text: 'Revised', before: 4 }), replaces: { turnId: 'turn-1', outcomeId: 'o-edit' },
   });
-  const viewOf = (ops: readonly SendOp[], entries: readonly TranscriptEntry[] = server) => outboxView({
-    cardId: 'card',
-    serverEntries: entries, serverTurns: entries.filter((entry): entry is ConversationTurn => entry.author === 'unknown'),
+  const viewOf = (ops: readonly SendOp[], entries: readonly TranscriptEntry[] = server) => outboxView({ cardId: 'card',
+    serverEntries: entries, serverTurns: entries.filter((entry): entry is ConversationTurn => entry.author === 'you'),
     liveReplies: [], queuedEntryIds: new Set(), stalled: false, ops, spent: NONE_SPENT, landed: NOTHING_READ,
   });
 
@@ -318,8 +305,8 @@ it('uses acknowledged operation state even when an accepted legacy receipt has n
 
 it('retires an edited queued send against the revised transcript text without leaving a phantom input', () => {
   const sent = op('edited', CONFIRMED, { text: 'old middle text', queued: true, entryId: 'middle' });
-  const edited = synchronizeQueuedSends([sent], [{ entry_id: 'middle', text: 'new middle text', rev: 1, queued_at_ms: 10 }]);
-  const revised = { ...row('5', 'new middle text'), legacyInput: { cardId: 'card', threadId: 'thread', entryId: 'middle' } };
+  const edited = synchronizeQueuedSends([sent], { displayed: [{ entry_id: 'middle', text: 'new middle text', rev: 1, queued_at_ms: 10 }], reported: [] });
+  const revised = { ...row('5', 'new middle text'), queueEntryId: 'middle' };
   const shown = view(edited, [revised]);
   expect(shown.retire).toEqual([{ key: sent.key, row: '5' }]);
   expect(shown.transcript).toEqual([revised]);
@@ -328,8 +315,8 @@ it('retires an edited queued send against the revised transcript text without le
 
 it('does not roll a successful queue edit back to an older cached queue revision', () => {
   const sent = op('edited', CONFIRMED, { text: 'before', queued: true, entryId: 'middle' });
-  const fresh = synchronizeQueuedSends([sent], [{ entry_id: 'middle', text: 'after', rev: 2, queued_at_ms: 10 }]);
-  const stale = synchronizeQueuedSends(fresh, [{ entry_id: 'middle', text: 'before', rev: 1, queued_at_ms: 10 }]);
+  const fresh = synchronizeQueuedSends([sent], { displayed: [{ entry_id: 'middle', text: 'after', rev: 2, queued_at_ms: 10 }], reported: [] });
+  const stale = synchronizeQueuedSends(fresh, { displayed: [{ entry_id: 'middle', text: 'before', rev: 1, queued_at_ms: 10 }], reported: [] });
   expect(stale).toBe(fresh);
   expect(stale[0].echo.text).toBe('after');
 });
@@ -337,6 +324,25 @@ it('does not roll a successful queue edit back to an older cached queue revision
 it('updates only the confirmed queue identity when equal messages coexist', () => {
   const confirmed = op('known', CONFIRMED, { queued: true, entryId: 'known' });
   const unconfirmed = op('unknown', SENDING, { queued: true });
-  const shown = synchronizeQueuedSends([confirmed, unconfirmed], [{ entry_id: 'known', text: 'edited', rev: 1, queued_at_ms: 10 }]);
+  const shown = synchronizeQueuedSends([confirmed, unconfirmed], { displayed: [{ entry_id: 'known', text: 'edited', rev: 1, queued_at_ms: 10 }], reported: [] });
   expect(shown[0].echo.text).toBe('edited'); expect(shown[1]).toBe(unconfirmed);
+});
+
+it('keeps accepted first-input evidence outside ordinary queue placement and send delivery helpers', () => {
+  const initial: import('./conversation-outbox.js').AcceptedInitialInput = {
+    phase: 'initial-accepted', localWrite: null, inputFact: null, sourceWitness: null, key: 'create', trackId: 'track', submitted: { text: 'first input', atMs: 1 },
+    receipt: { version: 'initial-input-v1', entryId: 'first-entry', entryRev: 0, queuedAtMs: 2,
+      textSha256: 'a'.repeat(64), initialRuntimeId: 'runtime' },
+  };
+  const first: ConversationTurn = { id: 'initial-create', author: 'you', text: initial.submitted.text, atMs: 1 };
+  const later = op('later', SENDING, { text: 'later input', queued: true });
+  const operations = [initial, later];
+  const drawn = { ...later.echo, queued: false };
+  const shown = presentPendingMessages([first, drawn], [], [first, later.echo],
+    rememberQueuePlacements(new Map(), operations, []), null, false, operations);
+  expect(shown.transcript).toEqual([first]);
+  expect(shown.queue).toEqual([]);
+  expect(shown.sending).toEqual([{ ...later.echo, delivery: 'sending' }]);
+  expect(synchronizeQueuedSends(operations, { displayed: [{ entry_id: 'first-entry', text: 'edited first input', rev: 1, queued_at_ms: 2 }], reported: [] })[0]).toBe(initial);
+  expect(rememberQueuePlacements(new Map(), operations, []).has('first-entry')).toBe(false);
 });

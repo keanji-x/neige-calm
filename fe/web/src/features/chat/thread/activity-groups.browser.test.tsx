@@ -43,7 +43,7 @@ const visible = (element: Element) => element.checkVisibility({ visibilityProper
 describe('tool activity groups', () => {
   it('collapses consecutive calls by default and expands them with the keyboard', async () => {
     const turns = Array.from({ length: 12 }, (_, index) => activity(String(index)));
-    const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    const { container } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
     const group = screen.getByRole('group', { name: '12 tool calls' });
     const button = groupButton(container);
     expect(group.contains(button)).toBe(true);
@@ -66,7 +66,7 @@ describe('tool activity groups', () => {
 
   it('keeps a lone call on the transcript’s own line, with no group around it', () => {
     const { container } = render(
-      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity('a'), { id: 'm', author: 'agent', text: 'Then', atMs: 2 }, activity('b')]} />,
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[activity('a'), { id: 'm', author: 'agent', text: 'Then', atMs: 2 }, activity('b')]} />,
     );
     const runs = [...thread(container).children].filter((child) => /tool-[ab]/.test(child.textContent ?? ''));
     expect(runs).toHaveLength(2);
@@ -82,7 +82,7 @@ describe('tool activity groups', () => {
       { id: 'm3', author: 'system', label: 'Report edited', text: 'Report changed', atMs: 4 },
     ];
     const turns = messages.flatMap((message, index) => [activity(`${index}-a`), activity(`${index}-b`), message]);
-    const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    const { container } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
     expect(screen.getAllByRole('group', { name: '2 tool calls' })).toHaveLength(3);
     const children = [...thread(container).children];
     expect(children[1]?.textContent).toContain('First result');
@@ -95,11 +95,11 @@ describe('tool activity groups', () => {
   it('retains expansion when a new call arrives and exposes failed output on demand', async () => {
     const failed = activity('bad', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'error: no test specified' });
     const turns = [failed, activity('ok')];
-    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
+    const { container, rerender } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={turns} />);
     const button = groupButton(container);
     expect(screen.queryByText('error: no test specified')).toBeNull();
     act(() => { fireEvent.click(button); });
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...turns, activity('new')]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...turns, activity('new')]} />);
     expect(groupButton(container)).toBe(button);
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(button.textContent).toContain('3 tool calls');
@@ -121,7 +121,7 @@ describe('tool activity groups', () => {
   it('finishes a running call in place, keeping the group open and one live mark', () => {
     const before = [activity('a'), running('b')];
     const { container, rerender } = render(
-      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={before} pending />,
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={before} pending />,
     );
     const button = groupButton(container);
     expect(button.textContent).toContain('Running');
@@ -133,7 +133,7 @@ describe('tool activity groups', () => {
     expect(screen.getByRole('group', { name: '2 tool calls' }).contains(spinners()[0])).toBe(true);
 
     const after = [activity('a'), activity('b', { verb: 'Called', durationMs: 2_000 })];
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={after} pending />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={after} pending />);
     expect(groupButton(container)).toBe(button);
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(button.textContent).toContain('2 tool calls');
@@ -146,11 +146,11 @@ describe('tool activity groups', () => {
     const turns = [activity('a'), running('b', 'cargo build')];
     /* Live is the kernel's verdict for this card, not the session state the row carries. */
     const { container, rerender } = render(
-      <ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} />,
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} />,
     );
     expect(spinners()).toHaveLength(1);
 
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} />);
     const button = groupButton(container);
     expect(button.textContent).toContain('Running');
     expect(button.textContent).toContain('cargo build');
@@ -163,7 +163,7 @@ describe('tool activity groups', () => {
 
   it('does not revive an interrupted historical group when the next turn starts', () => {
     const stale = [activity('old-done', { verb: 'Ran', target: 'pwd' }), running('old-running', 'old-command')];
-    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={stale} />);
+    const { container, rerender } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={stale} />);
     expect(spinners()).toHaveLength(0);
 
     const next: TranscriptEntry[] = [
@@ -171,7 +171,7 @@ describe('tool activity groups', () => {
       { id: 'next-user', author: 'you', text: 'Continue with a new task', atMs: 3 },
       running('new-running', 'new-command'),
     ];
-    rerender(<ChatThread canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={next} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{ c1: 'working' }} stalled={false} conversation={conversation({ state: 'running' })} turns={next} />);
     /* The one mark is the new lone call's own, at the live tail; the historical group shows none. */
     const fresh = screen.getByText('new-command').closest<HTMLElement>('[data-nc-entry]')!;
     const onlyFreshSpins = () => {
@@ -194,7 +194,7 @@ describe('tool activity groups', () => {
   it('shows one live mark for a tail group with an earlier call still running, open or closed', () => {
     const turns = [running('earlier', 'earlier call'), activity('later', { verb: 'Ran', target: 'later call', atMs: 2 })];
     const { container, rerender } = render(
-      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} pending />,
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} pending />,
     );
     const button = groupButton(container);
     expect(spinners()).toHaveLength(0);
@@ -209,13 +209,13 @@ describe('tool activity groups', () => {
     expect(spinners()).toHaveLength(0);
     expect(workingMarks()).toHaveLength(1);
 
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[...turns, running('third', 'third call')]} pending />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[...turns, running('third', 'third call')]} pending />);
     act(() => { fireEvent.click(button); });
     expect(spinners()).toHaveLength(2);
     expect(workingMarks()).toHaveLength(0);
 
     const finished = [activity('earlier', { verb: 'Ran', target: 'earlier call', durationMs: 3_000 }), turns[1], activity('third', { verb: 'Ran', target: 'third call' })];
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={finished} pending />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={finished} pending />);
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(spinners()).toHaveLength(0);
     expect(workingMarks()).toHaveLength(1);
@@ -230,7 +230,7 @@ describe('tool activity groups', () => {
       { id: 'next-user', author: 'you', text: 'Again', atMs: 3 },
       activity('new-done'), running('new-running', 'new-command'),
     ];
-    render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} pending />);
+    render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={turns} pending />);
     const [stale, current] = screen.getAllByRole('group', { name: '2 tool calls' });
     const currentSpins = () => {
       expect(spinners()).toHaveLength(1);
@@ -251,7 +251,7 @@ describe('tool activity groups', () => {
   it('keeps a partial first-page group, and the failure detail opened in it, as earlier calls load', () => {
     const failed = activity('recent-1', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'test failed', atMs: 3 });
     const done = activity('recent-2', { verb: 'Ran', target: 'pwd', atMs: 4 });
-    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, done]} />);
+    const { container, rerender } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, done]} />);
     const button = groupButton(container);
     act(() => { fireEvent.click(button); });
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran npm test/ })); });
@@ -265,7 +265,7 @@ describe('tool activity groups', () => {
       activity('earlier-1', { verb: 'Ran', target: 'old command 1', atMs: 1 }),
       activity('earlier-2', { verb: 'Ran', target: 'old command 2', atMs: 2 }),
     ];
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, failed, done]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, failed, done]} />);
     const group = screen.getByRole('group', { name: '4 tool calls' });
     expect(group.contains(button)).toBe(true);
     expect(button.getAttribute('aria-expanded')).toBe('true');
@@ -275,7 +275,7 @@ describe('tool activity groups', () => {
 
     const earliest = activity('earliest', { verb: 'Ran', target: 'old command 0', atMs: 0 });
     const resumed = running('next', 'cargo build');
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[earliest, ...earlier, failed, done, resumed]} pending />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[earliest, ...earlier, failed, done, resumed]} pending />);
     expect(screen.getByRole('group', { name: '6 tool calls' })).toBe(group);
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('test failed')).toBe(detail);
@@ -285,7 +285,7 @@ describe('tool activity groups', () => {
     expect(group.contains(spinners()[0])).toBe(true);
 
     const finished = activity('next', { verb: 'Ran', target: 'cargo build', durationMs: 2_000 });
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[earliest, ...earlier, failed, done, finished]} pending />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[earliest, ...earlier, failed, done, finished]} pending />);
     expect(screen.getByRole('group', { name: '6 tool calls' })).toBe(group);
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('test failed')).toBe(detail);
@@ -297,18 +297,18 @@ describe('tool activity groups', () => {
   it('keeps an open group and its opened failure detail through shrinking to one call and back', async () => {
     const failed = activity('f', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'test failed', atMs: 2 });
     const done = activity('d', { verb: 'Ran', target: 'pwd', atMs: 1 });
-    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
+    const { container, rerender } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
     act(() => { fireEvent.click(groupButton(container)); });
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran npm test/ })); });
     expect(visible(screen.getByText('test failed'))).toBe(true);
 
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />);
     /* A run of one is the vendor's single-call row, and the opened detail is replayed onto it. */
     expect(screen.queryByRole('group')).toBeNull();
     expect(screen.getByRole('button', { name: /Ran npm test/ }).getAttribute('aria-expanded')).toBe('true');
     expect(visible(screen.getByText('test failed'))).toBe(true);
 
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
     const group = screen.getByRole('group', { name: '2 tool calls' });
     const button = groupButton(container);
     expect(button.getAttribute('aria-expanded')).toBe('true');
@@ -323,20 +323,20 @@ describe('tool activity groups', () => {
     expect(targets).toEqual(['pwd', 'npm test']);
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Ran npm test/ })); });
     expect(screen.queryByText('test failed')).toBeNull();
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />);
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
     expect(groupButton(container).getAttribute('aria-expanded')).toBe('true');
     expect(screen.queryByText('test failed')).toBeNull();
     act(() => { fireEvent.click(groupButton(container)); });
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />);
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done, failed]} />);
     expect(groupButton(container).getAttribute('aria-expanded')).toBe('false');
   });
 
   it('restores a failure detail the reader opened with the keyboard, and keeps it reachable', async () => {
     const failed = activity('f', { state: 'failed', verb: 'Ran', target: 'npm test', detail: 'test failed', atMs: 1 });
     const done = activity('d', { verb: 'Ran', target: 'pwd', atMs: 2 });
-    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, done]} />);
+    const { container, rerender } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, done]} />);
     const button = groupButton(container);
     button.focus();
     await userEvent.keyboard('{Enter}');
@@ -345,9 +345,9 @@ describe('tool activity groups', () => {
     await userEvent.keyboard(' ');
     expect(visible(screen.getByText('test failed'))).toBe(true);
 
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[done]} />);
     expect(screen.queryByRole('group')).toBeNull();
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, done]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed, done]} />);
     const restored = groupButton(container);
     expect(restored.getAttribute('aria-expanded')).toBe('true');
     await expect.poll(() => visible(screen.getByText('test failed'))).toBe(true);
@@ -360,17 +360,17 @@ describe('tool activity groups', () => {
 
   it('brings a closed group back closed, and gives nothing to a stranger that appears after it', () => {
     const run = [activity('a'), activity('b', { state: 'failed', detail: 'nope' })];
-    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run} />);
+    const { container, rerender } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run} />);
     expect(groupButton(container).getAttribute('aria-expanded')).toBe('false');
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run.slice(1)} />);
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run.slice(1)} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run} />);
     expect(groupButton(container).getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('nope')).toBeNull();
     act(() => { fireEvent.click(groupButton(container)); });
     act(() => { fireEvent.click(screen.getByRole('button', { name: /Called tool-b/ })); });
     expect(visible(screen.getByText('nope'))).toBe(true);
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[{ id: 'm', author: 'agent', text: 'Then', atMs: 5 }]} />);
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[{ id: 'm', author: 'agent', text: 'Then', atMs: 5 }]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[
       { id: 'm', author: 'agent', text: 'Then', atMs: 5 },
       activity('s1'), activity('s2', { state: 'failed', detail: 'also nope' }),
     ]} />);
@@ -380,14 +380,14 @@ describe('tool activity groups', () => {
 
   it('keeps a group whose head a refetch dropped, and never hands its state to a stranger', () => {
     const run = [activity('e1'), activity('e2'), activity('r1'), activity('r2')];
-    const { container, rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run} />);
+    const { container, rerender } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run} />);
     const button = groupButton(container);
     act(() => { fireEvent.click(button); });
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run.slice(1)} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={run.slice(1)} />);
     const group = screen.getByRole('group', { name: '3 tool calls' });
     expect(group.contains(button)).toBe(true);
     expect(button.getAttribute('aria-expanded')).toBe('true');
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[
       { id: 'm', author: 'agent', text: 'Then', atMs: 5 }, activity('s1'), activity('s2'),
     ]} />);
     const stranger = screen.getByRole('group', { name: '2 tool calls' });
@@ -403,7 +403,7 @@ describe('tool activity groups', () => {
     const live = running('live', 'a-very-long-command-'.repeat(8));
     const { container } = render(
       <div style={{ width: 280 }}>
-        <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[activity('old'), failed, live]} pending />
+        <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[activity('old'), failed, live]} pending />
       </div>,
     );
     const button = groupButton(container);
@@ -426,7 +426,7 @@ describe('tool activity groups', () => {
     const { container } = render(
       <div className={drawerStyles.scroll} data-nc-drawer-scroll="" style={{ width: 280 }}>
         <div className={drawerStyles.bodyInner}>
-          <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />
+          <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[failed]} />
         </div>
       </div>,
     );
@@ -452,7 +452,7 @@ describe('tool activity groups', () => {
     ];
     const { container, rerender } = render(
       <div data-nc-drawer-scroll="" style={{ height: 240, overflow: 'auto' }}>
-        <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={recent} />
+        <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={recent} />
       </div>,
     );
     const button = groupButton(container);
@@ -462,7 +462,7 @@ describe('tool activity groups', () => {
 
     rerender(
       <div data-nc-drawer-scroll="" style={{ height: 240, overflow: 'auto' }}>
-        <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, ...recent]} />
+        <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, ...recent]} />
       </div>,
     );
     const groups = screen.getAllByRole('group');
@@ -484,7 +484,7 @@ describe('what a failed call says to assistive technology', () => {
   const said = { name: /^Error: one suite failed Ran npm test/ };
 
   it('names the closed header as failed while it draws a failed latest call', () => {
-    const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[ok, failed]} />);
+    const { container } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[ok, failed]} />);
     const header = screen.getByRole('button', said);
     expect(header).toBe(groupButton(container));
     expect(header.getAttribute('aria-expanded')).toBe('false');
@@ -493,7 +493,7 @@ describe('what a failed call says to assistive technology', () => {
   });
 
   it('names the failed row as failed once the group is open, and the header no longer', async () => {
-    const { container } = render(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[ok, failed]} />);
+    const { container } = render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[ok, failed]} />);
     const header = groupButton(container);
     header.focus();
     await userEvent.keyboard('{Enter}');
@@ -509,7 +509,7 @@ describe('what a failed call says to assistive technology', () => {
 
   it('says failed of nothing that did not fail', async () => {
     const { container } = render(
-      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[failed, ok, running('live', 'cargo build')]} pending />,
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[failed, ok, running('live', 'cargo build')]} pending />,
     );
     const header = groupButton(container);
     expect(screen.queryByRole('button', { name: /failed/i })).toBeNull();
@@ -524,11 +524,11 @@ describe('what a failed call says to assistive technology', () => {
   it('follows the latest call as it finishes in place, and as the group opens and closes', async () => {
     const live = running('live', 'npm test');
     const { container, rerender } = render(
-      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[ok, live]} pending />,
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation({ state: 'running' })} turns={[ok, live]} pending />,
     );
     const header = groupButton(container);
     expect(screen.queryByRole('button', { description: /failed/i })).toBeNull();
-    rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[ok, { ...failed, id: 'live' }]} />);
+    rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[ok, { ...failed, id: 'live' }]} />);
     expect(screen.getByRole('button', said)).toBe(header);
     header.focus();
     await userEvent.keyboard('{Enter}');

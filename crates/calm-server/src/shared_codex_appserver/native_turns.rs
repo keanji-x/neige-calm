@@ -83,10 +83,6 @@ pub(crate) enum NativeSteer {
     Legacy,
     BudgetControl,
     CanonicalControl(ExecutionEndTarget),
-    Canonical {
-        binding: CodexHarnessBinding,
-        logical_turn_id: calm_types::conversation::LogicalTurnId,
-    },
 }
 
 /// Consumed by one interrupt RPC on the actual client qualified under this owner.
@@ -369,16 +365,6 @@ impl NativeTurns {
             current.turn == turn
                 && current.needs_control()
                 && match (input, &current.input) {
-                    (
-                        NativeSteer::Canonical {
-                            binding,
-                            logical_turn_id,
-                        },
-                        NativeInput::Canonical(original),
-                    ) => {
-                        binding == &original.binding
-                            && original.input.matches_logical(logical_turn_id)
-                    }
                     (NativeSteer::BudgetControl, _) => true,
                     (NativeSteer::CanonicalControl(target), _) => {
                         current.input.matches(target)
@@ -717,6 +703,7 @@ impl NativeTurns {
         snapshot
     }
 
+    #[cfg(feature = "fixtures")]
     pub(super) fn insert(&self, thread: String, turn: String) {
         let mut state = self.lock();
         let slot = state.slots.entry(thread).or_default();

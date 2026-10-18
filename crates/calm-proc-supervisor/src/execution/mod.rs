@@ -9,11 +9,14 @@ mod launch;
 #[cfg(test)]
 mod monitor_tests;
 mod native_child;
+mod output;
 mod preparation;
 mod process;
 mod retirement;
 mod scope_helper;
 mod shutdown;
+#[cfg(test)]
+mod stop_tests;
 mod validation;
 use validation::*;
 
@@ -53,6 +56,7 @@ pub struct Executor {
     store: Store,
     config: ExecutorConfig,
     boot: ExecutorBootId,
+    host_boot_id: String,
     helper_image: std::fs::File,
     mechanism: ScopeMechanismIdentity,
     legacy_persistence: StdMutex<()>,
@@ -67,6 +71,7 @@ pub struct Executor {
     records: StdMutex<HashMap<ExecutionId, Journal>>,
     aliases: StdMutex<HashMap<String, AliasSlot>>,
     processes: StdMutex<HashMap<ExecutionId, Arc<process::Process>>>,
+    outputs: StdMutex<HashMap<ExecutionId, Arc<output::OutputLog>>>,
 }
 
 impl Executor {
@@ -91,14 +96,18 @@ impl Executor {
             executable_inode: image.ino(),
             protocol_version: 1,
         };
+        let host_boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?
+            .trim()
+            .to_owned();
+        anyhow::ensure!(!host_boot_id.is_empty(), "missing host boot identity");
+        let mut outputs = HashMap::new();
         let mut records = HashMap::new();
         let mut aliases: HashMap<String, AliasSlot> = HashMap::new();
         for mut record in store.load()? {
-            anyhow::ensure!(record.version == 3, "unsupported execution journal version");
-            let identity = &record.request.identity;
+            let identity = record.request.identity.clone();
             if let Some(receipt) = record.phase.receipt() {
                 anyhow::ensure!(
-                    receipt.identity == *identity,
+                    receipt.identity == identity,
                     "receipt identity does not match its journal"
                 );
             }
@@ -109,12 +118,56 @@ impl Executor {
                     "drain proof does not bind original scope receipt"
                 );
             }
+            let path = store.output_path(&identity.execution_id);
+            if record.phase.receipt().is_some() || path.exists() {
+                // Persisted completion must agree with the actual durable log.
+                let log =
+                    output::OutputLog::open(&path, record.request.specification.replay_bytes)?;
+                if let OutputEnd::Complete { final_cursor } = record.output_end
+                    && log.snapshot(None)?.0 != final_cursor
+                {
+                    record.output_end = OutputEnd::Incomplete {
+                        reason: "output_log_length_mismatch".into(),
+                    };
+                }
+                outputs.insert(identity.execution_id.clone(), log);
+            }
+            let rebooted = record.host_boot_id != host_boot_id;
+            // A formerly possible child can have output even when reboot maps it to NoChild.
+            if rebooted
+                && !matches!(
+                    record.phase,
+                    Phase::Prepared
+                        | Phase::Reserved { .. }
+                        | Phase::Revoked
+                        | Phase::NoChild { .. }
+                )
+                && record.output_end == OutputEnd::Open
+            {
+                record.output_end = OutputEnd::Incomplete {
+                    reason: "host_rebooted".into(),
+                };
+            }
             record.phase = match &record.phase {
+                phase if record.host_boot_id != host_boot_id && !phase.state().permits_handoff() => Phase::NoChild {
+                    slot_version: phase.slot_version(), reason: "host_rebooted".into()
+                },
                 Phase::Prepared => { record.interactive_revoked = true; Phase::Revoked },
-                Phase::Reserved { slot_version } => Phase::NoChild { slot_version: *slot_version, reason: "executor restarted before fork barrier".into() },
+                Phase::Reserved { slot_version } => Phase::NoChild { slot_version: Some(*slot_version), reason: "executor restarted before fork barrier".into() },
                 phase if !phase.state().permits_handoff() => Phase::Unknown { slot_version: phase.slot_version().ok_or_else(|| anyhow::anyhow!("missing active alias version"))?, receipt: phase.receipt().cloned(), reason: "executor restarted without original native handles; reconciliation required".into() },
                 phase => phase.clone(),
             };
+            record.settle_unspawned_output();
+            if record.output_end == OutputEnd::Open {
+                record.output_end = OutputEnd::Incomplete {
+                    reason: if rebooted {
+                        "host_rebooted"
+                    } else {
+                        "executor_restarted"
+                    }
+                    .into(),
+                };
+            }
             store.save(&record)?;
             if let Some(version) = record.phase.slot_version() {
                 let slot = aliases
@@ -205,6 +258,7 @@ impl Executor {
             store,
             config,
             boot: ExecutorBootId::fresh()?,
+            host_boot_id,
             helper_image,
             mechanism,
             legacy_persistence: Default::default(),
@@ -218,6 +272,7 @@ impl Executor {
             records: StdMutex::new(records),
             aliases: StdMutex::new(aliases),
             processes: Default::default(),
+            outputs: StdMutex::new(outputs),
         });
         executor.store.write("executor.boot", &executor.boot)?;
         Ok(executor)
@@ -291,6 +346,7 @@ impl Executor {
             .ok_or_else(|| anyhow::anyhow!("unknown execution identity"))
     }
     fn persist(&self, mut record: Journal) -> anyhow::Result<()> {
+        record.settle_unspawned_output();
         self.store.save(&record)?;
         record.pending_persistence = false;
         self.records
@@ -309,6 +365,7 @@ impl Executor {
     }
 
     fn latch(&self, mut record: Journal) -> anyhow::Result<Journal> {
+        record.settle_unspawned_output();
         record.pending_persistence = true;
         self.records
             .lock()
@@ -386,7 +443,7 @@ impl Executor {
         record.phase = match record.phase {
             Phase::Prepared => Phase::Revoked,
             Phase::Reserved { slot_version } => Phase::NoChild {
-                slot_version,
+                slot_version: Some(slot_version),
                 reason: "revoked before fork barrier".into(),
             },
             phase => phase,
@@ -435,7 +492,9 @@ impl Executor {
             ProcessAction::WriteStdin { .. } | ProcessAction::Resize { .. } => {
                 ExecutionControlPurpose::Interactive
             }
-            ProcessAction::Signal(_) | ProcessAction::Cleanup => ExecutionControlPurpose::Lifecycle,
+            ProcessAction::Signal(_) | ProcessAction::Stop | ProcessAction::Cleanup => {
+                ExecutionControlPurpose::Lifecycle
+            }
         };
         anyhow::ensure!(
             control.capability.purpose == required,
@@ -451,8 +510,9 @@ impl Executor {
         let process = self.processes.lock().map_err(poison)?.get(id).cloned();
         match control.action {
             ProcessAction::Observe { from_cursor } => {
-                let (cursor, output) = match process {
-                    Some(process) => process.output.lock().map_err(poison)?.snapshot(from_cursor),
+                let log = self.outputs.lock().map_err(poison)?.get(id).cloned();
+                let (cursor, output) = match log {
+                    Some(log) => log.snapshot(from_cursor)?,
                     None => (0, Vec::new()),
                 };
                 Ok(ExecutionReply::Observation {
@@ -460,7 +520,14 @@ impl Executor {
                     state: record.phase.state(),
                     cursor,
                     output,
+                    output_end: record.output_end.clone(),
                 })
+            }
+            ProcessAction::Stop => {
+                if !record.durably_settled() {
+                    self.stop_execution(id)?;
+                }
+                Ok(ExecutionReply::ActionComplete)
             }
             ProcessAction::Cleanup => {
                 anyhow::ensure!(record.durably_settled(), "execution not durably drained");
@@ -488,7 +555,9 @@ impl Executor {
                         pixel_h,
                     } => process.resize(cols, rows, pixel_w, pixel_h)?,
                     ProcessAction::Signal(signal) => process.signal(signal)?,
-                    ProcessAction::Observe { .. } | ProcessAction::Cleanup => {
+                    ProcessAction::Observe { .. }
+                    | ProcessAction::Stop
+                    | ProcessAction::Cleanup => {
                         unreachable!("handled above")
                     }
                 }
@@ -558,11 +627,32 @@ impl Executor {
                     .await;
             }
             barrier.await;
+            let (reaped, wait) = tokio::sync::oneshot::channel();
+            // A detached native wait must not keep Tokio shutdown alive if scope facts are Unknown.
             std::thread::spawn(move || {
-                if let Ok(mut child) = process.child.lock() {
-                    let _ = child.wait();
-                }
+                let result = process
+                    .child
+                    .lock()
+                    .map_err(poison)
+                    .and_then(|mut child| child.wait().map_err(anyhow::Error::from));
+                process
+                    .reaped
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = reaped.send(result);
             });
+            wait.await??;
+            if drained {
+                let log = executor.outputs.lock().map_err(poison)?.get(&id).cloned();
+                if let Some(log) = log {
+                    let end = log.finish().await;
+                    let first = executor.record(&id)?;
+                    let gate = executor.gate(scope_resource(&first.request.identity.scope))?;
+                    let _fence = gate.lock().await;
+                    let mut record = executor.record(&id)?;
+                    record.output_end = end;
+                    executor.persist(record)?;
+                }
+            }
             Ok::<(), anyhow::Error>(())
         });
     }
@@ -589,6 +679,7 @@ impl Executor {
             "helper report identity mismatch"
         );
         record.phase = match report.event {
+            scope_helper::HelperEvent::Ready => anyhow::bail!("duplicate helper readiness report"),
             scope_helper::HelperEvent::Started => {
                 if let Some(process) = self.processes.lock().map_err(poison)?.get(id) {
                     process

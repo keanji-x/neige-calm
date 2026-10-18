@@ -297,3 +297,24 @@ The project is evolving quickly. Before a large change, open an issue describing
 ## License
 
 Unless otherwise noted, code in this repository is licensed under the [Apache License 2.0](LICENSE). Third-party dependencies and independently distributed plugins remain under their respective licenses.
+
+### Admin history reconstruction
+
+A human can create the enabled `opencode-history-rebuild` template and separately
+grant Area Admin through the normal UI/API (#2783); binding never grants Admin
+automatically or widens plugin access. The bound Planner can discover the same template/recipe catalog as the
+REST picker and create an ordinary Track in its Area. See the
+[OpenCode history builtin guide](docs/opencode-history.md) for configuration,
+evidence capture, scope visibility and the unperformed isolated-instance acceptance.
+
+```sh
+neige catalog ls --kind template --limit 10
+neige catalog cat --kind template --source-id small-change
+neige track add --template-id small-change --title "Rebuild migration" --idempotency-key rebuild-1 --text "Current intent and self-contained selected evidence" --message "Rebuild selected migration"
+```
+
+Use exactly one of `--template-id` or `--recipe-id`; supply `--template-input` as
+JSON only when the selected template declares it. Optional `--cwd /repo` requires
+an existing same-Area folder claim or explicit `--attach-folder`; the Planner runs
+in the resulting Track worktree. Cross-Area MCP creation is refused. Retry the
+identical key and payload after a disconnect; a changed request conflicts.

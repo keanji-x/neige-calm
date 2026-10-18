@@ -139,7 +139,7 @@
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 area，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: fe/web/src/app/events/query-invalidation-adapter.ts:75-85
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:88-96
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:204-232
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -197,7 +197,7 @@
   why: >
     `neige_task_cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:229-231
+  source: fe/core/events/invalidation-plan.ts:232-234
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:238-244
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -276,7 +276,7 @@
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:195
+  source: fe/core/events/invalidation-plan.ts:196-199
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false

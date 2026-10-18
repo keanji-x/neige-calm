@@ -2,6 +2,8 @@
 //! "mint on first message" creation endpoint. A conversation created on Today's
 //! launchpad track is opened with the day's activity window ahead of the first message.
 
+use calm_types::conversation_receipt::TrackConversationCreated;
+
 use axum::{
     Router,
     extract::State,
@@ -34,10 +36,15 @@ use calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY;
 const TRACK_CONVERSATION_KIND: &str = "track-assistant";
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/api/tracks/{track_id}/conversations",
-        get(list_track_conversations).post(create_track_conversation),
-    )
+    Router::new()
+        .route(
+            "/api/tracks/{track_id}/conversations",
+            get(list_track_conversations).post(create_track_conversation),
+        )
+        .route(
+            "/api/tracks/{track_id}/conversations/{card_id}/initial-input",
+            get(super::conversation_initial_input::get_conversation_initial_input),
+        )
 }
 
 /// The only provider omission compatibility boundary. Explicit null is not an omission.
@@ -108,7 +115,7 @@ pub(crate) async fn list_track_conversations(
     ),
     request_body = NewTrackConversationBody,
     responses(
-        (status = 201, description = "Conversation card minted, harness started, first message delivered — all three in the mint operation's own transaction, so a 201 means the message is on the assistant's queue and not merely that a card exists. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = TrackConversationSummary),
+        (status = 201, description = "Created or replayed with immutable first-input acceptance; query current presence separately.", body = TrackConversationCreated),
         (status = 400, description = "Missing `Idempotency-Key`, one that is blank, not visible ASCII or over 128 bytes (code `idempotency_key_invalid`), or empty/over-long text. A `BadRequest` raised by `PlannerHarnessStartAdapter::validate` also lands here — the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
         (status = 403, description = "The track is retired hidden Area-chat scaffolding and cannot accept Track conversations.", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
@@ -127,7 +134,7 @@ pub(crate) async fn create_track_conversation(
     headers: HeaderMap,
     Path(track_id): Path<String>,
     JsonBody(body): JsonBody<NewTrackConversationBody>,
-) -> Result<(StatusCode, Json<TrackConversationSummary>)> {
+) -> Result<(StatusCode, Json<TrackConversationCreated>)> {
     create_track_conversation_inner(
         s,
         w,
@@ -150,7 +157,7 @@ pub(crate) async fn create_track_conversation_inner(
     track_id: String,
     body: NewTrackConversationBody,
     briefing: OpeningBriefing,
-) -> Result<(StatusCode, Json<TrackConversationSummary>)> {
+) -> Result<(StatusCode, Json<TrackConversationCreated>)> {
     // Required, not optional: the card id and the operation idempotency key are both
     // derived from this header; without it a retried POST would mint a second conversation.
     let idempotency_key = parse_idempotency_key_header(&headers)?.ok_or_else(|| {
@@ -307,7 +314,25 @@ pub(crate) async fn create_track_conversation_inner(
                 derived.card_id
             ))
         })?;
-    Ok((StatusCode::CREATED, Json(summary)))
+    let initial_input = super::conversation_initial_input::receipt_for_create(
+        &s,
+        track.id.as_str(),
+        &derived.card_id,
+        &idempotency_key,
+    )
+    .await?
+    .map_err(|reason| {
+        CalmError::Internal(format!(
+            "successful conversation receipt unavailable: {reason:?}"
+        ))
+    })?;
+    Ok((
+        StatusCode::CREATED,
+        Json(TrackConversationCreated {
+            conversation: summary,
+            initial_input,
+        }),
+    ))
 }
 
 /// Read the assistant conversation rows of one track. `role = 'assistant'` AND the

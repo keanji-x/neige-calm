@@ -351,7 +351,7 @@ function useConversationPanel(
           return false;
         }
         setSideError(null);
-        if (sideDraft !== null && sideDraft.sentText !== null) {
+        if (sideDraft !== null && sideDraft.submitted !== null) {
           sideTarget[1]({ kind: 'draft' });
           if (question !== '') { setSideError('This side draft still has an unsettled delivery. Continue or retry it before starting another.'); return false; }
           return;
@@ -363,7 +363,7 @@ function useConversationPanel(
         registry.startDraft({ scopeId: sideSlot, key: mintIdempotencyKey(),
           provider: parent.provider, side: sideConversationSnapshot(parent.id, entries), model: FOLLOW_INSTALLATION_DEFAULT,
           text: question === '' ? null : question, autoSend: question !== '',
-          sentText: null, creating: false, error: null, remedy: null });
+          submitted: null, creating: false, error: null, remedy: null });
         sideTarget[1]({ kind: 'draft' });
       },
     });
@@ -412,7 +412,7 @@ function useConversationPane(
     files: createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId),
   }), [imageRoot, imageTrackId, transport, unauthorized]);
   const routeIntent: ConversationRouteIntent = {
-    rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds,
+    rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds, visible: openRowId !== null,
   };
 
 
@@ -462,9 +462,15 @@ function useConversationPane(
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
+  const openTurns = open === null ? [] : store.turnsOf(open.id);
+  const hasPendingMessages = store.pendingQueue.length > 0 || store.pendingSends.length > 0 || store.pendingQueueOverflow > 0;
   const threadAvailable = open !== null
-    && (store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled || store.stopFeedback !== null);
+    && (store.historyReady || openTurns.length > 0 || hasPendingMessages || store.stalled || store.stopFeedback !== null);
   const threadPresented = useContentAdmission(open?.id ?? null, threadAvailable);
+  const outgoingPreview = open === null || threadPresented ? undefined : openTurns.findLast((entry): entry is ConversationTurn =>
+    entry.author === 'you' && entry.text !== '' && (entry.attachments?.length ?? 0) === 0);
+  const conversationBodyVisible = hasPendingMessages || (threadPresented ? openTurns.length > 0 : outgoingPreview !== undefined);
+  const threadStatusUnconfirmed = !store.runReady || store.runError !== null;
   const sideSourceReady = threadPresented && store.historyReady;
   /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
   const respondable = canContinue && edit.held === null;
@@ -499,6 +505,7 @@ function useConversationPane(
 
   const { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
     registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel,
+    supportsInitialInput: !draftCapabilities.isError && draftCapabilities.data?.conversationInitialInput === true,
     managedProviders: managed.answers,
     recheckManagedProviders: managed.recheck,
     supportsAssistantProviders: managed.supportsAssistantProviders,
@@ -573,13 +580,19 @@ function useConversationPane(
   [attachmentItems, attachmentIds, attachmentBusy, attachmentError, atCapacity, attach, removeAttachment]);
   const canSteer = store.steerQueuedEntry !== undefined;
   const refocusQueuedComposer = useCommittedCallback(existingId, () => { if (existingId !== null) focusComposer(existingId); });
+  const [pendingPresentation, setPendingPresentation] = useState<Readonly<{ conversationId: string | null; visible: boolean }> | null>(null);
+  const pendingPresenceChanged = useCallback((visible: boolean) => {
+    if (shownComposer.current !== existingId) return;
+    setPendingPresentation(previous => previous?.conversationId === existingId && previous.visible === visible
+      ? previous : { conversationId: existingId, visible });
+  }, [existingId]);
   const pendingMessages = useMemo(() => <PendingQueue key={existingId}
-    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow}
-    busy={store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
+    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow} queueDisplayAccounting={store.queueDisplayAccounting}
+    busy={!threadPresented || store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
     canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
-    savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onSteer={canSteer ? steerQueuedEntry : undefined} />,
-  [existingId, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.sending, store.queueWriteOut,
-    deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, canSteer, steerQueuedEntry]);
+    savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onPresenceChange={pendingPresenceChanged} onSteer={canSteer ? steerQueuedEntry : undefined} />,
+  [existingId, threadPresented, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
+    deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, pendingPresenceChanged, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
     compact: compact,
@@ -721,13 +734,17 @@ function useConversationPane(
               /* Menu membership and readiness come from the managed backend declarations. */
               footerActions={<ModelPill groups={managed.groups} provider={draft.provider} selection={draft.model}
                 effortControl={compactComposer ? 'in-menu' : 'separate'}
-                onChange={(model, provider) => withDraft(draft, current => current.creating || current.sentText !== null
+                onChange={(model, provider) => withDraft(draft, current => current.creating || current.submitted !== null
                   ? current : { ...current, model, provider })}
-                isDisabled={creating || draft.sentText !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />} />
+                isDisabled={creating || draft.submitted !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />} />
           </>
         ) : open === null ? undefined : (
           <>
             {store.sending && !threadPresented && <ChatFooterNotice tone="neutral">Sending…</ChatFooterNotice>}
+            {store.initialInputChecking && !(threadPresented && openTurns.length > 0 && threadStatusUnconfirmed)
+              && <ChatFooterNotice tone="neutral">Checking the first message’s current status.</ChatFooterNotice>}
+            {store.initialInputError !== null && <ChatFooterNotice tone="neutral">{store.initialInputError}
+              <ChatFooterRemedy onClick={store.retryInitialInput}>Reload conversation</ChatFooterRemedy></ChatFooterNotice>}
             {store.awaitingConversationUpdate && <ChatFooterNotice tone="neutral">Waiting for conversation to update.</ChatFooterNotice>}
             {/* Each query owns its read retry; accepted sends keep their reconciliation fence (#2068). */}
             {(store.historyError !== null || store.runError !== null) && (
@@ -823,7 +840,7 @@ function useConversationPane(
                 {store.loadingEarlier ? 'Loading…' : 'Load earlier'}
               </button>
             )}
-            {(!threadPresented || !store.historyReady) && store.historyError === null && (
+            {!conversationBodyVisible && (!threadPresented || !store.historyReady) && store.historyError === null && (
               <p role="status">Loading conversation…</p>
             )}
             {/* Keyed on the conversation: the drawer stays mounted across a switch, and
@@ -833,18 +850,21 @@ function useConversationPane(
                           `ChatThread` draws its empty state (with the live dot) for an empty list.
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
+            {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker="you" text={outgoingPreview.text} mobile={compactViewport} />}
+            {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
               <ChatThread readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
+                hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
                 imageFiles={imageFiles}
-                turns={store.turnsOf(open.id)} editing={edit.marked}
+                turns={openTurns} editing={edit.marked}
                 sending={store.sending}
                 submissionRequest={submission?.conversationId === open.id ? submission.request : 0}
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.working}
                 cards={source.cards}
                 stalled={store.stalled || store.executionHeld}
-                statusUnconfirmed={!store.runReady || store.runError !== null}
+                statusUnconfirmed={threadStatusUnconfirmed}
                 statusLoading={store.runLoading}
                 copyText={edit.held === null ? writeClipboardText : undefined}
                 regenerateMessage={respondable
@@ -1012,7 +1032,7 @@ function TrackRouteBody({
   prepareReport: ReportPreparationPort;
 }) {
   const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
-  useTrackViewState(track.id, reportPresentation.presentable);
+  const progressDisclosure = useTrackViewState(track.id, reportPresentation.presentable);
   // The same key and comparison point the rail uses: the overlay's completion
   // high-water mark, never the row's `updatedAt`.
   // A completed navigation also acknowledges a repeated selection of this already rendered Track.
@@ -1116,6 +1136,7 @@ function TrackRouteBody({
         };
       },
       create: conversationMutations.create,
+      inspect: conversationMutations.inspect,
       refresh: conversationMutations.refresh,
       planner: plannerCard === undefined ? null : {
         cardId: plannerCard.id, areaId: track.areaId, asks: openAsks,
@@ -1381,6 +1402,7 @@ function TrackRouteBody({
     <>
     <TrackStage>
     <TrackPage
+      progressDisclosure={progressDisclosure}
       panelContent={panelContent}
       mobileReportIntro={mobileReportIntro}
       mobilePanelObscured={chat.isOpen || sourceOpen}

@@ -25,7 +25,7 @@ function Pane({ height = 400, turns = history }: { height?: number; turns?: read
   return <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', position: 'relative', inlineSize: 396, blockSize: height + 48 }}>
     <div className={drawerStyles.scroll} data-nc-drawer-scroll="" style={{ blockSize: height, flex: 'none' }}>
       <div className={drawerStyles.bodyInner}>
-        <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />
+        <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />
       </div>
     </div>
   </div>;
@@ -130,7 +130,7 @@ function ResizablePane({ turns }: { turns: readonly TranscriptEntry[] }) {
       onPreview: (rem) => { host.current?.style.setProperty('--conversation-span', rem === null ? '396px' : `${rem}rem`); },
       onCommit: () => {},
     }}>
-      <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />
+      <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />
     </Drawer>
   </div>;
 }

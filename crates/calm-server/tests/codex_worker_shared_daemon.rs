@@ -1003,9 +1003,8 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     insert_pending_operation_row(&repo, &op).await;
-    let mut tx = repo.pool().begin().await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
+    let (output, op) =
+        support::worker_preparation::prepare(repo.clone(), &state, &adapter, &op).await;
 
     let runtime_id = output.data["runtime_id"].as_str().unwrap().to_string();
     let card_id = output.data["card_id"].as_str().unwrap().to_string();

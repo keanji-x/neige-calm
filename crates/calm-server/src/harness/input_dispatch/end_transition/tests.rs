@@ -2,7 +2,7 @@ use super::*;
 use crate::db::prelude::*;
 use crate::db::sqlite::conversation::*;
 use crate::db::sqlite::{begin_immediate_tx, session_set_harness_observation_runtime_tx};
-use crate::harness::input_dispatch::{Target, prepare};
+use crate::harness::input_dispatch::prepare;
 use calm_types::conversation::*;
 use calm_types::worker::{WorkerSessionId, WorkerSessionState};
 use serde_json::json;
@@ -280,8 +280,6 @@ async fn end_never_upgrades_no_attempt_or_crossing_marker_into_a_settled_report(
         &fx.runtime,
         &fx.submission,
         fx.backend.provider(),
-        Target::Initial,
-        None,
     )
     .await
     .unwrap();

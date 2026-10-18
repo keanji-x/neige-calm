@@ -7,7 +7,7 @@ use crate::error::{CalmError, Result};
 use crate::event::HarnessQueueChange;
 use crate::harness::observation::Observation;
 use crate::ids::CardId;
-use crate::model::{HarnessInputSegment, new_id, now_ms};
+use crate::model::{HarnessInputSegment, HarnessQueueEntryRef, new_id, now_ms};
 use crate::planner_attachments::bind::{BoundAttachment, MAX_ATTACHMENTS_PER_MESSAGE};
 
 pub use calm_types::harness::snapshot::QueueEntryId;
@@ -18,7 +18,7 @@ pub(crate) fn mint_entry_id() -> QueueEntryId {
 
 /// One entry in the harness pending queue. `LegacyUser` is a `UserMessage` read back from a
 /// snapshot whose `pending_entry_meta` slot is `None`; it has no `QueueEntryId` field at all and
-/// is never repaired in place — it gains an id only when the harvest rebuilds it as `User`.
+/// remains unversioned through transfers; no later read invents an identity or revision.
 #[derive(Clone, Debug, PartialEq)]
 pub enum QueueEntry {
     User {
@@ -64,10 +64,15 @@ impl QueueEntry {
     /// The entry is re-entering the queue after a client was told it had left; the bump lets the
     /// client tell the page after the restore from the page before. Only the completion sweep calls
     /// this — a steer codex refused restores WITHOUT a bump, or the client's retry would go `stale`.
-    pub fn bump_rev_for_restore(&mut self) {
+    pub fn bump_rev_for_restore(&mut self) -> bool {
         if let Self::User { rev, .. } = self {
-            *rev = rev.saturating_add(1);
+            let Some(next) = rev.checked_add(1) else {
+                return false;
+            };
+            *rev = next;
+            return true;
         }
+        false
     }
 
     /// The one place a [`QueueEntryId`] is minted. `attachments` is required so a test cannot
@@ -90,23 +95,31 @@ impl QueueEntry {
     }
 
     /// A user message arriving in a successor's queue by MOVE. It keeps the transfer identity it
-    /// was moved with and the `QueueEntryId` the mover had (a sentence stays addressable under the
-    /// SAME id). Attachments are NOT carried: their bytes live under the source card.
+    /// was moved with and the actual identity/revision the mover had. Unknown
+    /// historical versions stay legacy; they are not new sends. The existing
+    /// harvest payload policy does not carry attachments or the original timestamp
+    /// (tracked separately in #2318 and #2319).
     pub fn user_message_moved(
         text: String,
         message_ids: Vec<String>,
-        entry_id: Option<QueueEntryId>,
+        entry_ref: Option<HarnessQueueEntryRef>,
     ) -> Self {
-        let mut entry = Self::user_message(text, None, Vec::new());
-        if !message_ids.is_empty() {
-            *entry.message_ids_mut() = message_ids;
+        let Some(reference) = entry_ref else {
+            return Self::legacy_user(text, None, message_ids);
+        };
+        Self::User {
+            id: QueueEntryId::from_wire(reference.id),
+            text,
+            rev: reference.rev,
+            queued_at_ms: now_ms(),
+            envelope_id: None,
+            message_ids: if message_ids.is_empty() {
+                vec![new_id()]
+            } else {
+                message_ids
+            },
+            attachments: Vec::new(),
         }
-        if let Some(id) = entry_id
-            && let Self::User { id: slot, .. } = &mut entry
-        {
-            *slot = id;
-        }
-        entry
     }
 
     /// Wrap a dispatcher observation. A `UserMessage` is refused — a runtime fail-closed guard
@@ -219,6 +232,14 @@ impl QueueEntry {
             Self::User { id, .. } => Some(id),
             Self::LegacyUser { .. } | Self::System { .. } => None,
         }
+    }
+
+    /// The paired identity and actual revision, never supplied for a legacy entry.
+    pub fn user_ref(&self) -> Option<HarnessQueueEntryRef> {
+        self.user_view().map(|entry| HarnessQueueEntryRef {
+            id: entry.id.to_string(),
+            rev: entry.rev,
+        })
     }
 
     /// `Some` exactly for [`QueueEntry::User`]; the read endpoint's filter.
@@ -362,6 +383,8 @@ pub enum MutationRefused {
         entry_id: QueueEntryId,
         count: usize,
     },
+    /// No rewrite or steer may consume the last revision without capacity for a restore.
+    RevisionExhausted { entry_id: QueueEntryId },
 }
 
 /// The domain answer to a mutation, distinct from the transport `Result` around it ("the
@@ -413,6 +436,15 @@ pub fn apply_mutation(
 ) -> MutationResult {
     let entry_id = mutation.entry_id();
     let index = locate_entry(queue, entry_id, mutation.if_entry_rev())?;
+    if matches!(
+        mutation,
+        QueueMutation::Edit { .. } | QueueMutation::Steer { .. }
+    ) && queue[index].user_view().unwrap().rev == u32::MAX
+    {
+        return Err(MutationRefused::RevisionExhausted {
+            entry_id: entry_id.clone(),
+        });
+    }
 
     let (change, rev, text, removed) = match mutation {
         QueueMutation::Edit { text: new_text, .. } => {
@@ -423,7 +455,7 @@ pub fn apply_mutation(
             // The entry keeps its `message_ids`: an edit changes what the instance SAYS, not which
             // instance it is. Same rule as a fold: the body changed, so other clients' in-flight writes
             // against the old rev get a 409.
-            *rev = rev.saturating_add(1);
+            *rev += 1;
             (
                 HarnessQueueChange::Edited,
                 *rev,
@@ -533,11 +565,11 @@ pub fn try_fold_tail(
                 .filter(|incoming| !attachments.iter().any(|held| held.id == incoming.id))
                 .cloned()
                 .collect::<Vec<_>>();
-            if attachments.len() + merged.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+            if *rev == u32::MAX || attachments.len() + merged.len() > MAX_ATTACHMENTS_PER_MESSAGE {
                 false
             } else if fold_user_text(text, new_text, max_folded_user_chars) {
                 attachments.extend(merged);
-                *rev = rev.saturating_add(1);
+                *rev += 1;
                 true
             } else {
                 false
@@ -641,7 +673,7 @@ pub fn input_segments_for_entries(
         .map(|entry| {
             let mut segment = entry.observation().input_segment(entry.envelope_id());
             if let Some(origin) = &mut segment.origin {
-                origin.queue_entry_id = entry.id().cloned();
+                origin.queue_entry = entry.user_ref();
             }
             segment.attachments = entry
                 .attachments()
@@ -1173,3 +1205,6 @@ mod tests {
 
 #[cfg(test)]
 mod report_edit_fold_tests;
+
+#[cfg(test)]
+mod revision_tests;

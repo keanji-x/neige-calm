@@ -54,3 +54,12 @@ pub mod worker_flow;
 
 #[allow(dead_code)]
 pub mod planner_timeout_fixture;
+
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod builtins;
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod opencode_history;
+#[allow(dead_code)]
+pub mod worker_preparation;
