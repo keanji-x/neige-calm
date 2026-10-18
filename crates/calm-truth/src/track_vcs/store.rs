@@ -141,15 +141,7 @@ pub(super) async fn store_tree(
     };
     let tree_hash = hash_tree_manifest(&manifest);
     let bytes = canonical_json_bytes(&manifest)?;
-    sqlx::query(
-        r#"INSERT OR IGNORE INTO track_vcs_objects (hash, kind, bytes, created_at)
-           VALUES (?1, 'tree', ?2, ?3)"#,
-    )
-    .bind(&tree_hash)
-    .bind(&bytes)
-    .bind(created_at)
-    .execute(&mut **tx)
-    .await?;
+    insert_object_at_tx(tx, &tree_hash, "tree", &bytes, created_at).await?;
     Ok(TreeSnapshot {
         tree_hash,
         manifest,
@@ -256,9 +248,12 @@ async fn insert_object_at_tx(
     bytes: &[u8],
     created_at: i64,
 ) -> Result<()> {
+    // Existing immutable CAS rows add no fact. Avoid a row attempt (and its BEFORE
+    // guards) without another round trip; retain IGNORE/nonrepair semantics on collisions.
     sqlx::query(
         r#"INSERT OR IGNORE INTO track_vcs_objects (hash, kind, bytes, created_at)
-           VALUES (?1, ?2, ?3, ?4)"#,
+           SELECT ?1, ?2, ?3, ?4
+           WHERE NOT EXISTS (SELECT 1 FROM track_vcs_objects WHERE hash = ?1)"#,
     )
     .bind(hash)
     .bind(kind)

@@ -403,3 +403,165 @@ fn track_history_pruner_config_from_env_respects_disable_and_defaults() {
         None => remove(TRACK_HISTORY_PRUNE_KEEP_ENV),
     }
 }
+
+type CasObjectRow = (String, String, Vec<u8>, i64);
+type CasRefRow = (String, String, Option<i64>);
+type CasCommitRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    i64,
+);
+
+#[derive(Debug, PartialEq)]
+struct CasState {
+    objects: Vec<CasObjectRow>,
+    refs: Vec<CasRefRow>,
+    commits: Vec<CasCommitRow>,
+}
+
+async fn cas_state(pool: &sqlx::SqlitePool) -> CasState {
+    CasState {
+        objects: sqlx::query_as(
+            "SELECT hash,kind,bytes,created_at FROM track_vcs_objects ORDER BY hash",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+        refs: sqlx::query_as(
+            "SELECT track_id,head_hash,updated_event_id FROM track_vcs_refs ORDER BY track_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+        commits: sqlx::query_as(
+            "SELECT hash,track_id,parent_hash,tree_hash,manifest_schema_version,
+                    author,message,event_id,created_at FROM track_vcs_commits ORDER BY hash",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn unchanged_public_snapshot_does_not_attempt_existing_cas_object_inserts() {
+    let f = super::transcript_writer_tests::Fixture::new().await;
+    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let warm = snapshot_tree(&mut tx, &f.track.id, MANIFEST_SCHEMA_VERSION)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let before = cas_state(f.repo.pool()).await;
+    assert!(!before.refs.is_empty());
+    assert!(!before.commits.is_empty());
+    assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "tree"));
+    assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "blob"));
+    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    // This isolated test trigger observes actual source-row attempts, including ignored
+    // existing hashes. It does not replace the owner or reproduce its insertion policy.
+    sqlx::query("CREATE TABLE cas_insert_probe (kind TEXT NOT NULL)")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER cas_insert_probe BEFORE INSERT ON track_vcs_objects
+         BEGIN INSERT INTO cas_insert_probe(kind) VALUES(NEW.kind); END",
+    )
+    .execute(&mut **tx)
+    .await
+    .unwrap();
+    let repeated = snapshot_tree(&mut tx, &f.track.id, MANIFEST_SCHEMA_VERSION)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Pin all semantics before the cost oracle: object identity/body/type/age, HEAD refs
+    // and every commit field remain unchanged. This is a snapshot, not a new checkpoint.
+    assert_eq!(warm.tree_hash, repeated.tree_hash);
+    assert_eq!(warm.manifest, repeated.manifest);
+    assert_eq!(cas_state(f.repo.pool()).await, before);
+    let attempts: Vec<(String, i64)> =
+        sqlx::query_as("SELECT kind,count(*) FROM cas_insert_probe GROUP BY kind ORDER BY kind")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    let total: i64 = attempts.iter().map(|(_, count)| count).sum();
+    assert_eq!(
+        total, 0,
+        "unchanged CAS insert attempts by kind: {attempts:?}"
+    );
+}
+
+#[tokio::test]
+async fn immutable_cas_keeps_existing_facts_and_guards_real_new_row_attempts() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let hash = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Explicit raw corruption is not repaired by a typed CAS no-op, just as with IGNORE.
+    sqlx::query("UPDATE track_vcs_objects SET kind='tree',bytes=X'00',created_at=17 WHERE hash=?1")
+        .bind(&hash)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let again = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(again, hash);
+    let facts: (String, Vec<u8>, i64) =
+        sqlx::query_as("SELECT kind,bytes,created_at FROM track_vcs_objects WHERE hash=?1")
+            .bind(&hash)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(facts, ("tree".into(), vec![0], 17));
+    // Isolated fault injection: supported DML cannot delete required epoch state.
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    sqlx::query("DROP TRIGGER frontier_state_no_delete")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM track_vcs_gc_frontier_state")
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    assert!(
+        put_blob(&mut tx, "blob", b"actual new CAS fact")
+            .await
+            .is_err()
+    );
+    tx.rollback().await.unwrap();
+    assert!(
+        sqlx::query(
+            "INSERT OR REPLACE INTO track_vcs_objects(hash,kind,bytes,created_at)
+         VALUES(?1,'blob',X'01',19)",
+        )
+        .bind(&hash)
+        .execute(repo.pool())
+        .await
+        .is_err()
+    );
+    let after: (String, Vec<u8>, i64) =
+        sqlx::query_as("SELECT kind,bytes,created_at FROM track_vcs_objects WHERE hash=?1")
+            .bind(&hash)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(after, facts);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM track_vcs_objects")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
