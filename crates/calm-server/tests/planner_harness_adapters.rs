@@ -37,6 +37,9 @@ use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+#[path = "support/authenticated_router.rs"]
+mod authenticated_router;
+
 #[allow(dead_code)]
 #[path = "support/mcp.rs"]
 mod mcp;
@@ -522,11 +525,8 @@ async fn start_planner(
 async fn get_json(state: &AppState, uri: String) -> Value {
     use tower::ServiceExt;
 
-    let response = calm_server::routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone())
+    let response = authenticated_router::application(state.clone())
+        .await
         .oneshot(
             axum::http::Request::get(uri)
                 .body(axum::body::Body::empty())

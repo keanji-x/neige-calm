@@ -202,7 +202,7 @@ async fn planner_hibernat_closed_idle_session_sleeps_and_send_wakes_same_thread(
     assert_eq!(row.status, WorkerSessionState::Idle);
     assert_eq!(row.thread_id.as_deref(), Some(thread.as_str()));
     let (status, body) = post_planner_input(
-        boot.app.clone(),
+        crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"wake here"}),
     )
@@ -587,7 +587,7 @@ async fn planner_hibernat_send_resubscribes_thread_kept_loaded_by_another_client
     std::fs::write(sock.with_extension("thread-read"), &loaded).unwrap();
     std::fs::write(sock.with_extension("thread-resume"), &loaded).unwrap();
     let (status, body) = post_planner_input(
-        boot.app.clone(),
+        crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"continue here"}),
     )

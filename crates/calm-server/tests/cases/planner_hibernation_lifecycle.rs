@@ -100,7 +100,7 @@ async fn planner_hibernat_failed_release_survives_card_delete() {
 
 async fn send_completed(boot: &Boot, card: &Card, runtime: &String, text: &str) {
     let (status, body) = post_planner_input(
-        boot.app.clone(),
+        crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":format!("fake-reply: {text}")}),
     )
