@@ -66,12 +66,12 @@ pub(super) async fn join_driver(shared: &Shared) -> Result<()> {
 }
 
 impl AcpPlannerSession {
-    #[cfg(feature = "fixtures")]
+    #[cfg(all(test, feature = "fixtures"))]
     pub(crate) async fn hold_execution_driver_for_test(&self) -> impl Drop + '_ {
         self.shared.driver.lock().await
     }
 
-    #[cfg(feature = "fixtures")]
+    #[cfg(all(test, feature = "fixtures"))]
     pub(crate) async fn hold_execution_issue_for_test(&self) -> impl Drop + '_ {
         self.shared.issue.lock().await
     }

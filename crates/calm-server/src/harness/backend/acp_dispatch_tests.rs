@@ -114,7 +114,6 @@ async fn acp_v2_journal_contains_only_original_proof_and_replay_never_resends() 
             }],
             &selection,
             PlannerPermissionMode::Never,
-            None,
             &|| Box::pin(async { Ok(()) }),
         )
     };
@@ -165,7 +164,6 @@ async fn acp_v2_receipt_rejects_another_attempt_without_new_prompt() {
             }],
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            None,
             &|| Box::pin(async { Ok(()) }),
         )
         .await;
@@ -186,7 +184,6 @@ async fn acp_v2_receipt_rejects_another_attempt_without_new_prompt() {
             }],
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            None,
             &|| Box::pin(async { Ok(()) }),
         )
         .await;
@@ -237,7 +234,6 @@ async fn acp_legacy_proof_is_preserved_and_cannot_authorize_v2_replay() {
             vec![],
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            None,
             &|| Box::pin(async { Ok(()) }),
         )
         .await;
@@ -253,23 +249,6 @@ async fn acp_legacy_proof_is_preserved_and_cannot_authorize_v2_replay() {
     .unwrap();
     assert_eq!(before.input_json, after.input_json);
     assert_eq!(prompt_count(dir.path()), 1);
-    session.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn acp_new_rewind_is_typed_unsupported_during_pure_planning() {
-    let (backend, session, owner, dir) = fixture().await;
-    assert!(!backend.history_replacement_supported());
-    let result = backend.plan_rewind(
-        &owner.thread,
-        RewindTarget {
-            turn_id: "old",
-            prompt_client_id: None,
-            previous_turn: None,
-        },
-    );
-    assert!(matches!(result, Err(RewindPlanFailure::Unsupported(_))));
-    assert!(!dir.path().join("requests.jsonl").exists());
     session.shutdown().await.unwrap();
 }
 
@@ -325,7 +304,6 @@ async fn dispatch_report(
             }],
             &TurnModelSelection::inherit(),
             mode,
-            None,
             &|| Box::pin(async { Ok(()) }),
         )
         .await

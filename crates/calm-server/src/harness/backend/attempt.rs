@@ -1,9 +1,8 @@
 //! Provider observations for one immutable input attempt, independent of retry policy.
 use calm_types::conversation::InputAttempt;
-use provider::codex::{RequestCrossing, RpcRemoteError};
 use serde::Serialize;
 
-use super::{BackendRewind, TurnStartFailure};
+use super::TurnStartFailure;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::TurnId;
 
@@ -83,7 +82,6 @@ impl AttemptCorrelation {
 pub(crate) enum NonDispatchBasis {
     LocalPreflight,
     TransportBeforeSend,
-    Unsupported,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -108,7 +106,6 @@ impl NonDispatchEvidence {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum NativeAcceptanceBasis {
     CodexTurnStart,
-    CodexTurnSteer,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -162,52 +159,9 @@ impl InputDelivery {
     }
 }
 
-/// This observation never follows from the new prompt's delivery status.
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "certainty", content = "plan", rename_all = "snake_case")]
-pub(crate) enum RewindObservation {
-    NotRequested,
-    Unknown(BackendRewind),
-    Applied(BackendRewind),
-}
-
-/// In-memory diagnostics only: remote error data may include prompt text.
-#[derive(Debug)]
-pub(crate) struct NativeRpcFailure {
-    pub(super) method: String,
-    pub(super) request_id: Option<u64>,
-    pub(super) crossing: RequestCrossing,
-    pub(super) remote_error: Option<RpcRemoteError>,
-}
-
-impl NativeRpcFailure {
-    pub(super) fn from_rpc(error: &provider::codex::RpcAttemptFailure) -> Self {
-        Self {
-            method: error.method().into(),
-            request_id: error.request_id(),
-            crossing: error.crossing(),
-            remote_error: error.remote_error().cloned(),
-        }
-    }
-    pub(crate) fn method(&self) -> &str {
-        &self.method
-    }
-    pub(crate) fn request_id(&self) -> Option<u64> {
-        self.request_id
-    }
-    pub(crate) fn crossing(&self) -> RequestCrossing {
-        self.crossing
-    }
-    pub(crate) fn remote_error(&self) -> Option<&RpcRemoteError> {
-        self.remote_error.as_ref()
-    }
-}
-
 pub(crate) struct InputAttemptReport {
     pub(super) delivery: InputDelivery,
-    pub(super) rewind: RewindObservation,
     pub(super) outcome: Result<TurnId, TurnStartFailure>,
-    pub(super) rpc_failure: Option<NativeRpcFailure>,
 }
 
 impl InputAttemptReport {
@@ -217,34 +171,7 @@ impl InputAttemptReport {
     pub(crate) fn delivery(&self) -> &InputDelivery {
         &self.delivery
     }
-    pub(crate) fn rewind(&self) -> &RewindObservation {
-        &self.rewind
-    }
     pub(crate) fn outcome(&self) -> &Result<TurnId, TurnStartFailure> {
         &self.outcome
-    }
-    pub(crate) fn rpc_failure(&self) -> Option<&NativeRpcFailure> {
-        self.rpc_failure.as_ref()
-    }
-    pub(crate) fn into_outcome(self) -> Result<TurnId, TurnStartFailure> {
-        self.outcome
-    }
-}
-
-pub(crate) struct RewindReport {
-    pub(super) thread_id: String,
-    pub(super) observation: RewindObservation,
-    pub(super) outcome: Result<(), TurnStartFailure>,
-}
-
-impl RewindReport {
-    pub(crate) fn thread_id(&self) -> &str {
-        &self.thread_id
-    }
-    pub(crate) fn observation(&self) -> &RewindObservation {
-        &self.observation
-    }
-    pub(crate) fn into_outcome(self) -> Result<(), TurnStartFailure> {
-        self.outcome
     }
 }

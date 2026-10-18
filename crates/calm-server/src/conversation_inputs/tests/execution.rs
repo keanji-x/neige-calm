@@ -76,20 +76,6 @@ async fn accept_owner(fx: &Fixture) -> (String, HumanInputSource) {
     (token, source)
 }
 
-async fn mark_running(tx: &mut Transaction<'_, Sqlite>, fx: &Fixture) {
-    let carrier = current_input_carrier_tx(tx, &fx.input.card, &fx.input.runtime)
-        .await
-        .unwrap();
-    let mut snapshot = carrier.snapshot().clone();
-    snapshot["phase"] = json!("turn_running");
-    snapshot["last_turn_id"] = json!("native-turn");
-    assert!(
-        crate::db::sqlite::session_set_handle_state_tx(tx, &fx.input.runtime, Some(snapshot))
-            .await
-            .unwrap()
-    );
-}
-
 async fn transfer_area_to_alice(fx: &Fixture) {
     fx.register("alice").await;
     let mut tx = begin_immediate_tx(fx.input.repo.pool()).await.unwrap();
@@ -117,63 +103,6 @@ async fn operator_member_cannot_claim_initial_in_another_users_private_area() {
     let (_, source) = accept_owner(&fx).await;
     transfer_area_to_alice(&fx).await;
     assert!(claim(&fx, &source).await.is_err());
-}
-
-#[tokio::test]
-async fn operator_member_cannot_claim_supplemental_in_another_users_private_area() {
-    let fx = Fixture::new(false).await;
-    let (token, source) = accept_owner(&fx).await;
-    let initial = claim(&fx, &source).await.unwrap();
-    let mut tx = begin_immediate_tx(fx.input.repo.pool()).await.unwrap();
-    mark_running(&mut tx, &fx).await;
-    tx.commit().await.unwrap();
-    assert_eq!(fx.send(Some(&token)).await.status(), StatusCode::OK);
-    transfer_area_to_alice(&fx).await;
-    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
-        fx.input.repo.clone(),
-        None,
-    );
-    let card = fx
-        .input
-        .repo
-        .card_get(&fx.input.card)
-        .await
-        .unwrap()
-        .unwrap();
-    let runtime = fx
-        .input
-        .repo
-        .session_projection_active_for_card(&fx.input.card)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(runtime.id, fx.input.runtime);
-    let backend = crate::harness::backend::PlannerBackend::codex(
-        daemon,
-        card.id.as_str(),
-        card.track_id.as_str(),
-        &runtime.id,
-    )
-    .unwrap();
-    let mut tx = begin_immediate_tx(fx.input.repo.pool()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
-        .await
-        .unwrap();
-    let plan = first_plan(&mut tx, &carrier).await;
-    assert!(
-        claim_human_supplemental_tx(
-            &mut tx,
-            &source,
-            &mut carrier,
-            &backend,
-            &initial.logical_turn_id,
-            "native-turn",
-            plan,
-        )
-        .await
-        .is_err()
-    );
-    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]
@@ -235,9 +164,9 @@ async fn human_source_cannot_authorize_a_machine_observation() {
 }
 
 #[tokio::test]
-async fn real_owner_source_claims_initial_and_supplemental_in_the_actual_scope() {
+async fn real_owner_source_claims_initial_in_the_actual_scope() {
     let fx = Fixture::new(false).await;
-    let (token, source) = accept_owner(&fx).await;
+    let (_, source) = accept_owner(&fx).await;
     let initial = claim(&fx, &source).await.unwrap();
     let mut tx = begin_immediate_tx(fx.input.repo.pool()).await.unwrap();
     let identity = submission_identity_tx(&mut tx, &initial.submission_id)
@@ -248,53 +177,6 @@ async fn real_owner_source_claims_initial_and_supplemental_in_the_actual_scope()
         ref deployment_owner_user_id, ..
     } if deployment_owner_user_id == LEGACY_OWNER_USER_ID)
     );
-    mark_running(&mut tx, &fx).await;
-    tx.commit().await.unwrap();
-    assert_eq!(fx.send(Some(&token)).await.status(), StatusCode::OK);
-    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
-        fx.input.repo.clone(),
-        None,
-    );
-    let card = fx
-        .input
-        .repo
-        .card_get(&fx.input.card)
-        .await
-        .unwrap()
-        .unwrap();
-    let runtime = fx
-        .input
-        .repo
-        .session_projection_active_for_card(&fx.input.card)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(runtime.id, fx.input.runtime);
-    let backend = crate::harness::backend::PlannerBackend::codex(
-        daemon,
-        card.id.as_str(),
-        card.track_id.as_str(),
-        &runtime.id,
-    )
-    .unwrap();
-    let mut tx = begin_immediate_tx(fx.input.repo.pool()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
-        .await
-        .unwrap();
-    let plan = first_plan(&mut tx, &carrier).await;
-    let supplemental = claim_human_supplemental_tx(
-        &mut tx,
-        &source,
-        &mut carrier,
-        &backend,
-        &initial.logical_turn_id,
-        "native-turn",
-        plan,
-    )
-    .await
-    .unwrap();
-    assert_eq!(supplemental.ordinal, 1);
-    assert_eq!(supplemental.logical_turn_id, initial.logical_turn_id);
     tx.commit().await.unwrap();
 }
 

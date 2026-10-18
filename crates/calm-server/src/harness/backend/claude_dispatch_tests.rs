@@ -1,7 +1,6 @@
 use super::*;
 use crate::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use crate::claude_planner::session::ClaudePlannerSessionParams;
-use uuid::Uuid;
 
 async fn fixture(
     scenario: &str,
@@ -91,7 +90,6 @@ async fn dispatch(backend: &PlannerBackend, thread: &str, text: String) -> Input
             vec![InputItem::Text { text }],
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            None,
             &|| Box::pin(async { Ok(()) }),
         )
         .await
@@ -138,71 +136,6 @@ async fn claude_local_write_success_is_not_native_acceptance() {
         crate::harness::planner_event::PlannerEventKind::Item { params, .. }
         if params["item"]["clientId"] == "11111111111111111111111111111111"
             && event.thread_id.as_deref() == Some(thread.as_str()))));
-    session.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn claude_legacy_rewind_remains_unknown_without_cli_effects() {
-    let (backend, session, dir, _thread) = fixture("exit").await;
-    assert!(!backend.history_replacement_supported());
-    let mut old = BackendRewind(RewindArm::Claude {
-        resume_at: Uuid::new_v4(),
-        drops_turn: Uuid::new_v4(),
-    });
-    let report = backend.apply_rewind("thread", &mut old).await;
-    assert!(matches!(
-        report.observation(),
-        RewindObservation::Unknown(_)
-    ));
-    assert!(report.into_outcome().is_err());
-    let foreign = BackendRewind(RewindArm::CodexV2 {
-        thread_id: "thread".into(),
-        before_turn_id: "old".into(),
-        reverted: true,
-    });
-    let proof = super::dispatch_tests::proof();
-    let report = backend
-        .dispatch_input(
-            &super::dispatch_tests::logical_turn_id(),
-            proof.attempt(),
-            "thread",
-            &proof,
-            vec![],
-            &TurnModelSelection::inherit(),
-            PlannerPermissionMode::Never,
-            Some(&foreign),
-            &|| Box::pin(async { Ok(()) }),
-        )
-        .await;
-    assert!(matches!(report.rewind(), RewindObservation::Unknown(_)));
-    assert!(matches!(report.delivery(), InputDelivery::NotDispatched(_)));
-    assert!(!dir.path().join("argv").exists());
-    session.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn claude_new_rewind_is_typed_unsupported_during_pure_planning() {
-    let (backend, session, dir, thread) = fixture("exit").await;
-    let prior = vec![TranscriptRow {
-        id: 1,
-        turn_id: Some("previous".into()),
-        item_uuid: None,
-        item_type: None,
-        method: "turn/completed".into(),
-        params: serde_json::json!({"lastRecordUuid":Uuid::new_v4().to_string()}).to_string(),
-        input_segments: None,
-    }];
-    let result = backend.plan_rewind(
-        &thread,
-        RewindTarget {
-            turn_id: "old",
-            prompt_client_id: Some("11111111111111111111111111111111"),
-            previous_turn: Some(&prior),
-        },
-    );
-    assert!(matches!(result, Err(RewindPlanFailure::Unsupported(_))));
-    assert!(!dir.path().join("argv").exists());
-    assert_eq!(session.user_line_writes_for_test(), 0);
     session.shutdown().await.unwrap();
 }
 
@@ -379,7 +312,6 @@ async fn claude_permission_held_driver_does_not_block_qualification_or_its_own_a
             }],
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Ask,
-            None,
             &|| Box::pin(async { Ok(()) }),
         )
         .await;

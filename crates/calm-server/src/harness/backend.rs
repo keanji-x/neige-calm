@@ -45,17 +45,14 @@ mod dispatch_fixture;
 #[cfg(all(test, feature = "fixtures"))]
 mod dispatch_tests;
 mod execution_end;
-mod rewind;
 pub(crate) use attempt::{
     AttemptCorrelation, InputAttemptReport, InputDelivery, NativeAcceptanceBasis,
-    NativeAcceptanceReceipt, NativeRpcFailure, NonDispatchBasis, NonDispatchEvidence,
-    RewindObservation, RewindReport,
+    NativeAcceptanceReceipt, NonDispatchBasis, NonDispatchEvidence,
 };
 pub(crate) use budget_control::{BudgetControlScope, ControlDelivery};
 pub(crate) use execution_end::{
     ExecutionEndScope, ExecutionEndTarget, ExecutionInput, QualifiedExecutionEnd,
 };
-pub(crate) use rewind::RewindPlanFailure;
 
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
 /// run loop paces its retry and tells the reader from this, never from the error's shape.

@@ -224,10 +224,10 @@ async fn original_ack_replays_after_edit_and_withdraw_without_readopting_a_body(
     let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
         .await
         .unwrap();
-    let current = crate::conversation_inputs::edit_human_tx(
+    let current = edit_pending_human_tx(
         &mut tx,
-        &fx.source.current_principal().unwrap(),
         &mut carrier,
+        LEGACY_OWNER_USER_ID,
         message,
         HumanPayload {
             text: "later edited body".into(),
@@ -246,10 +246,10 @@ async fn original_ack_replays_after_edit_and_withdraw_without_readopting_a_body(
     let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
         .await
         .unwrap();
-    crate::conversation_inputs::withdraw_human_tx(
+    withdraw_pending_human_tx(
         &mut tx,
-        &fx.source.current_principal().unwrap(),
         &mut carrier,
+        LEGACY_OWNER_USER_ID,
         &current,
         &PrivateHistoryOperationId::parse(&crate::model::new_id()).unwrap(),
     )
