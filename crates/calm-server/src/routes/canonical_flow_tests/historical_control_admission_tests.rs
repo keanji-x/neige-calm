@@ -189,7 +189,7 @@ async fn historical_control_after_membership_removal(control: Control) {
             Request::builder()
                 .method(method)
                 .uri(&uri)
-                .header(header::COOKIE, &cookie)
+                .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
