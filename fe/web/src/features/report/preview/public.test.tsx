@@ -35,6 +35,7 @@ describe('ReportPreviewBlock', () => {
   it('frames the gateway port on this page\'s host, at the payload path', () => {
     const { container } = render(<ReportPreviewBlock payload={{ key: 'fe', path: '/next/' }}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     const frame = container.querySelector('iframe');
     expect(frame?.getAttribute('src')).toBe('http://192.168.5.20:4050/next/');
     // The registration's title names the frame when the payload has none.
@@ -44,12 +45,14 @@ describe('ReportPreviewBlock', () => {
   it('asks the resolver by the block key', () => {
     const resolve = vi.fn(() => registered(true));
     render(<ReportPreviewBlock payload={{ key: 'fe', title: 'Mine' }} resolve={resolve} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(resolve).toHaveBeenCalledWith('fe');
     expect(screen.getByTitle('Mine').getAttribute('src')).toBe('http://192.168.5.20:4050/');
   });
 
   it('sandboxes the frame with exactly the preview grant and sends no referrer', () => {
     const { container } = render(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     const frame = container.querySelector('iframe');
     expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin allow-forms allow-popups allow-modals');
     expect(frame?.getAttribute('allow')).toBe('fullscreen');
@@ -60,6 +63,7 @@ describe('ReportPreviewBlock', () => {
     // Unmeasured width: only the payload height binds the Desktop device (1080 px tall).
     const { container, rerender } = render(<ReportPreviewBlock payload={{ key: 'fe', height: 540 }}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     const frame = () => container.querySelector('iframe');
     expect(frame()?.style.transform).toBe('scale(0.5)');
     rerender(<ReportPreviewBlock payload={{ key: 'fe', height: 5 }} resolve={() => registered(true)} />);
@@ -70,6 +74,7 @@ describe('ReportPreviewBlock', () => {
 
   it('asks the figure, not the frame, for fullscreen', () => {
     const { container } = render(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     const figure = container.querySelector('figure');
     const requestFullscreen = vi.fn(() => Promise.resolve());
     if (figure !== null) figure.requestFullscreen = requestFullscreen;
@@ -94,14 +99,17 @@ describe('ReportPreviewBlock', () => {
       .toBe('Preview “fe” is offline — waiting for its dev server on port 4050.');
   });
 
-  it('mounts a fresh frame when the dev server comes back', () => {
+  it('requires a fresh activation when the dev server comes back', () => {
     const { container, rerender } = render(<ReportPreviewBlock payload={{ key: 'fe' }}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     const before = container.querySelector('iframe');
     expect(before).not.toBeNull();
     rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(false)} />);
     expect(container.querySelector('iframe')).toBeNull();
     rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
+    expect(container.querySelector('iframe')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     const after = container.querySelector('iframe');
     expect(after).not.toBeNull();
     expect(after).not.toBe(before);
@@ -153,6 +161,7 @@ describe('ReportPreviewBlock device frame', () => {
   it('opens on Desktop at its true 1920 × 1080, scaled from the stage width', () => {
     stubStage(960);
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('true');
     expect(frame()?.style.inlineSize).toBe('1920px');
     expect(frame()?.style.blockSize).toBe('1080px');
@@ -167,6 +176,7 @@ describe('ReportPreviewBlock device frame', () => {
   it('gives Mobile its true 390 × 844 and never enlarges it', () => {
     stubStage(2000);
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     toggle('Mobile');
     expect(screen.getByRole('button', { name: 'Mobile' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('false');
@@ -181,6 +191,7 @@ describe('ReportPreviewBlock device frame', () => {
   it('rescales when the column resizes', () => {
     const stage = stubStage(1920);
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(frame()?.style.transform).toBe('scale(1)');
     stage.resize(480);
     expect(frame()?.style.transform).toBe('scale(0.25)');
@@ -191,16 +202,19 @@ describe('ReportPreviewBlock device frame', () => {
     const viewports = memoryViewports();
     const view = render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     toggle('Mobile');
     view.unmount();
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(screen.getByRole('button', { name: 'Mobile' }).getAttribute('aria-pressed')).toBe('true');
     expect(frame()?.style.inlineSize).toBe('390px');
     cleanup();
     // Another key in the same report: its own choice.
     render(<ReportPreviewBlock payload={{ key: 'api', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(frame()?.style.inlineSize).toBe('1920px');
     expect([...viewports.values.entries()]).toEqual([['fe', 'mobile']]);
   });
@@ -212,10 +226,13 @@ describe('ReportPreviewBlock device frame', () => {
     viewports.write('api', 'desktop');
     const { rerender } = render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(frame()?.style.inlineSize).toBe('390px');
     rerender(<ReportPreviewBlock payload={{ key: 'api', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
     expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('true');
+    expect(frame()).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(frame()?.style.inlineSize).toBe('1920px');
     // Another track's store, same key: that track's choice.
     const other = memoryViewports();
@@ -239,6 +256,7 @@ describe('ReportPreviewBlock device frame', () => {
     viewports.write('fe', stored);
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(screen.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('true');
     expect(frame()?.style.inlineSize).toBe('1920px');
   });
@@ -251,6 +269,7 @@ describe('ReportPreviewBlock device frame', () => {
     };
     render(<ReportPreviewBlock payload={{ key: 'fe', height: 2000 }} viewports={viewports}
       resolve={() => registered(true)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
     expect(frame()?.style.inlineSize).toBe('1920px');
     toggle('Mobile');
     expect(frame()?.style.inlineSize).toBe('390px');
@@ -262,4 +281,30 @@ describe('ReportPreviewBlock device frame', () => {
     expect(figure?.querySelector('figcaption')?.textContent).toBe('Mine');
     expect(figure?.contains(screen.getByRole('note'))).toBe(true);
   });
+});
+
+it('loads a live preview only on request and releases it when paused', () => {
+  const { container } = render(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
+  expect(container.querySelector('iframe')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
+  const frame = container.querySelector('iframe');
+  expect(frame?.getAttribute('src')).toBe('http://192.168.5.20:4050/');
+  fireEvent.click(screen.getByRole('button', { name: 'Pause preview' }));
+  expect(container.querySelector('iframe')).toBeNull();
+  expect(frame?.isConnected).toBe(false);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Load preview' }));
+});
+
+it('keeps a running frame through polling and requests activation for another destination', () => {
+  const { container, rerender } = render(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
+  const frame = container.querySelector('iframe');
+  rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
+  expect(container.querySelector('iframe')).toBe(frame);
+  rerender(<ReportPreviewBlock payload={{ key: 'fe', path: '/other/' }} resolve={() => registered(true)} />);
+  expect(container.querySelector('iframe')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
+  expect(container.querySelector('iframe')?.getAttribute('src')).toBe('http://192.168.5.20:4050/other/');
+  rerender(<ReportPreviewBlock payload={{ key: 'fe', path: '/other/' }} resolve={() => registered(true, 4051)} />);
+  expect(container.querySelector('iframe')).toBeNull();
 });

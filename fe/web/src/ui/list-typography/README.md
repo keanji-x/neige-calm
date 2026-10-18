@@ -33,6 +33,7 @@ its bounded width. Hosts retain layout/overflow ownership and use `text-overflow
 clip` instead of an ellipsis when opting in. Full DOM text, native title and
 accessible names are preserved; resize and content updates remeasure overflow,
 and the observer disconnects on unmount. Short labels receive no mask.
+Initial overflow measurement runs in ResizeObserver after layout, so mounting labels does not force synchronous layout during React commits. Content changes coalesce their geometry reads into a cancellable animation-frame callback.
 Each opted-in element keeps its resize subscription for its mounted lifetime.
 A scoped content observer also measures committed text, child and attribute
 changes, including child updates that do not render the host. Recreated JSX

@@ -6,7 +6,6 @@ import '../../styles/entry.css';
 import { ListText } from './public.tsx';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
-
 it('remeasures nested text and style changes without a parent render and releases observers', async () => {
   const long = 'A nested label that is much wider than its bounded text host';
   function Label() {
@@ -40,4 +39,14 @@ it('remeasures nested text and style changes without a parent render and release
   await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())); });
   expect(detachedReads).toBe(0);
   expect(title.isConnected).toBe(false);
+});
+
+it('defers overflow geometry reads until after the mount commit', async () => {
+  const nativeWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')!;
+  const reads = vi.spyOn(Element.prototype, 'scrollWidth', 'get');
+  reads.mockImplementation(function (this: Element) { return nativeWidth.get!.call(this) as number; });
+  const view = render(<ListText tone="primary" fadeOverflow style={{ display: 'block', inlineSize: 80, overflow: 'hidden', whiteSpace: 'nowrap' }}>A long overflowing label</ListText>);
+  expect(reads).not.toHaveBeenCalled();
+  await expect.poll(() => getComputedStyle(view.container.firstElementChild!).maskImage).toContain('linear-gradient');
+  expect(reads).toHaveBeenCalled();
 });

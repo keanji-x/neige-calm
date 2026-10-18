@@ -69,15 +69,18 @@ export function ReportPreviewBlock({ payload, resolve, viewports }: {
     case 'missing':
       return <PreviewNotice title={title} height={height}
         text={`No preview is registered under “${payload.key}”.`} />;
-    case 'registered':
+    case 'registered': {
       if (!resolution.preview.live) {
         return <PreviewNotice title={title} height={height}
           text={`Preview “${payload.key}” is offline — waiting for its dev server on port ${resolution.preview.port}.`} />;
       }
-      // Offline renders no frame, so coming back live mounts a fresh one: the reload is the remount.
-      return <PreviewFrame title={title} height={height}
-        src={previewFrameUrl(window.location, resolution.preview.port, payload.path)}
+      const src = previewFrameUrl(window.location, resolution.preview.port, payload.path);
+      // A different registration/path requires its own activation. Polling the
+      // same registration keeps the running document and its state intact.
+      return <PreviewFrame key={JSON.stringify([payload.key, src])} title={title} height={height}
+        src={src}
         viewportKey={payload.key} viewports={viewports} />;
+    }
   }
 }
 
@@ -112,6 +115,15 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
 }) {
   const figure = useRef<HTMLElement>(null);
   const stage = useRef<HTMLDivElement>(null);
+  const loadButton = useRef<HTMLButtonElement>(null);
+  const returnToLoad = useRef(false);
+  const [running, setRunning] = useState(false);
+  useLayoutEffect(() => {
+    if (!running && returnToLoad.current) {
+      returnToLoad.current = false;
+      loadButton.current?.focus();
+    }
+  }, [running]);
   // The choice belongs to one (store, key): a block rewritten to another key, or the same block under
   // another track's store, reads that pair's choice instead of carrying the previous one over.
   const [choice, setChoice] = useState(() => ({ viewports, viewportKey, preset: readPreset(viewports, viewportKey) }));
@@ -153,6 +165,10 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
     <figure ref={figure} className={styles.figure}>
       <PreviewBar title={title}>
         <span className={styles.controls}>
+          {running && <button type="button" className={styles.control} onClick={() => {
+            returnToLoad.current = true;
+            setRunning(false);
+          }}>Pause preview</button>}
           <span className={styles.toggle} role="group" aria-label="Device">
             {PREVIEW_PRESETS.map((option) => (
               <button key={option.id} type="button" className={styles.segment} aria-pressed={preset === option.id}
@@ -169,7 +185,7 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
         {/* The scaled box, so the column holds exactly what is drawn: no dead space under a shrunk device. */}
         <div className={styles.viewport}
           style={{ inlineSize: `${size.width * scale}px`, blockSize: `${size.height * scale}px` }}>
-          <iframe
+          {running ? <iframe
             className={styles.device}
             style={{ inlineSize: `${size.width}px`, blockSize: `${size.height}px`, transform: `scale(${scale})` }}
             src={src}
@@ -177,7 +193,9 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
             sandbox={PREVIEW_SANDBOX}
             allow="fullscreen"
             referrerPolicy="no-referrer"
-          />
+          /> : <div className={styles.placeholder} style={{ inlineSize: '100%', blockSize: '100%' }}>
+            <button ref={loadButton} type="button" className={styles.control} onClick={() => { setRunning(true); }}>Load preview</button>
+          </div>}
         </div>
       </div>
       <p className={styles.size}>{`${size.width} × ${size.height} · ${Math.round(scale * 100)}%`}</p>

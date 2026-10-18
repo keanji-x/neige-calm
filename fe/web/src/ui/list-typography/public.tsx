@@ -21,14 +21,20 @@ export function ListText({ as: Tag = 'span', tone, emphasis, className, fadeOver
     const element = elementRef.current;
     if (!fadeOverflow || element === null) return;
     const measure = () => setOverflowing(element.scrollWidth > element.clientWidth);
-    measure();
+    let frame: number | null = null;
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => { frame = null; measure(); });
+    };
+    // ResizeObserver supplies the initial measurement after layout. Reading
+    // scrollWidth in the mount commit forces layout for each mounted label.
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     // React can recreate unchanged children, or a child can update without
     // rendering this host. Observe the committed content, not JSX identity.
-    const content = new MutationObserver(measure);
+    const content = new MutationObserver(schedule);
     content.observe(element, { subtree: true, childList: true, characterData: true, attributes: true });
-    return () => { observer.disconnect(); content.disconnect(); };
+    return () => { observer.disconnect(); content.disconnect(); if (frame !== null) cancelAnimationFrame(frame); };
   }, [fadeOverflow, Tag]);
   return <Tag {...attributes} ref={setElement} className={[styles[tone], fadeOverflow && overflowing ? styles.fade : '',  emphasis === undefined ? '' : styles[emphasis], className]
     .filter(Boolean).join(' ')}
