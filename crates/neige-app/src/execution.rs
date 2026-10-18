@@ -5,12 +5,32 @@ use calm_session::control::execution::CapabilityToken;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
+/// Host capability derived once from the platform, never from user configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecutionSupport {
+    Registered,
+    LegacyOnly,
+}
+
+impl ExecutionSupport {
+    pub(crate) const fn current() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::Registered
+        } else {
+            Self::LegacyOnly
+        }
+    }
+}
+
 pub(crate) fn key_path(cfg: &AppConfig) -> PathBuf {
     cfg.calm_data_dir_resolved()
         .join("execution-client-key.json")
 }
 
 pub(crate) fn ensure_key_file(cfg: &AppConfig) -> anyhow::Result<()> {
+    if cfg.execution_support == ExecutionSupport::LegacyOnly {
+        return Ok(());
+    }
     provision_key_file(cfg, |file| {
         let secret = CapabilityToken::fresh()?;
         file.write_all(&serde_json::to_vec(&secret)?)?;
@@ -57,10 +77,93 @@ fn provision_key_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_execution_does_not_provision_or_read_a_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cfg = AppConfig::starter(temp.path().join("config.toml"));
+        cfg.execution_support = ExecutionSupport::LegacyOnly;
+        cfg.child.data_dir = Some(temp.path().join("data"));
+        let key = key_path(&cfg);
+        std::fs::create_dir_all(&key).unwrap();
+        let sentinel = key.join("leave-unsupported-state-alone");
+        std::fs::write(&sentinel, b"untouched").unwrap();
+        ensure_key_file(&cfg)
+            .expect("legacy startup must not provision or validate an executor key");
+        assert!(key.is_dir());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+        assert_eq!(
+            std::fs::read_dir(cfg.calm_data_dir_resolved())
+                .unwrap()
+                .count(),
+            1
+        );
+
+        // A path where provisioning cannot create a directory is irrelevant to legacy mode.
+        let blocked = temp.path().join("data-file");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        cfg.child.data_dir = Some(blocked.clone());
+        ensure_key_file(&cfg).expect("legacy startup must not touch execution storage");
+        assert_eq!(std::fs::read(blocked).unwrap(), b"not a directory");
+    }
+
+    #[test]
+    fn legacy_execution_omits_authority_from_both_child_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cfg = AppConfig::starter(temp.path().join("config.toml"));
+        cfg.execution_support = ExecutionSupport::LegacyOnly;
+        cfg.child.data_dir = Some(temp.path().join("data with spaces"));
+        cfg.child.extra_args = vec!["--plugins-disabled".into(), "fixture".into()];
+        cfg.tailnet = None;
+        let supervisor = crate::supervisor::proc_supervisor_config(&cfg);
+        let server = crate::supervisor::calm_server_supervisor_config(&cfg);
+        assert_eq!(server.child_args, cfg.child.extra_args);
+        assert_eq!(
+            supervisor.child_args,
+            vec![
+                "--control-sock".to_owned(),
+                cfg.proc_supervisor_sock().display().to_string(),
+                "--stop-grace-ms".to_owned(),
+                "5000".to_owned(),
+            ]
+        );
+        // Explicit user requests retain their existing validation; the host only stops
+        // adding its own unsupported capability, rather than silently stripping requests.
+        cfg.child.extra_args.extend([
+            "--kernel-client-key-file".into(),
+            "user-supplied.json".into(),
+        ]);
+        assert_eq!(
+            crate::supervisor::calm_server_supervisor_config(&cfg).child_args,
+            cfg.child.extra_args
+        );
+    }
+
+    #[test]
+    fn native_execution_support_controls_provisioning_and_both_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cfg = AppConfig::starter(temp.path().join("config.toml"));
+        cfg.child.data_dir = Some(temp.path().join("data"));
+        cfg.tailnet = None;
+        ensure_key_file(&cfg).unwrap();
+        let expected = cfg!(target_os = "linux");
+        assert_eq!(key_path(&cfg).exists(), expected);
+        let supervisor = crate::supervisor::proc_supervisor_config(&cfg);
+        let server = crate::supervisor::calm_server_supervisor_config(&cfg);
+        for (args, flag) in [
+            (&supervisor.child_args, "--execution-state-dir"),
+            (&supervisor.child_args, "--kernel-client-key-file"),
+            (&server.child_args, "--kernel-client-key-file"),
+        ] {
+            assert_eq!(args.iter().any(|arg| arg == flag), expected, "{flag}");
+        }
+    }
+
     #[test]
     fn key_file_publish_is_atomic() {
         let temp = tempfile::tempdir().unwrap();
         let mut cfg = AppConfig::starter(temp.path().join("config.toml"));
+        cfg.execution_support = ExecutionSupport::Registered;
         cfg.child.data_dir = Some(temp.path().join("data"));
         let key = key_path(&cfg);
         // Interrupt a creator after opening and partially writing its staging file.
@@ -128,6 +231,7 @@ mod tests {
     fn supervisor_execution_args_and_key_file_mode() {
         let temp = tempfile::tempdir().unwrap();
         let mut cfg = AppConfig::starter(temp.path().join("config.toml"));
+        cfg.execution_support = ExecutionSupport::Registered;
         cfg.child.data_dir = Some(temp.path().join("data with spaces"));
         ensure_key_file(&cfg).unwrap();
         let key = key_path(&cfg);

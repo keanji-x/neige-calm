@@ -39,10 +39,12 @@ impl From<&AppConfig> for SupervisorConfig {
 pub(crate) fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
     let control_sock = cfg.proc_supervisor_sock();
     let mut child_args = cfg.child.extra_args.clone();
-    child_args.extend([
-        "--kernel-client-key-file".into(),
-        crate::execution::key_path(cfg).display().to_string(),
-    ]);
+    if cfg.execution_support == crate::execution::ExecutionSupport::Registered {
+        child_args.extend([
+            "--kernel-client-key-file".into(),
+            crate::execution::key_path(cfg).display().to_string(),
+        ]);
+    }
     if cfg.tailnet_unavailable {
         child_args.push("--private-tailnet-unavailable".into());
     } else if let Some(tailnet) = &cfg.tailnet {
@@ -110,13 +112,14 @@ pub(crate) fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig
 }
 
 pub(crate) fn proc_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
-    SupervisorConfig {
-        name: "calm-proc-supervisor".into(),
-        child_bin: cfg.child.proc_supervisor_bin.clone(),
-        child_cwd: cfg.child.cwd.clone(),
-        child_args: vec![
-            "--control-sock".into(),
-            cfg.proc_supervisor_sock().display().to_string(),
+    let mut child_args = vec![
+        "--control-sock".into(),
+        cfg.proc_supervisor_sock().display().to_string(),
+        "--stop-grace-ms".into(),
+        cfg.timing.stop_grace.as_millis().to_string(),
+    ];
+    if cfg.execution_support == crate::execution::ExecutionSupport::Registered {
+        child_args.extend([
             "--execution-state-dir".into(),
             cfg.calm_data_dir_resolved()
                 .join("execution")
@@ -124,9 +127,13 @@ pub(crate) fn proc_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
                 .to_string(),
             "--kernel-client-key-file".into(),
             crate::execution::key_path(cfg).display().to_string(),
-            "--stop-grace-ms".into(),
-            cfg.timing.stop_grace.as_millis().to_string(),
-        ],
+        ]);
+    }
+    SupervisorConfig {
+        name: "calm-proc-supervisor".into(),
+        child_bin: cfg.child.proc_supervisor_bin.clone(),
+        child_cwd: cfg.child.cwd.clone(),
+        child_args,
         child_envs: Vec::new(),
         restart_delay: cfg.timing.restart_delay,
         stop_grace: cfg.timing.stop_grace,

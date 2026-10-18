@@ -128,6 +128,9 @@ This is a limited local-development path, not Linux feature parity. The Tailnet
 helper and the `make prod` build path remain Linux-only. Configure a local
 `neige-app` installation with Tailnet disabled and `child.fe_dist` pointing to
 the absolute `fe/web/dist` path; the frontend is served at `/next/`.
+Registered workspace execution remains Linux-only. On macOS, `neige-app` uses
+the legacy supervisor service without provisioning executor keys or adding
+executor-only child arguments. Explicit registered-executor requests remain refused.
 Secure workspace file access requiring `openat2` and `/proc`-based process-group
 enumeration and descendant cleanup are not ported. Unsupported file operations
 fail closed; they never fall back to less restrictive filesystem access. This
