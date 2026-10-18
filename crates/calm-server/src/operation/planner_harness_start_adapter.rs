@@ -28,9 +28,10 @@ use crate::db::sqlite::{
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
+use crate::harness::backend::factory::{PlannerFactory, ReadinessFor};
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
-    PlannerBackend, PlannerHarness, PlannerHarnessParams, QueueEntry, initial_snapshot_with_goal,
+    PlannerHarness, PlannerHarnessParams, QueueEntry, initial_snapshot_with_goal,
     is_harness_snapshot_value,
 };
 use crate::ids::{ActorId, CardId, TrackId};
@@ -50,7 +51,7 @@ use crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::WriteContext;
 use crate::thread_seals::ThreadSeals;
 use crate::track_area_cache::TrackAreaCache;
@@ -124,17 +125,6 @@ impl PlannerHarnessStartAdapter {
             per_card_mint_locks: new_per_card_locks(),
             claude_host,
             acp_host,
-        }
-    }
-
-    /// The readiness preflight per provider (§4.1 row 11).
-    async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
-        match provider {
-            AgentProvider::Codex if self.daemon.is_running() => Ok(()),
-            // Message carries the live failure and the background-retry fact; preflights stay non-blocking.
-            AgentProvider::Codex => Err(self.daemon.not_running_error()),
-            AgentProvider::Claude => self.claude_host.check_ready().await,
-            AgentProvider::OpenCode => self.acp_host.check_ready(provider).await,
         }
     }
 
@@ -595,7 +585,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     payload.planner_card_id
                 )));
             }
-            return self.check_ready(&decoded.mint_provider).await;
+            return PlannerFactory::new(
+                std::sync::Arc::downgrade(&self.daemon),
+                &self.claude_host,
+                &self.acp_host,
+            )
+            .ready(&decoded.mint_provider, ReadinessFor::StartOperation)
+            .await;
         }
         let Some(card) = self.repo.card_get(payload.planner_card_id.as_str()).await? else {
             return Err(CalmError::NotFound(format!(
@@ -690,7 +686,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 track.id
             )));
         }
-        self.check_ready(&provider).await
+        PlannerFactory::new(
+            std::sync::Arc::downgrade(&self.daemon),
+            &self.claude_host,
+            &self.acp_host,
+        )
+        .ready(&provider, ReadinessFor::StartOperation)
+        .await
     }
 
     async fn prepare_tx<'tx>(
@@ -1223,31 +1225,23 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
-            // The channel-3 `thread/start` config comes from the single shared producer so every spawn path emits the byte-identical shape.
-            let params = SharedThreadStartParams {
+            PlannerFactory::new(
+                std::sync::Arc::downgrade(&self.daemon),
+                &self.claude_host,
+                &self.acp_host,
+            )
+            .prepare_codex_thread(
+                &card_id,
+                card_role,
+                &track_id,
                 cwd,
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
                 developer_instructions,
-                // The assistant needs the same channel-3 MCP credentials as the planner harness; WHICH tools the token can reach is resolved from the card's persisted role, not here.
-                config: match profile.mcp_role() {
-                    Some(role) => ThreadConfig::McpShell {
-                        role,
-                        socket_path: PathBuf::from(&socket_path),
-                        raw_token: raw,
-                    },
-                    None => ThreadConfig::NoMcp,
-                },
-            };
-            if runtime_deferred {
-                self.daemon
-                    .thread_start_mint_for_card(&card_id, params)
-                    .await?
-            } else {
-                self.daemon
-                    .thread_start_for_card(&card_id, card_role, Some(&track_id), params)
-                    .await?
-            }
+                profile.mcp_role(),
+                PathBuf::from(socket_path),
+                raw,
+                runtime_deferred,
+            )
+            .await?
         };
         output.set_output_data(
             "codex_thread_id",
@@ -1560,9 +1554,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
         }
-        let backend = PlannerBackend::open(
-            provider.clone(),
-            self.daemon.clone(),
+        let backend = PlannerFactory::new(
+            std::sync::Arc::downgrade(&self.daemon),
+            &self.claude_host,
+            &self.acp_host,
+        )
+        .open(
             self.seals.clone(),
             &self.claude_wiring(),
             self.repo.clone(),

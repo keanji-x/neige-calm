@@ -55,11 +55,16 @@ pub(super) async fn recover(
             "Restore this conversation's workspace before resuming; history is retained.".into(),
         ));
     }
-    if !cs.shared_codex_appserver.is_running() {
-        return Err(CalmError::ServiceUnavailable(
-            cs.shared_codex_appserver.not_running_message(),
-        ));
-    }
+    crate::harness::backend::factory::PlannerFactory::new(
+        std::sync::Arc::downgrade(&cs.shared_codex_appserver),
+        &s.claude_planner,
+        &s.acp_planner,
+    )
+    .ready(
+        &crate::session_projection_repo::AgentProvider::Codex,
+        crate::harness::backend::factory::ReadinessFor::RestoreOrSend,
+    )
+    .await?;
     let thread = crate::harness::effective_runtime_thread_id(&runtime).ok_or_else(|| {
         CalmError::Conflict("original conversation thread is missing; history is retained".into())
     })?;

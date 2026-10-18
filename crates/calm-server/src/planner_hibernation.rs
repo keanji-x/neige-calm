@@ -256,12 +256,17 @@ impl WakeContext {
                     .resume_active_conversation(&runtime, &thread)
                     .await?;
             }
-            Some(AgentProvider::Claude) => s.providers.claude.check_ready().await?,
-            Some(AgentProvider::OpenCode) => {
-                s.providers
-                    .acp
-                    .check_ready(&AgentProvider::OpenCode)
-                    .await?
+            Some(provider @ (AgentProvider::Claude | AgentProvider::OpenCode)) => {
+                crate::harness::backend::factory::PlannerFactory::new(
+                    s.daemon.clone(),
+                    &s.providers.claude,
+                    &s.providers.acp,
+                )
+                .ready(
+                    provider,
+                    crate::harness::backend::factory::ReadinessFor::RestoreOrSend,
+                )
+                .await?;
             }
             None => {
                 return Err(crate::error::CalmError::Conflict(

@@ -568,3 +568,131 @@ impl Boot {
         assert_eq!(self.session_rows().await, 1, "premise: the row is kept");
     }
 }
+
+/// Both production entry families retain the same provider decision and message, including
+/// the operation's historical Internal Codex refusal versus HTTP ServiceUnavailable.
+#[tokio::test]
+async fn ready_parity_start_operation_and_send_for_every_provider() {
+    use calm_server::error::CalmError;
+    use calm_server::harness::profile::HarnessProfile;
+    use calm_server::operation::OperationKey;
+    use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        let boot = boot(AppServer::Down).await;
+        sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
+            .bind(&boot.planner_card_id)
+            .bind(serde_json::to_string(&provider).unwrap())
+            .execute(boot.repo.pool()).await.unwrap();
+        let card = boot
+            .repo
+            .card_get(&boot.planner_card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let track = boot
+            .repo
+            .track_get(card.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        let error = boot
+            .state
+            .operation_runtime
+            .submit(
+                "planner-harness-start",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: None,
+                    payload_hash: new_id(),
+                },
+                serde_json::to_value(PlannerHarnessStartOperationPayload {
+                    actor: calm_server::ids::ActorId::Kernel,
+                    track_id: track.id.to_string(),
+                    planner_card_id: card.id.clone(),
+                    report_card_id: None,
+                    sort: None,
+                    cwd: track.workspace.agent_cwd().to_string(),
+                    goal: None,
+                    reset_harness_items: false,
+                    force_new_thread: false,
+                    profile: HarnessProfile::Planner,
+                    create_card: None,
+                    opening_briefing: None,
+                    first_message: None,
+                    create_request_sha256: None,
+                })
+                .unwrap(),
+            )
+            .await
+            .expect_err("unready operation must refuse before persistence");
+        let expected_status = match provider {
+            AgentProvider::Codex => {
+                assert!(matches!(error, CalmError::Internal(_)), "{error:?}");
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            AgentProvider::Claude | AgentProvider::OpenCode => {
+                assert!(matches!(error, CalmError::Conflict(_)), "{error:?}");
+                StatusCode::CONFLICT
+            }
+        };
+        let (status, body) = post_input(
+            boot.app.clone(),
+            &boot.input_uri(),
+            "ready probe",
+            &new_id(),
+        )
+        .await;
+        assert_eq!(status, expected_status, "{provider:?}: {body}");
+        assert_eq!(body["error"], json!(error.reason()), "{provider:?}");
+        assert_eq!(boot.session_rows().await, 0);
+        assert!(
+            boot.state
+                .shared_codex_appserver
+                .started_thread_params_for_test()
+                .is_empty()
+        );
+        assert_eq!(
+            boot.state
+                .shared_codex_appserver
+                .turn_start_count_for_test(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn ready_dormancy_precedes_backend_unavailability_for_every_provider() {
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        let boot = boot(AppServer::Down).await;
+        sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
+            .bind(&boot.planner_card_id).bind(serde_json::to_string(&provider).unwrap())
+            .execute(boot.repo.pool()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO harness_items \
+            (worker_session_id, card_id, track_id, thread_id, method, params, created_at_ms) \
+            SELECT 'gone', id, track_id, 'kept', 'item/completed', '{}', 0 FROM cards WHERE id=?1",
+        )
+        .bind(&boot.planner_card_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+        let (status, body) = post_input(
+            boot.app.clone(),
+            &boot.input_uri(),
+            "preserve history",
+            &new_id(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{provider:?}: {body}");
+        assert_eq!(body["code"], json!("planner_harness_dormant"));
+        assert_eq!(boot.start_ops().await, 0);
+    }
+}

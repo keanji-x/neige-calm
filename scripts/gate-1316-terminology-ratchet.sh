@@ -78,6 +78,10 @@
 # excluded file, pattern, count rule or executable policy is introduced; ordinary additional
 # contract references update this counted baseline without adding a file/test roster.
 
+# #2836 M2b bounded contract exception: harness_item/crates 298 -> 300 covers one
+# typed start payload's frozen reset field and one precedence test insert into the existing
+# transcript table. No new domain name, scan rule or file/test roster is introduced.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

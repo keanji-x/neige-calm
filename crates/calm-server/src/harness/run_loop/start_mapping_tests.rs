@@ -278,16 +278,18 @@ async fn m1_mapping_codex_signin_fact_is_captured_at_authentication_owner() {
 #[tokio::test]
 async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
     use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
-    use crate::harness::backend::PlannerBackend;
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
     use crate::session_projection_repo::AgentProvider;
     for provider in [AgentProvider::Claude, AgentProvider::OpenCode] {
         let f = Fixture::new().await;
         let inner = &f.harness.inner;
         let wiring = ClaudePlannerWiring::unconfigured_for_test(f.repo.clone());
-        let backend = PlannerBackend::open(
-            provider.clone(),
-            f.daemon.clone(),
+        let backend = crate::harness::backend::factory::PlannerFactory::new(
+            std::sync::Arc::downgrade(&f.daemon),
+            &wiring.claude,
+            &wiring.acp,
+        )
+        .open(
             f.daemon.thread_seals().clone(),
             &wiring,
             f.repo.clone(),
@@ -350,4 +352,81 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
         }
         assert_eq!(f.daemon.turn_start_count_for_test(), 0);
     }
+}
+
+#[tokio::test]
+async fn ready_factory_construction_and_open_leave_first_turn_work_lazy() {
+    use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
+    use crate::harness::backend::factory::PlannerFactory;
+    use crate::harness::profile::{HarnessProfile, PlannerBinding};
+    use crate::session_projection_repo::AgentProvider;
+
+    let f = Fixture::new().await;
+    let inner = &f.harness.inner;
+    let wiring = ClaudePlannerWiring::unconfigured_for_test(f.repo.clone());
+    let before: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, mcp_token_hash FROM worker_sessions ORDER BY id")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    let credentials: i64 = sqlx::query_scalar("SELECT count(*) FROM card_mcp_tokens")
+        .fetch_one(f.repo.pool())
+        .await
+        .unwrap();
+    let factory = PlannerFactory::new(Arc::downgrade(&f.daemon), &wiring.claude, &wiring.acp);
+    assert!(f.daemon.started_thread_params_for_test().is_empty());
+    assert_eq!(f.daemon.turn_start_count_for_test(), 0);
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        // The local hosts are deliberately unconfigured: open must not attempt readiness or
+        // native first-turn setup, which would refuse. Installation/issuance own that work.
+        let backend = factory
+            .open(
+                f.daemon.thread_seals().clone(),
+                &wiring,
+                f.repo.clone(),
+                ClaudePlannerRow {
+                    binding: PlannerBinding {
+                        profile: HarnessProfile::Planner,
+                        provider,
+                    },
+                    worker_session_id: inner.worker_session_id.as_str(),
+                    card_id: inner.card_id.as_str(),
+                    track_id: inner.track_id.as_str(),
+                    prior_total_tokens: 0,
+                },
+            )
+            .await
+            .unwrap();
+        drop(backend);
+    }
+    let after: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, mcp_token_hash FROM worker_sessions ORDER BY id")
+            .fetch_all(f.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        after, before,
+        "construction/open must not mint session credentials"
+    );
+    let after_credentials: i64 = sqlx::query_scalar("SELECT count(*) FROM card_mcp_tokens")
+        .fetch_one(f.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        after_credentials, credentials,
+        "no early card credential mint"
+    );
+    assert!(
+        f.daemon.started_thread_params_for_test().is_empty(),
+        "no early native thread/start"
+    );
+    assert_eq!(
+        f.daemon.turn_start_count_for_test(),
+        0,
+        "no early turn/start"
+    );
 }

@@ -151,6 +151,8 @@ async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state:
 }
 
 /// Codex reads local images itself; deliberately omit the optional `detail` field.
+/// A read or decode failure on Codex's side is silent (placeholder text, no error), so a
+/// successful `turn/start` is no evidence the image was seen.
 fn encode_input(input: &[InputItem]) -> Vec<Value> {
     input
         .iter()

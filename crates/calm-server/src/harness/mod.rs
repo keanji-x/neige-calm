@@ -341,9 +341,12 @@ pub async fn spawn_recovered_harness(
             .await?;
         }
     }
-    let backend = PlannerBackend::open(
-        provider,
-        daemon,
+    let backend = backend::factory::PlannerFactory::new(
+        std::sync::Arc::downgrade(&daemon),
+        &claude.claude,
+        &claude.acp,
+    )
+    .open(
         seals,
         claude,
         repo.clone(),

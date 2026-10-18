@@ -2,13 +2,14 @@
 //!
 //! Every provider-coupled call the run loop makes on a Planner turn goes through
 //! [`PlannerBackend`], including model resolution and shutdown. The deletion seals are not a
-//! provider's: they live in the shared [`ThreadSeals`].
+//! provider's: they live in the shared [`crate::thread_seals::ThreadSeals`].
 //!
 //! `input.correlation` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`]
 //! retains the projection row's key; codex hands it back as `item.clientId`.
 
 use provider::control::*;
 mod control;
+pub(crate) mod factory;
 mod start;
 use control::{codex_compact_submission, steer_outcome};
 pub(crate) use start::ordinary_start_result;
@@ -23,7 +24,6 @@ use uuid::Uuid;
 
 use crate::claude_planner::session::ClaudePlannerSession;
 use crate::claude_planner::spawn::ResumeTruncation;
-use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::codex_appserver::{ApprovalRoute, TurnApprovals};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
@@ -37,7 +37,6 @@ use crate::harness::{HarnessPhaseTag, HarnessSnapshot};
 use crate::planner_model::TurnModelSelection;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionProjection};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
-use crate::thread_seals::ThreadSeals;
 
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
 /// run loop paces its retry and tells the reader from this, never from the error's shape.
@@ -173,34 +172,6 @@ impl PlannerBackend {
     /// This is not admission: `compact_start` and the harness retain their current fences.
     pub(crate) fn manual_compact_supported(provider: &AgentProvider) -> bool {
         Self::metadata(provider).capabilities.manual_compact
-    }
-
-    /// The backend for `provider`. A Claude session only is opened: nothing is minted or spawned
-    /// before the harness is installed and its first turn runs. `seals` is the server's one
-    /// registry, the one the Codex daemon already consults.
-    pub async fn open(
-        provider: AgentProvider,
-        daemon: Arc<SharedCodexAppServer>,
-        seals: Arc<ThreadSeals>,
-        claude: &ClaudePlannerWiring,
-        repo: Arc<dyn Repo>,
-        row: ClaudePlannerRow<'_>,
-    ) -> Result<Self> {
-        Ok(match provider {
-            AgentProvider::Codex => daemon.into(),
-            AgentProvider::OpenCode => {
-                let acp = crate::acp_planner::wiring::AcpPlannerWiring {
-                    host: claude.acp.clone(),
-                    plugin: claude.plugin.clone(),
-                };
-                Self(Arm::Acp(
-                    acp.open_session(provider, repo, seals, row).await?,
-                ))
-            }
-            AgentProvider::Claude => {
-                Self(Arm::Claude(claude.open_session(repo, seals, row).await?))
-            }
-        })
     }
 
     /// Provider-owned suspension; the generic harness does not infer authentication policy.

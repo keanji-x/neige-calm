@@ -4,6 +4,7 @@
 
 use crate::actor::Actor;
 use crate::error::{CalmError, Result};
+use crate::harness::backend::factory::{PlannerFactory, ReadinessFor};
 use crate::harness::profile::{HarnessProfile, PlannerBinding};
 use crate::harness::{PlannerHarness, effective_runtime_thread_id, is_harness_snapshot_value};
 use crate::ids::CardId;
@@ -12,7 +13,7 @@ use crate::operation::planner_harness_start_adapter::profile_mints_its_own_card;
 use crate::operation::planner_start_fence::CardStartFence;
 use crate::routes::planner_cards::{HarnessCardStart, start_harness_card};
 use crate::session_projection_repo::{
-    AgentProvider, CardConversation, WorkerSessionProjection, WorkerSessionState,
+    CardConversation, WorkerSessionProjection, WorkerSessionState,
 };
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
@@ -25,23 +26,6 @@ pub(crate) fn dormant() -> CalmError {
         "This conversation's session can't be resumed; start a fresh session (history is kept)"
             .into(),
     )
-}
-
-/// The backend a harness of `provider` turns on, as a 503 when it is not ready. A Claude Planner
-/// needs its config and its pinned binary, not the shared app-server (#1791 §4.1 row 11).
-async fn require_backend(
-    s: &RouteState,
-    cs: &CodexShellState,
-    provider: AgentProvider,
-) -> Result<()> {
-    match provider {
-        AgentProvider::OpenCode => s.acp_planner.check_ready(&provider).await,
-        AgentProvider::Claude => s.claude_planner.check_ready().await,
-        AgentProvider::Codex if cs.shared_codex_appserver.is_running() => Ok(()),
-        AgentProvider::Codex => Err(CalmError::ServiceUnavailable(
-            cs.shared_codex_appserver.not_running_message(),
-        )),
-    }
 }
 
 fn starting() -> CalmError {
@@ -130,7 +114,13 @@ pub(crate) async fn ensure_planner_session(
     }
     // A recovered harness can't issue turns without its backend; surface that instead of spawning a silently-wedged task.
     let provider = runtime.agent_provider.clone().ok_or_else(dormant)?;
-    require_backend(s, cs, provider).await?;
+    PlannerFactory::new(
+        std::sync::Arc::downgrade(&cs.shared_codex_appserver),
+        &s.claude_planner,
+        &s.acp_planner,
+    )
+    .ready(&provider, ReadinessFor::RestoreOrSend)
+    .await?;
     let runtime_id = runtime.id.clone();
     let harness = install_preserved_session(s, w, cs, runtime.clone()).await?;
     tracing::info!(
@@ -199,7 +189,13 @@ async fn start_fresh(
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;
     // The start adapter's own readiness refusal is a 500; this is the send's 503, as for recovery.
-    require_backend(s, cs, binding.provider).await?;
+    PlannerFactory::new(
+        std::sync::Arc::downgrade(&cs.shared_codex_appserver),
+        &s.claude_planner,
+        &s.acp_planner,
+    )
+    .ready(&binding.provider, ReadinessFor::RestoreOrSend)
+    .await?;
     start_harness_card(
         s,
         &fence,
