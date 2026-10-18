@@ -149,3 +149,43 @@ fn locate_bin(name: &str) -> PathBuf {
     }
     panic!("{name} binary not found at {}", candidate.display());
 }
+
+#[tokio::test]
+async fn stop_grace_within_shutdown_starts_without_executor() {
+    use workspace_runtime::execution::{session_executor::SessionExecutor, *};
+    let temp = calm_test_sockets::socket_dir("short-grace");
+    let socket = temp.path().join("supervisor.sock");
+    // At the exact shutdown deadline (and below), do not even open the key/journal.
+    for grace in [0, (STOP_GRACE + DRAIN_BUDGET).as_millis() as u64] {
+        let mut child = Command::new(locate_bin("calm-proc-supervisor"))
+            .arg("--control-sock")
+            .arg(&socket)
+            .arg("--execution-state-dir")
+            .arg(temp.path().join("journal"))
+            .arg("--kernel-client-key-file")
+            .arg(temp.path().join("absent-key"))
+            .arg("--stop-grace-ms")
+            .arg(grace.to_string())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        wait_until_listening(&socket).await;
+        let executor = SessionExecutor::new(socket.clone(), CapabilityToken::fresh().unwrap());
+        assert!(!executor.available());
+        assert!(matches!(
+            executor.inspect(&ExecutionId::fresh().unwrap()).await,
+            Err(ExecError::Transport(_))
+        ));
+        let pid = ensure(&socket, ensure_request(&temp)).await;
+        assert!(pid_alive(pid));
+        assert!(!temp.path().join("journal").exists());
+        unsafe {
+            libc::kill(child.id().unwrap() as libc::pid_t, libc::SIGTERM);
+        }
+        tokio::time::timeout(LIVENESS_BUDGET, child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(executor);
+    }
+}

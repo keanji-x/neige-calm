@@ -82,6 +82,7 @@ mod track_occupancy_tests;
 mod track_recipe;
 mod track_tree;
 mod track_workspace;
+pub mod workspace_execution;
 mod workspace_resource;
 pub use workspace_resource::{
     DirectoryObservation, ObservedDirectory, WorkspaceObservation, WorkspaceOwnership,

@@ -15,6 +15,7 @@ name = "neige-app"
 path = "src/main.rs"
 
 [dependencies]
+calm-session = { path = "../calm-session" }
 calm-tailnet-control = { path = "../calm-tailnet-control" }
 anyhow = "1"
 # #1282 — the boot-autospawn budget the host must cover before the child binds

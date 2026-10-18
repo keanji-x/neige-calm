@@ -39,6 +39,10 @@ impl From<&AppConfig> for SupervisorConfig {
 pub(crate) fn calm_server_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
     let control_sock = cfg.proc_supervisor_sock();
     let mut child_args = cfg.child.extra_args.clone();
+    child_args.extend([
+        "--kernel-client-key-file".into(),
+        crate::execution::key_path(cfg).display().to_string(),
+    ]);
     if cfg.tailnet_unavailable {
         child_args.push("--private-tailnet-unavailable".into());
     } else if let Some(tailnet) = &cfg.tailnet {
@@ -113,6 +117,15 @@ pub(crate) fn proc_supervisor_config(cfg: &AppConfig) -> SupervisorConfig {
         child_args: vec![
             "--control-sock".into(),
             cfg.proc_supervisor_sock().display().to_string(),
+            "--execution-state-dir".into(),
+            cfg.calm_data_dir_resolved()
+                .join("execution")
+                .display()
+                .to_string(),
+            "--kernel-client-key-file".into(),
+            crate::execution::key_path(cfg).display().to_string(),
+            "--stop-grace-ms".into(),
+            cfg.timing.stop_grace.as_millis().to_string(),
         ],
         child_envs: Vec::new(),
         restart_delay: cfg.timing.restart_delay,

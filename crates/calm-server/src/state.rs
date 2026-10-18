@@ -319,6 +319,7 @@ impl BootState {
             raw: self.repo,
             workspace_root_guard: self.workspace_root_guard,
             track_creator: None,
+            execution: None,
             route,
             worker,
             codex_shell,
@@ -330,6 +331,8 @@ impl BootState {
 /// `fixtures`-gated [`AppState::raw_repo`].
 #[derive(Clone)]
 pub struct AppState {
+    /// Registered execution engine; no consumers are enabled in E2a.
+    pub execution: Option<Arc<crate::execution_boot::ExecutionEngine>>,
     /// Sync-domain raw writes are unreachable from this handle — handlers must funnel
     /// them through `db::write_with_event_typed`.
     pub repo: Arc<dyn RouteRepo>,
@@ -1540,6 +1543,7 @@ impl AppState {
         };
         let mut state = state.into_app_state();
         state.bind_track_creator(cfg.track_add_max_open);
+        state.execution = crate::execution_boot::recover(cfg, pool).await?;
 
         // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The
         // same tick also ends worker sessions left running on completed tracks.

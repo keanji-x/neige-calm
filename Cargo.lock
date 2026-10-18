@@ -578,6 +578,7 @@ dependencies = [
  "utoipa",
  "uuid",
  "workspace",
+ "workspace-runtime",
 ]
 
 [[package]]
@@ -2525,6 +2526,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "calm-session",
  "calm-tailnet-control",
  "calm-types",
  "chrono",
@@ -6074,6 +6076,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "calm-session",
+ "serde",
  "tempfile",
  "tokio",
  "workspace",

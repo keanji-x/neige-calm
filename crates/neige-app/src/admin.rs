@@ -116,6 +116,7 @@ pub(crate) async fn serve_system(args: SystemServeArgs) -> anyhow::Result<()> {
     } else {
         None
     };
+    crate::execution::ensure_key_file(&cfg)?;
     let proc_control_sock = cfg.proc_supervisor_sock();
     let cfg = Arc::new(cfg);
     let proc_supervisor = Supervisor::new(proc_supervisor_config(&cfg));

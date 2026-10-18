@@ -454,3 +454,17 @@ S2a 之外的后续里程碑：**resource cutover**（typed 资源、共享 regi
 | claude R6-N2 | 记录 tx-only 创建的 UX 差异：Prepare 被拒留下可删除的已退出卡片，不加机制（§7.2、E2b） |
 | claude R6-N3 | calm-truth 一个 Terminal alias helper，消费者、scope 映射与 boot reconcile 共用（§10、§12） |
 | claude R6-N4 | 条件已删除；剩余会话守卫写明为单条 `UPDATE … WHERE`（§7.2） |
+
+## Upgrade note: E2a executor wiring
+
+New supervisor launches receive an execution journal directory and a kernel-only
+0600 capability file from neige-app. calm-server receives the same file path via
+typed CLI configuration and schedules pending executions with `Engine::recover`.
+This slice adds no Terminal consumer.
+
+An already-running pre-upgrade supervisor is still taken over for Legacy sessions,
+but cannot provide the v4 executor handshake. The execution engine stays unavailable;
+there is no Legacy fallback for registered execution. Enabling the executor requires
+a supervisor restart, which ends existing Legacy PTYs. Plan that restart explicitly
+when upgrading. A shutdown grace no greater than `STOP_GRACE + DRAIN_BUDGET` also
+disables the executor while keeping Legacy service available.

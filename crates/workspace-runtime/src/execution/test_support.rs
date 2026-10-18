@@ -1,10 +1,12 @@
 //! Scripted port fixture and shared executor contract, available only by opt-in.
 use super::*;
+mod store_contract;
 use async_trait::async_trait;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
+pub use store_contract::StoreHarness;
 use tokio::sync::{Notify, watch};
 use workspace::identity::WorkspaceCwd;
 
@@ -302,6 +304,7 @@ pub fn tombstone(intent: &ExecutionIntent) -> Fact {
 }
 /// Shared assertions against a caller-supplied port. The fake supplies replies, not policy.
 pub mod port_contract {
+    pub use super::store_contract::store;
     use super::*;
     pub async fn executor<X: Executor>(
         executor: &X,

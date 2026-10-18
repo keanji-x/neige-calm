@@ -3,6 +3,7 @@ mod admin;
 mod apply;
 mod cli;
 mod config;
+mod execution;
 mod identity;
 mod installed;
 mod manifest;

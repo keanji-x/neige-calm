@@ -48,6 +48,10 @@ pub struct Config {
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
     pub proc_supervisor_sock: Option<PathBuf>,
 
+    /// Kernel-owned executor capability file, shared with the supervisor.
+    #[arg(long)]
+    pub kernel_client_key_file: Option<PathBuf>,
+
     /// Extra browser origin (typically a dev frontend) trusted for CORS and for
     /// cookie-authenticated writes and WS upgrades. Unset: only calm's own origins.
     #[arg(long, env = "CALM_ALLOWED_ORIGIN", value_parser = crate::auth::parse_origin)]

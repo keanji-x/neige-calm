@@ -9,6 +9,7 @@ session-executor = []
 test-support = []
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 workspace = { path = "../workspace" }
 calm-session = { path = "../calm-session" }
 async-trait = "0.1"

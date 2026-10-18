@@ -167,6 +167,7 @@ path = "tests/fixtures/cooked-shell-child/main.rs"
 test = false
 
 [dependencies]
+workspace-runtime = { path = "../workspace-runtime", features = ["session-executor"] }
 calm-tailnet-control = { path = "../calm-tailnet-control" }
 calm-terminal-view = { path = "../calm-terminal-view" }
 base64 = "=0.22.1"
@@ -318,6 +319,7 @@ nix = { version = "0.29", features = ["dir", "fs", "signal"] }
 libc = "0.2"
 
 [dev-dependencies]
+workspace-runtime = { path = "../workspace-runtime", features = ["test-support"] }
 url = "2"
 plugin = { path = "../plugin", features = ["test-support"] }
 calm-test-sockets = { path = "../calm-test-sockets" }

@@ -5,6 +5,8 @@ pub mod auth;
 pub mod builtin_plugins;
 pub mod card_kind;
 mod conversation_archive;
+pub mod execution_boot;
+pub mod execution_store;
 pub mod forge_trust;
 pub mod harness;
 pub mod liveness_feeder;

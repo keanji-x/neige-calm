@@ -594,6 +594,7 @@ mod tests {
     fn auth_config_panics_without_password_in_prod_mode() {
         let cfg = Config {
             emit_kernel_compatibility_json: false,
+            kernel_client_key_file: None,
             listen: "127.0.0.1:0".into(),
             db_url: "mock".into(),
             data_dir: None,
@@ -637,6 +638,7 @@ mod tests {
     fn auth_config_allows_no_password_when_dev_autologin_on() {
         let cfg = Config {
             emit_kernel_compatibility_json: false,
+            kernel_client_key_file: None,
             listen: "127.0.0.1:0".into(),
             db_url: "mock".into(),
             data_dir: None,

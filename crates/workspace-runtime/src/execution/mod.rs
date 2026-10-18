@@ -11,18 +11,19 @@ mod tests;
 pub use calm_session::control::execution::*;
 pub use engine::*;
 pub use ports::*;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use workspace::identity::WorkspaceCwd;
 
 pub const QUIESCE_DEADLINE: std::time::Duration = STOP_GRACE.saturating_add(DRAIN_BUDGET);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationRef(pub String);
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackId(pub String);
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessAlias(pub String);
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PrivateSource {
     pub root: PathBuf,
     pub cwd: WorkspaceCwd,
@@ -32,7 +33,7 @@ pub struct PrivateSource {
     pub incarnation: ExternalDirectoryIncarnationId,
     pub authority: ExecutionAuthority,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionMetadata {
     pub id: ExecutionId,
     pub alias: ProcessAlias,
@@ -44,7 +45,7 @@ pub struct ExecutionMetadata {
     pub ticket_id: LaunchTicketId,
 }
 /// Capabilities retained only while an execution is active.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionSecrets {
     pub ticket: CapabilityToken,
     pub tokens: ExecutionControlTokens,
@@ -137,7 +138,7 @@ impl Stored {
     }
 }
 /// Secret-free settlement evidence, copied directly from Inspect.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Settlement {
     Journal(ExecutionState),
     Retired(ExecutionTombstone),

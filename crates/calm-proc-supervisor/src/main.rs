@@ -11,6 +11,9 @@ struct Args {
     /// $CALM_DATA_DIR/proc-supervisor.sock.
     #[arg(long)]
     control_sock: PathBuf,
+    /// Parent shutdown budget; executor requires room for Stop and durable drain.
+    #[arg(long, default_value_t = 5000)]
+    stop_grace_ms: u64,
     /// Durable executor journal, outside workspace-private storage.
     #[arg(long, requires = "kernel_client_key_file")]
     execution_state_dir: Option<PathBuf>,
@@ -47,12 +50,23 @@ async fn serve() -> anyhow::Result<()> {
     establish_sigchld_process_invariant();
     let registry = match (args.execution_state_dir, args.kernel_client_key_file) {
         (Some(journal_directory), Some(key_file)) => {
-            let kernel_client_secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
-            ProcRegistry::new().with_executor(calm_proc_supervisor::execution::ExecutorConfig {
-                journal_directory,
-                helper_program: std::env::current_exe()?,
-                kernel_client_secret,
-            })?
+            let deadline = calm_session::control::execution::STOP_GRACE
+                + calm_session::control::execution::DRAIN_BUDGET;
+            if std::time::Duration::from_millis(args.stop_grace_ms) <= deadline {
+                tracing::error!(
+                    "executor disabled: stop grace must exceed durable shutdown deadline"
+                );
+                ProcRegistry::new()
+            } else {
+                let kernel_client_secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
+                ProcRegistry::new().with_executor(
+                    calm_proc_supervisor::execution::ExecutorConfig {
+                        journal_directory,
+                        helper_program: std::env::current_exe()?,
+                        kernel_client_secret,
+                    },
+                )?
+            }
         }
         (None, None) => ProcRegistry::new(),
         _ => anyhow::bail!("execution journal and client capability must be configured together"),

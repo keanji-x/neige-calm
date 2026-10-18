@@ -50,7 +50,12 @@ fn config_omitted_plugin_dirs_leave_child_argv_unchanged() {
     for cfg in [loaded, AppConfig::starter(path)] {
         assert!(cfg.child.plugins_dir.is_none());
         assert!(cfg.child.plugins_data_dir.is_none());
-        let args = crate::calm_server_supervisor_config(&cfg).child_args;
+        let mut args = crate::calm_server_supervisor_config(&cfg).child_args;
+        let key_flag = args
+            .iter()
+            .position(|arg| arg == "--kernel-client-key-file")
+            .unwrap();
+        args.drain(key_flag..key_flag + 2);
         assert!(
             !args
                 .iter()
