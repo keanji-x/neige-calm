@@ -13,9 +13,7 @@ import {
   ChatSendButton,
   ChatLayoutScrollButton,
   type ChatComposerTrigger,
-  type ChatToolCallItem,
 } from '@astryxdesign/core/Chat';
-import { Code } from '@astryxdesign/core/Code';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 import { Button } from '@astryxdesign/core/Button';
 import { useIcon } from '@astryxdesign/core/Icon';
@@ -31,7 +29,7 @@ import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
 import { useState } from '../../../ui/state/public.ts';
 
 import { activityLabelOf, cardActivityOf, type CardActivity } from '../../../../../core/domain/activity.ts';
-import { foldQuietSyncs } from '../../../../../core/domain/conversation-quiet-sync.ts';
+import { projectTranscriptView, type TranscriptView } from '../../../../../core/domain/conversation-view.ts';
 import {
   isQueuedConversationTurn, opensAfterGap, opensExchange,
   type Conversation, type ConversationTurn, type ConversationActivity, type ConversationTurnOutcome,
@@ -49,11 +47,9 @@ import { editedTurnMessageIds } from '../../../../../core/domain/conversation-co
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
 import {
-  ToolCallGroup, toolCallGroupShowsRunning, untouchedToolCallGroup, useToolCallFocus, withDetailOpen,
+  toolCallGroupShowsRunning, untouchedToolCallGroup, useToolCallFocus,
 } from './activity-groups.tsx';
-import {
-  groupTranscriptActivities, keyTranscriptGroups,
-} from '../../../../../core/domain/conversation-groups.ts';
+import { ActivityRun, toolCallOf } from './activity-run.tsx';
 
 export type ChatThreadProps = Readonly<{
   readingView?: ThreadReadingView;
@@ -137,40 +133,37 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const frameRef = useRef<HTMLDivElement | null>(null);
   const edited = useMemo(() => editing === null ? new Set<string>() : editedTurnMessageIds(turns, editing), [editing, turns]);
   /* Drawn by block, not by entry: a quiet-sync fold is one line. The index map keeps `opensExchange`, `opensAfterGap` and the live-mark rule reading positions in `turns`. */
-  const blocks = useMemo(() => foldQuietSyncs(turns), [turns]);
   const indexOf = useMemo(
     () => new Map(turns.map((entry, index) => [entry, index] as const)), [turns],
   );
-  // Quiet syncs remain a single top-level boundary; their existing disclosure
-  // owns its children. Ordinary tools on either side must never join through it.
-  const quietBlocks = useMemo(() => new Map(blocks
-    .filter((block) => block.kind === 'quiet-sync').map((block) => [block.id, block] as const)), [blocks]);
-  const visibleTurns = useMemo(() => blocks.map((block) => block.kind === 'entry'
-    ? block.entry : block.entries[0]), [blocks]);
   /* Run keys are read from the memory of the last *committed* transcript, advanced only in a layout effect: React renders transcripts it then throws away, and a memory advanced during render would hold keys for calls nobody saw. */
   const committedGroupKeys = reading.groupKeys;
-  const keyedGroups = useMemo(
-    () => keyTranscriptGroups(groupTranscriptActivities(visibleTurns), committedGroupKeys.current),
-    [visibleTurns, committedGroupKeys],
+  const committedView = useRef<Readonly<{ owner: ThreadReadingView['groupKeys']; id: string; view: TranscriptView }> | null>(null);
+  const projected = useMemo(
+    () => projectTranscriptView(turns, committedGroupKeys.current,
+      committedView.current?.owner === committedGroupKeys && committedView.current.id === conversation.id ? committedView.current.view : null),
+    [turns, committedGroupKeys, conversation.id],
   );
-  const transcriptGroups = keyedGroups.groups;
+  const transcriptGroups = projected.groups;
   useLayoutEffect(() => {
-    committedGroupKeys.current = keyedGroups.memory;
-  }, [keyedGroups, committedGroupKeys]);
+    committedView.current = { owner: committedGroupKeys, id: conversation.id, view: projected };
+    committedGroupKeys.current = projected.memory;
+  }, [projected, committedGroupKeys, conversation.id]);
   /* What the reader did to each run, by the run's carried key — held here because the vendor's element does not survive a page shift. A key is issued once and never reissued. */
   const groupUi = reading.groups;
   const updateGroupUi = reading.updateGroup;
+  const [untouchedGroupUi] = useState(untouchedToolCallGroup);
   /* Where focus goes when the element under it goes; held on the transcript's element, which outlives every run's. */
   const focus = useToolCallFocus(
     transcriptGroups.filter(({ entry }) => entry.author !== 'turn'),
     (activities) => activities.map(toolCallOf),
-    (key) => groupUi.get(key) ?? untouchedToolCallGroup(),
+    (key) => groupUi.get(key) ?? untouchedGroupUi,
   );
   /* Whether the end of the transcript already says "working", so the placeholder mark stays down: a run's *visible* rows count — the latest call when closed, every call when open. */
   const tail = transcriptGroups[transcriptGroups.length - 1];
-  const tailQuiet = tail === undefined ? undefined : quietBlocks.get(tail.entry.id);
+  const tailQuiet = tail?.body.quiet ?? null;
   const tailCarriesLiveMark = tail === undefined ? false
-    : tailQuiet !== undefined ? tailQuiet.entries.some((entry) => entry === lastTurn)
+    : tailQuiet !== null ? tailQuiet.entries.some((entry) => entry === lastTurn)
     : tail.activities === null ? tail.entry.author === 'agent'
     : toolCallGroupShowsRunning(tail.activities.map(toolCallOf), groupUi.get(tail.key)?.expanded ?? false);
   /* The rail is portalled into the drawer's seam (`.drawer` is `overflow: hidden`, so a descendant cannot reach it). Held in state because a portal needs the node at render time. */
@@ -224,15 +217,14 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   }, [scrollFollower, newestId, newestLength, noticeKind]);
 
   /* A run of calls, one or more, keyed by `key`: Astryx draws one call inline and two or more as a group. `runLive` is the live tail's alone — a run the conversation has moved past must not look like it resumed. */
-  const renderRun = (activities: readonly ConversationActivity[], key: string, runLive: boolean): ReactNode => (
-    <ToolCallGroup
+  const renderRun = (activities: readonly ConversationActivity[] | ConversationActivity, key: string, runLive: boolean): ReactNode => (
+    <ActivityRun
       /* Carried by membership, not read off any one call, so the run keeps its element as calls are appended, prepended or dropped. */
       key={key}
       entry={key}
-      calls={activities.map(toolCallOf)}
-      ui={groupUi.get(key) ?? untouchedToolCallGroup()}
-      onExpandedChange={(expanded) => updateGroupUi(key, (ui) => ({ ...ui, expanded }))}
-      onDetailOpenChange={(callKey, open) => updateGroupUi(key, (ui) => withDetailOpen(ui, callKey, open))}
+      activities={activities}
+      ui={groupUi.get(key) ?? untouchedGroupUi}
+      updateGroup={updateGroupUi}
       live={runLive}
     />
   );
@@ -241,7 +233,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const renderEntry = (turn: TranscriptEntry, key = turn.id, showLive = live): ReactNode => {
     const index = indexOf.get(turn) ?? -1;
     const last = index === turns.length - 1;
-    if (turn.author === 'activity') return renderRun([turn], key, showLive && last);
+    if (turn.author === 'activity') return renderRun(turn, key, showLive && last);
     if (turn.author === 'system') {
       return (
         <div key={turn.id} data-nc-entry={key}>
@@ -290,9 +282,9 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
           <p className={styles.emptyHint}>{compactViewport ? (live ? '回复会显示在这里。' : '从一个问题或想法开始。') : (live ? 'Messages will appear here.' : 'Write below and it starts here.')}</p>
           {live && <ActivityIndicator state="working" motion="thinking" />}
         </>}
-        {transcriptGroups.map(({ entry: turn, activities, key }) => {
-          const block = quietBlocks.get(turn.id);
-          if (block !== undefined) {
+        {transcriptGroups.map(({ entry: turn, activities, key, body }) => {
+          const block = body.quiet;
+          if (block !== null) {
             return (
               <div key={block.id} data-nc-entry={key}>
                 <QuietSyncFold expanded={reading.expanded.get(`quiet-${block.id}`) ?? false}
@@ -331,35 +323,6 @@ const FOLLOW_BOTTOM_SLACK_PX = 64;
 
 
 
-
-/** A duration is printed only when the reader felt it; most `item/completed` are a 12ms read. */
-const ACTIVITY_DURATION_FLOOR_MS = 1_000;
-
-/** `4.3s` under a minute, `3m 12s` over. The branch is decided on the rounded tenths, or `[59_950, 60_000)` would print `60.0s`. */
-function formatActivityDuration(durationMs: number): string {
-  const tenths = Math.round(durationMs / 100);
-  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
-  const seconds = Math.round(durationMs / 1_000);
-  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
-}
-
-/** Every run of activities renders through the vendor's tool calls: one inline, two or more grouped. `key` is the activity id (stable from started to completed); `resultDetail` is wrapped in `data-nc-detail`, which the vendor mounts only while open — that is how `ToolCallGroup` reads its state. The vendor prints `duration` on completed calls only. */
-function toolCallOf(activity: ConversationActivity): ChatToolCallItem {
-  const duration = activity.durationMs !== null && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
-    ? formatActivityDuration(activity.durationMs)
-    : undefined;
-  return {
-    key: activity.id,
-    name: activity.verb,
-    target: activity.target ?? undefined,
-    status: activity.state === 'done' ? 'complete' : activity.state === 'failed' ? 'error' : 'running',
-    duration,
-    errorMessage: activity.detail ?? undefined,
-    resultDetail: activity.detail === null
-      ? undefined
-      : <div data-nc-detail={activity.id}><Code>{activity.detail}</Code></div>,
-  };
-}
 
 /** `/new` in the composer: the panel column (and its `+`) is hidden while a drawer is open, so this is the only new-conversation door from inside a conversation. It runs the `+`'s own callback; `undefined` means no trigger at all. */
 export const NEW_CONVERSATION_COMMAND = Object.freeze({
