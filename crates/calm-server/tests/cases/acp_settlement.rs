@@ -61,6 +61,24 @@ async fn contention(exhaust: bool) {
     tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
         .await
         .unwrap();
+    // The drive's settlement pause does not acknowledge Harness persistence. Fence the
+    // early completed items before injecting receipt contention; the final reply's
+    // completion is published only after settlement and remains checked below.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let items =
+                claude_planner_session_fixture::card_rows(stack.repo(), &card, "item/completed")
+                    .await;
+            if items.iter().any(|frame| {
+                frame["item"]["type"] == "dynamicToolCall" && frame["item"]["status"] == "completed"
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the early native tool completion must be persisted before receipt contention");
     let pool = stack.repo().sqlite_db().unwrap();
     let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
         .fetch_one(pool.read_pool())
