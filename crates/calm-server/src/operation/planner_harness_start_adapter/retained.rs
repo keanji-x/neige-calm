@@ -4,7 +4,6 @@ use super::*;
 use crate::auth::HumanInputSource;
 use crate::db::sqlite::conversation::{self, RuntimeExecutionFence};
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
-use calm_types::conversation::MessageRevisionRef;
 
 mod recovery;
 
@@ -46,7 +45,7 @@ impl RetainedPayload {
 
 pub(super) struct Target {
     track_id: String,
-    inputs: Vec<MessageRevisionRef>,
+    inputs: crate::conversation_inputs::HumanSourceInputs,
     snapshot: CanonicalHarnessSnapshot,
     fence: RuntimeExecutionFence,
     activation_operation: Option<String>,
@@ -81,7 +80,7 @@ impl PlannerHarnessStartAdapter {
             ));
         }
         let inputs =
-            crate::conversation_inputs::human_pending_source_refs_tx(tx, source, &carrier).await?;
+            crate::conversation_inputs::human_source_inputs_tx(tx, source, &carrier).await?;
         let snapshot: CanonicalHarnessSnapshot =
             serde_json::from_value(carrier.snapshot().clone())?;
         if snapshot.header.last_thread_id != row.thread_id {
@@ -176,9 +175,9 @@ impl PlannerHarnessStartAdapter {
             .get(&wire.worker_session_id)
             .ok_or_else(|| CalmError::Conflict("retained handle is not installed".into()))?;
         let (source, _) = bound.retained_source()?;
-        for input in current.inputs {
+        for input in current.inputs.refs() {
             handle
-                .observe_canonical_source(input, source.clone())
+                .observe_canonical_source(input.clone(), source.clone())
                 .await?;
         }
         Ok(())

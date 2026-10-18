@@ -2,7 +2,8 @@
 //! provenance/runtime are facts, never a reusable permission for a later write.
 use super::*;
 use calm_types::conversation::{
-    ConversationExecutionProvenance, MessageAuthor, SubmissionRenderInput, SubmissionRenderSegment,
+    AcceptedInputRef, ConversationExecutionProvenance, MessageAuthor, SubmissionRenderInput,
+    SubmissionRenderSegment,
 };
 use calm_types::worker::WorkerSession;
 
@@ -62,14 +63,62 @@ async fn current_human_ref_matches_tx(
     ))
 }
 
-/// Derive transient source associations from the sole committed pending order.
-/// Stop at another source; these refs are neither a queue nor an execution grant.
-pub(crate) async fn human_pending_source_refs_tx(
+/// One current request's body-free associations, derived together by this owner.
+/// This cannot be serialized or constructed from a recorded author or receipt.
+pub(crate) struct HumanSourceInputs {
+    refs: Vec<MessageRevisionRef>,
+    unattempted_initial: bool,
+}
+
+impl HumanSourceInputs {
+    pub(crate) fn refs(&self) -> &[MessageRevisionRef] {
+        &self.refs
+    }
+
+    pub(crate) fn is_unattempted_initial(&self) -> bool {
+        self.unattempted_initial
+    }
+}
+
+/// Re-admit the original claim before any crossing, then the owned pending
+/// prefix. Already attempted work never gains another dispatch from this lookup.
+pub(crate) async fn human_source_inputs_tx(
     tx: &mut Transaction<'_, Sqlite>,
     source: &HumanInputSource,
     carrier: &CurrentInputCarrier,
-) -> Result<Vec<MessageRevisionRef>> {
+) -> Result<HumanSourceInputs> {
     let mut refs = vec![];
+    let mut unattempted_initial = false;
+    if carrier.phase()? == crate::harness::HarnessPhaseTag::IssuingTurn
+        && let Some(active) = &carrier.checkpoint().active
+        && let [id] = active.submission_ids.as_slice()
+        && carrier.checkpoint().attempt(id).is_none()
+    {
+        let original = conversation::submission_identity_tx(tx, id).await?;
+        let stored = conversation::submission_plan_tx(tx, id).await?;
+        let (execution, _) =
+            authorize_human_execution_tx(tx, source, carrier, &stored.plan).await?;
+        if original.card_id != carrier.card_id()
+            || original.logical_turn_id != active.logical_turn_id
+            || original.ordinal != 0
+            || original.execution != execution
+        {
+            return Err(CalmError::Conflict(
+                "original unattempted claim changed".into(),
+            ));
+        }
+        let original_refs = stored
+            .plan
+            .input_refs()
+            .map_err(|error| CalmError::Conflict(error.into()))?;
+        let [AcceptedInputRef::Human { message }] = original_refs.as_slice() else {
+            return Err(CalmError::Conflict(
+                "original claim is not one Human input".into(),
+            ));
+        };
+        refs.push(message.clone());
+        unattempted_initial = true;
+    }
     for pending in &carrier.checkpoint().pending {
         let calm_types::conversation::PendingInput::Human { message, .. } = pending else {
             break;
@@ -84,7 +133,10 @@ pub(crate) async fn human_pending_source_refs_tx(
             "current source cannot resume this exact pending head".into(),
         ));
     }
-    Ok(refs)
+    Ok(HumanSourceInputs {
+        refs,
+        unattempted_initial,
+    })
 }
 
 pub(crate) async fn authorize_human_execution_tx(
