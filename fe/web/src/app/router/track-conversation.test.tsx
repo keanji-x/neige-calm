@@ -25,7 +25,7 @@ import type { Conversation, TranscriptEntry } from '../../../../core/domain/conv
 import {
   CONVERSATION_CREATE_TEXT, conversationCreateUnknownText, MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId,
 } from '../../../../core/domain/conversation.ts';
-import { ConversationProvider, useConversationCommands, useConversationComposerText, useConversationTurns, useRememberedConversations } from '../conversations/public.tsx';
+import { ConversationProvider, useConversationCommands, useConversationComposerText, useConversationRememberedTurns, useConversationSendOps, useConversationSpentRows, useRememberedConversations } from '../conversations/public.tsx';
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
 import { createReadReceiptsKernel, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
@@ -3799,8 +3799,11 @@ describe('registry write-through', () => {
     }
 
     function RegistryProbe() {
-      const turns = useConversationTurns(ASSISTANT_CARD.id);
-      useEffect(() => { latestTurns = turns; });
+      const registry = useConversationCommands();
+      useConversationRememberedTurns(ASSISTANT_CARD.id);
+      useConversationSendOps(ASSISTANT_CARD.id);
+      useConversationSpentRows(ASSISTANT_CARD.id);
+      useEffect(() => { latestTurns = registry.turnsOf(ASSISTANT_CARD.id); });
       return null;
     }
 

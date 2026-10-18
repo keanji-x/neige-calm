@@ -55,6 +55,46 @@ it('preserves explicit repeated open intents and exact idempotent unsubscribe', 
   expect(observe).toHaveBeenCalledTimes(2);
 });
 
+it('does not call an observer removed by an earlier callback in the same publication', () => {
+  const owner = createConversationOwner();
+  const removed = vi.fn();
+  owner.subscribe(state => state.composers[card]?.text, () => { unsubscribe(); });
+  const unsubscribe = owner.subscribe(state => state.composers[card]?.text, removed);
+  owner.commands.editComposer(card, current => ({ ...current, text: 'Changed' }));
+  expect(removed).not.toHaveBeenCalled();
+});
+
+it('baselines an observer added during publication at current state and notifies its next change', () => {
+  const owner = createConversationOwner();
+  const added = vi.fn();
+  let subscribed = false;
+  owner.subscribe(state => state.composers[card]?.text, () => {
+    if (subscribed) return;
+    subscribed = true;
+    owner.subscribe(state => state.composers[card]?.text, added);
+  });
+  owner.commands.editComposer(card, current => ({ ...current, text: 'First' }));
+  expect(added).not.toHaveBeenCalled();
+  owner.commands.editComposer(card, current => ({ ...current, text: 'Second' }));
+  expect(added).toHaveBeenCalledOnce();
+});
+
+it('reads a coherent latest state when an earlier observer completes a reentrant command', () => {
+  const owner = createConversationOwner(); const registry = owner.commands;
+  const observations: unknown[] = [];
+  owner.subscribe(state => state.composers[card]?.text, () => {
+    if (registry.composerOf(card).text === 'First') registry.beginEdit(card, {
+      kind: 'turn', turnId: 'turn', outcomeId: 'outcome', refill: { text: 'Refill', attachments: [] },
+    });
+  });
+  owner.subscribe(state => state, () => {
+    observations.push({ edit: registry.editOf(card), composer: registry.composerOf(card), notice: registry.editNoticeOf(card) });
+  });
+  registry.editComposer(card, current => ({ ...current, text: 'First' }));
+  expect(observations).toEqual([{ edit: { kind: 'turn', turnId: 'turn', outcomeId: 'outcome', refill: { text: 'Refill', attachments: [] } },
+    composer: { text: 'First\n\nRefill', attachments: [] }, notice: null }]);
+});
+
 it('uses current upload ownership when cancelling an edit in the same tick', () => {
   const registry = createConversationOwner().commands;
   registry.beginEdit(card, { kind: 'turn', turnId: 'turn', outcomeId: 'outcome', refill: { text: 'Retained prompt', attachments: [] } });

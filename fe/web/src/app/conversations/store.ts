@@ -14,7 +14,8 @@ import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/doma
 import { harnessItemsQueryOptions, modelCatalogQueryOptions, plannerRunQueryOptions, usePlannerMutations } from '../providers/queries.ts';
 import { managedProvidersQueryOptions } from '../providers/managed-providers.ts';
 import { useState } from '../../ui/state/public.ts';
-import { useConversationCommands, useConversationSendOps, useConversationQueueWriteOut, useConversationRememberedTurns, useConversationTurns, useRememberedConversations } from './public.tsx';
+import { useConversationCommands, useConversationSendOps, useConversationQueueWriteOut, useConversationRememberedTurns, useRememberedConversations } from './public.tsx';
+import { NO_TURNS } from './registry-owner.ts';
 import { useConversationStop } from './stop.ts';
 import { useConversationRestart } from './restart.ts';
 import { useLiveReplies, useTranscriptReads } from './live-replies.ts';
@@ -79,7 +80,6 @@ export function useConversationStore(
      transcript. Raw `serverTurns` still sees every row for delivery reconciliation. */
   const rememberedSource = useConversationRememberedTurns(history.data === undefined && scope !== null ? cardId : null);
   const rememberedEntries = history.data === undefined ? rememberedSource : null;
-  const rememberedDisplay = useConversationTurns(scope === null ? null : cardId);
   const queueWriteOut = useConversationQueueWriteOut(scope === null ? null : cardId);
   const serverTurns = useMemo(
     () => history.data === undefined
@@ -298,7 +298,7 @@ export function useConversationStore(
 
   return {
     conversations,
-    turns: conversation === null ? rememberedDisplay : presentation.transcript,
+    turns: conversation === null ? NO_TURNS : presentation.transcript,
     pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,

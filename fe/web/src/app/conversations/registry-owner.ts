@@ -83,7 +83,7 @@ export function createConversationOwner() {
   const commit = (next: ConversationSnapshot) => {
     if (next === state) return;
     state = next;
-    for (const listener of Array.from(listeners)) listener();
+    for (const listener of listeners) listener();
   };
   const rememberEntry = (id: string, conversation: Conversation, given: readonly TranscriptEntry[]) => {
     const canonical = given.some(isOptimisticConversationTurn) ? given.filter(turn => !isOptimisticConversationTurn(turn)) : given;

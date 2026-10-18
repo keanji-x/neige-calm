@@ -1,6 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react';
 import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
-import { withConfirmedSends } from '../../../../core/domain/conversation-outbox.ts';
 import { NO_UPLOAD } from '../../features/planner/attachments.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { createConversationOwner, NO_SENDS, NO_ROWS, NO_TURNS, type ConversationSnapshot } from './registry-owner.ts';
@@ -66,14 +65,6 @@ export function useConversationSpentRows(cardId: string | null) {
 
 export function useConversationRememberedTurns(cardId: string | null) {
   return useSnapshot(useCallback((state: ConversationSnapshot) => cardId === null ? NO_TURNS : state.entries[cardId]?.turns ?? NO_TURNS, [cardId]), cardId !== null);
-}
-
-/** Display projection derives from subscribed canonical/delivery inputs; it is never canonical memory. */
-export function useConversationTurns(cardId: string | null) {
-  const turns = useConversationRememberedTurns(cardId);
-  const outbox = useConversationSendOps(cardId);
-  const spent = useConversationSpentRows(cardId);
-  return useMemo(() => withConfirmedSends(turns, outbox, spent), [turns, outbox, spent]);
 }
 
 export function useRememberedConversations() {
