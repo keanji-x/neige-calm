@@ -18,7 +18,8 @@ M1 W1–W4 已合入 #2866–#2871）。父合同为 [track-workspace.md](track-
    Neige 自有位置之间互不重叠（O1），新的 `none` 选择在准入时与全部自有位置不重叠（§3.1、§4.2）。剩余 cutover 收窄为 C0–C6。
 3. `none` 隔离等级**不依赖** resource cutover 的任何部分，但**依赖新的准入规则**：按被操作 track 自身的行跳过破坏性路径
    并不够，因为另一个 owner 的回收、清理或删除可以作用到同一物理目录。`none` 的准入拒绝位于、等于或包含任何
-   Neige 自有位置的 cwd（§4.2 的保证 G）。有了这条规则，`none` 可以在当前模型上落地（I1a/I1b/I2，无 migration）。
+   Neige 自有位置的 cwd（§4.2 的保证 G，含已启动 teardown 子进程跨崩溃存活的显式例外，待 #2862 闭合）。在此收窄下，
+   `none` 可以在当前模型上落地（I1a/I1b/I2，无 migration）。
 4. 推荐顺序：先 I1a→I1b→I2，同时做 C0；然后 C1；再 C2–C5（Engine 消费者与正向静默）；C6 可选；之后 S3→S2b（view）。
    既有 worktree 准入的自有/自有重叠（§3.1 O1）是既有缺陷，另立 issue，在 C5 之前修复。
 
@@ -75,7 +76,8 @@ M1 的非目标仍然有效：`identity` 留在 calm-server；两份 `RecycleRef
 进行中的 teardown 目标）是 kernel 创建、回收、清理、删除 effect 的全部目标。这不是一条持续成立的全局“无 alias”不变量，
 D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新准入的 `none` 选择在准入那一刻与全部自有位置互不重叠（§4.2）；
 之后只有一种被明确接受的重叠——同仓库后来创建的 worktree 落进 `none` 目录，删除时只移除那个后来创建的自有子树（§4.2
-“G 之外”），旧行不重新准入；(b) **owned/owned 不重叠**：自有位置之间按 track 一一对应、互不嵌套，由 O1 保障；
+“G 之外”），旧行不重新准入；已启动 teardown 子进程跨崩溃存活不受进程内登记保护，是 G 的显式例外（#2862）；
+(b) **owned/owned 不重叠**：自有位置之间按 track 一一对应、互不嵌套，由 O1 保障；
 (c) `none` 不参与 task admission（worker 被拒）。今天 (b) 有一个既有缺口：
 
 - **O1（既有缺陷，另立 issue，待接受）** 显式 cwd 的 worktree 准入不排除 managed 根或他人 worktree 根：cwd 选在 managed
@@ -167,7 +169,8 @@ turn_pending}`、未结算 intent/执行、checkout lease。
 这一跳与 clean 互斥。
 
 残余风险写进 PR 并由 Planner 接受：锁不跨进程崩溃；server 崩溃后孤儿 `git clean` 子进程可能继续运行，时长没有上界，期间
-重启后的启动不受围栏保护。不改 clean 的 SQL 采样。
+重启后的启动不受围栏保护。这与 §4.2 已启动 teardown 子进程跨崩溃存活属同一残余风险类，留给 follow-up #2862
+（PDEATHSIG / child lifetime semantics）闭合，本计划不新增机制。不改 clean 的 SQL 采样。
 
 之后的 S3（Revision、B pin、7/90）与 S2b（view、WorkspaceRef、WorkspaceContent）沿用各自协议，不在本表。
 
@@ -178,7 +181,7 @@ turn_pending}`、未结算 intent/执行、checkout lease。
 | 等级 | 依赖 cutover 的哪部分 | 结论 |
 |---|---|---|
 | `worktree` | 无（就是今天的行为） | 只需让它成为显式选择 |
-| `none` | 无。保证 G（§4.2）由“每个 kernel effect 只以自有位置为目标”的既有守卫加新的非重叠准入共同给出；它不要互斥、占用、证据或交付，因此不需要 C1–C6 | **可以先在当前模型上落地** |
+| `none` | 无。保证 G（§4.2，含已启动 teardown 子进程跨崩溃存活的显式例外，#2862）由“每个 kernel effect 只以自有位置为目标”的既有守卫加新的非重叠准入共同给出；它不要互斥、占用、证据或交付，因此不需要 C1–C6 | **可以先在当前模型上落地** |
 | `view` | S3 的 Revision/RuleView/FUSE 与 S2b 机制；推迟到 S2b 的 typed 启动目标与 WorkspaceContent（D5、D8）；回收私有层前的正向静默（C5），也就是 view 内允许的每种启动都要先成为 Engine 消费者（C2–C4） | 在 C5 与 S3 之后，作为第三个后端加入 |
 
 typed 等级选择本身（请求字段、枚举、wire 投影、UI 选择）只依赖创建路由与模型，与 cutover 无关。
@@ -192,9 +195,10 @@ teardown 目标：行已（或即将）随删除事务提交而消失、但 post
 创建、回收、清理、删除 effect（materialize、`ensure_track_worktree`、recycle、trash GC、`remove_track_worktree` 及其目录兜底、
 `git clean -fdX`、candidate refs 删除、空 area 目录删除）的目标都是某个自有位置或自有 refs（§1）。
 
-**保证 G。** 对一个经准入的 `none` 目录 D：kernel 不创建、不回收、不 clean、不删除 D，也不删除 D 内任何不属于自有位置的文件。
+**保证 G（以下文显式例外为限）。** 对一个经准入的 `none` 目录 D：kernel 不创建、不回收、不 clean、不删除 D，也不删除 D 内任何不属于自有位置的文件。
 依据：每个 kernel effect 只作用于自有位置；准入时 D 与全部自有位置（含进行中的 teardown 目标）互不重叠；`none` 行本身不是
-自有位置，其所有破坏性入口是显式 no-op。G 的新增前提只是这条准入时排除，不是持续的全局不重叠：准入之后唯一被接受的重叠是
+自有位置，其所有破坏性入口是显式 no-op。进程内登记只能覆盖同一 server 进程内的 teardown 窗口，不能排除已启动子进程跨崩溃
+存活后删除重启时新准入的 D；这是 G 的显式例外，留给 #2862 闭合。G 的新增前提只是这条准入时排除，不是持续的全局不重叠：准入之后唯一被接受的重叠是
 下文“G 之外”的后来创建的 worktree，owned/owned 不重叠由 O1 保障（§3.1）。
 
 **准入（I1b）。** 拒绝位于、等于或包含任何自有位置的 cwd，否则 400 并说明冲突的自有位置。实现复用 `AttachedInheritedPath`
@@ -227,12 +231,19 @@ teardown 目标：行已（或即将）随删除事务提交而消失、但 post
   执行完再移除；回滚或 panic 恢复（`restore_area_recycle_report`、Track 删除的 `restore_recycled_workspace`）路径在补偿执行完之后
   才移除登记。被回收与恢复的 managed 目录始终在 managed 根内（自有位置 (1)），不需要登记。worktree 创建发生在行提交之后
   （`routes/tracks.rs:1517`、`create.rs:661`），失败不删除目录，没有提交前的创建窗口需要登记。
-- **崩溃。** 登记表不持久化：今天未执行的 sweep 在重启后永远不会执行，只泄漏不删除，因此重启后被准入的 W 不会被 kernel 删除，
-  进程内登记表足够。若 C6 引入持久释放作业，那些作业行就是持久的进行中 teardown 目标，同片并入准入的自有位置集合（启动补跑之前
-  准入也必须看见它们）。
+- **崩溃。** 登记表不持久化：今天尚未启动的 post-commit sweep 在重启后永远不会补跑，这一部分只泄漏不删除。
+  但已经通过 `std::process` 启动的 `git worktree remove --force` 没有 parent-death 或 crash drain 保证
+  （`crates/workspace/src/teardown.rs:56-62`、`crates/workspace/src/command.rs:35-40`）：server 崩溃后子进程可继续存活，
+  live 行已删除、登记表已丢失，重启后的 `none` 准入可放行仍存在的 W 或其 Git 内子目录，随后被原有 Git 子进程删除。这个窗口没有时长上界，
+  Track/Area 删除同样受影响，是 G 的显式例外，与 C1 的孤儿 `git clean` 属同一残余风险类；留给 follow-up #2862
+  （PDEATHSIG / child lifetime semantics）闭合。进程内登记只足以关闭同一进程内的窗口，本计划不新增持久登记或子进程机制。
+  若 C6 引入持久释放作业，那些作业行就是持久的进行中 teardown 目标，同片并入准入的自有位置集合（启动补跑之前
+  准入也必须看见它们）；这本身不证明旧子进程已退出或排空，不关闭上述例外。
 
 **G 之外（明确不承诺）。**
 
+- 已启动的 teardown 子进程在 server 崩溃后存活：重启时登记丢失，`none` 可准入其尚未删除的目标，随后仍被删除，风险时长无上界。
+  这是 G 的显式例外，与 C1 孤儿 `git clean` 同类，待 #2862（PDEATHSIG / child lifetime semantics）闭合；见上“崩溃”。
 - 准入之后，同一仓库的 attached-worktree track 仍在该仓库下创建自己的 worktree（可能落在 D 内）；删除它时移除那个 worktree
   根、管理目录与分支。这些只作用于新的自有位置，D 的其余文件不变。worktree 父的子 track 继承的来源目录本来就包含父的
   worktree，属同一情形。
@@ -291,7 +302,7 @@ sweep 捕获在删除事务内用既有行解码器读出该行的 `TrackWorkspa
 | 路径 | 今天的守卫 | `none` 的结果 |
 |---|---|---|
 | `recycle_track_workspace`（Track/Area 删除、area 补偿）、`workspace_allows_runtime_recovery` | 非 Managed → `Refused(NotManaged)` / 允许 | `match`：只有 `Managed` 回收；`none` 目录不在 managed 根内（准入保证），其他 track 的回收也到不了 |
-| `remove_track_worktree`、post-commit sweep 的 worktree 部分 | 该行 `worktree` 为 Some | `match`：只有 `Worktree` 删除；`none` 目录不在任何 worktree 根内 |
+| `remove_track_worktree`、post-commit sweep 的 worktree 部分 | 该行 `worktree` 为 Some | `match`：只有 `Worktree` 删除；准入排除 live 根与进程内登记的 teardown 目标；已启动子进程跨崩溃存活为 G 的显式例外（#2862） |
 | 10 分钟 clean | `CLOSED_TRACK_WORKTREES_SQL` 要求 `workspace_worktree_path IS NOT NULL` | 不入候选；runtime 侧对 typed 行 `match`；`git clean` 只在 worktree 根内 |
 | candidate / gate-run refs 删除 | 按该 track 全部 lease 行的 common dir | 新 `none` 行没有 lease（worker 被拒）→ 空；历史 lease 照旧删除 Neige 自有 refs（显式例外） |
 | area 删除 | 逐 track recycle + sweep；只删 managed 根下的空 area 目录 | 同上；managed 根之外不动 |
@@ -305,7 +316,8 @@ I1a 的 PR 另外按 `agent_cwd`/`path` 消费者扫一遍 kernel 侧写入（�
 
 **UI（I2）。** 选择文件夹后，新建 track 的 composer 出现两个选项：`Worktree (isolated)`（默认）与 `Directly in this folder`。
 后者与 track 头部/信息里的徽标都标为 **“Not isolated · no guarantees”**，说明 agent 直接改动这个目录（包括 Planner 的提交落在
-当前分支），Neige 不加锁、不监控、不记录证据、不交付；Neige 不会创建、清理或删除这个目录；task worker 不可用。准入被拒时
+当前分支），Neige 不加锁、不监控、不记录证据、不交付；在保证 G 的范围内，Neige 不会创建、清理或删除这个目录；
+明确提示已启动的删除子进程可在 server 崩溃后继续运行，重启后选择的目录仍可能被其删除（G 的例外，待 #2862 闭合）；task worker 不可用。准入被拒时
 显示服务端给出的冲突位置。复用现有 chip/选项组件与图标，遵循 `fe/AGENTS.md`；FE 只读 wire 的 `isolation` 字段，不再从
 `worktree` 是否存在推断。
 
@@ -349,7 +361,8 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
   `workspace_worktree_path`，不从路径布局推断；executor 的版本与持久形状取自其协议常量。
 - **永久成本**：没有 migration、新表或名单。新增一个等级要改：枚举、解码函数、workspace-runtime 中约 6 处穷举 `match`、
   请求枚举、FE 标签映射，每处一次，由编译器强制。新增一类自有位置要在重叠检查的位置集合中加一处；进行中的 teardown 目标是一个进程内登记表，只有删除路径登记、只有 `none` 准入
-  读取，新增删除路径时必须同样登记（由 sweep 的入参类型要求守卫来强制，不靠名单）。准入检查每次 attached
+  读取，新增删除路径时必须同样登记（由 sweep 的入参类型要求守卫来强制，不靠名单）。它只保护同一进程内的窗口，
+  已启动子进程跨崩溃存活留作 G 的显式例外（#2862），不加持久登记。准入检查每次 attached
   创建运行一次（一次 SQL 读与少量 canonicalize）。新测试放在既有 target 中，每个 CI workflow 运行一次；增删测试不改任何名单。
   C1 是进程内围栏，不新增持久状态，每次 Planner turn issuance 多一次通常无争用的 track 锁；C0 每片 envelope +1，持久合同常量只在持久形状改变时变化；C6 若实施会新增一类
   operation kind。删除 D1–D3、D6 会显著减少 launch-admission 计划中的永久面。
@@ -368,7 +381,7 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
 | boundary N2 / adversarial N2：C1 未命名锁与持有区间 | §3.2 命名 drive mutex 与 `track_delete_locks`，逐入口给出持有区间，不加第二套锁；残余崩溃风险无上界，交 Planner 接受 |
 | boundary N1（I1b 默认值） | Planner 接受省略 → worktree 作为唯一记录在案的兼容规则 |
 | adversarial coverage：Planner forge/`git_commit` 写入来源目录 | 列入 G 之外，UI 文案不写“Neige 不触碰” |
-| 计划评审第二轮 adversarial B1：删除提交后、post-commit sweep 前，live 行已消失而 worktree 仍会被删除 | §4.2 把进行中的 teardown 目标列为自有位置 (3)：workspace-runtime `sweep::TeardownTargets` 进程内登记表，删除在 COMMIT 前登记、sweep 执行完才移除，`none` 准入在持 SQLite 写锁的事务内读取快照；Area 删除与回滚补偿同理；崩溃只泄漏不删除，C6 的作业行若引入则并入集合；I1b 加“提交后、sweep 前准入 → 400，sweep 后可准入”的稳定反例 |
+| 计划评审第二轮 adversarial B1：删除提交后、post-commit sweep 前，live 行已消失而 worktree 仍会被删除 | §4.2 把进行中的 teardown 目标列为自有位置 (3)：workspace-runtime `sweep::TeardownTargets` 进程内登记表，删除在 COMMIT 前登记、sweep 执行完才移除，`none` 准入在持 SQLite 写锁的事务内读取快照；Area 删除与回滚补偿同理；未启动的 sweep 崩溃后不补跑、只泄漏，已启动子进程跨崩溃存活是 G 的显式例外（#2862），C6 的作业行若引入则并入集合但不证明旧子进程已排空；I1b 加“提交后、sweep 前准入 → 400，sweep 后可准入”的稳定反例 |
 | 第二轮 adversarial B2：既有 idle Planner runtime 的下一 turn 不经任何启动入口 | C1 表加入 `maybe_issue_turn` 一行（排队消息、自动观察、pending rewind、issuance 下的命令）：issuance 之前等待 track，持有到持久化 `turn_pending`，锁序 card → drive → track → issuance，shutdown 可中止等待；保留 idle 可清理政策并说明不选“Idle 即阻止”的代价；C1 验收加双向竞争与删除不死锁 |
 | 第二轮 N1：canonical 检查只是一次观察 | 外部路径/链接在准入期间与之后的变化都明确不防御；缺失根按最近已存在祖先的物理位置比较，不把 canonicalize 失败当不重叠 |
 | 第二轮 N2：`none` 与自有位置不重叠不是全局不变量 | §3.1/§4.2 改写为准入时排除 + 后来创建 worktree 的已接受例外，owned/owned 由 O1 保障 |
