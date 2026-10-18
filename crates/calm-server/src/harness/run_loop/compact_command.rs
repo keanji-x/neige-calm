@@ -53,7 +53,10 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
     *inner.state.lock().await = HarnessState::Compacting {
         since: Instant::now(),
     };
-    match persist_snapshot_inner(inner, historical_control::SnapshotWrite::Kernel(None)).await {
+    match persist_snapshot_inner(inner, historical_control::SnapshotWrite::Kernel(None))
+        .await
+        .and_then(historical_control::SnapshotWriteOutcome::into_written)
+    {
         Ok(true) => {}
         result => {
             *inner.state.lock().await = previous;

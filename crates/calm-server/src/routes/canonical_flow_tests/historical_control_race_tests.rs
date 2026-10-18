@@ -682,3 +682,39 @@ async fn repeated_human_stop_preserves_the_accepted_intent_after_ack_without_end
 async fn selected_human_stop_cannot_replace_an_intent_accepted_while_it_waited() {
     repeated_human_stop(true).await;
 }
+
+#[tokio::test]
+async fn human_stop_rechecks_accepted_interrupt_in_the_original_snapshot_transaction() {
+    let fx = HistoricalFixture::new(true).await;
+    let pause = arm(&fx, test_seams::HISTORICAL_CONTROL_BEFORE_COMMIT);
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    ));
+    entered(&pause).await;
+    // The original trusted cleanup owner really commits an interruption after
+    // Human preflight. It does not run through the paused public command.
+    fx.harness.interrupt("kernel_cleanup".into()).await.unwrap();
+    let accepted = fx.harness.snapshot().await.unwrap();
+    let facts = fx.harness.historical_control_facts_for_test().await;
+    let accepted_native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    pause.release.notify_one();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the original snapshot writer settles its selected request")
+        .unwrap();
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_facts = fx.harness.historical_control_facts_for_test().await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert_eq!(accepted.phase, HarnessPhaseTag::IssuingInterrupt);
+    assert_eq!(accepted_native.len(), 1);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stopped"], false);
+    assert_eq!(after, accepted);
+    assert_eq!(after_facts, facts, "the accepted deadline stays unchanged");
+    assert_eq!(native, accepted_native);
+}

@@ -19,19 +19,17 @@ pub(in crate::harness::run_loop) struct PreparedStop {
     state: HarnessState,
 }
 
-impl PreparedStop {
-    fn from_runtime(
-        inner: &Inner,
-        runtime: &WorkerSessionProjection,
-        requester: Requester,
-        reason: String,
-        requested_at_ms: i64,
-    ) -> Result<Option<Self>> {
-        if runtime.id != inner.worker_session_id || runtime.card_id != inner.card_id.as_str() {
-            return Err(CalmError::Conflict(
-                "original Stop names another runtime".into(),
-            ));
-        }
+/// Interpret the complete committed projection at both selection and commit.
+/// Its phase and accepted cause cannot be inferred from target IDs alone.
+struct RuntimeTarget<'a> {
+    phase: HarnessPhaseTag,
+    thread: &'a str,
+    turn: &'a str,
+    intent: Option<HarnessInterruptionIntent>,
+}
+
+impl<'a> RuntimeTarget<'a> {
+    fn read(runtime: &'a WorkerSessionProjection) -> Result<Option<Self>> {
         let value = runtime.handle_state_json.clone().ok_or_else(|| {
             CalmError::Conflict("original Stop has no recorded harness snapshot".into())
         })?;
@@ -64,24 +62,54 @@ impl PreparedStop {
             )
             || snapshot.last_thread_id.as_ref() != Some(thread)
             || snapshot.last_turn_id.as_ref() != Some(turn)
+            || snapshot
+                .interruption_intent
+                .as_ref()
+                .is_some_and(|intent| intent.turn_id() != turn)
         {
             return Err(CalmError::Conflict(
                 "original Stop target contradicts its recorded snapshot".into(),
             ));
         }
         Ok(Some(Self {
+            phase,
+            thread,
+            turn,
+            intent: snapshot.interruption_intent,
+        }))
+    }
+}
+
+impl PreparedStop {
+    fn from_runtime(
+        inner: &Inner,
+        runtime: &WorkerSessionProjection,
+        requester: Requester,
+        reason: String,
+        requested_at_ms: i64,
+    ) -> Result<Option<Self>> {
+        if runtime.id != inner.worker_session_id || runtime.card_id != inner.card_id.as_str() {
+            return Err(CalmError::Conflict(
+                "original Stop names another runtime".into(),
+            ));
+        }
+        let Some(target) = RuntimeTarget::read(runtime)? else {
+            return Ok(None);
+        };
+        let plan = Self {
             request: HarnessStopRequest {
                 session_id: runtime.id.clone(),
                 card_id: runtime.card_id.clone(),
                 track_id: inner.track_id.to_string(),
-                thread_id: thread.clone(),
-                turn_id: turn.clone(),
+                thread_id: target.thread.to_owned(),
+                turn_id: target.turn.to_owned(),
                 requested_at_ms,
             },
             requester,
-            state: interrupt_state(turn, &reason),
+            state: interrupt_state(target.turn, &reason),
             reason,
-        }))
+        };
+        Ok(plan.needs_commit(runtime, &target)?.then_some(plan))
     }
 
     pub(in crate::harness::run_loop) fn state(&self) -> &HarnessState {
@@ -91,10 +119,44 @@ impl PreparedStop {
         HarnessInterruptionIntent::Control(HarnessControlIntent::UserStopV1(self.request.clone()))
     }
 
-    pub(in crate::harness::run_loop) async fn require_tx(
+    fn needs_commit(
+        &self,
+        runtime: &WorkerSessionProjection,
+        target: &RuntimeTarget<'_>,
+    ) -> Result<bool> {
+        if runtime.id != self.request.session_id
+            || runtime.card_id != self.request.card_id
+            || target.thread != self.request.thread_id
+            || target.turn != self.request.turn_id
+        {
+            return Err(CalmError::Conflict(
+                "original Stop target is no longer current".into(),
+            ));
+        }
+        match &self.requester {
+            // A new human request cannot replace an accepted cause, extend its
+            // deadline or treat ACK without END as another native interrupt.
+            Requester::Human(_) => {
+                Ok(target.phase != HarnessPhaseTag::IssuingInterrupt && target.intent.is_none())
+            }
+            // An old receipt may finish its own exact promise after a crash.
+            // Neither an unrelated accepted cause nor an unproved interrupt
+            // phase grants that receipt a new Stop intent.
+            Requester::CommittedLegacy => match &target.intent {
+                Some(intent) if intent == &self.intent() => Ok(true),
+                None if target.phase == HarnessPhaseTag::TurnRunning => Ok(true),
+                _ => Err(CalmError::Conflict(
+                    "old interruption does not own the accepted Stop intent".into(),
+                )),
+            },
+        }
+    }
+
+    pub(in crate::harness::run_loop) async fn needs_commit_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        // Even a no-op is a new request and must pass current authorization.
         match &self.requester {
             Requester::Human(source) => source.require_card_tx(tx, &self.request.card_id).await?,
             Requester::CommittedLegacy => {
@@ -111,15 +173,10 @@ impl PreparedStop {
                 .ok_or_else(|| {
                     CalmError::Conflict("original Stop runtime is no longer current".into())
                 })?;
-        if current.id != self.request.session_id
-            || current.thread_id.as_deref() != Some(&self.request.thread_id)
-            || current.active_turn_id.as_deref() != Some(&self.request.turn_id)
-        {
-            return Err(CalmError::Conflict(
-                "original Stop target is no longer current".into(),
-            ));
-        }
-        Ok(())
+        let target = RuntimeTarget::read(&current)?.ok_or_else(|| {
+            CalmError::Conflict("original Stop target is no longer current".into())
+        })?;
+        self.needs_commit(&current, &target)
     }
 }
 
@@ -215,7 +272,13 @@ impl PlannerHarness {
         .ok_or_else(|| {
             CalmError::Conflict("old interruption has no original running target".into())
         })?;
-        self.stop_original(plan).await.map(|_| ())
+        if self.stop_original(plan).await? {
+            Ok(())
+        } else {
+            Err(CalmError::Conflict(
+                "old interruption was not accepted".into(),
+            ))
+        }
     }
 
     async fn stop_original(&self, plan: PreparedStop) -> Result<bool> {
@@ -253,7 +316,7 @@ pub(in crate::harness::run_loop) async fn handle(
 ) {
     let result = persist_snapshot_inner(inner, SnapshotWrite::Stop(plan.clone())).await;
     match result {
-        Ok(true) => {
+        Ok(SnapshotWriteOutcome::Written) => {
             #[cfg(feature = "fixtures")]
             crate::test_seams::pause_point(
                 crate::test_seams::HISTORICAL_STOP_COMMITTED,
@@ -278,7 +341,10 @@ pub(in crate::harness::run_loop) async fn handle(
                 let _ = answer.send(Ok(true));
             });
         }
-        Ok(false) => {
+        Ok(SnapshotWriteOutcome::StopAlreadyAccepted) => {
+            let _ = answer.send(Ok(false));
+        }
+        Ok(SnapshotWriteOutcome::Superseded) => {
             let _ = answer.send(Err(CalmError::Conflict(
                 "original Stop runtime was superseded".into(),
             )));

@@ -54,13 +54,33 @@ pub(super) enum SnapshotWrite {
     Stop(stop::PreparedStop),
 }
 
+pub(super) enum SnapshotWriteOutcome {
+    Written,
+    Superseded,
+    StopAlreadyAccepted,
+}
+
+impl SnapshotWriteOutcome {
+    /// Non-Stop callers retain their original CAS semantics. A Stop-only no-op
+    /// cannot masquerade as a retired Send or a successful kernel write.
+    pub(super) fn into_written(self) -> Result<bool> {
+        match self {
+            Self::Written => Ok(true),
+            Self::Superseded => Ok(false),
+            Self::StopAlreadyAccepted => Err(CalmError::Internal(
+                "Stop-only snapshot disposition reached another write intent".into(),
+            )),
+        }
+    }
+}
+
 impl SnapshotWrite {
-    pub(super) async fn require(&self, inner: &Arc<Inner>) -> Result<()> {
+    pub(super) async fn needs_write(&self, inner: &Arc<Inner>) -> Result<bool> {
         if matches!(
             self,
             Self::Kernel(_) | Self::Send(DurableSendBinding { source: None, .. })
         ) {
-            return Ok(());
+            return Ok(true);
         }
         let (write, card, worker) = (
             self.clone(),
@@ -68,35 +88,40 @@ impl SnapshotWrite {
             inner.worker_session_id.clone(),
         );
         write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-            Box::pin(async move { write.require_tx(tx, &card, &worker).await })
+            Box::pin(async move { write.needs_write_tx(tx, &card, &worker).await })
         })
         .await
     }
 
-    pub(super) async fn require_tx(
+    pub(super) async fn needs_write_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         card: &str,
         worker: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         match self {
-            Self::Kernel(_) => Ok(()),
+            Self::Kernel(_) => Ok(true),
             Self::Send(send) => {
                 if let Some(source) = &send.source {
                     source.require_card_tx(tx, card).await?;
                 }
                 // The original Send writer owns runtime CAS and its typed
                 // superseded refusal. A control must not pre-empt that owner.
-                Ok(())
+                Ok(true)
             }
-            Self::Mutation(admission) => admission.require_tx(tx, card, worker).await,
-            Self::Stop(plan) => plan.require_tx(tx).await,
+            Self::Mutation(admission) => {
+                admission.require_tx(tx, card, worker).await.map(|()| true)
+            }
+            Self::Stop(plan) => plan.needs_commit_tx(tx).await,
         }
     }
 }
 
 pub(super) async fn persist_mutation(inner: &Arc<Inner>, admission: &Admission) -> Result<()> {
-    if persist_snapshot_inner(inner, SnapshotWrite::Mutation(admission.clone())).await? {
+    if persist_snapshot_inner(inner, SnapshotWrite::Mutation(admission.clone()))
+        .await?
+        .into_written()?
+    {
         Ok(())
     } else {
         Err(CalmError::Conflict(

@@ -4380,7 +4380,7 @@ async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
     persist_snapshot_inner(inner, historical_control::SnapshotWrite::Kernel(None))
         .await
-        .map(|_| ())
+        .and_then(|outcome| outcome.into_written().map(|_| ()))
 }
 
 /// Persist a durable user send, and REFUSE it if the row was not written: the writer matches
@@ -4394,7 +4394,10 @@ async fn persist_snapshot_for_durable_send(
 ) -> Result<()> {
     let mut bind = DurableSendBinding::new(inner, key, entry_id);
     bind.source = source;
-    if persist_snapshot_inner(inner, historical_control::SnapshotWrite::Send(bind)).await? {
+    if persist_snapshot_inner(inner, historical_control::SnapshotWrite::Send(bind))
+        .await?
+        .into_written()?
+    {
         return Ok(());
     }
     Err(CalmError::PlannerHarnessRuntimeSuperseded(
@@ -4408,7 +4411,8 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
         inner,
         historical_control::SnapshotWrite::Kernel(issued_head.clone()),
     )
-    .await?;
+    .await?
+    .into_written()?;
     if issued_head.is_some() {
         *inner.last_seen_head.lock().await = issued_head;
     }
@@ -4439,14 +4443,13 @@ impl DurableSendBinding {
     }
 }
 
-/// Returns whether the runtime's own row was written. `false` means the write
-/// matched no row — the runtime is shutting down, or its row has left the
-/// active set — and a caller that promised durability must not report success.
-/// `send` is bound only when the row was written, in the same transaction.
+/// The one historical writer distinguishes a retired carrier from an already
+/// accepted Stop. A Send key is bound only with its actual snapshot write.
 async fn persist_snapshot_inner(
     inner: &Arc<Inner>,
     write: historical_control::SnapshotWrite,
-) -> Result<bool> {
+) -> Result<historical_control::SnapshotWriteOutcome> {
+    use historical_control::SnapshotWriteOutcome;
     #[cfg(feature = "fixtures")]
     let control = matches!(
         &write,
@@ -4454,7 +4457,7 @@ async fn persist_snapshot_inner(
     );
     let publish_after_adoption = matches!(&write, historical_control::SnapshotWrite::Stop(_));
     if inner.shutting_down.load(Ordering::SeqCst) {
-        return Ok(false);
+        return Ok(SnapshotWriteOutcome::Superseded);
     }
     if inner.inputs.canonical().is_some() {
         if matches!(
@@ -4472,7 +4475,9 @@ async fn persist_snapshot_inner(
     }
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
-    write.require(inner).await?;
+    if !write.needs_write(inner).await? {
+        return Ok(SnapshotWriteOutcome::StopAlreadyAccepted);
+    }
     flush_dropped_announcements(inner).await?;
     let mut snapshot = if let historical_control::SnapshotWrite::Stop(plan) = &write {
         let mut snapshot = snapshot_from_state(inner, plan.state()).await?;
@@ -4514,7 +4519,12 @@ async fn persist_snapshot_inner(
     }
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            write.require_tx(tx, &bound_card_id, &runtime_id).await?;
+            if !write
+                .needs_write_tx(tx, &bound_card_id, &runtime_id)
+                .await?
+            {
+                return Ok(SnapshotWriteOutcome::StopAlreadyAccepted);
+            }
             let written = crate::db::sqlite::session_set_handle_state_tx(
                 tx,
                 &runtime_id,
@@ -4538,12 +4548,16 @@ async fn persist_snapshot_inner(
                 active_turn_id.as_deref(),
             )
             .await?;
-            Ok(written)
+            Ok(if written {
+                SnapshotWriteOutcome::Written
+            } else {
+                SnapshotWriteOutcome::Superseded
+            })
         })
     })
     .await?;
 
-    if written && !publish_after_adoption {
+    if matches!(written, SnapshotWriteOutcome::Written) && !publish_after_adoption {
         publish_historical_phase(inner, new_phase).await;
     }
     Ok(written)
