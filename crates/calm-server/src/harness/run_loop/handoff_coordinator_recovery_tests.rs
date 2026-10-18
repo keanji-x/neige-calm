@@ -1,6 +1,6 @@
 //! Durable generation, interrupted admission and original-owner reconciliation.
 use super::completed_commit_tests::Fixture;
-use super::handoff_coordinator_tests::{active, entered, hook, progress, request, runtime};
+use super::handoff_coordinator_tests::{active, entered, progress, request, runtime, start_at};
 use crate::harness::handoff_pause::{PauseState, ReleaseOutcome};
 use crate::model::CardRole;
 use crate::operation::handoff_coordinator::{self as coordinator, CoordinatorResult};
@@ -53,14 +53,7 @@ async fn handoff_coordinator_recovered_owner_release_remains_health_unconfirmed(
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, registry) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "SourcePaused");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (_id, hook, drive) = start_at(&runtime, &request, "SourcePaused").await;
     entered(&hook).await;
     super::handoff_pause_fault_tests::restart(&mut a).await;
     registry.insert(request.source_session_id.clone(), a.harness.clone());
@@ -78,7 +71,7 @@ async fn handoff_coordinator_recovered_owner_release_remains_health_unconfirmed(
             ..
         }
     ));
-    assert_eq!(active(&a).await, 0);
+    assert_eq!(active(&a).await, 1);
     assert_eq!(a.daemon.started_thread_params_for_test().len(), 0);
     a.harness.shutdown().await.unwrap();
 }
@@ -89,14 +82,7 @@ async fn handoff_coordinator_interrupted_intent_before_send_uses_serial_absence_
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "SourceIntent");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (id, hook, drive) = start_at(&runtime, &request, "SourceIntent").await;
     entered(&hook).await;
     drive.abort();
     assert!(drive.await.unwrap_err().is_cancelled());
@@ -107,7 +93,10 @@ async fn handoff_coordinator_interrupted_intent_before_send_uses_serial_absence_
     runtime.apply_recovery(recovery).await.unwrap();
     assert_eq!(a.stored().await.handoff_pause, PauseState::Unpaused);
     assert_eq!(b.stored().await.handoff_pause, PauseState::Unpaused);
-    assert_eq!(progress(&a, &id).await["source_attempted"], false);
+    assert_eq!(
+        progress(&a, &id).await["claims"]["source"]["state"],
+        "untouched"
+    );
     assert_eq!(active(&a).await, 0);
 }
 
@@ -124,7 +113,7 @@ async fn handoff_coordinator_preparation_storage_failure_retries_original_genera
     sqlx::query(
         r#"
             CREATE TRIGGER fail_prepare BEFORE UPDATE OF tx_output_json ON operations WHEN
-            OLD.kind='handoff-coordinator' BEGIN SELECT RAISE(ABORT,'prepare storage unavailable');
+            OLD.kind='handoff-workflow' BEGIN SELECT RAISE(ABORT,'prepare storage unavailable');
             END
         "#,
     )
@@ -143,7 +132,7 @@ async fn handoff_coordinator_preparation_storage_failure_retries_original_genera
         .unwrap();
     coordinator::cancel(&runtime, &request).await.unwrap();
     let op = runtime
-        .find_by_kind_and_idempotency("handoff-coordinator", &request.key)
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
         .await
         .unwrap()
         .unwrap();
@@ -222,14 +211,7 @@ async fn handoff_coordinator_inflight_service_replay_returns_original_without_wa
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "SourcePaused");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (id, hook, drive) = start_at(&runtime, &request, "SourcePaused").await;
     entered(&hook).await;
     assert_eq!(
         coordinator::begin(&runtime, request.clone()).await.unwrap(),

@@ -118,10 +118,9 @@ current ownership. Adoption and exclusion use existing IMMEDIATE/lease CAS primi
 | Standalone committed legacy cutover without coordinator | A bounded explicit recovery-only adoption may create a single owner keyed by the Neige-owned original operation identity, using original immutable audit. It cannot acquire precommit authority or forget retired identities. |
 
 The implementation must enumerate these version transitions and test pending adoption,
-compensation, Unknown and already-proven resources. This document alone is not evidence
-that adoption, fencing or the single-owner runtime path has been implemented.
+compensation, Unknown and already-proven resources. The implementation and actual evidence are recorded below and in the verification document.
 
-Before implementation, reproduce through real begin, SQLite and original native stub:
+The original regressions reproduce through real begin, SQLite and the native stub:
 Reserved crash without cancellation followed by same-session busy/idle change;
 postcommit activation-prepare ABORT followed by storage repair/file reopen/original-key
 explicit retry; and committed Activated with lost answer/runner-tail error followed by
@@ -140,3 +139,90 @@ An ordinary new provider extends the existing profile/resource owner, not this w
 A new state changes its owning type and relevant tests; a new test changes only its
 module. No permanent test list or extra CI pass is added. Checkpoint counts and actual
 deletions must be measured from the final production path, not inferred from line count.
+
+## Implemented ownership and compatibility
+
+The version-two registered kind is `handoff-workflow`. The existing internal
+`handoff_coordinator::begin/query/cancel/retry` entry points now select this one
+operation. Both application and dispatcher registries remove the cutover and
+activation adapters; the declared non-task adapter contract removes those two kinds.
+No legacy adapter is retained in a fixture registry. `HandoffCutoverAdapter` is a
+transaction-domain test helper only, and the old activation module contains receipt
+compatibility and explicit legacy adoption, with no native executor or enqueue.
+
+Admission returns an in-memory `Admission::Original` or `Admission::Replay`. Only
+the original branch scopes the private, nonserializable `LiveAdmission` around the
+existing exact-target runner. The scope is task-local to that original future, is
+not inherited by spawned/background tasks, and is destroyed on cancellation.
+Neither a Reserved row, a new lease, retry nor adoption can construct that scope.
+The admission transaction also distinguishes a concurrent same-key replay before
+returning, so a race after the initial read cannot mint a second live capability.
+
+`handoff_state` owns the required-data sum type. Pausing and compensation
+carry independently typed original claim states. Committed owns configuration and
+consumed receipts; it reconstructs the transient cutover plan/result from the
+immutable input instead of storing both. Resources distinguish unprepared,
+prepared, sending, unknown, proven and blocked-with-a-typed-resume-state. The
+resource stage uses the existing briefing, snapshot CAS, native mint, credential,
+transport and full-row recovery/install functions. Technical storage diagnostics
+use the original operation's existing `last_error`; they do not replace progress.
+
+Migration 0172 preserves all prior migration bytes, original operation payloads and
+legacy activation evidence. It removes reservation `request_hash`, adds direct
+single-owner resource proof, and makes the domain terminal absorbing in SQL as well
+as in the reader/driver. Retired identity fences start at the identity checkpoint,
+including the interval before resource preparation. Pending activation accepts only
+the leased version-two owner, proven resources, original consumed claims,
+configuration and current SQL authority. There is no reverse coordinator JSON join.
+
+Version-one rows are decoded explicitly by legacy kind and contract. The migration
+parks nonterminal old journals as requiring explicit adoption. Adoption is an
+IMMEDIATE, original-scope/generation transaction: it preserves immutable input,
+claims, intent, configuration and proof, creates one recovery-only version-two
+owner, and records a write-once mapping that fences writes by the old drivers.
+An active reservation transfers only through that mapping. The original user
+idempotency key and payload hash select the new owner; its internal globally unique
+operation key is Neige-owned (`handoff-adoption:<owner-id>`), since the old keyed
+operation remains permanent. Standalone already-committed legacy cutovers use the
+bounded `legacy-cutover:<original-id>` recovery key. Historical Activated is read
+before current authority/readiness and never reinstalls an owner. Legacy native
+intent without proof remains Unknown. No general version migration framework was
+added, and none of the old three journals is driven after adoption.
+
+The removed mechanisms are independent cutover commit/query composition, activation
+submit/enqueue and retry owner, the claimed-tx-only runtime wrapper, PlanRecorded /
+CommitIntent / empty Committed rewrites, duplicate persisted plan/result, and
+reservation request hash. The retained SQL retirement/resource proof is immutable
+evidence; the thin reservation is cross-key exclusion and cancellation; generations
+remain necessary for pointer ABA; full snapshot data remains owned by its existing
+session row and recovery CAS. These are distinct from runner phases.
+
+The normal domain path has one initial Reserved output and nine leased checkpoints:
+two pause intents, two pause receipts, atomic Committed, prepared resources, native
+intent, bound proof, and Activated with reservation release. The prior path had the
+coordinator's initial output plus eight checkpoints, one separate cutover result,
+and activation's initial output plus three checkpoints (14 versus 10 domain output
+writes, three operation rows versus one). Generic runner phase writes are separate
+from these domain checkpoints. Fault/compensation paths retain necessary evidence
+and can write additional checkpoints. Verification records runtime measurement and
+actual logs rather than making the exact count another permanent CI invariant.
+
+An ordinary new provider still extends profile/resource/recovery owners. An ordinary
+new test changes its module, and a new domain state changes this sum type and its
+callers. No new permanent test-name list or CI pass was added. The inherited head
+schema inventory gains the new migration name; subsequent migrations keep its
+existing two-file maintenance contract. New responsibilities remain below 800 lines.
+
+The final state model narrows Finished to settled claims: untouched or an exact
+HealthyReleased receipt. Intent, paused and nonhealthy outcomes cannot deserialize
+as that terminal. Error read-back takes IMMEDIATE and reads the original row before
+compensation or forward work. Terminal reservation updates prove their result in
+that transaction, including ignored-write detection. A late exact original pause
+is fenced after settlement; invalid non-handoff JSON is left to its existing recovery
+contract, rather than being parsed or accepted as a pause by this domain trigger.
+The adoption write fence performs one indexed mapping lookup on operation updates;
+the pause fence reads JSON on handle-state updates and checks completed original
+claims for valid pause candidates. These costs enforce original-owner settlement,
+rather than adding another executor or approval journal. Generations still write
+only on their existing pointer/role/root/lifecycle transitions. Adding an ordinary
+provider or test does not extend an application-identity list in runtime.

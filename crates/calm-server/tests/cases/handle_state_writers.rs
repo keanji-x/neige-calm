@@ -146,7 +146,7 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
     // IMMEDIATE transaction, never the operation's older queue. Preparation uses
     // the existing any-runtime writer under complete source compare/read-back.
     (
-        "crates/calm-server/src/operation/handoff_activation_sql.rs::bind_resources",
+        "crates/calm-server/src/operation/handoff_activation_sql.rs::bind_resources_tx",
         "row",
     ),
     // The scheduler edits one unrelated key with `json_set` / `json_remove`.

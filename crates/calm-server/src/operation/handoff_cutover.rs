@@ -1,11 +1,12 @@
 //! Internal user-audited identity cutover. No provider allocation or external ingress.
+#[cfg(test)]
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{
-    Operation, OperationKey, OperationOutcome, OperationRuntime, Tx, TxOnlyAdapter, TxOutput,
-};
+#[cfg(test)]
+use super::{Operation, OperationKey, OperationOutcome, OperationRuntime, TxOnlyAdapter};
+use super::{Tx, TxOutput};
 use crate::error::{CalmError, Result};
 use crate::harness::handoff_pause::PauseReceipt;
 use crate::ids::{CardId, TrackId};
@@ -122,6 +123,7 @@ pub(crate) async fn precheck(
         reason = "internal service for the later user-authorized entry point"
     )
 )]
+#[cfg(test)]
 pub(crate) async fn commit(
     runtime: &OperationRuntime,
     cache: &crate::card_role_cache::CardRoleCache,
@@ -133,7 +135,23 @@ pub(crate) async fn commit(
         idempotency_key: Some(plan.scope.plan_id.clone()),
         payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload)?,
     };
-    let result = runtime.commit_keyed(HANDOFF_CUTOVER, key, payload).await?;
+    let result = super::tx_only::commit_tx_only(
+        &runtime.repo.sqlite_pool(),
+        &HandoffCutoverAdapter,
+        key,
+        payload,
+    )
+    .await?;
+    let id = match result {
+        super::tx_only::KeyedCommit::Replay(id) => id,
+        super::tx_only::KeyedCommit::Committed { result, .. } => result.op_id,
+    };
+    let result = runtime
+        .wait_for_receipt(&id, std::time::Duration::ZERO)
+        .await?;
+    let super::OperationReceipt::Settled(result) = result else {
+        return Err(conflict());
+    };
     let OperationOutcome::Succeeded { result } = result.outcome else {
         return Err(conflict());
     };
@@ -142,29 +160,8 @@ pub(crate) async fn commit(
     Ok(result)
 }
 
-/// Compose the existing atomic keyed primitive while the outer OperationRuntime owns drive.
-/// It has no external side effects and must never acquire a second runtime drive lock.
-pub(super) async fn commit_recorded(
-    pool: &sqlx::SqlitePool,
-    cache: &crate::card_role_cache::CardRoleCache,
-    plan: ValidatedCutoverPlan,
-    owner: &Operation,
-) -> Result<CutoverResult> {
-    let payload = serde_json::to_value(&plan)?;
-    let key = OperationKey {
-        operation_key: plan.scope.plan_id.clone(),
-        idempotency_key: Some(plan.scope.plan_id.clone()),
-        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload)?,
-    };
-    super::tx_only::commit_tx_only_claimed(pool, &HandoffCutoverAdapter, key, payload, owner)
-        .await?;
-    let result = query_recorded(pool, &plan).await?.ok_or_else(conflict)?;
-    publish_cache(pool, cache, &plan).await?;
-    Ok(result)
-}
-
 // Never publish a replay's old grant over a later SQL owner.
-async fn publish_cache(
+pub(super) async fn publish_cache(
     pool: &sqlx::SqlitePool,
     cache: &crate::card_role_cache::CardRoleCache,
     plan: &ValidatedCutoverPlan,
@@ -190,28 +187,39 @@ pub(super) async fn query_recorded(
     plan: &ValidatedCutoverPlan,
 ) -> Result<Option<CutoverResult>> {
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let row: Option<(String,String,String,Option<String>)> = sqlx::query_as(
-        "SELECT phase,payload_hash,payload_json,tx_output_json FROM operations WHERE kind=?1 AND idempotency_key=?2")
-        .bind(HANDOFF_CUTOVER).bind(&plan.scope.plan_id).fetch_optional(&mut *tx).await?;
-    let Some((phase, hash, payload, output)) = row else {
-        tx.rollback().await?;
+    let result = query_recorded_tx(&mut tx, plan).await?;
+    tx.rollback().await?;
+    Ok(result)
+}
+
+pub(super) async fn query_recorded_tx(
+    tx: &mut Tx<'_>,
+    plan: &ValidatedCutoverPlan,
+) -> Result<Option<CutoverResult>> {
+    let row:Option<(String,String,String,Option<String>)>=sqlx::query_as("SELECT id,payload_hash,payload_json,tx_output_json FROM operations WHERE kind=?1 AND idempotency_key=?2")
+        .bind(HANDOFF_CUTOVER).bind(&plan.scope.plan_id).fetch_optional(&mut **tx).await?;
+    let Some((id, hash, payload, output)) = row else {
         return Ok(None);
     };
     let expected = serde_json::to_value(plan)?;
-    if phase != "succeeded"
-        || serde_json::from_str::<Value>(&payload)? != expected
+    if serde_json::from_str::<Value>(&payload)? != expected
         || hash != crate::routes::idempotency_key::stable_payload_hash(&expected)?
     {
         return Err(conflict());
     }
     let output: TxOutput = serde_json::from_str(&output.ok_or_else(conflict)?)?;
-    let result = serde_json::from_value(output.result)?;
-    tx.rollback().await?;
+    let result: CutoverResult = serde_json::from_value(output.result)?;
+    let CutoverResult::CutoverCommittedPendingActivation { operation_id, .. } = &result;
+    if *operation_id != id {
+        return Err(conflict());
+    }
     Ok(Some(result))
 }
 
+#[cfg(test)]
 pub(crate) struct HandoffCutoverAdapter;
 
+#[cfg(test)]
 #[async_trait]
 impl TxOnlyAdapter for HandoffCutoverAdapter {
     fn kind(&self) -> &'static str {

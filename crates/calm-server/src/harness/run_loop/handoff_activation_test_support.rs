@@ -3,7 +3,7 @@ use super::completed_commit_tests::Fixture;
 use super::*;
 use crate::db::prelude::*;
 use crate::harness::HarnessRegistry;
-use crate::operation::handoff_activation::{self, ActivationResult};
+use crate::operation::handoff_activation::ActivationResult;
 use crate::operation::{OperationReceipt, OperationRuntime};
 
 pub(super) fn runtime(a: &Fixture) -> (OperationRuntime, HarnessRegistry) {
@@ -50,16 +50,13 @@ pub(super) fn runtime_with_repo(
     );
     OperationRuntime::new_unchecked(
         operations,
-        vec![
-            Arc::new(handoff_activation::HandoffActivationAdapter { start }),
-            Arc::new(crate::operation::handoff_cutover::HandoffCutoverAdapter),
-            Arc::new(
-                crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
-                    registry: registry.clone(),
-                    cache: a.harness.inner.card_role_cache.clone(),
-                },
-            ),
-        ],
+        vec![Arc::new(
+            crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                start: start.clone(),
+                registry: registry.clone(),
+                cache: a.harness.inner.card_role_cache.clone(),
+            },
+        )],
         events,
         completion,
         ctx,
@@ -99,7 +96,7 @@ pub(super) async fn stored(a: &Fixture, session: &str) -> HarnessSnapshot {
 pub(super) async fn wait_for_resource_intent(a: &Fixture) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let count: i64 = sqlx::query_scalar(concat!("SELECT count(*) FROM operations WHERE kind='handoff-activation' AND json_extract(tx_output_json,","'$.result.state')='resource_request_recorded'"))
+            let count: i64 = sqlx::query_scalar(concat!("SELECT count(*) FROM operations WHERE kind='handoff-workflow' AND json_extract(tx_output_json,","'$.result.resources.state')='native_intent'"))
                 .fetch_one(a.repo.pool()).await.unwrap();
             if count == 1 { break; }
             tokio::time::sleep(Duration::from_millis(10)).await;

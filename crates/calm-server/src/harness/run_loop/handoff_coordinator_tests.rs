@@ -59,7 +59,7 @@ async fn handoff_coordinator_is_declared_in_the_production_operation_contract() 
     assert!(
         runtime
             .registered_adapter_kinds()
-            .any(|kind| kind == "handoff-coordinator")
+            .any(|kind| kind == "handoff-workflow")
     );
 }
 
@@ -240,14 +240,7 @@ async fn handoff_coordinator_second_pause_busy_releases_only_exact_first_claim()
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "SourcePaused");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (id, hook, drive) = start_at(&runtime, &request, "SourcePaused").await;
     entered(&hook).await;
     b.enqueue(vec![QueueEntry::user_message("busy".into(), None, vec![])])
         .await;
@@ -266,8 +259,8 @@ async fn handoff_coordinator_second_pause_busy_releases_only_exact_first_claim()
     ));
     assert_eq!(b.stored().await.handoff_pause, PauseState::Unpaused);
     let p = progress(&a, &id).await;
-    assert_eq!(p["source_attempted"], true);
-    assert_eq!(p["target_attempted"], false);
+    assert_eq!(p["claims"]["source"]["state"], "released");
+    assert_eq!(p["claims"]["target"]["state"], "untouched");
     assert_eq!(active(&a).await, 0);
     assert_eq!(a.daemon.started_thread_params_for_test().len(), 0);
 }
@@ -279,21 +272,13 @@ async fn handoff_coordinator_cancel_at_each_precommit_checkpoint_compensates_ori
         "SourcePaused",
         "TargetIntent",
         "BothPaused",
-        "PlanRecorded",
-        "CommitIntent",
+        "BeforeCommit",
     ] {
         let a = Fixture::new().await;
         let b = a.sibling(CardRole::Assistant).await;
         let (runtime, _) = runtime(&a, &b);
         let request = request(&a, &b).await;
-        let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-            .await
-            .unwrap();
-        let hook = hook(&id, stage);
-        let drive = {
-            let runtime = runtime.clone();
-            tokio::spawn(async move { runtime.drive().await.unwrap() })
-        };
+        let (_id, hook, drive) = start_at(&runtime, &request, stage).await;
         entered(&hook).await;
         coordinator::cancel(&runtime, &request).await.unwrap();
         hook.release.notify_one();
@@ -318,23 +303,18 @@ async fn handoff_coordinator_intents_are_durable_before_any_real_pause() {
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
+    let (id, admission, drive) = start_at(&runtime, &request, "Reserved").await;
     let hook = crate::test_seams::PausePoint::default();
     crate::test_seams::install_pause_for_test(
         crate::test_seams::HANDOFF_PAUSE_BEFORE_WRITE,
         a.harness.inner.card_id.as_str(),
         hook.clone(),
     );
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    admission.release.notify_one();
     entered(&hook).await;
     let p = progress(&a, &id).await;
-    assert_eq!(p["stage"], "source_intent");
-    assert_eq!(p["source_attempted"], true);
+    assert_eq!(p["state"], "pausing");
+    assert_eq!(p["claims"]["source"]["state"], "intent");
     let payload: String = sqlx::query_scalar("SELECT payload_json FROM operations WHERE id=?1")
         .bind(&id)
         .fetch_one(a.repo.pool())
@@ -352,61 +332,39 @@ async fn handoff_coordinator_intents_are_durable_before_any_real_pause() {
 }
 
 #[tokio::test]
-async fn handoff_coordinator_cutover_commit_reply_failure_queries_success_without_release() {
+async fn handoff_coordinator_identity_checkpoint_abort_rolls_back_identity_and_compensates() {
     let a = Fixture::new().await;
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    // Fail only the coordinator's postcommit checkpoint. Atomic cutover remains committed.
-    sqlx::query(
-        r#"
-            CREATE TRIGGER fail_coordinator_committed BEFORE UPDATE OF tx_output_json ON operations
-            WHEN OLD.kind='handoff-coordinator' AND
-            json_extract(NEW.tx_output_json,'$.result.stage')='committed' BEGIN SELECT
-            RAISE(ABORT,'lost postcommit checkpoint'); END
-        "#,
-    )
-    .execute(a.repo.pool())
-    .await
-    .unwrap();
-    runtime.drive().await.unwrap();
-    for f in [&a, &b] {
-        assert!(matches!(
-            super::handoff_activation_test_support::stored(f, &f.harness.inner.worker_session_id)
-                .await
-                .handoff_pause,
-            PauseState::ConsumedByHandoff { .. }
-        ));
-    }
-    assert_eq!(
-        progress(&a, &id).await["stage"],
-        "commit_intent",
-        "a possibly committed cutover never enters compensation"
-    );
-    assert_eq!(active(&a).await, 1);
-    sqlx::query("DROP TRIGGER fail_coordinator_committed")
-        .execute(a.repo.pool())
-        .await
-        .unwrap();
-    let OperationReceipt::AwaitingRetry { attempt, .. } =
-        runtime.observe_operation(&id).await.unwrap()
-    else {
-        panic!("recovery journal required")
-    };
-    coordinator::retry(&runtime, &request, attempt)
-        .await
-        .unwrap();
+    sqlx::query(r#"
+        CREATE TRIGGER fail_identity_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN
+        OLD.kind='handoff-workflow' AND json_extract(NEW.tx_output_json,'$.result.state')='committed'
+        BEGIN SELECT RAISE(ABORT,'atomic checkpoint unavailable'); END
+        "#)
+        .execute(a.repo.pool()).await.unwrap();
+    coordinator::begin(&runtime, request.clone()).await.unwrap();
     assert!(matches!(
         coordinator::query(&runtime, &request).await.unwrap(),
-        CoordinatorResult::Forward {
-            activation: ActivationResult::Activated { .. },
-            ..
-        }
+        CoordinatorResult::CancelledOrRefused
     ));
+    for (f, role) in [(&a, "planner"), (&b, "assistant")] {
+        let actual: String = sqlx::query_scalar("SELECT role FROM cards WHERE id=?1")
+            .bind(f.harness.inner.card_id.as_str())
+            .fetch_one(a.repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(actual, role);
+        assert!(matches!(
+            f.stored().await.handoff_pause,
+            PauseState::Released {
+                outcome: ReleaseOutcome::HealthyReleased,
+                ..
+            }
+        ));
+    }
     assert_eq!(active(&a).await, 0);
+    assert_eq!(a.daemon.started_thread_params_for_test().len(), 0);
 }
 
 #[tokio::test]
@@ -416,19 +374,14 @@ async fn handoff_coordinator_dropped_pause_answer_recovers_original_claim_withou
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
+    let (id, admission, drive) = start_at(&runtime, &request, "Reserved").await;
     let hook = crate::test_seams::PausePoint::default();
     crate::test_seams::install_pause_for_test(
         crate::test_seams::HANDOFF_PAUSE_BEFORE_WRITE,
         a.harness.inner.card_id.as_str(),
         hook.clone(),
     );
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    admission.release.notify_one();
     entered(&hook).await;
     drive.abort();
     assert!(drive.await.unwrap_err().is_cancelled());
@@ -452,11 +405,11 @@ async fn handoff_coordinator_dropped_pause_answer_recovers_original_claim_withou
         }
     );
     assert_eq!(
-        progress(&a, &id).await["source_receipt"],
+        progress(&a, &id).await["claims"]["source"]["receipt"],
         serde_json::to_value(&receipt).unwrap()
     );
     assert_eq!(
-        progress(&a, &id).await["source_release"]["kind"],
+        progress(&a, &id).await["claims"]["source"]["outcome"]["kind"],
         "healthy_released"
     );
     assert_eq!(b.stored().await.handoff_pause, PauseState::Unpaused);
@@ -471,14 +424,7 @@ async fn handoff_coordinator_faulted_release_is_needs_recovery_not_healthy() {
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "SourcePaused");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (_id, hook, drive) = start_at(&runtime, &request, "SourcePaused").await;
     entered(&hook).await;
     super::handoff_pause_fault_tests::error(&a).await;
     coordinator::cancel(&runtime, &request).await.unwrap();
@@ -490,7 +436,7 @@ async fn handoff_coordinator_faulted_release_is_needs_recovery_not_healthy() {
         panic!("fault cannot prove Healthy")
     };
     assert!(reason.contains("recovery"));
-    assert_eq!(active(&a).await, 0);
+    assert_eq!(active(&a).await, 1);
     assert!(matches!(
         a.stored().await.handoff_pause,
         PauseState::Released {
@@ -514,14 +460,7 @@ async fn handoff_coordinator_release_storage_failure_reopens_original_progress_a
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, registry) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "SourcePaused");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (id, hook, drive) = start_at(&runtime, &request, "SourcePaused").await;
     entered(&hook).await;
     sqlx::query(
         r#"
@@ -577,14 +516,7 @@ async fn handoff_coordinator_activation_hold_requires_explicit_original_generati
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "Committed");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (_id, hook, drive) = start_at(&runtime, &request, "Committed").await;
     entered(&hook).await;
     // The real provider owner holds authentication after durable cutover.
     a.daemon
@@ -609,10 +541,14 @@ async fn handoff_coordinator_activation_hold_requires_explicit_original_generati
         ..
     } = *cutover;
     let op = runtime
-        .find_by_kind_and_idempotency("handoff-activation", &operation_id)
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        operation_id, op.id,
+        "resource retry belongs to the original handoff operation"
+    );
     assert_eq!(a.daemon.started_thread_params_for_test().len(), 0);
     a.daemon
         .emit_notification_for_test(crate::codex_appserver::Notification::Other {
@@ -621,7 +557,7 @@ async fn handoff_coordinator_activation_hold_requires_explicit_original_generati
         });
     coordinator::begin(&runtime, request.clone()).await.unwrap();
     assert_eq!(a.daemon.started_thread_params_for_test().len(), 0);
-    coordinator::retry_activation(&runtime, &request, op.attempt)
+    coordinator::retry(&runtime, &request, op.attempt)
         .await
         .unwrap();
     assert!(matches!(
@@ -640,19 +576,12 @@ async fn handoff_coordinator_checkpoint_storage_failure_keeps_journal_for_genera
     let b = a.sibling(CardRole::Assistant).await;
     let (runtime, _) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-        .await
-        .unwrap();
-    let hook = hook(&id, "SourcePaused");
-    let drive = {
-        let runtime = runtime.clone();
-        tokio::spawn(async move { runtime.drive().await.unwrap() })
-    };
+    let (id, hook, drive) = start_at(&runtime, &request, "SourcePaused").await;
     entered(&hook).await;
     sqlx::query(
         r#"
             CREATE TRIGGER fail_coordinator_progress BEFORE UPDATE OF tx_output_json ON operations
-            WHEN OLD.kind='handoff-coordinator' BEGIN SELECT
+            WHEN OLD.kind='handoff-workflow' BEGIN SELECT
             RAISE(ABORT,'coordinator progress unavailable'); END
         "#,
     )
@@ -674,7 +603,7 @@ async fn handoff_coordinator_checkpoint_storage_failure_keeps_journal_for_genera
         .await
         .unwrap();
     let op = runtime
-        .find_by_kind_and_idempotency("handoff-coordinator", &request.key)
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
         .await
         .unwrap()
         .unwrap();
@@ -682,8 +611,8 @@ async fn handoff_coordinator_checkpoint_storage_failure_keeps_journal_for_genera
         .await
         .unwrap();
     assert_eq!(
-        progress(&a, &id).await["source_receipt"],
-        original["source_receipt"]
+        progress(&a, &id).await["claims"]["source"]["receipt"],
+        original["claims"]["source"]["receipt"]
     );
     assert!(matches!(
         a.stored().await.handoff_pause,
@@ -698,19 +627,12 @@ async fn handoff_coordinator_checkpoint_storage_failure_keeps_journal_for_genera
 #[tokio::test]
 async fn handoff_coordinator_system_notifications_survive_pause_cutover_and_activation_boundaries()
 {
-    for stage in ["SourcePaused", "CommitIntent", "Committed"] {
+    for stage in ["SourcePaused", "BeforeCommit", "Committed"] {
         let a = Fixture::new().await;
         let b = a.sibling(CardRole::Assistant).await;
         let (runtime, registry) = runtime(&a, &b);
         let request = request(&a, &b).await;
-        let id = coordinator::admit_for_test(a.repo.pool(), request.clone())
-            .await
-            .unwrap();
-        let hook = hook(&id, stage);
-        let drive = {
-            let runtime = runtime.clone();
-            tokio::spawn(async move { runtime.drive().await.unwrap() })
-        };
+        let (_id, hook, drive) = start_at(&runtime, &request, stage).await;
         entered(&hook).await;
         let event = Event::TrackWakeRequested {
             track_id: request.track_id.clone(),
@@ -762,4 +684,42 @@ async fn handoff_coordinator_system_notifications_survive_pause_cutover_and_acti
             .await
             .unwrap();
     }
+}
+
+// Scheduling uses the real original begin future, including its nonserializable capability.
+pub(super) async fn start_at(
+    runtime: &Arc<OperationRuntime>,
+    request: &coordinator::UserHandoffRequest,
+    stage: &str,
+) -> (
+    String,
+    crate::test_seams::PausePoint,
+    tokio::task::JoinHandle<()>,
+) {
+    let admitted = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "handoff-begin-admitted",
+        &request.key,
+        admitted.clone(),
+    );
+    let drive = {
+        let runtime = runtime.clone();
+        let request = request.clone();
+        tokio::spawn(async move {
+            coordinator::begin(&runtime, request).await.unwrap();
+        })
+    };
+    entered(&admitted).await;
+    let id = runtime
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    if stage == "Reserved" {
+        return (id, admitted, drive);
+    }
+    let hook = hook(&id, stage);
+    admitted.release.notify_one();
+    (id, hook, drive)
 }

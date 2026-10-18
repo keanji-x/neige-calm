@@ -1,4 +1,4 @@
-//! Exercise the actual registered transaction operation, never a copy of the SQL policy.
+//! Exercise the retained identity SQL domain helper and the single production registry.
 use super::completed_commit_tests::Fixture;
 use super::handoff_pause_tests::{request, system};
 use super::*;
@@ -35,7 +35,7 @@ pub(super) fn runtime_for_repo(repo: Arc<crate::db::sqlite::SqlxRepo>) -> Arc<Op
         state
             .operation_runtime
             .registered_adapter_kinds()
-            .any(|kind| kind == "handoff-cutover")
+            .any(|kind| kind == "handoff-workflow")
     );
     state.operation_runtime.clone()
 }
@@ -765,7 +765,7 @@ async fn handoff_cutover_competing_operation_has_one_identity_winner() {
 }
 
 #[tokio::test]
-async fn handoff_activation_registered_operation_accepts_only_original_committed_cutover() {
+async fn handoff_activation_old_submit_is_retired_and_requires_explicit_original_adoption() {
     let a = Fixture::new().await;
     let b = a.sibling(CardRole::Assistant).await;
     let plan = plan(&a, &b).await;
@@ -783,7 +783,7 @@ async fn handoff_activation_registered_operation_accepts_only_original_committed
         runtime
             .submit("handoff-activation", key, payload)
             .await
-            .is_ok(),
-        "the registered internal operation must accept its original persisted cutover"
+            .is_err(),
+        "retired child operations cannot be submitted through the normal registry"
     );
 }

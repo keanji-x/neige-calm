@@ -68,7 +68,7 @@ async fn terminal_track_can_close_and_delete(a: &Fixture) {
 }
 
 #[tokio::test]
-async fn handoff_workflow_reserved_restart_without_cancel_never_reacquires_live_approval() {
+async fn handoff_coordinator_reserved_restart_without_cancel_never_reacquires_live_approval() {
     let dir = tempfile::tempdir().unwrap();
     let url = file_url(&dir);
     let a = Fixture::for_role_at(CardRole::Planner, &url).await;
@@ -84,7 +84,7 @@ async fn handoff_workflow_reserved_restart_without_cancel_never_reacquires_live_
     };
     entered(&hook).await;
     let op = original
-        .find_by_kind_and_idempotency("handoff-coordinator", &request.key)
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
         .await
         .unwrap()
         .unwrap();
@@ -122,7 +122,7 @@ async fn handoff_workflow_reserved_restart_without_cancel_never_reacquires_live_
         .unwrap();
     restored.drive().await.unwrap();
     let after = restored
-        .find_by_kind_and_idempotency("handoff-coordinator", &request.key)
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
         .await
         .unwrap()
         .unwrap();
@@ -139,19 +139,36 @@ async fn handoff_workflow_reserved_restart_without_cancel_never_reacquires_live_
         coordinator::query(&restored, &request).await.unwrap(),
         CoordinatorResult::CancelledOrRefused
     ));
+    // Even a delayed original command after the serial absence barrier cannot recreate
+    // the settled claim. This is the same original request, not a fresh approval.
+    let late: crate::harness::handoff_pause::PauseRequest =
+        serde_json::from_value(input["source"].clone()).unwrap();
+    assert!(a.harness.pause_for_handoff(late).await.is_err());
+    assert_eq!(snapshot(&a).await.handoff_pause, PauseState::Unpaused);
     terminal_track_can_close_and_delete(&a).await;
 }
 
 #[tokio::test]
-async fn handoff_workflow_committed_prepare_abort_reopens_and_explicitly_forwards_original_key() {
+async fn handoff_coordinator_committed_prepare_abort_reopens_and_explicitly_forwards_original_key()
+{
     let dir = tempfile::tempdir().unwrap();
     let url = file_url(&dir);
     let a = Fixture::for_role_at(CardRole::Planner, &url).await;
     let b = a.sibling(CardRole::Assistant).await;
     let (original, registry) = runtime(&a, &b);
     let request = request(&a, &b).await;
-    sqlx::query("CREATE TRIGGER fail_activation_prepare BEFORE UPDATE OF tx_output_json ON operations WHEN OLD.kind='handoff-activation' AND OLD.phase='pending' BEGIN SELECT RAISE(ABORT,'activation prepare storage unavailable'); END")
-        .execute(a.repo.pool()).await.unwrap();
+    sqlx::query(
+        r#"
+        CREATE TRIGGER fail_activation_prepare BEFORE UPDATE OF tx_output_json ON operations WHEN
+        OLD.kind='handoff-workflow' AND
+        json_extract(OLD.tx_output_json,'$.result.resources.state')='unprepared' AND
+        json_extract(NEW.tx_output_json,'$.result.resources.state')='prepared' BEGIN SELECT
+        RAISE(ABORT,'activation prepare storage unavailable'); END
+        "#,
+    )
+    .execute(a.repo.pool())
+    .await
+    .unwrap();
     let id = coordinator::begin(&original, request.clone())
         .await
         .unwrap();
@@ -177,12 +194,20 @@ async fn handoff_workflow_committed_prepare_abort_reopens_and_explicitly_forward
         ..
     } = *cutover;
     let child = original
-        .find_by_kind_and_idempotency("handoff-activation", &operation_id)
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(child.phase, crate::operation::Phase::Stuck { .. }));
-    assert!(child.tx_output.is_none());
+    assert!(matches!(
+        child.phase,
+        crate::operation::Phase::AwaitingRetry { .. }
+    ));
+    assert_eq!(
+        child.tx_output.as_ref().unwrap().result["resources"]["state"],
+        "unprepared"
+    );
+    assert_eq!(child.id, operation_id);
+    assert_single_owner(&a).await;
     reserved_track_cannot_close_or_delete(&a).await;
     drop(original);
     let reopened = Arc::new(crate::db::sqlite::SqlxRepo::open(&url).await.unwrap());
@@ -195,7 +220,7 @@ async fn handoff_workflow_committed_prepare_abort_reopens_and_explicitly_forward
         .apply_recovery(restored.recover_on_boot().await.unwrap())
         .await
         .unwrap();
-    coordinator::retry_activation(&restored, &request, child.attempt)
+    coordinator::retry(&restored, &request, child.attempt)
         .await
         .unwrap();
     assert_eq!(
@@ -229,7 +254,7 @@ async fn handoff_workflow_committed_prepare_abort_reopens_and_explicitly_forward
 }
 
 #[tokio::test]
-async fn handoff_workflow_activated_lost_answer_remains_absorbing_after_hold_and_recovery() {
+async fn handoff_coordinator_activated_lost_answer_remains_absorbing_after_hold_and_recovery() {
     let dir = tempfile::tempdir().unwrap();
     let url = file_url(&dir);
     let a = Fixture::for_role_at(CardRole::Planner, &url).await;
@@ -272,7 +297,7 @@ async fn handoff_workflow_activated_lost_answer_remains_absorbing_after_hold_and
         "terminal and reservation committed together"
     );
     let child = original
-        .find_by_kind_and_idempotency("handoff-activation", &operation_id)
+        .find_by_kind_and_idempotency("handoff-workflow", &request.key)
         .await
         .unwrap()
         .unwrap();
@@ -280,6 +305,8 @@ async fn handoff_workflow_activated_lost_answer_remains_absorbing_after_hold_and
         child.phase,
         crate::operation::Phase::AppServerInteract { .. }
     ));
+    assert_eq!(child.id, operation_id);
+    assert_single_owner(&a).await;
     let source_claim = snapshot(&a).await.handoff_pause;
     let target_claim = snapshot(&b).await.handoff_pause;
     let installed = registry.get(&planner_session_id).unwrap();
@@ -300,7 +327,7 @@ async fn handoff_workflow_activated_lost_answer_remains_absorbing_after_hold_and
         .apply_recovery(restored.recover_on_boot().await.unwrap())
         .await
         .unwrap();
-    coordinator::retry_activation(&restored, &request, child.attempt)
+    coordinator::retry(&restored, &request, child.attempt)
         .await
         .unwrap();
     let after = coordinator::query(&restored, &request).await.unwrap();
@@ -334,4 +361,13 @@ async fn handoff_workflow_activated_lost_answer_remains_absorbing_after_hold_and
         .await
         .unwrap();
     terminal_track_can_close_and_delete(&a).await;
+}
+
+async fn assert_single_owner(a: &Fixture) {
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM operations WHERE kind LIKE 'handoff-%'")
+            .fetch_all(a.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(kinds, vec!["handoff-workflow"]);
 }

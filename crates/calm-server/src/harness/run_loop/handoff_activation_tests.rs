@@ -484,12 +484,15 @@ async fn handoff_activation_original_unknown_survives_lost_reply_and_actual_file
     let operations = crate::operation::SqlxOperationRepo::new(repo.pool().clone());
     use crate::operation::OperationRepo;
     let key = crate::operation::OperationKey {
-        operation_key: cutover.clone(),
-        idempotency_key: Some(cutover),
+        operation_key: format!("legacy-cutover:{cutover}"),
+        idempotency_key: Some(format!("legacy-cutover:{cutover}")),
         payload_hash: String::new(),
     };
     let op = operations
-        .find_by_idempotency_key(handoff_activation::HANDOFF_ACTIVATION, &key)
+        .find_by_idempotency_key(
+            crate::operation::handoff_coordinator::HANDOFF_COORDINATOR,
+            &key,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -498,8 +501,14 @@ async fn handoff_activation_original_unknown_survives_lost_reply_and_actual_file
         crate::operation::Phase::AwaitingRetry { .. }
     ));
     assert!(matches!(
-        serde_json::from_value::<ActivationResult>(op.tx_output.unwrap().result).unwrap(),
-        ActivationResult::Unknown { .. }
+        serde_json::from_value::<crate::operation::handoff_coordinator::Progress>(
+            op.tx_output.unwrap().result
+        )
+        .unwrap(),
+        crate::operation::handoff_coordinator::Progress::Committed {
+            resources: crate::operation::handoff_coordinator::Resources::Unknown { .. },
+            ..
+        }
     ));
     let row = repo
         .session_get_by_id(&session.as_str().into())
@@ -592,16 +601,18 @@ async fn handoff_activation_blocked_claim_preserves_parent_track_deletion_contra
         ),
         ActivationResult::Blocked { .. }
     ));
-    a.repo
-        .track_delete(plan.scope.track_id.as_str())
-        .await
-        .unwrap();
+    assert!(
+        a.repo
+            .track_delete(plan.scope.track_id.as_str())
+            .await
+            .is_err()
+    );
     assert!(
         a.repo
             .track_get(plan.scope.track_id.as_str())
             .await
             .unwrap()
-            .is_none()
+            .is_some()
     );
 }
 
@@ -612,21 +623,58 @@ async fn handoff_activation_two_explicit_callers_share_one_persistent_operation(
     let plan = plan(&a, &b).await;
     let cutover = original(commit(&a, plan.clone()).await.unwrap());
     let (runtime, registry) = runtime(&a);
-    let (left, right) = tokio::join!(
+    let runtime = Arc::new(runtime);
+    let native = a.daemon.lock_thread_start_serial_for_test().await;
+    let first = tokio::spawn({
+        let runtime = runtime.clone();
+        let cutover = cutover.clone();
+        async move { handoff_activation::activate(&runtime, cutover).await }
+    });
+    wait_for_resource_intent(&a).await;
+    let owner: String = sqlx::query_scalar(
+        "SELECT owner_operation_id FROM planner_handoff_adoptions WHERE legacy_operation_id=?1",
+    )
+    .bind(&cutover)
+    .fetch_one(a.repo.pool())
+    .await
+    .unwrap();
+    let early = tokio::time::timeout(
+        Duration::from_secs(10),
         handoff_activation::activate(&runtime, cutover.clone()),
-        handoff_activation::activate(&runtime, cutover)
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        matches!(early,OperationReceipt::Running { operation_id,attempt:1 } if operation_id==owner)
     );
-    assert!(matches!(
-        result(&left.unwrap()),
-        ActivationResult::Activated { .. }
-    ));
-    assert!(matches!(
-        result(&right.unwrap()),
-        ActivationResult::Activated { .. }
+    assert!(a.daemon.started_thread_params_for_test().is_empty());
+    drop(native);
+    let completed = first.await.unwrap().unwrap();
+    assert!(
+        matches!(&completed,OperationReceipt::Settled(crate::operation::OperationResult { op_id,.. }) if op_id==&owner)
+    );
+    assert_eq!(
+        result(&completed),
+        ActivationResult::Activated {
+            session_id: plan.scope.new_session_id.clone()
+        }
+    );
+    let installed = registry.get(&plan.scope.new_session_id).unwrap();
+    let replay = handoff_activation::activate(&runtime, cutover)
+        .await
+        .unwrap();
+    assert!(
+        matches!(&replay,OperationReceipt::Settled(crate::operation::OperationResult { op_id,.. }) if op_id==&owner)
+    );
+    assert_eq!(result(&replay), result(&completed));
+    assert!(Arc::ptr_eq(
+        &installed.inner,
+        &registry.get(&plan.scope.new_session_id).unwrap().inner
     ));
     assert_eq!(a.daemon.started_thread_params_for_test().len(), 1);
     let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='handoff-activation'")
+        sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='handoff-workflow'")
             .fetch_one(a.repo.pool())
             .await
             .unwrap();

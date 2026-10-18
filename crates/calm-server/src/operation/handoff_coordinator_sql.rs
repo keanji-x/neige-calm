@@ -7,7 +7,10 @@ use super::{Operation, Tx, TxOutput};
 use crate::error::Result;
 use crate::harness::handoff_pause::PauseRequest;
 
-pub(super) async fn admit(pool: &sqlx::SqlitePool, request: UserHandoffRequest) -> Result<String> {
+pub(super) async fn admit(
+    pool: &sqlx::SqlitePool,
+    request: UserHandoffRequest,
+) -> Result<super::handoff_coordinator::Admission> {
     let key = request.operation_key()?;
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
     if let Some((id, hash)) = sqlx::query_as::<_, (String, String)>(
@@ -22,7 +25,7 @@ pub(super) async fn admit(pool: &sqlx::SqlitePool, request: UserHandoffRequest) 
             return Err(conflict());
         }
         tx.rollback().await?;
-        return Ok(id);
+        return Ok(super::handoff_coordinator::Admission::Replay(id));
     }
     let busy: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM planner_handoff_coordinators WHERE track_id=?1 AND active=1)",
@@ -73,6 +76,7 @@ pub(super) async fn admit(pool: &sqlx::SqlitePool, request: UserHandoffRequest) 
         }
     }
     let input = CoordinatorInput {
+        version: 2,
         source: PauseRequest::new(
             request.source_card_id.clone(),
             request.source_session_id.clone(),
@@ -96,10 +100,13 @@ pub(super) async fn admit(pool: &sqlx::SqlitePool, request: UserHandoffRequest) 
     )?
     .execute(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO planner_handoff_coordinators(operation_id,track_id,request_hash) VALUES(?1,?2,?3)")
-        .bind(&id).bind(request.track_id.as_str()).bind(&key.payload_hash).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO planner_handoff_coordinators(operation_id,track_id) VALUES(?1,?2)")
+        .bind(&id)
+        .bind(request.track_id.as_str())
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-    Ok(id)
+    Ok(super::handoff_coordinator::Admission::Original(id))
 }
 
 pub(super) async fn validate_reservation(
@@ -108,15 +115,17 @@ pub(super) async fn validate_reservation(
     input: &CoordinatorInput,
 ) -> Result<()> {
     input.request.validate()?;
+    if input.version != 2 {
+        return Err(conflict());
+    }
     let valid: bool = sqlx::query_scalar(
         r#"
             SELECT EXISTS(SELECT 1 FROM planner_handoff_coordinators WHERE operation_id=?1 AND
-            track_id=?2 AND request_hash=?3 AND active=1)
+            track_id=?2 AND active=1)
         "#,
     )
     .bind(&op.id)
     .bind(input.request.track_id.as_str())
-    .bind(&op.payload_hash)
     .fetch_one(&mut **tx)
     .await?;
     if !valid
@@ -195,7 +204,7 @@ pub(super) async fn validate_cutover_intent(
         r#"
             SELECT o.payload_json,o.tx_output_json,c.cancel_requested FROM
             planner_handoff_coordinators c JOIN operations o ON o.id=c.operation_id WHERE
-            c.track_id=?1 AND c.active=1 AND o.kind='handoff-coordinator'
+            c.track_id=?1 AND c.active=1 AND o.kind='handoff-workflow'
         "#,
     )
     .bind(plan.scope.track_id.as_str())
@@ -208,8 +217,12 @@ pub(super) async fn validate_cutover_intent(
     let output: TxOutput = serde_json::from_str(&output)?;
     let progress: Progress = serde_json::from_value(output.result)?;
     if cancelled
-        || progress.stage != super::handoff_coordinator::Stage::CommitIntent
-        || serde_json::to_value(progress.plan)? != serde_json::to_value(Some(plan))?
+        || !matches!(progress, Progress::Pausing { .. })
+        || input.plan_id != plan.scope.plan_id
+        || input.new_session_id != plan.scope.new_session_id
+        || input.source != *plan.scope.source_pause.request()
+        || input.target != *plan.scope.target_pause.request()
+        || input.request.user_audit_id != plan.scope.user_audit_id
     {
         return Err(conflict());
     }

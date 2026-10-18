@@ -24,6 +24,24 @@ pub enum OperationReceipt {
     Settled(OperationResult),
 }
 
+/// Project one captured row without mixing metadata from a later read.
+pub(super) fn receipt_from_operation(op: Operation) -> Result<OperationReceipt> {
+    if let Some(result) = operation_result_from(&op)? {
+        return Ok(OperationReceipt::Settled(result));
+    }
+    if matches!(op.phase, Phase::AwaitingRetry { .. }) {
+        return Ok(OperationReceipt::AwaitingRetry {
+            operation_id: op.id.clone(),
+            attempt: op.attempt,
+            output: required_output(&op)?.clone(),
+        });
+    }
+    Ok(OperationReceipt::Running {
+        operation_id: op.id,
+        attempt: op.attempt,
+    })
+}
+
 impl OperationRuntime {
     pub(super) async fn refuse_deferred_wait(&self, operation_id: &str) -> Result<()> {
         if matches!(
@@ -44,20 +62,7 @@ impl OperationRuntime {
             .get_operation(operation_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("operation {operation_id}")))?;
-        if let Some(result) = operation_result_from(&op)? {
-            return Ok(OperationReceipt::Settled(result));
-        }
-        if matches!(op.phase, Phase::AwaitingRetry { .. }) {
-            return Ok(OperationReceipt::AwaitingRetry {
-                operation_id: op.id.clone(),
-                attempt: op.attempt,
-                output: required_output(&op)?.clone(),
-            });
-        }
-        Ok(OperationReceipt::Running {
-            operation_id: op.id,
-            attempt: op.attempt,
-        })
+        receipt_from_operation(op)
     }
 
     /// A bounded read-back; a running receipt at the deadline is unconfirmed.

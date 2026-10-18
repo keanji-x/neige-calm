@@ -23,6 +23,17 @@ async fn start(f: &Fixture) -> String {
         .await
         .unwrap();
     phase(f, HarnessPhaseTag::TurnRunning).await;
+    // turn/start's return stages issued_turn_id before the separate TurnStarted echo
+    // consumes it. Capture a confirmed running owner, so that echo cannot race a
+    // later checkpoint-failure test's before-image.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while f.harness.inner.issued_turn_id.lock().await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("real TurnStarted confirmation consumed the issuance staging");
+    f.harness.persist_snapshot().await.unwrap();
     f.harness.inner.state.lock().await.active_turn_id().unwrap()
 }
 

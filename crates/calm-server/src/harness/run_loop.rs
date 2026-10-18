@@ -4891,9 +4891,11 @@ mod handoff_activation_test_support;
 mod handoff_activation_recovery_tests;
 
 #[cfg(test)]
-mod handoff_coordinator_tests;
+mod handoff_coordinator_fault_tests;
 #[cfg(test)]
-mod handoff_workflow_regression_tests;
+mod handoff_coordinator_regression_tests;
+#[cfg(test)]
+mod handoff_coordinator_tests;
 
 #[cfg(test)]
 mod handoff_coordinator_recovery_tests;

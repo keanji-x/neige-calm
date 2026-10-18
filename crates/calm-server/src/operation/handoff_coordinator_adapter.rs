@@ -1,22 +1,26 @@
-//! Sequential composition; every intent checkpoints under OperationRuntime's exact lease.
-use super::handoff_coordinator::{CoordinatorInput, HANDOFF_COORDINATOR, Progress, Stage};
+//! One leased domain workflow. Recovery never acquires the original live capability.
+use super::handoff_coordinator::{
+    self as coordinator, Claim, Claims, CommittedIdentity, CoordinatorInput, HANDOFF_COORDINATOR,
+    Progress, Resources,
+};
 use super::handoff_coordinator_sql as journal;
 use super::handoff_cutover::{self, CutoverResult, CutoverScope, conflict};
+use super::planner_harness_start_adapter::PlannerHarnessStartAdapter;
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
     Operation, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 use crate::error::{CalmError, Result};
-use crate::harness::handoff_pause::{
-    PauseQuery, PauseReceipt, PauseRequest, PauseState, ReleaseOutcome,
-};
+use crate::harness::handoff_pause::{PauseQuery, PauseRequest, PauseState};
 use crate::harness::{HarnessRegistry, PlannerHarness};
 use async_trait::async_trait;
 use serde_json::Value;
+use std::sync::Arc;
 
 pub(crate) struct HandoffCoordinatorAdapter {
     pub registry: HarnessRegistry,
     pub cache: crate::card_role_cache::CardRoleCache,
+    pub start: Arc<PlannerHarnessStartAdapter>,
 }
 const PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -27,12 +31,28 @@ const PHASES: &[PhaseTag] = &[
     PhaseTag::SpawnSucceeded,
     PhaseTag::Succeeded,
 ];
-
-fn continuation() -> AppServerInteractKind {
+pub(super) fn continuation() -> AppServerInteractKind {
     AppServerInteractKind::RegisterPending { entry_id: None }
 }
 
 impl HandoffCoordinatorAdapter {
+    async fn reload_output(&self, ctx: &SpawnCtx, op: &Operation) -> Result<TxOutput> {
+        // Serialize with a commit whose answer was lost. A before-image from a concurrent
+        // ordinary SELECT must never authorize compensation of committed identity.
+        let pool = ctx.operation_repo.sqlite_pool();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+        let stored: String = sqlx::query_scalar(
+            "SELECT tx_output_json FROM operations WHERE id=?1 AND kind=?2 AND payload_hash=?3",
+        )
+        .bind(&op.id)
+        .bind(&op.kind)
+        .bind(&op.payload_hash)
+        .fetch_one(&mut *tx)
+        .await?;
+        let output = serde_json::from_str(&stored)?;
+        tx.rollback().await?;
+        Ok(output)
+    }
     fn owner(&self, request: &PauseRequest) -> Result<PlannerHarness> {
         let (_, session, _) = request.identity();
         self.registry.get(&session.to_string()).ok_or_else(|| {
@@ -41,125 +61,155 @@ impl HandoffCoordinatorAdapter {
             )
         })
     }
-
-    async fn checkpoint(
+    pub(super) async fn checkpoint(
         &self,
         ctx: &SpawnCtx,
         op: &Operation,
         output: &mut TxOutput,
         progress: &Progress,
-        terminal: bool,
     ) -> Result<()> {
         let pool = ctx.operation_repo.sqlite_pool();
         let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-        if matches!(progress.stage, Stage::SourceIntent | Stage::TargetIntent) {
-            let input: CoordinatorInput = serde_json::from_value(op.payload.clone())?;
-            journal::validate_generation(&mut tx, &input.request).await?;
-        }
         let mut next = output.clone();
         next.result = serde_json::to_value(progress)?;
         super::checkpoint_app_server_interact_tx(&mut tx, op, continuation(), output, &next)
             .await?;
-        if terminal {
-            sqlx::query("UPDATE planner_handoff_coordinators SET active=0 WHERE operation_id=?1")
-                .bind(&op.id)
-                .execute(&mut *tx)
-                .await?;
+        if progress.terminal() {
+            let released:Option<bool>=sqlx::query_scalar("UPDATE planner_handoff_coordinators SET active=0 WHERE operation_id=?1 AND active=1 RETURNING active")
+                .bind(&op.id).fetch_optional(&mut *tx).await?;
+            if released != Some(false) {
+                return Err(conflict());
+            }
         }
         tx.commit().await?;
         *output = next;
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point(
-            "handoff-coordinator-checkpoint",
-            &format!("{}:{:?}", op.id, progress.stage),
-        )
-        .await;
         Ok(())
     }
-
     async fn pause(
         &self,
         ctx: &SpawnCtx,
         op: &Operation,
         output: &mut TxOutput,
-        p: &mut Progress,
+        claims: &mut Claims,
         input: &CoordinatorInput,
         source: bool,
     ) -> Result<()> {
-        if journal::cancelled(&ctx.operation_repo.sqlite_pool(), op).await? {
+        if !coordinator::live_admission(op)
+            || journal::cancelled(&ctx.operation_repo.sqlite_pool(), op).await?
+        {
             return Err(conflict());
         }
         let request = if source { &input.source } else { &input.target };
         let owner = self.owner(request)?;
-        // No await with provider effects occurs until this original claim intent is durable.
         if source {
-            p.source_attempted = true;
-            p.stage = Stage::SourceIntent;
+            claims.source = Claim::Intent;
         } else {
-            p.target_attempted = true;
-            p.stage = Stage::TargetIntent;
+            claims.target = Claim::Intent;
         }
-        self.checkpoint(ctx, op, output, p, false).await?;
+        // Generation and lease are revalidated in the same transaction as the effect intent.
+        let pool = ctx.operation_repo.sqlite_pool();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+        journal::validate_generation(&mut tx, &input.request).await?;
+        let mut next = output.clone();
+        next.result = serde_json::to_value(Progress::Pausing {
+            claims: claims.clone(),
+        })?;
+        super::checkpoint_app_server_interact_tx(&mut tx, op, continuation(), output, &next)
+            .await?;
+        tx.commit().await?;
+        *output = next;
+        self.seam(
+            op,
+            if source {
+                "SourceIntent"
+            } else {
+                "TargetIntent"
+            },
+        )
+        .await;
         let answer = owner.attempt_handoff_pause(request.clone()).await;
-        let (refused, failure) = match &answer {
-            crate::harness::handoff_pause::PauseAttempt::Recorded(receipt) => {
-                if receipt.request() != request {
-                    return Err(conflict());
-                }
-                (false, None)
+        match answer {
+            crate::harness::handoff_pause::PauseAttempt::Recorded(receipt)
+                if receipt.request() != request =>
+            {
+                return Err(conflict());
             }
             crate::harness::handoff_pause::PauseAttempt::Refused(error) => {
-                (true, Some(error.to_string()))
+                if source {
+                    claims.source = Claim::Untouched;
+                } else {
+                    claims.target = Claim::Untouched;
+                }
+                self.checkpoint(
+                    ctx,
+                    op,
+                    output,
+                    &Progress::Pausing {
+                        claims: claims.clone(),
+                    },
+                )
+                .await?;
+                return Err(error);
             }
             crate::harness::handoff_pause::PauseAttempt::Unknown(error) => {
-                (false, Some(error.to_string()))
+                tracing::warn!(operation_id=%op.id, %error, "Reconciling original pause answer")
             }
-        };
-        if refused {
-            if source {
-                p.source_attempted = false;
-            } else {
-                p.target_attempted = false;
-            }
-            self.checkpoint(ctx, op, output, p, false).await?;
-            return Err(CalmError::Conflict(
-                failure.unwrap_or_else(|| "Pause refused".into()),
-            ));
+            _ => {}
         }
-        // Always resolve the original SQL fact, including a missing reply or faulted receipt.
-        let fact = crate::db::handoff_pause::query_handoff_pause_pool(
-            &ctx.operation_repo.sqlite_pool(),
-            request.clone(),
+        let PauseQuery::Recorded(PauseState::Paused { receipt }) =
+            crate::db::handoff_pause::query_handoff_pause_pool(&pool, request.clone()).await?
+        else {
+            return Err(conflict());
+        };
+        if receipt.request() != request {
+            return Err(conflict());
+        }
+        if source {
+            claims.source = Claim::Paused { receipt };
+        } else {
+            claims.target = Claim::Paused { receipt };
+        }
+        self.checkpoint(
+            ctx,
+            op,
+            output,
+            &Progress::Pausing {
+                claims: claims.clone(),
+            },
         )
         .await?;
-        let PauseQuery::Recorded(PauseState::Paused { receipt }) = fact else {
-            return Err(CalmError::Conflict(
-                failure.unwrap_or_else(|| "Pause is not healthy".into()),
-            ));
-        };
-        if source {
-            p.source_receipt = Some(receipt);
-            p.stage = Stage::SourcePaused;
-        } else {
-            p.target_receipt = Some(receipt);
-            p.stage = Stage::BothPaused;
-        }
-        self.checkpoint(ctx, op, output, p, false).await
+        self.seam(op, if source { "SourcePaused" } else { "BothPaused" })
+            .await;
+        Ok(())
     }
-
-    async fn prepare(
+    async fn seam(&self, _op: &Operation, _stage: &str) {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            "handoff-coordinator-checkpoint",
+            &format!("{}:{}", _op.id, _stage),
+        )
+        .await;
+    }
+    async fn commit_identity(
         &self,
         ctx: &SpawnCtx,
         op: &Operation,
         output: &mut TxOutput,
-        p: &mut Progress,
         input: &CoordinatorInput,
+        claims: Claims,
     ) -> Result<()> {
-        self.pause(ctx, op, output, p, input, true).await?;
-        self.pause(ctx, op, output, p, input, false).await?;
-        if journal::cancelled(&ctx.operation_repo.sqlite_pool(), op).await? {
+        let Claim::Paused {
+            receipt: source_pause,
+        } = claims.source
+        else {
             return Err(conflict());
-        }
+        };
+        let Claim::Paused {
+            receipt: target_pause,
+        } = claims.target
+        else {
+            return Err(conflict());
+        };
         let plan = handoff_cutover::precheck(
             &ctx.operation_repo.sqlite_pool(),
             CutoverScope {
@@ -168,36 +218,53 @@ impl HandoffCoordinatorAdapter {
                 source_session_id: input.request.source_session_id.clone(),
                 target_card_id: input.request.target_card_id.clone(),
                 target_session_id: input.request.target_session_id.clone(),
-                source_pause: p.source_receipt.clone().ok_or_else(conflict)?,
-                target_pause: p.target_receipt.clone().ok_or_else(conflict)?,
+                source_pause: source_pause.clone(),
+                target_pause: target_pause.clone(),
                 plan_id: input.plan_id.clone(),
                 new_session_id: input.new_session_id.clone(),
                 user_audit_id: input.request.user_audit_id.clone(),
             },
         )
         .await?;
-        p.plan = Some(plan.clone());
-        p.stage = Stage::PlanRecorded;
-        self.checkpoint(ctx, op, output, p, false).await?;
-        if journal::cancelled(&ctx.operation_repo.sqlite_pool(), op).await? {
+        self.seam(op, "BeforeCommit").await;
+        if !coordinator::live_admission(op) {
             return Err(conflict());
         }
-        p.stage = Stage::CommitIntent;
-        self.checkpoint(ctx, op, output, p, false).await?;
-        // Cutover owns final SQL validation; no copied provider/authentication policy here.
-        let result = handoff_cutover::commit_recorded(
-            &ctx.operation_repo.sqlite_pool(),
-            &self.cache,
-            plan,
-            op,
+        let pool = ctx.operation_repo.sqlite_pool();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+        journal::validate_generation(&mut tx, &input.request).await?;
+        if sqlx::query_scalar::<_, bool>(
+            "SELECT cancel_requested FROM planner_handoff_coordinators WHERE operation_id=?1",
         )
-        .await?;
-        p.committed = Some(result);
-        p.stage = Stage::Committed;
-        self.checkpoint(ctx, op, output, p, false).await
+        .bind(&op.id)
+        .fetch_one(&mut *tx)
+        .await?
+        {
+            return Err(conflict());
+        }
+        let CutoverResult::CutoverCommittedPendingActivation { push_watermark, .. } =
+            super::handoff_cutover_sql::cutover(&mut tx, &plan, &op.id).await?;
+        let identity = CommittedIdentity {
+            origin: super::handoff_coordinator::IdentityOrigin::Workflow,
+            configuration: plan.configuration.clone(),
+            source_pause,
+            target_pause,
+            push_watermark,
+        };
+        let mut next = output.clone();
+        next.result = serde_json::to_value(Progress::Committed {
+            identity,
+            resources: Resources::Unprepared,
+        })?;
+        super::checkpoint_app_server_interact_tx(&mut tx, op, continuation(), output, &next)
+            .await?;
+        tx.commit().await?;
+        *output = next;
+        handoff_cutover::publish_cache(&pool, &self.cache, &plan).await?;
+        self.seam(op, "Committed").await;
+        Ok(())
     }
-
-    async fn resolve_release(&self, ctx: &SpawnCtx, request: &PauseRequest) -> Result<PauseQuery> {
+    async fn resolve(&self, ctx: &SpawnCtx, request: &PauseRequest) -> Result<PauseQuery> {
         let fact = crate::db::handoff_pause::query_handoff_pause_pool(
             &ctx.operation_repo.sqlite_pool(),
             request.clone(),
@@ -211,157 +278,115 @@ impl HandoffCoordinatorAdapter {
             Ok(fact)
         }
     }
-
-    fn record_receipt(p: &mut Progress, source: bool, receipt: &PauseReceipt) -> Result<()> {
-        let slot = if source {
-            &mut p.source_receipt
-        } else {
-            &mut p.target_receipt
-        };
-        if slot.as_ref().is_some_and(|original| original != receipt) {
-            return Err(conflict());
-        }
-        *slot = Some(receipt.clone());
-        Ok(())
-    }
-
     async fn compensate(
         &self,
         ctx: &SpawnCtx,
         op: &Operation,
         output: &mut TxOutput,
-        p: &mut Progress,
         input: &CoordinatorInput,
-    ) -> Result<bool> {
-        // A possible committed cutover can NEVER enter this function.
-        if p.committed.is_some() || p.stage == Stage::CommitIntent {
-            return Err(conflict());
-        }
-        p.stage = Stage::Compensating;
-        self.checkpoint(ctx, op, output, p, false).await?;
-        // Resolve both independently; a failed target release must not orphan a source claim.
-        let mut errors = vec![];
+        mut claims: Claims,
+        reason: String,
+    ) -> Result<AppServerInteractOutcome> {
+        self.checkpoint(
+            ctx,
+            op,
+            output,
+            &Progress::Compensating {
+                claims: claims.clone(),
+                reason: reason.clone(),
+            },
+        )
+        .await?;
         for source in [false, true] {
-            let (attempted, done, request) = if source {
-                (
-                    p.source_attempted,
-                    p.source_release.is_some(),
-                    &input.source,
-                )
+            let claim = if source {
+                &claims.source
             } else {
-                (
-                    p.target_attempted,
-                    p.target_release.is_some(),
-                    &input.target,
-                )
+                &claims.target
             };
-            if !attempted || done {
+            if matches!(claim, Claim::Untouched | Claim::Released { .. }) {
                 continue;
             }
-            let result = match self.resolve_release(ctx, request).await {
+            let request = if source { &input.source } else { &input.target };
+            let resolved = match self.resolve(ctx, request).await {
+                Ok(PauseQuery::Unknown) if matches!(claim, Claim::Intent) => Some(Claim::Untouched),
                 Ok(PauseQuery::Recorded(PauseState::Released { receipt, outcome })) => {
-                    Self::record_receipt(p, source, &receipt)?;
-                    Ok(Some(outcome))
+                    Some(Claim::Released { receipt, outcome })
                 }
                 Ok(PauseQuery::Recorded(
                     PauseState::Paused { receipt }
                     | PauseState::FaultedPaused { receipt, .. }
                     | PauseState::RecoveryHealthUnconfirmed { receipt },
                 )) => {
-                    // Persist the real queried receipt before releasing an uncertain pause.
-                    Self::record_receipt(p, source, &receipt)?;
-                    self.checkpoint(ctx, op, output, p, false).await?;
-                    match self.owner(request) {
-                        Ok(owner) => owner.resume_from_handoff(receipt).await.map(Some),
-                        Err(error) => Err(error),
+                    if let Claim::Paused { receipt: expected } = claim
+                        && expected != &receipt
+                    {
+                        return Err(conflict());
                     }
-                }
-                Ok(PauseQuery::Unknown)
-                    if (if source {
-                        &p.source_receipt
-                    } else {
-                        &p.target_receipt
-                    })
-                    .is_none() =>
-                {
-                    Ok(None)
-                }
-                Ok(_) => Err(CalmError::Conflict(
-                    "Original pause result unresolved; keep reservation and claim for recovery"
-                        .into(),
-                )),
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(outcome) => {
+                    let recorded = Claim::Paused {
+                        receipt: receipt.clone(),
+                    };
                     if source {
-                        if outcome.is_none() {
-                            p.source_attempted = false;
-                        }
-                        p.source_release = outcome;
+                        claims.source = recorded;
                     } else {
-                        if outcome.is_none() {
-                            p.target_attempted = false;
-                        }
-                        p.target_release = outcome;
+                        claims.target = recorded;
                     }
-                    self.checkpoint(ctx, op, output, p, false).await?;
+                    self.checkpoint(
+                        ctx,
+                        op,
+                        output,
+                        &Progress::Compensating {
+                            claims: claims.clone(),
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+                    match self.owner(request) {
+                        Ok(owner) => owner
+                            .resume_from_handoff(receipt.clone())
+                            .await
+                            .ok()
+                            .map(|outcome| Claim::Released { receipt, outcome }),
+                        Err(_) => None,
+                    }
                 }
-                Err(error) => errors.push(error.to_string()),
+                _ => None,
+            };
+            if let Some(resolved) = resolved {
+                if source {
+                    claims.source = resolved;
+                } else {
+                    claims.target = resolved;
+                }
+                self.checkpoint(
+                    ctx,
+                    op,
+                    output,
+                    &Progress::Compensating {
+                        claims: claims.clone(),
+                        reason: reason.clone(),
+                    },
+                )
+                .await?;
             }
         }
-        let healthy = errors.is_empty()
-            && [
-                (p.source_attempted, &p.source_release),
-                (p.target_attempted, &p.target_release),
-            ]
-            .iter()
-            .all(|(attempted, outcome)| {
-                !attempted || matches!(outcome, Some(ReleaseOutcome::HealthyReleased))
-            });
-        let resolved = errors.is_empty()
-            && [
-                (p.source_attempted, &p.source_release),
-                (p.target_attempted, &p.target_release),
-            ]
-            .iter()
-            .all(|(attempted, outcome)| !attempted || outcome.is_some());
-        if healthy {
-            p.stage = Stage::Finished;
+        if let Ok(settled) = super::handoff_coordinator::SettledClaims::try_from(claims.clone()) {
+            self.checkpoint(ctx, op, output, &Progress::Finished { claims: settled })
+                .await?;
+            Ok(AppServerInteractOutcome::NotApplicable)
         } else {
-            p.reason = Some(format!(
-                "Exact compensation requires recovery: {}",
-                errors.join("; ")
-            ));
-            if resolved {
-                p.stage = Stage::ReleasedNeedsRecovery;
-            }
-        }
-        // A known nonhealthy release frees the claim, never proves provider health. Only
-        // unresolved claims/unknown storage retain the in-flight reservation and retry.
-        self.checkpoint(ctx, op, output, p, resolved).await?;
-        Ok(resolved)
-    }
-
-    async fn forward(
-        &self,
-        ctx: &SpawnCtx,
-        op: &Operation,
-        output: &mut TxOutput,
-        p: &mut Progress,
-    ) -> Result<()> {
-        let Some(CutoverResult::CutoverCommittedPendingActivation { operation_id, .. }) =
-            &p.committed
-        else {
-            return Err(conflict());
-        };
-        super::handoff_activation::enqueue(ctx.operation_repo.as_ref(), operation_id.clone())
+            self.checkpoint(
+                ctx,
+                op,
+                output,
+                &Progress::Compensating {
+                    claims,
+                    reason: format!("Exact compensation requires recovery: {reason}"),
+                },
+            )
             .await?;
-        p.reason = None;
-        p.stage = Stage::Committed;
-        self.checkpoint(ctx, op, output, p, false).await
+            Ok(AppServerInteractOutcome::AwaitingRetry)
+        }
     }
-
     async fn run(
         &self,
         ctx: &SpawnCtx,
@@ -369,69 +394,80 @@ impl HandoffCoordinatorAdapter {
         output: &mut TxOutput,
     ) -> Result<AppServerInteractOutcome> {
         let input: CoordinatorInput = serde_json::from_value(op.payload.clone())?;
-        let mut p: Progress = serde_json::from_value(output.result.clone())?;
-        let fresh = p.stage == Stage::Reserved;
-        let prepared = if fresh {
-            self.prepare(ctx, op, output, &mut p, &input).await
-        } else {
-            Ok(())
-        };
-        if let Err(error) = prepared {
-            // A checkpoint may have committed but lost its answer. Never overwrite its progress
-            // with the caller's staged before-image.
-            let row = ctx
-                .operation_repo
-                .get_operation(&op.id)
-                .await?
-                .ok_or_else(conflict)?;
-            *output = row.tx_output.ok_or_else(conflict)?;
-            p = serde_json::from_value(output.result.clone())?;
-            p.reason = Some(error.to_string());
+        if input.version != 2 {
+            return Err(conflict());
         }
-        if p.stage == Stage::CommitIntent {
-            // Query the original exact key first, even when the commit call itself errored.
-            match handoff_cutover::query_recorded(
-                &ctx.operation_repo.sqlite_pool(),
-                p.plan.as_ref().ok_or_else(conflict)?,
-            )
-            .await?
-            {
-                Some(result) => {
-                    p.committed = Some(result);
-                    p.stage = Stage::Committed;
-                    self.checkpoint(ctx, op, output, &p, false).await?;
-                }
-                None => {
-                    // The serialized original query proved the atomic cutover absent.
-                    p.stage = Stage::PlanRecorded;
-                    self.checkpoint(ctx, op, output, &p, false).await?;
+        let state: Progress = serde_json::from_value(output.result.clone())?;
+        if state.terminal() {
+            return Ok(AppServerInteractOutcome::NotApplicable);
+        }
+        if matches!(state, Progress::Reserved) && coordinator::live_admission(op) {
+            let result = async {
+                let mut claims = Claims::empty();
+                self.pause(ctx, op, output, &mut claims, &input, true)
+                    .await?;
+                self.pause(ctx, op, output, &mut claims, &input, false)
+                    .await?;
+                self.commit_identity(ctx, op, output, &input, claims).await
+            }
+            .await;
+            // Read the original row before interpreting any failed commit answer.
+            if let Err(error) = result {
+                *output = self.reload_output(ctx, op).await?;
+                match serde_json::from_value::<Progress>(output.result.clone())? {
+                    Progress::Pausing { claims } => {
+                        return self
+                            .compensate(ctx, op, output, &input, claims, error.to_string())
+                            .await;
+                    }
+                    Progress::Reserved => {
+                        return self
+                            .compensate(ctx, op, output, &input, Claims::empty(), error.to_string())
+                            .await;
+                    }
+                    Progress::Committed { .. } | Progress::Activated { .. } => {}
+                    _ => return Err(error),
                 }
             }
         }
-        if p.committed.is_some() {
-            return match self.forward(ctx, op, output, &mut p).await {
-                Ok(()) => Ok(AppServerInteractOutcome::NotApplicable),
-                Err(error) => {
-                    p.reason = Some(format!("Forward activation requires recovery: {error}"));
-                    self.checkpoint(ctx, op, output, &p, false).await?;
-                    Ok(AppServerInteractOutcome::AwaitingRetry)
-                }
-            };
-        }
-        if matches!(p.stage, Stage::Finished | Stage::ReleasedNeedsRecovery) {
-            return Ok(AppServerInteractOutcome::NotApplicable);
-        }
-        if !fresh && p.reason.is_none() {
-            p.reason = Some("Interrupted preparation; reconcile original claims only".into());
-        }
-        if self.compensate(ctx, op, output, &mut p, &input).await? {
-            Ok(AppServerInteractOutcome::NotApplicable)
-        } else {
-            Ok(AppServerInteractOutcome::AwaitingRetry)
+        match serde_json::from_value::<Progress>(output.result.clone())? {
+            Progress::Reserved => {
+                self.compensate(
+                    ctx,
+                    op,
+                    output,
+                    &input,
+                    Claims::empty(),
+                    "Interrupted original begin; no new pause permitted".into(),
+                )
+                .await
+            }
+            Progress::Pausing { claims } => {
+                self.compensate(
+                    ctx,
+                    op,
+                    output,
+                    &input,
+                    claims,
+                    "Interrupted preparation; original claims only".into(),
+                )
+                .await
+            }
+            Progress::Compensating { claims, reason } => {
+                self.compensate(ctx, op, output, &input, claims, reason)
+                    .await
+            }
+            Progress::Committed {
+                identity,
+                resources,
+            } => {
+                self.forward_resources(ctx, op, output, &input, identity, resources)
+                    .await
+            }
+            _ => Ok(AppServerInteractOutcome::NotApplicable),
         }
     }
 }
-
 #[async_trait]
 impl ProviderAdapter for HandoffCoordinatorAdapter {
     fn kind(&self) -> &'static str {
@@ -460,13 +496,15 @@ impl ProviderAdapter for HandoffCoordinatorAdapter {
                 Some(super::ExplicitRetryContinuation::Prepare)
             }
             Some(output) => {
-                serde_json::from_value::<Progress>(output.result.clone()).ok()?;
+                let p: Progress = serde_json::from_value(output.result.clone()).ok()?;
+                if p.terminal() {
+                    return None;
+                }
                 Some(super::ExplicitRetryContinuation::Interact(continuation()))
             }
         }
     }
     async fn validate(&self, _: &Value) -> Result<()> {
-        // Admission is the typed transactional service, never generic JSON submit.
         Err(CalmError::Conflict(
             "Handoff requires original internal audited admission".into(),
         ))
@@ -488,19 +526,26 @@ impl ProviderAdapter for HandoffCoordinatorAdapter {
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
         match self.run(ctx, op, output).await {
-            Ok(outcome) => Ok(outcome),
+            Ok(result) => Ok(result),
             Err(error) => {
-                // Retain durable progress; errors may not invoke the generic backward saga.
-                let row = ctx
-                    .operation_repo
-                    .get_operation(&op.id)
-                    .await?
-                    .ok_or_else(conflict)?;
-                *output = row.tx_output.ok_or_else(conflict)?;
-                let mut p: Progress = serde_json::from_value(output.result.clone())?;
-                p.reason = Some(format!("Handoff needs explicit recovery: {error}"));
-                self.checkpoint(ctx, op, output, &p, false).await?;
-                Ok(AppServerInteractOutcome::AwaitingRetry)
+                tracing::warn!(operation_id=%op.id, %error, "Handoff requires explicit original-generation recovery");
+                *output = self.reload_output(ctx, op).await?;
+                let p: Progress = serde_json::from_value(output.result.clone())?;
+                // Storage errors never rewrite evidence or downgrade committed terminals.
+                if p.terminal() {
+                    Ok(AppServerInteractOutcome::NotApplicable)
+                } else {
+                    let pool = ctx.operation_repo.sqlite_pool();
+                    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+                    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                    sqlx::query("UPDATE operations SET last_error=?1 WHERE id=?2")
+                        .bind(error.to_string())
+                        .bind(&op.id)
+                        .execute(&mut *tx)
+                        .await?;
+                    tx.commit().await?;
+                    Ok(AppServerInteractOutcome::AwaitingRetry)
+                }
             }
         }
     }
@@ -519,9 +564,7 @@ impl ProviderAdapter for HandoffCoordinatorAdapter {
         _: &TxOutput,
         _: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        Err(CalmError::Conflict(
-            "Coordinator retains original journal; explicit recovery only".into(),
-        ))
+        Err(conflict())
     }
     async fn compensate_step(
         &self,

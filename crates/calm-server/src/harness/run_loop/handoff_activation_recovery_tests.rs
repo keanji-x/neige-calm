@@ -26,7 +26,7 @@ async fn handoff_activation_post_install_failure_preserves_ack_and_pending_suffi
         .unwrap();
     let plan = plan(&a, &b).await;
     let cutover = original(commit(&a, plan.clone()).await.unwrap());
-    sqlx::query(concat!("CREATE TRIGGER fail_activated_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN ","NEW.kind='handoff-activation' AND json_extract(NEW.tx_output_json,'$.result.state')='activated' ","BEGIN SELECT RAISE(ABORT,'post installation checkpoint failure'); END"))
+    sqlx::query(concat!("CREATE TRIGGER fail_activated_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN ","NEW.kind='handoff-workflow' AND json_extract(NEW.tx_output_json,'$.result.state')='activated' ","BEGIN SELECT RAISE(ABORT,'post installation checkpoint failure'); END"))
         .execute(a.repo.pool()).await.unwrap();
     let (runtime, registry) = runtime(&a);
     let receipt = handoff_activation::activate(&runtime, cutover.clone())
@@ -116,17 +116,7 @@ async fn handoff_activation_ignored_snapshot_write_cannot_issue_without_durable_
     let receipt = handoff_activation::activate(&runtime, cutover.clone())
         .await
         .unwrap();
-    assert!(matches!(
-        receipt,
-        OperationReceipt::Settled(crate::operation::OperationResult {
-            outcome: crate::operation::OperationOutcome::Failed {
-                from_phase: crate::operation::PhaseTag::Pending,
-                last_error_class: Some(_),
-                ..
-            },
-            ..
-        })
-    ));
+    assert!(matches!(receipt, OperationReceipt::AwaitingRetry { .. }));
     assert!(matches!(
         handoff_activation::query(&runtime, &cutover).await.unwrap(),
         ActivationResult::NeedsRecovery { .. }
@@ -153,7 +143,7 @@ async fn handoff_activation_ignored_snapshot_write_cannot_issue_without_durable_
     );
 }
 
-async fn notification(a: &Fixture, owner: &PlannerHarness, method: &str, params: Value) {
+pub(super) async fn notification(a: &Fixture, owner: &PlannerHarness, method: &str, params: Value) {
     let hook = crate::test_seams::PausePoint::default();
     crate::test_seams::install_pause_for_test(
         "harness-notification-completed",
@@ -204,7 +194,10 @@ async fn notification(a: &Fixture, owner: &PlannerHarness, method: &str, params:
     .unwrap();
 }
 
-async fn running_snapshot(owner: &PlannerHarness, previous: Option<&str>) -> HarnessSnapshot {
+pub(super) async fn running_snapshot(
+    owner: &PlannerHarness,
+    previous: Option<&str>,
+) -> HarnessSnapshot {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             // persist_snapshot serializes with the notification/issuance owner, giving a
@@ -225,7 +218,7 @@ async fn running_snapshot(owner: &PlannerHarness, previous: Option<&str>) -> Har
 
 async fn fail_final_checkpoint(a: &Fixture) {
     sqlx::query(concat!("CREATE TRIGGER fail_activated_checkpoint BEFORE UPDATE OF tx_output_json ON operations WHEN ",
-        "NEW.kind='handoff-activation' AND json_extract(NEW.tx_output_json,'$.result.state')='activated' ",
+        "NEW.kind='handoff-workflow' AND json_extract(NEW.tx_output_json,'$.result.state')='activated' ",
         "BEGIN SELECT RAISE(ABORT,'post installation checkpoint failure'); END"))
         .execute(a.repo.pool()).await.unwrap();
 }

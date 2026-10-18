@@ -554,12 +554,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         claude_adapter,
         claude_worker_adapter,
         claude_restart_adapter,
-        Arc::new(
-            crate::operation::handoff_activation::HandoffActivationAdapter {
-                start: planner_harness_start_adapter.clone(),
-            },
-        ),
-        planner_harness_start_adapter,
+        planner_harness_start_adapter.clone(),
         planner_harness_interrupt_adapter,
         planner_harness_shutdown_adapter,
         task_verify_adapter,
@@ -568,9 +563,9 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         child_track_adapter,
         card_create_adapter,
         Arc::new(TrackRecipeCreateAdapter),
-        Arc::new(crate::operation::handoff_cutover::HandoffCutoverAdapter),
         Arc::new(
             crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                start: planner_harness_start_adapter.clone(),
                 registry: input.harness.clone(),
                 cache: input.card_role_cache.clone(),
             },

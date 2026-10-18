@@ -449,12 +449,7 @@ fn dispatcher_operation_runtime(
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
-            Arc::new(
-                crate::operation::handoff_activation::HandoffActivationAdapter {
-                    start: planner_harness_start_adapter.clone(),
-                },
-            ),
-            planner_harness_start_adapter,
+            planner_harness_start_adapter.clone(),
             planner_harness_interrupt_adapter,
             planner_harness_shutdown_adapter,
             task_verify_adapter,
@@ -463,9 +458,9 @@ fn dispatcher_operation_runtime(
             child_track_adapter,
             card_create_adapter,
             Arc::new(TrackRecipeCreateAdapter),
-            Arc::new(crate::operation::handoff_cutover::HandoffCutoverAdapter),
             Arc::new(
                 crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                    start: planner_harness_start_adapter.clone(),
                     registry: harness.clone(),
                     cache: write.role_cache().clone(),
                 },
