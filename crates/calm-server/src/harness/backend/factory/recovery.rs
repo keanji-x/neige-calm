@@ -11,9 +11,8 @@ use crate::session_projection_repo::WorkerSessionProjection;
 use crate::shared_codex_appserver::ThreadConfig;
 use serde_json::Value;
 
-/// Immutable target derived here from the caller's checked current carrier. No public constructor
-/// or alternate native thread argument; the native scope cannot be retargeted.
-pub(crate) struct RecoveryTarget {
+/// Original carrier identity, captured and consumed only within this recovery owner.
+struct RecoveryTarget {
     thread_id: String,
     card_id: String,
 }
@@ -34,25 +33,9 @@ impl RecoveryTarget {
             card_id: runtime.card_id.clone(),
         })
     }
-    pub(crate) fn thread_id(&self) -> &str {
-        &self.thread_id
-    }
-    pub(crate) fn card_id(&self) -> &str {
-        &self.card_id
-    }
 }
 
 impl PlannerFactory<'_> {
-    /// Capture the route's observed carrier before quiescence/refetch. The settled
-    /// snapshot may change, but the locked seal and eligibility checks must still
-    /// use this original target. No caller can supply an alternate native id.
-    pub(crate) fn system_error_recovery_target(
-        &self,
-        runtime: &WorkerSessionProjection,
-    ) -> Result<RecoveryTarget> {
-        RecoveryTarget::failed(runtime)
-    }
-
     pub(crate) async fn resume_active_conversation(
         &self,
         repo: &dyn crate::db::Repo,
@@ -61,7 +44,7 @@ impl PlannerFactory<'_> {
         let target = RecoveryTarget::active(runtime)?;
         let daemon = self.daemon()?;
         daemon
-            .with_exact_thread(&target, async |native| {
+            .with_exact_thread(&target.thread_id, &target.card_id, async |native| {
                 Self::restore_active(native, repo, runtime).await
             })
             .await
@@ -70,12 +53,24 @@ impl PlannerFactory<'_> {
         &self,
         repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
-        target: RecoveryTarget,
+        settle: impl AsyncFnOnce() -> Result<()>,
     ) -> Result<Option<(i64, String)>> {
+        // Refuse a missing original thread before quiescing the route-owned harness.
+        let target = RecoveryTarget::failed(runtime)?;
+        settle().await?;
+        // Quiescence may have restored dropped steers. Refetch the same session's
+        // settled queue without changing its original native target.
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(crate::test_seams::PLANNER_RECOVERY_REFETCH, &runtime.id)
+            .await;
+        let runtime = repo
+            .session_projection_by_id(&runtime.id)
+            .await?
+            .ok_or_else(|| CalmError::Conflict("conversation changed during recovery".into()))?;
         let daemon = self.daemon()?;
         daemon
-            .with_exact_thread(&target, async |native| {
-                Self::restore_failed(native, repo, runtime).await
+            .with_exact_thread(&target.thread_id, &target.card_id, async |native| {
+                Self::restore_failed(native, repo, &runtime).await
             })
             .await
     }

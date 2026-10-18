@@ -13,7 +13,7 @@ use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::thread_seals::ThreadSeals;
 
 mod codex;
-pub(crate) mod recovery;
+mod recovery;
 
 /// Preserve the existing operation vs HTTP refusal classes, with one readiness decision.
 pub(crate) enum ReadinessFor {

@@ -66,24 +66,14 @@ pub(super) async fn recover(
             crate::harness::backend::factory::ReadinessFor::RestoreOrSend,
         )
         .await?;
-    let target = factory.system_error_recovery_target(&runtime)?;
-    if let Some(old) = s.harness.get(&runtime.id) {
-        old.quiesce_system_error_for_recovery().await?;
-        s.harness.remove_if_same(&runtime.id, &old);
-    }
-    // Quiescence may have waited for a completion to restore dropped steers.
-    // Use that settled durable queue, not the earlier candidate's snapshot.
-    #[cfg(feature = "fixtures")]
-    crate::test_seams::pause_point(crate::test_seams::PLANNER_RECOVERY_REFETCH, &runtime.id).await;
-    let runtime = w
-        .repo
-        .session_projection_by_id(&runtime.id)
-        .await?
-        .ok_or_else(|| CalmError::Conflict("conversation changed during recovery".into()))?;
-    // Keep the original target: under both daemon locks its deletion seal and
-    // the settled snapshot/role/binding checks precede SQL's retarget refusal.
     let outcome = factory
-        .resume_system_error_conversation(w.repo.as_ref(), &runtime, target)
+        .resume_system_error_conversation(w.repo.as_ref(), &runtime, async || {
+            if let Some(old) = s.harness.get(&runtime.id) {
+                old.quiesce_system_error_for_recovery().await?;
+                s.harness.remove_if_same(&runtime.id, &old);
+            }
+            Ok(())
+        })
         .await?;
     if let Some((item_db_id, turn_id)) = outcome {
         s.repo

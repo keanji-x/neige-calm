@@ -1,6 +1,5 @@
 //! Native exact-thread operations under the daemon's existing transition/replay boundary.
 use super::*;
-use crate::harness::backend::factory::recovery::RecoveryTarget;
 use serde_json::Value;
 #[cfg(feature = "fixtures")]
 use serde_json::json;
@@ -30,23 +29,26 @@ pub(crate) struct RecoveryRead {
 
 pub(crate) struct RecoveryThread<'a> {
     daemon: &'a SharedCodexAppServer,
-    target: &'a RecoveryTarget,
+    thread_id: &'a str,
+    card_id: &'a str,
 }
 
 impl SharedCodexAppServer {
     pub(crate) async fn with_exact_thread<T>(
         &self,
-        target: &RecoveryTarget,
+        thread_id: &str,
+        card_id: &str,
         run: impl for<'scope> AsyncFnOnce(RecoveryThread<'scope>) -> Result<T>,
     ) -> Result<T> {
         let _transition = self.transition_serial.lock().await;
         let _replay = self.resume_replay_serial.lock().await;
-        if self.thread_seals.is_sealed(target.thread_id()) {
+        if self.thread_seals.is_sealed(thread_id) {
             return Err(CalmError::Conflict("conversation is being deleted".into()));
         }
         run(RecoveryThread {
             daemon: self,
-            target,
+            thread_id,
+            card_id,
         })
         .await
     }
@@ -115,35 +117,24 @@ impl SharedCodexAppServer {
 
 impl RecoveryThread<'_> {
     pub(crate) fn thread_id(&self) -> &str {
-        self.target.thread_id()
+        self.thread_id
     }
     pub(crate) fn socket_path(&self) -> &std::path::Path {
         &self.daemon.kernel_mcp_socket_path
     }
     pub(crate) async fn read_active(&self) -> Result<RecoveryState> {
         #[cfg(feature = "fixtures")]
-        if self.daemon.fake.is_some()
-            && !self
-                .daemon
-                .thread_cache
-                .contains_key(self.target.thread_id())
-        {
+        if self.daemon.fake.is_some() && !self.daemon.thread_cache.contains_key(self.thread_id) {
             return Ok(RecoveryState::from_thread(
-                &json!({"id":self.target.thread_id(),"status":{"type":"notLoaded"}}),
+                &json!({"id":self.thread_id,"status":{"type":"notLoaded"}}),
             ));
         }
         Ok(RecoveryState::from_thread(
-            &self
-                .daemon
-                .read_recovery_thread(self.target.thread_id())
-                .await?,
+            &self.daemon.read_recovery_thread(self.thread_id).await?,
         ))
     }
     pub(crate) async fn read(&self, expected_turn: Option<&str>) -> Result<RecoveryRead> {
-        let thread = self
-            .daemon
-            .read_recovery_thread(self.target.thread_id())
-            .await?;
+        let thread = self.daemon.read_recovery_thread(self.thread_id).await?;
         let terminal = expected_turn
             .and_then(|id| {
                 thread
@@ -168,19 +159,16 @@ impl RecoveryThread<'_> {
     pub(crate) async fn resume(&self, config: ThreadConfig) -> Result<RecoveryState> {
         let thread = self
             .daemon
-            .resume_recovery_thread(self.target.thread_id(), config)
+            .resume_recovery_thread(self.thread_id, config)
             .await?;
         Ok(RecoveryState::from_thread(&thread))
     }
     pub(crate) fn retain_subscription(&self) {
-        self.daemon.thread_cache.insert(
-            self.target.thread_id().to_owned(),
-            self.target.card_id().to_owned(),
-        );
+        self.daemon
+            .thread_cache
+            .insert(self.thread_id.to_owned(), self.card_id.to_owned());
     }
     pub(crate) fn clear_hibernating_release(&self) {
-        self.daemon
-            .hibernating_releases
-            .remove(self.target.thread_id());
+        self.daemon.hibernating_releases.remove(self.thread_id);
     }
 }
