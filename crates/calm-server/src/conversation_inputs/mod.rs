@@ -16,8 +16,8 @@ pub(crate) use selection_read::SelectionReadAdmission;
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
 pub(crate) use execution::{
-    authorize_human_execution_tx, authorize_human_resource_tx, claim_human_initial_tx,
-    human_pending_source_refs_tx,
+    HumanSourceInputs, authorize_human_execution_tx, authorize_human_resource_tx,
+    claim_human_initial_tx, human_source_inputs_tx,
 };
 
 use calm_types::conversation::{

@@ -369,6 +369,7 @@ enum HarnessObservationCommand {
         deliveries: Vec<HarnessObservationDelivery>,
         key: SendKey,
         source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+        addressability: QueueAddressability,
         persisted: oneshot::Sender<Result<DurableAck>>,
     },
     /// A human edit or delete against one queue entry. Rides the same mpsc as every other command,
@@ -455,6 +456,14 @@ struct DurableUserMessageCheckpoint {
     debounce: DebounceState,
 }
 
+/// An intake contract, independent of identity or authorization. Requiring an
+/// addressable result never assigns an ID to an existing historical entry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueueAddressability {
+    Historical,
+    Required,
+}
+
 async fn checkpoint_durable_user_message(inner: &Inner) -> Result<DurableUserMessageCheckpoint> {
     Ok(DurableUserMessageCheckpoint {
         pending_queue: inner.historical_queue()?.lock().await.clone(),
@@ -477,12 +486,13 @@ async fn restore_durable_user_message(
 async fn stage_durable_entries(
     inner: &Arc<Inner>,
     deliveries: Vec<HarnessObservationDelivery>,
+    addressability: QueueAddressability,
 ) -> Result<(DurableAck, DurableUserMessageCheckpoint)> {
     let checkpoint = checkpoint_durable_user_message(inner).await?;
     let mut ack = DurableAck { entry_id: None };
     for delivery in deliveries {
         let user_authored = delivery.entry.is_user_authored();
-        match on_observation(inner, delivery.entry).await {
+        match on_observation_with_addressability(inner, delivery.entry, addressability).await {
             EnqueueOutcome::Accepted { entry_id } => {
                 if user_authored {
                     ack.entry_id = entry_id;
@@ -729,6 +739,11 @@ impl PlannerHarness {
         key: SendKey,
         source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<DurableAck> {
+        let addressability = if source.is_some() {
+            QueueAddressability::Required
+        } else {
+            QueueAddressability::Historical
+        };
         self.inner.historical_queue()?;
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
@@ -748,6 +763,7 @@ impl PlannerHarness {
                         deliveries,
                         key,
                         source,
+                        addressability,
                         persisted,
                     })
                     .map_err(map_observation_send_error)?;
@@ -759,7 +775,8 @@ impl PlannerHarness {
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                let (ack, checkpoint) = stage_durable_entries(&self.inner, deliveries).await?;
+                let (ack, checkpoint) =
+                    stage_durable_entries(&self.inner, deliveries, addressability).await?;
                 if let Err(error) = persist_snapshot_for_durable_send(
                     &self.inner,
                     &key,
@@ -1657,14 +1674,14 @@ async fn run_loop(
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
                     }
-                    HarnessObservationCommand::Durable { deliveries, key, source, persisted } => {
+                    HarnessObservationCommand::Durable { deliveries, key, source, addressability, persisted } => {
                         if let Some(source) = &source
                             && let Err(error) = source.require_card(inner.repo.as_ref(), inner.card_id.as_str()).await
                         {
                             let _ = persisted.send(Err(error));
                             continue;
                         }
-                        let result = match stage_durable_entries(&inner, deliveries).await {
+                        let result = match stage_durable_entries(&inner, deliveries, addressability).await {
                             Ok((ack, checkpoint)) => {
                                 match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref(), source).await {
                                     Ok(()) => Ok(ack),
@@ -2180,6 +2197,14 @@ async fn emit_queue_changed(
 }
 
 async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
+    on_observation_with_addressability(inner, entry, QueueAddressability::Historical).await
+}
+
+async fn on_observation_with_addressability(
+    inner: &Arc<Inner>,
+    entry: QueueEntry,
+    addressability: QueueAddressability,
+) -> EnqueueOutcome {
     if let Some(envelope_id) = entry.envelope_id() {
         let mut watermark = inner.push_watermark.lock().await;
         *watermark = (*watermark).max(envelope_id);
@@ -2191,7 +2216,7 @@ async fn on_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome
     }
     let hard_fire = entry.is_hard_fire();
     let report_sha256 = entry.report_sha256().map(str::to_string);
-    let outcome = enqueue_pending_observation(inner, entry).await;
+    let outcome = enqueue_pending_observation(inner, entry, addressability).await;
     if matches!(outcome, EnqueueOutcome::Rejected) {
         return outcome;
     }
@@ -2267,7 +2292,11 @@ async fn flush_dropped_announcements(inner: &Arc<Inner>) -> Result<()> {
     }
 }
 
-async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> EnqueueOutcome {
+async fn enqueue_pending_observation(
+    inner: &Arc<Inner>,
+    entry: QueueEntry,
+    addressability: QueueAddressability,
+) -> EnqueueOutcome {
     let Ok(queue) = inner.historical_queue() else {
         return EnqueueOutcome::Unsupported;
     };
@@ -2278,11 +2307,15 @@ async fn enqueue_pending_observation(inner: &Arc<Inner>, entry: QueueEntry) -> E
         return EnqueueOutcome::Accepted { entry_id };
     }
     if queue.len() >= MAX_PENDING_QUEUE_LEN {
-        match try_fold_tail(&mut queue, &entry, MAX_FOLDED_USER_MESSAGE_CHARS) {
-            FoldOutcome::Folded { entry_id } => {
-                return EnqueueOutcome::Accepted { entry_id };
+        if addressability == QueueAddressability::Historical
+            || queue.back().is_some_and(|entry| entry.id().is_some())
+        {
+            match try_fold_tail(&mut queue, &entry, MAX_FOLDED_USER_MESSAGE_CHARS) {
+                FoldOutcome::Folded { entry_id } => {
+                    return EnqueueOutcome::Accepted { entry_id };
+                }
+                FoldOutcome::NotFolded => {}
             }
-            FoldOutcome::NotFolded => {}
         }
         let hard = entry.is_hard_fire();
         // Eviction only ever takes a non-hard-fire entry, which is always a `System` entry, so

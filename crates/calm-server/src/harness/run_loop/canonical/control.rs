@@ -45,8 +45,9 @@ impl Admission {
                     && next.header.phase == HarnessPhaseTag::TurnRunning
                     && matches!(&next.header.turn_budget, budget::FrozenBudget::Planner { start_attempt, warning_attempted:true,.. }
                         if start_attempt.as_str() == start),
-                Purpose::Interrupt { intent } => next.header.phase == HarnessPhaseTag::IssuingInterrupt
-                    && next.header.interruption_intent.as_ref() == Some(&intent),
+                // An accepted exact drain survives failure of new-work admission.
+                // The execution target above and this durable intent still bind it.
+                Purpose::Interrupt { intent } => next.header.interruption_intent.as_ref() == Some(&intent),
             };
             if !admitted {
                 return Err(CalmError::Conflict("control intent is no longer current".into()));

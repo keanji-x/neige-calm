@@ -1,4 +1,4 @@
-//! Current-source restoration of a known idle carrier. This uses the original
+//! Current-source restoration before a crossing or after completion. This uses the original
 //! exact-thread transport owner and the original retained-handle builder.
 use super::*;
 
@@ -13,10 +13,13 @@ struct RetainedRecovery {
 impl crate::shared_codex_appserver::ActiveRecoveryAdmission for RetainedRecovery {
     async fn validate_tx(&self, tx: &mut Tx<'_>) -> Result<()> {
         let current = self.adapter.retained_target_tx(tx, &self.wire).await?;
-        require_idle(&current)?;
+        require_restorable(&current)?;
         if current.fence != self.expected.fence
             || current.track_id != self.expected.track_id
-            || !current.inputs.starts_with(&self.expected.inputs)
+            || !current
+                .inputs
+                .refs()
+                .starts_with(self.expected.inputs.refs())
         {
             return Err(CalmError::Conflict(
                 "retained recovery target changed".into(),
@@ -33,13 +36,14 @@ impl crate::shared_codex_appserver::ActiveRecoveryAdmission for RetainedRecovery
     }
 }
 
-fn require_idle(target: &Target) -> Result<()> {
+fn require_restorable(target: &Target) -> Result<()> {
     let frame = &target.snapshot;
-    if frame.canonical_inputs.active.is_some()
-        || !matches!(
+    let idle = frame.canonical_inputs.active.is_none()
+        && matches!(
             frame.header.phase,
             HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
-        )
+        );
+    if !(idle || target.inputs.is_unattempted_initial())
         || frame.header.pending_rewind.is_some()
         || frame.header.interruption_intent.is_some()
         || frame.header.wedged_reason.is_some()
@@ -58,7 +62,7 @@ impl PlannerHarnessStartAdapter {
         events: &crate::event::EventBus,
     ) -> Result<()> {
         let expected = self.retained_target(wire).await?;
-        require_idle(&expected)?;
+        require_restorable(&expected)?;
         let thread = expected
             .snapshot
             .header

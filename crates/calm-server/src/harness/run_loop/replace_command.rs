@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    DurableAck, DurableSendBinding, HarnessObservationDelivery, Inner, SendKey,
-    clear_interruption_intent, harness_event_scope, restore_durable_user_message, snapshot_for,
-    stage_durable_entries,
+    DurableAck, DurableSendBinding, HarnessObservationDelivery, Inner, QueueAddressability,
+    SendKey, clear_interruption_intent, harness_event_scope, restore_durable_user_message,
+    snapshot_for, stage_durable_entries,
 };
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, Result};
@@ -120,8 +120,17 @@ pub(super) async fn handle_replace_admitted(
             other => other,
         })?;
 
-    let (ack, checkpoint) =
-        stage_durable_entries(inner, vec![HarnessObservationDelivery { entry }]).await?;
+    let addressability = if source.is_some() {
+        QueueAddressability::Required
+    } else {
+        QueueAddressability::Historical
+    };
+    let (ack, checkpoint) = stage_durable_entries(
+        inner,
+        vec![HarnessObservationDelivery { entry }],
+        addressability,
+    )
+    .await?;
 
     let state = match &plan.previous_turn_id {
         Some(previous) => HarnessState::TurnCompleted {

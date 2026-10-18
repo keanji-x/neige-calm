@@ -83,7 +83,7 @@ async fn observe_metadata(inner: &Arc<Inner>, observation: Metadata) -> Result<(
     let worker = inner.worker_session_id.clone();
     let next = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
+            let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
             let mut next: CanonicalHarnessSnapshot =
                 serde_json::from_value(carrier.snapshot().clone())?;
             let header = &mut next.header;
@@ -156,7 +156,7 @@ pub(in crate::harness::run_loop) async fn persist_native_item(
     let params = params.clone();
     write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            let carrier = current_input_carrier_tx(tx, &card, &worker).await?;
+            let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
             Ok(crate::db::sqlite::conversation::observe_native_item_tx(
                 tx,
                 &carrier,
