@@ -43,56 +43,105 @@ async fn hand_area_to_alice(fixture: &Fixture, area_id: &str) {
     tx.commit().await.unwrap();
 }
 
-async fn historical_control_after_membership_removal(control: Control) {
-    let fixture = Fixture::new().await;
-    let (state, app, cookie) = fixture.application_with_historical_native(true).await;
-    let area = post(
-        &app,
-        &cookie,
-        "/api/areas",
-        "control-area",
-        json!({"name":"Historical controls","color":"#123456"}),
-    )
-    .await;
-    let created = post(
-        &app,
-        &cookie,
-        "/api/tracks",
-        "historical-track",
-        json!({
-            "area_id":area["id"],"planner_provider":"codex","title":"",
-            "theme":{"fg":[255,255,255],"bg":[0,0,0]}
-        }),
-    )
-    .await;
-    let (card, worker): (String, String) =
-        sqlx::query_as("SELECT id,session_id FROM cards WHERE track_id=?1 AND role='planner'")
-            .bind(created["id"].as_str().unwrap())
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap();
-    let harness = state
-        .harness
-        .get(&worker)
-        .expect("original historical harness");
-    let input_uri = format!("/api/cards/{card}/planner/input");
-    if control.needs_running_turn() {
-        post(
+pub(super) struct HistoricalFixture {
+    pub(super) fixture: Fixture,
+    pub(super) state: AppState,
+    pub(super) app: axum::Router,
+    pub(super) cookie: String,
+    pub(super) area: Value,
+    pub(super) card: String,
+    pub(super) worker: String,
+    pub(super) harness: crate::harness::PlannerHarness,
+}
+
+impl HistoricalFixture {
+    pub(super) async fn new(running: bool) -> Self {
+        let fixture = Fixture::new().await;
+        let (state, app, cookie) = fixture.application_with_historical_native(true).await;
+        let area = post(
             &app,
             &cookie,
-            &input_uri,
-            "start-running",
-            json!({"text":"Run before membership is removed"}),
+            "/api/areas",
+            "control-area",
+            json!({"name":"Historical controls","color":"#123456"}),
         )
         .await;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while harness.runtime_header().await.unwrap().phase != HarnessPhaseTag::TurnRunning {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the production historical driver starts the provider turn");
+        let created = post(
+            &app,
+            &cookie,
+            "/api/tracks",
+            "historical-track",
+            json!({
+                "area_id":area["id"],"planner_provider":"codex","title":"",
+                "theme":{"fg":[255,255,255],"bg":[0,0,0]}
+            }),
+        )
+        .await;
+        let (card, worker): (String, String) =
+            sqlx::query_as("SELECT id,session_id FROM cards WHERE track_id=?1 AND role='planner'")
+                .bind(created["id"].as_str().unwrap())
+                .fetch_one(fixture.repo.pool())
+                .await
+                .unwrap();
+        let harness = state
+            .harness
+            .get(&worker)
+            .expect("original historical harness");
+        let input_uri = format!("/api/cards/{card}/planner/input");
+        if running {
+            post(
+                &app,
+                &cookie,
+                &input_uri,
+                "start-running",
+                json!({"text":"Run before membership is removed"}),
+            )
+            .await;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while harness.runtime_header().await.unwrap().phase != HarnessPhaseTag::TurnRunning
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the production historical driver starts the provider turn");
+        }
+        Self {
+            fixture,
+            state,
+            app,
+            cookie,
+            area,
+            card,
+            worker,
+            harness,
+        }
     }
+
+    pub(super) async fn shutdown(&self) {
+        self.state
+            .harness
+            .remove(&self.worker)
+            .unwrap()
+            .shutdown()
+            .await
+            .unwrap();
+    }
+}
+
+async fn historical_control_after_membership_removal(control: Control) {
+    let facts = HistoricalFixture::new(control.needs_running_turn()).await;
+    let HistoricalFixture {
+        fixture,
+        state,
+        app,
+        cookie,
+        area,
+        card,
+        worker: _,
+        harness,
+    } = &facts;
+    let input_uri = format!("/api/cards/{card}/planner/input");
     harness.pause_issuance_for_dev();
     let queued = post(
         &app,
@@ -107,7 +156,7 @@ async fn historical_control_after_membership_removal(control: Control) {
     assert_eq!(before.pending_entries().len(), 1);
     let original_pending = before.pending_entries();
     assert_eq!(original_pending[0].user_view().unwrap().rev, 0);
-    hand_area_to_alice(&fixture, area["id"].as_str().unwrap()).await;
+    hand_area_to_alice(fixture, area["id"].as_str().unwrap()).await;
     let before_steers =
         serde_json::to_value(state.shared_codex_appserver.steered_turns_for_test()).unwrap();
     let before_stops = state.shared_codex_appserver.interrupted_turns_for_test();
@@ -160,13 +209,7 @@ async fn historical_control_after_membership_removal(control: Control) {
         .unwrap();
     // Always let the real owner clean up before the decisive assertion, including
     // the expected red run, so an unauthorized control cannot leak a task.
-    state
-        .harness
-        .remove(&worker)
-        .unwrap()
-        .shutdown()
-        .await
-        .unwrap();
+    facts.shutdown().await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
