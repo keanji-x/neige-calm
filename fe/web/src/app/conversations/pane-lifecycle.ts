@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
-import { useConversationRegistry, type ConversationDraft, type ConversationRegistry } from './public.tsx';
+import { useConversationCommands, useConversationDraftSlot, useConversationOpenRequest, type ConversationDraft, type ConversationRegistry } from './public.tsx';
 import type { ConversationStore } from './contracts.ts';
 import { useConversationViewTarget } from '../providers/ui-preferences.tsx';
 
@@ -19,9 +19,10 @@ export function useConversationDraftRetention({ discardUnsentDraft, sourceScopeI
 
 /** Resolve selection before a panel derives parent/child ownership or presentation gates. */
 export function useConversationPaneTarget(sourceScopeId: string, rows: readonly Conversation[]) {
-  const registry = useConversationRegistry();
+  const registry = useConversationCommands();
   const [target, setOpenTarget] = useConversationViewTarget(sourceScopeId);
-  const adoptedDraftId = registry.adoptedDraftIdOf(sourceScopeId);
+  const slot = useConversationDraftSlot(sourceScopeId);
+  const adoptedDraftId = slot?.kind === 'adopted' ? slot.conversationId : null;
   const adoptedRow = adoptedDraftId === null ? undefined : rows.find(row => row.id === adoptedDraftId);
   /* Adoption: the reducer moves a matching `{ scopeId, key }` from `held` to
        `adopted`; if the create settles while unmounted, the outcome waits here. */
@@ -36,26 +37,27 @@ export function useConversationPaneTarget(sourceScopeId: string, rows: readonly 
 }
 
 export function useRequestedConversationOpen({ registry, rows, setOpenTarget, setComposerFocusFor, inline }: Readonly<{
-  registry: Pick<ConversationRegistry, 'requestedOpenId' | 'requestedOpenFocusesComposer' | 'clearOpenRequest'>;
+  registry: Pick<ConversationRegistry, 'clearOpenRequest'>;
   rows: readonly Conversation[];
   setOpenTarget: SetOpenTarget;
   setComposerFocusFor: (id: string | null) => void;
   inline: boolean | undefined;
 }>) {
+  const request = useConversationOpenRequest();
   /* Consumed only when the rows are loaded AND contain the id, never cleared on
        absence: the list arrives a round trip after the request, and the id may
        belong to another track. */
   useEffect(() => {
-    const requestedOpenId = registry.requestedOpenId;
+    const requestedOpenId = request?.id ?? null;
     if (requestedOpenId === null || inline === true) return;
     /* Captured here, not read at render time: the request is cleared in the same
            commit that opens the row. */
-    const focusComposer = registry.requestedOpenFocusesComposer;
+    const focusComposer = request?.focusComposer === true;
     if (!rows.some((row) => row.id === requestedOpenId)) return;
     setOpenTarget({ kind: 'row', id: requestedOpenId });
     if (focusComposer) setComposerFocusFor(requestedOpenId);
     registry.clearOpenRequest();
-  }, [registry, rows, setOpenTarget, setComposerFocusFor, inline]);
+  }, [registry, request, rows, setOpenTarget, setComposerFocusFor, inline]);
 }
 
 export function useConversationEscape({ open, store }: Readonly<{

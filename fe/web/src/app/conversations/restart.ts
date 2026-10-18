@@ -1,13 +1,12 @@
 import { useRef } from 'react';
 
-import { isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
 import {
   DORMANT_NOTICE, PAUSED_NOTICE, RESTART_ACTION, RESTARTED_NOTICE, restartFailureText,
 } from '../../../../core/domain/conversation-restart.ts';
 import { writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
 import { REFILLED_NOTE } from './edit.ts';
-import { useConversationRegistry } from './public.tsx';
+import { useConversationCommands, useConversationComposerEmpty, useConversationEditNotice, useConversationRestartOut } from './public.tsx';
 
 /** What the strip above the composer says about the conversation's session, and the action it offers, if any. */
 export type RestartStrip = Readonly<{
@@ -32,18 +31,20 @@ export function useConversationRestart({ cardId, stalled, restart }: {
   /** `POST …/planner/restart` for this card, settled once the run state read after it has landed. */
   restart: () => Promise<unknown>;
 }) {
-  const { editNoticeOf, noteRestarted, composerOf, holdRestart, restartOutOf } = useConversationRegistry();
+  const { noteRestarted, holdRestart } = useConversationCommands();
+  const composerEmpty = useConversationComposerEmpty(cardId === '' ? null : cardId);
+  const pending = useConversationRestartOut(cardId === '' ? null : cardId);
   const [failure, setFailure] = useState<Readonly<{ cardId: string; message: string }> | null>(null);
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
-  const notice = cardId === '' ? null : editNoticeOf(cardId);
+  const notice = useConversationEditNotice(cardId === '' ? null : cardId);
   const error = failure?.cardId === cardId ? failure.message : null;
   const errors = error === null ? [] : [error];
   const offered = notice?.kind === 'dormant' || stalled;
   const strip: RestartStrip | null = notice?.kind === 'dormant' ? {
     tone: 'error', errors, action: RESTART_ACTION,
     /* An Edit's replace was refused: a Send now adds a new message, as for any refused replace. */
-    lines: notice.edit && !isComposerEmpty(composerOf(cardId)) ? [DORMANT_NOTICE, REFILLED_NOTE] : [DORMANT_NOTICE],
+    lines: notice.edit && !composerEmpty ? [DORMANT_NOTICE, REFILLED_NOTE] : [DORMANT_NOTICE],
   } : stalled ? { tone: error === null ? 'neutral' : 'error', lines: [PAUSED_NOTICE], errors, action: RESTART_ACTION }
     : notice?.kind === 'restarted' ? { tone: 'neutral', lines: [RESTARTED_NOTICE], errors: [], action: null }
     : null;
@@ -58,7 +59,7 @@ export function useConversationRestart({ cardId, stalled, restart }: {
   };
   return {
     strip,
-    pending: restartOutOf(cardId),
+    pending,
     start,
     /** A send went out: a failed restart's sentence goes, as the notice it was beside does. */
     clearError: () => { setFailure((current) => current?.cardId === cardId ? null : current); },

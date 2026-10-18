@@ -14,7 +14,6 @@ import { writeClipboardText } from '../../ui/operation-feedback/clipboard.ts';
 import { useConversationEdit } from '../conversations/edit.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { notSentMessage } from '../../../../core/domain/conversation-delivery.ts';
-import { EMPTY_COMPOSER, isComposerEmpty } from '../../../../core/domain/conversation-composer.ts';
 import { DELETE_FAILURES, DELETE_TEXT, NotSentError, writeFailureText } from '../../../../core/domain/failure-class.ts';
 // Code-based TanStack Router setup, built inside a factory so a test can inject the
 // transport and QueryClient; also the composition point for route-owned surfaces.
@@ -35,7 +34,7 @@ import type { AgentProvider, AskAnswer } from '../../../../core/api/generated/wi
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
   ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer,
-  NO_UPLOAD, type AttachmentStore, usePlannerAttachments,
+  type AttachmentStore, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import {
   trackOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
@@ -61,7 +60,7 @@ import {
 import { ArchivedConversationNotice, ChatList } from '../../features/chat/list/public.tsx';
 import { OutgoingMessage } from '../../features/chat/thread/outgoing-message.tsx';
 import {
-  ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread, type ComposerFocusHandle,
+  ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread, type ComposerFocusHandle,
 } from '../../features/chat/thread/public.tsx';
 import { ModelPill, PermissionModePill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
 import { usePlannerRoleControl, type PlannerRoleControl } from './planner-role.ts';
@@ -110,7 +109,7 @@ import {
 } from '../providers/queries.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
 import { DailyTodayRoute } from './daily-planner.tsx';
-import { ChatDock } from '../../features/chat/dock/public.tsx';
+import { ConversationComposer, ConversationDock } from './conversation-composer.tsx';
 import mobileChatStyles from './mobile-chat.module.css';
 import { ConversationSurface } from './mobile-conversation-surface.tsx';
 import { plannerConversationRow } from '../conversations/planner-row.ts';
@@ -121,7 +120,7 @@ import { ReadReceiptsProvider, useReadReceipt, useReadReceipts } from '../provid
 import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, MobileConversationProvider, useMobileConversationOwner, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost } from '../shell/public.tsx';
 import {
-  ConversationProvider, useConversationRegistry, type ConversationDraftId,
+  ConversationProvider, useConversationCommands, useConversationAttachments, useConversationComposerEmpty, useConversationDraft, useConversationOpenRequest, useConversationUpload, type ConversationDraftId,
 } from '../conversations/public.tsx';
 import {
   renderedMobilePanel,
@@ -319,7 +318,7 @@ function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
   options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
 ) {
-  const registry = useConversationRegistry();
+  const registry = useConversationCommands();
   const compact = useCompactViewport();
   const [sideError, setSideError] = useState<string | null>(null);
   const mainTarget = useConversationPaneTarget(source.scopeId, source.rows);
@@ -334,7 +333,7 @@ function useConversationPanel(
     queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized), enabled: parentId !== null && !compact, retry: false });
   const sideSlot = `${source.scopeId}:side:${parentId ?? ''}`;
   const sideTarget = useConversationPaneTarget(sideSlot, source.rows);
-  const sideDraft = registry.draftOf(sideSlot);
+  const sideDraft = useConversationDraft(sideSlot);
   const childId = sideTarget[0]?.kind === 'row' ? sideTarget[0].id : null;
   const child = source.rows.find((row) => row.id === childId);
   const belongsToParent = !compact && parentId !== null && (sideTarget[0]?.kind === 'draft'
@@ -382,7 +381,7 @@ function useConversationPane(
   /* Existing conversation selection survives navigation; unfinished drafts
      retain their separate ConversationProvider lifecycle. */
   const [openTarget, setOpenTarget] = target;
-  const registry = useConversationRegistry();
+  const registry = useConversationCommands();
   const sourceScopeId = options?.slotId ?? source.scopeId;
   /* The conversation whose composer this route was asked to put the caret in. Held
        here because the request is cleared in the same commit that opens the row;
@@ -427,7 +426,8 @@ function useConversationPane(
   /* The open conversation's own composer: words and images live in the registry per conversation,
        so closing keeps them and switching shows the other conversation's own. */
   const composerId = scope?.cardId ?? null;
-  const composer = composerId === null ? EMPTY_COMPOSER : registry.composerOf(composerId);
+  const heldAttachments = useConversationAttachments(composerId);
+  const composerEmpty = useConversationComposerEmpty(composerId);
   const { editComposer } = registry;
   const setComposerText = useCallback<Dispatch<SetStateAction<string>>>((action) => {
     if (composerId === null) return;
@@ -437,16 +437,16 @@ function useConversationPane(
     });
   }, [composerId, editComposer]);
   const { editUpload } = registry;
-  const uploadState = composerId === null ? NO_UPLOAD : registry.uploadOf(composerId);
+  const uploadState = useConversationUpload(composerId);
   const attachmentStore = useMemo<AttachmentStore>(() => ({
-    items: composer.attachments,
+    items: heldAttachments,
     update: (cardId, next) => editComposer(cardId, (current) => {
       const attachments = next(current.attachments);
       return attachments === current.attachments ? current : { ...current, attachments };
     }),
     upload: uploadState,
     editUpload,
-  }), [composer.attachments, editComposer, editUpload, uploadState]);
+  }), [heldAttachments, editComposer, editUpload, uploadState]);
   const attachments = usePlannerAttachments(store.uploadAttachment, composerId ?? '', attachmentStore);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const shownComposer = useRef(composerId);
@@ -454,7 +454,7 @@ function useConversationPane(
   const focusComposer = useCallback((conversationId: string) => {
     if (shownComposer.current === conversationId) setComposerFocusRequest((count) => count + 1);
   }, []);
-  const edit = useConversationEdit({ conversationId: composerId, transcript: composerId === null ? [] : store.turnsOf(composerId),
+  const edit = useConversationEdit({ conversationId: composerId, transcript: composerId === null ? [] : store.turns,
     historyReady: store.historyReady, focusComposer, changeComposer: setComposerText,
     queue: { entries: store.pendingQueue, ready: store.runReady && store.runError === null,
       busy: store.queueWriteOut || attachments.busy, save: store.editQueuedEntry } });
@@ -487,7 +487,7 @@ function useConversationPane(
   const chatLinks = useConversationLinks({ transport, unauthorized, conversationId: openRowId, trackId: imageTrackId,
     root: imageRoot, files: conversationFiles, onOpenLink: openChatLink, onOpenFile: openChatFile });
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
-  const openTurns = open === null ? [] : store.turnsOf(open.id);
+  const openTurns = open === null ? [] : store.turns;
   const hasPendingMessages = store.pendingQueue.length > 0 || store.pendingSends.length > 0 || store.pendingQueueOverflow > 0;
   const threadAvailable = open !== null
     && (store.historyReady || openTurns.length > 0 || hasPendingMessages || store.stalled || store.stopFeedback !== null);
@@ -507,7 +507,7 @@ function useConversationPane(
     threadPresented && store.historyReady && !store.historyLoading && store.historyError === null);
 
   /* Only this route's slot is visible, reopenable or sendable here. */
-  const draft = registry.draftOf(sourceScopeId);
+  const draft = useConversationDraft(sourceScopeId);
   const creating = draft?.creating ?? false;
   const draftFocus = useMemo(() => ({ key: draft?.key ?? null, handle: createRef<ComposerFocusHandle>() }), [draft?.key]);
   // Rekey keeps this scope's event channel, but only the actual current attempt
@@ -520,7 +520,6 @@ function useConversationPane(
   });
   const discardUnsentDraft = registry.discardUnsentDraft;
   /* The new conversation's composer lives in the registry per Track, so closing, `+` and leaving keep its words. */
-  const newConversationText = registry.newConversationComposerOf(sourceScopeId);
   const { editNewConversationComposer } = registry;
   const setNewConversationText = useCallback<Dispatch<SetStateAction<string>>>((action) => {
     editNewConversationComposer(sourceScopeId, (current) => typeof action === 'function' ? action(current) : action);
@@ -586,7 +585,7 @@ function useConversationPane(
   const editMessage = useCommittedCallback(existingId, edit.start);
   const sideQuestion = useCommittedCallback(existingId, (question: string) => {
     if (open === null || options?.onSide === undefined || !sideSourceReady) return false;
-    return options.onSide(open, store.turnsOf(open.id), question);
+    return options.onSide(open, store.turns, question);
   });
   const plannerAsks = plannerRow?.asks ?? NO_ASKS;
   /* Read field by field: the control is rebuilt each render, and the composer's memo keys on what it shows. */
@@ -642,12 +641,12 @@ function useConversationPane(
   const editingQueue = edit.queued !== null;
   const changeComposer = edit.onComposerChange;
   const composerNode = useMemo(() => existingId === null ? null : (
-            <ChatComposer layout={compactComposer ? 'mobile' : 'standard'}
+            <ConversationComposer target={{ kind: 'card', id: existingId }} layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
                                when the drawer closes. */
               focusOnMount={composerFocusFor === existingId}
               focusRequest={composerFocusRequest}
-              draft={{ text: composer.text, onChange: changeComposer }}
+              changeText={changeComposer}
               disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
               onCompact={composerView.manualCompactSupported && composerView.historyReady && editingBar === undefined ? composerView.compact : undefined}
               sendWaiting={composerView.sending || edit.queuedSaving} {...(editingBar === undefined ? {} : { editing: editingBar })}
@@ -712,7 +711,7 @@ function useConversationPane(
                 </HStack>
               )}
             />
-  ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, changeComposer, composerView,
+  ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, changeComposer, composerView,
     replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
@@ -752,10 +751,10 @@ function useConversationPane(
               </ChatFooterNotice>
             )}
             {/* Initial submit hands words to the held draft, including refusal; only recovery uses the takeover boolean. */}
-            <ChatComposer layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
+            <ConversationComposer target={{ kind: 'scope', id: sourceScopeId }} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }} onNewConversation={options?.inline === true ? undefined : startAnother}
               focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
-              draft={{ text: newConversationText, onChange: setNewConversationText }}
+              changeText={setNewConversationText}
               /* Menu membership and readiness come from the managed backend declarations. */
               footerActions={<ModelPill groups={managed.groups} provider={draft.provider} selection={draft.model}
                 effortControl={compactComposer ? 'in-menu' : 'separate'}
@@ -884,7 +883,7 @@ function useConversationPane(
                   ? regenerateMessage
                   : undefined}
                 editMessage={respondable && store.historyReplacementSupported && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
-                  && isComposerEmpty(composer) && !attachments.busy ? editMessage : undefined}
+                  && composerEmpty && !attachments.busy ? editMessage : undefined}
                 canContinue={canContinue}
                 stalledReason={store.blockedReason}
                 stopFeedback={store.stopFeedback}
@@ -926,14 +925,14 @@ function useConversationPane(
   });
   const sendFromDock = useCommittedCallback(dockViewId, (text: string) => {
     if (dockRowId !== null) {
-      if (submitMessage(dockRowId, text, composer.attachments, true, edit.replacesIn(dockRowId)) !== null) {
+      if (submitMessage(dockRowId, text, registry.composerOf(dockRowId).attachments, true, edit.replacesIn(dockRowId)) !== null) {
         setOpenTarget({ kind: 'row', id: dockRowId });
       }
     } else if (startWithMessage(text)) setNewConversationText('');
   });
 
   return {
-    dock: compactComposer ? <ChatDock text={dockRowId === null ? newConversationText : composer.text}
+    dock: compactComposer ? <ConversationDock target={dockRowId === null ? { kind: 'scope', id: sourceScopeId } : { kind: 'card', id: dockRowId }}
       onChange={setDockText} onSend={sendFromDock} onBeginInput={openDockHistory}
       disabled={archived || options?.reportComposer?.ready === false || (dockRowId !== null && (store.sendBlocked || !store.historyReady || edit.held !== null))} /> : undefined,
     selectedConversationId: draftOpen ? null : open?.id ?? dockRowId,
@@ -956,7 +955,8 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles, prepare
   recentFiles: RecentFileHistory;
 }) {
   const trackId = useRouteParam('/track/');
-  const registry = useConversationRegistry();
+  const registry = useConversationCommands();
+  const openRequest = useConversationOpenRequest();
   const detail = useQuery({
     ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized),
     enabled: trackId !== undefined,
@@ -970,14 +970,14 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles, prepare
   /* The card Today asked for, if this track has it and it is a conversation card at
    * all — BOTH conversation markers, not just the planner one. A fail-safe with no
    * live producer. */
-  const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
+  const requestedCard = detail.data?.cards.find((card) => card.id === openRequest?.id
     && card.kind === 'codex'
     && (isPlannerHarnessPayload(card.payload) || isAssistantHarnessPayload(card.payload)));
   const detailMatchesRoute = trackId !== undefined && detail.data?.track.id === trackId;
   useEffect(() => {
-    if (registry.requestedOpenId === null || detail.isLoading || detail.isFetching) return;
+    if (openRequest === null || detail.isLoading || detail.isFetching) return;
     if (!detailMatchesRoute || requestedCard === undefined) registry.clearOpenRequest();
-  }, [detail.isFetching, detail.isLoading, detailMatchesRoute, registry, requestedCard]);
+  }, [detail.isFetching, detail.isLoading, detailMatchesRoute, registry, requestedCard, openRequest]);
 
   if (!detail.data || track === null) {
     if (detail.isLoading || detail.isFetching) return <TrackPending />;
@@ -1093,7 +1093,8 @@ function TrackRouteBody({
   const cardRegistry = cardRuntime.registry;
   // The same predicate the planner entry resolves by, imported rather than copied.
   const plannerCard = plannerCardIn(cards);
-  const registry = useConversationRegistry();
+  const registry = useConversationCommands();
+  const openRequest = useConversationOpenRequest();
   /* The track's assistant conversations; the server's list predicate is
    * `role == Assistant`, so the planner row is injected below. */
   const conversationsQuery = useQuery(trackConversationsQueryOptions(transport, track.id, unauthorized));
@@ -1166,11 +1167,11 @@ function TrackRouteBody({
    * would open it could not be read. Not "the read failed", which would also
    * throw away an openable planner row. */
   useEffect(() => {
-    const requestedOpenId = registry.requestedOpenId;
+    const requestedOpenId = openRequest?.id ?? null;
     if (requestedOpenId === null || !conversationsQuery.isError) return;
     if (rows.some((row) => row.id === requestedOpenId)) return;
     registry.clearOpenRequest();
-  }, [conversationsQuery.isError, registry, rows]);
+  }, [conversationsQuery.isError, registry, rows, openRequest]);
   /* The runtime half of the TASKS panel, keyed `['track-report', trackId]`: the key
    * `invalidation-plan` refreshes on every `task.*` event and `track.report_edited`. */
   /* Read before the query: the poll's interval depends on the rows this report can produce. */

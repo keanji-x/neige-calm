@@ -5,7 +5,7 @@ import { markedReplace, replacingTurn, type ReplacedTurn } from '../../../../cor
 import { notSentMessage } from '../../../../core/domain/conversation-delivery.ts';
 import { editedTurnRefill, isComposerEmpty, isLatestTurn } from '../../../../core/domain/conversation-composer.ts';
 import { useState } from '../../ui/state/public.ts';
-import { useConversationRegistry } from './public.tsx';
+import { useConversationCommands, useConversationComposerEmpty, useConversationEditNotice, useConversationEditState, useConversationSendOps } from './public.tsx';
 
 /** Beside a refused replace while its words are still in the composer: they are a new message now. */
 export const REFILLED_NOTE = 'Your message is back in the composer; sending adds a new one.';
@@ -22,9 +22,10 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
     save: (entry: PendingQueueEntry, text: string) => Promise<PlannerQueueEditOutcome>;
   }>;
 }) {
-  const { editOf, beginEdit, cancelEdit, settleQueuedEdit, leaveEdit, editNoticeOf, outboxOf, composerOf } = useConversationRegistry();
-  const held = conversationId === null ? null : editOf(conversationId);
-  const ops = conversationId === null ? [] : outboxOf(conversationId);
+  const { editOf, beginEdit, cancelEdit, settleQueuedEdit, leaveEdit, composerOf } = useConversationCommands();
+  const held = useConversationEditState(conversationId);
+  const composerEmpty = useConversationComposerEmpty(conversationId);
+  const ops = useConversationSendOps(conversationId);
   const replacing = replacingTurn(ops);
   const leases = useRef(new Set<string>());
   const [saving, setSaving] = useState<ReadonlySet<string>>(() => new Set());
@@ -69,12 +70,12 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
   const onComposerChange = useCallback<Dispatch<SetStateAction<string>>>(action => {
     if (conversationId === null || !leases.current.has(conversationId)) changeComposer(action);
   }, [conversationId, changeComposer]);
-  const heldNotice = conversationId === null ? null : editNoticeOf(conversationId);
+  const heldNotice = useConversationEditNotice(conversationId);
   const notice = heldNotice?.kind === 'dormant' || heldNotice?.kind === 'restarted' ? null : heldNotice;
   const cancel = () => { if (conversationId !== null && !queuedSaving) cancelEdit(conversationId); };
   return {
     held, queued, queuedMissing, queuedSaving, startQueued, saveQueued, onComposerChange,
-    canEditQueued: held === null && conversationId !== null && isComposerEmpty(composerOf(conversationId)) && queue.ready && !queue.busy,
+    canEditQueued: held === null && conversationId !== null && composerEmpty && queue.ready && !queue.busy,
     savedQueuedEntry: savedEntry?.cardId === conversationId ? savedEntry.entry : null,
     queueFailure: queuedResult?.cardId === conversationId && queuedResult.entryId === queued?.entry.entry_id ? queuedResult.outcome : null,
     replacesIn: (pressedIn: string): ReplacedTurn | null => {
@@ -87,7 +88,7 @@ export function useConversationEdit({ conversationId, transcript, historyReady, 
     marked: held?.kind === 'turn' ? held.outcomeId : markedReplace(ops)?.outcomeId ?? null,
     notice: notice === null ? null : notice.kind === 'refused'
       ? { tone: 'error', lines: notice.edit ? [`Edit failed: ${notice.message}`,
-        ...(conversationId === null || isComposerEmpty(composerOf(conversationId)) ? [] : [REFILLED_NOTE])]
+        ...(composerEmpty ? [] : [REFILLED_NOTE])]
         : [notSentMessage(notice.message)] } as const
       : { tone: 'neutral', lines: ['This message can no longer be replaced; sending adds a new one.'] } as const,
     start,

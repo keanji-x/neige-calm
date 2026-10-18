@@ -4,14 +4,14 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 
-import { useEffect } from 'react';
+import { StrictMode, useEffect, useLayoutEffect } from 'react';
 
 import type { PlannerAttachment } from '../../../../core/api/generated/wire.ts';
 import { MAX_ATTACHMENTS_PER_MESSAGE, TOO_MANY_IMAGES } from '../../../../core/domain/conversation.ts';
 import type { SendOp } from '../../../../core/domain/conversation-outbox.ts';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { sha256Hex } from '../../../../core/domain/sha256.ts';
-import { ConversationProvider, useConversationRegistry, type ConversationRegistry } from './public.tsx';
+import { ConversationProvider, useConversationCommands, useConversationComposerText, useConversationUpload, type ConversationRegistry } from './public.tsx';
 
 const CONVERSATION = 'conversation-a';
 
@@ -21,7 +21,7 @@ const images = (prefix: string, count: number) => Array.from({ length: count }, 
 function mountRegistry(): () => ConversationRegistry {
   let registry!: ConversationRegistry;
   function Probe() {
-    const current = useConversationRegistry();
+    const current = useConversationCommands();
     useEffect(() => { registry = current; });
     return null;
   }
@@ -30,6 +30,77 @@ function mountRegistry(): () => ConversationRegistry {
 }
 
 afterEach(cleanup);
+
+it('does not execute an unrelated card upload reader when composer text changes', () => {
+  let registry!: ConversationRegistry;
+  let renders = 0;
+  function Commands() {
+    registry = useConversationCommands();
+    return null;
+  }
+  function Upload() {
+    useConversationUpload('another-card');
+    renders += 1;
+    return null;
+  }
+  render(<ConversationProvider><Commands /><Upload /></ConversationProvider>);
+  const before = renders;
+  act(() => { registry.editComposer(CONVERSATION, current => ({ ...current, text: 'First words' })); });
+  expect(renders).toBe(before);
+});
+
+it('observes a write between render and subscription without publishing from render', () => {
+  let text = '';
+  function Reader() { text = useConversationComposerText(CONVERSATION); return <span>{text}</span>; }
+  function Parent() {
+    const registry = useConversationCommands();
+    useLayoutEffect(() => { registry.editComposer(CONVERSATION, current => ({ ...current, text: 'Landed before subscribing' })); }, [registry]);
+    return <Reader />;
+  }
+  render(<ConversationProvider><Parent /></ConversationProvider>);
+  expect(text).toBe('Landed before subscribing');
+});
+
+it('keeps StrictMode subscriptions live, retains facts across last unsubscribe and isolates replacement Providers', () => {
+  let commands!: ConversationRegistry; let text = ''; let renders = 0;
+  function Reader() {
+    commands = useConversationCommands();
+    text = useConversationComposerText(CONVERSATION); renders += 1;
+    return null;
+  }
+  const tree = (key: string, shown = true) => <StrictMode><ConversationProvider key={key}>{shown && <Reader />}</ConversationProvider></StrictMode>;
+  const view = render(tree('first'));
+  const original = commands;
+  act(() => { original.editComposer(CONVERSATION, current => ({ ...current, text: 'Retained words' })); });
+  expect(text).toBe('Retained words'); expect(commands).toBe(original);
+  view.rerender(tree('first', false)); view.rerender(tree('first'));
+  expect(text).toBe('Retained words'); expect(commands).toBe(original);
+  view.rerender(tree('replacement'));
+  expect(text).toBe(''); expect(commands).not.toBe(original);
+  const before = renders;
+  act(() => { original.editComposer(CONVERSATION, current => ({ ...current, text: 'Late old completion' })); });
+  expect(text).toBe(''); expect(renders).toBe(before);
+});
+
+it('switches card subscriptions without notifying the previous identity and cleans up exactly', () => {
+  let registry!: ConversationRegistry; let text = ''; let renders = 0;
+  function Reader({ id }: { id: string }) {
+    registry = useConversationCommands(); text = useConversationComposerText(id); renders += 1;
+    return null;
+  }
+  const view = render(<ConversationProvider><Reader id={CONVERSATION} /></ConversationProvider>);
+  act(() => { registry.editComposer(CONVERSATION, current => ({ ...current, text: 'A' })); });
+  view.rerender(<ConversationProvider><Reader id="another" /></ConversationProvider>);
+  expect(text).toBe('');
+  const before = renders;
+  act(() => { registry.editComposer(CONVERSATION, current => ({ ...current, text: 'A changed' })); });
+  expect(renders).toBe(before);
+  act(() => { registry.editComposer('another', current => ({ ...current, text: 'B' })); });
+  expect(text).toBe('B');
+  view.unmount();
+  act(() => { registry.editComposer('another', current => ({ ...current, text: 'B changed' })); });
+  expect(text).toBe('B');
+});
 
 /* #2068 item 30: an Edit merges the turn into whatever the composer holds, so the images it could not take are the
    merge's, not the turn's alone; they are said, never dropped silently. */

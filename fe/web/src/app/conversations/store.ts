@@ -14,7 +14,7 @@ import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/doma
 import { harnessItemsQueryOptions, modelCatalogQueryOptions, plannerRunQueryOptions, usePlannerMutations } from '../providers/queries.ts';
 import { managedProvidersQueryOptions } from '../providers/managed-providers.ts';
 import { useState } from '../../ui/state/public.ts';
-import { useConversationRegistry } from './public.tsx';
+import { useConversationCommands, useConversationSendOps, useConversationQueueWriteOut, useConversationRememberedTurns, useConversationTurns, useRememberedConversations } from './public.tsx';
 import { useConversationStop } from './stop.ts';
 import { useConversationRestart } from './restart.ts';
 import { useLiveReplies, useTranscriptReads } from './live-replies.ts';
@@ -36,8 +36,9 @@ export function useConversationStore(
   scope: PlannerConversationScope | null,
   routeIntent: ConversationRouteIntent,
 ): ConversationStore {
-  const registry = useConversationRegistry();
-  const { remember, rememberedTurnsOf, conversations: rememberedConversations } = registry;
+  const registry = useConversationCommands();
+  const { remember, rememberedTurnsOf } = registry;
+  const rememberedConversations = useRememberedConversations();
   const cardId = scope?.cardId ?? '';
   const trackId = scope?.id;
   const provider = scope?.provider;
@@ -76,7 +77,10 @@ export function useConversationStore(
        once any query data exists the server wins, even when empty. */
   /* Queued rows are supplied by the display projection, not twice from the server
      transcript. Raw `serverTurns` still sees every row for delivery reconciliation. */
-  const rememberedEntries = history.data === undefined ? rememberedTurnsOf(cardId) : null;
+  const rememberedSource = useConversationRememberedTurns(history.data === undefined && scope !== null ? cardId : null);
+  const rememberedEntries = history.data === undefined ? rememberedSource : null;
+  const rememberedDisplay = useConversationTurns(scope === null ? null : cardId);
+  const queueWriteOut = useConversationQueueWriteOut(scope === null ? null : cardId);
   const serverTurns = useMemo(
     () => history.data === undefined
       ? (rememberedEntries ?? []).filter(isConversationMessage)
@@ -85,7 +89,8 @@ export function useConversationStore(
   );
   const landedRun = runReads.startOf(run.data);
   const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
-  const accepted = registry.outboxOf(cardId).find((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
+  const queueOps = useConversationSendOps(scope === null ? null : cardId);
+  const accepted = queueOps.find((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
   const initialObservation = useInitialInputObservation(transport, unauthorized, cardId, accepted,
     scope !== null && routeIntent.visible !== false, history.isFetching || run.isFetching, registry.nextRead);
   const reportedInput = useMemo(() => {
@@ -190,7 +195,6 @@ export function useConversationStore(
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view, accountQueueDisplay } = outbox;
-  const queueOps = registry.outboxOf(cardId);
   const [placementMemory, setPlacementMemory] = useState(() => ({ cardId, ops: queueOps, queue: pendingQueue,
     placements: rememberQueuePlacements(new Map(), queueOps, pendingQueue) }));
   let placements = placementMemory.placements;
@@ -262,9 +266,9 @@ export function useConversationStore(
 
   const listedConversations = useMemo(
     () => serverRows.map((row) => withRememberedTitle(
-      row, registry.conversations.find((candidate) => candidate.id === row.id),
+      row, rememberedConversations.find((candidate) => candidate.id === row.id),
     )),
-    [registry.conversations, serverRows],
+    [rememberedConversations, serverRows],
   );
   /* The open row is replaced in place by the live one: same id, plus the turns and
        name only the transcript can supply. */
@@ -294,7 +298,7 @@ export function useConversationStore(
 
   return {
     conversations,
-    turnsOf: (conversationId) => conversation?.id === conversationId ? presentation.transcript : registry.turnsOf(conversationId),
+    turns: conversation === null ? rememberedDisplay : presentation.transcript,
     pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,
@@ -314,7 +318,7 @@ export function useConversationStore(
       outbox.acknowledgeQueuedEdit(entry, saved);
     }).then(observeQueueOutcome)),
     deleteQueuedEntry,
-    queueWriteOut: registry.queueWriteOutOf(cardId),
+    queueWriteOut,
     steerQueuedEntry,
     historyReady: history.data !== undefined,
     historyLoading: history.isFetching,

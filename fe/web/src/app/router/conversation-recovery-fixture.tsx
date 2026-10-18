@@ -1,6 +1,6 @@
 import { initialReceiptFor } from './initial-input-fixture.ts';
 import { useLayoutEffect } from 'react';
-import { useConversationRegistry } from '../conversations/public.tsx';
+import { useConversationDraft } from '../conversations/public.tsx';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -33,8 +33,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
     return sent && holdReads ? new Promise(resolve => { heldReads.push(() => resolve(answer())); }) : answer();
   };
   function DraftCommitProbe() {
-    const registry = useConversationRegistry();
-    const key = registry.draftOf('daily')?.key ?? null;
+    const key = useConversationDraft('daily')?.key ?? null;
     useLayoutEffect(() => { onDraftCommit?.(key); }, [key]);
     return null;
   }

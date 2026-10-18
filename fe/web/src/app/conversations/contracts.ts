@@ -8,8 +8,8 @@ import type { RestartStrip } from './restart.ts';
 
 export type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
-  /** Messages *and* the actions between them, in the order they happened. */
-  turnsOf: (conversationId: string) => readonly TranscriptEntry[];
+  /** This selected scope's messages and actions, in canonical display order. */
+  turns: readonly TranscriptEntry[];
   pending: ReadonlySet<string>;
   working: boolean;
   stalled: boolean;

@@ -2,6 +2,7 @@ import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { useConversationStore } from '../conversations/store.ts';
+import * as conversationStores from '../conversations/store.ts';
 // @vitest-environment jsdom
 // Starting a conversation on a track, driven through the real router; and what the
 // session registry may remember about one, driven through the real store.
@@ -24,12 +25,13 @@ import type { Conversation, TranscriptEntry } from '../../../../core/domain/conv
 import {
   CONVERSATION_CREATE_TEXT, conversationCreateUnknownText, MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId,
 } from '../../../../core/domain/conversation.ts';
-import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
+import { ConversationProvider, useConversationCommands, useConversationComposerText, useConversationTurns, useRememberedConversations } from '../conversations/public.tsx';
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
 import { createReadReceiptsKernel, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
 
 /* A send's automatic retries wait no real time here; how long they back off is not under test. */
 vi.mock('../../../../core/domain/recovery/access.ts', async (importOriginal) => ({
@@ -307,6 +309,50 @@ afterEach(() => {
 });
 
 describe('track conversations', () => {
+  it.each(['/track/w1', '/track/w2'])('keeps compact dock text updates below both pane controllers in %s', async route => {
+    window.history.pushState({}, '', `${APP_BASEPATH}${route}`);
+    vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
+      matches: media === RAIL_COLLAPSE_QUERY || media === '(prefers-reduced-motion: reduce)', media, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    })));
+    const controller = vi.spyOn(conversationStores, 'useConversationStore');
+    try {
+      setup();
+      const dock = await screen.findByRole('textbox', { name: 'Chat message' });
+      // Exercise the dock's controlled change port; focus deliberately opens the full editor.
+      fireEvent.change(dock, { target: { value: 'First' } });
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      const before = controller.mock.calls.length;
+      fireEvent.change(dock, { target: { value: 'First words' } });
+      expect((dock as HTMLTextAreaElement).value).toBe('First words');
+      expect(controller).toHaveBeenCalledTimes(before);
+    } finally { controller.mockRestore(); }
+  });
+
+  it('keeps ordinary existing and new composer edits below both pane controllers', async () => {
+    const controller = vi.spyOn(conversationStores, 'useConversationStore');
+    try {
+      setup();
+      fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+      await screen.findByRole('complementary', { name: 'Assistant' });
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+      await typeInto(messageField(), 'First');
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      const existingCalls = controller.mock.calls.length;
+      await typeInto(messageField(), 'First words');
+      expect(messageField().textContent).toBe('First words');
+      expect(controller).toHaveBeenCalledTimes(existingCalls);
+      fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+      await openDraft();
+      await typeInto(messageField(), 'New');
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+      const newCalls = controller.mock.calls.length;
+      await typeInto(messageField(), 'New words');
+      expect(messageField().textContent).toBe('New words');
+      expect(controller).toHaveBeenCalledTimes(newCalls);
+    } finally { controller.mockRestore(); }
+  });
+
   it('restores each track conversation drawer after switching tracks', async () => {
     const { router } = setup();
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
@@ -1842,6 +1888,17 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     await screen.findByRole('button', { name: 'Edit message' });
   }
+
+  it('keeps response-edit availability reactive across whitespace and nonempty composer boundaries', async () => {
+    twoTurnSetup();
+    await openEditableAssistant();
+    await typeInto(messageField(), ' \n ');
+    expect(screen.getByRole('button', { name: 'Edit message' })).toBeTruthy();
+    await typeInto(messageField(), 'A draft');
+    expect(screen.queryByRole('button', { name: 'Edit message' })).toBeNull();
+    await clearField();
+    expect(screen.getByRole('button', { name: 'Edit message' })).toBeTruthy();
+  });
 
   /** A send the case answers by hand, so what the press does is seen before any answer. */
   function heldAnswer() {
@@ -3451,8 +3508,9 @@ describe('registry write-through', () => {
     }
 
     function RegistryProbe() {
-      const registry = useConversationRegistry();
-      useEffect(() => { known = registry.conversations; readTurns = registry.turnsOf; });
+      const registry = useConversationCommands();
+      const conversations = useRememberedConversations();
+      useEffect(() => { known = conversations; readTurns = registry.turnsOf; });
       return null;
     }
 
@@ -3503,8 +3561,8 @@ describe('registry write-through', () => {
     let composerText = '';
     function Probe() {
       const current = useConversationStore(transport, unauthorized, SCOPE, { rows: ROWS, rememberOn: 'w1' });
-      const composer = useConversationRegistry().composerOf(ASSISTANT_CARD.id);
-      useEffect(() => { store = current; composerText = composer.text; });
+      const text = useConversationComposerText(ASSISTANT_CARD.id);
+      useEffect(() => { store = current; composerText = text; });
       return null;
     }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
@@ -3732,7 +3790,7 @@ describe('registry write-through', () => {
         rows: ROWS, rememberOn: 'w1',
       });
       const send = store.send;
-      const turns = store.turnsOf(ASSISTANT_CARD.id);
+      const turns = store.turns;
       useEffect(() => {
         latestSend = (text) => { void send(ASSISTANT_CARD.id, text, [], true, null); };
         visibleTurns = turns;
@@ -3741,7 +3799,7 @@ describe('registry write-through', () => {
     }
 
     function RegistryProbe() {
-      const turns = useConversationRegistry().turnsOf(ASSISTANT_CARD.id);
+      const turns = useConversationTurns(ASSISTANT_CARD.id);
       useEffect(() => { latestTurns = turns; });
       return null;
     }

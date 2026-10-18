@@ -17,7 +17,7 @@ import { queryKeys } from '../providers/queries.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 import { useState } from '../../ui/state/public.ts';
-import { useConversationRegistry, type RememberedConversation } from './public.tsx';
+import { useConversationSendOps, useConversationSpentRows, useConversationCommands, type RememberedConversation } from './public.tsx';
 import { numberReads } from './read-order.ts';
 
 /** End only the exact creation lease whose existing outbox owner no longer needs observation. */
@@ -97,11 +97,11 @@ export function useConversationOutbox({
   /** Real served queue/validated read or hint facts, kept distinct from the projected queue. */
   reportedInput: readonly ReportedInput[];
 }) {
-  const registry = useConversationRegistry();
+  const registry = useConversationCommands();
   const client = useQueryClient();
   const { editOutbox, retireSends, beginSend, nextRead, updateExisting } = registry;
-  const ops = registry.outboxOf(cardId);
-  const spent = registry.spentRowsOf(cardId);
+  const ops = useConversationSendOps(cardId === '' ? null : cardId);
+  const spent = useConversationSpentRows(cardId === '' ? null : cardId);
   const queuedEntryIds = useMemo(() => new Set(queuedEntries.map(entry => entry.entry_id)), [queuedEntries]);
   const observedOps = useMemo(() => synchronizeQueuedSends(ops, { displayed: queuedEntries, reported: reportedInput }), [ops, queuedEntries, reportedInput]);
   /** The card shown now; a send's own `cardId` is the one it was pressed in. */
@@ -132,9 +132,9 @@ export function useConversationOutbox({
   }, [cardId, client, ops, retireSends, retire]);
 
   const acknowledgeQueuedWrite = (result: PlannerInputMutation, edited: readonly PendingQueueEntry[] = []) => {
-    editOutbox(cardId, current => acknowledgeQueueMutation(synchronizeQueuedSends(
+    const written = editOutbox(cardId, current => acknowledgeQueueMutation(synchronizeQueuedSends(
       result.text === null ? withoutQueuedEntry(current, result.entry_id) : current, { displayed: edited, reported: [] }), result));
-    releaseSettledInitialQueries(client, cardId, registry.outboxOf(cardId));
+    releaseSettledInitialQueries(client, cardId, written);
   };
 
   /** Words and images back in the composer of the card they were sent from, whichever conversation is shown: the one

@@ -7,7 +7,7 @@ import { initialReceiptFor } from './initial-input-fixture.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { useLayoutEffect } from 'react';
-import { useConversationRegistry, type ConversationRegistry } from '../conversations/public.tsx';
+import { useConversationCommands, type ConversationRegistry } from '../conversations/public.tsx';
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 export const FIRST_MESSAGE = 'Keep the first sentence readable through adoption.';
@@ -43,7 +43,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
     } };
   };
   function RegistryProbe() {
-    const current = useConversationRegistry();
+    const current = useConversationCommands();
     useLayoutEffect(() => { registry = current; });
     return null;
   }
