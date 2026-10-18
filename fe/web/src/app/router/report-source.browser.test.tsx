@@ -1,5 +1,6 @@
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
-// @vitest-environment jsdom
+import '../../styles/entry.css';
+import { page } from 'vitest/browser';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -82,7 +83,8 @@ function setup(reply?: Reply) {
 }
 
 const scrollIntoView = vi.fn();
-beforeEach(() => {
+beforeEach(async () => {
+  await page.viewport(1400, 900);
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView });
   vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
 });
@@ -100,17 +102,6 @@ describe('sourceResolutionOf', () => {
     expect(sourceResolutionOf({ data: undefined, isError: false, error: null })).toEqual({ status: 'loading' });
   });
 });
-
-/** A `matchMedia` answering the width query as a phone would; the theme's `prefers-color-scheme` subscriber must keep getting a non-matching list. */
-function stubCompactViewport() {
-  vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
-    matches: media.includes('width'),
-    media,
-    onchange: null,
-    addEventListener: vi.fn(), removeEventListener: vi.fn(),
-    addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
-  })));
-}
 
 describe('the source panel on the track page', () => {
   it('retries an unreadable referenced report inside the hover card', async () => {
@@ -324,7 +315,7 @@ describe('the source panel on the track page', () => {
   });
 
   it('opens a cited source on a phone and returns to the report without writing data', async () => {
-    stubCompactViewport();
+    await page.viewport(390, 844);
     try {
       const { requests } = setup();
       fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 }));
@@ -335,7 +326,7 @@ describe('the source panel on the track page', () => {
       await waitFor(() => expect(drawer.isConnected).toBe(false));
       expect(requests.filter((request) => request.method !== 'GET')).toHaveLength(0);
     } finally {
-      vi.unstubAllGlobals();
+      await page.viewport(1400, 900);
     }
   });
 
@@ -350,8 +341,7 @@ describe('the source panel on the track page', () => {
     expect(scrollIntoView.mock.instances).toContain(mark);
     expect(within(drawer).getByRole('button', { name: SOURCE_PANEL_COPY.closeLabel })).toBeTruthy();
     fireEvent.keyDown(drawer, { key: 'Escape' });
-    /* jsdom fires no `transitionend`, so the card sits in its retracting frame;
-       what closing means here is that it has left the Escape stack. */
+    // Closing revokes Escape ownership immediately, before retained paint exits.
     await waitFor(() => expect(drawer.hasAttribute('data-nc-escape-layer')).toBe(false));
   });
 

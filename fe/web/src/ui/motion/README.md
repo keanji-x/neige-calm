@@ -52,7 +52,7 @@ remains caller-owned. Controls must use native disabled or aria-disabled semanti
 
 ## Verification
 
-Unit trajectory contracts verify proportional response and analytical velocity continuity without copying the solver. Production browser tests cover real long-message refill/focus, unscaled text, native interpolation, dynamic retargeting, queued finish, reversal, paired seam disposal and reduced motion. The jsdom-only native Animation stub supplies platform controls without simulating physics or paint; actual browser behavior remains authoritative.
+Unit trajectory contracts verify proportional response and analytical velocity continuity without copying the solver. Production browser tests cover real long-message refill/focus, unscaled text, native interpolation, dynamic retargeting, queued finish, reversal, paired seam disposal and reduced motion. The jsdom-only Animation model supplies manual platform controls and a stable per-document timeline sample (0 for an active document, null without a browsing context). It does not advance a rendering clock, simulate physics or paint, or deliver frame/finish events. Paired DOM consumers share that document timeline; real browser tests remain authoritative for native time and promise lifecycles.
 
 `CollapsePresence` retains one departing flow item until its shared spring settles.
 It animates a clipped grid track and opacity, preserving text size and keyed children.

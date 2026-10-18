@@ -6,8 +6,8 @@
     Menu 激活条目时必须先同步恢复 trigger 焦点，再调用 onSelect
   why: >
     onSelect 可能立即挂载 Dialog；反序会让 Dialog 记住即将卸载的 menuitem，关闭时无法恢复焦点
-  source: fe/web/src/ui/menu/public.tsx:20-26
-  authoritative_test: fe/web/src/ui/menu/public.test.tsx:28-38
+  source: fe/web/src/ui/menu/public.tsx:30-35
+  authoritative_test: fe/web/src/ui/menu/public.test.tsx:28-39
   owner_slice: ui/menu
   intentional_omission: false
   runtime_layer: ui
@@ -22,7 +22,7 @@
     外部点击关闭 Menu 时不得把焦点抢回 trigger
   why: >
     用户已经主动点击其它目标，恢复 trigger 会覆盖该焦点意图
-  source: fe/web/src/ui/menu/public.tsx:32-39
+  source: fe/web/src/ui/menu/public.tsx:42-49
   authoritative_test: NONE
   owner_slice: ui/menu
   intentional_omission: true
@@ -38,7 +38,7 @@
     鼠标悬停跟随使用 onMouseMove，不使用 onMouseEnter
   why: >
     菜单可能在静止指针下挂载，mouseenter 会覆盖键盘初始焦点
-  source: fe/web/src/ui/menu/public.tsx:50
+  source: fe/web/src/ui/menu/public.tsx:60-65
   authoritative_test: NONE
   owner_slice: ui/menu
   intentional_omission: true
@@ -54,7 +54,7 @@
     disabled menuitem 保持可聚焦和可读，但激活必须无效
   why: >
     键盘用户仍需发现不可用选项，aria-disabled 不能退化成可执行状态
-  source: fe/web/src/ui/menu/public.tsx:23,51-53
+  source: fe/web/src/ui/menu/public.tsx:31-35,60-65
   authoritative_test: NONE
   owner_slice: ui/menu
   intentional_omission: true
@@ -70,7 +70,7 @@
     外部点击检测使用 mousedown，并把 trigger 与 popover 视为同一内部边界
   why: >
     click 太晚，会先改变焦点；遗漏 trigger 会把 toggle 误判为外部关闭
-  source: fe/web/src/ui/menu/public.tsx:30-39
+  source: fe/web/src/ui/menu/public.tsx:42-49
   authoritative_test: NONE
   owner_slice: ui/menu
   intentional_omission: false

@@ -138,12 +138,41 @@ it('keeps a middle edit stable while an earlier input is revoked and the reply k
   const exiting = queued.closest('[data-nc-collapse-presence]')!;
   const fullHeight = exiting.getBoundingClientRect().height;
   const heights = [fullHeight];
+  // The driver can return after the spring has already crossed zero. Acquire
+  // and pause the real exit in the commit's microtask, before its first frame.
+  // Seek that same native effect to an interior time; Chromium still renders
+  // the height and owns the remaining playback/finished lifecycle.
+  let exit!: Animation;
+  const acquired = new Promise<void>(resolve => {
+    const observer = new MutationObserver(() => {
+      if (!exiting.hasAttribute('inert')) return;
+      [exit] = exiting.getAnimations();
+      observer.disconnect();
+      expect(exit).toBeDefined();
+      exit.pause();
+      resolve();
+    });
+    observer.observe(exiting, { attributes: true, attributeFilter: ['inert'] });
+  });
   await userEvent.click(queued.querySelector<HTMLButtonElement>('[aria-label="Delete this message"]')!);
+  await acquired;
+  await exit.ready;
+  const duration = exit.effect!.getComputedTiming().activeDuration;
+  expect(typeof duration).toBe('number');
+  exit.currentTime = Number(duration) / 4;
+  heights.push(exiting.getBoundingClientRect().height);
+  expect(exiting.getAnimations()).toContain(exit);
+  expect(heights.at(-1)).toBeGreaterThan(1);
+  expect(heights.at(-1)).toBeLessThan(fullHeight - 1);
   await expect.poll(() => document.querySelectorAll('[data-nc-pending-entry]').length).toBe(2);
+  const exitFinished = exit.finished;
+  exit.play();
   for (let i = 0; i < 80 && exiting.isConnected; i += 1) {
     heights.push(exiting.getBoundingClientRect().height);
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
   }
+  await exitFinished;
+  await waitFor(() => expect(exiting.isConnected).toBe(false));
   expect(document.querySelector('[data-nc-pending-entry="queued-0"]')).toBeNull();
   expect(field.element()).toBe(editor);
   expect(editor.textContent).toBe('Middle revised while the first is removed');
