@@ -71,7 +71,7 @@ impl Fixture {
         ));
         // Both clients are genuinely unavailable. No fake-running registry or
         // replacement acceptance implementation makes these requests succeed.
-        let state = AppState::from_parts(
+        AppState::from_parts(
             repo,
             events,
             Arc::new(DaemonClient::new_stub()),
@@ -80,8 +80,7 @@ impl Fixture {
             Some(roles),
             Some(tracks),
         )
-        .with_workspace_root(self.tmp.path().join("workspaces"));
-        state
+        .with_workspace_root(self.tmp.path().join("workspaces"))
     }
 
     async fn application_with_auth(&self, auth: AuthState) -> axum::Router {
