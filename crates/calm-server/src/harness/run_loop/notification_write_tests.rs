@@ -122,7 +122,7 @@ async fn semantic_notifications_still_persist_recoverable_state_and_final_record
         assert_eq!(running.phase, HarnessPhaseTag::TurnRunning);
         assert_eq!(running.last_turn_id.as_deref(), Some("turn-1"));
         assert!(matches!(
-            state_from_snapshot(&running),
+            state_from_runtime_header(&running.runtime_header(), &f.harness.inner.inputs),
             HarnessState::Resumed { .. }
         ));
         let started_writes = writes(&f).await;
@@ -146,7 +146,7 @@ async fn semantic_notifications_still_persist_recoverable_state_and_final_record
         let completed = f.stored().await;
         assert_eq!(completed.phase, HarnessPhaseTag::TurnCompleted);
         assert!(
-            matches!(state_from_snapshot(&completed), HarnessState::TurnCompleted { last_turn_id } if last_turn_id == "turn-1")
+            matches!(state_from_runtime_header(&completed.runtime_header(), &f.harness.inner.inputs), HarnessState::TurnCompleted { last_turn_id } if last_turn_id == "turn-1")
         );
         assert!(writes(&f).await > started_writes);
         let rows = f
