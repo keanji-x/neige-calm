@@ -617,7 +617,11 @@ impl ClaudePlannerSession {
 
     /// Record `Interrupted`, ask the CLI to interrupt, and arm the stop timer; a turn that is not
     /// this session's live one has nothing to interrupt.
-    pub async fn turn_interrupt(&self, thread: &str, turn: &str) -> Result<()> {
+    pub async fn turn_interrupt(
+        &self,
+        thread: &str,
+        turn: &str,
+    ) -> provider::control::InterruptOutcome<CalmError> {
         let slot = self
             .shared
             .state()
@@ -626,11 +630,8 @@ impl ClaudePlannerSession {
             .filter(|active| active.thread_id == thread && active.turn_id == turn)
             .map(|active| Arc::clone(&active.slot));
         match slot {
-            Some(slot) => {
-                interrupt(&slot).await;
-                Ok(())
-            }
-            None => Ok(()),
+            Some(slot) => interrupt(&slot).await,
+            None => provider::control::InterruptOutcome::NoTarget,
         }
     }
 
@@ -702,19 +703,27 @@ impl ClaudePlannerSession {
 
 /// The stop timer is armed before the interrupt line is written, so a CLI that stopped reading
 /// stdin cannot delay it.
-async fn interrupt(slot: &TurnSlot) {
+async fn interrupt(slot: &TurnSlot) -> provider::control::InterruptOutcome<CalmError> {
     slot.record(TerminalCause::Interrupted);
     slot.arm_stop(tokio::time::Instant::now() + STOP_TIMER);
     let request = super::protocol::ControlRequestOut::new(
         format!("interrupt-{}", Uuid::new_v4().simple()),
         super::protocol::ControlRequestKind::Interrupt,
     );
+    use provider::control::SubmissionEvidence;
     let written = match serde_json::to_string(&request) {
-        Ok(line) => slot.write_line(&line).await,
-        Err(error) => Err(error.into()),
+        Ok(line) => slot
+            .write_line(&line)
+            .await
+            .map_err(|error| (error, SubmissionEvidence::WriteMayHaveReachedPeer)),
+        Err(error) => Err((error.into(), SubmissionEvidence::NotWritten)),
     };
-    if let Err(error) = written {
-        tracing::warn!(%error, "claude planner: interrupt request not written; the stop timer ends the turn");
+    match written {
+        Ok(()) => provider::control::InterruptOutcome::LocalSignalDelivered,
+        Err((error, evidence)) => {
+            tracing::warn!(%error, "claude planner: interrupt request not written; the stop timer ends the turn");
+            provider::control::InterruptOutcome::Unconfirmed { error, evidence }
+        }
     }
 }
 
@@ -749,3 +758,6 @@ async fn user_line_content(items: &[InputItem]) -> Result<Vec<UserLineContent>> 
     }
     Ok(content)
 }
+
+#[cfg(test)]
+mod interrupt_tests;

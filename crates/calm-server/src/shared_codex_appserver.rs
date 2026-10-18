@@ -1529,6 +1529,14 @@ impl SharedCodexAppServer {
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
+        provider::codex::interrupt_result(self.interrupt_outcome(thread_id, turn_id).await)
+    }
+
+    pub async fn interrupt_outcome(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> provider::control::InterruptOutcome<CalmError> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             fake.interrupted_turns
@@ -1545,19 +1553,28 @@ impl SharedCodexAppServer {
                 release.notified().await;
             }
             if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "fixture: turn/interrupt failed".into(),
-                ));
+                return provider::control::InterruptOutcome::Unconfirmed {
+                    error: CalmError::CodexAppServer("fixture: turn/interrupt failed".into()),
+                    evidence: provider::control::SubmissionEvidence::Unobserved,
+                };
             }
             self.active_turns
                 .remove_if(thread_id, |_, active| active == turn_id);
-            return Ok(());
+            return provider::control::InterruptOutcome::NativeAck;
         }
-        let client = self.connected_client().await?;
+        let client = match self.connected_client().await {
+            Ok(client) => client,
+            Err(error) => {
+                return provider::control::InterruptOutcome::Unconfirmed {
+                    error,
+                    evidence: provider::control::SubmissionEvidence::Unobserved,
+                };
+            }
+        };
         client
-            .turn_interrupt(thread_id, turn_id)
+            .interrupt_outcome(thread_id, turn_id)
             .await
-            .map_err(Into::into)
+            .map_error(Into::into)
     }
 
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
@@ -1567,17 +1584,27 @@ impl SharedCodexAppServer {
     }
 
     pub async fn interrupt_active_turn(&self, thread_id: &str) -> Result<()> {
-        let Some(turn_id) = self
-            .active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
-        else {
-            return Ok(());
+        provider::codex::interrupt_result(self.interrupt_active_outcome(thread_id).await)
+    }
+
+    pub async fn interrupt_active_outcome(
+        &self,
+        thread_id: &str,
+    ) -> provider::control::InterruptOutcome<CalmError> {
+        let Some(turn_id) = self.active_turn_id_for_thread(thread_id) else {
+            return provider::control::InterruptOutcome::NoTarget;
         };
-        self.turn_interrupt(thread_id, &turn_id).await?;
-        self.active_turns
-            .remove_if(thread_id, |_, active| active == &turn_id);
-        Ok(())
+        let outcome = self.interrupt_outcome(thread_id, &turn_id).await;
+        match &outcome {
+            provider::control::InterruptOutcome::Unconfirmed { .. } => {}
+            provider::control::InterruptOutcome::NativeAck
+            | provider::control::InterruptOutcome::LocalSignalDelivered
+            | provider::control::InterruptOutcome::NoTarget => {
+                self.active_turns
+                    .remove_if(thread_id, |_, active| active == &turn_id);
+            }
+        }
+        outcome
     }
 
     pub async fn interrupt_active_turn_for_card(&self, card_id: &str) -> Result<()> {

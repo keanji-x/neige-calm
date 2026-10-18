@@ -14,6 +14,8 @@ pub use authentication::is_sign_in_failure;
 mod types;
 pub use types::*;
 mod client_transport;
+mod interrupt;
+pub use interrupt::legacy_result as interrupt_result;
 #[cfg(test)]
 mod server_request_tests;
 mod server_requests;
@@ -574,26 +576,6 @@ impl CodexAppServer {
         self.request::<Value>("config/mcpServer/reload", Value::Null)
             .await?;
         Ok(())
-    }
-
-    pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
-        let response: Result<Value> = self
-            .request(
-                "turn/interrupt",
-                json!({ "threadId": thread_id, "turnId": turn_id }),
-            )
-            .await;
-        match response {
-            Ok(_) => Ok(()),
-            // A turn that completed between our snapshot and the daemon handling this is already in the requested state; codex reports that race as this exact response.
-            Err(Error::Refused(message))
-                if message
-                    == "turn/interrupt failed: no active turn to interrupt (code -32600)" =>
-            {
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
     }
 
     /// Core round-trip. A JSON-RPC `error` frame maps to [`Error::Refused`]; transport failures and a dead reader map to [`Error::Transport`].

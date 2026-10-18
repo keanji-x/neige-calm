@@ -2,6 +2,7 @@
 pub mod acp;
 pub mod claude;
 pub mod codex;
+pub mod control;
 pub mod events;
 pub mod held_requests;
 mod input;

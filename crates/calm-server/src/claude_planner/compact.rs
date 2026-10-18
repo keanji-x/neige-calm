@@ -18,15 +18,18 @@ use super::driver::TerminalEvent;
 use super::protocol::{COMPACT_COMMAND, SystemInit};
 use super::session::{ClaudePlannerSession, SpawnFailure, SpawnInput};
 use crate::error::CalmError;
-use crate::harness::backend::{CompactStartFailure, TurnStartFailure};
+use crate::harness::backend::TurnStartFailure;
 use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
+use provider::control::{
+    CompactNotSubmitted, CompactSubmission, SubmissionBasis, SubmissionEvidence,
+};
 
 /// What a compaction's result is decided as when no boundary preceded it.
 pub(crate) const NO_BOUNDARY: &str = "claude ended the compaction without a compact boundary";
 
 impl ClaudePlannerSession {
-    /// Start a compaction of `thread`'s session and return its turn id. `selection` is the card's
+    /// Start a compaction of `thread`'s session and report its submission. `selection` is the card's
     /// model, so the summary runs on the conversation's own context window. It runs under `never`:
     /// it asks nothing of the person, whatever the card's turns run under. A conversation whose
     /// session does not exist yet is refused.
@@ -34,15 +37,16 @@ impl ClaudePlannerSession {
         &self,
         thread: &str,
         selection: &TurnModelSelection,
-    ) -> Result<String, CompactStartFailure> {
-        self.start_spawn(
-            thread,
-            SpawnInput::Compaction,
-            selection,
-            PlannerPermissionMode::Never,
+    ) -> CompactSubmission<CalmError> {
+        submission_result(
+            self.start_spawn(
+                thread,
+                SpawnInput::Compaction,
+                selection,
+                PlannerPermissionMode::Never,
+            )
+            .await,
         )
-        .await
-        .map_err(submission_failure)
     }
 }
 
@@ -86,7 +90,15 @@ pub(crate) fn refused(reason: impl std::fmt::Display) -> CalmError {
 /// setup `stop` or credential mint that failed, a turn still running, a spawn that did not start)
 /// submitted nothing, so the harness goes back to its previous phase as after Codex's refusal.
 /// Once the line may have reached the CLI, the submission is unconfirmed and the harness wedges.
-fn submission_failure(spawn: SpawnFailure) -> CompactStartFailure {
+fn submission_result(result: Result<String, SpawnFailure>) -> CompactSubmission<CalmError> {
+    let spawn = match result {
+        Ok(_) => {
+            return CompactSubmission::Submitted {
+                basis: SubmissionBasis::LocalWrite,
+            };
+        }
+        Err(spawn) => spawn,
+    };
     let error = match spawn.failure {
         TurnStartFailure::Refused { error, .. } => refused(error),
         TurnStartFailure::Transient(error) | TurnStartFailure::AwaitingRecovery { error, .. } => {
@@ -94,8 +106,69 @@ fn submission_failure(spawn: SpawnFailure) -> CompactStartFailure {
         }
     };
     if spawn.line_sent {
-        CompactStartFailure::Unconfirmed(error)
+        CompactSubmission::Unconfirmed {
+            error,
+            evidence: SubmissionEvidence::WriteMayHaveReachedPeer,
+        }
     } else {
-        CompactStartFailure::NotSubmitted(error)
+        CompactSubmission::NotSubmitted {
+            error,
+            reason: CompactNotSubmitted::PreparationFailed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m1_mapping_compact_spawn_failure_keeps_write_evidence_and_error() {
+        assert!(matches!(
+            submission_result(Ok("local-turn".into())),
+            CompactSubmission::Submitted {
+                basis: SubmissionBasis::LocalWrite
+            }
+        ));
+        for line_sent in [false, true] {
+            for kind in ["refused", "transient", "recovery"] {
+                let error = CalmError::ServiceUnavailable("original diagnostic".into());
+                let original = error.to_string();
+                let failure = match kind {
+                    "refused" => TurnStartFailure::Refused {
+                        error,
+                        reader: "intentionally discarded compact reader".into(),
+                    },
+                    "transient" => TurnStartFailure::Transient(error),
+                    _ => TurnStartFailure::AwaitingRecovery {
+                        error,
+                        reader: "intentionally discarded compact reader".into(),
+                    },
+                };
+                let outcome = submission_result(Err(SpawnFailure { failure, line_sent }));
+                let error = match outcome {
+                    CompactSubmission::Unconfirmed { error, evidence } => {
+                        assert!(line_sent, "{kind}");
+                        assert_eq!(evidence, SubmissionEvidence::WriteMayHaveReachedPeer);
+                        error
+                    }
+                    CompactSubmission::NotSubmitted { error, reason } => {
+                        assert!(!line_sent, "{kind}");
+                        assert_eq!(reason, CompactNotSubmitted::PreparationFailed);
+                        error
+                    }
+                    other => panic!("unexpected {other:?}"),
+                };
+                if kind == "refused" {
+                    assert!(
+                        matches!(&error, CalmError::BadRequest(message) if message == &format!("Claude will not compact this conversation: {original}"))
+                    );
+                } else {
+                    assert!(
+                        matches!(&error, CalmError::ServiceUnavailable(message) if message == "original diagnostic")
+                    );
+                }
+            }
+        }
     }
 }

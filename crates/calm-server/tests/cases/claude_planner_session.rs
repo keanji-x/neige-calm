@@ -523,10 +523,7 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
         .await
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
-    rig.session()
-        .turn_interrupt(&rig.thread, &turn)
-        .await
-        .expect("interrupt");
+    let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let completed = completed_turn(&until_completed(&mut rx).await);
 
     assert_eq!(completed["status"], "interrupted");
@@ -557,10 +554,7 @@ async fn the_private_instructions_never_reach_a_cmdline() {
     let pids = rig.marked_pids();
     let cmdlines: Vec<String> = pids.iter().map(|pid| cmdline(*pid)).collect();
     let delivered = rig.read_bin("instructions").unwrap_or_default();
-    rig.session()
-        .turn_interrupt(&rig.thread, &turn)
-        .await
-        .expect("interrupt");
+    let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let completed = completed_turn(&until_completed(&mut rx).await);
 
     assert!(!pids.is_empty(), "the CLI was live and marked");

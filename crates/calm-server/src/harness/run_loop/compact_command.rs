@@ -1,6 +1,6 @@
 //! A manual provider compaction, serialized with sends, edits and shutdown.
 use super::*;
-use crate::harness::backend::CompactStartFailure;
+use provider::control::CompactSubmission;
 
 pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
     let _issuance = inner.issuance.lock().await;
@@ -66,25 +66,24 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
             });
         }
     }
-    match inner.backend.compact_start(&thread, inner.as_ref()).await {
-        Ok(()) => Ok(()),
-        Err(failure) => {
-            let (state, error) = match failure {
-                CompactStartFailure::NotSubmitted(error) => {
-                    settle(inner, CompactStatus::Refused).await;
-                    (previous, error)
-                }
-                CompactStartFailure::Unconfirmed(error) => {
-                    settle(inner, CompactStatus::Unconfirmed).await;
-                    (HarnessState::Wedged { since: Instant::now(), reason: "compaction submission could not be confirmed; reset the conversation to continue".into() },
-                    error)
-                }
-            };
-            *inner.state.lock().await = state;
-            persist_snapshot(inner).await?;
-            Err(error)
+    let submission = match inner.backend.compact_request(&thread, inner.as_ref()).await {
+        Ok(request) => inner.backend.compact_start(&thread, request).await,
+        Err(error) => Err(error),
+    };
+    let (state, error) = match submission {
+        Ok(CompactSubmission::Submitted { .. }) => return Ok(()),
+        Err(error) | Ok(CompactSubmission::NotSubmitted { error, .. }) => {
+            settle(inner, CompactStatus::Refused).await;
+            (previous, error)
         }
-    }
+        Ok(CompactSubmission::Unconfirmed { error, .. }) => {
+            settle(inner, CompactStatus::Unconfirmed).await;
+            (HarnessState::Wedged { since: Instant::now(), reason: "compaction submission could not be confirmed; reset the conversation to continue".into() }, error)
+        }
+    };
+    *inner.state.lock().await = state;
+    persist_snapshot(inner).await?;
+    Err(error)
 }
 
 pub(super) async fn settle(

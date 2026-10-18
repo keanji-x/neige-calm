@@ -1,3 +1,6 @@
+use provider::control::{
+    CorrelationKey, InputRequest, InterruptRequest, SteerOutcome, SteerRequest, TurnTarget,
+};
 use std::collections::{HashSet, VecDeque};
 #[cfg(feature = "fixtures")]
 use std::sync::atomic::AtomicU64;
@@ -1629,10 +1632,23 @@ async fn handle_steer(
     );
     let steered = inner
         .backend
-        .turn_steer(&thread_id, &turn_id, items, entry_id.as_str())
+        .turn_steer(
+            &thread_id,
+            SteerRequest {
+                target: TurnTarget {
+                    session: inner.backend.session_target(&thread_id),
+                    turn: inner.backend.turn_identity(turn_id.clone()),
+                },
+                input: InputRequest {
+                    items,
+                    correlation: CorrelationKey(entry_id.as_str().to_owned()),
+                },
+            },
+        )
         .await;
-    let error = match steered {
-        Ok(taken_by) => {
+    let (error, mut refusal) = match steered? {
+        SteerOutcome::Taken { turn } => {
+            let taken_by = turn.into_string();
             // Codex has the sentence. A failed row write is logged rather than reported: the delivery has
             // happened whatever this says, and a 500 would invite a retry of it.
             let row_id = match insert_projection_row(
@@ -1711,7 +1727,18 @@ async fn handle_steer(
                 turn_id: taken_by,
             }));
         }
-        Err(error) => error,
+        SteerOutcome::NotTaken { error } => {
+            let message = error.reason();
+            (error, SteerRefused::NotTaken { message, phase })
+        }
+        SteerOutcome::Unknown { error, .. } => {
+            let message = error.to_string();
+            (error, SteerRefused::Unanswered { message, phase })
+        }
+        SteerOutcome::NoRunningTarget { .. } => {
+            rebuffer_head(inner, vec![entry]).await;
+            return Ok(Err(SteerRefused::NoRunningTurn { phase }));
+        }
     };
 
     // Refused, unreachable, or timed out: the sentence goes back. No row was written and the
@@ -1747,15 +1774,13 @@ async fn handle_steer(
         "planner harness could not steer the entry into the running turn; re-buffered it"
     );
     let phase = HarnessPhaseTag::from(&*inner.state.lock().await);
-    // `CodexRefused` is the one error shape in which codex is known to have seen the request;
-    // every other error leaves the outcome unknown.
-    Ok(Err(match error {
-        CalmError::CodexRefused(message) => SteerRefused::NotTaken { message, phase },
-        other => SteerRefused::Unanswered {
-            message: other.to_string(),
-            phase,
-        },
-    }))
+    match &mut refusal {
+        SteerRefused::Queue(_) => {}
+        SteerRefused::NoRunningTurn { phase: current }
+        | SteerRefused::NotTaken { phase: current, .. }
+        | SteerRefused::Unanswered { phase: current, .. } => *current = phase,
+    }
+    Ok(Err(refusal))
 }
 
 /// `TurnCompleted` sweep: every steered entry whose transcript row is still a projection was
@@ -4049,11 +4074,19 @@ async fn issue_interrupt_for_turn(
         Instant::now() + inner.config.interrupt_completion_budget,
     ));
     persist_snapshot(inner).await?;
-    if let Err(e) = inner
+    let outcome = inner
         .backend
-        .turn_interrupt(&thread_id, &target_turn_id)
-        .await
-    {
+        .turn_interrupt(
+            &thread_id,
+            InterruptRequest {
+                target: TurnTarget {
+                    session: inner.backend.session_target(&thread_id),
+                    turn: inner.backend.turn_identity(target_turn_id.clone()),
+                },
+            },
+        )
+        .await;
+    if let Err(e) = inner.backend.legacy_interrupt_result(outcome) {
         tracing::warn!(
             thread_id,
             turn_id = %target_turn_id,
@@ -4725,3 +4758,6 @@ mod turn_origin_tests;
 
 #[cfg(test)]
 mod workspace_report_tests;
+
+#[cfg(test)]
+mod control_mapping_tests;

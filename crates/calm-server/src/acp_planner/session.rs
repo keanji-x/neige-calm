@@ -410,7 +410,11 @@ impl AcpPlannerSession {
         // A durable dispatch attempt always hands ownership to the Harness, even if its pipe failed.
         Ok(turn)
     }
-    pub async fn turn_interrupt(&self, thread: &str, turn: &str) -> Result<()> {
+    pub async fn turn_interrupt(
+        &self,
+        thread: &str,
+        turn: &str,
+    ) -> provider::control::InterruptOutcome<tokio::sync::watch::error::SendError<bool>> {
         if let Some(active) = self
             .shared
             .state
@@ -420,9 +424,9 @@ impl AcpPlannerSession {
             .as_ref()
             .filter(|a| a.thread == thread && a.turn == turn)
         {
-            let _ = active.cancel.send(true);
+            return cancel_outcome(active.cancel.send(true));
         }
-        Ok(())
+        provider::control::InterruptOutcome::NoTarget
     }
     pub async fn shutdown(&self) -> Result<()> {
         self.shared.state.lock().expect("ACP state").closed = true;
@@ -686,6 +690,47 @@ fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
             *prior = frame;
         } else {
             retained.push(frame);
+        }
+    }
+}
+
+fn cancel_outcome(
+    result: std::result::Result<(), tokio::sync::watch::error::SendError<bool>>,
+) -> provider::control::InterruptOutcome<tokio::sync::watch::error::SendError<bool>> {
+    match result {
+        Ok(()) => provider::control::InterruptOutcome::LocalSignalDelivered,
+        Err(error) => provider::control::InterruptOutcome::Unconfirmed {
+            error,
+            evidence: provider::control::SubmissionEvidence::NotWritten,
+        },
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    use provider::control::{InterruptOutcome, SubmissionEvidence};
+
+    #[test]
+    fn m1_mapping_acp_interrupt_reports_watch_delivery_not_native_ack() {
+        for receiver_alive in [false, true] {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let mut receiver = Some(rx);
+            if !receiver_alive {
+                receiver.take();
+            }
+            match cancel_outcome(tx.send(true)) {
+                InterruptOutcome::LocalSignalDelivered => assert!(receiver_alive),
+                InterruptOutcome::Unconfirmed { error, evidence } => {
+                    assert!(!receiver_alive);
+                    assert!(error.0);
+                    assert_eq!(evidence, SubmissionEvidence::NotWritten);
+                }
+                other => panic!("wrong mapping: {other:?}"),
+            }
+            if let Some(rx) = receiver {
+                assert!(*rx.borrow());
+            }
         }
     }
 }

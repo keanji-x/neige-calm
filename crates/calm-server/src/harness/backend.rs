@@ -4,9 +4,13 @@
 //! [`PlannerBackend`], including model resolution and shutdown. The deletion seals are not a
 //! provider's: they live in the shared [`ThreadSeals`].
 //!
-//! `client_id` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`] is the
-//! projection row's key; codex hands it back as `item.clientId`.
+//! `client_id` on [`PlannerBackend::turn_start`] and `input.correlation` on
+//! [`PlannerBackend::turn_steer`] retain the projection row's key; codex hands it back as
+//! `item.clientId`.
 
+use provider::control::*;
+mod control;
+use control::{codex_compact_submission, steer_outcome};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -47,16 +51,7 @@ pub enum TurnStartFailure {
     AwaitingRecovery { error: CalmError, reader: String },
 }
 
-/// A provider's failure to start a manual compaction, classified by the provider that raised it:
-/// the run loop restores the conversation's phase or wedges it from this, never from the error's
-/// shape.
-#[derive(Debug)]
-pub enum CompactStartFailure {
-    /// Nothing reached the provider; the conversation is as it was.
-    NotSubmitted(CalmError),
-    /// The request may have reached the provider, and whether it compacts is unknown.
-    Unconfirmed(CalmError),
-}
+pub type InterruptDiagnostic = Box<dyn std::error::Error + Send + Sync>;
 
 /// A rewind the provider applies when the conversation's next turn starts (#1923). Its arms are
 /// private like [`PlannerBackend`]'s: the run loop stores, passes and clears it, never reads it.
@@ -337,73 +332,125 @@ impl PlannerBackend {
     pub async fn turn_steer(
         &self,
         thread_id: &str,
-        expected_turn_id: &str,
-        items: Vec<InputItem>,
-        client_id: &str,
-    ) -> Result<TurnId> {
+        request: SteerRequest,
+    ) -> Result<SteerOutcome<CalmError>> {
         match &self.0 {
-            Arm::Codex(daemon, _) => {
+            Arm::Codex(daemon, _) => Ok(steer_outcome(
                 daemon
-                    .turn_steer(thread_id, expected_turn_id, items, Some(client_id))
-                    .await
-            }
+                    .turn_steer(
+                        control::session_id(&request.target.session, thread_id),
+                        request.target.turn.as_str(),
+                        request.input.items,
+                        Some(&request.input.correlation.0),
+                    )
+                    .await,
+            )),
             Arm::Claude(_) | Arm::Acp(_) => Err(CalmError::Internal(
                 "a Claude Planner cannot steer; the run loop checks supports_steer first".into(),
             )),
         }
     }
 
-    /// A manual context compaction. Codex compacts its thread; a Claude Planner spawns `/compact`
-    /// on the card's model, read from `source` as a turn's is.
-    pub(crate) async fn compact_start(
+    /// Host selection preflight stays at the existing admission point, after snapshot persistence.
+    pub(crate) async fn compact_request(
         &self,
         thread_id: &str,
         source: &impl SelectionSource,
-    ) -> std::result::Result<(), CompactStartFailure> {
-        match &self.0 {
-            // A refusal is Codex's answer before anything started.
-            Arm::Codex(daemon, _) => {
-                daemon
-                    .thread_compact_start(thread_id)
-                    .await
-                    .map_err(|error| match error {
-                        CalmError::CodexRefused(_) | CalmError::BadRequest(_) => {
-                            CompactStartFailure::NotSubmitted(error)
-                        }
-                        error => CompactStartFailure::Unconfirmed(error),
-                    })
-            }
+    ) -> Result<CompactRequest> {
+        let selection = match &self.0 {
             Arm::Claude(session) => {
                 use crate::claude_planner::compact;
-                // A turn's refusal here tells the reader the message stays queued; a compaction
-                // has no message, so it is refused in its own words.
                 if session.host().configured().is_err() {
-                    return Err(CompactStartFailure::NotSubmitted(compact::refused(
+                    return Err(compact::refused(
                         crate::claude_planner::config::unavailable_message(),
-                    )));
+                    ));
                 }
-                let selection = self.resolve_selection(source).await.map_err(|refusal| {
-                    CompactStartFailure::NotSubmitted(compact::refused(
-                        if refusal.reader.is_empty() {
-                            refusal.log
-                        } else {
-                            refusal.reader
-                        },
-                    ))
-                })?;
-                session.compact_start(thread_id, &selection).await.map(drop)
+                self.resolve_selection(source).await.map_err(|refusal| {
+                    compact::refused(if refusal.reader.is_empty() {
+                        refusal.log
+                    } else {
+                        refusal.reader
+                    })
+                })?
             }
-            Arm::Acp(_) => Err(CompactStartFailure::NotSubmitted(CalmError::BadRequest(
+            Arm::Codex(..) | Arm::Acp(_) => TurnModelSelection::inherit(),
+        };
+        Ok(CompactRequest {
+            session: self.session_target(thread_id),
+            selection,
+        })
+    }
+
+    pub(crate) async fn compact_start(
+        &self,
+        thread_id: &str,
+        request: CompactRequest,
+    ) -> Result<CompactSubmission<CalmError>> {
+        match &self.0 {
+            Arm::Codex(daemon, _) => Ok(codex_compact_submission(
+                daemon
+                    .thread_compact_start(control::session_id(&request.session, thread_id))
+                    .await,
+            )),
+            Arm::Claude(session) => Ok(session.compact_start(thread_id, &request.selection).await),
+            Arm::Acp(_) => Err(CalmError::BadRequest(
                 "Manual context compaction is available for Codex and Claude conversations.".into(),
-            ))),
+            )),
         }
     }
 
-    pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
+    pub(crate) fn session_target(&self, thread_id: &str) -> SessionTarget {
         match &self.0 {
-            Arm::Acp(session) => session.turn_interrupt(thread_id, turn_id).await,
-            Arm::Codex(daemon, _) => daemon.turn_interrupt(thread_id, turn_id).await,
-            Arm::Claude(session) => session.turn_interrupt(thread_id, turn_id).await,
+            Arm::Codex(..) => SessionTarget::Native(NativeSessionRef(thread_id.to_owned())),
+            Arm::Claude(_) | Arm::Acp(_) => SessionTarget::CurrentBinding,
+        }
+    }
+
+    pub(crate) fn turn_identity(&self, id: String) -> TurnIdentity {
+        match &self.0 {
+            Arm::Codex(..) => TurnIdentity::Native(id),
+            Arm::Claude(_) | Arm::Acp(_) => TurnIdentity::Local(CorrelationKey(id)),
+        }
+    }
+
+    pub async fn turn_interrupt(
+        &self,
+        thread_id: &str,
+        request: InterruptRequest,
+    ) -> InterruptOutcome<InterruptDiagnostic> {
+        let turn_id = request.target.turn.as_str();
+        match &self.0 {
+            Arm::Acp(session) => session
+                .turn_interrupt(thread_id, turn_id)
+                .await
+                .map_error(|e| Box::new(e) as InterruptDiagnostic),
+            Arm::Codex(daemon, _) => daemon
+                .interrupt_outcome(
+                    control::session_id(&request.target.session, thread_id),
+                    turn_id,
+                )
+                .await
+                .map_error(|e| Box::new(e) as InterruptDiagnostic),
+            Arm::Claude(session) => session
+                .turn_interrupt(thread_id, turn_id)
+                .await
+                .map_error(|e| Box::new(e) as InterruptDiagnostic),
+        }
+    }
+
+    /// Local signal owners historically log/ignore failed delivery; only Codex propagated it.
+    pub(crate) fn legacy_interrupt_result(
+        &self,
+        outcome: InterruptOutcome<InterruptDiagnostic>,
+    ) -> std::result::Result<(), InterruptDiagnostic> {
+        match &self.0 {
+            Arm::Codex(..) => provider::codex::interrupt_result(outcome),
+            Arm::Acp(_) | Arm::Claude(_) => match outcome {
+                InterruptOutcome::NativeAck
+                | InterruptOutcome::LocalSignalDelivered
+                | InterruptOutcome::NoTarget
+                | InterruptOutcome::Unconfirmed { .. } => Ok(()),
+            },
         }
     }
 

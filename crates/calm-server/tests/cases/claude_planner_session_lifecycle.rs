@@ -35,10 +35,7 @@ async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let interrupted_at = Instant::now();
-    rig.session()
-        .turn_interrupt(&rig.thread, &turn)
-        .await
-        .expect("interrupt");
+    let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
         .expect("settled by settle_by");
@@ -231,10 +228,7 @@ async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     let interrupted_at = Instant::now();
-    rig.session()
-        .turn_interrupt(&rig.thread, &turn)
-        .await
-        .expect("interrupt");
+    let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
         .expect("settled by settle_by");
@@ -268,10 +262,7 @@ async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
         .await
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
-    rig.session()
-        .turn_interrupt(&rig.thread, &turn)
-        .await
-        .expect("interrupt");
+    let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
         .expect("settled by settle_by");
@@ -377,10 +368,7 @@ async fn the_stop_timer_runs_from_the_interrupt_not_from_its_write() {
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     let interrupted_at = Instant::now();
-    rig.session()
-        .turn_interrupt(&rig.thread, &turn)
-        .await
-        .expect("interrupt");
+    let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await
         .expect("settled by settle_by");
@@ -414,10 +402,7 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let interrupted_at = Instant::now();
-    rig.session()
-        .turn_interrupt(&rig.thread, &turn)
-        .await
-        .expect("interrupt");
+    let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
     let settle_by = STOP_TIMER + margin;
     let seen = tokio::time::timeout(SETTLE_BUDGET, until_completed(&mut rx))
         .await

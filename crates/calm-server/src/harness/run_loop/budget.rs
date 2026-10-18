@@ -136,7 +136,19 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
                 return false;
             }
             let input = vec![super::InputItem::text(segments[0].text.clone())];
-            let send = inner.backend.turn_steer(&thread, &turn_id, input, &key);
+            let send = inner.backend.turn_steer(
+                &thread,
+                super::SteerRequest {
+                    target: super::TurnTarget {
+                        session: inner.backend.session_target(&thread),
+                        turn: inner.backend.turn_identity(turn_id.clone()),
+                    },
+                    input: super::InputRequest {
+                        items: input,
+                        correlation: super::CorrelationKey(key.clone()),
+                    },
+                },
+            );
             tokio::pin!(send);
             let sent = loop {
                 tokio::select! {
@@ -146,7 +158,7 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
                     }
                 }
             };
-            matches!(sent, Ok(ref accepted) if accepted == &turn_id)
+            matches!(sent, Ok(super::SteerOutcome::Taken { ref turn }) if turn.as_str() == turn_id)
                 && current(&inner, &turn_id).await
         };
         if !matches!(
