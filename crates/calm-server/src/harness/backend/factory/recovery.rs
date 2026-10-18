@@ -43,6 +43,16 @@ impl RecoveryTarget {
 }
 
 impl PlannerFactory<'_> {
+    /// Capture the route's observed carrier before quiescence/refetch. The settled
+    /// snapshot may change, but the locked seal and eligibility checks must still
+    /// use this original target. No caller can supply an alternate native id.
+    pub(crate) fn system_error_recovery_target(
+        &self,
+        runtime: &WorkerSessionProjection,
+    ) -> Result<RecoveryTarget> {
+        RecoveryTarget::failed(runtime)
+    }
+
     pub(crate) async fn resume_active_conversation(
         &self,
         repo: &dyn crate::db::Repo,
@@ -60,8 +70,8 @@ impl PlannerFactory<'_> {
         &self,
         repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
+        target: RecoveryTarget,
     ) -> Result<Option<(i64, String)>> {
-        let target = RecoveryTarget::failed(runtime)?;
         let daemon = self.daemon()?;
         daemon
             .with_exact_thread(&target, async |native| {

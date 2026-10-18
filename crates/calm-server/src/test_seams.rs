@@ -60,6 +60,11 @@ pub const PLANNER_FIRST_START: &str = "planner-first-start";
 #[cfg(feature = "fixtures")]
 pub const PLANNER_RECOVERY_INSTALL: &str = "planner-recovery-install";
 
+/// Failed recovery has captured its original target and quiesced its harness,
+/// but has not refetched the settled durable carrier; keyed by session id.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_RECOVERY_REFETCH: &str = "planner-recovery-refetch";
+
 /// Where a message-less track create has committed its cards and not yet submitted its
 /// Planner's start (#2184); keyed by the track's area id, which the test knows in advance.
 #[cfg(feature = "fixtures")]

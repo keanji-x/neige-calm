@@ -140,3 +140,73 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
         "quiescence must retain the event whose watermark it commits; catch-up cannot replay past that watermark",
     );
 }
+
+#[tokio::test]
+async fn mismatched_recovery_refetch_preserves_original_refusal_precedence() {
+    use calm_server::test_seams::{PLANNER_RECOVERY_REFETCH, PausePoint, install_pause_for_test};
+
+    let mut messages = Vec::new();
+    for (sealed, missing_snapshot) in [(true, true), (false, true), (false, false)] {
+        let boot = boot_fake_running().await;
+        let (card, runtime, original_thread, _) = failed_conversation(&boot).await;
+        let pause = PausePoint::default();
+        install_pause_for_test(PLANNER_RECOVERY_REFETCH, &runtime, pause.clone());
+        let app = boot.app.clone();
+        let uri = format!("/api/cards/{}/planner/input", card.id);
+        let recovery = tokio::spawn(async move {
+            post_planner_input(app, &uri, json!({"text":"must not retarget"})).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+            .await
+            .expect("human send reaches the production recovery refetch");
+        // Change the durable carrier after the route selected its original thread.
+        // The refetch must supply this settled snapshot without selecting a new target.
+        sqlx::query(
+            "UPDATE worker_sessions SET thread_id='retargeted-thread', \
+             handle_state_json=CASE WHEN ? THEN NULL \
+             ELSE json_set(handle_state_json,'$.last_thread_id','retargeted-thread') END WHERE id=?",
+        )
+            .bind(missing_snapshot)
+            .bind(&runtime)
+            .execute(boot.repo.pool())
+            .await
+            .unwrap();
+        if sealed {
+            boot.state
+                .shared_codex_appserver
+                .thread_seals()
+                .seal_for_deletion(&original_thread);
+        }
+        let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+            .await
+            .unwrap();
+        pause.release.notify_one();
+        let (status, body) = tokio::time::timeout(Duration::from_secs(5), recovery)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        messages.push(body["error"].as_str().expect("conflict message").to_owned());
+        assert_eq!(
+            runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+                .await
+                .unwrap(),
+            before
+        );
+        assert!(
+            boot.state
+                .shared_codex_appserver
+                .resumed_threads_for_test()
+                .is_empty()
+        );
+        assert!(boot.state.harness.get(&runtime).is_none());
+    }
+    assert_eq!(
+        messages,
+        [
+            "conversation is being deleted",
+            "conversation recovery snapshot is missing",
+            "conversation is no longer eligible for recovery; history is retained",
+        ]
+    );
+}
