@@ -60,7 +60,8 @@ crates/workspace-runtime/src/
   worktree_clean.rs ← worktree_clean.rs（ClosedWorktreeFacts、spawn 循环）
 server/workspace_service/
   mod.rs            适配器入口 + workspace_key_digest
-  ports.rs          ServerWorkspacePorts：TrackBranch + CandidateRefs + ClosedWorktreeFacts，observe
+  ports.rs          ServerWorkspacePorts：TrackBranch + CandidateRefs；observe
+                    ServerClosedWorktreeFacts { pool: SqlitePool }：ClosedWorktreeFacts
   sweep.rs          只保留 workspace_track_sweep_for_track_tx（事务内捕获）
   identity.rs(+tests)  不变
 ```
@@ -84,36 +85,57 @@ impl From<workspace::error::Error> for WorkspaceError { /* Internal(m) => Intern
 
 Display 与 `CalmError` 同名变体逐字相同。这是必要条件，因为 area 补偿会把错误 `to_string()` 拼进 500 正文
 （`recycle_area_workspaces`、`restore_area_recycle_report`）。无 port 的函数返回 `WorkspaceError`。带 port 的函数对 port 的
-错误类型 `E: From<WorkspaceError> + From<workspace::error::Error>` 泛型（与 `workspace::worktree::ensure_track_worktree<E>` 同一
-惯用法），calm-server 的 `CalmError` 原样穿过，不做往返转换。
+错误类型 `E: From<WorkspaceError> + From<workspace::error::Error> + Send + 'static` 泛型（与 `workspace::worktree::ensure_track_worktree<E>` 同一
+惯用法）；`Send + 'static` 保证 `spawn_blocking` 返回值可跨线程。calm-server 的 `CalmError` 原样穿过，不做往返转换。
 
 ### 3.3 Port（最小面）
 
+异步 port 的 trait 与实现沿用仓库现有 `#[async_trait]`（不用 `?Send`），保证方法返回 Send future，
+使 clean 循环与 HTTP handler future 保持 Send；`TrackBranch::Error: Send + 'static`。
+
 | Port（定义处） | 方法 | 实现方（calm-server） | 不变量 |
 |---|---|---|---|
-| `track_worktree::TrackBranch: Clone + Send + Sync + 'static` | `async fn refresh_upstream(&self, repo_root: &Path)`（结果今天即被丢弃）；`fn prepare_branch(&self, repo_root: &Path, branch: &str) -> Result<String, Self::Error>`（阻塞，在 metadata lock 内由叶子回调） | `upstream_fetch::refresh_upstream`；`choose_lease_start` + `diverged_refusal` + `head_upstream` + `set_branch_upstream`（原 `prepare_branch`/`track_worktree_base` 原样迁入适配器） | refresh 先于 `spawn_blocking`；仅新 branch 调 `prepare_branch`；`attached-repo-diverged` 的 409 原样穿过 |
-| `sweep::CandidateRefs: Clone + Send + Sync + 'static` | `fn delete_for_track(&self, track_id: &str, git_common_dirs: &[PathBuf])`（在既有 `spawn_blocking` 内调用，不失败） | `git_candidate::refs::delete_candidate_refs_for_track` | 每个 sweep 先删 worktree 再删 refs；整体从不失败 |
-| `worktree_clean::ClosedWorktreeFacts: Send + Sync + 'static` | `async fn closed_idle_worktrees(&self) -> Result<Vec<(String, String, i64)>, Self::Error>`；`async fn checkout_free(&self, track: &str) -> Result<bool, Self::Error>`；`async fn executions_settled(&self, track: &str) -> Result<bool, Self::Error>`；`Self::Error: Display` | `CLOSED_TRACK_WORKTREES_SQL` 原文；`checkout_occupancy(.., "") == Free`；`unsettled_executions(Scope::Track).is_empty()`，每次各自 acquire 一个连接 | 检查顺序为 memo → Free → settled，短路与 `?` 位置不变 |
+| `track_worktree::TrackBranch: Clone + Send + Sync + 'static` | `async fn refresh_upstream(&self, repo_root: &Path)`（结果今天即被丢弃）；`fn prepare_branch(&self, repo_root: &Path, branch: &str) -> Result<String, Self::Error>`（阻塞，在 metadata lock 内由叶子回调） | 无状态 `ServerWorkspacePorts`：`upstream_fetch::refresh_upstream`；`choose_lease_start` + `diverged_refusal` + `head_upstream` + `set_branch_upstream`（原 `prepare_branch`/`track_worktree_base` 原样迁入适配器） | refresh 留在 `spawn_blocking` 外且先于它；仅新 branch 调 `prepare_branch`；`attached-repo-diverged` 的 409 原样穿过 |
+| `sweep::CandidateRefs: Clone + Send + Sync + 'static` | `fn delete_for_track(&self, track_id: &str, git_common_dirs: &[PathBuf])`（在既有 `spawn_blocking` 内调用，不失败） | 无状态 `ServerWorkspacePorts`：`git_candidate::refs::delete_candidate_refs_for_track` | 每个 sweep 先删 worktree 再删 refs；整体从不失败 |
+| `worktree_clean::ClosedWorktreeFacts: Send + Sync + 'static` | `async fn closed_idle_worktrees(&self) -> Result<Vec<(String, String, i64)>, Self::Error>`；`async fn checkout_free(&self, track: &str) -> Result<bool, Self::Error>`；`async fn executions_settled(&self, track: &str) -> Result<bool, Self::Error>`；`Self::Error: Display` | `ServerClosedWorktreeFacts`：`CLOSED_TRACK_WORKTREES_SQL` 原文；`checkout_occupancy(.., "") == Free`；`unsettled_executions(Scope::Track).is_empty()`，每次各自 acquire 一个连接 | 检查顺序为 memo → Free → settled，短路与 `?` 位置不变 |
 | `ObservePoint = fn(&str, &Path)` | 测试暂停点 | `workspace_service::ports::observe`（fixtures 下调 `test_seams::blocking_pause_point`） | ensure/remove/clean 传同一函数 |
 
-`ServerWorkspacePorts` 是无状态单元结构，`ClosedWorktreeFacts` 持有 `SqlitePool`（`state.rs` 仍传 `read_pool()`）。
+`ServerWorkspacePorts` 是无状态单元结构，只实现 `TrackBranch`、`CandidateRefs`。单独的
+`ServerClosedWorktreeFacts { pool: SqlitePool }` 实现 `ClosedWorktreeFacts`；`state.rs` 与今天一样从该实例的
+`read_pool().clone()` 构造它并传入 clean spawn，不用全局 pool。
 `recycle` 与 `selection` 不需要 port：它们只调用 `workspace` 机制、Git 命令和 `calm-types` 词汇。
 
 ## 4. 行为等价的证明
 
 ### 4.1 迁移即移动
 
-每片用 `git diff -M` 审查：迁移文件应被识别为 rename，差异只允许四类替换：模块/导入路径；
-`CalmError`→`WorkspaceError` 或泛型 `E`；`crate::model::X`→`calm_types::model::X`；把 calm-server 内部调用换成 port 方法，
-调用点和顺序不变。字符串、守卫顺序、`spawn_blocking` 边界、日志宏的级别/消息/字段都不改。超出这四类的改动即为阻断。
+每片用 `git diff -M` 审查：迁移文件应被识别为 rename，只允许以下行为不变的机械编辑：
+
+- 模块/导入路径；`CalmError`→`WorkspaceError` 或泛型 `E`；`crate::model::X`→`calm_types::model::X`；
+  calm-server 内部调用换成 port 方法，调用点和顺序不变。
+- 跨 crate 所需可见性：被迁项从 `pub(crate)` 扩为 `pub`（含 `git_repo_root_for_track_cwd`、
+  `materialize_managed_workspace`）；`WorkspaceTrackSweep` 及其由 server 构造的字段公开。
+- server 边界将 `WorkspaceError` 按 §3.2 逐变体转为 `CalmError`：普通传播用 `From`/`?`，直接 `Err` 返回需显式
+  转换（`routes/areas.rs:554` 的 `Err(error)` 改为 `Err(CalmError::from(error))`）；组合子前用 `map_err(CalmError::from)`，例如
+  `git_candidate/staleness.rs:59–60` 的 `and_then` 链，使闭包继续返回 `CalmError`。不得用 `to_string()` 转换，
+  不得增加反向 `CalmError`→`WorkspaceError` 转换。每片须扫全所有直接返回、组合子及其他被迁函数调用者。
+- §3.3 的 `#[async_trait]` 与 `Send + 'static` 类型约束，以及声明的 adapter 构造接线。
+
+字符串、守卫顺序、`spawn_blocking` 边界、日志宏的级别/消息/字段都不改；§4.4 的默认过滤器调整除外。
+超出以上清单的改动即为阻断。
 
 ### 4.2 测试随代码迁移，断言不改
 
 - `workspace_materialize/tests.rs`、`workspace_recycle/tests.rs` 原样移到 `selection/tests.rs`、`recycle/tests.rs`，只改
   导入；`matches!(err, CalmError::BadRequest(_))` 改为 `WorkspaceError::BadRequest(_)`，判定的变体不变。
-- identity 测试、`test_seams`、集成测试夹具中调用被迁函数的地方只改路径。
+- identity 测试、`test_seams`、集成测试夹具中调用被迁函数的地方只改路径及 §4.1 必需的机械边界编辑。
 - 不新增测试、golden、名单或扫描规则。等价证据是：迁移前后各跑一次同一组既有聚焦测试（§5），全部为绿，
-  并在 PR 中记录。
+  并在 PR 中记录。unit namespace 对应如下，迁移前后分别运行每个 namespace，不与其他过滤器合并：
+
+  | 迁移前（calm-server） | 迁移后（workspace-runtime） |
+  |---|---|
+  | `workspace_service::workspace_materialize::tests` | `selection::tests` |
+  | `workspace_service::workspace_recycle::tests` | `recycle::tests` |
 
 ### 4.3 新接缝的一次性证据（不永久化）
 
@@ -136,11 +158,12 @@ calm_server 模块路径过滤时，结果会变化；这是仅影响诊断的�
 
 每片独立可合入，按 [track-workspace.md](track-workspace.md) §6 的公共 gate G 验证：text ratchet、contract、
 `scripts/local-rust-gates.sh --quick --base origin/main`（clippy `--workspace --all-targets` 覆盖所有被改路径的测试夹具编译）
-各跑一次，再做一次聚焦 replay：
+各跑一次，再做一次聚焦 replay。下表每个 namespace/filter 单独调用以下命令，迁移前按 §4.2 换成旧 namespace，
+迁移后用新 namespace；两侧均逐项要求非空，不能靠聚合的 `--no-tests=fail` 掩盖空子过滤器：
 
 ```
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked --no-tests=fail \
-  -p workspace-runtime -p calm-server <下表过滤器> --test-threads 8
+  -p workspace-runtime -p calm-server <单个过滤器> --test-threads 8
 ```
 
 规模按 `git diff -M --numstat` 计（纯 rename 只计改动行）；括号内是迁移的源行数。全部为 **L2**：涉及回收所有权、
@@ -150,11 +173,11 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --loc
 |---|---|---|---|
 | W1 | `error` + `recycle` 迁入；calm-server `From<WorkspaceError>`；两处默认 EnvFilter | Cargo/lib/error 约 50；回收调用者 tracks/areas/harness/planner_hibernation/planner_recovery 与一个集成测试常量约 40；（迁移 456） | `recycle::tests`、`track_workspace_recycle` |
 | W2 | `selection` 迁入（attached 准入、物化分派、repo 根解析）；key digest 移到 `workspace_service/mod.rs` | 调用者 preparation/tracks/create/areas/today/scheduler/child_track_adapter/worker/staleness，lease 测试，identity 测试，3 个集成测试夹具，约 60；（迁移约 360） | `selection::tests`、`track_workspace_materialize`、`track_workspace_repoint`、`today_launchpad`、`workspace_identity`、`workspace_lease::tests`、`child_track_adapter`、`candidate_upstream`、`planner_attachments_rest` |
-| W3 | `track_worktree` + `sweep` 提交后半段迁入；`TrackBranch`、`CandidateRefs`、`ObservePoint`；calm-server `ports.rs` | port 约 40，适配器约 60，调用者 tracks/create/areas/workspace_lease/test_seams 与 identity 测试约 30，`upstream_fetch.rs:6` 文档指针；（迁移约 80，`prepare_branch` 留在适配器） | `track_worktree`（含 `track_metadata_concurrency` 锁序、diverged、删除）、`track_workspace_recycle`、`workspace_identity` |
-| W4 | `worktree_clean` 迁入；`ClosedWorktreeFacts` 与 spawn 循环 | port 约 20，适配器约 50，`state.rs`/`test_seams` 约 6；（迁移 92） | `track_worktree::a_closed`、`worktree_clean_skips_until_settled` |
+| W3 | `track_worktree` + `sweep` 提交后半段迁入；`TrackBranch`、`CandidateRefs`、`ObservePoint`；calm-server `ports.rs` | port 约 40，适配器约 60，调用者 tracks/create/areas/workspace_lease/test_seams 与 identity 测试约 30；同片将仍在 server 的 `worktree_clean.rs:77` 的 observe 引用改指 `ports::observe`，不等 W4；`upstream_fetch.rs:6` 文档指针；（迁移约 80，`prepare_branch` 留在适配器） | `track_worktree`（含 `track_metadata_concurrency` 锁序、diverged、删除）、`track_workspace_recycle`、`workspace_identity` |
+| W4 | `worktree_clean` 迁入；`ClosedWorktreeFacts` 与 spawn 循环；独立 `ServerClosedWorktreeFacts { pool: SqlitePool }` | port 约 20，适配器约 50，`state.rs` 用 `read_pool().clone()` 构造后传入，`test_seams` 同步接线，约 6；（迁移 92） | `track_worktree::a_closed`、`worktree_clean_skips_until_settled` |
 
 依赖：W1 引入 `error` 与依赖，最先合入；W2 只依赖 W1；W3 依赖 W1 并新建 `ports.rs`；W4 依赖 W3（复用 `ports.rs` 与 `observe`）。
-每片的 PR 记录迁移前后的同组测试结果、`git diff -M` 摘要，以及 W2/W3 的变异证据。
+每片的 PR 按 §4.2 namespace 映射逐项记录迁移前后的同组测试结果（每项单独非空）、`git diff -M` 摘要，以及 W2/W3 的变异证据。
 
 ## 6. 非目标
 
@@ -163,7 +186,7 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --loc
 - 隔离等级与 backend 选择（worktree / Linux COW view、namespace、sandbox）、COW mediator、S3 交付证据与 7/90 typed 保留期。
 - 迁移 `identity`、`workspace_lease`（含 upstream 政策）、`git_candidate`；把内联 SQL 移入 calm-truth；合并 calm-server 与
   `workspace` 两份 `RecycleRefusal`（现存重复，作为 follow-up issue 记录）。
-- 任何重命名之外的 API 改动、错误文本/日志文本改动、schema/migration/OpenAPI/wire 改动。
+- §4.1 机械编辑之外的 API 改动、错误文本/日志文本改动、schema/migration/OpenAPI/wire 改动。
 
 ## 7. AGENTS.md 架构五点与维护成本
 
