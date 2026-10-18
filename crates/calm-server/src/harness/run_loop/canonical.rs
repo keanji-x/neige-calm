@@ -92,7 +92,7 @@ pub(super) struct PublicFeedback {
     native_turn: Option<String>,
 }
 impl PublicFeedback {
-    fn from_frame(frame: &CanonicalHarnessSnapshot) -> Self {
+    fn from_frame(frame: &CanonicalHarnessSnapshot, standing_reason: Option<String>) -> Self {
         let h = &frame.header;
         Self {
             pending: frame
@@ -111,7 +111,7 @@ impl PublicFeedback {
                     .as_ref()
                     .map(|u| (u.used_tokens, u.context_window, u.percent(), u.at_ms))
             },
-            blocked: h.wedged_reason.clone(),
+            blocked: h.wedged_reason.clone().or(standing_reason),
             native_turn: (h.phase == HarnessPhaseTag::TurnRunning)
                 .then(|| h.last_turn_id.clone())
                 .flatten(),
@@ -245,7 +245,10 @@ async fn publish(inner: &Inner, next: CommittedFrame) {
     let emitted = (
         header.compact_outcome.clone(),
         header.context_usage_invalidated,
-        Some(PublicFeedback::from_frame(&next.snapshot)),
+        Some(PublicFeedback::from_frame(
+            &next.snapshot,
+            inner.issuance_block.lock().await.clone(),
+        )),
     );
     let phase = header.phase;
     inputs.publish_committed(next).await;
@@ -332,6 +335,7 @@ pub(super) async fn tick(inner: &Arc<Inner>) -> Result<()> {
     };
     let inputs = inner.inputs.canonical().expect("canonical consumer");
     let Some(source) = inputs.source(message).await else {
+        publish_issuance_error(inner, &CalmError::Unauthorized).await;
         return Ok(());
     };
     let card = inner.card_id.to_string();
@@ -517,6 +521,7 @@ async fn resume_unattempted(inner: &Arc<Inner>, current: &CommittedFrame) -> Res
         .source(&message)
         .await
     else {
+        publish_issuance_error(inner, &CalmError::Unauthorized).await;
         return Ok(());
     };
     let read_admission = write_in_tx_typed(inner.repo.as_ref(), {

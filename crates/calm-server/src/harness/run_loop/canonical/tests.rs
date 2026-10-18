@@ -185,7 +185,10 @@ async fn real_loop_requires_live_source_before_claim_and_preserves_pending_head(
     assert_eq!(fx.frame().await, before);
     peer.close(None).await.unwrap();
     fx.harness.shutdown().await.unwrap();
-    assert_eq!(feedback.as_deref(), Some("A current session must authorize this saved input."));
+    assert_eq!(
+        feedback.as_deref(),
+        Some("A current session must authorize this saved input.")
+    );
 }
 
 #[tokio::test]
