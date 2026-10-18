@@ -91,7 +91,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
       }
       if (server !== undefined && request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({
         card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, permission_mode: card === CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: server.runningTurn,
-      }, 'idle'));
+      }, 'idle', true));
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);

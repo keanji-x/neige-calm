@@ -288,11 +288,20 @@ async fn failed_current_run_preserves_active_and_pending_without_promoting_the_c
         claimed.submission_id.as_str()
     );
     assert!(run["blocked_reason"].as_str().unwrap().contains("held"));
+    assert_eq!(run["history_replacement_supported"], false);
     let (_, _, after) = f.carrier(track["id"].as_str().unwrap()).await;
     assert_eq!(
         after, before,
         "reading neither ends work nor authorizes a fresh claim"
     );
+    let precise_reason = "The provider ended this execution with an error.";
+    sqlx::query("UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.wedged_reason',?1) WHERE id=?2")
+        .bind(precise_reason).bind(&worker).execute(f.repo.pool()).await.unwrap();
+    let (status, failed) = get(&app, &cookie,
+        &format!("/api/cards/{card}/planner/run?contract=conversation_v1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(failed["runtime_state"], "failed");
+    assert_eq!(failed["blocked_reason"], precise_reason);
     let state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?1")
         .bind(&worker)
         .fetch_one(f.repo.pool())

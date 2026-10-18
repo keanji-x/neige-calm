@@ -405,10 +405,11 @@ pub(crate) async fn interrupt_planner_card(
 pub(crate) async fn get_planner_run(
     State(s): State<RouteState>,
     principal: crate::auth::Principal,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
     Path(id): Path<String>,
     crate::extract::Query(query): crate::extract::Query<super::conversation_run::RunReadQuery>,
 ) -> Result<axum::response::Response> {
-    super::conversation_run::read(s, principal, id, query).await
+    super::conversation_run::read(s, principal, source.map(|source| source.0), id, query).await
 }
 
 pub(super) async fn historical_planner_run(

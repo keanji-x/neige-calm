@@ -48,8 +48,6 @@ export function useConversationStore(
   const scopeUpdatedAt = scope?.updatedAt;
   const scopeKind = scope?.kind ?? 'shared-spec';
   const capabilities = useQuery({ ...managedProvidersQueryOptions(transport, unauthorized), enabled: scope?.kind === 'track-assistant' });
-  const historicalReplacementSupported = scopeKind !== 'track-assistant' || (!capabilities.isError
-    && capabilities.data?.find(answer => answer.availability.provider === scope?.provider)?.capabilities.history_replacement === true);
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.rows;
   const rememberOn = routeIntent.rememberOn;
@@ -73,7 +71,7 @@ export function useConversationStore(
   const modelCatalog = useQuery({
     ...modelCatalogQueryOptions(transport, { kind: 'card', cardId }, unauthorized), enabled: scope !== null,
   });
-  const historyReplacementSupported = run.data?.input_contract === 'historical' && historicalReplacementSupported;
+  const historyReplacementSupported = run.data?.history_replacement_supported === true;
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
   const executionHeld = run.data?.runtime_state === 'failed' || run.data?.runtime_state === 'exited'
@@ -345,6 +343,7 @@ export function useConversationStore(
     retryRun: () => { void run.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
     blockedReason: run.data?.blocked_reason ?? null,
+    terminalTimeout: run.data?.terminal_timeout ?? null,
     /* Before the first answer the conversation is following the default, which is
            what a card with no selection really does. */
     model,

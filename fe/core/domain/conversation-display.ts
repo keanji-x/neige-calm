@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
 import { conversationCursorSchema, workerSessionStateSchema } from '../api/schemas.js';
 import type { ConversationCursor, ConversationDisplayItem, ConversationPage, HarnessItem } from '../api/generated/wire.js';
-import { buildTranscript, retireFollowedThoughts, harnessItemSchema, HARNESS_ITEMS_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
+import { buildTranscript, retireFollowedThoughts, harnessTimeoutEvidenceSchema, harnessItemSchema, HARNESS_ITEMS_PAGE_LIMIT, plannerRunOperation, type PlannerRun, type TranscriptEntry } from './conversation.js';
 
 const attachment = z.object({ id: z.string(), size: z.number(), url: z.string(), contentType:z.string() });
 const identity = z.discriminatedUnion('kind', [
@@ -67,6 +67,8 @@ export function buildConversationTranscript(items: readonly ConversationDisplayI
 export const conversationRunMetadataSchema = z.object({
   input_contract:z.enum(['canonical','historical']),
   runtime_state:workerSessionStateSchema.nullable(),
+  history_replacement_supported:z.boolean(),
+  terminal_timeout:harnessTimeoutEvidenceSchema.nullable(),
   pending_messages:z.array(z.object({ message_id:z.string(),revision:z.number().int().positive(),
     queue_position:z.number().int().nonnegative(),queued_at_ms:z.number() }).strict()),
   active_input:z.object({ logical_turn_id:z.string(),submissions:z.array(z.object({

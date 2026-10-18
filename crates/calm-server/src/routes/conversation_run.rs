@@ -51,6 +51,11 @@ pub struct ConversationRunResponse {
     #[serde(flatten)]
     pub run: GetPlannerRunResponse,
     pub input_contract: ConversationInputContract,
+    /// Current historical edit affordance; every write rechecks its actual source.
+    pub history_replacement_supported: bool,
+    /// Confirmed timeout for this exact current execution, independent of execution admission.
+    #[schema(required = true, nullable = true)]
+    pub terminal_timeout: Option<calm_types::harness::HarnessTimeoutEvidence>,
     /// Actual current worker row state. Canonical is always present; null means no current historical runtime.
     #[schema(required = true, nullable = true)]
     pub runtime_state: Option<calm_types::worker::WorkerSessionState>,
@@ -64,6 +69,7 @@ pub struct ConversationRunResponse {
 pub(super) async fn read(
     s: RouteState,
     principal: Principal,
+    source: Option<crate::auth::HumanInputSource>,
     id: String,
     query: RunReadQuery,
 ) -> Result<Response> {
@@ -176,6 +182,8 @@ pub(super) async fn read(
                     running_turn: None,
                 },
                 input_contract: ConversationInputContract::Canonical,
+                history_replacement_supported: false,
+                terminal_timeout: None,
                 runtime_state: Some(runtime.state),
                 pending_messages,
                 active_input,
@@ -185,11 +193,16 @@ pub(super) async fn read(
     } else {
         let Json(run) = super::planner_cards::historical_planner_run(s.clone(), id).await?;
         if query.contract.is_some() {
+            let history_replacement_supported = historical_edit_capability(
+                &s, &principal, source, &scope, &run,
+            ).await?;
             Json(PlannerRunReadResponse::Conversation(
                 ConversationRunResponse {
                     native_turn_id: run.running_turn.as_ref().map(|turn| turn.turn_id.clone()),
                     run,
                     input_contract: ConversationInputContract::Historical,
+                    history_replacement_supported,
+                    terminal_timeout: None,
                     runtime_state: frame.runtime.map(|runtime| runtime.state),
                     pending_messages: vec![],
                     active_input: None,
@@ -202,4 +215,29 @@ pub(super) async fn read(
     };
     scope.publish(s.repo.as_ref(), &principal).await?;
     Ok(response)
+}
+
+/// A display affordance consumes the actual effect owner's policy, never a role/name guess.
+async fn historical_edit_capability(
+    state: &RouteState,
+    principal: &Principal,
+    source: Option<crate::auth::HumanInputSource>,
+    scope: &ReadScope,
+    run: &GetPlannerRunResponse,
+) -> Result<bool> {
+    let backend_supported = run.worker_session_id.as_ref()
+        .and_then(|runtime| state.harness.get(runtime))
+        .is_some_and(|handle| handle.history_replacement_supported());
+    let Some(source) = source.filter(|_| backend_supported) else { return Ok(false); };
+    match source.current_principal() {
+        Ok(current) if current.user_id == principal.user_id => {},
+        Ok(_) | Err(CalmError::Unauthorized | CalmError::Forbidden(_)) => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    match crate::conversation_inputs::HistoricalHumanSource::new(source)
+        .require_area(state.repo.as_ref(), scope.area.as_str()).await {
+        Ok(()) => Ok(true),
+        Err(CalmError::Unauthorized | CalmError::Forbidden(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
 }

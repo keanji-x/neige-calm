@@ -49,7 +49,7 @@ describe('canonical conversation display',()=>{
 });
 
 it('refuses a canonical run with missing current runtime state instead of treating null as Idle',()=>{
-  const value={input_contract:'canonical',runtime_state:null,pending_messages:[],active_input:null,native_turn_id:null};
+  const value={input_contract:'canonical',history_replacement_supported:false,terminal_timeout:null,runtime_state:null,pending_messages:[],active_input:null,native_turn_id:null};
   expect(conversationRunMetadataSchema.safeParse(value).success).toBe(false);
   expect(conversationRunMetadataSchema.safeParse({...value,runtime_state:'failed'}).success).toBe(true);
   expect(conversationRunMetadataSchema.safeParse({...value,input_contract:'historical'}).success).toBe(true);

@@ -200,7 +200,8 @@ export function outboxFacts({ cardId, serverEntries, serverTurns, queuedEntryIds
   return {
     /* KNOWN GAP (#1923): a steer sent while a reply streams draws its echo below the live reply,
        then its stored row above it: a one-time reorder that converges. */
-    entries: withoutReplacedTurns(serverEntries, ops),
+    entries: withoutReplacedTurns(serverEntries.filter(entry => !isUserConversationTurn(entry)
+      || entry.legacyInput?.cardId !== cardId || !queuedEntryIds.has(entry.legacyInput.entryId)), ops),
     echoes: drawn,
     shown: live.filter(drawsEcho).map((op) => op.echo),
     confirmed: live.filter((op) => op.phase === 'confirmed').map((op) => op.echo),

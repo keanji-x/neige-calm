@@ -249,7 +249,7 @@ function harness(options: {
         return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationRun({
           card_id: 'card-planner', worker_session_id: 'runtime', phase: 'idle',
           model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-        }, 'idle') });
+        }, 'idle', true) });
       }
       if (request.method === 'GET' && request.path.includes('/harness/items')) {
         return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [...(options.plannerItems ?? [])], null) });

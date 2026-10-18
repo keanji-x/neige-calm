@@ -224,7 +224,7 @@ it('offers editing for every queued message', () => {
 it('marks the original bubble and hands editing to the existing composer owner', async () => {
   const onEdit = vi.fn();
   renderQueue({ entries: [entry()], onEdit, editingEntryId: 'e1' });
-  expect(document.querySelector('[data-nc-turn="you"][data-nc-editing]')?.textContent).toBe('look at the report');
+  expect(document.querySelector('[data-nc-turn="unknown"][data-nc-editing]')?.textContent).toBe('look at the report');
   expect(document.querySelector('[data-nc-composer]')).toBeNull();
   await userEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
   expect(onEdit).toHaveBeenCalledWith(entry());
@@ -232,7 +232,7 @@ it('marks the original bubble and hands editing to the existing composer owner',
 
 it('reuses outgoing bubbles and exposes only icons without a queue header', () => {
   renderQueue({ onSteer: () => done });
-  expect(document.querySelector('[data-nc-pending-entry] [data-nc-turn="you"]')?.textContent).toBe('look at the report');
+  expect(document.querySelector('[data-nc-pending-entry] [data-nc-turn="unknown"]')?.textContent).toBe('look at the report');
   expect(document.querySelector('[data-nc-queue-toggle]')).toBeNull();
   const actions = screen.getAllByRole('button');
   expect(actions).toHaveLength(3);

@@ -1,4 +1,4 @@
-import type { AgentProvider, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
+import type { AgentProvider, HarnessTimeoutEvidence, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
 import type { Conversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerQueueEditOutcome, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { FailedSendOp, PendingQueueSend, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
@@ -80,6 +80,8 @@ export type ConversationStore = Readonly<{
   loadEarlier: () => void;
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
   blockedReason: string | null;
+  /** Confirmed result for this exact execution; feedback never gates new content. */
+  terminalTimeout: HarnessTimeoutEvidence | null;
   /** What this conversation's turns run with. */
   model: ModelSelection;
   /** What may be chosen, or `null` until the catalog has answered once. */

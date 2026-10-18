@@ -796,6 +796,9 @@ function useConversationPane(
                 <ChatFooterError message={store.blockedReason} />
               </ChatFooterNotice>
             )}
+            {!store.stalled && !store.executionHeld && store.terminalTimeout !== null && (
+              <ChatFooterNotice tone="neutral">The previous response stopped after reaching its time limit. Send a message to continue.</ChatFooterNotice>
+            )}
             {plannerRow !== null && <OperationFeedback feedback={plannerRow.role.feedback} />}
             {composerNode}
           </>

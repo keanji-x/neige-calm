@@ -50,7 +50,7 @@ export function renderReadmeFixture(initial: string, detailReady: Promise<void> 
     }
     if (request.path.includes('/readfile')) throw new Error(`Unexpected file read: ${request.path}`);
     if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: card.id, worker_session_id: 'runtime', phase: 'idle',
-      model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, 'idle'));
+      model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, 'idle', true));
     if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [{ id: 1, worker_session_id: 'runtime', card_id: card.id, track_id: track.id,
       thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: 'Conversation remains available while reading documentation.' } }), created_at_ms: 1 }], null));

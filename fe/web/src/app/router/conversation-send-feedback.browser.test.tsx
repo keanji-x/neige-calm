@@ -43,7 +43,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
     }]);
     if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return ok(historicalConversationRun({ card_id: 'second-planner', worker_session_id: 'runtime',
       phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     if (request.path.endsWith('/harness/live')) return ok({ turn_id: 'running-turn', items: [] });
     if (request.path.includes('/second-planner/harness/items')) {
       if (storedText !== null) canonicalReads++;

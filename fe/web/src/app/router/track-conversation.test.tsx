@@ -121,7 +121,8 @@ function projectionRow(id: number, clientId: string, text: string) {
       item: { id: clientId, clientId, type: 'userMessage', content: [{ type: 'text', text: `User says:\n${text}` }] },
       _projection: true,
     }),
-    input_segments: [{ presentation: 'user', text: `User says:\n${text}`, attachments: [] }],
+    input_segments: [{ presentation: 'user', text: `User says:\n${text}`, attachments: [],
+      origin: { observation: 'user_message', event_id: null, queue_entry_id: clientId } }],
   };
 }
 
@@ -146,7 +147,8 @@ function ok(body: unknown): ApiTransportResponse {
 
 /* The shapes are schema-checked by the transport; an off-schema body is refused before any test can observe anything. */
 const inputAccepted = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' });
-const runIdle = () => ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+const inputAcceptedWithEntry = (entryId: string, cardId: string = ASSISTANT_CARD.id) => ok({ card_id: cardId, worker_session_id: 'r', entry_id: entryId });
+const runIdle = () => ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
 
 function created(body: unknown): ApiTransportResponse {
   return { status: 201, statusText: 'Created', body };
@@ -198,7 +200,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
       /* Both card endpoints echo the card in the path, as the kernel does; a fixed id
          would be a trap for the first case that reads the field. */
-      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       /* An off-schema body is refused by the transport and the optimistic echo rolled back. */
       if (request.path.endsWith('/planner/input')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r' });
       if (request.path === '/api/settings') return ok({});
@@ -679,7 +681,7 @@ describe('track conversations', () => {
         }
         if (request.path.includes('/planner/run?contract=conversation_v1') && wedged && !restarted) {
           return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null,
-            permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: 'The stop request timed out before the model confirmed that this turn had stopped.', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+            permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: 'The stop request timed out before the model confirmed that this turn had stopped.', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
         }
         if (request.path.endsWith('/planner/input') && !restarted) return DORMANT;
         return undefined;
@@ -906,10 +908,10 @@ describe('track conversations', () => {
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/input')) {
         attempts += 1;
-        return attempts === 1 ? failure(429, 'rate_limited', 'Wait a moment') : inputAccepted();
+        return attempts === 1 ? failure(429, 'rate_limited', 'Wait a moment') : inputAcceptedWithEntry('retry-entry');
       }
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), attempts > 1
-        ? [harnessMessage(1, 'userMessage', { content: [{ text }] })] : [], null));
+        ? [projectionRow(1, 'retry-entry', text)] : [], null));
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
@@ -932,7 +934,7 @@ describe('track conversations', () => {
     '[F4] never labels the %s working-turn submission as queued, including after reopen', async (outcome) => {
       const text = `Keep ${outcome} queued attempt`;
       const { requests } = setup((request) => {
-        if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
         if (request.path.endsWith('/planner/input')) {
           if (outcome === 'unknown') throw new Error('response dropped');
           return failure(429, 'rate_limited', 'Wait a moment');
@@ -960,7 +962,7 @@ describe('track conversations', () => {
     let resolve!: (response: ApiTransportResponse) => void;
     const held = new Promise<ApiTransportResponse>((answer) => { resolve = answer; });
     const { requests } = setup((request) => {
-      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       if (request.path.endsWith('/planner/input')) return held;
       return undefined;
     });
@@ -1003,7 +1005,7 @@ describe('track conversations', () => {
         if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
         if (request.path.endsWith('/planner/input')) {
           /* Stored, and drained into the transcript the refresh after the 200 reads. */
-          if (!failing) { rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })]; return inputAccepted(); }
+          if (!failing) { rows = [projectionRow(1, 'retry-entry', text)]; return inputAcceptedWithEntry('retry-entry'); }
           if (mode === 'transport') throw new Error('response dropped');
           return mode === '503' ? failure(503, 'unavailable', 'upstream unavailable') : ok({});
         }
@@ -1134,7 +1136,7 @@ describe('track conversations', () => {
     const view = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
         return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null,
-          permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: state.queued ? [entry] : [], pending_overflow: 0 }, 'idle'));
+          permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: state.queued ? [entry] : [], pending_overflow: 0 }, 'idle', true));
       }
       if (!request.path.endsWith('/planner/input')) return undefined;
       if (!state.accept) throw new Error('response dropped');
@@ -1195,7 +1197,7 @@ describe('track conversations', () => {
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
         return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null,
-          permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+          permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       }
       if (request.path.endsWith('/planner/attachments')) {
         return ok({ attachmentId: ATTACHMENT_ID, contentType: 'image/png', size: 4,
@@ -1313,7 +1315,7 @@ describe('track conversations', () => {
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
       if (!request.path.endsWith('/planner/input')) return undefined;
       await answered;
-      return inputAccepted();
+      return inputAcceptedWithEntry('outstanding-entry');
     });
     const inputs = () => requests.filter((request) => request.path.endsWith('/planner/input'));
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
@@ -1321,9 +1323,10 @@ describe('track conversations', () => {
     await write(text);
     await waitFor(() => expect(inputs()).toHaveLength(1));
     /* An event-driven read shows the stored message while its answer is still out. */
-    rows = [harnessMessage(1, 'userMessage', { content: [{ text }] })];
+    rows = [projectionRow(1, 'outstanding-entry', text)];
     await act(async () => { await client.invalidateQueries({ queryKey: cachedHistoryKey(client, ASSISTANT_CARD.id) }); });
-    await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1));
+    /* Before the ACK, equal text and an unknown author cannot identify this send. */
+    await waitFor(() => expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2));
     expect(messageField().getAttribute('contenteditable')).toBe('false');
     await typeInto(messageField(), 'A second message');
     await submit();
@@ -1333,6 +1336,7 @@ describe('track conversations', () => {
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     expect(messageField().textContent).toBe('A second message');
     expect(inputs()).toHaveLength(1);
+    expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(1);
   });
 
   it('[#2068] retires a replayed send by a run read started after its answer, not by a first read still out before it', async () => {
@@ -1494,7 +1498,7 @@ describe('track conversations', () => {
         return ok(historicalConversationRun({
           card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null,
           permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: supported, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-        }, 'idle'));
+        }, 'idle', true));
       }
       if (request.path.endsWith('/planner/attachments')) {
         return ok({
@@ -1565,7 +1569,7 @@ describe('track conversations', () => {
     const dropped = (): never => { throw new Error('response dropped'); };
     const chatText = () => drawerElement().textContent;
     const running = () => ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null,
-      reasoning_effort: null, permission_mode: null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      reasoning_effort: null, permission_mode: null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     async function openAssistant() {
       fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
       await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
@@ -1612,7 +1616,7 @@ describe('track conversations', () => {
     });
 
     it('image upload: says the image could not be uploaded', async () => {
-      setup((request) => request.path.includes('/planner/run?contract=conversation_v1') ? ok(historicalConversationRun({ ...running().body as object, phase: 'idle' }, 'idle'))
+      setup((request) => request.path.includes('/planner/run?contract=conversation_v1') ? ok(historicalConversationRun({ ...running().body as object, phase: 'idle' }, 'idle', true))
         : request.path.endsWith('/planner/attachments') ? timedOut() : undefined);
       await openAssistant();
       await attachAnImage();
@@ -1650,7 +1654,7 @@ describe('track conversations', () => {
 
       it('image upload: says the image was not uploaded', async () => {
         const requests = await offlineAfterOpening((request) => request.path.includes('/planner/run?contract=conversation_v1')
-          ? ok(historicalConversationRun({ ...running().body as object, phase: 'idle' }, 'idle')) : undefined);
+          ? ok(historicalConversationRun({ ...running().body as object, phase: 'idle' }, 'idle', true)) : undefined);
         await attachAnImage();
         expect(await within(drawerElement()).findByText('The image was not uploaded.')).toBeTruthy();
         expect(requests.filter((request) => request.path.endsWith('/planner/attachments'))).toEqual([]);
@@ -1719,7 +1723,7 @@ describe('track conversations', () => {
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [user, reply, terminal], null));
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null,
-        reasoning_effort: null, permission_mode: null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        reasoning_effort: null, permission_mode: null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: draftImageId, contentType: 'image/png', size: 4,
         url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${draftImageId}` });
       if (request.path.endsWith('/planner/input')) return held;
@@ -1774,9 +1778,10 @@ describe('track conversations', () => {
 
   /** One stored turn of the assistant conversation: its prompt (with images), reply and outcome. */
   const turnRows = (turnId: string, first: number, prompt: string, answer: string,
-    images: readonly (typeof REWIND_IMAGE)[] = []) => [
+    images: readonly (typeof REWIND_IMAGE)[] = [], entryId: string | null = null) => [
     { ...harnessMessage(first, 'userMessage', { content: [{ text: prompt }] }), turn_id: turnId,
-      input_segments: [{ presentation: 'user', text: `User says:\n${prompt}`, attachments: images }] },
+      input_segments: [{ presentation: 'user', text: `User says:\n${prompt}`, attachments: images,
+        ...(entryId === null ? {} : { origin: { observation: 'user_message', event_id: null, queue_entry_id: entryId } }) }] },
     { ...harnessMessage(first + 1, 'agentMessage', { text: answer }), turn_id: turnId },
     { ...harnessMessage(first + 2, '', {}), item_type: null, turn_id: turnId, method: 'turn/completed',
       params: JSON.stringify({ id: turnId, status: 'completed', error: null }) },
@@ -1788,7 +1793,7 @@ describe('track conversations', () => {
       if (answered !== undefined) return answered;
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), pathCardId(request.path) === ASSISTANT_CARD.id ? rows() : [], null));
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r',
-        phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: DRAFT_IMAGE_ID, contentType: 'image/png', size: 4,
         url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${DRAFT_IMAGE_ID}` });
       return undefined;
@@ -1812,7 +1817,7 @@ describe('track conversations', () => {
       }
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
         return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null,
-          reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, ...run }, 'idle'));
+          reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, ...run }, 'idle', true));
       }
       if (request.path.endsWith('/planner/attachments')) {
         await uploadGate();
@@ -1845,7 +1850,7 @@ describe('track conversations', () => {
   }
   const settleFor = (ms: number) => act(async () => { await new Promise((done) => setTimeout(done, ms)); });
   const editBar = () => drawerElement().querySelector<HTMLElement>('[data-nc-edit-bar]');
-  const markedMessages = () => Array.from(drawerElement().querySelectorAll('[data-nc-turn="you"][data-nc-editing]')).map((said) => said.textContent);
+  const markedMessages = () => Array.from(drawerElement().querySelectorAll('[data-nc-turn="unknown"][data-nc-editing]')).map((said) => said.textContent);
   const markedImages = () => Array.from(drawerElement().querySelectorAll('[data-nc-turn-attachments][data-nc-editing] img')).map((image) => image.getAttribute('src'));
   const REFUSED_NOTE = 'Your message is back in the composer; sending adds a new one.';
   /** An earlier turn, then the one to edit (with its image), until a replace is answered 200. */
@@ -2008,7 +2013,7 @@ describe('track conversations', () => {
     await waitFor(() => expect(drawerElement().querySelector('[data-nc-attachments]')).toBeNull());
     await settleFor(20);
     /* No echo of the refused send: the thread is the two stored turns, and the edited one is still the latest. */
-    expect(Array.from(drawerElement().querySelectorAll('[data-nc-turn="you"]')).map((said) => said.textContent))
+    expect(Array.from(drawerElement().querySelectorAll('[data-nc-turn="unknown"]')).map((said) => said.textContent))
       .toEqual(['Earlier prompt', 'Original prompt']);
     expect(screen.getByText('Original answer', { exact: true })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Edit message' })).toBeTruthy();
@@ -2272,7 +2277,7 @@ describe('track conversations', () => {
       const card = pathCardId(request.path);
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
         return ok(historicalConversationRun({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: card === PLANNER_CARD.id ? 'never' : null, blocked_reason: null,
-          manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 }, 'idle'));
+          manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
         await answered;
@@ -2302,7 +2307,7 @@ describe('track conversations', () => {
       const card = pathCardId(request.path);
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
         return ok(historicalConversationRun({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: card === PLANNER_CARD.id ? 'never' : null, blocked_reason: null,
-          manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 }, 'idle'));
+          manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
         await answered;
@@ -2387,11 +2392,11 @@ describe('track conversations', () => {
       if (request.path.includes(HISTORY_PATH) && pathCardId(request.path) === ASSISTANT_CARD.id) {
         if (stage === 'before') return ok(historicalConversationPage(conversationCardId(request.path), [...earlier, ...turnRows('turn', 91, 'Original prompt', 'Original answer')], null));
         if (failReads) return failure(503, 'unavailable', 'Transcript unavailable');
-        return ok(historicalConversationPage(conversationCardId(request.path), [...earlier, ...turnRows('turn-2', 101, 'Original prompt', 'Replacement answer')], null));
+        return ok(historicalConversationPage(conversationCardId(request.path), [...earlier, ...turnRows('turn-2', 101, 'Original prompt', 'Replacement answer', [], 'replacement-entry')], null));
       }
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r',
-        phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
-      if (request.path.endsWith('/planner/input')) { stage = 'replaced'; return inputAccepted(); }
+        phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
+      if (request.path.endsWith('/planner/input')) { stage = 'replaced'; return inputAcceptedWithEntry('replacement-entry'); }
       return undefined;
     });
     await openEditableAssistant();
@@ -2467,8 +2472,8 @@ describe('track conversations', () => {
   it('acts again on a later turn that reuses the removed turn’s id', async () => {
     let stage: 'before' | 'replaced' = 'before';
     const { requests } = scriptedSetup(() => stage === 'before' ? turnRows('turn', 91, 'Original prompt', 'Original answer', [REWIND_IMAGE])
-      : turnRows('turn', 101, 'Original prompt', 'A new answer', [REWIND_IMAGE]), (request) => {
-      if (request.path.endsWith('/planner/input')) { stage = 'replaced'; return inputAccepted(); }
+      : turnRows('turn', 101, 'Original prompt', 'A new answer', [REWIND_IMAGE], 'replacement-entry'), (request) => {
+      if (request.path.endsWith('/planner/input')) { stage = 'replaced'; return inputAcceptedWithEntry('replacement-entry'); }
       return undefined;
     });
     await editIntoComposer(requests);
@@ -2634,9 +2639,9 @@ describe('track conversations', () => {
         return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: state.drained ? 'idle' : 'turn_running',
           model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
           pending: state.queued && !state.drained ? [{ entry_id: 'entry-a', text, rev: 0, queued_at_ms: 5 }] : [],
-          pending_overflow: 0 }, 'idle'));
+          pending_overflow: 0 }, 'idle', true));
       }
-      if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), state.drained ? [harnessMessage(1, 'userMessage', { content: [{ text }] })] : [], null));
+      if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), state.drained ? [projectionRow(1, 'entry-a', text)] : [], null));
       if (!request.path.endsWith('/planner/input')) return undefined;
       state.inputs += 1;
       if (state.inputs > 1) throw new Error('response dropped');
@@ -2672,7 +2677,7 @@ describe('track conversations', () => {
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [terminal], null));
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: reason, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: reason, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
@@ -2714,7 +2719,7 @@ describe('track conversations', () => {
     const pending = new Promise<ApiTransportResponse>((done) => { resolve = done; });
     const { client, requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
       if (request.path.endsWith('/planner/interrupt')) return pending;
       return undefined;
@@ -2745,7 +2750,7 @@ describe('track conversations', () => {
       params: JSON.stringify({ id: 'previous-turn', status: 'completed', error: null }) };
     const { client, requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), change === 'load earlier' ? [current] : [current, historical], null));
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: true });
       return undefined;
@@ -2765,7 +2770,7 @@ describe('track conversations', () => {
   it.each(['issuing_turn', 'turn_running'])('shows an unconfirmed stop receipt without inventing a terminal result (%s)', async (phase) => {
     const { requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: false });
       return undefined;
     });
@@ -2787,7 +2792,7 @@ describe('track conversations', () => {
     let stops = 0;
     setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       if (request.path.endsWith('/planner/interrupt')) {
         stops += 1;
         return stops === 1 ? failure(409, 'planner_harness_dormant', 'No live planner harness session.')
@@ -2810,7 +2815,7 @@ describe('track conversations', () => {
     const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
     const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
       ? ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'wedged', model: null,
-        reasoning_effort: null, permission_mode: null, blocked_reason: reason, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle')) : undefined);
+        reasoning_effort: null, permission_mode: null, blocked_reason: reason, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true)) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     const disclosure = await screen.findByRole('button', { name: 'Paused', expanded: false });
     fireEvent.click(disclosure);
@@ -2829,7 +2834,7 @@ describe('track conversations', () => {
     let phase = 'turn_running';
     const { client, requests } = setup((request) => {
       if (request.path === CONVERSATIONS) return ok([assistantRow({ state: 'turn_pending' })]);
-      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
@@ -2852,7 +2857,7 @@ describe('track conversations', () => {
   it('[F6] stops promising queued delivery after the harness becomes wedged', async () => {
     let phase = 'turn_running';
     const { client, requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
-      ? ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle')) : undefined);
+      ? ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true)) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await screen.findByRole('button', { name: 'Stop' });
     await typeInto(messageField(), 'Queued before the stall');
@@ -2874,7 +2879,7 @@ describe('track conversations', () => {
     const held = new Promise<ApiTransportResponse>((resolve) => { release = resolve; });
     const { client } = setup((request) => {
       if (request.path.endsWith('/planner/input')) return held;
-      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
@@ -3195,10 +3200,10 @@ describe('track conversations', () => {
     await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
     const drawer = drawerElement();
     await waitFor(() => expect(
-      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+      [...drawer.querySelectorAll('[data-nc-turn="unknown"]')].map((turn) => turn.textContent),
     ).toEqual(['start this thread']));
     expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
-    const before = drawer.querySelector('[data-nc-turn="you"]');
+    const before = drawer.querySelector('[data-nc-turn="unknown"]');
 
     /* codex echoes: the kernel upgrades the row in place. */
     persisted = [upgradedRow(projectionRow(1, 'entry-0001', 'start this thread'), 'turn-1', 'item-codex-1')];
@@ -3207,10 +3212,10 @@ describe('track conversations', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await waitFor(() => expect(
-      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+      [...drawer.querySelectorAll('[data-nc-turn="unknown"]')].map((turn) => turn.textContent),
     ).toEqual(['start this thread']));
     /* Same DOM node: the line is keyed by the row's `id`, which the upgrade keeps. */
-    expect(drawer.querySelector('[data-nc-turn="you"]')).toBe(before);
+    expect(drawer.querySelector('[data-nc-turn="unknown"]')).toBe(before);
   });
 
   /* The create's message never drained, so the kernel wrote no row; the reader
@@ -3226,7 +3231,7 @@ describe('track conversations', () => {
       }
       if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [...persisted], null));
-      if (request.path.endsWith('/planner/input')) return inputAccepted();
+      if (request.path.endsWith('/planner/input')) return inputAcceptedWithEntry('retyped-entry', pathCardId(request.path));
       if (request.path.includes('/planner/run?contract=conversation_v1')) return runIdle();
       return undefined;
     });
@@ -3236,17 +3241,17 @@ describe('track conversations', () => {
     await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
     const drawer = drawerElement();
-    expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0);
+    expect(drawer.querySelectorAll('[data-nc-turn="unknown"]')).toHaveLength(0);
 
     /* Nothing came back, so they say it again. The composer allows it. */
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-    persisted = [harnessMessage(1, 'userMessage', { content: [{ text: 'hi' }] })];
+    persisted = [{ ...projectionRow(1, 'retyped-entry', 'hi'), card_id: minted[0].id }];
     await write('hi');
     await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/input'))).toBe(true));
 
     /* The row retires the send's echo, and the composer comes back. */
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-    expect([...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent))
+    expect([...drawer.querySelectorAll('[data-nc-turn="unknown"]')].map((turn) => turn.textContent))
       .toEqual(['hi']);
   });
 
@@ -3623,9 +3628,10 @@ describe('registry write-through', () => {
       async send(request) {
         if (request.path.endsWith('/planner/input')) {
           await inputSettled;
-          return inputAccepted();
+          return inputAcceptedWithEntry('refresh-entry');
         }
         if (request.path.includes('/planner/run?contract=conversation_v1')) return runIdle();
+        if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
         return ok([]);
       },
     };
@@ -3633,7 +3639,7 @@ describe('registry write-through', () => {
     await store.send('what does this repo do?');
     /* The history refresh lands while the POST that started it is still out. */
     await store.deliverHistory([
-      harnessMessage(1, 'userMessage', { content: [{ text: 'what does this repo do?' }] }),
+      projectionRow(1, 'refresh-entry', 'what does this repo do?'),
       harnessMessage(2, 'agentMessage', { text: 'it runs tracks' }),
     ]);
     await waitFor(() => { expect(store.turns()).toHaveLength(2); });
@@ -3685,8 +3691,9 @@ describe('registry write-through', () => {
     const transport: ApiTransportPort = {
       async send(request) {
         if (request.path.endsWith('/planner/input')) {
+          const entryId = `serial-entry-${holds.length + 1}`;
           await new Promise<void>((resolve) => { holds.push(resolve); });
-          return inputAccepted();
+          return inputAcceptedWithEntry(entryId);
         }
         if (request.path.includes('/planner/run?contract=conversation_v1')) return runIdle();
         if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), historyRows, null));
@@ -3740,7 +3747,7 @@ describe('registry write-through', () => {
 
     /* The first POST lands while the second store is mounted; only after it settles
            may the new store start its same-text send. */
-    historyRows = [harnessMessage(1, 'userMessage', { content: [{ text: 'ping' }] })];
+    historyRows = [projectionRow(1, 'serial-entry-1', 'ping')];
     await act(async () => { holds[0]?.(); await Promise.resolve(); });
     await waitFor(() => {
       latestSend('ping');
@@ -3762,7 +3769,7 @@ describe('registry write-through', () => {
   });
 });
 
-it.each(['429', 'transport'])('[F5] keeps a %s failure and its Try again when a stale read reveals an old equal message', async (mode) => {
+it.each(['429', 'transport'])('[F5] keeps a %s failure and its distinct echo when an unacknowledged send meets an old equal Unknown message', async (mode) => {
   const text = 'repeat this instruction';
   const first = harnessMessage(1, 'userMessage', { content: [{ text: 'Earlier different instruction' }] });
   const oldEqual = harnessMessage(2, 'userMessage', { content: [{ text }] });
@@ -3788,9 +3795,9 @@ it.each(['429', 'transport'])('[F5] keeps a %s failure and its Try again when a 
   await screen.findByText('Previously completed response');
   expect(screen.getByRole('alert').textContent).toContain(mode === '429' ? 'Not sent' : 'Delivery is unconfirmed');
   expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
-  /* A rejected send was not stored, so it is drawn beside the equal row. A spent unknown one may have been: the row
-     is drawn once in its place (#2068 item 7), and the send keeps its Try again, which only replays its key. */
-  expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(mode === '429' ? 2 : 1);
+  /* Neither failure has an acknowledged entry ID. The old Unknown message cannot identify
+     this send by equal text; keep both and retain Try again under the original key. */
+  expect(within(drawerElement()).getAllByText(text, TRANSCRIPT_TEXT)).toHaveLength(2);
   expect(requests.filter((request) => request.path.endsWith('/planner/input'))).toHaveLength(sent);
 });
 
@@ -4262,7 +4269,7 @@ it.each(['parent', 'side'] as const)('interrupts only the focused %s pane when p
     if (request.path === '/api/version') return sideVersion();
     if (request.path === CONVERSATIONS) return ok([assistantRow(), child]);
     if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r',
-      phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', stopped: true });
     return undefined;
   });

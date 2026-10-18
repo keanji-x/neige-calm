@@ -1282,9 +1282,7 @@ const turnOutcomeParamsSchema = z.object({
 });
 
 /** The released cause-only string and complete v1 proof; never read unprotected `harness_timeout`. */
-const harnessInterruptionSchema = z.union([
-  z.literal('max_turn_duration'),
-  z.object({
+export const harnessTimeoutEvidenceSchema: z.ZodType<HarnessTimeoutEvidence> = z.object({
     version: z.literal('v1'),
     request: z.strictObject({
       session_id: z.string(), card_id: z.string(), track_id: z.string(), thread_id: z.string(), turn_id: z.string(),
@@ -1292,7 +1290,10 @@ const harnessInterruptionSchema = z.union([
       effective_elapsed_ms: z.number().int().nonnegative(), budget_ms: z.number().int().nonnegative(),
     }),
     ended_at_ms: z.number().int(),
-  }),
+  });
+
+const harnessInterruptionSchema = z.union([
+  z.literal('max_turn_duration'), harnessTimeoutEvidenceSchema,
 ]);
 
 /** A recorded duration only when it is a finite, non-negative integer; anything else is unknown, not 0. */
@@ -1507,7 +1508,7 @@ export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]):
 }
 
 /** User-role display data includes unknown historical authors; this is never an ownership test. */
-export function isUserConversationTurn(entry:TranscriptEntry|undefined):entry is ConversationTurn {
+export function isUserConversationTurn(entry:TranscriptEntry|undefined):entry is ConversationTurn & Readonly<{ author: 'you' | 'human' | 'unknown' }> {
   return entry?.author === 'you' || entry?.author === 'human' || entry?.author === 'unknown';
 }
 
