@@ -1,6 +1,6 @@
 import type { ConversationActivity, TranscriptEntry } from './conversation.ts';
-import { foldQuietSyncs, type QuietSyncGroup } from './conversation-quiet-sync.ts';
-import { groupTranscriptActivities, keyTranscriptGroups, type KeyedTranscriptGroup, type TranscriptGroupKeys } from './conversation-groups.ts';
+import { foldQuietSyncs, type QuietSyncGroup } from './conversation-quiet-sync.js';
+import { groupTranscriptActivities, keyTranscriptGroups, type KeyedTranscriptGroup, type TranscriptGroupKeys } from './conversation-groups.js';
 
 /** Content identity is independent of the current group's position and reading state. */
 export type TranscriptGroupBody = Readonly<{

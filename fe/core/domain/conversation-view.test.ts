@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest';
 import { SYSTEM_PRESENTATION_LABELS, type ConversationActivity, type ConversationSystemEntry,
-  type ConversationTurn, type ConversationTurnOutcome, type TranscriptEntry } from './conversation.ts';
-import { groupTranscriptActivities, keyTranscriptGroups, noTranscriptGroupKeys } from './conversation-groups.ts';
-import { foldQuietSyncs } from './conversation-quiet-sync.ts';
-import { projectTranscriptView, type TranscriptView } from './conversation-view.ts';
+  type ConversationTurn, type ConversationTurnOutcome, type TranscriptEntry } from './conversation.js';
+import { groupTranscriptActivities, keyTranscriptGroups, noTranscriptGroupKeys } from './conversation-groups.js';
+import { foldQuietSyncs } from './conversation-quiet-sync.js';
+import { projectTranscriptView, type TranscriptView } from './conversation-view.js';
 
 function activity(id: string): ConversationActivity {
   return { id, author: 'activity', verb: 'Ran', target: id, tool: null,
