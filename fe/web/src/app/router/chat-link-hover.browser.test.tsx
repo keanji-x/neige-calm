@@ -41,7 +41,7 @@ async function setup({ streaming = false, historySuffix = '', narrow = false, fi
     if (request.path === '/api/areas') body = [{ id: 'examples', name: 'Examples', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === '/api/areas/examples/tracks') body = [track];
     if (request.path === '/api/tracks/link-preview') body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card, { ...card, id: 'chat-b', title: 'Other chat', payload: { harness_profile: 'assistant', planner_provider: 'codex' } }], overlays: [] };
-    if (request.path === '/api/tracks/link-preview/conversations') body = [{ id: 'chat-b', trackId: track.id, title: 'Other chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null }];
+    if (request.path === '/api/tracks/link-preview/conversations') body = [{ id: 'chat-b', trackId: track.id, title: 'Other chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null, archivedAt: null }];
     if (request.path === '/api/settings') body = {};
     if (request.path.endsWith('/planner/run')) body = { card_id: request.path.split('/')[3], worker_session_id: 'chat-runtime', phase: streaming ? 'issuing_turn' : 'idle',
       model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
