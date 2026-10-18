@@ -286,7 +286,10 @@ describe('ReportPreviewBlock device frame', () => {
 it('loads a live preview only on request and releases it when paused', () => {
   const { container } = render(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => registered(true)} />);
   expect(container.querySelector('iframe')).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Load preview' }));
+  const load = screen.getByRole('button', { name: 'Load preview' });
+  load.focus();
+  fireEvent.click(load);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause preview' }));
   const frame = container.querySelector('iframe');
   expect(frame?.getAttribute('src')).toBe('http://192.168.5.20:4050/');
   fireEvent.click(screen.getByRole('button', { name: 'Pause preview' }));

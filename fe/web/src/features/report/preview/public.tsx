@@ -116,12 +116,14 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
   const figure = useRef<HTMLElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const loadButton = useRef<HTMLButtonElement>(null);
+  const pauseButton = useRef<HTMLButtonElement>(null);
   const returnToLoad = useRef(false);
   const [running, setRunning] = useState(false);
   useLayoutEffect(() => {
-    if (!running && returnToLoad.current) {
+    if (running) pauseButton.current?.focus({ preventScroll: true });
+    else if (returnToLoad.current) {
       returnToLoad.current = false;
-      loadButton.current?.focus();
+      loadButton.current?.focus({ preventScroll: true });
     }
   }, [running]);
   // The choice belongs to one (store, key): a block rewritten to another key, or the same block under
@@ -165,7 +167,7 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
     <figure ref={figure} className={styles.figure}>
       <PreviewBar title={title}>
         <span className={styles.controls}>
-          {running && <button type="button" className={styles.control} onClick={() => {
+          {running && <button ref={pauseButton} type="button" className={styles.control} onClick={() => {
             returnToLoad.current = true;
             setRunning(false);
           }}>Pause preview</button>}
