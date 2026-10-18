@@ -2,6 +2,10 @@
 
 Styles owns small CSS feedback tokens; UI owns the generic Motion physics and playback adapters. Domain state and focus remain synchronous in callers.
 
+Under reduced motion, the base layer defaults undeclared CSS transitions to `none`.
+This default has normal priority so component-owned transitions still complete at
+the existing tiny duration, including vendor lifecycles that require `transitionend`.
+
 ## Physical motion
 
 This is the default for new or changed interactive position, size and presence motion. Consumers reuse `SizeMotion`, `useSpringPresence` or the shared playback adapter and declare targets/geometry; they do not add local response frequencies, duration formulas, curves or spring solvers. The UI owner calibrates the shared response. Declared color-feedback, direct-manipulation and decorative-loop contracts remain intentional exceptions.

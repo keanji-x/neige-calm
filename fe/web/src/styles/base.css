@@ -279,6 +279,8 @@
     *::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
+      /* Static elements stay static; component declarations still own their transitions. */
+      transition-property: none;
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
     }

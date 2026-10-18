@@ -74,7 +74,7 @@ it('resolves directly to natural size under reduced motion', async () => {
   const view = render(<Panel mode="compact" />);
   view.rerender(<Panel mode="expanded" margin={16} />);
   expect(host().style.height).toBe('');
-  // The global reset leaves 0.01ms CSS transitions; wait for painting without a held JS height.
+  // Reduced motion releases JavaScript sizing and leaves the content at its intrinsic height.
   await expect.poll(() => host().getBoundingClientRect().height).toBe(192);
   expect(host().style.height).toBe('');
 });
