@@ -27,24 +27,19 @@ async fn hand_area_to_alice(fixture: &Fixture, area_id: &str) {
     )
     .await
     .unwrap();
-    // There is no public membership-management path yet. Prepare legitimate
-    // registry/membership facts, without issuing a credential or changing a
-    // runtime phase. The Area always retains an actual registered owner.
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at)
-         VALUES (?1,'historical-control-alice','owner',0)",
+    // There is no public membership-management path yet. Atomically transfer
+    // the existing unique owner row to another registered user. This prepares
+    // legitimate facts without issuing credentials or changing runtime state.
+    let moved = sqlx::query(
+        "UPDATE area_members SET user_id='historical-control-alice'
+         WHERE area_id=?1 AND user_id=?2 AND role='owner'",
     )
     .bind(area_id)
+    .bind(LEGACY_OWNER_USER_ID)
     .execute(&mut *tx)
     .await
     .unwrap();
-    let removed = sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
-        .bind(area_id)
-        .bind(LEGACY_OWNER_USER_ID)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert_eq!(removed.rows_affected(), 1);
+    assert_eq!(moved.rows_affected(), 1);
     tx.commit().await.unwrap();
 }
 
@@ -113,7 +108,8 @@ async fn historical_control_after_membership_removal(control: Control) {
     let original_pending = before.pending_entries();
     assert_eq!(original_pending[0].user_view().unwrap().rev, 0);
     hand_area_to_alice(&fixture, area["id"].as_str().unwrap()).await;
-    let before_steers = state.shared_codex_appserver.steered_turns_for_test();
+    let before_steers =
+        serde_json::to_value(state.shared_codex_appserver.steered_turns_for_test()).unwrap();
     let before_stops = state.shared_codex_appserver.interrupted_turns_for_test();
     let before_events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
         .fetch_one(fixture.repo.pool())
@@ -155,7 +151,8 @@ async fn historical_control_after_membership_removal(control: Control) {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let response_body: Value = serde_json::from_slice(&bytes).unwrap();
     let after = harness.snapshot().await.unwrap();
-    let after_steers = state.shared_codex_appserver.steered_turns_for_test();
+    let after_steers =
+        serde_json::to_value(state.shared_codex_appserver.steered_turns_for_test()).unwrap();
     let after_stops = state.shared_codex_appserver.interrupted_turns_for_test();
     let after_events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
         .fetch_one(fixture.repo.pool())
