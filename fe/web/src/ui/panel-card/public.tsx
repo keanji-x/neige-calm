@@ -32,7 +32,7 @@ export function PanelModule({ title, icon, action, children, bare = false, revea
       className={[styles.module, bare ? styles.bare : '', revealActions ? styles.revealActions : '', grow ? styles.grow : '', className].filter(Boolean).join(' ')}
       {...(moduleMarker === undefined ? {} : { 'data-nc-module': moduleMarker })}
     >
-      <div className={styles.head}>
+      <div className={styles.head} aria-hidden={bare || undefined}>
         <ListText as="h2" tone="section" emphasis="medium"
           className={styles.title}
           {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}

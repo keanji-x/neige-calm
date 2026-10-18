@@ -6,12 +6,13 @@ import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
-import { checkProjection } from '../../../../../tools/projection/public.ts';
-import type { ProjectionNode } from '../../../../../tools/projection/public.ts';
+import { checkProjection, checkProjectionIn } from '../../../../../tools/projection/public.ts';
+import { paintModule } from '../../../../../core/view/panel.ts';
+import { captureContextProjection } from './test-fixtures.tsx';
 import { makeDesktopPainter, type DesktopLeaf } from './desktop-painter.tsx';
 
 /** The one mount every case uses: it renders exactly what the painter painted; a non-module leaf at this level is a thrown error, not a guess. */
-const mount = (painted: readonly DesktopLeaf[]): ProjectionNode =>
+const mount = (painted: readonly DesktopLeaf[]): Element =>
   render(<>{painted.map((leaf) => {
     if (leaf.slot !== 'module') throw new Error(`checkProjection handed back a ${leaf.slot} leaf`);
     return leaf.node;
@@ -69,9 +70,10 @@ describe('the desktop painter’s capability table', () => {
 });
 
 describe('the desktop painter is a faithful projection of a Cards module', () => {
-  it('with a titled deletable row and an untitled kernel-owned one', () => {
-    expect(checkProjection(makeDesktopPainter({ onDeleteCard: vi.fn() }), [cardsModule], mount))
-      .toEqual([]);
+  it('with a titled deletable row and an untitled kernel-owned one', async () => {
+    const painter = makeDesktopPainter({ onDeleteCard: vi.fn() });
+    const root = mount([paintModule(painter, cardsModule)]);
+    expect(checkProjectionIn(painter, [cardsModule], await captureContextProjection(root))).toEqual([]);
   });
 
   it('with no delete handler, so every delete-card is filtered away', () => {

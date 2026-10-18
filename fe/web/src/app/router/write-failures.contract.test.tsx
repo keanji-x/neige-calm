@@ -98,8 +98,7 @@ describe('a lost answer shows the write’s fixed state, never transport text', 
       await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     }, 'The delete is unconfirmed.'],
     ['card delete', '/track/w1', async () => {
-      const progress = await screen.findByText('Progress', { exact: true });
-      if (!progress.closest('details')!.open) await userEvent.click(progress);
+      await screen.findByRole('region', { name: 'Workbench' });
       await userEvent.click(await screen.findByRole('button', { name: 'Actions for Build log' }));
       await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete card Build log' }));
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
@@ -170,8 +169,7 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       return Promise.resolve({ status: 404, statusText: 'Not Found', body: { error: 'card not found', code: 'not_found' } });
     });
     const deleteCard = async () => {
-      const progress = await screen.findByText('Progress', { exact: true });
-      if (!progress.closest('details')!.open) await userEvent.click(progress);
+      await screen.findByRole('region', { name: 'Workbench' });
       await userEvent.click(await screen.findByRole('button', { name: 'Actions for Build log' }));
       await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete card Build log' }));
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));

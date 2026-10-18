@@ -265,7 +265,7 @@ describe('a desktop viewport never lets ?panel= disable the track panel', () => 
     const router = setup('/track/w1?panel=cards');
 
     // A role query is the right instrument: `inert` + `aria-hidden` take the surface out of the accessibility tree.
-    await userEvent.click(await screen.findByText('Progress', { exact: true }));
+    await screen.findByRole('region', { name: 'Workbench' });
     /* `^` anchors to the row itself: the delete sibling's accessible name also carries the card's title. */
     expect(await screen.findByRole('button', { name: /^Build log/ })).toBeTruthy();
     // And the URL stops claiming a state this viewport cannot be in.

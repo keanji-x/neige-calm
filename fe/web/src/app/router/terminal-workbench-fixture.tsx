@@ -5,6 +5,7 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import type { CardWire } from '../../../../core/domain/track.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
+import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter, APP_BASEPATH } from './public.tsx';
@@ -17,6 +18,7 @@ export function terminalCard(id: string, trackId = 'workbench'): CardWire {
 /** HTTP boundary fixture; production router, mutations, card registry and lifecycle remain real. */
 export function setupWorkbench({ cards: initial = [] as CardWire[], defer = false, lost = false, daily = false, failure = null as null | 'definite' | 'unknown', initialCard = null as string | null, secondaryReads = null as Promise<void> | null, createdTerminalId = null as string | null } = {}) {
   const requests: ApiRequest[] = [];
+  const receipts = createReadReceiptsKernel({ baselineMs: 0 });
   const cards = [...initial];
   const otherCards: CardWire[] = [];
   const live = { text: '' };
@@ -30,6 +32,8 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { async send(request) {
     requests.push(request);
+    const receipt = await receipts.reply(request);
+    if (receipt !== undefined) return receipt;
     const { path, method } = request;
     if (path === '/api/today/daily') return ok({ date: '2026-10-17', time_zone: 'Asia/Shanghai', track_id: track.id });
     if (path === '/api/version') return ok({ assistantProviders: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION,

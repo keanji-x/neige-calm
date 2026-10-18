@@ -1,10 +1,11 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
+import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { queryKeys } from '../providers/queries.ts';
 import { setupWorkbench, terminalCard } from './terminal-workbench-fixture.tsx';
 
-afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
+afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.restoreAllMocks(); });
 
 it.each(['main', 'draft', 'side'] as const)('dispatches /terminal from the %s pane to the latest committed card list and pending intent', async pane => {
   const fixture = setupWorkbench({ defer: true, failure: 'definite' });
@@ -15,6 +16,7 @@ it.each(['main', 'draft', 'side'] as const)('dispatches /terminal from the %s pa
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
   };
   if (pane === 'side') {
+    await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
     await command(await screen.findByRole('combobox', { name: 'Message' }), '/side');
     await screen.findByRole('region', { name: 'Side conversation · Codex' });
   }
@@ -374,4 +376,48 @@ it('omits dock deletion for kernel-owned cards while keeping hide available', as
   await userEvent.click(within(dock).getByRole('button', { name: 'Hide terminal' }));
   expect(document.querySelector('[data-nc-card-dock]')).toBe(dock);
   expect(fixture.requests.some(request => request.method === 'DELETE')).toBe(false);
+});
+
+it('does not acknowledge a side reply while Discussion is hidden by Terminal', async () => {
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  const fixture = setupWorkbench({ cards: [terminalCard('shell')] });
+  await screen.findByRole('button', { name: 'Conversation Main discussion' });
+  const parent = fixture.client.getQueryData<Conversation[]>(queryKeys.trackConversations('workbench'))![0];
+  const side = { ...parent, id: 'side', title: 'Side discussion', sourceCardId: 'parent', lastTurnCompletedAt: 10 };
+  const receipts = (id: string) => fixture.requests.filter(request => request.path === `/api/read-receipts/conversation/${id}/read`).map(request => request.body);
+  act(() => { fixture.client.setQueryData(queryKeys.trackConversations('workbench'), [parent, side]); });
+  fireEvent.click(screen.getByRole('button', { name: 'Conversation Main discussion' }));
+  const input = await screen.findByRole('combobox', { name: 'Message' });
+  await waitFor(() => expect(input.getAttribute('contenteditable')).toBe('true'));
+  await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
+  input.textContent = '/side'; fireEvent.input(input); fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+  await waitFor(() => expect(receipts('side')).toEqual([{ readThroughMs: 10 }]));
+  const retained = document.getElementById('conversation-side');
+  const sideInput = within(retained!).getByRole('combobox', { name: 'Message' });
+  await waitFor(() => expect(sideInput.getAttribute('contenteditable')).toBe('true'));
+  sideInput.textContent = 'keep this side draft'; fireEvent.input(sideInput);
+  fireEvent.click(screen.getByRole('button', { name: 'Terminal workbench' }));
+  await screen.findByRole('button', { name: 'Hide terminal' });
+  await waitFor(() => expect(document.querySelector('[data-nc-terminal-card]')).not.toBeNull());
+  const host = document.querySelector('[data-nc-terminal-card]');
+  expect(retained?.closest('[hidden]')).not.toBeNull();
+  // The main receipt proves the same query observer update has committed. Cache
+  // publication alone can precede a render and is not a hidden-side assertion.
+  for (const at of [20, 30]) {
+    act(() => { fixture.client.setQueryData(queryKeys.trackConversations('workbench'),
+      [{ ...parent, lastTurnCompletedAt: at }, { ...side, lastTurnCompletedAt: at }]); });
+    await waitFor(() => expect(receipts('parent')).toContainEqual({ readThroughMs: at }));
+    const visibleReceipts = receipts('parent').length;
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    await waitFor(() => expect(receipts('parent')).toHaveLength(visibleReceipts + 1));
+    expect(receipts('side')).toEqual([{ readThroughMs: 10 }]);
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Discussion' }));
+  await waitFor(() => expect(receipts('side')).toEqual([{ readThroughMs: 10 }, { readThroughMs: 30 }]));
+  expect(document.getElementById('conversation-side')).toBe(retained);
+  expect(document.querySelector('[data-nc-terminal-card]')).toBe(host);
+  expect(sideInput.textContent).toBe('keep this side draft');
+  fireEvent.click(screen.getByRole('button', { name: 'Discussion' }));
+  expect(receipts('side')).toHaveLength(2);
+  expect(fixture.requests.filter(request => request.method === 'POST' && !request.path.startsWith('/api/read-receipts/'))).toEqual([]);
 });

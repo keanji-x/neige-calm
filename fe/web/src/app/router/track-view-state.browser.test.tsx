@@ -244,7 +244,7 @@ it('remembers Progress expansion and collapse independently through sidebar navi
   await page.viewport(1440, 900);
   setup(prepareReportDocument, '/track/a', true);
   const progress = () => document.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
-  const toggle = () => page.getByText('Progress', { exact: true });
+  const toggle = () => page.getByRole('group', { name: 'Progress', exact: true }).getByText('Progress', { exact: true });
   await expect.element(toggle()).toBeVisible();
   expect(progress().open).toBe(false);
   await toggle().click();

@@ -344,7 +344,7 @@ function useConversationPanel(
   const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
     .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent });
+    { ...options, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: belongsToParent && options?.terminal?.workbench.open !== true });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
     { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
       companionVisible: (!compact && options?.terminal?.workbench.open === true) || (belongsToParent && side.isOpen),
@@ -384,7 +384,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationPaneTarget>,
-  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
+  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean; presented?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -401,6 +401,9 @@ function useConversationPane(
        dropped when the drawer closes. */
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
   const openRowId = options?.enabled === false ? null : openTarget?.kind === 'row' ? openTarget.id : null;
+  // A retained controller may keep reading resources while its pane is hidden.
+  // App composition owns presentation; visible-only effects consume it here.
+  const panePresented = options?.presented !== false;
   const compactViewport = useCompactViewport();
   const compactComposer = options?.reportComposer !== undefined && compactViewport && options?.enabled !== false && options?.inline !== true;
   const dockRowId = compactComposer ? options?.reportComposer?.conversationId ?? null : null;
@@ -426,7 +429,7 @@ function useConversationPane(
     root: imageRoot, files: conversationFiles,
   }), [imageRoot, conversationFiles]);
   const routeIntent: ConversationRouteIntent = {
-    rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds, visible: openRowId !== null,
+    rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds, visible: panePresented && openRowId !== null,
   };
 
 
@@ -464,9 +467,9 @@ function useConversationPane(
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const shownComposer = useRef(composerId);
   shownComposer.current = composerId;
-  const focusComposer = useCallback((conversationId: string) => {
-    if (shownComposer.current === conversationId) setComposerFocusRequest((count) => count + 1);
-  }, []);
+  const focusComposer = useCommittedCallback(sourceScopeId, (conversationId: string) => {
+    if (panePresented && shownComposer.current === conversationId) setComposerFocusRequest((count) => count + 1);
+  });
   const edit = useConversationEdit({ conversationId: composerId, transcript: composerId === null ? [] : store.turns,
     historyReady: store.historyReady, focusComposer, changeComposer: setComposerText,
     queue: { entries: store.pendingQueue, ready: store.runReady && store.runError === null,
@@ -517,7 +520,7 @@ function useConversationPane(
   // when the reader queues a message. `null` is never unread.
   const openActivity = rows.find(row => row.id === open?.id);
   useReadReceipt('conversation', openActivity?.id ?? null, openActivity?.lastTurnCompletedAt ?? null,
-    threadPresented && store.historyReady && !store.historyLoading && store.historyError === null);
+    panePresented && threadPresented && store.historyReady && !store.historyLoading && store.historyError === null);
 
   /* Only this route's slot is visible, reopenable or sendable here. */
   const draft = useConversationDraft(sourceScopeId);
@@ -527,7 +530,7 @@ function useConversationPane(
   // may hand focus to its adopted row. Its UI handle stays bound to that key.
   const onAdoptDraft = useCommittedCallback(sourceScopeId, (from: ConversationDraftId, conversationId: string) => {
     if (from.scopeId !== sourceScopeId || from.key !== draftFocus.key) return;
-    if (openTarget?.kind === 'draft' && options?.enabled !== false && draftFocus.handle.current?.ownsFocus()) {
+    if (openTarget?.kind === 'draft' && panePresented && options?.enabled !== false && draftFocus.handle.current?.ownsFocus()) {
       setComposerFocusFor(conversationId);
     }
   });
@@ -555,7 +558,7 @@ function useConversationPane(
 
   useRequestedConversationOpen({ registry, rows, setOpenTarget, setComposerFocusFor, inline: options?.inline });
 
-  useConversationEscape({ open, store });
+  useConversationEscape({ open: panePresented ? open : null, store });
 
   /* A draft belonging to another Track is not open here: `draft` is read only
      from this route's provider slot. */
@@ -657,7 +660,7 @@ function useConversationPane(
             <ConversationComposer target={{ kind: 'card', id: existingId }} layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
                                when the drawer closes. */
-              focusOnMount={composerFocusFor === existingId}
+              focusOnMount={panePresented && composerFocusFor === existingId}
               focusRequest={composerFocusRequest}
               changeText={changeComposer}
               disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
@@ -725,7 +728,7 @@ function useConversationPane(
                 </HStack>
               )}
             />
-  ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, changeComposer, composerView,
+  ), [existingId, compactComposer, panePresented, composerFocusFor, composerFocusRequest, changeComposer, composerView,
     replacing, editingQueue, edit.queuedSaving, editingBar, options?.showSideCommand, options?.inline, onTerminal, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
@@ -733,7 +736,7 @@ function useConversationPane(
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <ConversationSurface
         mobileSheet={compactComposer}
-        focusInput={draftOpen || (open !== null && composerFocusFor === open.id)}
+        focusInput={panePresented && (draftOpen || (open !== null && composerFocusFor === open.id))}
         contextTitle={scope?.title}
         resizeGroup={resizeGroup}
         id={open === null ? undefined : `conversation-${open.id}`}

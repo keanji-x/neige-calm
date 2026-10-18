@@ -361,6 +361,17 @@ describe('a keyed card create', () => {
   /* Picking the same fieldless kind again is the natural retry: it continues the held intent, as Try again does. */
   it('resends the held key and body when the same fieldless kind is picked again', async () => {
     const { posts, cards } = setup({ answers: ['lost'] });
+    await pickKind('claude');
+    await screen.findByRole('button', { name: 'Try again' });
+    await pickKind('claude');
+    await waitFor(() => { expect(posts()).toHaveLength(2); });
+    expect(keyOf(posts()[1])).toBe(keyOf(posts()[0]));
+    expect(posts()[1]?.body).toEqual(posts()[0]?.body);
+    expect(cards).toHaveLength(1);
+  });
+
+  it('retains the Workbench held key and body when terminal is picked again', async () => {
+    const { posts, cards } = setup({ answers: ['lost'] });
     await pickKind('terminal');
     await screen.findByRole('button', { name: 'Try again' });
     await pickKind('terminal');

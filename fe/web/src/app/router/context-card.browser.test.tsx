@@ -49,7 +49,7 @@ it('keeps execution details and related entries in one card with single-line row
     expect(heading.parentElement!.getBoundingClientRect().height).toBe(28);
   }
   expect([...root.querySelectorAll('section[aria-label]')].map(section => section.getAttribute('aria-label')))
-    .toEqual(['Conversations']);
+    .toEqual(['Conversations', 'Workbench']);
   expect(root.querySelector('[data-nc-row="tool:worker"]')).toBeNull();
   const work = root.querySelector<HTMLElement>('[data-nc-row="task:Review layout"]')!;
   expect(work.getBoundingClientRect().height).toBe(28);
@@ -93,7 +93,8 @@ it('retains finished-worker activity and standalone failure inside folded progre
   expect(attention.open).toBe(false);
   await userEvent.click(attention.querySelector('summary')!);
   expect([...attention.querySelectorAll('[data-nc-row]')].map(row => row.getAttribute('data-nc-row')))
-    .toEqual(['tool:failed', 'task:Confirm result']);
+    .toEqual(['task:Confirm result']);
+  expect([...document.querySelectorAll('[data-nc-card-inventory] [data-nc-row]')].map(row => row.getAttribute('data-nc-row'))).toEqual(['tool:failed']);
   expect(attention.querySelectorAll('details')).toHaveLength(0);
   expect(page.getByRole('button', { name: 'Build log', exact: true }).element().getAttribute('aria-description')).toBe('session failed');
 });
@@ -104,7 +105,7 @@ it('bounds long work and context lists while keeping the last entry operable', a
   renderPage({ tasks: Array.from({ length: 40 }, (_, index) => task(`Task ${index}`, 'running', null)), onOpenTask: openTask,
     recentFiles: <RecentFiles inline paths={Array.from({ length: 30 }, (_, index) => `file-${index}.md`)} onOpen={vi.fn()} /> });
   const panel = document.querySelector<HTMLElement>('[data-nc-panel]')!;
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const list = document.querySelector<HTMLElement>('[data-nc-work-inventory] ul')!;
   expect(getComputedStyle(list).overflowY).toBe('auto');
   expect(list.clientHeight).toBeLessThanOrEqual(224);
@@ -162,7 +163,7 @@ it('pins conversations first with a persistent creation action and does not repe
   });
   const root = document.querySelector<HTMLElement>('[data-nc-desktop-panel]')!;
   const groups = [...root.querySelectorAll('section[aria-label]')];
-  expect(groups.map(group => group.getAttribute('aria-label'))).toEqual(['Conversations']);
+  expect(groups.map(group => group.getAttribute('aria-label'))).toEqual(['Conversations', 'Workbench']);
   const button = page.getByRole('button', { name: 'New conversation', exact: true }).element() as HTMLButtonElement;
   await userEvent.hover(document.body);
   expect(button.checkVisibility({ checkOpacity: true })).toBe(true);
@@ -191,9 +192,9 @@ it('aligns header controls, disclosure arrows and row menus on one system action
   const axis = center(plus.querySelector('svg')!).x;
   const tools = page.getByRole('button', { name: 'Tools', exact: true }).element();
   expect(tools.querySelector('svg')!.getBoundingClientRect().width).toBe(14);
-  expect(center(tools.querySelector('svg')!).y).toBe(center(plus.querySelector('svg')!).y);
+  expect(center(tools.querySelector('svg')!).y).toBe(center(tools.closest('section[aria-label="Workbench"]')!.querySelector('h2')!.parentElement!).y);
   for (const summary of root.querySelectorAll('summary')) expect(center(summary.querySelector('svg')!).x).toBe(axis);
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const menu = page.getByRole('button', { name: 'Actions for Server', exact: true }).element();
   expect(center(menu.querySelector('svg')!).x).toBe(axis);
   const conversation = root.querySelector<HTMLElement>('section[aria-label="Conversations"]')!;
@@ -201,7 +202,9 @@ it('aligns header controls, disclosure arrows and row menus on one system action
   expect(progress.getBoundingClientRect().top - conversation.getBoundingClientRect().bottom).toBe(12);
   const work = root.querySelector<HTMLElement>('[data-nc-module="work"]')!;
   const related = [...root.querySelectorAll('details')].find(element => element.querySelector('summary')?.textContent === 'Related')!;
-  expect(related.getBoundingClientRect().top - work.getBoundingClientRect().bottom).toBe(12);
+  const workbench = root.querySelector<HTMLElement>('section[aria-label="Workbench"]')!;
+  expect(workbench.getBoundingClientRect().top - work.getBoundingClientRect().bottom).toBe(12);
+  expect(related.getBoundingClientRect().top - workbench.querySelector('[data-nc-card-inventory]')!.getBoundingClientRect().bottom).toBe(12);
 });
 
 it('does not leave an empty work spacer between conversations and related content', async () => {
@@ -210,7 +213,9 @@ it('does not leave an empty work spacer between conversations and related conten
   const root = document.querySelector<HTMLElement>('[data-nc-desktop-panel]')!;
   const conversation = root.querySelector<HTMLElement>('section[aria-label="Conversations"]')!;
   const related = [...root.querySelectorAll('details')].find(element => element.querySelector('summary')?.textContent === 'Related')!;
-  expect(related.getBoundingClientRect().top - conversation.getBoundingClientRect().bottom).toBe(12);
+  const workbench = root.querySelector<HTMLElement>('section[aria-label="Workbench"]')!;
+  expect(workbench.getBoundingClientRect().top - conversation.getBoundingClientRect().bottom).toBe(12);
+  expect(related.getBoundingClientRect().top - workbench.querySelector('[data-nc-card-inventory]')!.getBoundingClientRect().bottom).toBe(12);
 });
 
 
@@ -282,7 +287,7 @@ it.each([
   renderPage({ track: track({ cards: { worker: activity } }),
     tasks: [task('Inspect layout', 'done', 'worker')], cards: [card({ id: 'worker', title: 'Layout worker' })],
   });
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const row = document.querySelector('[data-nc-row="task:Inspect layout"]')!;
   const control = row.querySelector<HTMLButtonElement>('[data-nc-row-action="reveal-block"]')!;
   await expect.element(page.getByRole('button', { name: `Inspect layout ${description}`, exact: true })).toBeVisible();
@@ -312,7 +317,7 @@ it('bounds long conversation and progress lists independently while retaining he
   await page.getByRole('button', { name: 'Conversation Discussion 0', exact: true }).click();
   expect(openChat).toHaveBeenCalledOnce();
   expect(header.getBoundingClientRect().top).toBe(top);
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const progress = root.querySelector<HTMLElement>('[data-nc-work-inventory] ul')!;
   expect(progress.clientHeight).toBeLessThanOrEqual(224);
   expect(progress.scrollHeight).toBeGreaterThan(progress.clientHeight);
@@ -341,7 +346,7 @@ it('shows a compact real status and keeps finished work after newer running work
   renderPage({ cards: [card({ id: 'old', updated_at: 100 }), card({ id: 'new', updated_at: 200 }), card({ id: 'done', updated_at: 999 })],
     tasks: [task('Earlier work', 'running', 'old'), task('Latest work', 'running', 'new'), task('Finished work', 'done', 'done')],
   });
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const rows = [...document.querySelectorAll('[data-nc-work-inventory] [data-nc-row]')];
   expect(rows.map(row => row.getAttribute('data-nc-row'))).toEqual(['task:Latest work', 'task:Earlier work', 'task:Finished work']);
   expect(rows.map(row => row.querySelector('button > span:last-child')?.textContent)).toEqual(['Running', 'Running', 'Finished']);
@@ -353,7 +358,7 @@ it('preserves a long unknown phase without overflowing the name or hiding its ex
   await page.viewport(1000, 900);
   const phase = 'future-provider-execution-phase-with-an-unusually-long-name';
   renderPage({ tasks: [task('Inspect a long task name in a narrow panel', phase, null)] });
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const row = document.querySelector('[data-nc-work-inventory] [data-nc-row]')!;
   const button = row.querySelector('button')!;
   expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
@@ -387,7 +392,7 @@ it('right-aligns text states and centers conversation indicators on the same sys
   }
   const quiet = page.getByRole('button', { name: 'Conversation quiet', exact: true }).element();
   expect(quiet.querySelector('[data-nc-activity]')).toBeNull();
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   await userEvent.hover(document.body);
   for (const id of ['Has menu', 'No menu']) {
     const row = [...root.querySelectorAll<HTMLElement>('[data-nc-row]')].find(node => node.getAttribute('data-nc-row') === `task:${id}`)!;

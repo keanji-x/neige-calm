@@ -22,7 +22,7 @@ it('keeps both statuses and persistent actions visible in distinct columns on to
       { id: 'chat', provider: 'codex', trackId: 'w1', title: 'Chat', kind: 'track-assistant', state: 'running', updatedAt: 1 },
     ]} />,
   });
-  await page.getByText('Progress', { exact: true }).click();
+  await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const row = document.querySelector('[data-nc-row="task:has-menu"]')!;
   const status = row.querySelector('button')!.lastElementChild!;
   const other = document.querySelector('[data-nc-row="task:no-menu"] button')!.lastElementChild!;

@@ -46,7 +46,7 @@ export function ContextGroup({ title, children, collapsible = false, open, onOpe
   const heading = <ListText as={collapsible ? 'span' : 'h2'} tone="secondary" emphasis="medium" className={styles.title}>
     {title}{count === undefined ? null : ` · ${count}`}
   </ListText>;
-  return collapsible ? <details className={styles.group} open={open} onToggle={event => onOpenChange?.(event.currentTarget.open)}>
+  return collapsible ? <details className={styles.group} aria-label={title} open={open} onToggle={event => onOpenChange?.(event.currentTarget.open)}>
     <summary className={styles.head}>{heading}<span className={styles.endSlot}><Icon name="chevron-right" size="sm" /></span></summary>
     {children}
   </details> : <section className={styles.group} aria-label={title}>

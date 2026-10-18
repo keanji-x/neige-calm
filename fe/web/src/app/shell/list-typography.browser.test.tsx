@@ -42,11 +42,11 @@ function draw(selected = false) {
       tracks={tracks} currentPath={selected ? '/track/track-0' : '/'} onGo={vi.fn()} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
       onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={vi.fn()} onDeleteTrack={vi.fn()}
       onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} /></div>
-    <div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '2',
+    <div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ progressDisclosure: { open: true, onOpenChange: vi.fn() }, taskSummary: '2',
       cardEntries: <ChatList activeId={selected ? 'chat-0' : null} showTrack={false} onOpen={vi.fn()} cards={{}}
         conversations={['Chat first', 'Chat second'].map((title, i) => ({ provider: 'codex' as const, id: `chat-${i}`, trackId: 'track-0', title,
           kind: 'track-assistant', state: 'idle', updatedAt: 1 }))} />,
-    }), view)}</PanelCard></div>
+    }), { ...view, rowModules: view.desktop.rowModules })}</PanelCard></div>
   </div>));
   return { tracks };
 }
@@ -64,7 +64,7 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   draw(); document.documentElement.dataset.theme = theme;
   const name = element(document.querySelector<HTMLElement>('[title="Left first"]'));
   const primary = [element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-field="title"]')),
-    element(document.querySelector<HTMLElement>('[data-nc-module="tasks"] [data-nc-field="title"]'))];
+    element(document.querySelector<HTMLElement>('[data-nc-module="work"] [data-nc-field="title"]'))];
   const assertRole = (node: HTMLElement, role: Parameters<typeof withFontRoleProbe>[0]) => {
     withFontRoleProbe(role, document.documentElement, expected => {
       expect(getComputedStyle(node)).toMatchObject(expected);
@@ -74,42 +74,45 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   for (const node of primary) assertRole(node, '--type-content');
   const group = element(document.querySelector<HTMLElement>('[title="Work"]'));
   assertRole(group, '--type-content');
-  const inventoryGroup = element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary > span:first-child'));
+  const inventoryGroup = element(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary > span:first-child'));
   assertRole(inventoryGroup, '--type-metadata');
   expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(primary[0]));
-  const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Tools', 'Tasks'].includes(node.textContent ?? ''));
-  expect(panelTitles).toHaveLength(2);
-  for (const title of panelTitles) assertRole(title, '--type-navigation-label');
+  const workbenchTitle = element(document.querySelector<HTMLElement>('section[aria-label="Workbench"] h2'));
+  const progressTitle = element(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary > span:first-child'));
+  expect(workbenchTitle.textContent).toBe('Workbench');
+  expect(progressTitle.textContent).toBe('Progress');
+  assertRole(workbenchTitle, '--type-metadata');
+  assertRole(progressTitle, '--type-metadata');
   assertRole(element(document.querySelector<HTMLElement>('[title="Areas"]')), '--type-metadata');
 
 });
 
-it('uses configured sidebar density and reserves a metadata line for unified tool entries', async () => {
+it('uses configured sidebar density and uses compact single-line contextual tool entries', async () => {
   await page.viewport(1400, 900); draw();
   const area = element(document.querySelector<HTMLElement>('[aria-label="Collapse area Work"]'));
   const rows = [
     element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]')),
     element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-row]')),
-    element(document.querySelector<HTMLElement>('[data-nc-module="tasks"] [data-nc-row]')),
+    element(document.querySelector<HTMLElement>('[data-nc-module="work"] [data-nc-row]')),
     element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')),
-    element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary')),
+    element(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')),
   ];
-  for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 32 : index === 1 ? 40 : 28, 0);
+  for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 32 : 28, 0);
   expect(area.getBoundingClientRect().height).toBeCloseTo(32, 0);
   const sidebarHeader = element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2')).parentElement!;
   expect(area.getBoundingClientRect().top - sidebarHeader.getBoundingClientRect().bottom).toBeCloseTo(0, 0);
-  const panelHeader = element(document.querySelector<HTMLElement>('[data-nc-module="cards"] h2')).parentElement!;
+  const panelHeader = element(document.querySelector<HTMLElement>('[data-nc-module="cards"] section[aria-label="Workbench"] h2')).parentElement!;
   expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-card-inventory]')).getBoundingClientRect().top
-    - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(8, 0);
+    - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(0, 0);
 
   expect(element(document.querySelector<HTMLElement>('[title="Work"]')).getBoundingClientRect().left).toBeCloseTo(element(document.querySelector<HTMLElement>('[title="Left first"]')).getBoundingClientRect().left, 1);
   const pairs = [
     [element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]')), element(document.querySelector<HTMLElement>('[aria-label^="Track Left second"]'))],
-    [element(document.querySelector<HTMLElement>('[data-nc-row="card-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="card-1"]'))],
-    [element(document.querySelector<HTMLElement>('[data-nc-row="task-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="task-1"]'))],
+    [element(document.querySelector<HTMLElement>('[data-nc-row="tool:card-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="tool:card-1"]'))],
+    [element(document.querySelector<HTMLElement>('[data-nc-row="task:task-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="task:task-1"]'))],
     [element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')), element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat second"]'))],
   ];
-  for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 32 : index === 1 ? 40 : 28, 0);
+  for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 32 : 28, 0);
 
 });
 
