@@ -60,17 +60,6 @@ it('replaces missing or unreadable images with visible alt and unavailable', asy
   expect(container.querySelector('img')).toBeNull();
 });
 
-it('keeps remote images opt-in until the load control is activated', async () => {
-  const { container, files } = setup('![Remote](https://example.com/pic.png)');
-  expect(container.querySelector('img, iframe, object')).toBeNull();
-  expect(files.rawUrl).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
-  const load = await screen.findByRole('button', { name: 'Load image' });
-  expect(document.querySelector('img')).toBeNull();
-  fireEvent.click(load);
-  expect((await screen.findByRole('img', { name: 'Remote' })).getAttribute('src')).toBe('https://example.com/pic.png');
-});
-
 it('keeps the outer link destination without nested image controls', async () => {
   const { container, openFile } = setup('[![Diagram](diagram.svg)](notes.md)');
   const image = await screen.findByRole('img', { name: 'Diagram' });

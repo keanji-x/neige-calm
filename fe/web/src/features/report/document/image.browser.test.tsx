@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
@@ -51,4 +51,31 @@ it('fits the desktop prose measure and keeps linked image navigation on the oute
   expect(document.querySelector('button button, button a, a button')).toBeNull();
   await page.getByRole('button', { name: 'Diagram' }).click();
   expect(open).toHaveBeenCalledWith({ path: 'notes.md' });
+});
+
+// The load control belongs to an admitted HoverPreview. Exercise its native
+// layout here; inline workspace resources and invalid paths remain DOM tests.
+it.each([390, 1280])('keeps remote images opt-in until the load control is activated at %ipx', async width => {
+  await page.viewport(width, 900);
+  const report = { summary: '', body: '![Remote](https://example.com/pic.png)', blocks: null };
+  const files = { readFile: vi.fn(), rawUrl: vi.fn() };
+  const { container } = render(<ReportDocument report={report} empty={null} fileRoot="/repo"
+    linkPreview={{ trackId: 'image-track', report, files }} />);
+  expect(container.querySelector('img, iframe, object')).toBeNull();
+  expect(files.rawUrl).not.toHaveBeenCalled();
+  await page.getByRole('button', { name: 'Remote', exact: true }).click();
+  const load = await screen.findByRole('button', { name: 'Load image' });
+  const preview = screen.getByRole('dialog', { name: 'Preview: Remote' });
+  expect(preview.closest('[inert], [aria-hidden="true"]')).toBeNull();
+  expect(preview.closest('[popover]')?.matches(':popover-open')).toBe(true);
+  expect(preview.getBoundingClientRect().width).toBeGreaterThan(0);
+  expect(document.querySelector('img, iframe, object')).toBeNull();
+  // Read the resource contract in the activation commit, before the external
+  // server can answer with an unrelated load or network failure.
+  fireEvent.click(load);
+  const image = screen.getByRole('img', { name: 'Remote' });
+  expect(image.getAttribute('src')).toBe('https://example.com/pic.png');
+  expect(image.getAttribute('referrerpolicy')).toBe('no-referrer');
+  expect(files.rawUrl).not.toHaveBeenCalled();
+  expect(files.readFile).not.toHaveBeenCalled();
 });

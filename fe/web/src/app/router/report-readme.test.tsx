@@ -42,7 +42,9 @@ it('cold-loads the exact docs/README.md deep link after track detail arrives', a
 });
 
 it('opens from Report with an existing Conversation, closes and returns through history', async () => {
-  const { router, requests } = renderReadmeFixture(README_TRACK_URL);
+  // This target checks navigation and retained Conversation state. Keep the
+  // real README in the file viewer, without duplicating it in the Report below.
+  const { router, requests } = renderReadmeFixture(README_TRACK_URL, undefined, { shortReport: true });
   fireEvent.click(await screen.findByRole('button', { name: /Conversation Existing conversation/ }));
   const conversation = await screen.findByRole('complementary', { name: 'Existing conversation' });
   const input = within(conversation).getByRole('combobox', { name: 'Message' });
