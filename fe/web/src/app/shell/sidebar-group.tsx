@@ -50,6 +50,7 @@ type GroupProps = Readonly<{
 export function SidebarGroup({ title, label, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
   children: ReactNode;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const presentation = navigationRowPresentation(level === 'section' ? { kind: 'caption', depth: 0 } : { kind: 'entry', depth: 0 });
   const disclosure = useCollapsible({ isCollapsible: { isOpen: expanded, onOpenChange: onToggle } });
   const button = <button
@@ -70,14 +71,16 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
     <div className={`${styles.areaRowWrap} ${presentation.className}`}>
       {level === 'section' ? <ListText as="h2" tone={presentation.tone} className={styles.groupHeading}>{button}</ListText> : button}
       <span className={`${styles.areaActions} ${rowLayout('inner')}`}>
-        <DropdownMenu placement="below" button={{
+        <DropdownMenu isMenuOpen={menuOpen} onOpenChange={setMenuOpen} placement="below" button={{
           label: management.menuLabel, icon: <Icon name="more" size="sm" />,
           isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.areaActionsButton,
         }}>
-          <DropdownMenuItem label="Move up" isDisabled={!management.canMoveUp} onClick={() => management.onMove('up')} />
+          {menuOpen && <>
+            <DropdownMenuItem label="Move up" isDisabled={!management.canMoveUp} onClick={() => management.onMove('up')} />
           <DropdownMenuItem label="Move down" isDisabled={!management.canMoveDown} onClick={() => management.onMove('down')} />
           <DropdownMenuItem label="Hide group" onClick={management.onHide} />
           {extraMenuItems !== undefined && <><DropdownMenuDivider />{extraMenuItems}</>}
+          </>}
         </DropdownMenu>
       </span>
       {actions}

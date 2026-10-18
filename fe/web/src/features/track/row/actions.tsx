@@ -2,6 +2,7 @@
 import { DropdownMenu, DropdownMenuItem, DropdownMenuDivider } from '@astryxdesign/core/DropdownMenu';
 import { trackDisplayTitle, type Track } from '../../../../../core/domain/track.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
+import { useState } from '../../../ui/state/public.ts';
 
 export type TrackActionsProps = Readonly<{
   track: Track;
@@ -14,13 +15,16 @@ export type TrackActionsProps = Readonly<{
 }>;
 
 export function TrackActions({ track, areaPinned, onSetPinned, onSetAreaPinned, onMarkUnread, onDelete, className }: TrackActionsProps) {
-  return <DropdownMenu placement="below" alignment="end" button={{
+  const [menuOpen, setMenuOpen] = useState(false);
+  return <DropdownMenu isMenuOpen={menuOpen} onOpenChange={setMenuOpen} placement="below" alignment="end" button={{
     label: `Actions for track ${trackDisplayTitle(track.title)}`, icon: <Icon name="more" size="sm" />,
     isIconOnly: true, variant: 'ghost', size: 'sm', className,
   }}>
-    <DropdownMenuItem label={track.pinnedAt === null ? 'Pin globally' : 'Unpin globally'} onClick={() => onSetPinned(track.id, track.pinnedAt === null)} />
+    {menuOpen && <>
+      <DropdownMenuItem label={track.pinnedAt === null ? 'Pin globally' : 'Unpin globally'} onClick={() => onSetPinned(track.id, track.pinnedAt === null)} />
     <DropdownMenuItem label={areaPinned ? 'Unpin within area' : 'Pin within area'} onClick={() => onSetAreaPinned(track.id, !areaPinned)} />
     <DropdownMenuItem label="Mark as unread" onClick={() => onMarkUnread(track.id)} />
     {onDelete !== undefined && <><DropdownMenuDivider /><DropdownMenuItem label="Delete track" onClick={() => onDelete(track.id)} /></>}
+    </>}
   </DropdownMenu>;
 }

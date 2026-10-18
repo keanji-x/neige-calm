@@ -289,7 +289,8 @@ it('loads a live preview only on request and releases it when paused', () => {
   const load = screen.getByRole('button', { name: 'Load preview' });
   load.focus();
   fireEvent.click(load);
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause preview' }));
+  expect(screen.getByRole('button', { name: 'Pause preview' })).toBe(load);
+  expect(document.activeElement).toBe(load);
   const frame = container.querySelector('iframe');
   expect(frame?.getAttribute('src')).toBe('http://192.168.5.20:4050/');
   fireEvent.click(screen.getByRole('button', { name: 'Pause preview' }));

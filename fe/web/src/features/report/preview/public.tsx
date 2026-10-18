@@ -115,17 +115,7 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
 }) {
   const figure = useRef<HTMLElement>(null);
   const stage = useRef<HTMLDivElement>(null);
-  const loadButton = useRef<HTMLButtonElement>(null);
-  const pauseButton = useRef<HTMLButtonElement>(null);
-  const returnToLoad = useRef(false);
   const [running, setRunning] = useState(false);
-  useLayoutEffect(() => {
-    if (running) pauseButton.current?.focus({ preventScroll: true });
-    else if (returnToLoad.current) {
-      returnToLoad.current = false;
-      loadButton.current?.focus({ preventScroll: true });
-    }
-  }, [running]);
   // The choice belongs to one (store, key): a block rewritten to another key, or the same block under
   // another track's store, reads that pair's choice instead of carrying the previous one over.
   const [choice, setChoice] = useState(() => ({ viewports, viewportKey, preset: readPreset(viewports, viewportKey) }));
@@ -167,10 +157,9 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
     <figure ref={figure} className={styles.figure}>
       <PreviewBar title={title}>
         <span className={styles.controls}>
-          {running && <button ref={pauseButton} type="button" className={styles.control} onClick={() => {
-            returnToLoad.current = true;
-            setRunning(false);
-          }}>Pause preview</button>}
+          <button type="button" className={styles.control} onClick={() => { setRunning(previous => !previous); }}>
+            {running ? 'Pause preview' : 'Load preview'}
+          </button>
           <span className={styles.toggle} role="group" aria-label="Device">
             {PREVIEW_PRESETS.map((option) => (
               <button key={option.id} type="button" className={styles.segment} aria-pressed={preset === option.id}
@@ -196,7 +185,7 @@ function PreviewFrame({ title, height, src, viewportKey, viewports }: {
             allow="fullscreen"
             referrerPolicy="no-referrer"
           /> : <div className={styles.placeholder} style={{ inlineSize: '100%', blockSize: '100%' }}>
-            <button ref={loadButton} type="button" className={styles.control} onClick={() => { setRunning(true); }}>Load preview</button>
+            Preview paused
           </div>}
         </div>
       </div>
