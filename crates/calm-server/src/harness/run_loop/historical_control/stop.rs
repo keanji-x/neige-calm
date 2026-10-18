@@ -225,6 +225,12 @@ impl PlannerHarness {
     }
 
     async fn stop_original(&self, plan: PreparedStop) -> Result<bool> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            crate::test_seams::HISTORICAL_STOP_SELECTED,
+            self.inner.card_id.as_str(),
+        )
+        .await;
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
                 let (answer, result) = oneshot::channel();
@@ -254,6 +260,12 @@ pub(in crate::harness::run_loop) async fn handle(
     let result = persist_snapshot_inner(inner, SnapshotWrite::Stop(plan.clone())).await;
     match result {
         Ok(true) => {
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point(
+                crate::test_seams::HISTORICAL_STOP_COMMITTED,
+                inner.card_id.as_str(),
+            )
+            .await;
             // No in-memory acceptance fact changes until the original writer
             // commits. A later logout cannot revoke the accepted exact drain.
             adopt_interrupt(

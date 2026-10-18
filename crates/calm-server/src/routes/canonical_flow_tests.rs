@@ -243,6 +243,7 @@ mod cold_recovery_tests;
 mod historical_addressability_tests;
 mod historical_compatibility_tests;
 mod historical_control_admission_tests;
+mod historical_control_race_tests;
 mod historical_interrupt_recovery_tests;
 mod source_readmission_tests;
 

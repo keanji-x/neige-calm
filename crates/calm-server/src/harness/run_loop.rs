@@ -1289,6 +1289,16 @@ impl PlannerHarness {
         *self.inner.state.lock().await = state;
     }
 
+    #[cfg(feature = "fixtures")]
+    pub async fn historical_control_facts_for_test(
+        &self,
+    ) -> (Option<String>, Option<(String, Instant)>) {
+        (
+            self.inner.issued_turn_id.lock().await.clone(),
+            self.inner.interrupt_deadline.lock().await.clone(),
+        )
+    }
+
     pub async fn set_issued_turn_id_for_test(&self, turn_id: Option<String>) {
         *self.inner.issued_turn_id.lock().await = turn_id;
     }
@@ -1842,7 +1852,15 @@ async fn handle_steer(
     let report = inner
         .backend
         .steer_pending_input(&thread_id, &turn_id, items, entry_id.as_str(), &|| {
-            Box::pin(admission.require(inner))
+            Box::pin(async {
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point(
+                    crate::test_seams::HISTORICAL_STEER_NATIVE_ADMISSION,
+                    inner.card_id.as_str(),
+                )
+                .await;
+                admission.require(inner).await
+            })
         })
         .await;
     if matches!(
@@ -4438,6 +4456,11 @@ async fn persist_snapshot_inner(
     inner: &Arc<Inner>,
     write: historical_control::SnapshotWrite,
 ) -> Result<bool> {
+    #[cfg(feature = "fixtures")]
+    let control = matches!(
+        &write,
+        historical_control::SnapshotWrite::Mutation(_) | historical_control::SnapshotWrite::Stop(_)
+    );
     let (last_seen_head_override, send, admission, stop) = write.parts();
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
@@ -4491,6 +4514,14 @@ async fn persist_snapshot_inner(
     let repo = Arc::clone(&inner.repo);
     let bound_card_id = inner.card_id.to_string();
 
+    #[cfg(feature = "fixtures")]
+    if control {
+        crate::test_seams::pause_point(
+            crate::test_seams::HISTORICAL_CONTROL_BEFORE_COMMIT,
+            &bound_card_id,
+        )
+        .await;
+    }
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
             if let Some(admission) = &admission {

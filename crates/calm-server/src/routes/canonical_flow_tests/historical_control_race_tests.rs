@@ -1,0 +1,379 @@
+//! Actual HTTP commands cross issuer, persistence and native-effect awaits.
+use super::historical_control_admission_tests::{HistoricalFixture, hand_area_to_alice};
+use super::*;
+use crate::test_seams::{self, PausePoint};
+
+async fn perform(
+    app: axum::Router,
+    cookie: String,
+    method: &'static str,
+    uri: String,
+    body: Value,
+) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+fn arm(fx: &HistoricalFixture, point: &str) -> PausePoint {
+    let pause = PausePoint::default();
+    test_seams::install_pause_for_test(point, &fx.card, pause.clone());
+    pause
+}
+
+async fn entered(pause: &PausePoint) {
+    tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+        .await
+        .expect("the production control reaches its actual protected point");
+}
+
+async fn logout(fx: &HistoricalFixture) {
+    let (status, body) = perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        "/api/auth/logout".into(),
+        json!({}),
+    )
+    .await;
+    assert_eq!((status, body), (StatusCode::OK, json!({"ok":true})));
+}
+
+async fn queue(fx: &HistoricalFixture) -> String {
+    fx.harness.pause_issuance_for_dev();
+    let queued = post(
+        &fx.app,
+        &fx.cookie,
+        &format!("/api/cards/{}/planner/input", fx.card),
+        "race-queue",
+        json!({"text":"Keep the original pending message"}),
+    )
+    .await;
+    queued["entry_id"].as_str().unwrap().to_owned()
+}
+
+async fn before_commit_refusal(delete: bool) {
+    let fx = HistoricalFixture::new(false).await;
+    let entry = queue(&fx).await;
+    let before = fx.harness.snapshot().await.unwrap();
+    let debounce = fx.harness.debounce_timestamps_set_for_test().await;
+    let hard_fire = fx.harness.debounce_hard_fire_for_test().await;
+    let pause = arm(&fx, test_seams::HISTORICAL_CONTROL_BEFORE_COMMIT);
+    let method = if delete { "DELETE" } else { "PATCH" };
+    let body = if delete {
+        json!({"if_entry_rev":0})
+    } else {
+        json!({"if_entry_rev":0,"text":"Must not replace"})
+    };
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        method,
+        format!("/api/cards/{}/planner/input/{entry}", fx.card),
+        body,
+    ));
+    entered(&pause).await;
+    if delete {
+        logout(&fx).await;
+    } else {
+        hand_area_to_alice(&fx.fixture, fx.area["id"].as_str().unwrap()).await;
+    }
+    pause.release.notify_one();
+    let (status, body) = pending.await.unwrap();
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_debounce = fx.harness.debounce_timestamps_set_for_test().await;
+    let after_hard_fire = fx.harness.debounce_hard_fire_for_test().await;
+    fx.shutdown().await;
+    assert_eq!(
+        status,
+        if delete {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::FORBIDDEN
+        },
+        "{body}"
+    );
+    assert_eq!(after, before);
+    assert_eq!(after_debounce, debounce);
+    assert_eq!(after_hard_fire, hard_fire);
+}
+
+#[tokio::test]
+async fn queued_delete_rechecks_logout_at_commit_and_restores_debounce() {
+    before_commit_refusal(true).await;
+}
+#[tokio::test]
+async fn queued_edit_rechecks_membership_at_commit_and_restores_revision() {
+    before_commit_refusal(false).await;
+}
+
+#[tokio::test]
+async fn queued_steer_rechecks_logout_after_native_gate_without_unknown_delivery() {
+    let fx = HistoricalFixture::new(true).await;
+    let entry = queue(&fx).await;
+    let before = fx.harness.snapshot().await.unwrap();
+    let debounce = fx.harness.debounce_timestamps_set_for_test().await;
+    let native =
+        serde_json::to_value(fx.state.shared_codex_appserver.steered_turns_for_test()).unwrap();
+    let pause = arm(&fx, test_seams::HISTORICAL_STEER_NATIVE_ADMISSION);
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/input/{entry}/steer", fx.card),
+        json!({"if_entry_rev":0}),
+    ));
+    entered(&pause).await;
+    logout(&fx).await;
+    pause.release.notify_one();
+    let (status, body) = pending.await.unwrap();
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_debounce = fx.harness.debounce_timestamps_set_for_test().await;
+    let after_native =
+        serde_json::to_value(fx.state.shared_codex_appserver.steered_turns_for_test()).unwrap();
+    fx.shutdown().await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "source refusal is known unsent: {body}"
+    );
+    assert_eq!(after, before);
+    assert_eq!(after_debounce, debounce);
+    assert_eq!(after_native, native);
+}
+
+#[tokio::test]
+async fn stop_membership_rejection_at_commit_preserves_all_control_facts() {
+    let fx = HistoricalFixture::new(true).await;
+    let before = fx.harness.snapshot().await.unwrap();
+    let controls = fx.harness.historical_control_facts_for_test().await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    let pause = arm(&fx, test_seams::HISTORICAL_CONTROL_BEFORE_COMMIT);
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    ));
+    entered(&pause).await;
+    hand_area_to_alice(&fx.fixture, fx.area["id"].as_str().unwrap()).await;
+    pause.release.notify_one();
+    let (status, body) = pending.await.unwrap();
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_controls = fx.harness.historical_control_facts_for_test().await;
+    let after_native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.get("stopped").is_none());
+    assert_eq!(after, before);
+    assert_eq!(after_controls, controls);
+    assert_eq!(after_native, native);
+}
+
+#[tokio::test]
+async fn stop_storage_rejection_preserves_all_control_facts_and_dispatches_nothing() {
+    let fx = HistoricalFixture::new(true).await;
+    let before = fx.harness.snapshot().await.unwrap();
+    let controls = fx.harness.historical_control_facts_for_test().await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    sqlx::query(
+        "CREATE TRIGGER refuse_stop BEFORE UPDATE OF handle_state_json ON worker_sessions
+        WHEN NEW.id=OLD.id AND json_extract(NEW.handle_state_json,'$.phase')='issuing_interrupt'
+        BEGIN SELECT RAISE(ABORT,'fixture refuses Stop commit'); END",
+    )
+    .execute(fx.fixture.repo.pool())
+    .await
+    .unwrap();
+    let (status, body) = perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    )
+    .await;
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_controls = fx.harness.historical_control_facts_for_test().await;
+    let after_native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    sqlx::query("DROP TRIGGER refuse_stop")
+        .execute(fx.fixture.repo.pool())
+        .await
+        .unwrap();
+    fx.shutdown().await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(body.get("stopped").is_none());
+    assert_eq!(after, before);
+    assert_eq!(after_controls, controls);
+    assert_eq!(after_native, native);
+}
+
+async fn complete(fx: &HistoricalFixture, turn: &str) {
+    let thread = fx.harness.snapshot().await.unwrap().last_thread_id.unwrap();
+    fx.state.shared_codex_appserver.emit_notification_for_test(
+        crate::codex_appserver::Notification::TurnCompleted {
+            thread_id: thread,
+            turn: json!({"id":turn,"status":"interrupted"}),
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fx.harness.runtime_header().await.unwrap().phase != HarnessPhaseTag::TurnCompleted {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the real reducer records the original native end");
+}
+
+#[tokio::test]
+async fn accepted_stop_drains_original_target_after_logout_and_ack_is_not_end() {
+    let fx = HistoricalFixture::new(true).await;
+    let original = fx.harness.snapshot().await.unwrap();
+    let (entered, release) = fx
+        .state
+        .shared_codex_appserver
+        .hold_turn_interrupt_for_test();
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    let accepted = fx.harness.snapshot().await.unwrap();
+    logout(&fx).await;
+    release.notify_one();
+    let (status, body) = pending.await.unwrap();
+    let acknowledged = fx.harness.snapshot().await.unwrap();
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    complete(&fx, "fake-turn-0001").await;
+    fx.shutdown().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stopped"], true);
+    assert_eq!(accepted.phase, HarnessPhaseTag::IssuingInterrupt);
+    assert!(matches!(
+        accepted.interruption_intent,
+        Some(calm_types::harness::HarnessInterruptionIntent::Control(_))
+    ));
+    assert_eq!(
+        acknowledged.phase,
+        HarnessPhaseTag::IssuingInterrupt,
+        "ACK does not prove END"
+    );
+    assert_eq!(
+        native,
+        vec![(
+            original.last_thread_id.unwrap(),
+            original.last_turn_id.unwrap()
+        )]
+    );
+}
+
+#[tokio::test]
+async fn selected_stop_cannot_retarget_a_later_turn_while_waiting_for_its_owner() {
+    let fx = HistoricalFixture::new(true).await;
+    let pause = arm(&fx, test_seams::HISTORICAL_STOP_SELECTED);
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    ));
+    entered(&pause).await;
+    complete(&fx, "fake-turn-0001").await;
+    post(
+        &fx.app,
+        &fx.cookie,
+        &format!("/api/cards/{}/planner/input", fx.card),
+        "new-turn",
+        json!({"text":"A genuinely later turn"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = fx.harness.snapshot().await.unwrap();
+            if snapshot.phase == HarnessPhaseTag::TurnRunning
+                && snapshot.last_turn_id.as_deref() == Some("fake-turn-0002")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    pause.release.notify_one();
+    let (status, body) = pending.await.unwrap();
+    let after = fx.harness.snapshot().await.unwrap();
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.get("stopped").is_none());
+    assert_eq!(after.phase, HarnessPhaseTag::TurnRunning);
+    assert_eq!(after.last_turn_id.as_deref(), Some("fake-turn-0002"));
+    assert!(native.is_empty());
+}
+
+#[tokio::test]
+async fn stop_phase_event_follows_committed_memory_publication() {
+    let fx = HistoricalFixture::new(true).await;
+    let pause = arm(&fx, test_seams::HISTORICAL_STOP_COMMITTED);
+    let mut events = fx.state.events.subscribe();
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    ));
+    entered(&pause).await;
+    let mut early = false;
+    while let Ok(event) = events.try_recv() {
+        if matches!(
+            event.event,
+            crate::event::Event::HarnessPhaseChanged {
+                new_phase: HarnessPhaseTag::IssuingInterrupt,
+                ..
+            }
+        ) {
+            early = true;
+        }
+    }
+    pause.release.notify_one();
+    let (status, body) = pending.await.unwrap();
+    let (_, run) = perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "GET",
+        format!(
+            "/api/cards/{}/planner/run?contract=conversation_v1",
+            fx.card
+        ),
+        Value::Null,
+    )
+    .await;
+    complete(&fx, "fake-turn-0001").await;
+    fx.shutdown().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        !early,
+        "an event must not invite a GET while the committed phase is still unpublished"
+    );
+    assert_eq!(run["phase"], "issuing_interrupt");
+}

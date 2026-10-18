@@ -318,3 +318,13 @@ pub const PLANNER_HIBERNATION_QUIESCE: &str = "planner-hibernation-quiesce";
 /// Where the loop decided a hibernation request, before replying; keyed by card id.
 #[cfg(feature = "fixtures")]
 pub const PLANNER_HIBERNATION_DECIDED: &str = "planner-hibernation-decided";
+
+/// Historical control observation points share the existing keyed pause registry.
+#[cfg(feature = "fixtures")]
+pub const HISTORICAL_CONTROL_BEFORE_COMMIT: &str = "historical-control-before-commit";
+#[cfg(feature = "fixtures")]
+pub const HISTORICAL_STEER_NATIVE_ADMISSION: &str = "historical-steer-native-admission";
+#[cfg(feature = "fixtures")]
+pub const HISTORICAL_STOP_SELECTED: &str = "historical-stop-selected";
+#[cfg(feature = "fixtures")]
+pub const HISTORICAL_STOP_COMMITTED: &str = "historical-stop-committed";

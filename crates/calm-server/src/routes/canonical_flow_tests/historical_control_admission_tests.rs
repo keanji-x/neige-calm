@@ -18,7 +18,7 @@ impl Control {
     }
 }
 
-async fn hand_area_to_alice(fixture: &Fixture, area_id: &str) {
+pub(super) async fn hand_area_to_alice(fixture: &Fixture, area_id: &str) {
     let mut tx = fixture.repo.pool().begin().await.unwrap();
     crate::db::sqlite::area_membership::application_user_register(
         &mut tx,
@@ -98,8 +98,19 @@ impl HistoricalFixture {
             )
             .await;
             tokio::time::timeout(Duration::from_secs(5), async {
-                while harness.runtime_header().await.unwrap().phase != HarnessPhaseTag::TurnRunning
-                {
+                loop {
+                    let memory = harness.runtime_header().await.unwrap().phase;
+                    let runtime = fixture
+                        .repo
+                        .session_projection_by_id(&worker)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if memory == HarnessPhaseTag::TurnRunning
+                        && runtime.active_turn_id.as_deref() == Some("fake-turn-0001")
+                    {
+                        break;
+                    }
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
             })
