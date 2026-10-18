@@ -116,7 +116,10 @@ async fn boot() -> Boot {
         ))
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                username: None, password: None, dev_autologin: true, display_name: "Owner".into(),
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
             }),
             calm_server::auth::require_session,
         ))

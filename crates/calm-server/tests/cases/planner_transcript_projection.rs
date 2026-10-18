@@ -1,6 +1,9 @@
 //! The person's sentence is on the transcript from the moment the queue
 //! drains, not from the moment codex echoes it.
 
+#[path = "planner_transcript_projection/entry_identity.rs"]
+mod entry_identity;
+
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -270,7 +273,10 @@ async fn boot_with(plan: BootPlan) -> Boot {
         ))
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                username: None, password: None, dev_autologin: true, display_name: "Owner".into(),
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
             }),
             calm_server::auth::require_session,
         ))

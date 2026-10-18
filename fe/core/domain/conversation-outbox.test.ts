@@ -11,7 +11,7 @@ const row = (id: string, text = 'same'): ConversationTurn => ({ id, author: 'unk
   queueEntryId: id === '5' ? 'entry-a' : `entry-old-${id}`,
   inputSource: { cardId: 'card', threadId: 'thread', itemId: Number.parseInt(id, 10), segmentIndex: 0, turnId: 'turn', entryRev: 1 } });
 
-const op = (key: string, phase: SendOpPhase, { before = 4, text = 'same', queued = false, entryId = `entry-${key}` as string | null, atMs = 2 } = {}): SendOp => ({
+const op = (key: string, phase: SendOpPhase, { before = 4, text = 'same', queued = false, entryId = null as string | null, atMs = 2 } = {}): SendOp => ({
   key, fromComposer: true, replaces: null,
   echo: { id: `echo-${key}`, author: 'you', text, atMs, serverHighWaterBefore: before, queued, entryId },
   ...phase,
@@ -33,18 +33,19 @@ const texts = (entries: readonly TranscriptEntry[]) => entries.map((entry) => 't
 
 describe('matching sends to persisted rows', () => {
   it('does not let an identical older row stand for a newer send', () => {
-    expect(matchSendOps([row('4')], [op('a', CONFIRMED)], NONE_SPENT, 'card').size).toBe(0);
-    expect([...matchSendOps([row('5')], [op('a', CONFIRMED)], NONE_SPENT, 'card')]).toEqual([['a', '5']]);
+    const accepted = op('a', CONFIRMED, { entryId: 'entry-a' });
+    expect(matchSendOps([{ ...row('4'), queueEntryId: 'entry-a' }], [accepted], NONE_SPENT, 'card').size).toBe(0);
+    expect([...matchSendOps([row('5')], [accepted], NONE_SPENT, 'card')]).toEqual([['a', '5']]);
   });
 
-  it('lets one new row stand for only one of two identical sends, the older', () => {
-    expect([...matchSendOps([row('5')], [op('b', CONFIRMED, { atMs: 3 }), op('a', CONFIRMED, { atMs: 2 })], NONE_SPENT, 'card')])
+  it('uses the exact acknowledged entry when equal sends share a row', () => {
+    expect([...matchSendOps([row('5')], [op('b', CONFIRMED, { entryId: 'entry-b', atMs: 3 }), op('a', CONFIRMED, { entryId: 'entry-a', atMs: 2 })], NONE_SPENT, 'card')])
       .toEqual([['a', '5']]);
   });
 
   /* #2068 item 8: over its lifetime, not only within one read. */
   it('never lets a row that already retired a send stand for another', () => {
-    expect(matchSendOps([row('5')], [op('b', UNKNOWN_SPENT)], ['5'], 'card').size).toBe(0);
+    expect(matchSendOps([row('5')], [op('b', CONFIRMED, { entryId: 'entry-a' })], ['5'], 'card').size).toBe(0);
   });
 });
 
@@ -55,13 +56,14 @@ describe('the outbox view', () => {
     expect(view([op('a', CONFIRMED, { queued: true })]).awaitingReconciliation).toBe(false);
     expect(view([op('a', SENDING)]).awaitingReconciliation).toBe(false);
     expect(view([op('a', UNKNOWN_SPENT)]).awaitingReconciliation).toBe(false);
-    expect(view([op('a', CONFIRMED)], [row('5')]).awaitingReconciliation).toBe(false);
+    expect(view([op('a', CONFIRMED, { entryId: 'entry-a' })], [row('5')]).awaitingReconciliation).toBe(false);
     expect(view([op('a', CONFIRMED)], [], { stalled: true }).awaitingReconciliation).toBe(false);
   });
   it('keeps a confirmed send until a read shows it, and retires it then', () => {
-    expect(view([op('a', CONFIRMED)]).retire).toEqual([]);
-    expect(texts(view([op('a', CONFIRMED)]).transcript)).toEqual(['same']);
-    const shown = view([op('a', CONFIRMED)], [row('5')]);
+    const accepted = op('a', CONFIRMED, { entryId: 'entry-a' });
+    expect(view([accepted]).retire).toEqual([]);
+    expect(texts(view([accepted]).transcript)).toEqual(['same']);
+    const shown = view([accepted], [row('5')]);
     expect(shown.retire).toEqual([{ key: 'a', row: '5' }]);
     expect(texts(shown.transcript)).toEqual(['same']);
   });
@@ -87,9 +89,9 @@ describe('the outbox view', () => {
     expect(texts(matched.transcript)).toEqual(['same']);
   });
 
-  it('hides a spent unknown send that a read shows, keeping it with its Try again', () => {
+  it('keeps an unacknowledged spent send beside equal Unknown input with its Try again', () => {
     const shown = view([op('a', UNKNOWN_SPENT)], [row('5')]);
-    expect(texts(shown.transcript)).toEqual(['same']);
+    expect(texts(shown.transcript)).toEqual(['same', 'same']);
     expect(shown.retire).toEqual([]);
     expect(shown.failed?.key).toBe('a');
     expect(shown.blocked).toBe(true);
@@ -99,15 +101,15 @@ describe('the outbox view', () => {
   it('keeps a null-ID echo separate from equal Unknown input until exact identity is acknowledged', () => {
     const unknown = op('a', UNKNOWN_SPENT, { entryId: null });
     expect(texts(view([unknown], [row('5')]).transcript)).toEqual(['same', 'same']);
-    const known = view([{ ...unknown, echo: { ...unknown.echo, entryId: 'entry-a' } }], [row('5')]);
+    const known = view([op('a', CONFIRMED, { entryId: 'entry-a' })], [row('5')]);
     expect(known.transcript).toEqual([row('5')]);
-    expect(known.failed?.key).toBe('a');
-    expect(known.retire).toEqual([]);
+    expect(known.failed).toBeNull();
+    expect(known.retire).toEqual([{ key: 'a', row: '5' }]);
   });
 
-  it('still blocks on a sending op a read already shows', () => {
+  it('still blocks on an unacknowledged sending op beside equal Unknown input', () => {
     const shown = view([op('a', SENDING)], [row('5')]);
-    expect(texts(shown.transcript)).toEqual(['same']);
+    expect(texts(shown.transcript)).toEqual(['same', 'same']);
     expect(shown.blocked).toBe(true);
     expect(shown.sending).toBe(true);
   });
@@ -156,7 +158,7 @@ describe('outbox transitions', () => {
   });
 
   it('adds back to remembered entries the confirmed sends no row stands for yet', () => {
-    const ops = [op('a', CONFIRMED, { before: 0 }), op('b', CONFIRMED, { before: 5 }), op('c', SENDING)];
+    const ops = [op('a', CONFIRMED, { entryId: 'entry-a', before: 0 }), op('b', CONFIRMED, { entryId: 'entry-b', before: 5 }), op('c', SENDING)];
     expect(texts(withConfirmedSends([row('5')], ops, NONE_SPENT, 'card'))).toEqual(['same', 'same']);
     expect(texts(withConfirmedSends([row('5')], ops, ['5'], 'card'))).toEqual(['same', 'same', 'same']);
     expect(withConfirmedSends([row('5')], [], NONE_SPENT, 'card')).toEqual([row('5')]);

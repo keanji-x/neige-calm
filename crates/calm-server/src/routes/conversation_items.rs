@@ -3,7 +3,7 @@ use super::conversation_read::{ReadScope, current_frame};
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path, Query};
-use crate::model::HarnessItem;
+use crate::model::HarnessItem as TranscriptRow;
 use crate::state::RouteState;
 use axum::{
     extract::State,
@@ -36,7 +36,7 @@ pub struct HarnessItemsQuery {
 #[derive(Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum HarnessItemsReadResponse {
-    Historical(Vec<HarnessItem>),
+    Historical(Vec<TranscriptRow>),
     Conversation(ConversationPage),
 }
 
