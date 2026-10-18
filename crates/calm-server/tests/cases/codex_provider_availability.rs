@@ -291,19 +291,22 @@ async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model()
         boot.state.shared_codex_appserver.clone().into();
     let failure = backend
         .turn_start(
-            "auth-reader-thread",
-            vec![calm_server::codex_appserver::InputItem::text(
-                "auth regression",
-            )],
-            &calm_server::planner_model::TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            "fixture-client-id",
-            &[calm_server::harness::QueueEntry::user_message(
-                "auth regression".into(),
-                None,
-                Vec::new(),
-            )],
-            None,
+            provider::control::TurnRequest {
+                input: provider::control::InputRequest {
+                    items: vec![calm_server::codex_appserver::InputItem::text(
+                        "auth regression",
+                    )],
+                    correlation: provider::control::CorrelationKey("fixture-client-id".into()),
+                },
+                selection: calm_server::planner_model::TurnModelSelection::inherit(),
+                permission: calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                edit: provider::control::TurnEdit::NoEdit,
+            },
+            calm_server::harness::backend::TurnInvocation {
+                thread_id: "auth-reader-thread",
+                claim: calm_server::acp_planner::FrozenClaim(serde_json::json!([])),
+                rewind: None,
+            },
         )
         .await
         .expect_err("a confirmed sign-in failure holds the turn");

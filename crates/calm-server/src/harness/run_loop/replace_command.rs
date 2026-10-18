@@ -15,13 +15,14 @@ use super::{
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, Result};
 use crate::event::Event;
-use crate::harness::backend::RewindTarget;
+use crate::harness::backend::BackendRewind;
 use crate::harness::queue::QueueEntry;
 use crate::harness::rewind::plan;
 use crate::harness::snapshot::HarnessPhaseTag;
 use crate::harness::state::{HarnessState, run_status_for};
 use crate::ids::ActorId;
 use crate::state::WriteContext;
+use provider::control::EditPreparation;
 
 /// Decided before anything was written, or rolled back with the transaction: nothing changed and
 /// no key was bound, so the reader is told why.
@@ -92,20 +93,19 @@ pub(super) async fn handle_replace(
         .transcript_rows_of_thread(inner.card_id.as_str(), &thread_id)
         .await?;
     let plan = plan(&rows, turn_id).map_err(refused)?;
-    let prepared = inner
-        .backend
-        .prepare_rewind(
-            &thread_id,
-            RewindTarget {
-                turn_id,
-                prompt_client_id: plan.prompt_client_id.as_deref(),
-                previous_turn: plan
-                    .previous_turn_id
-                    .as_ref()
-                    .map(|_| plan.previous_turn_rows.as_slice()),
-            },
-        )
-        .await
+    let target = inner.backend.native_edit_target(
+        turn_id,
+        plan.previous_turn_id
+            .as_ref()
+            .map(|_| crate::claude_planner::rewind::anchor(&plan.previous_turn_rows)),
+        plan.prompt_client_id.as_deref(),
+    );
+    let preparation = async { inner.backend.prepare_rewind(&thread_id, target?).await }.await;
+    let prepared = preparation
+        .and_then(|preparation| match preparation {
+            EditPreparation::Prepared { plan } => Ok(BackendRewind::from_plan(plan)),
+            EditPreparation::Failed { error } => Err(error),
+        })
         .map_err(|error| match error {
             CalmError::Conflict(reason) => refused(reason),
             other => other,

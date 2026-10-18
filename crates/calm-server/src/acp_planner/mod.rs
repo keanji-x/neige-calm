@@ -6,6 +6,9 @@ pub mod config;
 mod process;
 pub(crate) mod recovery;
 pub mod session;
+mod start;
 #[cfg(feature = "fixtures")]
 pub mod test_seams;
 pub mod wiring;
+
+pub use start::FrozenClaim;

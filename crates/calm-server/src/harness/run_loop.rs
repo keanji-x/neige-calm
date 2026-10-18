@@ -312,17 +312,34 @@ impl<'a> IssueTurnHandle<'a> {
         claim: &[QueueEntry],
         pending_rewind: Option<&mut BackendRewind>,
     ) -> std::result::Result<String, TurnStartFailure> {
-        self.backend
-            .turn_start(
-                thread_id,
-                input,
-                selection,
-                permission,
-                client_user_message_id,
-                claim,
-                pending_rewind,
-            )
-            .await
+        let edit = pending_rewind.as_deref().map_or(
+            provider::control::TurnEdit::NoEdit,
+            BackendRewind::turn_edit,
+        );
+        crate::harness::backend::ordinary_start_result(
+            self.backend
+                .turn_start(
+                    provider::control::TurnRequest {
+                        input: provider::control::InputRequest {
+                            items: input,
+                            correlation: provider::control::CorrelationKey(
+                                client_user_message_id.into(),
+                            ),
+                        },
+                        selection: selection.clone(),
+                        permission,
+                        edit,
+                    },
+                    crate::harness::backend::TurnInvocation {
+                        thread_id,
+                        claim: crate::acp_planner::FrozenClaim(super::submission_claims::freeze(
+                            claim,
+                        )),
+                        rewind: pending_rewind,
+                    },
+                )
+                .await,
+        )
     }
 }
 
@@ -4751,3 +4768,5 @@ mod workspace_report_tests;
 
 #[cfg(test)]
 mod control_mapping_tests;
+#[cfg(test)]
+mod start_mapping_tests;

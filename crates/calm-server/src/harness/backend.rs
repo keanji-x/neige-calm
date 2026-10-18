@@ -4,13 +4,16 @@
 //! [`PlannerBackend`], including model resolution and shutdown. The deletion seals are not a
 //! provider's: they live in the shared [`ThreadSeals`].
 //!
-//! `client_id` on [`PlannerBackend::turn_start`] and `input.correlation` on
-//! [`PlannerBackend::turn_steer`] retain the projection row's key; codex hands it back as
-//! `item.clientId`.
+//! `input.correlation` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`]
+//! retains the projection row's key; codex hands it back as `item.clientId`.
 
 use provider::control::*;
 mod control;
+mod start;
 use control::{codex_compact_submission, steer_outcome};
+pub(crate) use start::ordinary_start_result;
+pub use start::{StartDiagnostic, TurnInvocation};
+use start::{codex_start_result, revert_codex_thread};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -21,9 +24,8 @@ use uuid::Uuid;
 use crate::claude_planner::session::ClaudePlannerSession;
 use crate::claude_planner::spawn::ResumeTruncation;
 use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
-use crate::codex_appserver::{ApprovalRoute, InputItem, TurnApprovals};
+use crate::codex_appserver::{ApprovalRoute, TurnApprovals};
 use crate::db::Repo;
-use crate::db::TranscriptRow;
 use crate::error::{CalmError, Result};
 use crate::harness::codex_events::CodexEvents;
 use crate::harness::codex_selection;
@@ -33,7 +35,6 @@ use crate::harness::planner_event::PlannerEvent;
 use crate::harness::run_recovery::{RunRecovery, RunRecoveryAction, RunRecoveryCause};
 use crate::harness::{HarnessPhaseTag, HarnessSnapshot};
 use crate::planner_model::TurnModelSelection;
-use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionProjection};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
 use crate::thread_seals::ThreadSeals;
@@ -74,15 +75,6 @@ enum RewindArm {
     },
     /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
     Claude { resume_at: Uuid, drops_turn: Uuid },
-}
-
-/// What a provider is told about the turn a rewind removes.
-pub struct RewindTarget<'a> {
-    pub turn_id: &'a str,
-    /// The client id of the turn's first user message (its projection key), when it has one.
-    pub prompt_client_id: Option<&'a str>,
-    /// The rows of the turn before it, or `None` when it is the thread's first.
-    pub previous_turn: Option<&'a [TranscriptRow]>,
 }
 
 /// The provider a Planner harness runs on. Its arms are private to this module, so code outside it
@@ -233,29 +225,62 @@ impl PlannerBackend {
     pub async fn prepare_rewind(
         &self,
         thread_id: &str,
-        target: RewindTarget<'_>,
-    ) -> Result<BackendRewind> {
+        target: NativeEditTarget,
+    ) -> Result<EditPreparation<CalmError>> {
         if let Some(reader) = self.issuance_hold() {
             return Err(CalmError::Conflict(reader));
         }
-        match &self.0 {
-            Arm::Acp(_) => Err(CalmError::Conflict(
-                "ACP history replacement is unsupported".into(),
+        match (&self.0, &target) {
+            (Arm::Acp(_), _) => Ok(EditPreparation::Failed {
+                error: CalmError::Conflict("ACP history replacement is unsupported".into()),
+            }),
+            (Arm::Codex(..), NativeEditTarget::BeforeTurn { .. }) => {
+                Ok(EditPreparation::Prepared {
+                    plan: NativeEditPlan { target },
+                })
+            }
+            (
+                Arm::Claude(session),
+                NativeEditTarget::TranscriptCut {
+                    resume_at,
+                    drops_turn,
+                },
+            ) => {
+                session
+                    .check_truncation(
+                        thread_id,
+                        &ResumeTruncation {
+                            at: *resume_at,
+                            drops_turn: *drops_turn,
+                        },
+                    )
+                    .await
+            }
+            (Arm::Codex(..), NativeEditTarget::TranscriptCut { .. })
+            | (Arm::Claude(_), NativeEditTarget::BeforeTurn { .. }) => Err(CalmError::Internal(
+                "an edit target names another provider".into(),
             )),
-            Arm::Codex(..) => Ok(BackendRewind(RewindArm::Codex {
-                before_turn_id: target.turn_id.to_string(),
-                reverted: false,
-            })),
-            Arm::Claude(session) => {
-                let truncation = crate::claude_planner::rewind::truncation(
-                    target.previous_turn,
-                    target.prompt_client_id,
-                )?;
-                session.check_truncation(thread_id, &truncation).await?;
-                Ok(BackendRewind(RewindArm::Claude {
-                    resume_at: truncation.at,
-                    drops_turn: truncation.drops_turn,
-                }))
+        }
+    }
+
+    /// Resolve product transcript anchors in the server, before crossing the native seam.
+    pub(crate) fn native_edit_target(
+        &self,
+        turn_id: &str,
+        previous_anchor: Option<Option<Uuid>>,
+        prompt_client_id: Option<&str>,
+    ) -> Result<NativeEditTarget> {
+        match &self.0 {
+            Arm::Codex(..) | Arm::Acp(_) => Ok(NativeEditTarget::BeforeTurn {
+                before_turn_id: turn_id.into(),
+            }),
+            Arm::Claude(_) => {
+                let cut =
+                    crate::claude_planner::rewind::truncation(previous_anchor, prompt_client_id)?;
+                Ok(NativeEditTarget::TranscriptCut {
+                    resume_at: cut.at,
+                    drops_turn: cut.drops_turn,
+                })
             }
         }
     }
@@ -275,80 +300,115 @@ impl PlannerBackend {
     /// `permission` is the conversation's permission mode as the card holds it now (#2348), read
     /// once by the run loop for every arm: Codex sends its approval settings with every turn, the
     /// Claude spawn runs under it, and ACP answers its permission requests by it.
-    #[allow(clippy::too_many_arguments)]
     pub async fn turn_start(
         &self,
-        thread_id: &str,
-        items: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        permission: PlannerPermissionMode,
-        client_id: &str,
-        claim: &[crate::harness::QueueEntry],
-        rewind: Option<&mut BackendRewind>,
-    ) -> std::result::Result<TurnId, TurnStartFailure> {
+        request: TurnRequest,
+        invocation: TurnInvocation<'_>,
+    ) -> std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
         if let Some(reader) = self.issuance_hold() {
             return Err(TurnStartFailure::AwaitingRecovery {
                 error: CalmError::ServiceUnavailable(reader.clone()),
                 reader,
             });
         }
+        let TurnRequest {
+            input,
+            selection,
+            permission,
+            edit,
+        } = request;
+        let InputRequest { items, correlation } = input;
+        let thread_id = invocation.thread_id;
+        // The host's stored marker and the request are one invocation, never independent authority.
+        if edit
+            != invocation
+                .rewind
+                .as_deref()
+                .map_or(TurnEdit::NoEdit, BackendRewind::turn_edit)
+        {
+            return Err(mismatched_rewind());
+        }
         match &self.0 {
             Arm::Acp(session) => {
-                if rewind.is_some() {
+                if invocation.rewind.is_some() {
                     return Err(mismatched_rewind());
                 }
                 session
-                    .turn_start(thread_id, items, selection, permission, client_id, claim)
+                    .turn_start_control(
+                        thread_id,
+                        items,
+                        &selection,
+                        permission,
+                        &correlation.0,
+                        &invocation.claim,
+                    )
                     .await
             }
             Arm::Codex(daemon, approvals) => {
-                match rewind.map(|rewind| &mut rewind.0) {
-                    None | Some(RewindArm::Codex { reverted: true, .. }) => {}
-                    Some(RewindArm::Codex {
-                        before_turn_id,
-                        reverted,
-                    }) => {
-                        revert_codex_thread(daemon, thread_id, before_turn_id).await?;
-                        // The caller keeps this if the start below fails, so its retry does not
-                        // ask Codex again: Codex answers `turn not found` alike for a reverted
-                        // turn and a wrong one.
-                        *reverted = true;
+                if let Some(rewind) = invocation.rewind {
+                    match (&mut rewind.0, edit) {
+                        (RewindArm::Codex { reverted: true, .. }, TurnEdit::NoEdit) => {}
+                        (
+                            RewindArm::Codex { reverted, .. },
+                            TurnEdit::ApplyNativePlan(NativeEditPlan {
+                                target: NativeEditTarget::BeforeTurn { before_turn_id },
+                            }),
+                        ) => {
+                            if let Some(failure) =
+                                revert_codex_thread(daemon, thread_id, &before_turn_id).await?
+                            {
+                                return Ok(failure);
+                            }
+                            *reverted = true;
+                        }
+                        (RewindArm::Claude { .. }, _) | (RewindArm::Codex { .. }, _) => {
+                            return Err(mismatched_rewind());
+                        }
                     }
-                    Some(RewindArm::Claude { .. }) => return Err(mismatched_rewind()),
                 }
-                // Before `turn/start`, so the turn's first approval already has somewhere to go.
                 approvals.route(daemon, thread_id);
-                daemon
-                    .turn_start(
-                        thread_id,
-                        items,
-                        selection,
-                        TurnApprovals::Explicit(permission),
-                        Some(client_id),
-                    )
-                    .await
-                    // Codex answering with a refusal is the one failure known to be its answer.
-                    .map_err(codex_turn_start_failure)
+                codex_start_result(
+                    daemon
+                        .turn_start_control(
+                            thread_id,
+                            items,
+                            &selection,
+                            TurnApprovals::Explicit(permission),
+                            Some(&correlation.0),
+                        )
+                        .await,
+                )
             }
             Arm::Claude(session) => {
-                let truncation = match rewind.map(|rewind| &rewind.0) {
-                    None => None,
-                    Some(RewindArm::Claude {
-                        resume_at,
-                        drops_turn,
+                if matches!(
+                    invocation.rewind.as_deref().map(|rewind| &rewind.0),
+                    Some(RewindArm::Codex { .. })
+                ) {
+                    return Err(mismatched_rewind());
+                }
+                let truncation = match edit {
+                    TurnEdit::NoEdit => None,
+                    TurnEdit::ApplyNativePlan(NativeEditPlan {
+                        target:
+                            NativeEditTarget::TranscriptCut {
+                                resume_at,
+                                drops_turn,
+                            },
                     }) => Some(ResumeTruncation {
-                        at: *resume_at,
-                        drops_turn: *drops_turn,
+                        at: resume_at,
+                        drops_turn,
                     }),
-                    Some(RewindArm::Codex { .. }) => return Err(mismatched_rewind()),
+                    TurnEdit::ApplyNativePlan(NativeEditPlan {
+                        target: NativeEditTarget::BeforeTurn { .. },
+                    }) => return Err(mismatched_rewind()),
                 };
                 session
-                    .turn_start(
+                    .turn_start_control(
                         thread_id,
                         items,
-                        selection,
+                        &selection,
                         permission,
-                        client_id,
+                        &correlation.0,
                         truncation.as_ref(),
                     )
                     .await
@@ -658,32 +718,6 @@ impl PlannerEvents {
     }
 }
 
-fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
-    match error {
-        CalmError::CodexRefused(message) => {
-            if message == crate::codex_authentication::SIGN_IN_REFUSAL {
-                TurnStartFailure::AwaitingRecovery {
-                    error: CalmError::CodexRefused(message),
-                    reader: format!(
-                        "{} Your message is still queued.",
-                        crate::codex_authentication::SIGN_IN_REQUIRED
-                    ),
-                }
-            } else {
-                TurnStartFailure::Refused {
-                    error: CalmError::CodexRefused(message),
-                    reader: "codex refused to start a turn for this conversation, so \
-                             your message has not been sent. If you changed the model \
-                             recently, it may not be one this account can run — try \
-                             another."
-                        .into(),
-                }
-            }
-        }
-        error => TurnStartFailure::Transient(error),
-    }
-}
-
 /// A rewind recorded for the other provider: the runtime's provider never changes, so this is a
 /// corrupt snapshot that no retry clears.
 fn mismatched_rewind() -> TurnStartFailure {
@@ -692,25 +726,6 @@ fn mismatched_rewind() -> TurnStartFailure {
         reader: "this conversation holds an edit for another provider, so your message has not \
                  been sent. Reset the conversation to continue."
             .into(),
-    }
-}
-
-/// `thread/revert` before the turn that follows a rewind. Any refusal, `turn not found` included,
-/// keeps the turn from starting: only the kernel's own record says a revert already went through.
-async fn revert_codex_thread(
-    daemon: &SharedCodexAppServer,
-    thread_id: &str,
-    before_turn_id: &str,
-) -> std::result::Result<(), TurnStartFailure> {
-    match daemon.thread_revert(thread_id, before_turn_id).await {
-        Ok(()) => Ok(()),
-        Err(error @ CalmError::CodexRefused(_)) => Err(TurnStartFailure::Refused {
-            error,
-            reader: "codex refused to remove the edited turn from this conversation, so your \
-                     message has not been sent. Reset the conversation to continue."
-                .into(),
-        }),
-        Err(error) => Err(TurnStartFailure::Transient(error)),
     }
 }
 
@@ -796,16 +811,20 @@ mod tests {
     #[test]
     fn the_sign_in_refusal_awaits_recovery_and_other_refusals_stay_refusals() {
         assert!(matches!(
-            codex_turn_start_failure(CalmError::CodexRefused(
-                crate::codex_authentication::SIGN_IN_REFUSAL.into()
-            )),
-            TurnStartFailure::AwaitingRecovery { .. }
+            ordinary_start_result(codex_start_result(Err(
+                crate::shared_codex_appserver::control::StartError::RecoveryRequired(
+                    CalmError::CodexRefused(crate::codex_authentication::SIGN_IN_REFUSAL.into())
+                )
+            ))),
+            Err(TurnStartFailure::AwaitingRecovery { .. })
         ));
         assert!(matches!(
-            codex_turn_start_failure(CalmError::CodexRefused(
-                "turn/start failed: unknown model".into()
-            )),
-            TurnStartFailure::Refused { .. }
+            ordinary_start_result(codex_start_result(Err(
+                crate::shared_codex_appserver::control::StartError::Refused(
+                    CalmError::CodexRefused("turn/start failed: unknown model".into())
+                )
+            ))),
+            Err(TurnStartFailure::Refused { .. })
         ));
     }
 }

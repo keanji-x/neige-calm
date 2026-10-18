@@ -15,6 +15,8 @@ mod types;
 pub use types::*;
 mod client_transport;
 mod interrupt;
+#[cfg(test)]
+mod start_mapping_tests;
 pub use interrupt::legacy_result as interrupt_result;
 #[cfg(test)]
 mod server_request_tests;

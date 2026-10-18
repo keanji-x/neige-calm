@@ -1,7 +1,7 @@
 //! One Claude Planner session: one `claude -p` process per turn, at most one at a time (design
 //! #1791 §5.1, §5.2, §5.6, §6.2).
 //!
-//! Submission contract ([`ClaudePlannerSession::turn_start`]): refuse until the harness is
+//! Submission contract (`ClaudePlannerSession::turn_start_control`): refuse until the harness is
 //! installed, mint the turn id, check the seal, run `--version` (before any user input), on the
 //! harness's first turn mint its MCP credential (§5.1 item 2), `stop` whatever still carries this session's marker, write the instructions file under a
 //! per-spawn guard, spawn, re-check the seal, write the one `user` line (bounded), and return
@@ -180,29 +180,8 @@ pub(super) enum SpawnInput<'a> {
     Compaction,
 }
 
-/// Why a spawn did not start, and whether its user line may have reached the CLI. Every failure
-/// before the line is written submitted nothing; a failed write may have delivered part or all of
-/// it.
-pub(super) struct SpawnFailure {
-    pub(super) failure: crate::harness::backend::TurnStartFailure,
-    pub(super) line_sent: bool,
-}
-
-impl From<crate::harness::backend::TurnStartFailure> for SpawnFailure {
-    fn from(failure: crate::harness::backend::TurnStartFailure) -> Self {
-        Self {
-            failure,
-            line_sent: false,
-        }
-    }
-}
-
-impl From<CalmError> for SpawnFailure {
-    fn from(error: CalmError) -> Self {
-        crate::harness::backend::TurnStartFailure::from(error).into()
-    }
-}
-
+mod start;
+pub(crate) use start::SpawnFailure;
 impl ClaudePlannerSession {
     /// Open the session for its worker-session row: a row whose `agent_session_id` is bound
     /// resumes that Claude session (`--resume`); otherwise the first spawn creates it.
@@ -280,7 +259,7 @@ impl ClaudePlannerSession {
         &self,
         thread: &str,
         cut: &ResumeTruncation,
-    ) -> Result<()> {
+    ) -> Result<provider::control::EditPreparation<CalmError>> {
         let _issue = self.shared.issue.lock().await;
         let busy = {
             let state = self.shared.state();
@@ -298,6 +277,8 @@ impl ClaudePlannerSession {
     /// read at issue and passed as it is; the CLI judges the model (#1822 6′). `mode` is the card's
     /// permission mode, read at issue by the harness (#2348) and fixed for this spawn. `truncation`
     /// is a rewind's pending cut, applied by this spawn.
+    /// Fixture-facing legacy projection; managed issuance consumes typed control results.
+    #[cfg(feature = "fixtures")]
     pub async fn turn_start(
         &self,
         thread: &str,
@@ -307,14 +288,30 @@ impl ClaudePlannerSession {
         client_id: &str,
         truncation: Option<&ResumeTruncation>,
     ) -> Result<String, crate::harness::backend::TurnStartFailure> {
+        crate::harness::backend::ordinary_start_result(
+            self.turn_start_control(thread, items, selection, mode, client_id, truncation)
+                .await,
+        )
+    }
+
+    pub(crate) async fn turn_start_control(
+        &self,
+        thread: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        mode: PlannerPermissionMode,
+        client_id: &str,
+        truncation: Option<&ResumeTruncation>,
+    ) -> Result<
+        provider::control::TurnStartOutcome<CalmError, crate::harness::backend::StartDiagnostic>,
+        crate::harness::backend::TurnStartFailure,
+    > {
         let input = SpawnInput::Turn {
             items,
             client_id,
             truncation,
         };
-        self.start_spawn(thread, input, selection, mode)
-            .await
-            .map_err(|spawn| spawn.failure)
+        start::start_result(self.start_spawn(thread, input, selection, mode).await)
     }
 
     /// The submission contract for either kind of spawn; see the module docs.
@@ -393,7 +390,18 @@ impl ClaudePlannerSession {
             .configured()
             .map_err(|_| needs_an_operator(unavailable_message()))?;
         let env = spawn::session_env(params, &config.config_dir)?;
-        config.refuse_unless_pinned(&env).await?;
+        match config.version_problem(&env).await {
+            None => {}
+            Some(super::config::VersionProblem::NotPinned(problem)) => {
+                return Err(needs_an_operator(problem).into());
+            }
+            Some(super::config::VersionProblem::NoAnswer(problem)) => {
+                return Err(SpawnFailure::Failed {
+                    error: CalmError::Conflict(problem),
+                    line_sent: false,
+                });
+            }
+        }
         // A shutdown or a deletion seal may have landed while `--version` ran; nothing is minted
         // for a session that can no longer start a turn.
         if shared.state().shutting_down {
@@ -421,9 +429,16 @@ impl ClaudePlannerSession {
             } => {
                 let line = UserLine::new(
                     thread_uuid,
-                    client_line_uuid(client_id)
-                        .map_err(|e| CalmError::BadRequest(e.to_string()))?,
-                    user_line_content(&items).await?,
+                    client_line_uuid(client_id).map_err(|e| SpawnFailure::Failed {
+                        error: CalmError::BadRequest(e.to_string()),
+                        line_sent: false,
+                    })?,
+                    user_line_content(&items)
+                        .await
+                        .map_err(|error| SpawnFailure::Failed {
+                            error,
+                            line_sent: false,
+                        })?,
                 );
                 (line, client_id.to_string(), items, truncation)
             }
@@ -434,7 +449,10 @@ impl ClaudePlannerSession {
                 (line, uuid.simple().to_string(), Vec::new(), None)
             }
         };
-        let line = serde_json::to_string(&line).map_err(CalmError::from)?;
+        let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::Failed {
+            error: e.into(),
+            line_sent: false,
+        })?;
         let mut translator = TurnTranslator::new(
             TurnContext {
                 thread_id: thread.to_string(),
@@ -446,7 +464,10 @@ impl ClaudePlannerSession {
             },
             params.calm_tools.clone(),
         )
-        .map_err(|e| CalmError::BadRequest(e.to_string()))?;
+        .map_err(|e| SpawnFailure::Failed {
+            error: CalmError::BadRequest(e.to_string()),
+            line_sent: false,
+        })?;
         let instructions = InstructionsFile::write(
             &host.instructions_dir,
             &params.worker_session_id,
@@ -466,7 +487,13 @@ impl ClaudePlannerSession {
         );
         let argv = match argv {
             Ok(argv) => argv,
-            Err(error) => return Err(self.abort_before_ok(None, instructions, error).await.into()),
+            Err(error) => {
+                let failure = self.abort_before_ok(None, instructions, error).await;
+                return Err(SpawnFailure::Failed {
+                    error: failure,
+                    line_sent: false,
+                });
+            }
         };
         let spawned = Command::new(&config.claude_binary)
             .args(argv)
@@ -485,7 +512,11 @@ impl ClaudePlannerSession {
                     "claude planner spawn of {} failed: {error}",
                     config.claude_binary.display()
                 ));
-                return Err(self.abort_before_ok(None, instructions, error).await.into());
+                let failure = self.abort_before_ok(None, instructions, error).await;
+                return Err(SpawnFailure::Failed {
+                    error: failure,
+                    line_sent: false,
+                });
             }
         };
         #[cfg(feature = "fixtures")]
@@ -516,8 +547,9 @@ impl ClaudePlannerSession {
             shared.hooks.lock().expect("hooks").user_line_writes += 1;
         }
         if let Err(error) = slot.write_line(&line).await {
-            return Err(SpawnFailure {
-                failure: self.abort_before_ok(Some(child), instructions, error).await,
+            let failure = self.abort_before_ok(Some(child), instructions, error).await;
+            return Err(SpawnFailure::Failed {
+                error: failure,
                 line_sent: true,
             });
         }
@@ -598,7 +630,7 @@ impl ClaudePlannerSession {
         child: Option<Child>,
         instructions: InstructionsFile,
         error: CalmError,
-    ) -> crate::harness::backend::TurnStartFailure {
+    ) -> CalmError {
         let params = &self.shared.params;
         if let Err(stop_error) = stop(&params.host.instance, &params.worker_session_id).await {
             tracing::warn!(
@@ -612,7 +644,7 @@ impl ClaudePlannerSession {
             let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
         }
         drop(instructions);
-        error.into()
+        error
     }
 
     /// Record `Interrupted`, ask the CLI to interrupt, and arm the stop timer; a turn that is not

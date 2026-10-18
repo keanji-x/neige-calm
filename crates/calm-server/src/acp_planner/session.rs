@@ -1,3 +1,4 @@
+use super::start::{self, StartFailure};
 use super::{
     config::AcpPlannerHost,
     process::{Process, setup_request},
@@ -103,6 +104,8 @@ impl AcpPlannerSession {
             .filter(|active| active.thread == thread)
             .map(|active| active.turn.clone())
     }
+    /// Fixture-facing legacy projection; managed issuance consumes typed control results.
+    #[cfg(feature = "fixtures")]
     pub async fn turn_start(
         &self,
         thread: &str,
@@ -112,6 +115,46 @@ impl AcpPlannerSession {
         client: &str,
         claim: &[crate::harness::QueueEntry],
     ) -> std::result::Result<String, TurnStartFailure> {
+        crate::harness::backend::ordinary_start_result(
+            self.turn_start_control(
+                thread,
+                items,
+                selection,
+                permission,
+                client,
+                &super::FrozenClaim(crate::harness::submission_claims::freeze(claim)),
+            )
+            .await,
+        )
+    }
+
+    pub(crate) async fn turn_start_control(
+        &self,
+        thread: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        permission: PlannerPermissionMode,
+        client: &str,
+        claim: &super::FrozenClaim,
+    ) -> std::result::Result<
+        provider::control::TurnStartOutcome<CalmError, crate::harness::backend::StartDiagnostic>,
+        TurnStartFailure,
+    > {
+        start::start_result(
+            self.issue(thread, items, selection, permission, client, claim)
+                .await,
+        )
+    }
+
+    async fn issue(
+        &self,
+        thread: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        permission: PlannerPermissionMode,
+        client: &str,
+        claim: &super::FrozenClaim,
+    ) -> std::result::Result<String, StartFailure> {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
@@ -161,7 +204,7 @@ impl AcpPlannerSession {
                 serde_json::from_str(&receipt.input_json).map_err(CalmError::from)?;
             if receipt.thread_id != thread
                 || row.agent_session_id.as_deref() != Some(&receipt.native_session_id)
-                || issued.get("queue") != Some(&crate::harness::submission_claims::freeze(claim))
+                || issued.get("queue") != Some(&claim.0)
             {
                 return Err(refused("ACP receipt ownership or original input changed"));
             }
@@ -237,7 +280,7 @@ impl AcpPlannerSession {
         .await
         .map_err(CalmError::from)?;
         let token = mint_token(params).await?;
-        let mut process = match Process::spawn(
+        let mut process = match Process::spawn_control(
             &params.host,
             config,
             &params.worker_session_id,
@@ -252,7 +295,7 @@ impl AcpPlannerSession {
             Ok(process) => process,
             Err(error) => {
                 revoke(params).await?;
-                return Err(error.into());
+                return Err(error);
             }
         };
         let prepared = async {
@@ -283,7 +326,7 @@ impl AcpPlannerSession {
                     (
                         native,
                         provider::acp::configuration::Configuration::from_response(&result)
-                            .map_err(wire_error)?,
+                            .map_err(|error| StartFailure::Failed(wire_error(error)))?,
                     )
                 }
                 None => {
@@ -295,9 +338,9 @@ impl AcpPlannerSession {
                     .await?;
                     let configuration =
                         provider::acp::configuration::Configuration::from_response(&result)
-                            .map_err(wire_error)?;
-                    let native: protocol::NewSessionResponse =
-                        protocol::decode(result).map_err(wire_error)?;
+                            .map_err(|error| StartFailure::Failed(wire_error(error)))?;
+                    let native: protocol::NewSessionResponse = protocol::decode(result)
+                        .map_err(|error| StartFailure::Failed(wire_error(error)))?;
                     if native.session_id.is_empty() {
                         return Err(refused("ACP agent returned an empty native identity"));
                     }
@@ -328,7 +371,7 @@ impl AcpPlannerSession {
                 )
                 .await?;
                 configuration = provider::acp::configuration::Configuration::from_response(&result)
-                    .map_err(wire_error)?;
+                    .map_err(|error| StartFailure::Failed(wire_error(error)))?;
                 if configuration
                     .category(category)
                     .is_none_or(|option| option.current_value != value)
@@ -349,15 +392,17 @@ impl AcpPlannerSession {
                 turn_id: turn.clone(),
                 thread_id: thread.into(),
                 native_session_id: native.clone(),
-                input_json: serde_json::to_string(&json!({"input":input,"prompt":blocks,"queue":crate::harness::submission_claims::freeze(claim)}))
-                    .map_err(CalmError::from)?,
+                input_json: serde_json::to_string(
+                    &json!({"input":input,"prompt":blocks,"queue":claim.0}),
+                )
+                .map_err(CalmError::from)?,
                 state: crate::db::sqlite::AcpSubmissionState::Sending,
                 outcome_json: None,
             };
             acp_submission_prepare(&pool, &receipt, crate::model::now_ms())
                 .await
                 .map_err(CalmError::from)?;
-            Ok::<_, TurnStartFailure>((native, turn, receipt))
+            Ok::<_, StartFailure>((native, turn, receipt))
         }
         .await;
         let (native, turn, receipt) = match prepared {
@@ -466,11 +511,11 @@ async fn join_driver(shared: &Shared) -> Result<()> {
     slot.take();
     result
 }
-fn refused(reason: &str) -> TurnStartFailure {
-    TurnStartFailure::Refused {
+fn refused(reason: &str) -> StartFailure {
+    StartFailure::Host(TurnStartFailure::Refused {
         error: CalmError::Conflict(reason.into()),
         reader: reason.into(),
-    }
+    })
 }
 fn wire_error(error: provider::acp::Error) -> CalmError {
     CalmError::Conflict(error.to_string())

@@ -24,7 +24,7 @@ fn harness_turn_start_is_gated() {
     let backend = std::fs::read_to_string(manifest_dir.join("src/harness/backend.rs"))
         .expect("read harness backend");
     assert_eq!(
-        backend.matches(".turn_start(").count(),
+        backend.matches(".turn_start_control(").count(),
         3,
         "harness/backend.rs should call .turn_start once per arm (Codex, Claude, ACP), inside \
          PlannerBackend::turn_start; bump when a backend arm is added"
@@ -36,7 +36,7 @@ fn harness_turn_start_is_gated() {
         .and_then(|rest| rest.split("\n    }\n").next())
         .expect("PlannerBackend::turn_start present");
     assert_eq!(
-        turn_start_fn.matches(".turn_start(").count(),
+        turn_start_fn.matches(".turn_start_control(").count(),
         3,
         "every backend .turn_start call should sit inside PlannerBackend::turn_start"
     );
@@ -47,6 +47,8 @@ fn harness_turn_start_is_gated() {
         "src/harness/run_loop.rs",
         "src/operation/codex_adapter/mod.rs",
         "src/shared_codex_appserver.rs",
+        "src/claude_planner/session.rs",
+        "src/acp_planner/session.rs",
     ];
     for path in rust_files(&manifest_dir.join("src")) {
         let rel = path
@@ -62,7 +64,7 @@ fn harness_turn_start_is_gated() {
             continue;
         }
         assert!(
-            !src.contains(".turn_start("),
+            !src.contains(".turn_start(") && !src.contains(".turn_start_control("),
             "unexpected turn_start callsite in {rel}"
         );
     }

@@ -15,6 +15,7 @@ use super::session::ClaudePlannerSessionParams;
 use super::spawn::{self, ResumeTruncation};
 use crate::db::TranscriptRow;
 use crate::error::{CalmError, Result};
+use provider::control::{EditPreparation, NativeEditPlan, NativeEditTarget};
 
 /// The dry run loads the session and exits without a model call (~3 s on the pinned CLI).
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -22,19 +23,20 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REASON_CHARS: usize = 500;
 
 /// The cut that removes the turn whose prompt line is `prompt_client_id`: keep the session up to the
-/// chain entry the previous turn ended on. `previous_turn` is `None` when the turn is the first.
+/// chain entry the previous turn ended on. The outer option is absent for the first turn;
+/// the inner option is absent when the previous turn recorded no native anchor.
 pub(crate) fn truncation(
-    previous_turn: Option<&[TranscriptRow]>,
+    previous_anchor: Option<Option<Uuid>>,
     prompt_client_id: Option<&str>,
 ) -> Result<ResumeTruncation> {
-    let Some(previous_turn) = previous_turn else {
+    let Some(previous_anchor) = previous_anchor else {
         return Err(CalmError::Conflict(
             "the first message of a Claude conversation cannot be edited: Claude has nothing \
              before it to go back to"
                 .into(),
         ));
     };
-    let at = anchor(previous_turn).ok_or_else(|| {
+    let at = previous_anchor.ok_or_else(|| {
         CalmError::Conflict(
             "the previous reply did not record where it ended, so this turn cannot be removed"
                 .into(),
@@ -83,7 +85,7 @@ pub(crate) async fn check(
     params: &ClaudePlannerSessionParams,
     thread: &str,
     cut: &ResumeTruncation,
-) -> Result<()> {
+) -> Result<EditPreparation<CalmError>> {
     let thread = Uuid::try_parse(thread).map_err(|_| {
         CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
     })?;
@@ -94,6 +96,12 @@ pub(crate) async fn check(
         spawn::truncation_check_argv(thread, cut),
         env,
         &params.cwd,
+        NativeEditPlan {
+            target: NativeEditTarget::TranscriptCut {
+                resume_at: cut.at,
+                drops_turn: cut.drops_turn,
+            },
+        },
     )
     .await
 }
@@ -103,37 +111,47 @@ async fn run(
     args: Vec<OsString>,
     env: Vec<(String, OsString)>,
     cwd: &Path,
-) -> Result<()> {
-    let child = Command::new(binary)
-        .args(args)
-        .env_clear()
-        .envs(env)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            CalmError::Internal(format!(
-                "the Claude rewind check could not start {}: {error}",
-                binary.display()
-            ))
-        })?;
-    let output = tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output())
-        .await
-        .map_err(|_| {
-            CalmError::ServiceUnavailable(
-                "Claude did not finish checking the edit in time; nothing was changed".into(),
-            )
-        })??;
-    if output.status.success() {
-        return Ok(());
+    plan: NativeEditPlan,
+) -> Result<EditPreparation<CalmError>> {
+    let result = async {
+        let child = Command::new(binary)
+            .args(args)
+            .env_clear()
+            .envs(env)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                CalmError::Internal(format!(
+                    "the Claude rewind check could not start {}: {error}",
+                    binary.display()
+                ))
+            })?;
+        let output = tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| {
+                CalmError::ServiceUnavailable(
+                    "Claude did not finish checking the edit in time; nothing was changed".into(),
+                )
+            })??;
+        if output.status.success() {
+            return Ok(EditPreparation::Prepared { plan });
+        }
+        Ok(EditPreparation::Failed {
+            error: CalmError::Conflict(format!(
+                "Claude refused to remove this turn: {}",
+                refusal_reason(&output.stdout, &output.stderr, output.status)
+            )),
+        })
     }
-    Err(CalmError::Conflict(format!(
-        "Claude refused to remove this turn: {}",
-        refusal_reason(&output.stdout, &output.stderr, output.status)
-    )))
+    .await;
+    Ok(match result {
+        Ok(preparation) => preparation,
+        Err(error) => EditPreparation::Failed { error },
+    })
 }
 
 /// The `errors` of the CLI's result record, else its last stderr line, else the exit status.
@@ -164,4 +182,65 @@ fn refusal_reason(stdout: &[u8], stderr: &[u8], status: std::process::ExitStatus
         .or_else(from_stderr)
         .unwrap_or_else(|| format!("claude exited ({status})"));
     reason.trim().chars().take(MAX_REASON_CHARS).collect()
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+    #[tokio::test]
+    async fn m1_mapping_edit_dry_run_accept_refuse_and_failure_table() {
+        for (command, expected) in [
+            ("exit 0", "prepared"),
+            (
+                "printf '%s' '{\"type\":\"result\",\"errors\":[\"native reason\"]}'; exit 1",
+                "rejected",
+            ),
+            ("", "failed"),
+        ] {
+            let target = NativeEditTarget::TranscriptCut {
+                resume_at: Uuid::from_u128(1),
+                drops_turn: Uuid::from_u128(2),
+            };
+            let binary = if expected == "failed" {
+                Path::new("/no-such-neige-rewind-binary")
+            } else {
+                Path::new("/bin/sh")
+            };
+            let prepared = run(
+                binary,
+                vec!["-c".into(), command.into()],
+                vec![],
+                Path::new("/tmp"),
+                NativeEditPlan {
+                    target: target.clone(),
+                },
+            )
+            .await
+            .unwrap();
+            match (expected, prepared) {
+                ("prepared", EditPreparation::Prepared { plan }) => assert_eq!(plan.target, target),
+                (
+                    "rejected",
+                    EditPreparation::Failed {
+                        error: CalmError::Conflict(message),
+                    },
+                ) => assert_eq!(message, "Claude refused to remove this turn: native reason"),
+                (
+                    "failed",
+                    EditPreparation::Failed {
+                        error: CalmError::Internal(message),
+                    },
+                ) => assert!(message.starts_with(
+                    "the Claude rewind check could not start /no-such-neige-rewind-binary:"
+                )),
+                other => panic!("wrong preparation {other:?}"),
+            }
+        }
+        assert!(
+            matches!(truncation(None, None), Err(CalmError::Conflict(message)) if message == "the first message of a Claude conversation cannot be edited: Claude has nothing before it to go back to")
+        );
+        assert!(
+            matches!(truncation(Some(None), None), Err(CalmError::Conflict(message)) if message == "the previous reply did not record where it ended, so this turn cannot be removed")
+        );
+    }
 }

@@ -110,3 +110,55 @@ impl<E> InterruptOutcome<E> {
         }
     }
 }
+
+/// Start input for the session owned by the receiving facade.
+#[derive(Clone, Debug)]
+pub struct TurnRequest {
+    pub input: InputRequest,
+    pub selection: TurnModelSelection,
+    pub permission: calm_types::harness::PlannerPermissionMode,
+    pub edit: TurnEdit,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TurnEdit {
+    NoEdit,
+    ApplyNativePlan(NativeEditPlan),
+}
+/// Native anchors resolved by the host, never product transcript rows or session overrides.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeEditTarget {
+    BeforeTurn {
+        before_turn_id: String,
+    },
+    TranscriptCut {
+        resume_at: uuid::Uuid,
+        drops_turn: uuid::Uuid,
+    },
+}
+/// A target whose preparation succeeded. This is ephemeral, not a storage codec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeEditPlan {
+    pub target: NativeEditTarget,
+}
+/// Error payloads and refusal/recovery diagnostics can have distinct required fields.
+#[derive(Debug)]
+pub enum TurnStartOutcome<E, R = E> {
+    Started {
+        turn: TurnIdentity,
+    },
+    Failed {
+        error: E,
+    },
+    Rejected {
+        error: R,
+    },
+    /// The current producer is local authentication preflight, not a remote reply.
+    RecoveryRequired {
+        error: R,
+    },
+}
+#[derive(Debug)]
+pub enum EditPreparation<E> {
+    Prepared { plan: NativeEditPlan },
+    Failed { error: E },
+}

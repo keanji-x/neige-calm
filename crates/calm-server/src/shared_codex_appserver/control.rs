@@ -68,3 +68,35 @@ mod tests {
         }
     }
 }
+
+/// Start facts captured at the daemon source, before widening to CalmError.
+#[derive(Debug)]
+pub enum StartError {
+    Host(CalmError),
+    Refused(CalmError),
+    RecoveryRequired(CalmError),
+    Unanswered(CalmError),
+}
+impl From<provider::codex::error::Error> for StartError {
+    fn from(error: provider::codex::error::Error) -> Self {
+        ControlError::from(error).into()
+    }
+}
+impl From<ControlError> for StartError {
+    fn from(error: ControlError) -> Self {
+        match error {
+            ControlError::Refused(error) => Self::Refused(error),
+            ControlError::Unanswered(error) => Self::Unanswered(error),
+        }
+    }
+}
+impl From<StartError> for CalmError {
+    fn from(error: StartError) -> Self {
+        match error {
+            StartError::Host(error)
+            | StartError::Refused(error)
+            | StartError::RecoveryRequired(error)
+            | StartError::Unanswered(error) => error,
+        }
+    }
+}

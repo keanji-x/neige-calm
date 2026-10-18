@@ -48,19 +48,6 @@ impl ClaudePlannerConfig {
         })
     }
 
-    /// [`Self::verify_version`] for a turn start (#1981): a binary that answered as another version
-    /// is refused until an operator fixes it; one that did not answer may answer next time.
-    pub async fn refuse_unless_pinned(
-        &self,
-        env: &[(String, std::ffi::OsString)],
-    ) -> Result<(), TurnStartFailure> {
-        match self.version_problem(env).await {
-            None => Ok(()),
-            Some(VersionProblem::NotPinned(problem)) => Err(needs_an_operator(problem)),
-            Some(VersionProblem::NoAnswer(problem)) => Err(CalmError::Conflict(problem).into()),
-        }
-    }
-
     /// [`Self::verify_version`]'s check, answering why the binary is refused (`None` = it is not).
     /// Runs through [`super::readiness_command::run`]: bounded, capped, killed and reaped.
     pub async fn version_problem(

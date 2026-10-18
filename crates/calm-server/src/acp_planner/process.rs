@@ -7,6 +7,8 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::process::Command;
 
+use super::start::StartFailure;
+
 pub(super) struct Process {
     child: GroupChild,
     pub connection: Connection,
@@ -29,6 +31,18 @@ impl Process {
         cwd: &std::path::Path,
         context: LaunchContext<'_>,
     ) -> Result<Self> {
+        Self::spawn_control(host, config, worker, cwd, context)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn spawn_control(
+        host: &AcpPlannerHost,
+        config: &AcpAgentConfig,
+        worker: &str,
+        cwd: &std::path::Path,
+        context: LaunchContext<'_>,
+    ) -> std::result::Result<Self, StartFailure> {
         crate::planner_process::stop(&host.instance, worker).await?;
         let mut command = Command::new(&config.command);
         command
@@ -36,7 +50,12 @@ impl Process {
             .current_dir(cwd)
             .env_clear()
             .envs(&config.env)
-            .env("PATH", crate::kernel_bin_path::kernel_led_path()?.path)
+            .env(
+                "PATH",
+                crate::kernel_bin_path::kernel_led_path()
+                    .map_err(CalmError::from)?
+                    .path,
+            )
             .env(MARKER_KEY, host.instance.marker(worker))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -59,7 +78,10 @@ impl Process {
             tokio::time::Instant::now() + Duration::from_secs(10),
         )
         .await
-        .map_err(|_| CalmError::Conflict("ACP process spawn timed out".into()))??;
+        .map_err(|_| {
+            StartFailure::Failed(CalmError::Conflict("ACP process spawn timed out".into()))
+        })?
+        .map_err(|error| StartFailure::Failed(error.into()))?;
         let connection = Connection::new(
             child
                 .stdout()
@@ -88,9 +110,9 @@ impl Process {
                 let _ = child.start_kill();
                 reap(&mut child).await;
                 crate::planner_process::stop(&host.instance, worker).await?;
-                Err(CalmError::Conflict(
+                Err(StartFailure::Failed(CalmError::Conflict(
                     "ACP agent did not negotiate the registered protocol identity/version".into(),
-                ))
+                )))
             }
         }
     }
@@ -116,22 +138,22 @@ pub(super) async fn setup_request(
     process: &mut Process,
     method: &str,
     params: Value,
-) -> Result<Value> {
+) -> std::result::Result<Value, StartFailure> {
     let response = process
         .connection
         .client
         .submit(method, params)
         .await
-        .map_err(|error| CalmError::Conflict(error.to_string()))?;
+        .map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?;
     let response = response.wait(Duration::from_secs(10));
     tokio::pin!(response);
     loop {
         tokio::select! {
             result=&mut response=>return finish_setup(&process.connection.client,&mut process.connection.incoming,result).await,
             incoming=process.connection.incoming.recv()=>match incoming {
-                Some(Incoming::Request{id,method,..})=>refuse(&process.connection.client,id,&method).await.map_err(|error| CalmError::Conflict(error.to_string()))?,
+                Some(Incoming::Request{id,method,..})=>refuse(&process.connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
                 Some(Incoming::Notification{..})=>{}, // Loaded replay never represents a fresh native prompt.
-                None=>return Err(CalmError::Conflict("ACP setup connection closed".into())),
+                None=>return Err(StartFailure::Failed(CalmError::Conflict("ACP setup connection closed".into()))),
             }
         }
     }
@@ -140,17 +162,17 @@ async fn finish_setup(
     client: &provider::acp::Client,
     incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
     result: std::result::Result<Value, provider::acp::Error>,
-) -> Result<Value> {
+) -> std::result::Result<Value, StartFailure> {
     // The transport delivered these frames before the response. Drain replay at this boundary,
     // even when select chooses the ready response before the incoming branch.
     while let Ok(frame) = incoming.try_recv() {
         if let Incoming::Request { id, method, .. } = frame {
             refuse(client, id, &method)
                 .await
-                .map_err(|error| CalmError::Conflict(error.to_string()))?;
+                .map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?;
         }
     }
-    result.map_err(|error| CalmError::Conflict(error.to_string()))
+    result.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))
 }
 
 #[cfg(test)]
@@ -158,6 +180,34 @@ mod setup_tests {
     use super::*;
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    #[tokio::test]
+    async fn m1_mapping_setup_native_errors_keep_ordinary_retry_policy() {
+        use provider::acp::Error;
+        for error in [
+            Error::Closed,
+            Error::Timeout,
+            Error::Protocol("invalid setup reply"),
+            Error::Remote {
+                code: -32602,
+                message: "native refusal".into(),
+                data: None,
+            },
+        ] {
+            let diagnostic = error.to_string();
+            let (kernel, _peer) = tokio::io::duplex(4096);
+            let (read, write) = tokio::io::split(kernel);
+            let mut connection = provider::acp::Connection::new(read, write);
+            let result =
+                finish_setup(&connection.client, &mut connection.incoming, Err(error)).await;
+            let outcome = super::super::start::start_result(result.map(|_| unreachable!()));
+            assert!(matches!(
+                crate::harness::backend::ordinary_start_result(outcome),
+                Err(crate::harness::backend::TurnStartFailure::Transient(CalmError::Conflict(message)))
+                    if message == diagnostic
+            ));
+        }
+    }
+
     #[tokio::test]
     async fn ready_setup_response_drains_prior_history_before_live_turn_installation() {
         let (kernel, peer) = tokio::io::duplex(4096);

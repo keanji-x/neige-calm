@@ -2,7 +2,8 @@
 use super::completed_commit_tests::Fixture;
 use super::*;
 use provider::control::{
-    CompactRequest, CompactSubmission, InterruptOutcome, SubmissionEvidence, TurnIdentity,
+    CompactRequest, CompactSubmission, EditPreparation, InterruptOutcome, NativeEditTarget,
+    SubmissionEvidence, TurnIdentity,
 };
 
 #[tokio::test]
@@ -279,6 +280,24 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
         )
         .await
         .unwrap();
+        if provider == AgentProvider::OpenCode {
+            assert!(matches!(
+                backend
+                    .prepare_rewind(
+                        "logical-thread",
+                        NativeEditTarget::BeforeTurn {
+                            before_turn_id: "turn".into()
+                        }
+                    )
+                    .await
+                    .unwrap(),
+                EditPreparation::Failed { error: CalmError::Conflict(message) } if message == "ACP history replacement is unsupported"
+            ));
+        } else {
+            assert!(
+                matches!(backend.native_edit_target("turn", None, None), Err(CalmError::Conflict(message)) if message == "the first message of a Claude conversation cannot be edited: Claude has nothing before it to go back to")
+            );
+        }
         assert!(!backend.supports_steer());
         let identity = backend.turn_identity("local-turn".into());
         assert_eq!(

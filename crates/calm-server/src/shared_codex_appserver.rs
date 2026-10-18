@@ -1055,11 +1055,30 @@ impl SharedCodexAppServer {
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
-        self.require_authentication()?;
+        self.turn_start_control(
+            thread_id,
+            items,
+            selection,
+            approvals,
+            client_user_message_id,
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    pub(crate) async fn turn_start_control(
+        &self,
+        thread_id: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        approvals: TurnApprovals,
+        client_user_message_id: Option<&str>,
+    ) -> std::result::Result<TurnId, control::StartError> {
+        self.require_start_authentication()?;
         if self.thread_seals.is_sealed(thread_id) {
-            return Err(CalmError::Conflict(format!(
+            return Err(control::StartError::Host(CalmError::Conflict(format!(
                 "thread {thread_id} is sealed because its track is being deleted"
-            )));
+            ))));
         }
         if !self.thread_cache.contains_key(thread_id) {
             tracing::warn!(
@@ -1072,14 +1091,14 @@ impl SharedCodexAppServer {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.reject_turn_start.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexRefused(
+                return Err(control::StartError::Refused(CalmError::CodexRefused(
                     "turn/start failed: unknown model (code -32602)".into(),
-                ));
+                )));
             }
             if fake.fail_turn_start.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
+                return Err(control::StartError::Unanswered(CalmError::CodexAppServer(
                     "forced turn/start failure for test".into(),
-                ));
+                )));
             }
             fake.started_turns
                 .lock()
@@ -1116,16 +1135,19 @@ impl SharedCodexAppServer {
                 turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
             });
             if self.thread_seals.is_sealed(thread_id) {
-                self.turn_interrupt(thread_id, &turn_id).await?;
+                provider::codex::interrupt_result(
+                    self.interrupt_control(thread_id, &turn_id).await,
+                )?;
                 self.active_turns
                     .remove_if(thread_id, |_, active| active == &turn_id);
-                return Err(CalmError::Conflict(format!(
+                return Err(control::StartError::Host(CalmError::Conflict(format!(
                     "thread {thread_id} was sealed while turn/start was in flight"
-                )));
+                ))));
             }
             return Ok(turn_id);
         }
-        let client = self.authenticated_client().await?;
+        let client = self.connected_client().await?;
+        self.require_start_authentication()?;
         let turn = client
             .turn_start_with_client_id(
                 thread_id,
@@ -1135,19 +1157,20 @@ impl SharedCodexAppServer {
                 client_user_message_id,
             )
             .await?;
-        let turn_id = turn
-            .turn_id()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| CalmError::CodexAppServer("turn/start returned no turn.id".into()))?;
+        let turn_id = turn.turn_id().map(ToOwned::to_owned).ok_or_else(|| {
+            control::StartError::Unanswered(CalmError::CodexAppServer(
+                "turn/start returned no turn.id".into(),
+            ))
+        })?;
         self.active_turns
             .insert(thread_id.to_string(), turn_id.clone());
         if self.thread_seals.is_sealed(thread_id) {
-            self.turn_interrupt(thread_id, &turn_id).await?;
+            provider::codex::interrupt_result(self.interrupt_control(thread_id, &turn_id).await)?;
             self.active_turns
                 .remove_if(thread_id, |_, active| active == &turn_id);
-            return Err(CalmError::Conflict(format!(
+            return Err(control::StartError::Host(CalmError::Conflict(format!(
                 "thread {thread_id} was sealed while turn/start was in flight"
-            )));
+            ))));
         }
         Ok(turn_id)
     }
@@ -1434,12 +1457,16 @@ impl SharedCodexAppServer {
 
     /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
     /// like `turn/start`; the active-turn cache loses only an entry naming the reverted turn.
-    pub async fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<()> {
+    pub async fn thread_revert(
+        &self,
+        thread_id: &str,
+        before_turn_id: &str,
+    ) -> std::result::Result<(), control::StartError> {
         self.require_authentication()?;
         if self.thread_seals.is_sealed(thread_id) {
-            return Err(CalmError::Conflict(format!(
+            return Err(control::StartError::Host(CalmError::Conflict(format!(
                 "thread {thread_id} is sealed because its track is being deleted"
-            )));
+            ))));
         }
         #[cfg(feature = "fixtures")]
         let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> =
@@ -1542,6 +1569,16 @@ impl SharedCodexAppServer {
         thread_id: &str,
         turn_id: &str,
     ) -> provider::control::InterruptOutcome<CalmError> {
+        self.interrupt_control(thread_id, turn_id)
+            .await
+            .map_error(Into::into)
+    }
+
+    async fn interrupt_control(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> provider::control::InterruptOutcome<control::StartError> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             fake.interrupted_turns
@@ -1559,7 +1596,9 @@ impl SharedCodexAppServer {
             }
             if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
                 return provider::control::InterruptOutcome::Unconfirmed {
-                    error: CalmError::CodexAppServer("fixture: turn/interrupt failed".into()),
+                    error: control::StartError::Unanswered(CalmError::CodexAppServer(
+                        "fixture: turn/interrupt failed".into(),
+                    )),
                     evidence: provider::control::SubmissionEvidence::Unobserved,
                 };
             }
@@ -1643,18 +1682,29 @@ impl SharedCodexAppServer {
         });
     }
 
-    fn require_authentication(&self) -> std::result::Result<(), ControlError> {
+    fn require_start_authentication(&self) -> std::result::Result<(), control::StartError> {
         if let Some(reader) = self.authentication_hold() {
             if self.authentication_failed() {
-                return Err(ControlError::Refused(CalmError::CodexRefused(
-                    crate::codex_authentication::SIGN_IN_REFUSAL.into(),
-                )));
+                return Err(control::StartError::RecoveryRequired(
+                    CalmError::CodexRefused(crate::codex_authentication::SIGN_IN_REFUSAL.into()),
+                ));
             }
-            return Err(ControlError::Unanswered(CalmError::ServiceUnavailable(
+            return Err(control::StartError::Host(CalmError::ServiceUnavailable(
                 reader,
             )));
         }
         Ok(())
+    }
+
+    fn require_authentication(&self) -> std::result::Result<(), ControlError> {
+        self.require_start_authentication()
+            .map_err(|error| match error {
+                control::StartError::Refused(error)
+                | control::StartError::RecoveryRequired(error) => ControlError::Refused(error),
+                control::StartError::Host(error) | control::StartError::Unanswered(error) => {
+                    ControlError::Unanswered(error)
+                }
+            })
     }
 
     pub fn request_authentication_retry(&self, expected_revision: &str) -> Result<String> {

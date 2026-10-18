@@ -99,13 +99,14 @@ fn submission_result(result: Result<String, SpawnFailure>) -> CompactSubmission<
         }
         Err(spawn) => spawn,
     };
-    let error = match spawn.failure {
+    let (failure, line_sent) = spawn.into_legacy();
+    let error = match failure {
         TurnStartFailure::Refused { error, .. } => refused(error),
         TurnStartFailure::Transient(error) | TurnStartFailure::AwaitingRecovery { error, .. } => {
             error
         }
     };
-    if spawn.line_sent {
+    if line_sent {
         CompactSubmission::Unconfirmed {
             error,
             evidence: SubmissionEvidence::WriteMayHaveReachedPeer,
@@ -145,7 +146,19 @@ mod tests {
                         reader: "intentionally discarded compact reader".into(),
                     },
                 };
-                let outcome = submission_result(Err(SpawnFailure { failure, line_sent }));
+                let spawn = if line_sent {
+                    // Only transport failure can occur at the user-line write.
+                    if kind != "transient" {
+                        continue;
+                    }
+                    SpawnFailure::Failed {
+                        error: CalmError::ServiceUnavailable("original diagnostic".into()),
+                        line_sent,
+                    }
+                } else {
+                    SpawnFailure::Host(failure)
+                };
+                let outcome = submission_result(Err(spawn));
                 let error = match outcome {
                     CompactSubmission::Unconfirmed { error, evidence } => {
                         assert!(line_sent, "{kind}");
