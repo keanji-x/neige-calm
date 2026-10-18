@@ -75,16 +75,16 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     tag = "cards",
     params(
         ("id" = String, Path, description = "Harness conversation card id"),
-        ("Idempotency-Key" = String, Header, description = "Required original message key, at most 128 visible ASCII bytes. The selected conversation contract binds the original request and acknowledgement; canonical receipts additionally bind the verified author."),
+        ("Idempotency-Key" = String, Header, description = "Required immutable key (1–128 visible ASCII bytes); canonical bindings include the verified author."),
     ),
     request_body = SendPlannerInputRequest,
     responses(
-        (status = 200, description = "Input committed under its persisted conversation contract, or its original acknowledgement replayed after current source/resource authorization. Canonical acceptance survives native wake failure. Historical input retains its original lazy start, queue entry and acknowledgement semantics.", body = SendPlannerInputResponse),
+        (status = 200, description = "Input saved or its original receipt replayed after current authorization; execution may remain pending.", body = SendPlannerInputResponse),
         (status = 400, description = "Invalid text/request or missing/invalid Idempotency-Key (idempotency_key_invalid)", body = ErrorBody),
         (status = 401, description = "A verified current Human session source is required; invalid or revoked sessions are refused", body = ErrorBody),
-        (status = 403, description = "Canonical content requires registered current Area collaboration access. Historical public input additionally requires the deployment owner and its existing Private resources, including before key replay", body = ErrorBody),
+        (status = 403, description = "Area collaboration required; historical input also requires deployment-owner Private-resource access.", body = ErrorBody),
         (status = 404, description = "Conversation or its owning Area was not found", body = ErrorBody),
-        (status = 409, description = "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses unsupported canonical attachments/history replacement or a missing canonical carrier; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.", body = ErrorBody),
+        (status = 409, description = "Key conflict or unsupported input; no new message accepted. Reconcile uncertain outcomes with the original key.", body = ErrorBody),
         (status = 500, description = "Internal storage or response error; reconcile an uncertain outcome with the original key", body = ErrorBody),
     ),
 )]

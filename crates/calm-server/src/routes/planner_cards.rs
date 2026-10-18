@@ -301,7 +301,7 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
         (status = 401, description = "Canonical Stop requires a current verified Human source", body = ErrorBody),
         (status = 403, description = "Planner card and current Area/private execution access required", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "No live session, changed original execution, or canonical issuance has no confirmed native target; retry Stop once the original turn is running. This refuses new control effects.", body = ErrorBody),
+        (status = 409, description = "No current native target or original execution changed. Retry Stop once the original turn is running.", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -394,7 +394,7 @@ pub(crate) async fn interrupt_planner_card(
     tag = "cards",
     params(("id" = String, Path, description = "Planner card id"), super::conversation_run::RunReadQuery),
     responses(
-        (status = 200, description = "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = super::conversation_run::PlannerRunReadResponse),
+        (status = 200, description = "Current run; worker_session_id and phase are null when dormant.", body = super::conversation_run::PlannerRunReadResponse),
         (status = 401, description = "Verified session required", body = ErrorBody),
         (status = 409, description = "Canonical read requires conversation_v1", body = ErrorBody),
         (status = 403, description = "Current Area access or Planner shape refused", body = ErrorBody),

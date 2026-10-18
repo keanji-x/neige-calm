@@ -636,8 +636,14 @@ async fn historical_daily_start_rechecks_its_real_source_after_the_start_wait() 
             .unwrap(),
         StatusCode::UNAUTHORIZED
     );
-    let effects: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM worker_sessions WHERE card_id=?1),(SELECT count(*) FROM planner_input_idempotency WHERE card_id=?1)")
-        .bind(&card).fetch_one(fixture.repo.pool()).await.unwrap();
+    let effects: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM worker_sessions WHERE card_id=?1),
+                (SELECT count(*) FROM planner_input_idempotency WHERE card_id=?1)",
+    )
+    .bind(&card)
+    .fetch_one(fixture.repo.pool())
+    .await
+    .unwrap();
     assert_eq!(
         effects,
         (0, 0),

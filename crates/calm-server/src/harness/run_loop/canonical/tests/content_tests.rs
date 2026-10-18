@@ -270,9 +270,17 @@ async fn canonical_erased_native_reply_cannot_leave_a_raw_body_on_late_repeat() 
     // Declare the existing presentation erasure owner's identity-only tombstone,
     // as its storage tests do. No synthetic END, delivery or runtime transition.
     let mut tx = begin_immediate_tx(fx.original.repo.pool()).await.unwrap();
-    let changed = sqlx::query("UPDATE conversation_presentations SET erased_by_operation_id=?1,native_item_row_id=NULL WHERE card_id=?2 AND native_item_row_id=?3")
-        .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").bind(fx.harness.inner.card_id.as_str()).bind(row)
-        .execute(&mut *tx).await.unwrap();
+    let changed = sqlx::query(
+        "UPDATE conversation_presentations
+         SET erased_by_operation_id=?1,native_item_row_id=NULL
+         WHERE card_id=?2 AND native_item_row_id=?3",
+    )
+    .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    .bind(fx.harness.inner.card_id.as_str())
+    .bind(row)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     assert_eq!(changed.rows_affected(), 1);
     sqlx::query("DELETE FROM harness_items WHERE id=?1")
         .bind(row)
