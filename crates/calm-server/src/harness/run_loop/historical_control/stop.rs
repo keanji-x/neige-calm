@@ -1,6 +1,7 @@
 //! Frozen historical Stop target and commit-before-publish transition. The
 //! existing interrupt state, deadline and native effect have one implementation.
 use super::*;
+use crate::operation::planner_harness_interrupt_adapter::HistoricalInterruptReceipt;
 use crate::session_projection_repo::WorkerSessionProjection;
 use calm_types::harness::{HarnessControlIntent, HarnessInterruptionIntent, HarnessStopRequest};
 
@@ -257,17 +258,15 @@ impl PlannerHarness {
     /// substituted for a missing or completed original target.
     pub(crate) async fn interrupt_original_receipt(
         &self,
-        runtime: &WorkerSessionProjection,
-        reason: String,
-        requested_at_ms: i64,
+        receipt: HistoricalInterruptReceipt,
     ) -> Result<()> {
         self.inner.historical_queue()?;
         let plan = PreparedStop::from_runtime(
             &self.inner,
-            runtime,
+            receipt.runtime(),
             Requester::CommittedLegacy,
-            reason,
-            requested_at_ms,
+            receipt.reason().to_owned(),
+            receipt.requested_at_ms(),
         )?
         .ok_or_else(|| {
             CalmError::Conflict("old interruption has no original running target".into())

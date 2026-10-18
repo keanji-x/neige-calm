@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
+use crate::session_projection_repo::WorkerSessionProjection;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, PhaseTag, ProviderAdapter,
@@ -35,6 +36,28 @@ pub struct PlannerHarnessInterruptOperationPayload {
     #[serde(rename = "runtime_id")]
     pub worker_session_id: String,
     pub reason: String,
+}
+
+/// The original operation decoder alone can bind a released prepared promise.
+/// It is not deserializable and exposes no constructor for projection callers.
+pub(crate) struct HistoricalInterruptReceipt {
+    original: WorkerSessionProjection,
+    reason: String,
+    requested_at_ms: i64,
+}
+
+impl HistoricalInterruptReceipt {
+    pub(crate) fn runtime(&self) -> &WorkerSessionProjection {
+        &self.original
+    }
+
+    pub(crate) fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    pub(crate) fn requested_at_ms(&self) -> i64 {
+        self.requested_at_ms
+    }
 }
 
 #[async_trait]
@@ -93,19 +116,12 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let (original, reason) = original_receipt(op, output)?;
+        let receipt = original_receipt(op, output, ctx).await?;
         let harness = self
             .harness_registry
-            .get(&original.id)
-            .ok_or_else(|| CalmError::NotFound(format!("harness {}", original.id)))?;
-        let requested_at_ms = super::repo_sqlite::original_request_created_at(
-            &ctx.operation_repo.sqlite_pool(),
-            &op.id,
-        )
-        .await?;
-        harness
-            .interrupt_original_receipt(&original, reason, requested_at_ms)
-            .await?;
+            .get(&receipt.runtime().id)
+            .ok_or_else(|| CalmError::NotFound(format!("harness {}", receipt.runtime().id)))?;
+        harness.interrupt_original_receipt(receipt).await?;
         Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
 
@@ -138,18 +154,16 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
 /// Lifetime decoder for the released operation's mutually bound original facts.
 /// New callers cannot create this receipt; missing or contradictory old values
 /// are held rather than interpreted as a new current-target request.
-fn original_receipt(
+async fn original_receipt(
     op: &Operation,
     output: &TxOutput,
-) -> Result<(
-    crate::session_projection_repo::WorkerSessionProjection,
-    String,
-)> {
+    ctx: &SpawnCtx,
+) -> Result<HistoricalInterruptReceipt> {
     let payload: PlannerHarnessInterruptOperationPayload =
         serde_json::from_value(op.payload.clone())?;
     let runtime = output.output_string("runtime_id", "planner harness")?;
     let reason = output.output_string("reason", "planner harness")?;
-    let original: crate::session_projection_repo::WorkerSessionProjection =
+    let original: WorkerSessionProjection =
         serde_json::from_value(output.result.clone()).map_err(|_| {
             CalmError::Conflict("old interruption has no valid original runtime receipt".into())
         })?;
@@ -168,5 +182,12 @@ fn original_receipt(
             "old interruption receipt contradicts its original request or target".into(),
         ));
     }
-    Ok((original, reason))
+    let requested_at_ms =
+        super::repo_sqlite::original_request_created_at(&ctx.operation_repo.sqlite_pool(), &op.id)
+            .await?;
+    Ok(HistoricalInterruptReceipt {
+        original,
+        reason,
+        requested_at_ms,
+    })
 }
