@@ -10,7 +10,6 @@ use crate::harness::token_usage::TokenUsageExt;
 use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
 use crate::ids::CardId;
 use crate::model::{Card, CardRole, Track, new_id};
-use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptOperationPayload;
 use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOperationPayload;
 use crate::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload,
@@ -337,7 +336,7 @@ pub(crate) async fn interrupt_planner_card(
         crate::conversation_inputs::has_canonical_storage(s.repo.as_ref(), card.id.as_str())
             .await?;
     let canonical_source = if canonical {
-        let source = source.ok_or(CalmError::Unauthorized)?.0;
+        let source = source.as_ref().ok_or(CalmError::Unauthorized)?.0.clone();
         let (card, source_for_check) = (card.id.to_string(), source.clone());
         crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
             Box::pin(async move {
@@ -352,30 +351,30 @@ pub(crate) async fn interrupt_planner_card(
     } else {
         None
     };
-    let phase = harness.runtime_header().await?.phase;
-    // Dispatch for IssuingTurn too (best-effort), but only TurnRunning reports `stopped: true`.
-    let dispatch = matches!(
-        phase,
-        HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
-    );
-    let stopped = matches!(phase, HarnessPhaseTag::TurnRunning);
-    if dispatch {
-        if let Some(source) = canonical_source {
+    let stopped = if let Some(source) = canonical_source {
+        let phase = harness.runtime_header().await?.phase;
+        if matches!(
+            phase,
+            HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingTurn
+        ) {
             harness.stop_canonical(source).await?;
+            true
         } else {
-            let payload = serde_json::to_value(PlannerHarnessInterruptOperationPayload {
-                worker_session_id: runtime.id.clone(),
-                reason: "user_stop".into(),
-            })?;
-            run_planner_card_operation(&s, "planner-harness-interrupt", payload).await?;
+            false
         }
-    }
+    } else {
+        let source = source.ok_or(CalmError::Unauthorized)?.0;
+        harness
+            .stop_historical(crate::conversation_inputs::HistoricalHumanSource::new(
+                source,
+            ))
+            .await?
+    };
 
     tracing::info!(
         actor = %actor.as_str(),
         card_id = %card.id,
         runtime_id = %runtime.id,
-        ?phase,
         stopped,
         "planner harness user stop requested"
     );

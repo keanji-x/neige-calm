@@ -21,6 +21,28 @@ pub(crate) struct ControlAttemptReport {
 }
 
 impl ControlAttemptReport {
+    pub(super) fn not_dispatched(error: CalmError) -> Self {
+        Self {
+            delivery: ControlDelivery::NotDispatched,
+            outcome: Err(error),
+        }
+    }
+    pub(super) fn from_native(native: crate::shared_codex_appserver::CodexPromptReport) -> Self {
+        let delivery = match native.delivery() {
+            CodexPromptDelivery::NotDispatched => ControlDelivery::NotDispatched,
+            CodexPromptDelivery::Unknown => ControlDelivery::Unknown,
+            CodexPromptDelivery::Accepted { turn_id } => ControlDelivery::Accepted {
+                native_turn_id: turn_id.clone(),
+            },
+        };
+        Self {
+            delivery,
+            outcome: native.into_outcome(),
+        }
+    }
+    pub(crate) fn into_outcome(self) -> Result<TurnId> {
+        self.outcome
+    }
     pub(crate) fn delivery(&self) -> &ControlDelivery {
         &self.delivery
     }
@@ -81,17 +103,7 @@ impl PlannerBackend {
                 admission,
             )
             .await;
-        let delivery = match native.delivery() {
-            CodexPromptDelivery::NotDispatched => ControlDelivery::NotDispatched,
-            CodexPromptDelivery::Unknown => ControlDelivery::Unknown,
-            CodexPromptDelivery::Accepted { turn_id } => ControlDelivery::Accepted {
-                native_turn_id: turn_id.clone(),
-            },
-        };
-        ControlAttemptReport {
-            delivery,
-            outcome: native.into_outcome(),
-        }
+        ControlAttemptReport::from_native(native)
     }
 
     pub(crate) async fn interrupt_execution(

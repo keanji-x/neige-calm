@@ -4,7 +4,7 @@
 //! [`PlannerBackend`], including model resolution and shutdown. The deletion seals are not a
 //! provider's: they live in the shared [`ThreadSeals`].
 //!
-//! `client_id` on [`PlannerBackend::turn_start`] and [`PlannerBackend::turn_steer`] is the
+//! `client_id` on [`PlannerBackend::turn_start`] and [`PlannerBackend::steer_pending_input`] is the
 //! projection row's key; codex hands it back as `item.clientId`.
 
 use std::sync::Arc;
@@ -376,22 +376,30 @@ impl PlannerBackend {
         }
     }
 
-    pub async fn turn_steer(
+    pub(crate) async fn steer_pending_input(
         &self,
         thread_id: &str,
         expected_turn_id: &str,
         items: Vec<InputItem>,
         client_id: &str,
-    ) -> Result<TurnId> {
+        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+    ) -> budget_control::ControlAttemptReport {
         match &self.0 {
-            Arm::Codex(daemon, _) => {
+            Arm::Codex(daemon, _) => budget_control::ControlAttemptReport::from_native(
                 daemon
-                    .turn_steer(thread_id, expected_turn_id, items, Some(client_id))
-                    .await
-            }
-            Arm::Claude(_) | Arm::Acp(_) => Err(CalmError::Internal(
-                "a Claude Planner cannot steer; the run loop checks supports_steer first".into(),
-            )),
+                    .turn_steer_report(
+                        thread_id,
+                        expected_turn_id,
+                        items,
+                        Some(client_id),
+                        crate::shared_codex_appserver::NativeSteer::Legacy,
+                        admission,
+                    )
+                    .await,
+            ),
+            Arm::Claude(_) | Arm::Acp(_) => budget_control::ControlAttemptReport::not_dispatched(
+                CalmError::Internal("this provider does not support steering".into()),
+            ),
         }
     }
 

@@ -32,6 +32,17 @@ pub(crate) use writes::{
 #[cfg(test)]
 mod claim_tests;
 
+/// Immutable request clock for lifetime servicing of an old prepared control.
+/// The original operation row is the only source; recovery does not invent it.
+pub(super) async fn original_request_created_at(pool: &SqlitePool, id: &str) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT created_at_ms FROM operations WHERE id=?1")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    )
+}
+
 #[derive(Clone)]
 pub struct SqlxOperationRepo {
     pub(super) pool: SqlitePool,

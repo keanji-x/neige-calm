@@ -48,6 +48,7 @@ use crate::track_vcs;
 
 mod canonical;
 mod content_observer;
+mod historical_control;
 mod input_contract;
 pub use input_contract::HarnessRuntimeSnapshot;
 use input_contract::{LoadedRuntimeSnapshot, RuntimeInputs, RuntimeSnapshotKind};
@@ -343,6 +344,10 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    HistoricalInterrupt {
+        plan: Box<historical_control::stop::PreparedStop>,
+        answer: oneshot::Sender<Result<bool>>,
+    },
     CanonicalInterrupt {
         target: crate::harness::backend::ExecutionEndTarget,
         source: crate::auth::HumanInputSource,
@@ -379,6 +384,7 @@ enum HarnessObservationCommand {
     /// so it never runs part-way through a tick; the delete-vs-drain atomicity itself comes from
     /// `queue::apply_mutation` doing its whole compare-and-swap under one queue-lock hold.
     Mutate {
+        admission: historical_control::Admission,
         mutation: QueueMutation,
         actor: ActorId,
         applied: oneshot::Sender<Result<MutationResult>>,
@@ -387,6 +393,7 @@ enum HarnessObservationCommand {
     /// queue lock rules out double delivery; awaiting `turn/steer` inside this arm orders the steer
     /// with the completion, so the `TurnCompleted` sweep always sees an accepted entry registered.
     Steer {
+        admission: historical_control::Admission,
         entry_id: QueueEntryId,
         if_entry_rev: u32,
         actor: ActorId,
@@ -776,82 +783,6 @@ impl PlannerHarness {
                     return Err(error);
                 }
                 Ok(ack)
-            }
-        }
-    }
-
-    /// Edit or delete one queue entry from the REST write port. Outer `Result` is transport; inner
-    /// [`MutationResult`] is the queue's own answer.
-    pub async fn mutate_pending_entry(
-        &self,
-        mutation: QueueMutation,
-        actor: ActorId,
-    ) -> Result<MutationResult> {
-        self.inner.historical_queue()?;
-        // Deliberately NOT taking `durable_observation`.
-        if self.inner.shutting_down.load(Ordering::SeqCst) {
-            return Err(CalmError::Conflict(
-                "planner harness is shutting down; refusing queue mutation".into(),
-            ));
-        }
-        match &self.inner.observations {
-            ObservationIngress::Running(sender) => {
-                let (applied, answer) = oneshot::channel();
-                sender
-                    .try_send(HarnessObservationCommand::Mutate {
-                        mutation,
-                        actor,
-                        applied,
-                    })
-                    .map_err(map_observation_send_error)?;
-                answer.await.map_err(|_| {
-                    CalmError::Conflict(
-                        "planner harness runtime shut down before the queue mutation was applied"
-                            .into(),
-                    )
-                })?
-            }
-            #[cfg(feature = "fixtures")]
-            ObservationIngress::Unstarted(_) => {
-                handle_queue_mutation(&self.inner, &mutation, &actor).await
-            }
-        }
-    }
-
-    /// Send one queued entry into the running turn from the REST write port. Every inner refusal
-    /// leaves the entry queued under the id and rev the client read.
-    pub async fn steer_pending_entry(
-        &self,
-        entry_id: QueueEntryId,
-        if_entry_rev: u32,
-        actor: ActorId,
-    ) -> Result<SteerResult> {
-        self.inner.historical_queue()?;
-        if self.inner.shutting_down.load(Ordering::SeqCst) {
-            return Err(CalmError::Conflict(
-                "planner harness is shutting down; refusing to steer".into(),
-            ));
-        }
-        match &self.inner.observations {
-            ObservationIngress::Running(sender) => {
-                let (applied, answer) = oneshot::channel();
-                sender
-                    .try_send(HarnessObservationCommand::Steer {
-                        entry_id,
-                        if_entry_rev,
-                        actor,
-                        applied,
-                    })
-                    .map_err(map_observation_send_error)?;
-                answer.await.map_err(|_| {
-                    CalmError::Conflict(
-                        "planner harness runtime shut down before the steer was answered".into(),
-                    )
-                })?
-            }
-            #[cfg(feature = "fixtures")]
-            ObservationIngress::Unstarted(_) => {
-                handle_steer(&self.inner, &entry_id, if_entry_rev, &actor).await
             }
         }
     }
@@ -1617,6 +1548,9 @@ async fn run_loop(
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
+                    HarnessObservationCommand::HistoricalInterrupt { plan, answer } => {
+                        historical_control::stop::handle(&inner, *plan, answer).await;
+                    }
                     HarnessObservationCommand::CanonicalInterrupt { target, source, answer } => {
                         canonical::control::manual(&inner, target, source, answer).await;
                     }
@@ -1684,12 +1618,12 @@ async fn run_loop(
                     HarnessObservationCommand::InspectInput { entry_id, answer } => {
                         let _ = answer.send(input_inspection::inspect(&inner, &entry_id).await);
                     }
-                    HarnessObservationCommand::Mutate { mutation, actor, applied } => {
-                        let outcome = handle_queue_mutation(&inner, &mutation, &actor).await;
+                    HarnessObservationCommand::Mutate { admission, mutation, actor, applied } => {
+                        let outcome = handle_queue_mutation(&inner, &mutation, &actor, &admission).await;
                         let _ = applied.send(outcome);
                     }
-                    HarnessObservationCommand::Steer { entry_id, if_entry_rev, actor, applied } => {
-                        let outcome = handle_steer(&inner, &entry_id, if_entry_rev, &actor).await;
+                    HarnessObservationCommand::Steer { admission, entry_id, if_entry_rev, actor, applied } => {
+                        let outcome = handle_steer(&inner, &entry_id, if_entry_rev, &actor, &admission).await;
                         let _ = applied.send(outcome);
                     }
                     HarnessObservationCommand::Replace { turn_id, delivery, key, source, answer } => {
@@ -1768,7 +1702,9 @@ async fn handle_queue_mutation(
     inner: &Arc<Inner>,
     mutation: &QueueMutation,
     actor: &ActorId,
+    admission: &historical_control::Admission,
 ) -> Result<MutationResult> {
+    admission.require(inner).await?;
     if matches!(mutation, QueueMutation::Steer { .. }) {
         return Err(CalmError::Internal(
             "a steer is not a queue mutation: it goes through steer_pending_entry, which \
@@ -1776,11 +1712,8 @@ async fn handle_queue_mutation(
                 .into(),
         ));
     }
-    let (outcome, checkpoint) = {
-        let mut queue = inner.historical_queue()?.lock().await;
-        let before = queue.clone();
-        (apply_mutation(&mut queue, mutation), before)
-    };
+    let checkpoint = checkpoint_durable_user_message(inner).await?;
+    let outcome = apply_mutation(&mut *inner.historical_queue()?.lock().await, mutation);
     let applied = match outcome {
         Ok(applied) => applied,
         // A refusal changed nothing; a 404 does NOT mean the entry was delivered (`rebuffer_head`
@@ -1792,9 +1725,8 @@ async fn handle_queue_mutation(
         rearm_debounce_after_departure(inner, &applied).await;
     }
 
-    if let Err(error) = persist_snapshot(inner).await {
-        // Memory is rolled back to the exact queue the mutation started from.
-        *inner.historical_queue()?.lock().await = checkpoint;
+    if let Err(error) = historical_control::persist_mutation(inner, admission).await {
+        restore_durable_user_message(inner, checkpoint).await?;
         return Err(error);
     }
 
@@ -1831,7 +1763,10 @@ async fn handle_steer(
     entry_id: &QueueEntryId,
     if_entry_rev: u32,
     actor: &ActorId,
+    admission: &historical_control::Admission,
 ) -> Result<SteerResult> {
+    admission.require(inner).await?;
+    let checkpoint = checkpoint_durable_user_message(inner).await?;
     // Read on this task: the phase leaves `TurnRunning` through the notification arm of the same
     // `select!`; a Stop landing after codex accepted is what `SteeredEntry` exists for.
     let running = inner.state.lock().await.clone();
@@ -1904,10 +1839,22 @@ async fn handle_steer(
         entry_id = %entry_id,
         "calling backend.turn_steer"
     );
-    let steered = inner
+    let report = inner
         .backend
-        .turn_steer(&thread_id, &turn_id, items, entry_id.as_str())
+        .steer_pending_input(&thread_id, &turn_id, items, entry_id.as_str(), &|| {
+            Box::pin(admission.require(inner))
+        })
         .await;
+    if matches!(
+        report.delivery(),
+        crate::harness::backend::ControlDelivery::NotDispatched
+    ) {
+        restore_durable_user_message(inner, checkpoint).await?;
+        return report
+            .into_outcome()
+            .map(|_| unreachable!("undispatched report cannot accept input"));
+    }
+    let steered = report.into_outcome();
     let error = match steered {
         Ok(taken_by) => {
             // Codex has the sentence. A failed row write is logged rather than reported: the delivery has
@@ -4179,12 +4126,12 @@ async fn issue_interrupt_for_turn(
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         return Ok(());
     };
-    {
-        let mut state = inner.state.lock().await;
+    let intent = {
+        let state = inner.state.lock().await;
         if matches!(*state, HarnessState::Wedged { .. }) {
             return Ok(());
         }
-        *inner.issued_turn_id.lock().await = None;
+        let mut intent = inner.interruption_intent.lock().await.clone();
         if reason == "max_turn_duration" {
             use calm_types::harness::{
                 HarnessInterruptionIntent, HarnessInterruptionReason, HarnessTimeoutIntent,
@@ -4216,40 +4163,25 @@ async fn issue_interrupt_for_turn(
                         .try_into()
                         .expect("budget fits u64"),
                 };
-                *inner.interruption_intent.lock().await = Some(
-                    HarnessInterruptionIntent::Versioned(HarnessTimeoutIntent::V1(request)),
-                );
+                intent = Some(HarnessInterruptionIntent::Versioned(
+                    HarnessTimeoutIntent::V1(request),
+                ));
             }
         } else {
             // A later manual stop supersedes any earlier unconfirmed timeout request.
-            *inner.interruption_intent.lock().await = None;
+            intent = None;
         }
-        *state = HarnessState::Issuing {
-            since: Instant::now(),
-            kind: IssuingKind::Interrupt {
-                target_turn_id: target_turn_id.clone(),
-                reason: reason.clone(),
-            },
-        };
-    }
-    *inner.interrupt_deadline.lock().await = Some((
-        target_turn_id.clone(),
-        Instant::now() + inner.config.interrupt_completion_budget,
-    ));
+        intent
+    };
+    historical_control::stop::adopt_interrupt(
+        inner,
+        historical_control::stop::interrupt_state(&target_turn_id, &reason),
+        intent,
+        &target_turn_id,
+    )
+    .await;
     persist_snapshot(inner).await?;
-    if let Err(e) = inner
-        .backend
-        .turn_interrupt(&thread_id, &target_turn_id)
-        .await
-    {
-        tracing::warn!(
-            thread_id,
-            turn_id = %target_turn_id,
-            reason,
-            error = %e,
-            "planner harness turn/interrupt failed; interrupt timeout watchdog remains armed"
-        );
-    }
+    historical_control::stop::dispatch_interrupt(inner, &thread_id, &target_turn_id, &reason).await;
     Ok(())
 }
 
@@ -4438,7 +4370,9 @@ async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> 
 }
 
 async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
-    persist_snapshot_inner(inner, None, None).await.map(|_| ())
+    persist_snapshot_inner(inner, historical_control::SnapshotWrite::Kernel(None))
+        .await
+        .map(|_| ())
 }
 
 /// Persist a durable user send, and REFUSE it if the row was not written: the writer matches
@@ -4452,7 +4386,7 @@ async fn persist_snapshot_for_durable_send(
 ) -> Result<()> {
     let mut bind = DurableSendBinding::new(inner, key, entry_id);
     bind.source = source;
-    if persist_snapshot_inner(inner, None, Some(bind)).await? {
+    if persist_snapshot_inner(inner, historical_control::SnapshotWrite::Send(bind)).await? {
         return Ok(());
     }
     Err(CalmError::PlannerHarnessRuntimeSuperseded(
@@ -4462,7 +4396,11 @@ async fn persist_snapshot_for_durable_send(
 
 async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()> {
     let issued_head = inner.issued_turn_head.lock().await.clone();
-    let _written = persist_snapshot_inner(inner, issued_head.clone(), None).await?;
+    let _written = persist_snapshot_inner(
+        inner,
+        historical_control::SnapshotWrite::Kernel(issued_head.clone()),
+    )
+    .await?;
     if issued_head.is_some() {
         *inner.last_seen_head.lock().await = issued_head;
     }
@@ -4498,9 +4436,9 @@ impl DurableSendBinding {
 /// `send` is bound only when the row was written, in the same transaction.
 async fn persist_snapshot_inner(
     inner: &Arc<Inner>,
-    last_seen_head_override: Option<track_vcs::CommitHash>,
-    send: Option<DurableSendBinding>,
+    write: historical_control::SnapshotWrite,
 ) -> Result<bool> {
+    let (last_seen_head_override, send, admission, stop) = write.parts();
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
     }
@@ -4516,13 +4454,20 @@ async fn persist_snapshot_inner(
     }
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
-    if let Some(source) = send.as_ref().and_then(|send| send.source.as_ref()) {
-        source
-            .require_card(inner.repo.as_ref(), inner.card_id.as_str())
-            .await?;
+    if let Some(admission) = &admission {
+        admission.require(inner).await?;
+    }
+    if let Some(plan) = &stop {
+        plan.require(inner).await?;
     }
     flush_dropped_announcements(inner).await?;
-    let mut snapshot = snapshot_for(inner).await?;
+    let mut snapshot = if let Some(plan) = &stop {
+        let mut snapshot = snapshot_from_state(inner, plan.state()).await?;
+        snapshot.interruption_intent = Some(plan.intent());
+        snapshot
+    } else {
+        snapshot_for(inner).await?
+    };
     if let Some(head) = last_seen_head_override {
         snapshot.last_seen_head = Some(head);
         snapshot.issued_turn_head = None;
@@ -4536,7 +4481,10 @@ async fn persist_snapshot_inner(
         HarnessPhaseTag::Compacting => inner.state.lock().await.active_turn_id(),
         _ => None,
     };
-    let state_for_status = inner.state.lock().await.clone();
+    let state_for_status = stop
+        .as_ref()
+        .map(|plan| plan.state().clone())
+        .unwrap_or(inner.state.lock().await.clone());
     let status = run_status_for(&state_for_status);
     let new_phase = snapshot.phase;
     let snapshot_value = serde_json::to_value(snapshot)?;
@@ -4545,8 +4493,13 @@ async fn persist_snapshot_inner(
 
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            if let Some(source) = send.as_ref().and_then(|send| send.source.as_ref()) {
-                source.require_card_tx(tx, &bound_card_id).await?;
+            if let Some(admission) = &admission {
+                admission
+                    .require_tx(tx, &bound_card_id, &runtime_id)
+                    .await?;
+            }
+            if let Some(plan) = &stop {
+                plan.require_tx(tx).await?;
             }
             let written = crate::db::sqlite::session_set_handle_state_tx(
                 tx,

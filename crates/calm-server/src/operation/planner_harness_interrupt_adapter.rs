@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::db::sqlite::session_projection_by_id_tx;
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
 
@@ -59,7 +58,10 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
                 "interrupt reason must be at most {MAX_INTERRUPT_REASON_LEN} bytes"
             )));
         }
-        Ok(())
+        Err(CalmError::Conflict(
+            "new unbound interruption operations are unavailable; use the current control owner"
+                .into(),
+        ))
     }
 
     async fn prepare_tx<'tx>(
@@ -68,31 +70,12 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
         input: &Value,
         _op: &Operation,
     ) -> Result<TxOutput> {
-        let payload: PlannerHarnessInterruptOperationPayload =
-            serde_json::from_value(input.clone())?;
-        let runtime = session_projection_by_id_tx(tx, &payload.worker_session_id)
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("runtime {}", payload.worker_session_id)))?;
-        if self
-            .harness_registry
-            .get(&payload.worker_session_id)
-            .is_none()
-        {
-            return Err(CalmError::NotFound(format!(
-                "harness {}",
-                payload.worker_session_id
-            )));
-        }
-        let mut output = TxOutput::new(
-            "runtime",
-            Some(runtime.id.clone()),
-            serde_json::to_value(&runtime)?,
-        );
-        output.data = json!({
-            "runtime_id": runtime.id,
-            "reason": payload.reason,
-        });
-        Ok(output)
+        let _: PlannerHarnessInterruptOperationPayload = serde_json::from_value(input.clone())?;
+        let _ = tx;
+        Err(CalmError::Conflict(
+            "old pending interruption has no original target; refusing to select a later turn"
+                .into(),
+        ))
     }
 
     async fn app_server_interact(
@@ -107,8 +90,8 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
     async fn spawn_side_effect(
         &self,
         output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
+        op: &Operation,
+        ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let runtime_id = output.output_string("runtime_id", "planner harness")?;
         let reason = output.output_string("reason", "planner harness")?;
@@ -116,7 +99,26 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
             .harness_registry
             .get(&runtime_id)
             .ok_or_else(|| CalmError::NotFound(format!("harness {runtime_id}")))?;
-        harness.interrupt(reason).await?;
+        let original: crate::session_projection_repo::WorkerSessionProjection =
+            serde_json::from_value(output.result.clone()).map_err(|_| {
+                CalmError::Conflict("old interruption has no valid original runtime receipt".into())
+            })?;
+        if output.target_type != "runtime"
+            || output.target_id.as_deref() != Some(runtime_id.as_str())
+            || original.id != runtime_id
+        {
+            return Err(CalmError::Conflict(
+                "old interruption receipt target contradicts its original runtime".into(),
+            ));
+        }
+        let requested_at_ms = super::repo_sqlite::original_request_created_at(
+            &ctx.operation_repo.sqlite_pool(),
+            &op.id,
+        )
+        .await?;
+        harness
+            .interrupt_original_receipt(&original, reason, requested_at_ms)
+            .await?;
         Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
 

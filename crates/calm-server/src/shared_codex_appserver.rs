@@ -1273,28 +1273,6 @@ impl SharedCodexAppServer {
         &self.thread_seals
     }
 
-    /// `turn/steer` — hand `items` to the turn running on `thread_id`; codex refuses when
-    /// `expected_turn_id` is not the active turn (`CalmError::CodexRefused`). No seal check and
-    /// no `native_turns` write: a steer creates no turn.
-    pub async fn turn_steer(
-        &self,
-        thread_id: &str,
-        expected_turn_id: &str,
-        items: Vec<InputItem>,
-        client_user_message_id: Option<&str>,
-    ) -> Result<TurnId> {
-        self.turn_steer_report(
-            thread_id,
-            expected_turn_id,
-            items,
-            client_user_message_id,
-            NativeSteer::Legacy,
-            &|| Box::pin(async { Ok(()) }),
-        )
-        .await
-        .into_outcome()
-    }
-
     /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
     /// like `turn/start`; the active-turn cache loses only an entry naming the reverted turn.
     pub async fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<()> {
