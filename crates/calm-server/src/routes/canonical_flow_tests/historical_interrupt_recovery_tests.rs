@@ -93,6 +93,41 @@ async fn prepared_legacy_interrupt_restores_its_original_running_target() {
 }
 
 #[tokio::test]
+async fn prepared_legacy_interrupt_cannot_replace_another_accepted_stop_intent() {
+    let fx = HistoricalFixture::new(true).await;
+    let original = original_output(&fx).await;
+    let id = old_interrupt(&fx, Some(original)).await;
+    // The real later request is a different intent from this older promise.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    let stopped = post(
+        &fx.app,
+        &fx.cookie,
+        &format!("/api/cards/{}/planner/interrupt", fx.card),
+        "later-accepted-stop",
+        json!({}),
+    )
+    .await;
+    assert_eq!(stopped["stopped"], true);
+    let accepted = fx.harness.snapshot().await.unwrap();
+    let facts = fx.harness.historical_control_facts_for_test().await;
+    let before_native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    let outcome = drive(&fx, &id).await;
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_facts = fx.harness.historical_control_facts_for_test().await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert!(
+        !matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "an old promise cannot claim it committed a different accepted intent"
+    );
+    assert_eq!(accepted.phase, HarnessPhaseTag::IssuingInterrupt);
+    assert_eq!(after, accepted);
+    assert_eq!(after_facts, facts);
+    assert_eq!(native, before_native);
+    assert_eq!(native.len(), 1);
+}
+
+#[tokio::test]
 async fn prepared_legacy_interrupt_cannot_retarget_a_later_turn() {
     let fx = HistoricalFixture::new(true).await;
     let original = original_output(&fx).await;

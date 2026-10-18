@@ -617,3 +617,68 @@ async fn historical_stop_refuses_unconfirmed_issuance_without_claiming_acceptanc
     assert_eq!(after, before);
     assert!(native.is_empty());
 }
+
+async fn repeated_human_stop(selected_before_acceptance: bool) {
+    let fx = HistoricalFixture::new(true).await;
+    let uri = format!("/api/cards/{}/planner/interrupt", fx.card);
+    let pending = if selected_before_acceptance {
+        let pause = arm(&fx, test_seams::HISTORICAL_STOP_SELECTED);
+        let pending = tokio::spawn(perform(
+            fx.app.clone(),
+            fx.cookie.clone(),
+            "POST",
+            uri.clone(),
+            json!({}),
+        ));
+        entered(&pause).await;
+        Some((pending, pause))
+    } else {
+        None
+    };
+    let (first_status, first_body) = perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        uri.clone(),
+        json!({}),
+    )
+    .await;
+    let accepted = fx.harness.snapshot().await.unwrap();
+    let facts = fx.harness.historical_control_facts_for_test().await;
+    let first_native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    let (repeat_status, repeat_body) = if let Some((pending, pause)) = pending {
+        pause.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .expect("the already-selected request must settle")
+            .unwrap()
+    } else {
+        perform(fx.app.clone(), fx.cookie.clone(), "POST", uri, json!({})).await
+    };
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_facts = fx.harness.historical_control_facts_for_test().await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert_eq!(first_status, StatusCode::OK, "{first_body}");
+    assert_eq!(first_body["stopped"], true);
+    assert_eq!(accepted.phase, HarnessPhaseTag::IssuingInterrupt);
+    assert_eq!(first_native.len(), 1);
+    assert_eq!(repeat_status, StatusCode::OK, "{repeat_body}");
+    assert_eq!(repeat_body["stopped"], false);
+    assert_eq!(
+        after, accepted,
+        "the first accepted intent remains authoritative"
+    );
+    assert_eq!(after_facts, facts, "the original deadline is not extended");
+    assert_eq!(native, first_native, "ACK without END is not a new Stop");
+}
+
+#[tokio::test]
+async fn repeated_human_stop_preserves_the_accepted_intent_after_ack_without_end() {
+    repeated_human_stop(false).await;
+}
+
+#[tokio::test]
+async fn selected_human_stop_cannot_replace_an_intent_accepted_while_it_waited() {
+    repeated_human_stop(true).await;
+}
