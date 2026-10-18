@@ -157,15 +157,7 @@ async fn execution_qualification_unsupported_worktree_does_not_disable_external_
                 .request(ExecutionRequest::Prepare(request.clone()))
                 .await
                 .unwrap(),
-            ExecutionReply::ObjectQualificationFailed {
-                failure: ObjectQualificationFailure::Unsupported(
-                    ObjectQualificationUnsupported::Filesystem {
-                        role: ObjectRole::Root,
-                        magic: 0x01021994,
-                        ..
-                    }
-                )
-            }
+            ExecutionReply::Refused { reason } if reason == held.qualify_local().err().unwrap().to_string()
         ));
     }
     assert!(!unsupported.path().join("forbidden").exists());
@@ -227,14 +219,7 @@ async fn execution_qualification_each_git_role_requires_its_own_filesystem() {
             .request(ExecutionRequest::Prepare(request))
             .await
             .unwrap(),
-        ExecutionReply::ObjectQualificationFailed {
-            failure: ObjectQualificationFailure::Unsupported(
-                ObjectQualificationUnsupported::Filesystem {
-                    role: ObjectRole::GitDirectory,
-                    ..
-                }
-            )
-        }
+        ExecutionReply::Refused { reason } if reason == held.qualify_local().err().unwrap().to_string()
     ));
     assert!(!root.join("forbidden").exists());
 }

@@ -25,6 +25,9 @@ impl Executor {
                 .contains_key(&transfer.registration_id),
             "registration lease retired; immutable history cannot restore live objects"
         );
+        if let ExecutionRegistration::ExternalDir { directory_id, .. } = &registration {
+            self.private_directory_available(directory_id, None)?;
+        }
         let key = registration_key(&registration);
         let mut source_changed = false;
         {
@@ -116,6 +119,16 @@ impl Executor {
                 anyhow::bail!("resource still occupied by an old execution/ticket");
             }
         }
+        self.preparations
+            .reserve_attachment(&root.receipt.transfer)?;
+        anyhow::ensure!(
+            self.tombstones
+                .lock()
+                .map_err(poison)?
+                .values()
+                .all(|t| t.registration.as_ref() != Some(&root.receipt.id)),
+            "registration identity belongs to an execution tombstone"
+        );
         // Reserve validated source facts before IO: a failed fsync may already have published
         // this immutable receipt. Exact retries keep the claim, without creating a live lease.
         self.registration_facts
@@ -152,6 +165,35 @@ impl Executor {
             self.authenticates(secret),
             "unregistered object-transfer client"
         );
+        if let ExecutionRequest::Prepare(prepare) = request {
+            let reply = match self.prepare_objects(prepare, descriptors).await {
+                Ok(reply) => reply,
+                Err(error) => refused(&error.to_string()),
+            };
+            rights::send(stream, &ControlReply::Execution(Box::new(reply)), &[]).await?;
+            return Ok(());
+        }
+        if matches!(request, ExecutionRequest::Watch) {
+            anyhow::ensure!(descriptors.is_empty(), "descriptors on Watch");
+            let (watching, mut changes) = self.watch()?;
+            rights::send(stream, &ControlReply::Execution(Box::new(watching)), &[]).await?;
+            loop {
+                // Lag is a transport disconnect: a reconnect snapshot forces a fresh Inspect.
+                let (seq, id) = tokio::select! {
+                    changed = changes.recv() => changed?,
+                    incoming = rights::receive::<ControlMsg>(stream) => {
+                        incoming?;
+                        anyhow::bail!("Watch is a dedicated executor stream");
+                    }
+                };
+                rights::send(
+                    stream,
+                    &ControlReply::Execution(Box::new(ExecutionReply::Changed { seq, id })),
+                    &[],
+                )
+                .await?;
+            }
+        }
         if let ExecutionRequest::Attach(transfer) = request {
             let reply = match self.attach_objects(transfer, descriptors).await {
                 Ok(reply) => reply,

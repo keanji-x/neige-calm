@@ -113,6 +113,8 @@ impl Phase {
 pub(super) struct Store {
     root: PathBuf,
     _lock: File,
+    #[cfg(test)]
+    pub(super) fail_execution_write: std::sync::atomic::AtomicU8,
 }
 
 impl Store {
@@ -148,10 +150,57 @@ impl Store {
             "executor journal already owned"
         );
         barrier(&root)?;
-        Ok(Self { root, _lock: lock })
+        Ok(Self {
+            root,
+            _lock: lock,
+            #[cfg(test)]
+            fail_execution_write: Default::default(),
+        })
     }
     pub fn load(&self) -> anyhow::Result<Vec<Journal>> {
         self.load_extension("execution")
+    }
+    pub fn tombstones(
+        &self,
+    ) -> anyhow::Result<
+        std::collections::HashMap<
+            ExecutionId,
+            calm_session::control::execution::ExecutionTombstone,
+        >,
+    > {
+        let values: Vec<calm_session::control::execution::ExecutionTombstone> =
+            self.load_extension("tombstone")?;
+        let mut tombstones = std::collections::HashMap::new();
+        for value in values {
+            anyhow::ensure!(
+                tombstones
+                    .insert(value.execution_id.clone(), value)
+                    .is_none(),
+                "duplicate execution tombstone"
+            );
+        }
+        Ok(tombstones)
+    }
+    pub fn contains_tombstone(&self, id: &ExecutionId) -> anyhow::Result<bool> {
+        Ok(self
+            .root
+            .join(format!("{}.tombstone", id.as_str()))
+            .try_exists()?)
+    }
+
+    /// Idempotent durable removal, shared by publication, startup and tombstone replay.
+    pub fn remove_execution(&self, id: &ExecutionId) -> anyhow::Result<()> {
+        self.remove(&format!("{}.execution", id.as_str()))
+    }
+
+    pub fn remove(&self, name: &str) -> anyhow::Result<()> {
+        match std::fs::remove_file(self.root.join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        File::open(&self.root)?.sync_all()?;
+        Ok(())
     }
     pub fn registrations(&self) -> anyhow::Result<Vec<ObjectRegistrationReceipt>> {
         self.load_extension("registration")
@@ -167,6 +216,9 @@ impl Store {
         for entry in std::fs::read_dir(&self.root)? {
             let path = entry?.path();
             if path.extension().is_some_and(|actual| actual == extension) {
+                if extension == "execution" && path.with_extension("tombstone").exists() {
+                    continue;
+                }
                 let mut bytes = Vec::new();
                 OpenOptions::new()
                     .read(true)
@@ -206,6 +258,32 @@ impl Store {
         )
     }
     pub fn write(&self, name: &str, value: &impl Serialize) -> anyhow::Result<()> {
+        if name.ends_with(".tombstone") {
+            match OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(self.root.join(name))
+            {
+                Ok(file) => {
+                    let previous: serde_json::Value = serde_json::from_reader(file)?;
+                    anyhow::ensure!(
+                        previous == serde_json::to_value(value)?,
+                        "immutable execution tombstone conflict"
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        #[cfg(test)]
+        let failure = if name.ends_with(".execution") {
+            self.fail_execution_write
+                .swap(0, std::sync::atomic::Ordering::SeqCst)
+        } else {
+            0
+        };
+        #[cfg(test)]
+        anyhow::ensure!(failure != 1, "injected execution journal write failure");
         let temporary = self
             .root
             .join(format!("{}.staging", ExecutionId::fresh()?.as_str()));
@@ -219,6 +297,8 @@ impl Store {
         file.flush()?;
         file.sync_all()?;
         std::fs::rename(&temporary, self.root.join(name))?;
+        #[cfg(test)]
+        anyhow::ensure!(failure != 2, "injected post-rename directory fsync failure");
         File::open(&self.root)?.sync_all()?;
         Ok(())
     }

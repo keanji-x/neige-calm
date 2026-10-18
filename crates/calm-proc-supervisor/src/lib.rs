@@ -570,7 +570,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         };
         anyhow::ensure!(
             descriptors.is_empty()
-                || matches!(&msg, ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::Attach(_) | ExecutionRequest::ObserveTransferredDirectories(_))),
+                || matches!(&msg, ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::Attach(_) | ExecutionRequest::Prepare(calm_session::control::execution::PrepareExecution { source: calm_session::control::execution::PreparedSource::Private(_), .. }) | ExecutionRequest::ObserveTransferredDirectories(_))),
             "unexpected ancillary rights"
         );
         if matches!(&msg, ControlMsg::Probe(request) if request.proc_id.is_empty()) {

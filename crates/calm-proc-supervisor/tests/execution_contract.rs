@@ -152,10 +152,7 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
         } => assert_eq!(receipt, old_receipt),
         other => panic!("original retry lost: {other:?}"),
     }
-    for action in [
-        ProcessAction::Signal(ProcSignal::Kill),
-        ProcessAction::Cleanup,
-    ] {
+    for action in [ProcessAction::Signal(ProcSignal::Kill)] {
         let reply = client
             .request(ExecutionRequest::Control(ExecutionControl {
                 capability: capability(&old, &old_receipt, ExecutionControlPurpose::Lifecycle),
@@ -167,6 +164,22 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
             reply,
             ExecutionReply::Refused { .. } | ExecutionReply::ActionComplete
         ));
+    }
+    loop {
+        match client
+            .request(ExecutionRequest::Retire {
+                execution_id: old.identity.execution_id.clone(),
+                lifecycle: old.control_tokens.lifecycle.clone(),
+            })
+            .await
+            .unwrap()
+        {
+            ExecutionReply::Retired(_) => break,
+            ExecutionReply::Busy(BusyReason::OutputOpen) => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await
+            }
+            other => panic!("old execution retire failed: {other:?}"),
+        }
     }
     for action in [
         ProcessAction::WriteStdin {
