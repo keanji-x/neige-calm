@@ -11,8 +11,8 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
-    session_bind_attribution_tx, session_fail_if_active_runtime_tx,
+    SqlxRepo, begin_immediate_tx, card_create_with_id_tx, card_mcp_token_set_tx,
+    card_with_codex_create_tx, session_bind_attribution_tx, session_fail_if_active_runtime_tx,
     session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
     session_projection_active_for_card_tx, session_start_runtime_tx,
 };
@@ -221,7 +221,7 @@ const FIXTURE_ROLES: &[CardRole] = &[
 ];
 
 async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRole) {
-    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx_repo.pool()).await.unwrap();
     if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
@@ -773,7 +773,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.planner_card_id);
 
-    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx_repo.pool()).await.unwrap();
     let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
         .await
         .unwrap()
@@ -820,7 +820,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.planner_card_id);
 
-    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx_repo.pool()).await.unwrap();
     let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
         .await
         .unwrap()

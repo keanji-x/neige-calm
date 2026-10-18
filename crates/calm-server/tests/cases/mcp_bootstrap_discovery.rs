@@ -180,7 +180,7 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
 #[tokio::test]
 async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery() {
     use calm_server::db::sqlite::{
-        session_bind_attribution_tx, session_mark_superseded_runtime_tx,
+        begin_immediate_tx, session_bind_attribution_tx, session_mark_superseded_runtime_tx,
         session_projection_active_for_card_tx,
     };
     use calm_server::session_projection_repo::{AgentProvider, ThreadAttribution};
@@ -203,7 +203,7 @@ async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery
             .any(|t| t["name"] == PUBLISH)
     );
 
-    let mut tx = boot.sqlx.pool().begin().await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx.pool()).await.unwrap();
     let foreign = session_projection_active_for_card_tx(&mut tx, &boot.other_card_id)
         .await
         .unwrap()
