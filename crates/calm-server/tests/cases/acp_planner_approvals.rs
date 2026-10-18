@@ -120,7 +120,7 @@ fn hold_ask(asked: &(i64, Event)) -> i64 {
 /// Each option the person picks reaches the agent as exactly that option's id, and the turn goes
 /// on to complete; nothing is withdrawn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_ask_mode_holds_each_request_and_answers_the_chosen_option_id() {
+async fn run_recovery_acp_ask_mode_holds_each_request_and_answers_the_chosen_option_id() {
     let root = Root::new("unused");
     let (stack, track, card, mut notes) = ask_track(&root, "ask").await;
     for (n, option_id) in ["once", "always", "reject"].into_iter().enumerate() {
@@ -128,6 +128,18 @@ async fn acp_ask_mode_holds_each_request_and_answers_the_chosen_option_id() {
         assert_eq!(status, StatusCode::OK, "{body}");
         let asked = wait_rows(&stack, &track, "ask.requested", n + 1).await;
         let ask_id = hold_ask(&asked[n]);
+        let (status, run) = stack
+            .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{run}");
+        assert_eq!(run["phase"], "turn_running", "{run}");
+        assert!(run.as_object().unwrap().contains_key("recovery"));
+        assert_eq!(
+            run["recovery"],
+            Value::Null,
+            "a healthy live ACP dispatch awaiting approval is not fenced: {run}"
+        );
+
         let HeldNote::Open { connection, .. } = next_note(&mut notes).await else {
             panic!("expected Open first");
         };

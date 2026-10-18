@@ -13,6 +13,8 @@ mod acp_planner_lifecycle;
 mod acp_planner_prompt_error;
 #[path = "cases/acp_planner_transcript.rs"]
 mod acp_planner_transcript;
+#[path = "cases/acp_settlement.rs"]
+mod acp_settlement;
 #[allow(dead_code)]
 #[path = "cases/claude_planner_session_fixture.rs"]
 mod claude_planner_session_fixture;
@@ -605,53 +607,6 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
     assert!(restored.pending_entries().is_empty());
     assert_eq!(requests(&root, "session/prompt").len(), 1);
     assert_eq!(stack.wait_outcomes(&card, 1).await[0]["id"], issued);
-    stack.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_receipt_write_failure_cannot_publish_success() {
-    let root = Root::new("unused");
-    let stack = boot(&root).await;
-    let (_, card) = create(&stack).await;
-    std::fs::write(root.path().join("scenario"), "settlement").unwrap();
-    let (status, body) = stack.post_input(&card, "settle once").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    wait_file(&root, "before-settlement").await;
-    let pool = stack.repo().sqlite_pool().unwrap();
-    sqlx::query(concat!(
-        "CREATE TRIGGER refuse_acp_settlement BEFORE UPDATE ON acp_submissions ",
-        "WHEN NEW.state='completed' BEGIN ",
-        "SELECT RAISE(ABORT,'fixture receipt write failure'); END"
-    ))
-    .execute(&pool)
-    .await
-    .unwrap();
-    std::fs::write(root.path().join("release-settlement"), "").unwrap();
-    let outcome = stack.wait_outcomes(&card, 1).await;
-    assert_eq!(
-        outcome[0]["status"], "failed",
-        "undurable success cannot be published"
-    );
-    assert!(
-        outcome[0]["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unknown")
-    );
-    let runtime = stack.runtime(&card).await;
-    assert!(
-        calm_server::db::sqlite::acp_submission_unresolved(&pool, &runtime.id)
-            .await
-            .unwrap()
-    );
-    sqlx::query("DROP TRIGGER refuse_acp_settlement")
-        .execute(&pool)
-        .await
-        .unwrap();
-    stack.shutdown().await;
-    let stack = boot(&root).await;
-    assert_eq!(stack.outcomes(&card).await[0]["status"], "failed");
-    assert_eq!(requests(&root, "session/prompt").len(), 1);
     stack.shutdown().await;
 }
 

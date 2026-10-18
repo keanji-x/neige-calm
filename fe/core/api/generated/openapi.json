@@ -14462,6 +14462,7 @@
           "compact_outcome",
           "context_usage_invalidated",
           "permission_mode",
+          "recovery",
           "pending",
           "pending_overflow",
           "attachments_supported",
@@ -14549,6 +14550,17 @@
               "null"
             ],
             "description": "The chosen reasoning effort, or `null` for the default. Same source as `model`."
+          },
+          "recovery": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RunRecovery",
+                "description": "Explicit recovery for the current worker, independent of lifecycle and queue contents."
+              }
+            ]
           },
           "running_turn": {
             "oneOf": [
@@ -17106,6 +17118,35 @@
             "description": "Absolute filesystem path to resolve against every area's folder claims; `null` if no claim covers it."
           }
         }
+      },
+      "RunRecovery": {
+        "type": "object",
+        "description": "An explicit action; lifecycle phase and human-readable block notices are not recovery policy.",
+        "required": [
+          "cause",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RunRecoveryAction"
+          },
+          "cause": {
+            "$ref": "#/components/schemas/RunRecoveryCause"
+          }
+        }
+      },
+      "RunRecoveryAction": {
+        "type": "string",
+        "enum": [
+          "restart_session"
+        ]
+      },
+      "RunRecoveryCause": {
+        "type": "string",
+        "enum": [
+          "unknown_outcome",
+          "wedged"
+        ]
       },
       "SendPlannerInputRequest": {
         "type": "object",

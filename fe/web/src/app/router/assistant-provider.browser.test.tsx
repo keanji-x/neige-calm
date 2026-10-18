@@ -66,7 +66,7 @@ it('keeps a dormant backend after fresh-session recovery and takes actions from 
   const field = page.getByRole('combobox', { name: 'Message' });
   await field.fill('Resume the declared backend');
   await userEvent.keyboard('{Enter}');
-  await page.getByRole('button', { name: 'Start a fresh session' }).click();
+  await page.getByRole('button', { name: 'Start a fresh session, keep history' }).click();
   await expect.element(page.getByText(/^Fresh session started/)).toBeVisible();
   await expect.element(page.getByText('Saved reply', { exact: true })).toBeVisible();
   await expect.element(field).toHaveTextContent('Resume the declared backend');

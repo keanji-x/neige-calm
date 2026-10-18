@@ -192,7 +192,7 @@ impl AcpPlannerSession {
                 .map_err(CalmError::from)?
         {
             return Err(refused(
-                "Previous ACP outcome is unknown. Reset before sending more input; nothing will be resent.",
+                "Previous ACP outcome is unknown. Start a fresh session; nothing will be resent.",
             ));
         }
         join_driver(shared).await?;
@@ -476,7 +476,7 @@ fn wire_error(error: provider::acp::Error) -> CalmError {
     CalmError::Conflict(error.to_string())
 }
 pub(super) fn unknown_outcome(turn: &str) -> Value {
-    json!({"id":turn,"status":"failed","error":{"message":"ACP execution outcome is unknown. The submission will not be resent; reset the conversation to continue."}})
+    json!({"id":turn,"status":"failed","error":{"message":"ACP execution outcome is unknown. The submission will not be resent; start a fresh session (history is kept)."}})
 }
 
 async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Result<()> {
@@ -633,25 +633,29 @@ async fn drive(
     #[cfg(feature = "fixtures")]
     super::test_seams::wait_at_settlement(&params.worker_session_id).await;
     let settle = async {
-        // The receipt owns settlement; projections can always be rebuilt from it.
-        // Never publish success before its final frames are durable.
-        acp_submission_finish(
-            &params
-                .repo
-                .sqlite_pool()
-                .ok_or_else(|| CalmError::Internal("ACP journal pool missing".into()))?,
-            &receipt.worker_session_id,
-            &receipt.client_id,
-            known
-                .then(|| serde_json::to_string(&durable))
-                .transpose()?
-                .as_deref(),
-        )
-        .await
+        let pool = params
+            .repo
+            .sqlite_pool()
+            .ok_or_else(|| CalmError::Internal("ACP journal pool missing".into()))?;
+        // Serialize once: every persistence attempt must commit these exact bytes and items.
+        let outcome_json = known.then(|| serde_json::to_string(&durable)).transpose()?;
+        settle_receipt(&pool, &receipt, outcome_json.as_deref()).await
     }
     .await;
     if let Err(error) = settle {
+        #[cfg(feature = "fixtures")]
+        super::test_seams::settlement_note(&params.worker_session_id, "failed");
         tracing::error!(%error,"ACP settlement failed; durable submission remains fenced");
+        // Best effort checkpoint of the unknown fence. Spend at most one extra second:
+        // if the writer is still unavailable, `sending` itself remains unresolved and
+        // restart recovery marks it unknown. Never overwrite a completed CAS winner.
+        if let Some(pool) = params.repo.sqlite_pool() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                acp_submission_finish(&pool, &receipt.worker_session_id, &receipt.client_id, None),
+            )
+            .await;
+        }
         turn = unknown_outcome(&receipt.turn_id);
         events = vec![PlannerEvent {
             thread_id: Some(receipt.thread_id.clone()),
@@ -690,6 +694,55 @@ fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
             *prior = frame;
         } else {
             retained.push(frame);
+        }
+    }
+}
+
+/// Persistence pending is not execution unknown. This function has no provider access.
+async fn settle_receipt(
+    pool: &sqlx::SqlitePool,
+    receipt: &AcpSubmission,
+    outcome_json: Option<&str>,
+) -> Result<()> {
+    // 45s covers a full shared admission cycle (7 x 5s busy_timeout + backoff)
+    // and another attempt, without holding the active session indefinitely. Bound the
+    // whole future too: pool acquisition and each SQLite attempt consume this budget.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    // The active turn remains owned by drive until this returns. A crash loses the
+    // in-memory known result; restart recovery fences the sending receipt as unknown.
+    loop {
+        // The receipt owns settlement; projections can always be rebuilt from it.
+        // Never publish success before its final frames are durable.
+        let result = tokio::time::timeout_at(
+            deadline,
+            acp_submission_finish(
+                pool,
+                &receipt.worker_session_id,
+                &receipt.client_id,
+                outcome_json,
+            ),
+        )
+        .await;
+        match result {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(calm_truth::TruthError::Db(ref error)))
+                if crate::db::sqlite::is_sqlite_busy(error)
+                    || matches!(error, sqlx::Error::PoolTimedOut) =>
+            {
+                #[cfg(feature = "fixtures")]
+                super::test_seams::settlement_note(&receipt.worker_session_id, "retry");
+                tracing::debug!(%error, "ACP receipt persistence pending; retrying settlement only");
+                tokio::time::sleep_until(
+                    deadline.min(tokio::time::Instant::now() + Duration::from_millis(100)),
+                )
+                .await;
+            }
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => {
+                return Err(CalmError::Conflict(
+                    "ACP receipt settlement retry budget exhausted".into(),
+                ));
+            }
         }
     }
 }

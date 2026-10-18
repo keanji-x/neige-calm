@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { runRecoverySchema, type RunRecovery } from './conversation-restart.js';
 import { agentProviderSchema } from '../api/schemas.js';
 
 import type {
@@ -263,6 +264,8 @@ export type PlannerRun = Readonly<{
    * that anything succeeded.
    */
   blocked_reason: string | null;
+  /** Explicit server-owned recovery; phase never implies an action. */
+  recovery: RunRecovery | null;
   /**
    * Whether this card can take image attachments; defaulted to false, which is absent exactly when
    * the server is older than the feature.
@@ -335,6 +338,7 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
       model: z.string().nullable(), reasoning_effort: z.string().nullable(),
       permission_mode: plannerPermissionModeSchema.nullable(),
       blocked_reason: z.string().nullable(),
+      recovery: runRecoverySchema.nullable(),
       /* Absent on older servers, and false is the safe read. */
       attachments_supported: z.boolean().optional().default(false),
       manual_compact_supported: z.boolean(),

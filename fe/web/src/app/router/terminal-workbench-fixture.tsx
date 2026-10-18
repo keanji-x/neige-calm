@@ -63,7 +63,7 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
     }
     if (method === 'DELETE' && path.startsWith('/api/cards/')) { cards.splice(cards.findIndex(card => card.id === path.split('/')[3]), 1); return ok(undefined); }
     if (path.endsWith('/planner/run')) return ok({ card_id: 'parent', worker_session_id: 'session-parent', phase: live.text === '' ? 'idle' : 'issuing_turn', model: null,
-      reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      reasoning_effort: null, permission_mode: null, blocked_reason: null, recovery: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
     if (path.endsWith('/harness/live')) return ok(live.text === '' ? { turn_id: null, items: [] }
       : { turn_id: 'streamed-turn', items: [{ item_id: 'streamed-message', text: live.text }] });
     return ok([]);

@@ -52,7 +52,7 @@ function mount({ phase = 'idle', input }: { phase?: string; input?: Promise<ApiT
     }]);
     if (request.path === '/api/cards/second-planner/planner/run') return ok({ card_id: 'second-planner', worker_session_id: 'runtime',
       phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true,
-      compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
     if (request.path.includes('/second-planner/harness/items')) return ok(Array.from({ length: 120 }, (_, index) => ({
       id: index + 1, worker_session_id: 'runtime', card_id: 'second-planner', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',

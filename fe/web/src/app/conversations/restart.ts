@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 
 import {
-  DORMANT_NOTICE, PAUSED_NOTICE, RESTART_ACTION, RESTARTED_NOTICE, restartFailureText,
+  DORMANT_NOTICE, recoveryNotice, offersFreshSession, type RunRecovery, RESTART_ACTION, RESTARTED_NOTICE, restartFailureText,
 } from '../../../../core/domain/conversation-restart.ts';
 import { writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
@@ -19,15 +19,15 @@ export type RestartStrip = Readonly<{
 
 /**
  * "Start a fresh session" (#2192) for the open conversation: offered when a send was refused because the session cannot
- * be resumed (`dormant`, held by the registry until the next send) and while the conversation is paused (`stalled`),
+ * be resumed (`dormant`, held by the registry until the next send) and when the server declares recovery,
  * where Send is disabled. The composer keeps its words and nothing is sent again: the reader presses Send. A restart
  * that was answered leaves its notice in the registry for the card it was made in, whichever is shown by then; its
  * failure is said only while that card is shown.
  */
-export function useConversationRestart({ cardId, stalled, restart }: {
+export function useConversationRestart({ cardId, recovery, restart }: {
   cardId: string;
-  /** The run is `wedged`: Send is disabled until a fresh session starts. */
-  stalled: boolean;
+  /** Server-owned recovery for the current worker. */
+  recovery: RunRecovery | null;
   /** `POST …/planner/restart` for this card, settled once the run state read after it has landed. */
   restart: () => Promise<unknown>;
 }) {
@@ -40,12 +40,12 @@ export function useConversationRestart({ cardId, stalled, restart }: {
   const notice = useConversationEditNotice(cardId === '' ? null : cardId);
   const error = failure?.cardId === cardId ? failure.message : null;
   const errors = error === null ? [] : [error];
-  const offered = notice?.kind === 'dormant' || stalled;
+  const offered = notice?.kind === 'dormant' || offersFreshSession(recovery);
   const strip: RestartStrip | null = notice?.kind === 'dormant' ? {
     tone: 'error', errors, action: RESTART_ACTION,
     /* An Edit's replace was refused: a Send now adds a new message, as for any refused replace. */
     lines: notice.edit && !composerEmpty ? [DORMANT_NOTICE, REFILLED_NOTE] : [DORMANT_NOTICE],
-  } : stalled ? { tone: error === null ? 'neutral' : 'error', lines: [PAUSED_NOTICE], errors, action: RESTART_ACTION }
+  } : recovery !== null && offersFreshSession(recovery) ? { tone: error === null ? 'neutral' : 'error', lines: [recoveryNotice(recovery)], errors, action: RESTART_ACTION }
     : notice?.kind === 'restarted' ? { tone: 'neutral', lines: [RESTARTED_NOTICE], errors: [], action: null }
     : null;
 

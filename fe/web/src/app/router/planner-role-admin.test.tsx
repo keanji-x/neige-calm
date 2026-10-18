@@ -19,7 +19,7 @@ const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', cre
 const PLANNER = { id: 'planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1,
   payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
 const PLANNER_RUN = { card_id: PLANNER.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null,
-  permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null,
+  permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null,
   context_usage_invalidated: false, running_turn: null };
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });

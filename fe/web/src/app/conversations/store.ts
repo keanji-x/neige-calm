@@ -18,6 +18,7 @@ import { useConversationCommands, useConversationSendOps, useConversationQueueWr
 import { NO_TURNS } from './registry-owner.ts';
 import { useConversationStop } from './stop.ts';
 import { useConversationRestart } from './restart.ts';
+import { offersFreshSession } from '../../../../core/domain/conversation-restart.ts';
 import { useLiveReplies, useTranscriptReads } from './live-replies.ts';
 import { useConversationOutbox, useRunReads } from './outbox.ts';
 import type { ConversationRouteIntent, ConversationStore, PlannerConversationScope } from './contracts.ts';
@@ -107,7 +108,8 @@ export function useConversationStore(
     ? readErrorText(initialObservation.error, 'The first message’s current status could not be checked.')
     : null;
   const phase = run.data?.phase ?? null;
-  const stalled = phase === 'wedged';
+  const recovery = run.data?.recovery ?? null;
+  const stalled = offersFreshSession(recovery);
   /* Anchored on the response's arrival (`dataUpdatedAt`); the fold keeps the earlier anchor for one turn. */
   const [runningAnchor, setRunningAnchor] = useState<RunningTurnAnchor | null>(null);
   const nextRunningAnchor = anchorRunningTurn(runningAnchor, run.data?.running_turn ?? null, run.dataUpdatedAt);
@@ -185,7 +187,7 @@ export function useConversationStore(
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
   });
-  const restart = useConversationRestart({ cardId, stalled, restart: mutations.restart });
+  const restart = useConversationRestart({ cardId, recovery, restart: mutations.restart });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
@@ -302,6 +304,7 @@ export function useConversationStore(
     pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,
+    recovery,
     stopping,
     stopFeedback,
     sending: view.sending,

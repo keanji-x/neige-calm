@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { recoveryStatusNotice, type RunRecovery } from '../../../../../core/domain/conversation-restart.ts';
 import type { ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { ConversationMetaClock, RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
@@ -15,7 +16,7 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, sending = false, statusUnconfirmed, statusLoading, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange }: {
+export function CurrentStatusNotice({ outcome, canContinue, live, sending = false, statusUnconfirmed, statusLoading, stalled, stalledReason, recovery, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange }: {
   detailsExpanded?: boolean;
   onDetailsExpandedChange?: (expanded: boolean) => void;
   outcome: ConversationTurnOutcome | null;
@@ -25,6 +26,7 @@ export function CurrentStatusNotice({ outcome, canContinue, live, sending = fals
   statusUnconfirmed: boolean;
   statusLoading: boolean;
   stalled: boolean;
+  recovery: RunRecovery | null;
   stalledReason: string | null;
   feedback: ConversationStopFeedback | null;
   copyAction: CopyResponseAction | null;
@@ -55,8 +57,9 @@ export function CurrentStatusNotice({ outcome, canContinue, live, sending = fals
       </>}
     </>;
   } else if (stalled) {
-    heading = 'Paused'; tone = 'warning';
-    details = <p className={styles.outcomeReason}>{stalledReason ?? 'This conversation is stuck.'}</p>;
+    const notice = recoveryStatusNotice(recovery, stalledReason);
+    heading = notice.heading; tone = 'warning';
+    details = <p className={styles.outcomeReason}>{notice.reason}</p>;
   } else if (feedback !== null) {
     heading = stopFeedbackHeading(feedback);
     tone = feedback.kind === 'failed' ? 'error' : 'neutral';

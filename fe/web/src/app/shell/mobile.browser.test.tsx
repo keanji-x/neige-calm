@@ -85,7 +85,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
       onRequest(request);
       const receipt = await receipts?.reply(request);
       if (receipt !== undefined) return receipt;
-      if (request.path.endsWith('/planner/run')) return Promise.resolve(ok({ card_id: 'card-review', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
+      if (request.path.endsWith('/planner/run')) return Promise.resolve(ok({ card_id: 'card-review', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
       if (request.path === '/api/settings') return Promise.resolve(ok({ settings: {} }));
       if (request.path === '/api/areas') return Promise.resolve(ok([{ ...AREA, name: areaName }, OTHER_AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK, OTHER_TRACK]));

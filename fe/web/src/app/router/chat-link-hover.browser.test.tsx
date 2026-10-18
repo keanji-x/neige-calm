@@ -45,7 +45,7 @@ async function setup({ streaming = false, historySuffix = '', narrow = false, fi
     if (request.path === '/api/settings') body = {};
     if (request.path.endsWith('/planner/run')) body = { card_id: request.path.split('/')[3], worker_session_id: 'chat-runtime', phase: streaming ? 'issuing_turn' : 'idle',
       model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
-      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
+      manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
     if (request.path.includes('/harness/items')) body = history(request.path.includes('/chat-b/') ? 'chat-b' : card.id);
     if (request.path.endsWith('/harness/live')) body = { turn_id: 'live-turn', items: [{ item_id: 'live-reply', text: live.text }] };
     if (request.path.includes('/workspace/readfile')) body = { path: new URL(request.path, 'http://fixture').searchParams.get('path'), text: fileText, size: fileText.length, truncated: false };

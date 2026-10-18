@@ -5,7 +5,7 @@ import { setPlannerPermissionModeOperation } from './planner-permission-mode.js'
 
 const RUN = {
   card_id: 'card-1', worker_session_id: null, phase: null, model: null, reasoning_effort: null,
-  blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
+  blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
 };
 
 describe('planner permission mode (#2348)', () => {

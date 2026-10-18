@@ -895,6 +895,7 @@ function useConversationPane(
                 pending={store.working}
                 cards={source.cards}
                 stalled={store.stalled}
+                recovery={store.recovery}
                 statusUnconfirmed={threadStatusUnconfirmed}
                 statusLoading={store.runLoading}
                 copyText={edit.held === null ? writeClipboardText : undefined}

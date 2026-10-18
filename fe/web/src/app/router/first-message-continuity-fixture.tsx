@@ -136,7 +136,7 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
         if (failRun && created !== null && request.path.includes(`/${created.id}/`)) return { status: 500, statusText: 'Error', body: { error: 'Run unavailable.' } };
         const result = ok({ card_id: request.path.split('/')[3], worker_session_id: 'runtime',
         phase: options.running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
-        manual_compact_supported: false, compact_outcome: null, context_usage_invalidated: false, running_turn: options.running ? { turn_id: 'running-first-input', elapsed_ms: 1 } : null, pending, pending_overflow: 0 });
+        manual_compact_supported: false, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: options.running ? { turn_id: 'running-first-input', elapsed_ms: 1 } : null, pending, pending_overflow: 0 });
         if (options.holdRun && created !== null && request.path.includes(`/${created.id}/`)) {
           return await new Promise<ApiTransportResponse>(resolve => { heldRun.push(() => { resolve(result); }); });
         }

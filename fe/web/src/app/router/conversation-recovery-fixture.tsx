@@ -75,7 +75,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
     if (request.path.endsWith('/planner/run')) return read(() => ({ card_id: created?.id ?? 'second-planner', worker_session_id: 'runtime', phase: 'idle',
       model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true,
-      compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
     if (request.path.includes('/harness/items')) {
       const cardId = created?.id ?? 'second-planner';
       return read(() => created !== null ? [{ ...row(cardId, true), turn_id: 'accepted-initial-turn', input_segments: [{

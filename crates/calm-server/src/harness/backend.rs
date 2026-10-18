@@ -30,9 +30,11 @@ use crate::harness::codex_selection;
 use crate::harness::held_requests::HeldRequestSender;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::planner_event::PlannerEvent;
+use crate::harness::run_recovery::{RunRecovery, RunRecoveryAction, RunRecoveryCause};
+use crate::harness::{HarnessPhaseTag, HarnessSnapshot};
 use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
-use crate::session_projection_repo::AgentProvider;
+use crate::session_projection_repo::{AgentProvider, WorkerSessionProjection};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
 use crate::thread_seals::ThreadSeals;
 
@@ -134,6 +136,40 @@ impl CodexApprovals {
 }
 
 impl PlannerBackend {
+    /// Query only the current worker's durable facts, including when no live backend exists.
+    pub(crate) async fn run_recovery(
+        provider: &AgentProvider,
+        repo: &dyn Repo,
+        runtime: &WorkerSessionProjection,
+        live_phase: Option<HarnessPhaseTag>,
+    ) -> Result<Option<RunRecovery>> {
+        let phase = live_phase.or_else(|| {
+            runtime
+                .handle_state_json
+                .clone()
+                .and_then(HarnessSnapshot::parse_known)
+                .map(|snapshot| snapshot.phase)
+        });
+        let unresolved = match provider {
+            AgentProvider::OpenCode => {
+                crate::acp_planner::recovery::submission_unresolved(repo, &runtime.id, live_phase)
+                    .await?
+            }
+            AgentProvider::Codex | AgentProvider::Claude => false,
+        };
+        let cause = if unresolved {
+            RunRecoveryCause::UnknownOutcome
+        } else if phase == Some(HarnessPhaseTag::Wedged) {
+            RunRecoveryCause::Wedged
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(RunRecovery {
+            cause,
+            action: RunRecoveryAction::RestartSession,
+        }))
+    }
+
     /// Codex reports provider terminal confirmation directly. Local-process adapters record
     /// their confirmed terminal after teardown, before publishing the event; their event alone
     /// cannot prove teardown succeeded if that write failed.

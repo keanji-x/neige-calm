@@ -7,7 +7,7 @@ import { renderDailyFixture } from './daily-planner-fixture.tsx';
 export function renderCompactFixture(provider: AgentProvider, supported: boolean, historyReady = true, compactReply?: ApiTransportResponse) {
   const run = { card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle',
     model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-    manual_compact_supported: supported, compact_outcome: null as CompactOutcome | null, context_usage_invalidated: false, token_usage: null as PlannerRunTokenUsage | null, running_turn: null };
+    manual_compact_supported: supported, recovery: null, compact_outcome: null as CompactOutcome | null, context_usage_invalidated: false, token_usage: null as PlannerRunTokenUsage | null, running_turn: null };
   const rows = [{
     id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 'thread',
     input_segments: [{ presentation: 'user', text: 'User says:\nEarlier prompt.', attachments: [] }],
@@ -23,7 +23,7 @@ export function renderCompactFixture(provider: AgentProvider, supported: boolean
     params: JSON.stringify({ id: 'turn', status: 'completed', error: null }), created_at_ms: 3,
   }];
   return { run, ...renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, plannerProvider: provider, reply: request => {
-    if (request.path === '/api/cards/second-planner/planner/run') return { status: 200, statusText: 'OK', body: { ...run, card_id: 'second-planner', worker_session_id: 'runtime2', compact_outcome: null, context_usage_invalidated: false, token_usage: null } };
+    if (request.path === '/api/cards/second-planner/planner/run') return { status: 200, statusText: 'OK', body: { ...run, card_id: 'second-planner', worker_session_id: 'runtime2', recovery: null, compact_outcome: null, context_usage_invalidated: false, token_usage: null } };
     if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: run };
     if (request.path.endsWith('/planner/compact')) return compactReply ?? { status: 200, statusText: 'OK', body: { card_id: run.card_id, started: true } };
     if (request.path.includes('/harness/items')) return historyReady

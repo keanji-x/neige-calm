@@ -2,6 +2,7 @@ import type { AgentProvider, PlannerAttachment, PlannerPermissionMode } from '..
 import type { Conversation, CreatedConversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerQueueEditOutcome, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { FailedSendOp, PendingQueueSend, ReplacedTurn, QueueDisplayAccounting } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
+import type { RunRecovery } from '../../../../core/domain/conversation-restart.ts';
 import type { RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import type { UploadAttachment } from '../../features/planner/attachments.tsx';
 import type { RestartStrip } from './restart.ts';
@@ -13,6 +14,7 @@ export type ConversationStore = Readonly<{
   pending: ReadonlySet<string>;
   working: boolean;
   stalled: boolean;
+  recovery: RunRecovery | null;
   stopping: boolean;
   stopFeedback: ConversationStopFeedback | null;
   sending: boolean;

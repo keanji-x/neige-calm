@@ -25,7 +25,7 @@ const AREA = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', 
 const PLANNER = { id: 'planner', track_id: 'w1', kind: 'codex', title: 'Planner', sort: 1,
   payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
 const PLANNER_RUN = { card_id: PLANNER.id, worker_session_id: 'session', phase: 'idle', model: null, reasoning_effort: null,
-  permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null,
+  permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null,
   context_usage_invalidated: false, running_turn: null, attachments_supported: true };
 
 type Kernel = Readonly<{ adminGrantedAt: number | null; canAdmin: boolean; refuse?: boolean; theme?: 'light' | 'dark' }>;

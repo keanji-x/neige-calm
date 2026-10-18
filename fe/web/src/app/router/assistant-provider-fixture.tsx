@@ -87,7 +87,7 @@ export function renderAssistantProviderFixture(options: {
     const cardId = request.path.split('/')[3];
     if (request.path.endsWith('/planner/run')) body = { card_id: cardId, worker_session_id: restarted ? 'replacement' : null,
       phase: 'idle', model: selectedModel, reasoning_effort: null, permission_mode: null, blocked_reason: null,
-      attachments_supported: options.runAttachmentsSupported ?? false, manual_compact_supported: false, compact_outcome: null,
+      attachments_supported: options.runAttachmentsSupported ?? false, manual_compact_supported: false, recovery: null, compact_outcome: null,
       context_usage_invalidated: false, running_turn: null };
     if (request.path.endsWith('/planner/model')) {
       const input = request.body as { model: string | null; reasoning_effort: string | null };

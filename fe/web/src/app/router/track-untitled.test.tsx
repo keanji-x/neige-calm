@@ -87,7 +87,7 @@ function setup(options: Options = {}) {
         }));
       }
       if (request.path.endsWith('/planner/run')) {
-        return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'r', phase: 'idle', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false }));
+        return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'r', phase: 'idle', manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false }));
       }
       if (request.path === '/api/settings') return Promise.resolve(ok({}));
       return Promise.resolve(ok([]));

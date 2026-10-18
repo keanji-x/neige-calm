@@ -87,7 +87,7 @@ it.each([1280, 390])('keeps the last ordinary deleted queue row in place until i
     }
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      pending, pending_overflow: 0, manual_compact_supported: true, compact_outcome: null,
+      pending, pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null,
       context_usage_invalidated: false, running_turn: null });
     return undefined;
   } });
@@ -206,7 +206,7 @@ it.each([1280, 390])('keeps the ordinary queue exit spring when displayed bound 
     }
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null,
       reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending, pending_overflow: 0,
-      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
     return undefined;
   } });
   try {

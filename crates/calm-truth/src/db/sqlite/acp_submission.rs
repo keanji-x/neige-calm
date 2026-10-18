@@ -85,6 +85,7 @@ pub async fn acp_submission_finish(
     client: &str,
     outcome: Option<&str>,
 ) -> Result<()> {
+    let mut tx = super::begin_immediate_tx(pool).await?;
     let state = if outcome.is_some() {
         "completed"
     } else {
@@ -92,18 +93,20 @@ pub async fn acp_submission_finish(
     };
     let result = sqlx::query(concat!(
         "UPDATE acp_submissions SET state=?3,outcome_json=?4 WHERE worker_session_id=?1 AND ",
-        "client_id=?2 AND state IN ('sending','unknown')"
+        "client_id=?2 AND (state IN ('sending','unknown') OR ",
+        "(state='completed' AND ?3='completed' AND outcome_json=?4 COLLATE BINARY))"
     ))
     .bind(worker)
     .bind(client)
     .bind(state)
     .bind(outcome)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     if result.rows_affected() != 1 {
         return Err(CalmError::Conflict(
             "ACP submission fence changed before settlement",
         ));
     }
+    tx.commit().await?;
     Ok(())
 }

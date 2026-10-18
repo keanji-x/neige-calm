@@ -14,18 +14,19 @@ const HISTORY = [{
 }];
 
 /** The production drawer with a session that cannot be resumed (`dormant`) or is paused (`wedged`) until a restart. */
-function renderRecovery(state: 'dormant' | 'paused', initial = '/track/daily?panel=conversations') {
+function renderRecovery(state: 'dormant' | 'paused' | 'unknown', initial = '/track/daily?panel=conversations') {
   let restarted = false;
+  let fenced = state !== 'unknown';
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
-  return renderDailyFixture({ initial, reply: (request) => {
+  const fixture = renderDailyFixture({ initial, reply: (request) => {
     if (request.path.endsWith('/planner/restart')) {
       restarted = true;
       return ok({ card_id: 'daily-planner', terminal_id: '', new_thread_id: 'thread-2' });
     }
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
-      phase: state === 'paused' && !restarted ? 'wedged' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never',
+      phase: !restarted ? state === 'paused' ? 'wedged' : state === 'unknown' ? 'turn_completed' : 'idle' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never',
       blocked_reason: state === 'paused' && !restarted
-        ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+        ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null, manual_compact_supported: true, recovery: !restarted && fenced && state !== 'dormant' ? { cause: state === 'unknown' ? 'unknown_outcome' : 'wedged', action: 'restart_session' } : null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
     if (request.path.endsWith('/planner/input')) return restarted || state === 'paused'
       ? ok({ card_id: 'daily-planner', worker_session_id: 'runtime' })
       : { status: 409, statusText: 'Conflict', body: { code: 'planner_harness_dormant',
@@ -33,9 +34,13 @@ function renderRecovery(state: 'dormant' | 'paused', initial = '/track/daily?pan
     if (request.path.includes('/harness/items')) return ok(HISTORY);
     return undefined;
   } });
+  return { ...fixture, fence: async () => {
+    fenced = true;
+    await fixture.client.invalidateQueries({ queryKey: ['planner-run', 'daily-planner'] });
+  } };
 }
 
-it.each([[390, 'dormant', '/track/daily?panel=conversations'], [1280, 'dormant', '/track/daily?panel=conversations'], [390, 'paused', '/track/daily?panel=conversations'], [1280, 'paused', '/track/daily?panel=conversations'], [1280, 'dormant', '/']] as const)(
+it.each([[390, 'dormant', '/track/daily?panel=conversations'], [1280, 'dormant', '/track/daily?panel=conversations'], [390, 'paused', '/track/daily?panel=conversations'], [1280, 'paused', '/track/daily?panel=conversations'], [1280, 'dormant', '/'], [1280, 'unknown', '/track/daily?panel=conversations']] as const)(
   'offers a fresh session above the composer in the production drawer (%ipx, %s, %s)', async (width, state, initial) => {
     await page.viewport(width, 844);
     const fixture = renderRecovery(state, initial);
@@ -48,10 +53,21 @@ it.each([[390, 'dormant', '/track/daily?panel=conversations'], [1280, 'dormant',
       await expect.element(page.getByText(/^Not sent\. This conversation’s session can’t be resumed\./)).toBeVisible();
       await expect.element(field).toHaveTextContent('Keep this draft.');
     } else {
-      await expect.element(page.getByText(/^This conversation’s session is stuck\./)).toBeVisible();
+      if (state === 'unknown') {
+        await expect.element(field).toHaveAttribute('contenteditable', 'true');
+        await userEvent.type(field, 'Keep this draft.');
+        await fixture.fence();
+        const status = page.getByRole('status', { name: 'Current response status' });
+        await expect.element(status.getByRole('button', { name: 'Outcome unknown' })).toBeVisible();
+        await status.getByRole('button', { name: 'Outcome unknown' }).click();
+        await expect.element(status.getByText('The previous request’s outcome is unknown. It won’t be sent again.', { exact: true })).toBeVisible();
+        await expect.element(status).not.toHaveTextContent('Paused');
+        await expect.element(status).not.toHaveTextContent('This conversation is stuck.');
+      }
+      await expect.element(page.getByText(state === 'unknown' ? /^The previous request’s outcome is unknown\. It won’t be sent again\. History stays here;/ : /^This conversation’s session is stuck\./)).toBeVisible();
       await expect.element(field).toHaveAttribute('contenteditable', 'false');
     }
-    const action = page.getByRole('button', { name: 'Start a fresh session' });
+    const action = page.getByRole('button', { name: 'Start a fresh session, keep history' });
     await expect.element(action).toBeVisible();
     const box = action.element().getBoundingClientRect();
     expect(box.left).toBeGreaterThanOrEqual(0);
@@ -64,7 +80,7 @@ it.each([[390, 'dormant', '/track/daily?panel=conversations'], [1280, 'dormant',
     await expect.element(action).not.toBeInTheDocument();
     await expect.element(page.getByText('Earlier reply that stays.', { exact: true })).toBeVisible();
     await expect.element(field).toHaveAttribute('contenteditable', 'true');
-    if (state === 'dormant') await expect.element(field).toHaveTextContent('Keep this draft.');
+    if (state === 'dormant' || state === 'unknown') await expect.element(field).toHaveTextContent('Keep this draft.');
     if (initial === '/') {
       const calendar = document.querySelector('[aria-label="Calendar tasks"]')!;
       expect(getComputedStyle(calendar).visibility).toBe('hidden');

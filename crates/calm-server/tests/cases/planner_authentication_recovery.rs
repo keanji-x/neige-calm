@@ -34,7 +34,7 @@ async fn select_model(boot: &Boot) {
 }
 
 #[tokio::test]
-async fn authentication_hold_preserves_queue_metadata_and_attachment_until_login() {
+async fn run_recovery_authentication_hold_preserves_queue_metadata_and_attachment_until_login() {
     let boot = boot_with_issuance(idle_snapshot(Vec::new()), Issuance::Live).await;
     select_model(&boot).await;
     fail(&boot);
@@ -75,6 +75,18 @@ async fn authentication_hold_preserves_queue_metadata_and_attachment_until_login
             .await
             .unwrap()
             .contains("Sign in again")
+    );
+    let (status, run) = crate::planner_restart::get(
+        boot.app.clone(),
+        format!("/api/cards/{}/planner/run", boot.planner_card.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert!(run.as_object().unwrap().contains_key("recovery"));
+    assert_eq!(
+        run["recovery"],
+        serde_json::Value::Null,
+        "authentication is not repaired by restart"
     );
     // Account presence is not a proof of repair.
     boot.daemon.emit_notification_for_test(Notification::Other {

@@ -33,7 +33,7 @@ const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
 /* `model` and `reasoning_effort` are required in the response schema; `null` in
    both is a conversation following the installation default. */
 const PLANNER_RUN_IDLE = {
-  card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
+  card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
 };
 
 function ok(body: unknown): ApiTransportResponse {
@@ -1133,7 +1133,7 @@ describe('planner conversation regressions', () => {
     'phase %s applies %s policy to markers, composer state and subsequent sends',
     async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
-        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null })
+        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null, compact_outcome: null, context_usage_invalidated: false, running_turn: null })
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
@@ -1145,7 +1145,7 @@ describe('planner conversation regressions', () => {
              would look queued for the wrong reason. */
       await act(async () => {
         client.setQueryData(queryKeys.plannerRun(CARD.id),
-          { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+          { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
         await Promise.resolve();
       });
       const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
@@ -1205,7 +1205,7 @@ describe('planner conversation regressions', () => {
       let elapsed = 18_000;
       const { client } = setupWithTurns((request) => {
         if (request.path.endsWith('/planner/run')) {
-          return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } });
+          return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } });
         }
         return request.path === '/api/tracks/w1'
           ? ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
@@ -1258,7 +1258,7 @@ describe('planner conversation regressions', () => {
       if (request.path.endsWith('/planner/run')) {
         return ok({
           card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running',
-          model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
+          model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
         });
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;

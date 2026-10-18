@@ -88,7 +88,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
           ? ok({ card_id: card, worker_session_id: 'runtime' }) : server.replace();
       }
       if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
-        card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, permission_mode: card === CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: server.runningTurn,
+        card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, permission_mode: card === CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, recovery: server.phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null, compact_outcome: null, context_usage_invalidated: false, running_turn: server.runningTurn,
       });
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);

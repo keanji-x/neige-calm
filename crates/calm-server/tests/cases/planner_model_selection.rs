@@ -599,7 +599,7 @@ async fn a_refusal_that_cannot_clear_itself_tells_the_reader_what_to_do() {
 
 /// A field that lights up for conditions the reader can do nothing about is one they learn to ignore.
 #[tokio::test]
-async fn a_transient_refusal_says_nothing_to_the_reader() {
+async fn run_recovery_a_transient_refusal_says_nothing_to_the_reader() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     put_model(
         &boot,
@@ -619,6 +619,15 @@ async fn a_transient_refusal_says_nothing_to_the_reader() {
          would train them to ignore the field"
     );
 
+    let (status, run) = get(
+        boot.app.clone(),
+        format!("/api/cards/{}/planner/run", boot.planner_card.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert!(run.as_object().unwrap().contains_key("recovery"));
+    assert_eq!(run["recovery"], Value::Null);
+
     // `PUT /planner/model` stores a slug codex does not know BY DESIGN, so an unpaced arm here is the 50 ms tick issuing RPCs forever.
     let before = boot.harness.refused_issuances_for_test();
     tokio::time::sleep(Duration::from_secs(7)).await;
@@ -636,7 +645,7 @@ async fn a_transient_refusal_says_nothing_to_the_reader() {
 
 /// `config.model = null` is a supported codex state: the daemon answers, and the answer names no model. Asserted through the endpoint the composer reads, not the enum.
 #[tokio::test]
-async fn a_config_that_names_no_model_reaches_the_reader_through_planner_run() {
+async fn run_recovery_a_config_that_names_no_model_reaches_the_reader_through_planner_run() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     // Codex answers, and its answer names nothing. Not an outage.
     boot.daemon.set_config_read_for_test(CodexConfig::default());
@@ -662,6 +671,12 @@ async fn a_config_that_names_no_model_reaches_the_reader_through_planner_run() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body={run}");
+        assert!(run.as_object().unwrap().contains_key("recovery"));
+        assert_eq!(
+            run["recovery"],
+            Value::Null,
+            "selection needs a model change, not restart"
+        );
         if let Some(reason) = run["blocked_reason"].as_str() {
             assert!(
                 reason.contains("does not name one") && reason.contains("Pick a model"),

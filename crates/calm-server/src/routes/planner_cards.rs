@@ -21,7 +21,7 @@ use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_p
 use crate::routes::planner_session::dormant;
 use crate::session_projection_lookup::card_is_shared_planner;
 use crate::session_projection_repo::WorkerSessionProjection;
-use crate::state::{CodexShellState, RouteState};
+use crate::state::{CodexShellState, RouteState, WorkerState};
 
 use axum::extract::State;
 use calm_types::planner_attachment::PlannerAttachment;
@@ -148,6 +148,9 @@ pub struct GetPlannerRunResponse {
     /// Why this conversation's queue is not draining, or `null` when there is nothing worth saying: an undeterminable model/effort, a refused turn start, or a long codex outage. A client should render it as a standing notice, not a request error.
     /// A brief outage fills nothing, so `null` is not evidence that anything succeeded.
     pub blocked_reason: Option<String>,
+    /// Explicit recovery for the current worker, independent of lifecycle and queue contents.
+    #[schema(required = true, nullable = true)]
+    pub recovery: Option<crate::harness::run_recovery::RunRecovery>,
     /// The addressable user entries still waiting for the next turn, in queue order. Empty when dormant. Dispatcher observations and pre-id user entries never appear; the latter are counted in `pending_overflow`.
     pub pending: Vec<PendingQueueEntry>,
     /// User-authored entries that exist in the queue but are NOT in `pending`: pre-id entries, plus anything past the page budget.
@@ -374,6 +377,7 @@ pub(crate) async fn interrupt_planner_card(
 )]
 pub(crate) async fn get_planner_run(
     State(s): State<RouteState>,
+    State(w): State<WorkerState>,
     Path(id): Path<String>,
 ) -> Result<Json<GetPlannerRunResponse>> {
     let card = s
@@ -418,6 +422,7 @@ pub(crate) async fn get_planner_run(
         permission_mode,
         // A dormant conversation has no harness to be blocked and nothing waiting.
         blocked_reason: None,
+        recovery: None,
         token_usage: None,
         compact_outcome: None,
         context_usage_invalidated: false,
@@ -437,6 +442,13 @@ pub(crate) async fn get_planner_run(
             .session_projection_projectable_for_card(&card.id.to_string())
             .await?
         {
+            dormant.recovery = crate::harness::PlannerBackend::run_recovery(
+                &binding.provider,
+                w.repo.as_ref(),
+                &runtime,
+                None,
+            )
+            .await?;
             apply_dormant_context_snapshot(&mut dormant, &runtime);
             if let Some(snapshot) = super::planner_recovery::unconfirmed_stop_snapshot(&runtime) {
                 dormant.worker_session_id = Some(runtime.id.clone());
@@ -457,6 +469,13 @@ pub(crate) async fn get_planner_run(
         return Ok(Json(dormant));
     };
     let Some(harness) = s.harness.get(&runtime.id) else {
+        dormant.recovery = crate::harness::PlannerBackend::run_recovery(
+            &binding.provider,
+            w.repo.as_ref(),
+            &runtime,
+            None,
+        )
+        .await?;
         apply_dormant_context_snapshot(&mut dormant, &runtime);
         return Ok(Json(dormant));
     };
@@ -473,6 +492,13 @@ pub(crate) async fn get_planner_run(
         reasoning_effort: selection.reasoning_effort,
         permission_mode,
         blocked_reason: harness.issuance_block().await,
+        recovery: crate::harness::PlannerBackend::run_recovery(
+            &binding.provider,
+            w.repo.as_ref(),
+            &runtime,
+            Some(snapshot.phase),
+        )
+        .await?,
         token_usage: snapshot
             .visible_context_usage()
             .map(PlannerRunTokenUsage::from),

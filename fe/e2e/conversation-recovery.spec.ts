@@ -63,7 +63,7 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
     await page.route('**/api/cards/*/planner/run', async (route) => {
       const response = await route.fetch();
       const body = await response.json() as Record<string, unknown>;
-      await route.fulfill({ response, json: { ...body, phase } });
+      await route.fulfill({ response, json: { ...body, phase, recovery: phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null } });
     });
     await page.goto(`/next/track/${track.id}`);
     await page.getByRole('button', { name: 'Conversation Planner' }).click();
@@ -80,7 +80,7 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
     await expect(page.getByRole('alert')).toHaveCount(0);
     /* #2192: the way out is offered beside the composer; it is a standing condition, so not an alert. */
     await expect(page.getByRole('status').filter({ hasText: 'This conversation’s session is stuck.' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Start a fresh session' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Start a fresh session, keep history' })).toBeVisible();
     await expect(composer).toHaveAttribute('contenteditable', 'false');
     await expect(page.getByRole('complementary').locator('[data-nc-activity="working"]')).toHaveCount(0);
     await composer.press('Enter');
@@ -147,7 +147,7 @@ test('offers a fresh session for a dormant send and keeps the history and the wo
     await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('dormant-desktop.png'), fullPage: true, animations: 'disabled' });
     await page.setViewportSize({ width: 390, height: 844 });
-    const restart = page.getByRole('button', { name: 'Start a fresh session' });
+    const restart = page.getByRole('button', { name: 'Start a fresh session, keep history' });
     await expect(restart).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('dormant-mobile.png'), fullPage: true, animations: 'disabled' });
 

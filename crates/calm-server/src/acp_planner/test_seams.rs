@@ -114,3 +114,21 @@ pub(crate) fn tap_held(
     });
     tapped
 }
+
+/// Observe settlement decisions without timing guesses or changing persistence policy.
+static SETTLEMENT_NOTES: LazyLock<
+    Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<&'static str>>>,
+> = LazyLock::new(Mutex::default);
+pub fn observe_settlement(worker: &str) -> tokio::sync::mpsc::UnboundedReceiver<&'static str> {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    SETTLEMENT_NOTES
+        .lock()
+        .unwrap()
+        .insert(worker.into(), sender);
+    receiver
+}
+pub(crate) fn settlement_note(worker: &str, note: &'static str) {
+    if let Some(sender) = SETTLEMENT_NOTES.lock().unwrap().get(worker) {
+        let _ = sender.send(note);
+    }
+}

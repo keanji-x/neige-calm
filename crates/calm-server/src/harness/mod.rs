@@ -22,6 +22,7 @@ pub mod registry;
 mod result_receipt;
 pub(crate) mod rewind;
 pub mod run_loop;
+pub mod run_recovery;
 pub mod snapshot;
 pub mod state;
 pub(crate) mod submission_claims;

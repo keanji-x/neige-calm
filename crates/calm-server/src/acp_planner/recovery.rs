@@ -154,3 +154,27 @@ pub(crate) async fn recover(
     snapshot.issued_input_segments = None;
     Ok(())
 }
+
+/// Durable receipt fencing belongs to the worker, independent of queue and process liveness.
+pub(crate) async fn submission_unresolved(
+    repo: &dyn Repo,
+    worker: &str,
+    live_phase: Option<HarnessPhaseTag>,
+) -> Result<bool> {
+    // A sending receipt belongs to a healthy live dispatch until that dispatch ends.
+    // A checkpoint's phase alone cannot prove liveness after boot or registry removal.
+    if matches!(
+        live_phase,
+        Some(
+            HarnessPhaseTag::IssuingTurn
+                | HarnessPhaseTag::TurnRunning
+                | HarnessPhaseTag::IssuingInterrupt
+        )
+    ) {
+        return Ok(false);
+    }
+    let pool = repo
+        .sqlite_pool()
+        .ok_or_else(|| CalmError::Internal("ACP recovery requires durable storage".into()))?;
+    Ok(crate::db::sqlite::acp_submission_unresolved(&pool, worker).await?)
+}

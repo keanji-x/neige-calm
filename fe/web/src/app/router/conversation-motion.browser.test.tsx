@@ -25,7 +25,7 @@ it('keeps the composer and message bubble in place through queue acknowledgement
     }
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      pending: phase === 'queued' ? [entry] : [], pending_overflow: 0, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      pending: phase === 'queued' ? [entry] : [], pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
     if (request.path.includes('/harness/items')) return ok([...prior, ...(phase === 'drained' ? [{ id: 2,
       card_id: 'daily-planner', worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: entry.entry_id, item_type: 'userMessage', method: 'item/completed',
@@ -86,7 +86,7 @@ it('keeps a middle edit stable while an earlier input is revoked and the reply k
     if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending, pending_overflow: 0, manual_compact_supported: true,
-      compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 1000 } } };
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 1000 } } };
     if (request.path.endsWith('/harness/live')) return { status: 200, statusText: 'OK', body: { turn_id: 'stream', items: [{ item_id: 'reply', text: liveText }] } };
     return undefined;
   } });
@@ -190,7 +190,7 @@ it('processes locally queued edits in order without leaving their old outbox tex
     }
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: drained ? 'idle' : 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      pending: drained ? [] : pending, pending_overflow: 0, manual_compact_supported: true, compact_outcome: null,
+      pending: drained ? [] : pending, pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null,
       context_usage_invalidated: false, running_turn: null });
     if (request.path.endsWith('/harness/live')) return ok({ turn_id: null, items: [] });
     if (request.path.includes('/harness/items')) return ok(drained ? pending.map((entry, index) => ({
@@ -232,7 +232,7 @@ it('keeps a queued edit mounted when the first reply creates the transcript', as
     if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending: [{ entry_id: 'waiting', text: 'Original queued input', rev: 0, queued_at_ms: 1 }],
-      pending_overflow: 0, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false,
+      pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false,
       running_turn: { turn_id: 'first', elapsed_ms: 0 } } };
     return undefined;
   } });
@@ -255,7 +255,7 @@ it('saves from the original queued revision and keeps the main-composer draft af
     if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending: [pending], pending_overflow: 0, manual_compact_supported: true,
-      compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } } };
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } } };
     if (request.method === 'PATCH') {
       if ((request.body as { if_entry_rev: number }).if_entry_rev === 2) return { status: 409, statusText: 'Conflict', body: {
         error: 'The queued entry changed.', code: 'planner_input_stale', text: pending.text, rev: pending.rev, entry_id: pending.entry_id } };
@@ -292,7 +292,7 @@ it('retains unsaved main-composer words when the edited queue entry disappears a
     if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending, pending_overflow: 0, manual_compact_supported: true,
-      compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } } };
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } } };
     return undefined;
   } });
   await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();

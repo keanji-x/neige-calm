@@ -609,6 +609,29 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 card.id, card.track_id, payload.track_id
             )));
         }
+        // Authorize the eventual CardUpdated intent before prepare_tx can move queues
+        // or app_server_interact can stop the predecessor. Reuse the event writer's
+        // truth policy, including live session resolution; commit still checks again.
+        let scope = card_scope(self.repo.as_ref(), card.id.clone(), card.track_id.clone()).await?;
+        let actor = payload.actor.clone();
+        let event = Event::CardUpdated(card.clone());
+        let role_cache = self.card_role_cache.clone();
+        let area_cache = self.track_area_cache.clone();
+        write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                calm_truth::decision_gate::enforce_role_resolving_session(
+                    tx,
+                    &actor,
+                    &event,
+                    &scope,
+                    &role_cache,
+                    &area_cache,
+                )
+                .await
+                .map_err(|violation| CalmError::Forbidden(violation.to_string()))
+            })
+        })
+        .await?;
         let expected_role = match payload.profile {
             HarnessProfile::Planner => CardRole::Planner,
             HarnessProfile::PlainChat

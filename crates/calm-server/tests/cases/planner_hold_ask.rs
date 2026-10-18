@@ -490,9 +490,22 @@ fn question() -> AskQuestion {
 /// An `Open` is a `hold` ask by the harness's own session, shown as a paused-turn item; the
 /// chosen option goes to the request, and the answer closes the ask.
 #[tokio::test]
-async fn an_open_request_is_a_hold_ask_and_its_answer_goes_to_the_request() {
+async fn run_recovery_an_open_request_is_a_hold_ask_and_its_answer_goes_to_the_request() {
     let rig = rig().await;
     let (ask_id, mut request) = rig.open("req-1", CONNECTION).await;
+    let (status, run) = crate::planner_restart::get(
+        rig.app.clone(),
+        format!("/api/cards/{}/planner/run", rig.card),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert!(run.as_object().unwrap().contains_key("recovery"));
+    assert_eq!(
+        run["recovery"],
+        Value::Null,
+        "a held approval needs an answer, not a restart"
+    );
+
     let asks = rig.asks().await;
     assert!(
         matches!(asks.as_slice(), [(_, ActorId::AiPlannerSession(session), Event::AskRequested {

@@ -216,7 +216,7 @@ async fn assistant_provider_opencode_first_turn_model_prompt_and_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn assistant_provider_opencode_unknown_receipt_is_not_resent_after_boot() {
+async fn run_recovery_assistant_provider_opencode_unknown_receipt_is_not_resent_after_boot() {
     use std::time::Duration;
     let root = Root::new("unused");
     let stack = boot_acp(&root).await;
@@ -254,8 +254,22 @@ async fn assistant_provider_opencode_unknown_receipt_is_not_resent_after_boot() 
         .unwrap()
     );
     assert_eq!(requests(&root, "session/prompt").len(), 2);
+    let recovery = json!({"cause":"unknown_outcome","action":"restart_session"});
+    let run_uri = format!("/api/cards/{card}/planner/run");
+    let (_, run) = stack.send("GET", &run_uri, None).await;
+    assert_eq!(run["recovery"], recovery, "{run}");
+    assert_eq!(run["pending"], json!([]));
+    let handle = stack.state.harness.remove(&worker).unwrap();
+    handle.shutdown().await.unwrap();
+    let (_, run) = stack.send("GET", &run_uri, None).await;
+    assert_eq!(run["recovery"], recovery, "no live harness: {run}");
     stack.shutdown().await;
     let stack = boot_acp(&root).await;
+    let (_, run) = stack.send("GET", &run_uri, None).await;
+    assert_eq!(
+        run["recovery"], recovery,
+        "after boot, before any new input: {run}"
+    );
     let (status, response) = stack.post_input(card, "queued after unknown").await;
     assert_eq!(status, StatusCode::OK, "{response}");
     let handle = stack.state.harness.get(&worker).unwrap();
@@ -270,6 +284,46 @@ async fn assistant_provider_opencode_unknown_receipt_is_not_resent_after_boot() 
         requests(&root, "session/prompt").len(),
         2,
         "unknown receipt cannot authorize native resend"
+    );
+    std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    let before = stack.outcomes(card).await.len();
+    let (status, response) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{card}/planner/restart"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    stack.wait_outcomes(card, before + 1).await;
+    assert_ne!(stack.runtime(card).await.id, worker);
+    let (_, run) = stack.send("GET", &run_uri, None).await;
+    assert_eq!(
+        run["recovery"],
+        Value::Null,
+        "old worker's receipt must not fence its replacement: {run}"
+    );
+    assert_eq!(
+        requests(&root, "session/prompt").len(),
+        3,
+        "only still-owed input transfers"
+    );
+    let prompts = requests(&root, "session/prompt");
+    let last_prompt = prompts.last().unwrap()["params"]["prompt"].to_string();
+    assert!(
+        last_prompt.contains("queued after unknown"),
+        "{last_prompt}"
+    );
+    assert!(
+        !last_prompt.contains("perform once"),
+        "the fenced dispatch must never transfer: {last_prompt}"
+    );
+    let (_, history) = stack
+        .send("GET", &format!("/api/cards/{card}/harness/items"), None)
+        .await;
+    assert!(
+        history.to_string().contains("perform once"),
+        "history is kept: {history}"
     );
     stack.shutdown().await;
 }

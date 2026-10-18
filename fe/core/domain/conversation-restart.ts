@@ -34,7 +34,7 @@ export const RESTART_TEXT: WriteText = Object.freeze({
 });
 
 /** The one way out of a session that cannot go on; the same words wherever it is offered. */
-export const RESTART_ACTION = 'Start a fresh session';
+export const RESTART_ACTION = 'Start a fresh session, keep history';
 
 /**
  * A send refused with `planner_harness_dormant`: the session cannot be resumed. Keyed on that code, never on the
@@ -42,8 +42,34 @@ export const RESTART_ACTION = 'Start a fresh session';
  */
 export const DORMANT_NOTICE = 'Not sent. This conversation’s session can’t be resumed. Your history is kept and your message is still below.';
 
-/** A paused (`wedged`) conversation, where Send is disabled until a fresh session starts. */
-export const PAUSED_NOTICE = 'This conversation’s session is stuck. A fresh session keeps your history and queued messages.';
+export const runRecoverySchema = z.object({
+  cause: z.enum(['unknown_outcome', 'wedged']),
+  action: z.enum(['restart_session']),
+});
+export type RunRecovery = z.infer<typeof runRecoverySchema>;
+
+/** Only a declared action licenses a fresh-session offer. */
+export function offersFreshSession(recovery: RunRecovery | null): boolean {
+  return recovery?.action === 'restart_session';
+}
+
+function recoveryReason(recovery: RunRecovery): string {
+  return recovery.cause === 'unknown_outcome'
+    ? 'The previous request’s outcome is unknown. It won’t be sent again.'
+    : 'This conversation’s session is stuck.';
+}
+
+/** Declared recovery explains the status; other stalls retain their runtime reason. */
+export function recoveryStatusNotice(recovery: RunRecovery | null, stalledReason: string | null): Readonly<{ heading: string; reason: string }> {
+  return recovery?.cause === 'unknown_outcome'
+    ? { heading: 'Outcome unknown', reason: recoveryReason(recovery) }
+    : { heading: 'Paused', reason: stalledReason ?? 'This conversation is stuck.' };
+}
+
+export function recoveryNotice(recovery: RunRecovery): string {
+  const reason = recoveryReason(recovery);
+  return `${reason} History stays here; a fresh model session starts without that context.`;
+}
 
 /** A restart that was answered: the new session does not carry the old thread's context. */
 export const RESTARTED_NOTICE = 'Fresh session started. Earlier messages stay here, but the assistant won’t remember them unless you mention them.';

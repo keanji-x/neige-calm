@@ -550,3 +550,122 @@ async fn a_send_during_a_restart_waits_on_the_cards_lock() {
     boot.wait_delivered("after the restart").await;
     boot.shutdown().await;
 }
+
+#[tokio::test]
+async fn run_recovery_healthy_and_wedged() {
+    let boot = ordinary_track().await;
+    let (_, run) = get(boot.app.clone(), boot.card_uri("planner/run")).await;
+    assert!(run.as_object().unwrap().contains_key("recovery"));
+    assert_eq!(run["recovery"], Value::Null);
+    let runtime = boot.active().await;
+    let harness = boot.state.harness.get(&runtime.id).unwrap();
+    harness
+        .set_state_for_test(HarnessState::Wedged {
+            since: Instant::now(),
+            reason: "system_error".into(),
+        })
+        .await;
+    harness.persist_snapshot().await.unwrap();
+    let (_, run) = get(boot.app.clone(), boot.card_uri("planner/run")).await;
+    assert_eq!(
+        run["recovery"],
+        json!({"cause":"wedged","action":"restart_session"})
+    );
+}
+
+/// Denial must happen before the start can harvest input, stop the predecessor, or
+/// install a successor. Exercise the REST actor parser, not a synthetic operation.
+async fn restart_authority_denies_before_side_effects(route: &str) {
+    const QUEUED: &str = "input still owned by the predecessor";
+    let boot = ordinary_track().await;
+    let old = boot.active().await;
+    let harness = boot.state.harness.get(&old.id).unwrap();
+    let running = HarnessState::turn_running("unconfirmed".into(), Instant::now());
+    harness.set_state_for_test(running.clone()).await;
+    harness
+        .observe_user_message_durable(QUEUED.into(), vec![], SendKey::unique_for_test())
+        .await
+        .unwrap();
+    harness.persist_snapshot().await.unwrap();
+    let before: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&old.id)
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+    let before: Value = serde_json::from_str(&before).unwrap();
+    assert!(before["pending_entry_meta"][0]["rev"].is_number());
+    let starts = boot.start_ops().await;
+    let workers = boot
+        .scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+        .await;
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(boot.card_uri(&format!("planner/{route}")))
+                .header("X-Calm-Actor", "ai:codex")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "{route}: {body}");
+    assert_eq!(body["code"], "forbidden", "{route}: {body}");
+    assert_eq!(boot.current_session().await, Some(old.id.clone()));
+    assert!(boot.state.harness.get(&old.id).is_some());
+    assert_eq!(harness.state_for_test().await, running);
+    let after: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&old.id)
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+    let after: Value = serde_json::from_str(&after).unwrap();
+    assert_eq!(after["pending_queue"], before["pending_queue"]);
+    assert_eq!(
+        after["pending_entry_meta"], before["pending_entry_meta"],
+        "queue identity and revision"
+    );
+    assert_eq!(boot.harvested_at(&old.id).await, None);
+    assert_eq!(boot.queued_copies(QUEUED).await, vec![(old.id.clone(), 1)]);
+    assert_eq!(
+        boot.scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+            .await,
+        workers,
+        "no successor"
+    );
+    assert_eq!(
+        boot.start_ops().await,
+        starts,
+        "denied before operation creation"
+    );
+    let compensated: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE compensation_state IS NOT NULL")
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(compensated, 0, "no compensation ran");
+    // Shutdown closes durable ingress. Successful admission proves the original
+    // harness is still running, beyond merely retaining its registry entry.
+    harness
+        .observe_user_message_durable("still running".into(), vec![], SendKey::unique_for_test())
+        .await
+        .unwrap();
+    boot.shutdown().await;
+}
+
+#[tokio::test]
+async fn restart_authority_restart_preserves_predecessor() {
+    restart_authority_denies_before_side_effects("restart").await;
+}
+
+#[tokio::test]
+async fn restart_authority_reset_preserves_predecessor() {
+    restart_authority_denies_before_side_effects("reset").await;
+}

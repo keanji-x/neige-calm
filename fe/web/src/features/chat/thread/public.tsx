@@ -1,4 +1,5 @@
 import { terminalCommand, TERMINAL_ARGUMENTS_MESSAGE, TERMINAL_DESKTOP_MESSAGE } from '../../../../../core/domain/terminal-command.ts';
+import type { RunRecovery } from '../../../../../core/domain/conversation-restart.ts';
 import { useThreadReadingView, type ThreadReadingView } from './reading-view.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 import { floatingControlClassName, floatingControlMaterialClassName } from '../../../ui/floating-control/public.ts';
@@ -73,6 +74,8 @@ export type ChatThreadProps = Readonly<{
   stalled: boolean;
   /** The runtime reason is separate from the persisted terminal transcript. */
   stalledReason?: string | null;
+  /** Server-declared recovery explains the current stalled status. */
+  recovery?: RunRecovery | null;
   /** A failed status read cannot confirm current execution from cached facts. History stays readable. */
   statusUnconfirmed?: boolean;
   /** Read progress describes the status query, independently of model execution. */
@@ -96,7 +99,7 @@ export type ChatThreadProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -128,7 +131,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     } };
   const currentMeta = <CurrentStatusNotice detailsExpanded={reading.expanded.get('current-status') ?? false}
     onDetailsExpandedChange={expanded => reading.setExpanded('current-status', expanded)} outcome={currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} sending={sending} statusUnconfirmed={statusUnconfirmed} statusLoading={statusLoading}
-    stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
+    stalled={stalled} recovery={recovery} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);
