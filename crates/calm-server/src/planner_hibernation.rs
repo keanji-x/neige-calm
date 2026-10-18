@@ -242,19 +242,13 @@ impl WakeContext {
                         "Restore this conversation's workspace before resuming".into(),
                     ));
                 }
-                let thread =
-                    crate::harness::effective_runtime_thread_id(&runtime).ok_or_else(|| {
-                        crate::error::CalmError::Conflict("conversation thread is missing".into())
-                    })?;
-                s.daemon
-                    .upgrade()
-                    .ok_or_else(|| {
-                        crate::error::CalmError::ServiceUnavailable(
-                            "application daemon stopped".into(),
-                        )
-                    })?
-                    .resume_active_conversation(&runtime, &thread)
-                    .await?;
+                crate::harness::backend::factory::PlannerFactory::new(
+                    s.daemon.clone(),
+                    &s.providers.claude,
+                    &s.providers.acp,
+                )
+                .resume_active_conversation(s.repo.as_ref(), &runtime)
+                .await?;
             }
             Some(provider @ (AgentProvider::Claude | AgentProvider::OpenCode)) => {
                 crate::harness::backend::factory::PlannerFactory::new(

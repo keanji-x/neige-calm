@@ -5,7 +5,7 @@
 mod macos_process;
 
 pub mod control;
-mod preserving_recovery;
+pub(crate) mod exact_thread;
 use control::ControlError;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod termination_identity_tests;

@@ -1,57 +1,107 @@
-//! Exact-thread recovery. The caller owns the card/reset and track/delete
-//! fences and has quiesced any failed harness before entering here.
-use super::*;
-use crate::db::sqlite::{session_resume_system_error_tx, session_system_error_recovery_matches_tx};
+//! Host exact-thread restoration. Callers retain card/reset and track/delete fences.
+use super::PlannerFactory;
+use crate::db::sqlite::{
+    session_projection_active_for_card_tx, session_resume_system_error_tx,
+    session_system_error_recovery_matches_tx,
+};
+use crate::db::write_in_tx_typed;
+use crate::error::{CalmError, Result};
+use crate::mcp_server::wiring::mint_and_persist_card_token;
 use crate::session_projection_repo::WorkerSessionProjection;
+use crate::shared_codex_appserver::ThreadConfig;
 use serde_json::Value;
-#[cfg(feature = "fixtures")]
-use serde_json::json;
 
-impl SharedCodexAppServer {
+/// Immutable target derived here from the caller's checked current carrier. No public constructor
+/// or alternate native thread argument; the native scope cannot be retargeted.
+pub(crate) struct RecoveryTarget {
+    thread_id: String,
+    card_id: String,
+}
+impl RecoveryTarget {
+    fn active(runtime: &WorkerSessionProjection) -> Result<Self> {
+        Self::from_carrier(runtime, "conversation thread is missing")
+    }
+    fn failed(runtime: &WorkerSessionProjection) -> Result<Self> {
+        Self::from_carrier(
+            runtime,
+            "original conversation thread is missing; history is retained",
+        )
+    }
+    fn from_carrier(runtime: &WorkerSessionProjection, missing: &str) -> Result<Self> {
+        Ok(Self {
+            thread_id: crate::harness::effective_runtime_thread_id(runtime)
+                .ok_or_else(|| CalmError::Conflict(missing.into()))?,
+            card_id: runtime.card_id.clone(),
+        })
+    }
+    pub(crate) fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+    pub(crate) fn card_id(&self) -> &str {
+        &self.card_id
+    }
+}
+
+impl PlannerFactory<'_> {
+    pub(crate) async fn resume_active_conversation(
+        &self,
+        repo: &dyn crate::db::Repo,
+        runtime: &WorkerSessionProjection,
+    ) -> Result<()> {
+        let target = RecoveryTarget::active(runtime)?;
+        let daemon = self.daemon()?;
+        daemon
+            .with_exact_thread(&target, async |native| {
+                Self::restore_active(native, repo, runtime).await
+            })
+            .await
+    }
+    pub(crate) async fn resume_system_error_conversation(
+        &self,
+        repo: &dyn crate::db::Repo,
+        runtime: &WorkerSessionProjection,
+    ) -> Result<Option<(i64, String)>> {
+        let target = RecoveryTarget::failed(runtime)?;
+        let daemon = self.daemon()?;
+        daemon
+            .with_exact_thread(&target, async |native| {
+                Self::restore_failed(native, repo, runtime).await
+            })
+            .await
+    }
     /// Active carrier restoration uses the same exact-thread read/resume RPCs as
     /// system-error recovery. A cold thread receives this carrier's MCP token;
     /// a loaded thread keeps its existing credentials.
-    pub(crate) async fn resume_active_conversation(
-        &self,
+    async fn restore_active(
+        native: crate::shared_codex_appserver::exact_thread::RecoveryThread<'_>,
+        repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
-        thread_id: &str,
     ) -> Result<()> {
-        let _transition = self.transition_serial.lock().await;
-        let _replay = self.resume_replay_serial.lock().await;
-        if self.thread_seals.is_sealed(thread_id) {
-            return Err(CalmError::Conflict("conversation is being deleted".into()));
-        }
-        let before = {
-            #[cfg(feature = "fixtures")]
-            if self.fake.is_some() && !self.thread_cache.contains_key(thread_id) {
-                json!({"id":thread_id,"status":{"type":"notLoaded"}})
-            } else {
-                self.read_recovery_thread(thread_id).await?
-            }
-            #[cfg(not(feature = "fixtures"))]
-            self.read_recovery_thread(thread_id).await?
-        };
-        if before.get("id").and_then(Value::as_str) != Some(thread_id) {
+        let thread_id = native.thread_id();
+        let before = native.read_active().await?;
+        if before.id.as_deref() != Some(thread_id) {
             return Err(CalmError::Conflict(
                 "provider returned a different conversation".into(),
             ));
         }
-        let cold = match before.pointer("/status/type").and_then(Value::as_str) {
-            Some("notLoaded") => true,
-            Some("idle" | "systemError" | "active") => false,
-            _ => {
-                return Err(CalmError::ServiceUnavailable(
-                    "Original conversation state is unknown; retry shortly".into(),
-                ));
-            }
-        };
+        let cold = before.status.as_deref() == Some("notLoaded");
+        if !cold
+            && !matches!(
+                before.status.as_deref(),
+                Some("idle" | "systemError" | "active")
+            )
+        {
+            return Err(CalmError::ServiceUnavailable(
+                "Original conversation state is unknown; retry shortly".into(),
+            ));
+        }
         // A loaded thread still needs this connection's subscription restored.
         // Its existing credentials and running turn stay in place.
         let config = if cold {
-            let socket_path = self.kernel_mcp_socket_path.clone();
+            let socket_path = native.socket_path().to_owned();
             let expected = runtime.clone();
             let thread = thread_id.to_owned();
-            write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            write_in_tx_typed(repo, move |tx| {
                 Box::pin(async move {
                     let current =
                         session_projection_active_for_card_tx(tx, &expected.card_id).await?;
@@ -94,45 +144,38 @@ impl SharedCodexAppServer {
         } else {
             ThreadConfig::NoMcp
         };
-        let resumed = self.resume_recovery_thread(thread_id, config).await?;
-        if resumed.get("id").and_then(Value::as_str) != Some(thread_id)
+        let resumed = native.resume(config).await?;
+        if resumed.id.as_deref() != Some(thread_id)
             || !matches!(
-                resumed.pointer("/status/type").and_then(Value::as_str),
+                resumed.status.as_deref(),
                 Some("idle" | "systemError" | "active")
             )
-            || (cold && resumed.pointer("/status/type").and_then(Value::as_str) == Some("active"))
+            || (cold && resumed.status.as_deref() == Some("active"))
         {
             return Err(CalmError::ServiceUnavailable(
                 "Original conversation did not confirm resume; history retained".into(),
             ));
         }
-        self.thread_cache
-            .insert(thread_id.to_owned(), runtime.card_id.clone());
-        self.hibernating_releases.remove(thread_id);
+        native.retain_subscription();
+        native.clear_hibernating_release();
         Ok(())
     }
-    pub(crate) async fn resume_system_error_conversation(
-        &self,
+    async fn restore_failed(
+        native: crate::shared_codex_appserver::exact_thread::RecoveryThread<'_>,
+        repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
-        thread_id: &str,
     ) -> Result<Option<(i64, String)>> {
         // Same order as daemon replacement -> cached-thread resume. A daemon
         // cannot turn a hot read into a cold resume while credentials are chosen.
-        let _transition = self.transition_serial.lock().await;
-        let _replay = self.resume_replay_serial.lock().await;
-        if self.thread_seals.is_sealed(thread_id) {
-            return Err(CalmError::Conflict("conversation is being deleted".into()));
-        }
+        let thread_id = native.thread_id();
         let snapshot = runtime.handle_state_json.clone().ok_or_else(|| {
             CalmError::Conflict("conversation recovery snapshot is missing".into())
         })?;
-        let role = self
-            .repo
+        let role = repo
             .card_role_get(&runtime.card_id)
             .await?
             .ok_or_else(|| CalmError::Conflict("conversation role is missing".into()))?;
-        let card = self
-            .repo
+        let card = repo
             .card_get(&runtime.card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound("conversation no longer exists".into()))?;
@@ -143,18 +186,17 @@ impl SharedCodexAppServer {
             })
             .ok_or_else(|| CalmError::Conflict("card is not a Codex harness conversation".into()))?
             .profile;
-        self.validate_recovery_carrier(runtime, thread_id, &snapshot)
-            .await?;
+        Self::validate_recovery_carrier(repo, runtime, thread_id, &snapshot).await?;
         // thread/read and thread/resume share Codex's global exclusive thread queue, so after a
         // lost resume response this read waits for that resume to settle, across connections.
-        let before = self.read_recovery_thread(thread_id).await?;
-        let cold = match before.get("status").and_then(|s| s.get("type")).and_then(Value::as_str) {
-            Some("notLoaded") => true,
-            Some("idle" | "systemError") => false,
-            _ => return Err(CalmError::ServiceUnavailable(
-                "The original conversation still has an active or unknown turn; retry after it settles. History is retained.".into())),
-        };
-        if before.get("id").and_then(Value::as_str) != Some(thread_id) {
+        let turn_id = snapshot.get("last_turn_id").and_then(Value::as_str);
+        let before = native.read(turn_id).await?;
+        let cold = before.state.status.as_deref() == Some("notLoaded");
+        if !cold && !matches!(before.state.status.as_deref(), Some("idle" | "systemError")) {
+            return Err(CalmError::ServiceUnavailable(
+                "The original conversation still has an active or unknown turn; retry after it settles. History is retained.".into()));
+        }
+        if before.state.id.as_deref() != Some(thread_id) {
             return Err(CalmError::Conflict(
                 "provider returned a different conversation".into(),
             ));
@@ -167,7 +209,7 @@ impl SharedCodexAppServer {
             // Persist before RPC: a lost response can leave a loaded thread.
             // Its token must already be known on retry, while Failed continues
             // to deny that token authority until the final restore commits.
-            let raw = write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            let raw = write_in_tx_typed(repo, move |tx| {
                 Box::pin(async move {
                     if !session_system_error_recovery_matches_tx(tx, &card, &id, &thread, &expected)
                         .await?
@@ -182,21 +224,15 @@ impl SharedCodexAppServer {
             .await?;
             ThreadConfig::McpShell {
                 role,
-                socket_path: self.kernel_mcp_socket_path.clone(),
+                socket_path: native.socket_path().to_owned(),
                 raw_token: raw,
             }
         } else {
             ThreadConfig::NoMcp
         };
-        let resumed = self.resume_recovery_thread(thread_id, config).await?;
-        if resumed.get("id").and_then(Value::as_str) != Some(thread_id)
-            || !matches!(
-                resumed
-                    .get("status")
-                    .and_then(|s| s.get("type"))
-                    .and_then(Value::as_str),
-                Some("idle" | "systemError")
-            )
+        let resumed = native.resume(config).await?;
+        if resumed.id.as_deref() != Some(thread_id)
+            || !matches!(resumed.status.as_deref(), Some("idle" | "systemError"))
         {
             return Err(CalmError::ServiceUnavailable(
                 "The original conversation could not be confirmed idle; history is retained. Retry shortly.".into()));
@@ -204,13 +240,18 @@ impl SharedCodexAppServer {
         // The old loop may have been quiesced before its queued completion.
         // Recover the exact last turn's terminal outcome from provider history,
         // without replaying its inputs or relying on a future notification.
-        let outcome = self
-            .retain_recovered_outcome(runtime, thread_id, &before)
-            .await?;
+        let outcome = Self::retain_recovered_outcome(
+            repo,
+            runtime,
+            thread_id,
+            turn_id,
+            before.terminal.as_ref(),
+        )
+        .await?;
         let card = runtime.card_id.clone();
         let id = runtime.id.clone();
         let thread = thread_id.to_owned();
-        let restored = write_in_tx_typed(self.repo.as_ref(), move |tx| {
+        let restored = write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
                 Ok(session_resume_system_error_tx(tx, &card, &id, &thread, &snapshot).await?)
             })
@@ -221,47 +262,26 @@ impl SharedCodexAppServer {
                 "conversation changed during recovery; message was not sent".into(),
             ));
         }
-        self.thread_cache
-            .insert(thread_id.to_owned(), runtime.card_id.clone());
+        native.retain_subscription();
         Ok(outcome)
     }
 
     async fn retain_recovered_outcome(
-        &self,
+        repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
         thread_id: &str,
-        thread: &Value,
+        turn_id: Option<&str>,
+        terminal: Option<&Value>,
     ) -> Result<Option<(i64, String)>> {
-        let Some(turn_id) = runtime
-            .handle_state_json
-            .as_ref()
-            .and_then(|s| s.get("last_turn_id"))
-            .and_then(Value::as_str)
-        else {
+        let (Some(turn_id), Some(turn)) = (turn_id, terminal) else {
             return Ok(None);
         };
-        let Some(turn) = thread
-            .get("turns")
-            .and_then(Value::as_array)
-            .and_then(|turns| {
-                turns.iter().find(|turn| {
-                    turn.get("id").and_then(Value::as_str) == Some(turn_id)
-                        && matches!(
-                            turn.get("status").and_then(Value::as_str),
-                            Some("completed" | "failed" | "interrupted")
-                        )
-                })
-            })
-        else {
-            return Ok(None);
-        };
-        let card = self
-            .repo
+        let card = repo
             .card_get(&runtime.card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound("conversation disappeared".into()))?;
         let id = crate::harness::turn_outcome::record(
-            self.repo.as_ref(),
+            repo,
             &runtime.id,
             &runtime.card_id,
             card.track_id.as_str(),
@@ -275,7 +295,7 @@ impl SharedCodexAppServer {
     }
 
     async fn validate_recovery_carrier(
-        &self,
+        repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
         thread_id: &str,
         snapshot: &Value,
@@ -284,7 +304,7 @@ impl SharedCodexAppServer {
         let id = runtime.id.clone();
         let thread = thread_id.to_owned();
         let expected = snapshot.clone();
-        let valid = write_in_tx_typed(self.repo.as_ref(), move |tx| {
+        let valid = write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
                 Ok(
                     session_system_error_recovery_matches_tx(tx, &card, &id, &thread, &expected)
@@ -300,67 +320,5 @@ impl SharedCodexAppServer {
                 "conversation is no longer eligible for recovery; history is retained".into(),
             ))
         }
-    }
-
-    async fn read_recovery_thread(&self, thread_id: &str) -> Result<Value> {
-        #[cfg(feature = "fixtures")]
-        if self.fake.is_some() {
-            let status = if self.active_turn_id_for_thread(thread_id).is_some() {
-                "active"
-            } else {
-                "systemError"
-            };
-            return Ok(json!({"id":thread_id,"status":{"type":status}}));
-        }
-        Ok(self
-            .connected_client()
-            .await?
-            .thread_read_full(thread_id)
-            .await?
-            .thread)
-    }
-
-    async fn resume_recovery_thread(&self, thread_id: &str, config: ThreadConfig) -> Result<Value> {
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            if fake.fail_thread_resume.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "forced thread/resume failure".into(),
-                ));
-            }
-            fake.resumed_threads
-                .lock()
-                .expect("fake resumed threads mutex")
-                .push((
-                    thread_id.to_owned(),
-                    matches!(config, ThreadConfig::McpShell { .. }),
-                ));
-            return Ok(json!({"id":thread_id,"status":{"type":"idle"}}));
-        }
-        Ok(self
-            .connected_client()
-            .await?
-            .thread_resume_with_config(thread_id, config.to_wire_config()?)
-            .await?
-            .thread)
-    }
-
-    #[cfg(feature = "fixtures")]
-    pub fn resumed_threads_for_test(&self) -> Vec<(String, bool)> {
-        self.fake
-            .as_ref()
-            .expect("fake daemon")
-            .resumed_threads
-            .lock()
-            .unwrap()
-            .clone()
-    }
-    #[cfg(feature = "fixtures")]
-    pub fn fail_thread_resume_for_test(&self) {
-        self.fake
-            .as_ref()
-            .expect("fake daemon")
-            .fail_thread_resume
-            .store(true, Ordering::SeqCst);
     }
 }

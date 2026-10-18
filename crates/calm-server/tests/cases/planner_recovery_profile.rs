@@ -365,3 +365,171 @@ async fn a_failed_planner_bound_to_claude_is_not_resumed_on_codex() {
         .unwrap();
     assert_eq!(row.status, WorkerSessionState::Failed);
 }
+
+/// Observe the transaction at the real RPC boundary, including a failed response.
+#[tokio::test]
+async fn recovery_commits_cold_credentials_before_rpc_but_not_restore_authority() {
+    for cold in [false, true] {
+        let boot = boot_shared().await;
+        let (card, runtime, thread, _) = failed_conversation(&boot).await;
+        let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+            .await
+            .unwrap();
+        let sock = boot._tmp.path().join("run/codex-appserver.sock");
+        std::fs::write(
+            sock.with_extension("thread-read"),
+            json!({"thread":{
+                "id":thread,"status":{"type":if cold {"notLoaded"} else {"systemError"}}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        // A mismatched identity must retain history and Failed even after credentials commit.
+        std::fs::write(
+            sock.with_extension("thread-resume"),
+            json!({"thread":{
+                "id":"decoy-thread","status":{"type":"idle"}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(sock.with_extension("hold-first-resume"), "").unwrap();
+        let app = boot.app.clone();
+        let uri = format!("/api/cards/{}/planner/input", card.id);
+        let pending = tokio::spawn(async move {
+            post_planner_input(app, &uri, json!({"text":"retain this input on refusal"})).await
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !sock.with_extension("held-resume").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "resume did not reach its RPC hold"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let during = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+            .await
+            .unwrap();
+        assert_eq!(during.status, WorkerSessionState::Failed);
+        assert_eq!(during.handle_state_json, before.handle_state_json);
+        let token: Option<String> =
+            sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?")
+                .bind(&runtime)
+                .fetch_one(boot.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(token.is_some(), cold, "only cold recovery mints before RPC");
+        std::fs::write(sock.with_extension("release-resume"), "").unwrap();
+        let (status, body) = pending.await.unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        let after = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+            .await
+            .unwrap();
+        assert_eq!(after.status, WorkerSessionState::Failed);
+        assert_eq!(after.handle_state_json, before.handle_state_json);
+        assert!(boot.state.harness.get(&runtime).is_none());
+        assert!(
+            boot.state
+                .shared_codex_appserver
+                .started_thread_params_for_test()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn exact_thread_recovery_refusal_matrix_retains_carrier_and_queue() {
+    // Pin both host policies at HTTP Send: neither unknown native states nor a
+    // cold resume claiming an active turn grant restoration or replay input.
+    for failed in [false, true] {
+        for (read_id_matches, read_status, resume_id_matches, resume_status, expected) in [
+            (false, "systemError", true, "idle", StatusCode::CONFLICT),
+            (
+                true,
+                "futureState",
+                true,
+                "idle",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                true,
+                "notLoaded",
+                false,
+                "idle",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                true,
+                "notLoaded",
+                true,
+                "futureState",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                true,
+                "notLoaded",
+                true,
+                "active",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let boot = boot_shared().await;
+            let (card, runtime, thread, _) = failed_conversation(&boot).await;
+            if !failed {
+                sqlx::query(
+                    "UPDATE worker_sessions SET state='idle',
+                        handle_state_json=json_set(handle_state_json,'$.phase','idle','$.wedged_reason',NULL)
+                     WHERE id=?",
+                )
+                    .bind(&runtime).execute(boot.repo.pool()).await.unwrap();
+            }
+            let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+                .await
+                .unwrap();
+            let sock = boot._tmp.path().join("run/codex-appserver.sock");
+            std::fs::write(
+                sock.with_extension("thread-read"),
+                json!({"thread":{
+                    "id":if read_id_matches {thread.as_str()} else {"decoy-thread"},
+                    "status":{"type":read_status}
+                }})
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                sock.with_extension("thread-resume"),
+                json!({"thread":{
+                    "id":if resume_id_matches {thread.as_str()} else {"decoy-thread"},
+                    "status":{"type":resume_status}
+                }})
+                .to_string(),
+            )
+            .unwrap();
+            let (status, body) = post_planner_input(
+                boot.app.clone(),
+                &format!("/api/cards/{}/planner/input", card.id),
+                json!({"text":"do not replay"}),
+            )
+            .await;
+            assert_eq!(
+                status, expected,
+                "failed={failed}, read={read_status}, resume={resume_status}: {body}"
+            );
+            let after = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
+                .await
+                .unwrap();
+            assert_eq!(after.status, before.status);
+            assert_eq!(after.handle_state_json, before.handle_state_json);
+            assert!(boot.state.harness.get(&runtime).is_none());
+            let sends: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE scope_card=? AND kind='harness.user_message.enqueued'")
+                .bind(card.id.as_str()).fetch_one(boot.repo.pool()).await.unwrap();
+            assert_eq!(sends, 0);
+            assert!(
+                boot.state
+                    .shared_codex_appserver
+                    .started_thread_params_for_test()
+                    .is_empty()
+            );
+        }
+    }
+}

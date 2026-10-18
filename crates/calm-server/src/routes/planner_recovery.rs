@@ -65,9 +65,12 @@ pub(super) async fn recover(
         crate::harness::backend::factory::ReadinessFor::RestoreOrSend,
     )
     .await?;
-    let thread = crate::harness::effective_runtime_thread_id(&runtime).ok_or_else(|| {
-        CalmError::Conflict("original conversation thread is missing; history is retained".into())
-    })?;
+    let expected_thread =
+        crate::harness::effective_runtime_thread_id(&runtime).ok_or_else(|| {
+            CalmError::Conflict(
+                "original conversation thread is missing; history is retained".into(),
+            )
+        })?;
     if let Some(old) = s.harness.get(&runtime.id) {
         old.quiesce_system_error_for_recovery().await?;
         s.harness.remove_if_same(&runtime.id, &old);
@@ -79,10 +82,19 @@ pub(super) async fn recover(
         .session_projection_by_id(&runtime.id)
         .await?
         .ok_or_else(|| CalmError::Conflict("conversation changed during recovery".into()))?;
-    let outcome = cs
-        .shared_codex_appserver
-        .resume_system_error_conversation(&runtime, &thread)
-        .await?;
+    // Refetch may update the settled queue, but cannot retarget this recovery.
+    if crate::harness::effective_runtime_thread_id(&runtime).as_deref() != Some(&expected_thread) {
+        return Err(CalmError::Conflict(
+            "conversation is no longer eligible for recovery; history is retained".into(),
+        ));
+    }
+    let outcome = crate::harness::backend::factory::PlannerFactory::new(
+        std::sync::Arc::downgrade(&cs.shared_codex_appserver),
+        &s.claude_planner,
+        &s.acp_planner,
+    )
+    .resume_system_error_conversation(w.repo.as_ref(), &runtime)
+    .await?;
     if let Some((item_db_id, turn_id)) = outcome {
         s.repo
             .log_pure_event(
