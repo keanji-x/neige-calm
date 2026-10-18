@@ -25,9 +25,11 @@ async fn old_interrupt(fx: &HistoricalFixture, output: Option<TxOutput>) -> Stri
     if let Some(output) = output {
         // Released old TxOutput shape, built from the real original runtime.
         // No launch/claim/FSM fact is invented by this fixture write.
-        sqlx::query("UPDATE operations SET phase='tx_committed',tx_output_json=?2 WHERE id=?1")
+        sqlx::query("UPDATE operations SET phase='tx_committed',tx_output_json=?2,target_type=?3,target_id=?4,target_json=?5 WHERE id=?1")
             .bind(&id)
             .bind(serde_json::to_string(&output).unwrap())
+            .bind(&output.target_type).bind(&output.target_id)
+            .bind(json!({"type":output.target_type,"id":output.target_id}).to_string())
             .execute(fx.fixture.repo.pool())
             .await
             .unwrap();
@@ -198,4 +200,47 @@ async fn new_unbound_legacy_interrupt_submissions_are_refused() {
         !accepted,
         "new runtime-only submissions lack an original target and live public source"
     );
+}
+
+#[tokio::test]
+async fn old_interrupt_cannot_override_its_original_request_target() {
+    let fx = HistoricalFixture::new(true).await;
+    let original = original_output(&fx).await;
+    let id = old_interrupt(&fx, Some(original)).await;
+    let original_request = json!({"runtime_id":"different-original-runtime","reason":"user_stop"});
+    sqlx::query("UPDATE operations SET payload_json=?2,payload_hash=?3 WHERE id=?1")
+        .bind(&id)
+        .bind(original_request.to_string())
+        .bind(super::super::idempotency_key::stable_payload_hash(&original_request).unwrap())
+        .execute(fx.fixture.repo.pool())
+        .await
+        .unwrap();
+    let outcome = drive(&fx, &id).await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert!(
+        native.is_empty(),
+        "a prepared result cannot replace the original request's target"
+    );
+    assert!(!matches!(outcome, OperationOutcome::Succeeded { .. }));
+}
+
+#[tokio::test]
+async fn old_interrupt_cannot_override_its_operation_target_metadata() {
+    let fx = HistoricalFixture::new(true).await;
+    let original = original_output(&fx).await;
+    let id = old_interrupt(&fx, Some(original)).await;
+    sqlx::query("UPDATE operations SET target_id='different-original-runtime' WHERE id=?1")
+        .bind(&id)
+        .execute(fx.fixture.repo.pool())
+        .await
+        .unwrap();
+    let outcome = drive(&fx, &id).await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert!(
+        native.is_empty(),
+        "prepared data cannot replace the operation's stored target"
+    );
+    assert!(!matches!(outcome, OperationOutcome::Succeeded { .. }));
 }

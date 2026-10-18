@@ -275,6 +275,7 @@ pub(in crate::harness::run_loop) async fn handle(
                 &plan.request.turn_id,
             )
             .await;
+            publish_historical_phase(inner, HarnessPhaseTag::IssuingInterrupt).await;
             let inner = inner.clone();
             let request = plan.request;
             let reason = plan.reason;

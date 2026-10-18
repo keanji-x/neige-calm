@@ -4462,6 +4462,7 @@ async fn persist_snapshot_inner(
         historical_control::SnapshotWrite::Mutation(_) | historical_control::SnapshotWrite::Stop(_)
     );
     let (last_seen_head_override, send, admission, stop) = write.parts();
+    let publish_after_adoption = stop.is_some();
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
     }
@@ -4560,9 +4561,16 @@ async fn persist_snapshot_inner(
     })
     .await?;
 
+    if written && !publish_after_adoption {
+        publish_historical_phase(inner, new_phase).await;
+    }
+    Ok(written)
+}
+
+async fn publish_historical_phase(inner: &Inner, phase: HarnessPhaseTag) {
     emit_phase_refresh(
         inner,
-        new_phase,
+        phase,
         (
             inner.compact_outcome.lock().await.clone(),
             inner.context_usage_invalidation.lock().await.is_some(),
@@ -4570,7 +4578,6 @@ async fn persist_snapshot_inner(
         ),
     )
     .await;
-    Ok(written)
 }
 
 async fn emit_phase_refresh(

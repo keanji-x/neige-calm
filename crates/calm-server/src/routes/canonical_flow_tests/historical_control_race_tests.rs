@@ -91,7 +91,10 @@ async fn before_commit_refusal(delete: bool) {
         hand_area_to_alice(&fx.fixture, fx.area["id"].as_str().unwrap()).await;
     }
     pause.release.notify_one();
-    let (status, body) = pending.await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the released original control answers")
+        .unwrap();
     let after = fx.harness.snapshot().await.unwrap();
     let after_debounce = fx.harness.debounce_timestamps_set_for_test().await;
     let after_hard_fire = fx.harness.debounce_hard_fire_for_test().await;
@@ -138,7 +141,10 @@ async fn queued_steer_rechecks_logout_after_native_gate_without_unknown_delivery
     entered(&pause).await;
     logout(&fx).await;
     pause.release.notify_one();
-    let (status, body) = pending.await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the released original control answers")
+        .unwrap();
     let after = fx.harness.snapshot().await.unwrap();
     let after_debounce = fx.harness.debounce_timestamps_set_for_test().await;
     let after_native =
@@ -171,7 +177,10 @@ async fn stop_membership_rejection_at_commit_preserves_all_control_facts() {
     entered(&pause).await;
     hand_area_to_alice(&fx.fixture, fx.area["id"].as_str().unwrap()).await;
     pause.release.notify_one();
-    let (status, body) = pending.await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the released original control answers")
+        .unwrap();
     let after = fx.harness.snapshot().await.unwrap();
     let after_controls = fx.harness.historical_control_facts_for_test().await;
     let after_native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
@@ -258,11 +267,19 @@ async fn accepted_stop_drains_original_target_after_logout_and_ack_is_not_end() 
     let accepted = fx.harness.snapshot().await.unwrap();
     logout(&fx).await;
     release.notify_one();
-    let (status, body) = pending.await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the released original control answers")
+        .unwrap();
     let acknowledged = fx.harness.snapshot().await.unwrap();
     let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
     complete(&fx, "fake-turn-0001").await;
-    fx.shutdown().await;
+    // The original legacy shutdown separately asks the last-known turn. ACK
+    // that cleanup RPC as well; it is not the earlier business Stop or END.
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), fx.shutdown())
+        .await
+        .expect("the original cleanup RPC receives its own ACK");
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["stopped"], true);
     assert_eq!(accepted.phase, HarnessPhaseTag::IssuingInterrupt);
@@ -319,7 +336,10 @@ async fn selected_stop_cannot_retarget_a_later_turn_while_waiting_for_its_owner(
     .await
     .unwrap();
     pause.release.notify_one();
-    let (status, body) = pending.await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the released original control answers")
+        .unwrap();
     let after = fx.harness.snapshot().await.unwrap();
     let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
     fx.shutdown().await;
@@ -356,7 +376,10 @@ async fn stop_phase_event_follows_committed_memory_publication() {
         }
     }
     pause.release.notify_one();
-    let (status, body) = pending.await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("the released original control answers")
+        .unwrap();
     let (_, run) = perform(
         fx.app.clone(),
         fx.cookie.clone(),
