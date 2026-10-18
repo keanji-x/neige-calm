@@ -53,6 +53,24 @@ cross a boundary. Never lower it mid-review.
   a rename), both channels instead check only its delta and confirm that their
   earlier verdicts still hold.
 
+### After a rebase or conflict resolution
+
+For an already-reviewed change, compare its own patch before and after the
+rebase or conflict resolution, each against its respective base (for example,
+with `git range-diff <old-base>..<old-head> <new-base>..<new-head>`). Use this
+interdiff rule instead of the fix-review rules above:
+
+- If the interdiff is mechanical and changes no behaviour (a fixture field,
+  an import merge, test wait ordering), the re-run gate is the evidence; no
+  review channel re-reviews the change.
+- If the interdiff changes behaviour, each review channel required by the
+  change's tier reviews only the interdiff, using surrounding code as needed.
+
+Keep the prior review verdicts and record the compared revisions, interdiff
+classification, and re-run gate results in the pull request. Re-run invalidated
+checks on the final tree in either case; this does not replace the initial
+review required by the change's tier.
+
 ## Review and fix loop
 
 - Review behavior, security, data integrity, architecture boundaries, callers,
