@@ -20,7 +20,7 @@ pub struct RunReadQuery {
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum PlannerRunReadResponse {
-    Historical(GetPlannerRunResponse),
+    Historical(Box<GetPlannerRunResponse>),
     Conversation(Box<ConversationRunResponse>),
 }
 
@@ -237,7 +237,7 @@ pub(super) async fn read(
             )))
             .into_response()
         } else {
-            Json(PlannerRunReadResponse::Historical(run)).into_response()
+            Json(PlannerRunReadResponse::Historical(Box::new(run))).into_response()
         }
     };
     scope.publish(s.repo.as_ref(), &principal).await?;
