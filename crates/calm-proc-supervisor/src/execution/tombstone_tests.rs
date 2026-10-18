@@ -30,38 +30,75 @@ async fn tombstone_resumes_journal_removal() {
     store.write(&tombstone_name, &tombstone).unwrap();
     let original = std::fs::read(root.join(&tombstone_name)).unwrap();
     drop(store);
+    std::fs::remove_file(root.join(&name)).unwrap();
+    std::fs::create_dir(root.join(&name)).unwrap();
+    assert!(
+        Executor::open(ExecutorConfig {
+            journal_directory: root.clone(),
+            helper_program: std::fs::canonicalize("/bin/sh").unwrap(),
+            kernel_client_secret: secret.clone(),
+        })
+        .is_err()
+    );
+    std::fs::remove_dir(root.join(&name)).unwrap();
+    std::fs::write(root.join(&name), b"malformed superseded secret journal").unwrap();
     let executor = open(&root, &secret);
     assert!(!root.join(&name).exists(), "startup must resume deletion");
     assert!(executor.records.lock().unwrap().is_empty());
 
-    // A real unlink error after durable publication, then retries through every tombstone reply.
-    for replay in 0..3 {
+    // Exercise production dispatch: each tombstone path must attempt cleanup on failure and retry.
+    let (mut prepare, _held) = protocol_tests::private(&executor, temp.path());
+    prepare.identity.execution_id = tombstone.execution_id.clone();
+    prepare.identity.ticket_id = tombstone.ticket_id.clone();
+    let mut reused_ticket = prepare.clone();
+    reused_ticket.identity.execution_id = ExecutionId::fresh().unwrap();
+    let consume = ConsumeExecution {
+        execution_id: tombstone.execution_id.clone(),
+        ticket_id: tombstone.ticket_id.clone(),
+        ticket: CapabilityToken::fresh().unwrap(),
+    };
+    let requests = [
+        ExecutionRequest::Inspect(tombstone.execution_id.clone()),
+        ExecutionRequest::Retire {
+            execution_id: tombstone.execution_id.clone(),
+            lifecycle: CapabilityToken::fresh().unwrap(),
+        },
+        ExecutionRequest::Revoke(consume.clone()),
+        ExecutionRequest::Launch(consume.clone()),
+        ExecutionRequest::Revoke(ConsumeExecution {
+            execution_id: ExecutionId::fresh().unwrap(),
+            ..consume
+        }),
+        ExecutionRequest::Prepare(prepare),
+        ExecutionRequest::Prepare(reused_ticket),
+    ];
+    for request in requests {
         std::fs::create_dir(root.join(&name)).unwrap();
         let (_, mut changes) = executor.watch().unwrap();
         assert!(executor.persist_tombstone(tombstone.clone()).is_err());
         assert_eq!(changes.try_recv().unwrap().1, tombstone.execution_id);
+        let failed = executor.dispatch(&secret, request.clone()).await;
+        assert!(
+            matches!(failed, ExecutionReply::Refused { .. }),
+            "{request:?}: {failed:?}"
+        );
+        assert!(root.join(&name).is_dir());
         std::fs::remove_dir(root.join(&name)).unwrap();
         std::fs::write(root.join(&name), b"still not a journal").unwrap();
-        let request = match replay {
-            0 => ExecutionRequest::Inspect(tombstone.execution_id.clone()),
-            1 => ExecutionRequest::Retire {
-                execution_id: tombstone.execution_id.clone(),
-                lifecycle: CapabilityToken::fresh().unwrap(),
-            },
-            _ => ExecutionRequest::Revoke(ConsumeExecution {
-                execution_id: tombstone.execution_id.clone(),
-                ticket_id: tombstone.ticket_id.clone(),
-                ticket: CapabilityToken::fresh().unwrap(),
-            }),
-        };
-        let reply = executor.dispatch(&secret, request).await;
-        assert!(
-            matches!(reply, ExecutionReply::Retired(ref t) if *t == tombstone),
-            "{reply:?}"
-        );
+        let reply = executor.dispatch(&secret, request.clone()).await;
+        if matches!(&request, ExecutionRequest::Prepare(_))
+            || matches!(&request, ExecutionRequest::Revoke(r) if r.execution_id != tombstone.execution_id)
+        {
+            assert!(matches!(reply, ExecutionReply::Refused { .. }), "{reply:?}");
+        } else {
+            assert!(
+                matches!(reply, ExecutionReply::Retired(ref t) if *t == tombstone),
+                "{request:?}: {reply:?}"
+            );
+        }
         assert!(
             !root.join(&name).exists(),
-            "tombstone replay must resume deletion"
+            "{request:?}: tombstone replay must resume deletion"
         );
         assert_eq!(std::fs::read(root.join(&tombstone_name)).unwrap(), original);
     }

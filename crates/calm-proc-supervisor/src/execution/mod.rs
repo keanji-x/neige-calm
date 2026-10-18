@@ -116,6 +116,7 @@ impl Executor {
         let mut aliases: HashMap<String, AliasSlot> = HashMap::new();
         let tombstones = store.tombstones()?;
         for tombstone in tombstones.values() {
+            Self::replay_retired(&store, tombstone)?;
             if let Some((alias, version)) = &tombstone.slot {
                 let slot = aliases.entry(alias.clone()).or_insert(AliasSlot {
                     execution: Some(tombstone.execution_id.clone()),

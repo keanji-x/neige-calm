@@ -126,22 +126,20 @@ impl Executor {
     ) -> anyhow::Result<ExecutionReply> {
         let id_gate = self.id_gate(&request.identity.execution_id)?;
         let _id = id_gate.lock().await;
-        anyhow::ensure!(
-            !self
-                .tombstones
-                .lock()
-                .map_err(poison)?
-                .contains_key(&request.identity.execution_id),
-            "execution already retired or revoked"
-        );
-        anyhow::ensure!(
-            self.tombstones
-                .lock()
-                .map_err(poison)?
+        {
+            let tombstones = self.tombstones.lock().map_err(poison)?;
+            if let Some(tombstone) = tombstones.get(&request.identity.execution_id) {
+                Self::replay_retired(&self.store, tombstone)?;
+                anyhow::bail!("execution already retired or revoked");
+            }
+            if let Some(tombstone) = tombstones
                 .values()
-                .all(|t| t.ticket_id != request.identity.ticket_id),
-            "ticket belongs to a tombstone"
-        );
+                .find(|t| t.ticket_id == request.identity.ticket_id)
+            {
+                Self::replay_retired(&self.store, tombstone)?;
+                anyhow::bail!("ticket belongs to a tombstone");
+            }
+        }
         anyhow::ensure!(
             !self
                 .store

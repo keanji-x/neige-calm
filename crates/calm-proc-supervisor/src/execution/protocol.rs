@@ -45,10 +45,18 @@ impl Executor {
             changes.send.subscribe(),
         ))
     }
+    /// The sole Retired reply owner: a tombstone never acknowledges leftover secret journals.
+    /// Taking the store explicitly also lets startup replay before loading execution journals.
+    pub(super) fn replay_retired(
+        store: &Store,
+        tombstone: &ExecutionTombstone,
+    ) -> anyhow::Result<ExecutionReply> {
+        store.remove_execution(&tombstone.execution_id)?;
+        Ok(ExecutionReply::Retired(tombstone.clone()))
+    }
     pub(super) fn inspect(&self, id: &ExecutionId) -> anyhow::Result<ExecutionReply> {
         if let Some(tombstone) = self.tombstones.lock().map_err(poison)?.get(id) {
-            self.store.remove_execution(id)?;
-            return Ok(ExecutionReply::Retired(tombstone.clone()));
+            return Self::replay_retired(&self.store, tombstone);
         }
         Ok(match self.records.lock().map_err(poison)?.get(id) {
             // Latched IO failures can contain a terminal phase that is not yet a durable fact.
@@ -64,7 +72,10 @@ impl Executor {
             None => ExecutionReply::Absent,
         })
     }
-    pub(super) fn persist_tombstone(&self, tombstone: ExecutionTombstone) -> anyhow::Result<()> {
+    pub(super) fn persist_tombstone(
+        &self,
+        tombstone: ExecutionTombstone,
+    ) -> anyhow::Result<ExecutionReply> {
         let id = tombstone.execution_id.clone();
         if let Some(previous) = self.tombstones.lock().map_err(poison)?.get(&id) {
             anyhow::ensure!(*previous == tombstone, "immutable tombstone conflict");
@@ -75,16 +86,15 @@ impl Executor {
         self.tombstones
             .lock()
             .map_err(poison)?
-            .insert(id.clone(), tombstone);
+            .insert(id.clone(), tombstone.clone());
         self.release_private(&id)?;
         self.records.lock().map_err(poison)?.remove(&id);
         self.preparations.retire(&id)?;
         self.processes.lock().map_err(poison)?.remove(&id);
-        let removal = self.store.remove_execution(&id);
+        let replay = Self::replay_retired(&self.store, &tombstone);
         // Observers wake only after cleanup was attempted, including a retryable IO failure.
         self.changed(id)?;
-        removal?;
-        Ok(())
+        replay
     }
     pub(super) async fn retire_execution(
         &self,
@@ -94,8 +104,7 @@ impl Executor {
         let gate = self.id_gate(&id)?;
         let _id = gate.lock().await;
         if let Some(tombstone) = self.tombstones.lock().map_err(poison)?.get(&id) {
-            self.store.remove_execution(&id)?;
-            return Ok(ExecutionReply::Retired(tombstone.clone()));
+            return Self::replay_retired(&self.store, tombstone);
         }
         let first = self.record(&id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;
@@ -130,7 +139,6 @@ impl Executor {
                 .map(|v| (record.request.identity.process_alias.clone(), v)),
             outcome: TombstoneOutcome::Retired,
         };
-        self.persist_tombstone(tombstone.clone())?;
-        Ok(ExecutionReply::Retired(tombstone))
+        self.persist_tombstone(tombstone)
     }
 }

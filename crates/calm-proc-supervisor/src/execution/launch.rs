@@ -25,7 +25,7 @@ impl Executor {
                 t.ticket_id == request.ticket_id,
                 "tombstone ticket mismatch"
             );
-            return Ok(ExecutionReply::Retired(t.clone()));
+            return Self::replay_retired(&self.store, t);
         }
         let first = self.record(&request.execution_id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;

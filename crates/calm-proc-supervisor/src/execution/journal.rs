@@ -172,7 +172,6 @@ impl Store {
             self.load_extension("tombstone")?;
         let mut tombstones = std::collections::HashMap::new();
         for value in values {
-            self.remove_execution(&value.execution_id)?;
             anyhow::ensure!(
                 tombstones
                     .insert(value.execution_id.clone(), value)

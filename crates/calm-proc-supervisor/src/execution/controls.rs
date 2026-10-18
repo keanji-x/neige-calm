@@ -14,8 +14,7 @@ impl Executor {
                 t.ticket_id == request.ticket_id,
                 "tombstone ticket mismatch"
             );
-            self.store.remove_execution(&request.execution_id)?;
-            return Ok(ExecutionReply::Retired(t.clone()));
+            return Self::replay_retired(&self.store, t);
         }
         if !self
             .records
@@ -24,14 +23,16 @@ impl Executor {
             .contains_key(&request.execution_id)
         {
             self.preparations.reserve_revocation(&request)?;
-            anyhow::ensure!(
-                self.tombstones
-                    .lock()
-                    .map_err(poison)?
-                    .values()
-                    .all(|t| t.ticket_id != request.ticket_id),
-                "ticket belongs to a tombstone"
-            );
+            if let Some(tombstone) = self
+                .tombstones
+                .lock()
+                .map_err(poison)?
+                .values()
+                .find(|t| t.ticket_id == request.ticket_id)
+            {
+                Self::replay_retired(&self.store, tombstone)?;
+                anyhow::bail!("ticket belongs to a tombstone");
+            }
             let tombstone = ExecutionTombstone {
                 execution_id: request.execution_id,
                 ticket_id: request.ticket_id,
@@ -40,8 +41,7 @@ impl Executor {
                 slot: None,
                 outcome: TombstoneOutcome::Revoked,
             };
-            self.persist_tombstone(tombstone.clone())?;
-            return Ok(ExecutionReply::Retired(tombstone));
+            return self.persist_tombstone(tombstone);
         }
         let first = self.record(&request.execution_id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;
