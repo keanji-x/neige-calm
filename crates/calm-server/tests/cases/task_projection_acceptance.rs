@@ -193,7 +193,7 @@ async fn immediate_rebuild_serializes_with_waiting_writer_without_deadlock() {
     let mut rebuild_tx = begin_immediate_tx(&pool).await.unwrap();
     let _: i64 = sqlx::query_scalar("SELECT count(*) FROM cards WHERE track_id=?1")
         .bind(boot.track_id.as_str())
-        .fetch_one(&mut *rebuild_tx)
+        .fetch_one(&mut **rebuild_tx)
         .await
         .unwrap();
 
@@ -212,7 +212,7 @@ async fn immediate_rebuild_serializes_with_waiting_writer_without_deadlock() {
     let mut writer_tx = waiting_writer.await.unwrap();
     sqlx::query("UPDATE cards SET updated_at=updated_at WHERE id=?1")
         .bind(boot.report_card_id.as_str())
-        .execute(&mut *writer_tx)
+        .execute(&mut **writer_tx)
         .await
         .unwrap();
     writer_tx.commit().await.unwrap();

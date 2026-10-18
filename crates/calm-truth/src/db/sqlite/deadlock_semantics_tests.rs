@@ -471,7 +471,7 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
 
     let mut tx_a = begin_immediate_tx(&pool).await.unwrap();
     sqlx::query("INSERT INTO deadlock_x (v) VALUES ('a')")
-        .execute(&mut *tx_a)
+        .execute(&mut **tx_a)
         .await
         .unwrap();
     b_locked_y_rx.await.unwrap();
@@ -480,7 +480,7 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
     sleep(PARK_GRACE).await;
 
     let err = sqlx::query("INSERT INTO deadlock_y (v) VALUES ('a')")
-        .execute(&mut *tx_a)
+        .execute(&mut **tx_a)
         .await
         .expect_err("cycle-closing writer must fail with the deadlock error");
     let capture = assert_deadlock_shape(&err, "pool writer(A), guard-drop path");
@@ -515,11 +515,11 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
         .expect("begin_immediate_tx must not stall after the deadlock")
         .expect("begin_immediate_tx must succeed on the healed pool");
     sqlx::query("INSERT INTO deadlock_x (v) VALUES ('retry')")
-        .execute(&mut *tx_retry)
+        .execute(&mut **tx_retry)
         .await
         .unwrap();
     sqlx::query("INSERT INTO deadlock_y (v) VALUES ('retry')")
-        .execute(&mut *tx_retry)
+        .execute(&mut **tx_retry)
         .await
         .unwrap();
     tx_retry.commit().await.unwrap();

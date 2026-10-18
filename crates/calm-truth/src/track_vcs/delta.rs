@@ -593,7 +593,7 @@ mod tests {
         )
         .bind(track.id.as_str())
         .bind(r#"{"schemaVersion":2,"summary":"","body":"Report body"}"#)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .expect("insert report card");
 
@@ -609,7 +609,7 @@ mod tests {
              WHERE track_id = ?1 AND kind = 'track-report'",
         )
         .bind(track.id.as_str())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .expect("force formerly reachable kind transition");
 

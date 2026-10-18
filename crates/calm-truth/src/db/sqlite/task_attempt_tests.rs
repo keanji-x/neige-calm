@@ -36,7 +36,7 @@ async fn project(repo: &SqlxRepo, blocks: &[ReportBlock]) -> Vec<TaskDeclaration
     // Invalid edits must reach the real projector with their parser diagnostics.
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     sqlx::query("INSERT INTO cards(id,track_id,kind,sort,payload,title,deletable,created_at,updated_at,role) VALUES('report','w','track-report',0,?1,'report',0,0,0,'reportcard') ON CONFLICT(id) DO UPDATE SET payload=excluded.payload")
-        .bind(json!({"blocks":blocks,"docRev":0}).to_string()).execute(&mut *tx).await.unwrap();
+        .bind(json!({"blocks":blocks,"docRev":0}).to_string()).execute(&mut **tx).await.unwrap();
     project_tasks_tx(&mut tx, "w", &declarations, &diagnostics)
         .await
         .unwrap();

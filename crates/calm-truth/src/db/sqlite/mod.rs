@@ -109,7 +109,7 @@ pub use card_composite::{
 #[cfg(any(test, feature = "test-helpers"))]
 pub use events::append_probe;
 pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
-pub use infra::{begin_immediate_tx, is_sqlite_busy};
+pub use infra::{ObservedTransaction, begin_immediate_tx, begin_immediate_tx_once, is_sqlite_busy};
 #[cfg(test)]
 pub(crate) use out_of_domain::worker_flow_item_insert_tx;
 pub use out_of_domain::{

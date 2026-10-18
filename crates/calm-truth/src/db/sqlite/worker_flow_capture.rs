@@ -2,9 +2,9 @@
 use calm_exec::flow::{CaptureCheckpoint, CaptureOutcome};
 use sqlx::{Sqlite, Transaction};
 
-use super::SqlxRepo;
 #[cfg(feature = "fixtures")]
 use super::is_sqlite_busy;
+use super::{SqlxRepo, begin_immediate_tx_once};
 use crate::db::rows::WorkerFlowCursor;
 use crate::db::worker_flow_capture::WorkerFlowCapture;
 use crate::error::{Result, TruthError};
@@ -24,7 +24,7 @@ impl SqlxRepo {
         .await;
         // The shared source writer owns retry/cancellation, not begin_immediate_tx's
         // bounded retry loop. A failed BEGIN owns no transaction and is safe to retry.
-        let mut tx = match self.pool.begin_with("BEGIN IMMEDIATE").await {
+        let mut tx = match begin_immediate_tx_once(&self.pool).await {
             Ok(tx) => tx,
             Err(e) => {
                 #[cfg(feature = "fixtures")]
@@ -41,7 +41,7 @@ impl SqlxRepo {
         };
         // The compare read runs inside the write transaction (CAS under BEGIN IMMEDIATE).
         let stored =
-            worker_flow_cursor_select(&mut *tx, &capture.card_id, &capture.source_kind).await;
+            worker_flow_cursor_select(&mut **tx, &capture.card_id, &capture.source_kind).await;
         let stored = match stored {
             Ok(stored) => stored,
             Err(e) => {

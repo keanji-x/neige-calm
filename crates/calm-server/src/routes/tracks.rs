@@ -2733,7 +2733,7 @@ async fn preflight_track_deletion_reprojection(
         let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
             .bind(&root_id)
             .bind(MAX_TRACK_TREE_DEPTH + 1)
-            .fetch_all(&mut *tx)
+            .fetch_all(&mut **tx)
             .await?;
         for (member_id, _) in members {
             if member_id != track_id.as_str() {

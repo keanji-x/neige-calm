@@ -211,7 +211,7 @@ pub async fn reset_from_fixture(
         // Reset AUTOINCREMENT counters so re-seeded events start at id=1; a WS client holding a cursor across resets would otherwise see id-skips.
         "DELETE FROM sqlite_sequence",
     ] {
-        sqlx::query(stmt).execute(&mut *tx).await?;
+        sqlx::query(stmt).execute(&mut **tx).await?;
     }
     tx.commit().await?;
 

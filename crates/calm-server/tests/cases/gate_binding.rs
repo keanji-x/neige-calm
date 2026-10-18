@@ -1343,7 +1343,7 @@ async fn gate_prepare_times_out_as_stuck_not_hang() {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("UPDATE tasks SET updated_at_ms = updated_at_ms WHERE id = ?1")
             .bind(&task_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         tx.commit().await?;
         Ok::<_, calm_server::error::CalmError>(writer_started.elapsed())

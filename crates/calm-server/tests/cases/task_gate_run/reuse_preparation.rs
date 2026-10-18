@@ -90,13 +90,13 @@ async fn reuse_refs_sampling_releases_writer_and_revalidates_run() {
                 "UPDATE tracks SET title=title WHERE id=(SELECT track_id FROM tasks WHERE id=?1)",
             )
             .bind(&task_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             if change_run {
                 sqlx::query(include_str!("../../fixtures/gate_run_verdict_change.sql"))
                     .bind(TASK_GATE_RUN_KIND)
                     .bind(format!("{task_id}#r1"))
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await?;
             }
             tx.commit().await?;

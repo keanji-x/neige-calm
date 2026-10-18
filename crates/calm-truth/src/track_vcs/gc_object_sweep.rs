@@ -261,7 +261,7 @@ async fn delete_validated_batch(
         let mut tx = begin_immediate_tx(pool).await?;
         // Recompute actual ancestry, not just HEAD equality. A restored ancestor can make an
         // old tree live without moving HEAD. Check existence/kind even for cached trees.
-        let current = reachable_trees(&mut *tx).await?;
+        let current = reachable_trees(&mut **tx).await?;
         let delta: Vec<_> = current
             .into_iter()
             .filter(|tree| !observed.trees.contains(&tree.hash))
@@ -279,7 +279,7 @@ async fn delete_validated_batch(
         }
         // Both count and byte limits are checked before fetching or parsing any inline payload.
         // This bounded delta prevents ordinary continuous commits starving a full external scan.
-        observe_batch(&mut *tx, &delta, observed).await?;
+        observe_batch(&mut **tx, &delta, observed).await?;
         let candidates: Vec<_> = candidates
             .iter()
             .filter(|hash| !observed.live.contains(*hash))
@@ -296,7 +296,7 @@ async fn delete_validated_batch(
             separated.push_bind(hash);
         }
         separated.push_unseparated(")");
-        let count = query.build().execute(&mut *tx).await?.rows_affected();
+        let count = query.build().execute(&mut **tx).await?.rows_affected();
         tx.commit().await?;
         return Ok(Some(count));
     }

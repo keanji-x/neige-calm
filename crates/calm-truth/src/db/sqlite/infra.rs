@@ -7,27 +7,85 @@ use sqlx::Transaction;
 
 use crate::error::{CalmError, Result};
 
-pub async fn begin_immediate_tx<'a>(pool: &'a SqlitePool) -> Result<Transaction<'a, Sqlite>> {
-    const MAX_RETRIES: usize = 6;
-    let mut backoff = Duration::from_millis(10);
+mod observation;
+pub use observation::ObservedTransaction;
 
-    for attempt in 0..=MAX_RETRIES {
-        match pool.begin_with("BEGIN IMMEDIATE").await {
-            Ok(tx) => return Ok(tx),
-            Err(e) if is_sqlite_busy(&e) && attempt < MAX_RETRIES => {
+/// Begin a writing transaction with the existing bounded busy-retry policy.
+#[track_caller]
+pub fn begin_immediate_tx<'a>(
+    pool: &'a SqlitePool,
+) -> impl std::future::Future<Output = Result<ObservedTransaction<'static>>> + Send + 'a {
+    let caller = std::panic::Location::caller();
+    async move {
+        begin_observed(pool, caller, RetryPolicy::Bounded)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// One observed BEGIN attempt; the caller retains ownership of retry and cancellation policy.
+#[track_caller]
+pub fn begin_immediate_tx_once<'a>(
+    pool: &'a SqlitePool,
+) -> impl std::future::Future<Output = sqlx::Result<ObservedTransaction<'static>>> + Send + 'a {
+    let caller = std::panic::Location::caller();
+    begin_observed(pool, caller, RetryPolicy::Once)
+}
+
+enum RetryPolicy {
+    Once,
+    Bounded,
+}
+
+async fn begin_observed(
+    pool: &SqlitePool,
+    caller: &'static std::panic::Location<'static>,
+    retry: RetryPolicy,
+) -> sqlx::Result<ObservedTransaction<'static>> {
+    use observation::{Observation, Phase};
+    let retries = match retry {
+        RetryPolicy::Once => 0,
+        RetryPolicy::Bounded => 6,
+    };
+    let mut backoff = Duration::from_millis(10);
+    let mut observation = Observation::new(caller);
+
+    for attempt in 0..=retries {
+        match begin_attempt(pool, &mut observation).await {
+            Ok(transaction) => return Ok(ObservedTransaction::new(transaction, observation)),
+            Err(error) if is_sqlite_busy(&error) && attempt < retries => {
                 tracing::debug!(
                     attempt,
-                    error = %e,
                     "sqlite: BEGIN IMMEDIATE hit transient writer contention; retrying"
                 );
+                observation.phase(Phase::Backoff);
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_millis(250));
             }
-            Err(e) => return Err(e.into()),
+            Err(error) => {
+                observation.admission_error();
+                return Err(error);
+            }
         }
     }
-
     unreachable!("bounded retry loop must return or error");
+}
+
+async fn begin_attempt(
+    pool: &SqlitePool,
+    observation: &mut observation::Observation,
+) -> sqlx::Result<Transaction<'static, Sqlite>> {
+    observation.phase(observation::Phase::Acquire);
+    let connection = pool.acquire().await?;
+    observation.phase(observation::Phase::Begin);
+    // Mirrors sqlx 0.8.6 Pool::begin_with exactly, splitting acquisition from BEGIN.
+    // This public doc-hidden constructor owns the pooled connection and preserves
+    // SQLx cancellation/Drop cleanup. Verify this seam when upgrading sqlx.
+    Transaction::begin(
+        connection,
+        Some(std::borrow::Cow::Borrowed("BEGIN IMMEDIATE")),
+    )
+    .await
 }
 
 pub fn is_sqlite_busy(e: &sqlx::Error) -> bool {

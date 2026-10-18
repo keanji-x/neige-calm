@@ -61,7 +61,7 @@ pub(super) async fn restore(
     .bind(card)
     .bind(thread)
     .bind(turn)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
     let mut order = Vec::new();
     for row in &rows {
@@ -101,11 +101,11 @@ pub(super) async fn restore(
     .bind(thread)
     .bind(turn)
     .bind(ids)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     for item in items {
         insert_transcript_row(
-            &mut *tx,
+            &mut **tx,
             worker,
             card,
             track,

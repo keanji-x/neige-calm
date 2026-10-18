@@ -52,7 +52,7 @@ async fn gate_prepare_allows_unrelated_writer_before_git_filter_release() {
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_writer_probe(value) VALUES (1)")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         tx.commit().await?;
         Ok::<_, calm_server::error::CalmError>(())

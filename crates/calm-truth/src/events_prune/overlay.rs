@@ -186,7 +186,7 @@ async fn flush(
         super::writer_tests::at_phase(super::writer_tests::Phase::BeforeWrite).await;
         let mut tx = begin_immediate_tx(pool).await?;
         *batches += 1;
-        if frontier(&mut *tx).await? > observed.frontier {
+        if frontier(&mut **tx).await? > observed.frontier {
             tx.rollback().await?;
             continue;
         }
@@ -194,7 +194,7 @@ async fn flush(
         // them; disappearance stops safely rather than applying an old freeze decision.
         let current: Vec<(i64, String)> = sqlx::query_as(
             "SELECT id, payload FROM events WHERE kind='overlay.set' AND id IN (SELECT value FROM json_each(?1))"
-        ).bind(witness_ids).fetch_all(&mut *tx).await?;
+        ).bind(witness_ids).fetch_all(&mut **tx).await?;
         if current.len() != witnesses.len()
             || current
                 .iter()
@@ -209,7 +209,7 @@ async fn flush(
         }
         let ids: Vec<i64> = sqlx::query_scalar(
             "DELETE FROM events WHERE kind='overlay.set' AND at<?1 AND id IN (SELECT value FROM json_each(?2)) RETURNING id"
-        ).bind(horizon).bind(candidate_ids).fetch_all(&mut *tx).await?;
+        ).bind(horizon).bind(candidate_ids).fetch_all(&mut **tx).await?;
         advance_watermark(&mut tx, &ids).await?;
         tx.commit().await?;
         *deleted += ids.len() as u64;

@@ -353,7 +353,7 @@ impl RepoEventWrite for SqlxRepo {
         };
         // The gate runs after the closure produces an event so the closure can mint per-row roles through the cache first.
         let authorized = match gated::authorize_with_caches(
-            &mut tx,
+            &mut *tx,
             &actor,
             &scope,
             &event,
@@ -430,7 +430,7 @@ impl RepoEventWrite for SqlxRepo {
         let mut authorized_batch = Vec::with_capacity(events.len());
         for (scope, event) in &events {
             match gated::authorize_with_caches(
-                &mut tx,
+                &mut *tx,
                 &actor,
                 scope,
                 event,
@@ -521,7 +521,7 @@ impl RepoEventWrite for SqlxRepo {
         let mut authorized_batch = Vec::with_capacity(events.len());
         for (actor, scope, event) in &events {
             match gated::authorize_with_caches(
-                &mut tx,
+                &mut *tx,
                 actor,
                 scope,
                 event,
@@ -604,7 +604,7 @@ impl RepoEventWrite for SqlxRepo {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         // Pure events have no entity write to populate the cache from, so the role lookup uses the cache's current contents.
         let authorized = match gated::authorize_with_caches(
-            &mut tx,
+            &mut *tx,
             &actor,
             &scope,
             &event,

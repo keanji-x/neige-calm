@@ -231,7 +231,7 @@ async fn prune_batch(pool: &SqlitePool, kind: &str, horizon_ms: i64, batch: i64)
     let query = sqlx::query_scalar::<_, i64>(
         "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE kind=?1 AND at<?2 LIMIT ?3) RETURNING id"
     ).bind(kind).bind(horizon_ms).bind(batch);
-    let deleted_ids: Vec<i64> = query.fetch_all(&mut *tx).await?;
+    let deleted_ids: Vec<i64> = query.fetch_all(&mut **tx).await?;
     advance_watermark(&mut tx, &deleted_ids).await?;
     tx.commit().await?;
     Ok(deleted_ids.len() as u64)

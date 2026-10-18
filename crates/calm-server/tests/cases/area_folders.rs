@@ -330,7 +330,7 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
         .bind(&area_id)
         .bind("/a/b")
         .bind(0_i64)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
 

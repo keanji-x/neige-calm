@@ -108,7 +108,7 @@ pub async fn changes(
         }
         None => {
             sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id),0) FROM events")
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?
         }
     };
@@ -126,7 +126,7 @@ pub async fn changes(
         JOIN events first ON first.id=edits.first_event_id JOIN events last ON last.id=edits.last_event_id
         WHERE (?4 IS NULL OR t.id>?4) ORDER BY t.id LIMIT ?5
     "#).bind(start).bind(end).bind(through).bind(&query.cursor)
-        .bind((PAGE_SIZE+1) as i64).fetch_all(&mut *tx).await?;
+        .bind((PAGE_SIZE+1) as i64).fetch_all(&mut **tx).await?;
     tx.commit().await?;
     let next_cursor = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].track_id.clone());
     rows.truncate(PAGE_SIZE);

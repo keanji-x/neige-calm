@@ -140,7 +140,7 @@ async fn setup() -> Arc<SqlxRepo> {
         .expect("project pending task");
     let task_id: String =
         sqlx::query_scalar("SELECT id FROM tasks WHERE track_id='snapshot-track'")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await
             .expect("projected task id");
     assert_eq!(

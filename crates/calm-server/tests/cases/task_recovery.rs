@@ -136,7 +136,7 @@ pub(super) async fn time_out_claimed_worker_holding_lease(
     sqlx::query("UPDATE tasks SET status='running', worker_card_id=?1 WHERE id=?2")
         .bind(&card_id)
         .bind(&task.id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     assert_eq!(
@@ -157,7 +157,7 @@ pub(super) async fn time_out_claimed_worker_holding_lease(
     )
     .bind(now + 1)
     .bind(lease_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();

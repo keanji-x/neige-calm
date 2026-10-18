@@ -397,7 +397,7 @@ async fn launchpad_track_carries_an_unfrozen_managed_workspace_on_both_branches(
     .unwrap();
     sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
         .bind(&track_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();

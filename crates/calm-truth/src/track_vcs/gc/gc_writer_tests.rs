@@ -136,7 +136,7 @@ impl Fixture {
             .await
             .unwrap();
         sqlx::query("CREATE TABLE unrelated_gc_writer_probe (value INTEGER NOT NULL)")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -183,7 +183,7 @@ impl Fixture {
         sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
             .bind(now_ms() - 7_200_000)
             .bind(&blob)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -197,7 +197,7 @@ impl Fixture {
             sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
                 .bind(now_ms() - 7_200_000)
                 .bind(hash)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .unwrap();
         }
@@ -221,7 +221,7 @@ async fn object_sweep_manifest_parsing_does_not_hold_database_writer() {
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_gc_writer_probe(value) VALUES (1)")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         tx.commit().await?;
         Ok::<_, crate::error::CalmError>(())

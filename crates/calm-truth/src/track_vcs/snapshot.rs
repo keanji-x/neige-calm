@@ -1,4 +1,5 @@
 use crate::db::rows::TRACK_SELECT_COLUMNS;
+use crate::db::sqlite::begin_immediate_tx_once;
 use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::ids::{CardId, TrackId};
@@ -22,7 +23,7 @@ use super::types::{BlobContent, CardProjection, CardVisibility};
 use super::{MANIFEST_SCHEMA_VERSION, ManifestEntry, TreeSnapshot};
 
 pub async fn backfill_existing_tracks(pool: &SqlitePool) -> Result<usize> {
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = begin_immediate_tx_once(pool).await?;
     let res = backfill_existing_tracks_tx(&mut tx).await;
     match res {
         Ok(count) => {

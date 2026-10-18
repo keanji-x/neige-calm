@@ -277,7 +277,7 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
     for index in 0..130 {
         let key = format!("k{index:03}");
         sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms,finished_at_ms) VALUES(?1,?2,?3,'terminal','true','{}','done',1,1,1)")
-            .bind(format!("{}:{key}", boot.track_id)).bind(boot.track_id.as_str()).bind(key).execute(&mut *tx).await.unwrap();
+            .bind(format!("{}:{key}", boot.track_id)).bind(boot.track_id.as_str()).bind(key).execute(&mut **tx).await.unwrap();
     }
     tx.commit().await.unwrap();
     let list = call_tool(&boot, "neige_task_ls", planner_identity(&boot), json!({}))

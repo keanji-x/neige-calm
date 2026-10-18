@@ -16,7 +16,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<()> {
     let applied: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM report_data_migrations WHERE name=?1)")
             .bind(NAME)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
     if applied {
         tx.commit().await?;
@@ -26,7 +26,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<()> {
     let reports: Vec<(String, String, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT id,payload,body_crdt FROM cards WHERE kind='track-report' ORDER BY id",
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
     for (id, raw, bytes) in reports {
         let mut cache: serde_json::Value = serde_json::from_str(&raw)?;
@@ -66,28 +66,28 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<()> {
             .bind(serde_json::to_string(&cache)?)
             .bind(doc.to_bytes())
             .bind(id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
     }
     let recipes: Vec<(String, String)> = sqlx::query_as("SELECT id,body FROM track_recipes")
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
     for (id, body) in recipes {
         let migrated = migrate_legacy_body(&body);
         if migrated != body {
             sqlx::query("UPDATE track_recipes SET body=?1,revision=revision+1,updated_at=MAX(updated_at+1,?2) WHERE id=?3")
-                .bind(migrated).bind(crate::model::now_ms()).bind(id).execute(&mut *tx).await?;
+                .bind(migrated).bind(crate::model::now_ms()).bind(id).execute(&mut **tx).await?;
         }
     }
     sqlx::query("UPDATE tasks SET spawn=?1 WHERE spawn=?2")
         .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
         .bind(LEGACY_CHILD_ROUTE)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     sqlx::query("INSERT INTO report_data_migrations(name,completed_at_ms) VALUES(?1,?2)")
         .bind(NAME)
         .bind(crate::model::now_ms())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     tx.commit().await?;
     Ok(())

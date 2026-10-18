@@ -345,7 +345,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
         "UPDATE acp_submissions SET state='sending',outcome_json=NULL WHERE worker_session_id=?1",
     )
     .bind(&runtime.id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .unwrap();
     delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
@@ -353,7 +353,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
         .bind(&runtime.id)
         .bind(serde_json::to_string(&snapshot).unwrap())
         .bind(outcome["id"].as_str().unwrap())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -531,7 +531,7 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
     sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
         .bind(&runtime.id)
         .bind(serde_json::to_string(&checkpoint).unwrap())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -699,12 +699,12 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
     sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
         .bind(&runtime.id)
         .bind(serde_json::to_string(&checkpoint).unwrap())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     let area: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
         .bind(&track)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .unwrap();
     let later = calm_server::db::sqlite::append_decision_event_in_tx(

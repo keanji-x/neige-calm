@@ -206,7 +206,7 @@ impl OperationRepo for SqlxOperationRepo {
         )
         .bind(now)
         .bind(limit)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
 
         let mut claimed = Vec::new();
@@ -232,12 +232,12 @@ impl OperationRepo for SqlxOperationRepo {
             .bind(lease_until)
             .bind(now)
             .bind(&id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             if result.rows_affected() == 1 {
                 let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
                     .bind(&id)
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await?;
                 claimed.push(operation_from_row(&row)?);
             }
@@ -374,7 +374,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(now_ms())
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -442,7 +442,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(now_ms())
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -474,7 +474,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(now_ms())
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -518,7 +518,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(now)
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -566,7 +566,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(now)
         .bind(&op.id)
         .bind(required_lease_owner(op)?)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);

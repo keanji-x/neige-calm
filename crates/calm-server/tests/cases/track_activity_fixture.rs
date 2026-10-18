@@ -441,7 +441,7 @@ impl Fx {
         .bind(track_id)
         .bind(key)
         .bind(serde_json::to_string(&origin).unwrap())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
         tasks_rebuild_tx(&mut tx, track_id).await.unwrap();

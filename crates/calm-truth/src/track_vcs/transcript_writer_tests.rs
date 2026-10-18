@@ -254,7 +254,7 @@ async fn transcript_refresh_allows_unrelated_writer_during_hook_interpretation()
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_transcript_writer_probe (value) VALUES (1)")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         tx.commit().await?;
         Ok::<_, crate::error::TruthError>(())

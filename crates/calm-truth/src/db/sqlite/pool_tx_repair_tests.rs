@@ -110,7 +110,7 @@ async fn pool_repair_rolls_back_leaked_uncommitted_writes() {
         .expect("BEGIN IMMEDIATE must not stall on a leaked transaction's write lock")
         .unwrap();
     sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('committed', 'y', 0)")
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();

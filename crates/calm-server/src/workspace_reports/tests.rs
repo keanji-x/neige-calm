@@ -46,7 +46,7 @@ pub(crate) async fn event(
     sqlx::query("UPDATE events SET at=?1 WHERE id=?2")
         .bind(at)
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();

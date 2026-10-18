@@ -33,13 +33,13 @@ async fn partial_receipt_recovery_restores_native_item_order() {
     sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND item_uuid=?2")
         .bind(&card)
         .bind(first)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
         .bind(&runtime.id)
         .bind(serde_json::to_string(&snapshot).unwrap())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();

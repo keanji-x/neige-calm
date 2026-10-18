@@ -95,7 +95,7 @@ pub(in crate::operation) async fn record_spawn_artifacts(
         .bind(serde_json::to_string(artifacts)?)
         .bind(now_ms())
         .bind(&op.id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     tx.commit().await?;
     Ok(())
@@ -119,7 +119,7 @@ pub(in crate::operation) async fn set_parked(
     .bind(now)
     .bind(deadline_ms)
     .bind(&op.id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     if result.rows_affected() == 0 {
         return Ok(None);

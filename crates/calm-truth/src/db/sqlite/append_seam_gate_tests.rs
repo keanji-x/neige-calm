@@ -207,7 +207,7 @@ async fn batch_append_seam_gates_each_event_and_writes_none_on_refusal() {
     }
     // The first event was accepted by the gate, so if the appender interleaved authorize and insert, its row is sitting right here.
     let in_tx: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .expect("count events inside the tx");
     assert_eq!(

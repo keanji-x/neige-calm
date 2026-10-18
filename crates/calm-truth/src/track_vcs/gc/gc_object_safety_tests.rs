@@ -64,7 +64,7 @@ async fn object_sweep_restored_ancestor_without_head_change_preserves_objects() 
     sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
         .bind(&child)
         .bind(f.track.as_str())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -360,7 +360,7 @@ async fn object_sweep_restored_cycle_and_duplicate_states_keep_reachable_objects
     sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
         .bind(&head)
         .bind(f.track.as_str())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();

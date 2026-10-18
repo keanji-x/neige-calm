@@ -34,7 +34,7 @@ pub async fn acp_registration_claim(
         "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
     )
     .bind(worker)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     match prior {
         Some(prior) if prior == digest => {}
@@ -49,7 +49,7 @@ pub async fn acp_registration_claim(
             ));
         }
         None => {
-            sqlx::query("INSERT INTO acp_managed_sessions(worker_session_id,registration_digest) VALUES(?1,?2)").bind(worker).bind(digest).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO acp_managed_sessions(worker_session_id,registration_digest) VALUES(?1,?2)").bind(worker).bind(digest).execute(&mut **tx).await?;
         }
     }
     tx.commit().await?;

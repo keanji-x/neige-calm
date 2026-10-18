@@ -2734,7 +2734,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
                     (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .unwrap();
         let error = adapter
@@ -2750,7 +2750,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
                     (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .unwrap();
         assert_eq!(
@@ -4288,7 +4288,7 @@ async fn seed_fresh_context_copies(
             .push("1")
             .push("1");
     });
-    tasks.build().execute(&mut *tx).await.unwrap();
+    tasks.build().execute(&mut **tx).await.unwrap();
 
     if index_destination {
         let mut index = QueryBuilder::<Sqlite>::new(
@@ -4299,7 +4299,7 @@ async fn seed_fresh_context_copies(
                 .push_bind(refs[0].track_id.as_str())
                 .push_bind(&refs[0].block_id);
         });
-        index.build().execute(&mut *tx).await.unwrap();
+        index.build().execute(&mut **tx).await.unwrap();
     }
     tx.commit().await.unwrap();
 }
@@ -4381,7 +4381,7 @@ async fn seed_stale_context_copies(
         .bind(clone_track_id.as_str())
         .bind(&source_key)
         .bind(&frozen)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
         if index_destination {
@@ -4391,7 +4391,7 @@ async fn seed_stale_context_copies(
             .bind(&task_id)
             .bind(source_refs[0].track_id.as_str())
             .bind(&source_refs[0].block_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .unwrap();
         }
@@ -7843,20 +7843,20 @@ async fn acceptance_18_success_flip_rechecks_closed_after_its_snapshot() {
         let observed: bool =
             sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
                 .bind(&child)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await
                 .unwrap();
         assert!(observed, "fixture must first observe the close");
         if mutation == "delete" {
             sqlx::query("DELETE FROM tracks WHERE id=?1")
                 .bind(&child)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .unwrap();
         } else {
             sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
                 .bind(&child)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .unwrap();
         }
@@ -7907,20 +7907,20 @@ async fn acceptance_18_incomplete_flip_rechecks_closed_after_its_snapshot() {
         let observed: bool =
             sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
                 .bind(&child)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await
                 .unwrap();
         assert!(observed, "fixture must first observe the close");
         if mutation == "delete" {
             sqlx::query("DELETE FROM tracks WHERE id=?1")
                 .bind(&child)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .unwrap();
         } else {
             sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
                 .bind(&child)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .unwrap();
         }
@@ -7957,7 +7957,7 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
         .unwrap();
     let observed: Option<String> = sqlx::query_scalar("SELECT id FROM tracks WHERE id=?1")
         .bind(&child)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .unwrap();
     assert_eq!(observed, None, "fixture must first observe the deletion");
@@ -7974,7 +7974,7 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
     .bind(&child)
     .bind(now_ms())
     .bind(boot.track_id.as_str())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .unwrap();
     calm_server::db::sqlite::track_workspace_write_tx(&mut tx, &child, &workspace)

@@ -498,14 +498,14 @@ impl RepoOutOfDomain for SqlxRepo {
         let existing:Option<i64>=sqlx::query_scalar(
             "SELECT id FROM harness_items WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND \
                 turn_id=?4 AND method='turn/completed' ORDER BY id DESC LIMIT 1"
-        ).bind(worker_session_id).bind(card_id).bind(thread_id).bind(turn_id).fetch_optional(&mut *tx).await?;
+        ).bind(worker_session_id).bind(card_id).bind(thread_id).bind(turn_id).fetch_optional(&mut **tx).await?;
         let id=match existing {
             Some(id)=>id,
             None=>sqlx::query_scalar(
                 "INSERT INTO \
                     harness_items(worker_session_id,card_id,track_id,thread_id,turn_id,method,params,created_at_ms) \
                     VALUES(?1,?2,?3,?4,?5,'turn/completed',?6,?7) RETURNING id"
-            ).bind(worker_session_id).bind(card_id).bind(track_id).bind(thread_id).bind(turn_id).bind(params).bind(now_ms()).fetch_one(&mut *tx).await?,
+            ).bind(worker_session_id).bind(card_id).bind(track_id).bind(thread_id).bind(turn_id).bind(params).bind(now_ms()).fetch_one(&mut **tx).await?,
         };
         tx.commit().await?;
         Ok(id)
@@ -556,7 +556,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(turn_id)
         .bind(item_uuid)
         .bind(params)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(row.map(|row| row.get::<i64, _>("id")))
@@ -571,7 +571,7 @@ impl RepoOutOfDomain for SqlxRepo {
         )
         .bind(card_id)
         .bind(client_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         tx.commit().await?;
         Ok(done.rows_affected())

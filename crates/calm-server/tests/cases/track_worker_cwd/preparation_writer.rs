@@ -84,7 +84,7 @@ async fn assert_writer_before_filter_release(kind: &'static str, managed: bool) 
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO worker_writer_probe(value) VALUES (1)")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         tx.commit().await?;
         Ok::<_, calm_server::error::CalmError>(())
@@ -367,7 +367,7 @@ async fn obsolete_worker_task_or_allocation_publishes_no_prepared_rows() {
                 sqlx::query("UPDATE tasks SET context_stale_at_ms=?1 WHERE id=?2")
                     .bind(calm_server::model::now_ms())
                     .bind(&task.id)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await
                     .unwrap();
             } else {
@@ -376,7 +376,7 @@ async fn obsolete_worker_task_or_allocation_publishes_no_prepared_rows() {
                 sqlx::query("UPDATE tasks SET status='failed', finished_at_ms=?1 WHERE id=?2")
                     .bind(calm_server::model::now_ms())
                     .bind(&task.id)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await
                     .unwrap();
                 let origin = TaskAttemptOrigin::Recovery {
@@ -405,7 +405,7 @@ async fn obsolete_worker_task_or_allocation_publishes_no_prepared_rows() {
                 .bind(&task.key)
                 .bind(serde_json::to_string(&origin).unwrap())
                 .bind(calm_server::model::now_ms())
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await
                 .unwrap();
             }

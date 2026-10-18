@@ -468,14 +468,14 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
     let harness = worker_lease_harness().await;
     let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
     sqlx::query("DROP TABLE tasks")
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     // The statement really is broken now — otherwise this test would pass for the wrong reason (a missing row).
     assert!(
         sqlx::query_scalar::<_, String>("SELECT key FROM tasks WHERE id = ?1")
             .bind("any")
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
             .is_err()
     );
@@ -736,7 +736,7 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
     assert!(prepared.apply(&mut tx, &replacement).await.is_err());
     let after: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"
-    ).fetch_one(&mut *tx).await.unwrap();
+    ).fetch_one(&mut **tx).await.unwrap();
     assert_eq!(
         after, before,
         "different claim must be rejected before publication"

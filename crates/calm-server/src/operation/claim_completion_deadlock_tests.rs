@@ -51,7 +51,7 @@ async fn claim_drive_batch_vs_parked_completion_no_deadlock() {
     let a = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool_a).await?;
         sqlx::query("INSERT INTO deadlock_repro_scratch (v) VALUES ('completion')")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(CalmError::from)?;
         a_holding_tx.send(()).unwrap();

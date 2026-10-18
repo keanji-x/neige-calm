@@ -142,7 +142,7 @@ async fn insert_session(repo: &SqlxRepo, mut session: WorkerSession) -> Card {
     sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
         .bind(session_id.as_str())
         .bind(card.id.as_str())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .expect("link card session");
     tx.commit().await.expect("commit tx");

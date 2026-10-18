@@ -142,7 +142,7 @@ async fn overlay_history_discovery_does_not_hold_database_writer_without_candida
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_event_writer_probe(value) VALUES (1)")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         tx.commit().await?;
         Ok::<_, crate::error::CalmError>(())

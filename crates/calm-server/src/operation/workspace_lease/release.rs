@@ -114,7 +114,7 @@ pub(crate) async fn release_workspace_lease_by_id(
     );
     let Some(row) = sqlx::query(&sql)
         .bind(lease_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
     else {
         tx.rollback().await?;

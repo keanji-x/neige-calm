@@ -77,7 +77,7 @@ async fn task_recovery_allocation_inventory_caps_page_size_without_silent_miss()
         // is independent of this storage pagination boundary.
         let key = format!("k{index:04}");
         sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,created_at_ms,updated_at_ms) VALUES(?1,'w',?2,'terminal','true','{}',0,0)")
-            .bind(format!("w:{key}")).bind(key).execute(&mut *tx).await.unwrap();
+            .bind(format!("w:{key}")).bind(key).execute(&mut **tx).await.unwrap();
     }
     let first = task_attempt_current_by_track_tx(&mut tx, "w", None, i64::MAX)
         .await
