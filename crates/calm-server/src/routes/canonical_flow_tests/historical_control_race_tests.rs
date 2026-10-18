@@ -302,6 +302,163 @@ async fn accepted_stop_drains_original_target_after_logout_and_ack_is_not_end() 
 }
 
 #[tokio::test]
+async fn accepted_assistant_stop_drains_after_real_end_archive_and_logout() {
+    let mut fx = HistoricalFixture::new(false).await;
+    let planner = fx.worker.clone();
+    let track = fx
+        .fixture
+        .repo
+        .card_get(&fx.card)
+        .await
+        .unwrap()
+        .unwrap()
+        .track_id;
+    let created = post(
+        &fx.app,
+        &fx.cookie,
+        &format!("/api/tracks/{track}/conversations"),
+        "stop-before-archive",
+        json!({"provider":"codex","text":"Finish the original Assistant reply"}),
+    )
+    .await;
+    fx.card = created["id"].as_str().unwrap().to_owned();
+    fx.worker = fx
+        .fixture
+        .repo
+        .session_projection_active_for_card(&fx.card)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    fx.harness = fx.state.harness.get(&fx.worker).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fx.harness.runtime_header().await.unwrap().phase != HarnessPhaseTag::TurnRunning {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the public Assistant creation starts its original input");
+    let original = fx.harness.snapshot().await.unwrap();
+    let thread = original.last_thread_id.clone().unwrap();
+    let turn = original.last_turn_id.clone().unwrap();
+    let (entered, release) = fx
+        .state
+        .shared_codex_appserver
+        .hold_turn_interrupt_for_test();
+    let pending = tokio::spawn(perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("the original Stop reaches its native RPC after acceptance");
+    let accepted = fx.harness.snapshot().await.unwrap();
+
+    // The external fake reports the same real END to both native activity and
+    // the original reducer, matching main's archive fixture. No phase is set.
+    fx.state
+        .shared_codex_appserver
+        .clear_active_turn_for_test(&thread);
+    complete(&fx, &turn).await;
+    let archive = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::patch(format!(
+                "/api/tracks/{track}/conversations/{}/archive",
+                fx.card
+            ))
+            .header(header::COOKIE, &fx.cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"archived":true}).to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let archive_status = archive.status();
+    let input = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/cards/{}/planner/input", fx.card))
+                .header(header::COOKIE, &fx.cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("Idempotency-Key", "refuse-work-after-archive")
+                .body(Body::from(
+                    json!({"text":"Must not create work in an archived conversation"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let input_status = input.status();
+    let input_body: Value =
+        serde_json::from_slice(&input.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    logout(&fx).await;
+    release.notify_one();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("archive and logout cannot revoke the accepted original drain")
+        .unwrap();
+    let after = fx.harness.snapshot().await.unwrap();
+    let stored = fx
+        .fixture
+        .repo
+        .session_projection_active_for_card(&fx.card)
+        .await
+        .unwrap()
+        .unwrap();
+    let archived = fx
+        .fixture
+        .repo
+        .conversation_archived_at(&fx.card)
+        .await
+        .unwrap();
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    let starts = fx.state.shared_codex_appserver.turn_start_count_for_test();
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), fx.shutdown())
+        .await
+        .expect("the separate original cleanup RPC receives its own ACK");
+    fx.state
+        .harness
+        .remove(&planner)
+        .unwrap()
+        .shutdown()
+        .await
+        .unwrap();
+
+    assert_eq!(archive_status, StatusCode::NO_CONTENT);
+    assert!(archived.is_some());
+    assert_eq!(input_status, StatusCode::CONFLICT, "{input_body}");
+    assert!(input_body["error"].as_str().unwrap().contains("archived"));
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["stopped"], true);
+    assert_eq!(accepted.phase, HarnessPhaseTag::IssuingInterrupt);
+    let Some(calm_types::harness::HarnessInterruptionIntent::Control(
+        calm_types::harness::HarnessControlIntent::UserStopV1(request),
+    )) = accepted.interruption_intent
+    else {
+        panic!("the original writer must commit its exact UserStopV1 acceptance");
+    };
+    assert_eq!(request.session_id, fx.worker);
+    assert_eq!(request.card_id, fx.card);
+    assert_eq!(request.thread_id, thread);
+    assert_eq!(request.turn_id, turn);
+    assert_eq!(after.phase, HarnessPhaseTag::TurnCompleted);
+    assert_eq!(after.last_thread_id.as_deref(), Some(thread.as_str()));
+    assert_eq!(after.last_turn_id.as_deref(), Some(turn.as_str()));
+    assert_eq!(stored.id, fx.worker);
+    assert_eq!(stored.thread_id.as_deref(), Some(thread.as_str()));
+    assert!(stored.active_turn_id.is_none());
+    assert_eq!(native, vec![(thread, turn)]);
+    assert_eq!(starts, 1, "archive and Stop cannot start later work");
+}
+
+#[tokio::test]
 async fn selected_stop_cannot_retarget_a_later_turn_while_waiting_for_its_owner() {
     let fx = HistoricalFixture::new(true).await;
     let pause = arm(&fx, test_seams::HISTORICAL_STOP_SELECTED);

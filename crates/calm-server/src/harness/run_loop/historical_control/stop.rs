@@ -103,13 +103,16 @@ impl PreparedStop {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<()> {
-        if let Requester::Human(source) = &self.requester {
-            Admission::Human(source.clone())
-                .require_tx(tx, &self.request.card_id, &self.request.session_id)
+        match &self.requester {
+            Requester::Human(source) => source.require_card_tx(tx, &self.request.card_id).await?,
+            Requester::CommittedLegacy => {
+                crate::conversation_inputs::require_historical_storage_tx(
+                    tx,
+                    &self.request.card_id,
+                )
                 .await?;
+            }
         }
-        crate::conversation_inputs::require_historical_storage_tx(tx, &self.request.card_id)
-            .await?;
         let current =
             crate::db::sqlite::session_projection_active_for_card_tx(tx, &self.request.card_id)
                 .await?
@@ -178,9 +181,7 @@ impl PlannerHarness {
         let repo = inner.repo.clone();
         let plan = write_in_tx_typed(repo.as_ref(), move |tx| {
             Box::pin(async move {
-                Admission::Human(source.clone())
-                    .require_tx(tx, inner.card_id.as_str(), &inner.worker_session_id)
-                    .await?;
+                source.require_card_tx(tx, inner.card_id.as_str()).await?;
                 let runtime = crate::db::sqlite::session_projection_active_for_card_tx(
                     tx,
                     inner.card_id.as_str(),
