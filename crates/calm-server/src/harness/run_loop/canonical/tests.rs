@@ -174,7 +174,17 @@ async fn real_loop_requires_live_source_before_claim_and_preserves_pending_head(
     assert_eq!(before.canonical_inputs.pending.len(), 1);
     assert!(before.canonical_inputs.active.is_none());
     assert!(before.canonical_inputs.attempts.is_empty());
-    let feedback = fx.harness.issuance_block().await;
+    let mut feedback = None;
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            feedback = fx.harness.issuance_block().await;
+            if feedback.as_deref() == Some("A current session must authorize this saved input.") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
     fx.auth.sessions.remove(&fx.session).unwrap();
     assert!(
         fx.harness
