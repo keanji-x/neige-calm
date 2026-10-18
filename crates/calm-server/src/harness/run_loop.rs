@@ -1562,6 +1562,8 @@ async fn run_loop(
                             live.discard(&turn_id);
                         }
                         let _ = answer.send(outcome);
+                        #[cfg(feature = "fixtures")]
+                        crate::test_seams::pause_point("harness-replace-completed", inner.card_id.as_str()).await;
                     }
                 }
             }

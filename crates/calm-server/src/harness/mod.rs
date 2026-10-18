@@ -19,6 +19,7 @@ pub mod observation;
 pub mod planner_event;
 pub mod profile;
 pub mod queue;
+pub(crate) mod recovery;
 pub mod registry;
 mod result_receipt;
 pub(crate) mod rewind;
@@ -312,50 +313,20 @@ pub async fn spawn_recovered_harness(
     {
         return Ok(RecoveryOutcome::Skipped);
     }
-    let Some(source) = runtime.handle_state_json.clone() else {
-        return Ok(RecoveryOutcome::Skipped);
-    };
     if effective_runtime_thread_id(&runtime)
         .as_deref()
         .is_some_and(|thread_id| seals.is_sealed(thread_id))
     {
         return Ok(RecoveryOutcome::Skipped);
     }
-    let mut snapshot = HarnessSnapshot::parse_known(source.clone()).ok_or_else(|| {
-        crate::error::CalmError::Conflict("invalid harness recovery snapshot".into())
-    })?;
-    if let Some(receipt) = snapshot.handoff_pause.receipt()
-        && !receipt.matches_binding(&card.id, &runtime.id, &card.track_id)
-    {
-        return Err(crate::error::CalmError::Conflict(
-            "handoff pause recovery binding mismatch".into(),
-        ));
+    if runtime.handle_state_json.is_none() {
+        return Ok(RecoveryOutcome::Skipped);
     }
+    let (source, snapshot) =
+        recovery::prepare_quiesced(repo.clone(), &runtime, &card.track_id, &binding).await?;
     if provider == AgentProvider::Claude {
         record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
-    }
-    if provider == AgentProvider::OpenCode {
-        snapshot = crate::acp_planner::recovery::load_quiesced(
-            repo.as_ref(),
-            &runtime.id,
-            &runtime.card_id,
-            card.track_id.as_str(),
-        )
-        .await?;
-    }
-    snapshot.handoff_pause.unconfirm_recovered_health();
-    // Catch-up is Planner-only; reuse the live stream's filters and keep pending <= watermark.
-    if role == Some(CardRole::Planner) {
-        let watermark = snapshot.push_watermark;
-        replay_harness_events_since(
-            repo.clone(),
-            &runtime.card_id,
-            &card.track_id,
-            watermark,
-            &mut snapshot,
-        )
-        .await?;
     }
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(

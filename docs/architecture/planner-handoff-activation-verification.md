@@ -505,3 +505,172 @@ The other critical guards are unchanged; the kernel now replays 230 focused test
 The current affected-package all-target clippy check passes, exit 0, in 2m15s
 (`/tmp/handoff-activation-clippy-r4.log`), with the same command/flags recorded above.
 The next kernel run owns all six checks, including the complete 230-test frozen replay.
+
+## Full snapshot recovery follow-up from d1c865a3
+
+Attempt `7e93be68c1b94d6dac678f815f5602d9:handoff-activation-full-snapshot-recovery`
+starts exactly at `d1c865a309a32da8d17edb320cabc474799f1402`, without syncing main.
+Both original independent reviews (`handoff-activation-review-a`, completed 417936;
+`handoff-activation-review-b`, completed 418022) identify the same P1: the complete
+current snapshot passed catch-up CAS but was discarded in favor of the operation's
+initial Idle capture plus row queue fields. The older 230-test gate does not disprove it.
+The [design](planner-conversation-handoff.md#start-capture-and-same-session-restoration-ownership)
+now distinguishes start capture from same-session recovery, including phase and unknown
+native ownership. Review tier remains L2; the Planner arranges fresh complete reviews.
+
+### Actual initial reproduction
+
+Command: `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --lib -E 'test(/handoff_activation_post_install_retry/)' --no-tests fail --no-fail-fast --test-threads 8`.
+Raw output: `/tmp/activation-full-old-red.log`, run
+`a1ca9135-4f90-4560-ab13-d7a37b80527e`: **2 selected, 2 failed**, exit 100.
+An earlier compile-only failure was a missing test trait import and is not reproduction evidence.
+
+- `handoff_activation_post_install_retry_preserves_completed_usage_and_replace_rewind`:
+  real cutover/OperationRuntime/SQL trigger rejects the final Activated checkpoint after
+  registry installation. The installed owner completes its briefing turn, issues a real
+  user turn, receives its user echo, usage and completion notifications, then commits
+  `replace_turn_durable`. Reopening the file database and rebuilding OperationRuntime
+  with the same registry retries the original operation. Expected `thread/revert` before
+  replacement input was absent (`[]` versus the actual thread/second-turn identity with
+  two preceding turn starts). No snapshot field or private runtime field is seeded.
+- `handoff_activation_post_install_retry_running_interrupt_failure_restores_resumed`:
+  after actual issuance and usage notification, a second durable user entry waits while
+  the original turn runs. Retry produced **IssuingTurn**, not Resumed: it had already
+  reopened issuance from the stale Idle capture. The initial red stops in the ordinary
+  shutdown case; the final green additionally exercises injected interrupt failure.
+
+The first briefing turn is deliberately not replaced: production rejects replacement of
+a turn containing system observations. The test completes it and replaces a later real
+user turn instead. Provider notifications use the existing completed-handler barrier;
+a fixture-only barrier after the real replace command answer prevents a timed race with
+next issuance. Stable committed phase barriers use the public snapshot owner, not sleeps.
+The pre-existing ACK/suffix regression remains in the full selection.
+
+### Owner change and unchanged boundaries
+
+`HarnessInstallation` explicitly selects StartCapture versus ActivationRecovery.
+Activation reads the complete row after predecessor shutdown/reservation, checks its
+resource/thread identity, and shares `harness::recovery::prepare_quiesced` with boot/lazy
+replacement. ACP receipts, pause health invalidation and eligible suffix replay remain in
+their existing owners. The complete-source CAS accepts the candidate which is passed
+directly to installation; activation never calls partial queue adoption. Snapshot phase
+restoration still uses `state_from_snapshot` (running/interrupt -> Resumed), and shutdown
+interrupt failure does not create terminal evidence. Ordinary start retains capture
+phase/thread decisions and its existing ACP/queue/pause replay branches. Its existing
+`durable_observation_start_replay_preserves_row_progress` now also pins phase/turn isolation.
+The included boot suite exercises actual redriven start, Assistant recovery and queue races.
+
+No new migration, API binding, provider lifecycle, SQL permission, growing provider/test
+list or CI pass is added. Existing large owning files are extended; the new recovery
+responsibility file is 50 lines. Ordinary tests change only their module; provider variants
+extend the existing backend owners. The kernel owns the six declared gate steps once on
+the frozen target, including one focused replay. Worker owns focused iteration and fmt;
+CI owns broad suites. No real native inference, real Codex E2E or Tier 2 is run. Configured
+local deferred-native activation remains outside this stub coverage; registered unconfigured
+provider tests prove readiness refusal and metadata only.
+
+### Retained mutation evidence binding
+
+`/tmp/activation-full-retained-mutation-proof.json` records byte comparison with d1c865a3.
+The activation SQL remains SHA-256
+`d640df0a274ca7de993fa41cddce103e0ca12742f15ecc8b79cf81631fe95295`;
+0170 remains `78c9e2084ffc073c4c12e3b1d41bec3c06d270c3c27a471c027763c1d44e5330`;
+0169 remains `711590b2c96fb665bb15c33a066bd945c2e0a4c61bfc22576e525c9691e8ca77`.
+The old exact-root/SQL-fence/briefing-owner mutations retain their unchanged production
+invariants and recorded valid red/restored sets (1/1/7). The Unknown guard is byte-identical
+(SHA-256 `89f912067147235b83044d1d46dc90a953200b458ec16bf876d5f9e463c211ca`);
+the entire operation diff changes only the installer import and typed dispatch argument,
+after that guard. The previous valid four-red Unknown result remains evidence for that
+unchanged guard, not for the changed installation semantics. No historical full-file hash
+is presented as the new operation file hash. New phase isolation mutation evidence follows.
+
+### Final phase isolation mutation and complete restoration
+
+The initial complete follow-up run was 231/232: its running test sampled the before-row
+before the usage notification, because the generic notification hook could observe an older
+queued frame. The barrier now additionally waits for the notification's actual public durable
+usage/terminal/transcript fact. This strengthens scheduling control without seeding fields.
+The complete context selection then passed 232/232 (`/tmp/activation-full-fixed-focused3.log`,
+exit 0, 28.753 seconds). Compile-only type/import/ownership fixes are not counted as red tests.
+
+Ordinary start now passes a required, decoded capture and profile in its typed variant,
+so invalid output still fails before predecessor shutdown. Activation's variant fixes Planner
+profile and never decodes an operation snapshot as restoration input. A preliminary mutation
+was rerun after this interface tightening; only the final source-bound evidence below is used.
+
+Both mutation and restoration run this **entire context selection**, including all three
+selected binaries, not only the predicted failing test:
+
+```sh
+env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --lib --test planner_harness_suite --test planner_card_reset -E 'test(/handoff_activation|handoff_cutover|handoff_pause|durable_observation|dispatcher::tests|planner_preserving_recovery::observation_recovery|planner_harness_boot_recovery|reset_planner_card_preserves_runtime_pending_queue_and_push_watermark|public_snapshot_persistence_waits_for_issuance_checkpoint_owner|harness::tests::|harness::snapshot::|interrupt|watchdog|timeout|system_error/)' --no-tests fail --no-fail-fast --test-threads 8
+```
+
+Production file: `crates/calm-server/src/operation/planner_harness_start_adapter.rs`.
+Original SHA-256: `c7d5984a368885721d26142902be3f240f365f81d7c9efa8288a559a4a347e6f`.
+Mutated SHA-256: `5d7dfb03bf3ba7655f70da934590fc4ec78339d7595d250599fd347ff0f0dce0`.
+
+Complete predicted red set (saved before writing production):
+
+- `calm-server harness::run_loop::handoff_activation_recovery_tests::handoff_activation_post_install_retry_running_interrupt_failure_restores_resumed`
+
+```diff
+--- crates/calm-server/src/operation/planner_harness_start_adapter.rs
++++ crates/calm-server/src/operation/planner_harness_start_adapter.rs
+@@ -236,7 +236,9 @@
+         };
+         let snapshot = match installation {
+             HarnessInstallation::ActivationRecovery => {
+-                self.activation_catch_up(output, &binding).await?
++                let mut snapshot = self.activation_catch_up(output, &binding).await?;
++                snapshot.phase = HarnessPhaseTag::Idle;
++                snapshot
+             }
+             HarnessInstallation::StartCapture { snapshot, .. } => {
+                 let mut snapshot = *snapshot;
+```
+
+The source write is confirmed against the mutated hash before execution. The script's
+`finally` restores the exact saved production bytes before the green replay; no tests are
+mutated, no destructive checkout/reset is used, and no concurrent writer/reviewer observes
+transient code. Prediction, full diff, original source backup, red/restored output and result
+are `/tmp/activation-full-phase-mutation-{prediction.json,diff,original.rs,red.log,restored.log,result.json}`.
+Final mutation: **232 run, 231 passed, exactly 1 predicted failure**, exit 100, 35.969 seconds.
+Restoration: **232/232 passed**, exit 0, 48.326 seconds. Exact comparison result:
+
+```json
+{
+  "expected": [
+    "calm-server harness::run_loop::handoff_activation_recovery_tests::handoff_activation_post_install_retry_running_interrupt_failure_restores_resumed"
+  ],
+  "actual": [
+    "calm-server harness::run_loop::handoff_activation_recovery_tests::handoff_activation_post_install_retry_running_interrupt_failure_restores_resumed"
+  ],
+  "red_exit": 100,
+  "restored_exit": 0,
+  "source_restored_sha256": "c7d5984a368885721d26142902be3f240f365f81d7c9efa8288a559a4a347e6f",
+  "valid": true
+}
+```
+
+The final running test compares the complete persisted snapshot, allowing only the original
+TurnRunning -> Resumed recovery phase conversion. It checks both successful and failed
+shutdown interruption without repeated turn issuance. The replacement test verifies actual
+`thread/revert` before the replacement input, retained lifetime usage/invalidation/deduplication,
+and a single resource mint and briefing across file reopen/retry. Existing full-selection
+ACK/suffix, pause health, original start capture, provider binding and source-CAS conflict tests
+remain green. This does not claim real native readiness or eventual provider reconciliation.
+
+The final tree is frozen for the six-step kernel gate. Its actual verdict/log belongs in the
+completion report; this document is not edited after a passing gate.
+
+### Kernel r1: regenerate the existing terminology count
+
+Kernel r1 stops at the text gate: the new notification barrier's one call to the existing
+transcript repository list method raises the crates legacy-symbol count from 308 to 309.
+The other four text checks pass. The existing generator
+`scripts/gate-1316-terminology-ratchet.sh --update-baseline` regenerates that counted TSV;
+no pattern, exclusion, scan policy or provider/test roster changes. This is one test-only
+reference to an existing contract, not a new domain identifier. Production and mutation
+source hashes are unchanged. The raw kernel log is
+`runs/7e93be68c1b94d6dac678f815f5602d9:handoff-activation-full-snapshot-recovery/gates/1.log`.
+The next kernel run verifies the complete frozen tree again.

@@ -7,10 +7,20 @@ use crate::operation::handoff_activation::{self, ActivationResult};
 use crate::operation::{OperationReceipt, OperationRuntime};
 
 pub(super) fn runtime(a: &Fixture) -> (OperationRuntime, HarnessRegistry) {
-    let repo: Arc<dyn crate::db::Repo> = a.repo.clone();
+    let registry = HarnessRegistry::new();
+    (
+        runtime_with_repo(a, a.repo.clone(), registry.clone()),
+        registry,
+    )
+}
+
+pub(super) fn runtime_with_repo(
+    a: &Fixture,
+    repo: Arc<dyn crate::db::Repo>,
+    registry: HarnessRegistry,
+) -> OperationRuntime {
     let wiring =
         crate::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(repo.clone());
-    let registry = HarnessRegistry::new();
     let start = Arc::new(
         crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter::new(
             repo.clone(),
@@ -26,7 +36,7 @@ pub(super) fn runtime(a: &Fixture) -> (OperationRuntime, HarnessRegistry) {
         ),
     );
     let operations: Arc<dyn crate::operation::OperationRepo> = Arc::new(
-        crate::operation::SqlxOperationRepo::new(a.repo.pool().clone()),
+        crate::operation::SqlxOperationRepo::new(repo.sqlite_pool().unwrap()),
     );
     let events = EventBus::new();
     let completion = crate::operation::OperationCompletionBus::new();
@@ -38,17 +48,14 @@ pub(super) fn runtime(a: &Fixture) -> (OperationRuntime, HarnessRegistry) {
         events.clone(),
         completion.clone(),
     );
-    (
-        OperationRuntime::new_unchecked(
-            operations,
-            vec![Arc::new(handoff_activation::HandoffActivationAdapter {
-                start,
-            })],
-            events,
-            completion,
-            ctx,
-        ),
-        registry,
+    OperationRuntime::new_unchecked(
+        operations,
+        vec![Arc::new(handoff_activation::HandoffActivationAdapter {
+            start,
+        })],
+        events,
+        completion,
+        ctx,
     )
 }
 

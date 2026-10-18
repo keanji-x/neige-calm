@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::handoff_cutover::conflict;
-use super::planner_harness_start_adapter::{HarnessProfile, PlannerHarnessStartAdapter};
+use super::planner_harness_start_adapter::{
+    HarnessInstallation, HarnessProfile, PlannerHarnessStartAdapter,
+};
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
     Operation, OperationKey, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle,
@@ -254,7 +256,7 @@ impl HandoffActivationAdapter {
         // snapshot may overwrite queue ACKs from an installed/recovered owner.
         if let Err(error) = self
             .start
-            .install_harness(output, HarnessProfile::Planner, ctx, true)
+            .install_harness(output, ctx, HarnessInstallation::ActivationRecovery)
             .await
         {
             self.checkpoint(

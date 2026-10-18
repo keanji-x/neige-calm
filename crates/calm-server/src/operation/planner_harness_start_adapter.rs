@@ -82,6 +82,15 @@ pub fn fixture_socket_path() -> std::path::PathBuf {
     ))
 }
 
+/// Ordinary start applies its capture decisions; activation restores the same session's row.
+pub(crate) enum HarnessInstallation {
+    StartCapture {
+        profile: HarnessProfile,
+        snapshot: Box<HarnessSnapshot>,
+    },
+    ActivationRecovery,
+}
+
 #[derive(Clone)]
 pub struct PlannerHarnessStartAdapter {
     repo: Arc<dyn Repo>,
@@ -142,29 +151,36 @@ impl PlannerHarnessStartAdapter {
         self.repo.as_ref()
     }
 
-    pub(crate) async fn activation_catch_up(&self, output: &TxOutput) -> Result<()> {
+    async fn activation_catch_up(
+        &self,
+        output: &TxOutput,
+        binding: &crate::harness::profile::PlannerBinding,
+    ) -> Result<HarnessSnapshot> {
         let session_id = output.output_string("runtime_id", "activation")?;
         let row = self
             .repo
             .session_projection_by_id(&session_id)
             .await?
             .ok_or_else(|| CalmError::Conflict("activation session missing".into()))?;
-        let source = row
-            .handle_state_json
-            .clone()
-            .ok_or_else(|| CalmError::Conflict("activation snapshot missing".into()))?;
-        let mut snapshot = HarnessSnapshot::parse_known(source.clone())
-            .ok_or_else(|| CalmError::Conflict("activation snapshot invalid".into()))?;
+        let thread = output.output_optional_string("codex_thread_id", "activation")?;
+        if row.card_id != output.output_string("card_id", "activation")?
+            || row.kind != binding.profile.session_kind()
+            || row.agent_provider.as_ref() != Some(&binding.provider)
+            || row.thread_id != thread
+        {
+            return Err(CalmError::Conflict(
+                "activation resource binding changed".into(),
+            ));
+        }
         let track_id = TrackId::from(output.output_string("track_id", "activation")?);
-        let watermark = snapshot.push_watermark;
-        crate::harness::replay_harness_events_since(
-            self.repo.clone(),
-            &row.card_id,
-            &track_id,
-            watermark,
-            &mut snapshot,
-        )
-        .await?;
+        let (source, snapshot) =
+            crate::harness::recovery::prepare_quiesced(self.repo.clone(), &row, &track_id, binding)
+                .await?;
+        if snapshot.last_thread_id != thread {
+            return Err(CalmError::Conflict(
+                "activation checkpoint thread changed".into(),
+            ));
+        }
         if !crate::harness::persist_recovered_snapshot(
             self.repo.clone(),
             &row,
@@ -178,21 +194,24 @@ impl PlannerHarnessStartAdapter {
                 "activation source checkpoint changed".into(),
             ));
         }
-        Ok(())
+        // This exact complete CAS candidate is the only activation installation input.
+        Ok(snapshot)
     }
 
     pub(crate) async fn install_harness(
         &self,
         output: &TxOutput,
-        profile: HarnessProfile,
         ctx: &SpawnCtx,
-        catch_up: bool,
+        installation: HarnessInstallation,
     ) -> Result<SpawnOutcome> {
+        let profile = match &installation {
+            HarnessInstallation::StartCapture { profile, .. } => *profile,
+            HarnessInstallation::ActivationRecovery => HarnessProfile::Planner,
+        };
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
-        let mut snapshot = output_snapshot(output)?;
         let provider = {
             let card = self
                 .repo
@@ -209,62 +228,73 @@ impl PlannerHarnessStartAdapter {
             .harness_registry
             .reserve_after_shutdown(worker_session_id.clone())
             .await?;
-        // Recovery CAS assumes the previous installed owner is quiescent. Keep the
-        // claim through catch-up, row adoption and installation so no ACK is overwritten.
-        if catch_up {
-            self.activation_catch_up(output).await?;
-        }
-        if provider == AgentProvider::OpenCode {
-            snapshot = crate::acp_planner::recovery::load_quiesced(
-                self.repo.as_ref(),
-                &worker_session_id,
-                &card_id,
-                &track_id,
-            )
-            .await?;
-        } else {
-            overwrite_queue_from_the_runtimes_own_row(
-                self.repo.as_ref(),
-                &worker_session_id,
-                &mut snapshot,
-            )
-            .await?;
-        }
-        // Start replay is also an owner reconstruction. Persist conservative health before
-        // backend installation, using the same complete source CAS as boot/replacement.
-        if matches!(
-            snapshot.handoff_pause,
-            crate::harness::handoff_pause::PauseState::Paused { .. }
-        ) {
-            let row = self
-                .repo
-                .session_projection_by_id(&worker_session_id)
-                .await?
-                .ok_or_else(|| CalmError::Conflict("replayed pause session missing".into()))?;
-            let source = row
-                .handle_state_json
-                .clone()
-                .ok_or_else(|| CalmError::Conflict("replayed pause checkpoint missing".into()))?;
-            if HarnessSnapshot::parse_known(source.clone()).as_ref() != Some(&snapshot) {
-                return Err(CalmError::Conflict(
-                    "replayed pause checkpoint changed".into(),
-                ));
+        // Keep the claim through complete recovery CAS and installation. Shutdown only
+        // quiesces the local writer; state_from_snapshot still owns unknown live turns.
+        let binding = crate::harness::profile::PlannerBinding {
+            profile,
+            provider: provider.clone(),
+        };
+        let snapshot = match installation {
+            HarnessInstallation::ActivationRecovery => {
+                self.activation_catch_up(output, &binding).await?
             }
-            snapshot.handoff_pause.unconfirm_recovered_health();
-            if !crate::harness::persist_recovered_snapshot(
-                self.repo.clone(),
-                &row,
-                &TrackId::from(track_id.clone()),
-                source,
-                &snapshot,
-            )
-            .await?
-            {
-                return Err(CalmError::Conflict(
-                    "replayed pause checkpoint changed".into(),
-                ));
+            HarnessInstallation::StartCapture { snapshot, .. } => {
+                let mut snapshot = *snapshot;
+                if provider == AgentProvider::OpenCode {
+                    snapshot = crate::acp_planner::recovery::load_quiesced(
+                        self.repo.as_ref(),
+                        &worker_session_id,
+                        &card_id,
+                        &track_id,
+                    )
+                    .await?;
+                } else {
+                    overwrite_queue_from_the_runtimes_own_row(
+                        self.repo.as_ref(),
+                        &worker_session_id,
+                        &mut snapshot,
+                    )
+                    .await?;
+                }
+                // Start replay is also an owner reconstruction. Persist conservative health before
+                // backend installation, using the same complete source CAS as boot/replacement.
+                if matches!(
+                    snapshot.handoff_pause,
+                    crate::harness::handoff_pause::PauseState::Paused { .. }
+                ) {
+                    let row = self
+                        .repo
+                        .session_projection_by_id(&worker_session_id)
+                        .await?
+                        .ok_or_else(|| {
+                            CalmError::Conflict("replayed pause session missing".into())
+                        })?;
+                    let source = row.handle_state_json.clone().ok_or_else(|| {
+                        CalmError::Conflict("replayed pause checkpoint missing".into())
+                    })?;
+                    if HarnessSnapshot::parse_known(source.clone()).as_ref() != Some(&snapshot) {
+                        return Err(CalmError::Conflict(
+                            "replayed pause checkpoint changed".into(),
+                        ));
+                    }
+                    snapshot.handoff_pause.unconfirm_recovered_health();
+                    if !crate::harness::persist_recovered_snapshot(
+                        self.repo.clone(),
+                        &row,
+                        &TrackId::from(track_id.clone()),
+                        source,
+                        &snapshot,
+                    )
+                    .await?
+                    {
+                        return Err(CalmError::Conflict(
+                            "replayed pause checkpoint changed".into(),
+                        ));
+                    }
+                }
+                snapshot
             }
-        }
+        };
         let backend = PlannerBackend::open(
             provider.clone(),
             self.daemon.clone(),
@@ -1708,8 +1738,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        self.install_harness(output, op_profile(_op)?, ctx, false)
-            .await
+        self.install_harness(
+            output,
+            ctx,
+            HarnessInstallation::StartCapture {
+                profile: op_profile(_op)?,
+                snapshot: Box::new(output_snapshot(output)?),
+            },
+        )
+        .await
     }
 
     /// `Driver::apply_compensation` marks the operation `Stuck` on the FIRST step error and it is never re-driven; if `delete_card` fails, the lazily minted card stays with `deletable: false`.
@@ -2621,8 +2658,15 @@ mod tests {
             ],
         );
         durable.last_report_body_sha256 = Some("accepted-report".into());
+        durable.phase = HarnessPhaseTag::TurnRunning;
+        durable.last_turn_id = Some("row-owned-turn".into());
         let mut replay = HarnessSnapshot::initial(0, vec![]);
         adopt_queue_from_row(&mut replay, Some(serde_json::to_value(&durable).unwrap())).unwrap();
+        assert_eq!(replay.phase, HarnessPhaseTag::PendingThreadStart);
+        assert!(
+            replay.last_turn_id.is_none(),
+            "ordinary start retains its capture decisions"
+        );
         assert_eq!(replay.pending_entries(), durable.pending_entries());
         assert_eq!(replay.push_watermark, durable.push_watermark);
         assert_eq!(

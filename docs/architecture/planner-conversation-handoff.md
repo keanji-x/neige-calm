@@ -202,6 +202,35 @@ original admission and does not request activation catch-up. Migration 0170 narr
 explicit transition and permanently fences both retired identities; 0169 is unchanged.
 A pending claim alone, a native cache entry, or registry installation never grants SQL authority.
 
+### Start capture and same-session restoration ownership
+
+The ordinary start operation owns its initial phase/thread capture; its row owns queue,
+ACK watermark and report deduplication. Activation installation, including the first install,
+is same-session recovery: after registry quiescence the complete current durable snapshot
+owns **all** fields (phase, turn/thread, usage, rewind, projection, interruption, pause,
+queue metadata, floor and deduplication). The operation supplies exact resource/binding
+proof only. Separate typed installation purposes select these contracts; a shared boolean
+must not decide phase/thread ownership. Boot/lazy replacement and activation share the
+recovery candidate owner, ACP reconciliation, pause-health invalidation, eligible suffix
+catch-up and complete-source CAS. The exact accepted candidate goes straight to installation;
+a later row read or field merge cannot replace it. CAS refusal leaves recovery to the owner.
+
+| Captured durable phase / evidence | Same-session restoration | Issuance constraint |
+| --- | --- | --- |
+| Idle / TurnCompleted | original `state_from_snapshot` | preserve committed rewind and apply it before replacement input |
+| TurnRunning / IssuingInterrupt / Resumed | original Resumed reconciliation | shutdown does not prove native termination; no immediate duplicate turn |
+| IssuingTurn | original state restoration using durable turn identity | preserve projection/queue claims; no invented terminal receipt |
+| Compacting / Wedged | original conservative recovery | no forced Idle |
+| Paused / faulted pause | complete row plus unconfirmed recovered health | original pause/health owner gates release and issuance |
+| ACP sending / unknown | ACP receipt recovery | retire receipt-owned input and preserve typed unknown outcome |
+| ResourceRequestRecorded / Unknown without resource proof | activation operation stays Unknown | never retry native resource creation blindly |
+| Cancel/crash after proven resource binding or failed Activated checkpoint | explicit original-operation recovery | quiesce, complete snapshot CAS, then install; no resource/briefing remint |
+
+Registry reservation remains after predecessor shutdown, before candidate capture and through
+installation. Card start/mint, Track deletion and issuance retain their existing lock order;
+no SQL grant or pending-session admission is broadened. A swallowed shutdown interrupt error
+only means the old local loop stopped. It cannot justify discarding a live turn's identity.
+
 The new direct binding snapshot write joins the existing writer classification as row-owned.
 Preparation uses the existing snapshot writer, with complete source comparison and read-back
 under BEGIN IMMEDIATE; an ordinary later direct writer updates that inventory once. Migration 0170 joins the existing
