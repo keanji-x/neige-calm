@@ -5,9 +5,9 @@ use std::sync::{Arc, Weak};
 use super::{Arm, PlannerBackend};
 use crate::acp_planner::config::AcpPlannerHost;
 use crate::claude_planner::config::ClaudePlannerHost;
-use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
+use crate::harness::wiring::{PlannerRow, PlannerWiring};
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::thread_seals::ThreadSeals;
@@ -72,25 +72,58 @@ impl<'a> PlannerFactory<'a> {
     pub(crate) async fn open(
         &self,
         seals: Arc<ThreadSeals>,
-        claude: &ClaudePlannerWiring,
+        wiring: &PlannerWiring,
         repo: Arc<dyn Repo>,
-        row: ClaudePlannerRow<'_>,
+        row: PlannerRow<'_>,
     ) -> Result<PlannerBackend> {
         Ok(match row.binding.provider.clone() {
             AgentProvider::Codex => self.daemon()?.into(),
-            AgentProvider::OpenCode => {
-                let acp = crate::acp_planner::wiring::AcpPlannerWiring {
-                    host: claude.acp.clone(),
-                    plugin: claude.plugin.clone(),
-                };
-                PlannerBackend(Arm::Acp(
-                    acp.open_session(AgentProvider::OpenCode, repo, seals, row)
-                        .await?,
-                ))
-            }
+            AgentProvider::OpenCode => PlannerBackend(Arm::Acp(
+                crate::acp_planner::wiring::open_session(self.acp, wiring, repo, seals, row)
+                    .await?,
+            )),
             AgentProvider::Claude => {
-                PlannerBackend(Arm::Claude(claude.open_session(repo, seals, row).await?))
+                PlannerBackend(Arm::Claude(wiring.open_session(repo, seals, row).await?))
             }
         })
+    }
+
+    /// Call only after the caller's predecessor reservation has settled. ACP owns full
+    /// receipt/checkpoint recovery; other providers retain their entry-specific fallback.
+    pub(crate) async fn prepare_checkpoint(
+        &self,
+        provider: &AgentProvider,
+        repo: &dyn Repo,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+    ) -> Result<Option<crate::harness::HarnessSnapshot>> {
+        match provider {
+            AgentProvider::OpenCode => crate::acp_planner::recovery::load_quiesced(
+                repo,
+                worker_session_id,
+                card_id,
+                track_id,
+            )
+            .await
+            .map(Some),
+            AgentProvider::Codex | AgentProvider::Claude => Ok(None),
+        }
+    }
+
+    /// Registry-miss cleanup uses persisted ownership facts, never a reopened session.
+    pub(crate) async fn shutdown_replay(
+        &self,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+    ) -> Result<()> {
+        use crate::session_projection_repo::WorkerSessionKind;
+        let managed = matches!(
+            runtime.kind,
+            WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+        );
+        if managed && runtime.agent_provider == Some(AgentProvider::OpenCode) {
+            return crate::planner_process::stop(&self.acp.instance, &runtime.id).await;
+        }
+        self.shutdown_codex_replay(runtime).await
     }
 }

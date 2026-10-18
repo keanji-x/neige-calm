@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 use crate::activity_window::launchpad_opening_briefing;
 use crate::card_role_cache::CardRoleCache;
 use crate::claude_planner::config::ClaudePlannerHost;
-use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::db::sqlite::{
     HarnessTranscriptMeasure, HarvestOutcome, HarvestedFrom, HarvestedMessage,
     append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
@@ -29,6 +28,7 @@ use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::harness::backend::factory::{PlannerFactory, ReadinessFor};
+use crate::harness::wiring::{PlannerRow, PlannerWiring};
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
     PlannerHarness, PlannerHarnessParams, QueueEntry, initial_snapshot_with_goal,
@@ -128,8 +128,8 @@ impl PlannerHarnessStartAdapter {
         }
     }
 
-    fn claude_wiring(&self) -> ClaudePlannerWiring {
-        ClaudePlannerWiring {
+    fn claude_wiring(&self) -> PlannerWiring {
+        PlannerWiring {
             claude: Arc::clone(&self.claude_host),
             acp: Arc::clone(&self.acp_host),
             plugin: Arc::clone(&self.plugin),
@@ -1538,14 +1538,22 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             .harness_registry
             .reserve_after_shutdown(worker_session_id.clone())
             .await?;
-        if provider == AgentProvider::OpenCode {
-            snapshot = crate::acp_planner::recovery::load_quiesced(
+        let factory = PlannerFactory::new(
+            std::sync::Arc::downgrade(&self.daemon),
+            &self.claude_host,
+            &self.acp_host,
+        );
+        if let Some(checkpoint) = factory
+            .prepare_checkpoint(
+                &provider,
                 self.repo.as_ref(),
                 &worker_session_id,
                 &card_id,
                 &track_id,
             )
-            .await?;
+            .await?
+        {
+            snapshot = checkpoint;
         } else {
             overwrite_queue_from_the_runtimes_own_row(
                 self.repo.as_ref(),
@@ -1554,30 +1562,26 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
         }
-        let backend = PlannerFactory::new(
-            std::sync::Arc::downgrade(&self.daemon),
-            &self.claude_host,
-            &self.acp_host,
-        )
-        .open(
-            self.seals.clone(),
-            &self.claude_wiring(),
-            self.repo.clone(),
-            ClaudePlannerRow {
-                binding: crate::harness::profile::PlannerBinding {
-                    profile: op_profile(_op)?,
-                    provider,
+        let backend = factory
+            .open(
+                self.seals.clone(),
+                &self.claude_wiring(),
+                self.repo.clone(),
+                PlannerRow {
+                    binding: crate::harness::profile::PlannerBinding {
+                        profile: op_profile(_op)?,
+                        provider,
+                    },
+                    worker_session_id: &worker_session_id,
+                    card_id: &card_id,
+                    track_id: &track_id,
+                    prior_total_tokens: snapshot
+                        .token_usage
+                        .as_ref()
+                        .map_or(0, |usage| usage.total_tokens),
                 },
-                worker_session_id: &worker_session_id,
-                card_id: &card_id,
-                track_id: &track_id,
-                prior_total_tokens: snapshot
-                    .token_usage
-                    .as_ref()
-                    .map_or(0, |usage| usage.total_tokens),
-            },
-        )
-        .await?;
+            )
+            .await?;
         let handle = PlannerHarness::run(PlannerHarnessParams {
             worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from(track_id),

@@ -488,6 +488,16 @@ async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_regis
         })
         .await
         .unwrap();
+        // ACP cleanup must work without a native thread and must not reopen a session.
+        if provider == AgentProvider::OpenCode {
+            sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?1")
+                .bind(&runtime.id)
+                .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+                .await
+                .unwrap();
+        }
+        let native_before = ["session/new", "session/load", "session/prompt"]
+            .map(|method| requests(&root, method).len());
         let submitted = stack
             .state
             .operation_runtime
@@ -516,6 +526,12 @@ async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_regis
         assert!(
             stopped,
             "{provider:?} shutdown replay left its own native orphan alive"
+        );
+        assert_eq!(
+            ["session/new", "session/load", "session/prompt"]
+                .map(|method| requests(&root, method).len()),
+            native_before,
+            "orphan cleanup must not reopen or prompt"
         );
         stack.shutdown().await;
     }

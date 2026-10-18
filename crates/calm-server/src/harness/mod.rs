@@ -36,12 +36,12 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::Result;
 #[cfg(test)]
 use crate::event::Event;
 use crate::event::EventBus;
+use crate::harness::wiring::{PlannerRow, PlannerWiring};
 use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
 use crate::per_card_lock::{KeyedLocks, lock_key};
@@ -148,7 +148,7 @@ pub async fn spawn_recovered_harness(
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     seals: Arc<ThreadSeals>,
-    claude: &ClaudePlannerWiring,
+    claude: &PlannerWiring,
     registry: &HarnessRegistry,
     track_delete_locks: &KeyedLocks,
     runtime: WorkerSessionProjection,
@@ -321,14 +321,22 @@ pub async fn spawn_recovered_harness(
         record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
     }
-    if provider == AgentProvider::OpenCode {
-        snapshot = crate::acp_planner::recovery::load_quiesced(
+    let factory = backend::factory::PlannerFactory::new(
+        std::sync::Arc::downgrade(&daemon),
+        &claude.claude,
+        &claude.acp,
+    );
+    if let Some(checkpoint) = factory
+        .prepare_checkpoint(
+            &provider,
             repo.as_ref(),
             &runtime.id,
             &runtime.card_id,
             card.track_id.as_str(),
         )
-        .await?;
+        .await?
+    {
+        snapshot = checkpoint;
         if role == Some(CardRole::Planner) {
             let watermark = snapshot.push_watermark;
             replay_harness_events_since(
@@ -341,27 +349,23 @@ pub async fn spawn_recovered_harness(
             .await?;
         }
     }
-    let backend = backend::factory::PlannerFactory::new(
-        std::sync::Arc::downgrade(&daemon),
-        &claude.claude,
-        &claude.acp,
-    )
-    .open(
-        seals,
-        claude,
-        repo.clone(),
-        ClaudePlannerRow {
-            binding,
-            worker_session_id: &runtime.id,
-            card_id: &runtime.card_id,
-            track_id: card.track_id.as_str(),
-            prior_total_tokens: snapshot
-                .token_usage
-                .as_ref()
-                .map_or(0, |usage| usage.total_tokens),
-        },
-    )
-    .await?;
+    let backend = factory
+        .open(
+            seals,
+            claude,
+            repo.clone(),
+            PlannerRow {
+                binding,
+                worker_session_id: &runtime.id,
+                card_id: &runtime.card_id,
+                track_id: card.track_id.as_str(),
+                prior_total_tokens: snapshot
+                    .token_usage
+                    .as_ref()
+                    .map_or(0, |usage| usage.total_tokens),
+            },
+        )
+        .await?;
     let handle = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
@@ -533,7 +537,7 @@ pub async fn recover_harnesses_on_boot(
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     seals: Arc<ThreadSeals>,
-    claude: &ClaudePlannerWiring,
+    claude: &PlannerWiring,
     registry: &HarnessRegistry,
     track_delete_locks: &KeyedLocks,
     rows: BootRows,
@@ -580,7 +584,7 @@ pub struct HarnessRecoveryContext {
     track_area_cache: TrackAreaCache,
     daemon: Arc<SharedCodexAppServer>,
     seals: Arc<ThreadSeals>,
-    claude: ClaudePlannerWiring,
+    claude: PlannerWiring,
     registry: HarnessRegistry,
     track_delete_locks: KeyedLocks,
 }
@@ -594,7 +598,7 @@ impl HarnessRecoveryContext {
         track_area_cache: TrackAreaCache,
         daemon: Arc<SharedCodexAppServer>,
         seals: Arc<ThreadSeals>,
-        claude: ClaudePlannerWiring,
+        claude: PlannerWiring,
         registry: HarnessRegistry,
         track_delete_locks: KeyedLocks,
     ) -> Self {
@@ -674,7 +678,7 @@ pub struct DeferredRecoveryParams {
     pub track_area_cache: TrackAreaCache,
     pub daemon: Arc<SharedCodexAppServer>,
     pub seals: Arc<ThreadSeals>,
-    pub claude: ClaudePlannerWiring,
+    pub claude: PlannerWiring,
     pub registry: HarnessRegistry,
     pub track_delete_locks: KeyedLocks,
     /// Fixtures-only race hook: fired once per runtime AFTER the eligibility check and BEFORE
@@ -1196,7 +1200,7 @@ mod tests {
             track_area_cache,
             daemon.clone(),
             daemon.thread_seals().clone(),
-            &ClaudePlannerWiring::unconfigured_for_test(repo.clone()),
+            &PlannerWiring::unconfigured_for_test(repo.clone()),
             &registry,
             &crate::per_card_lock::new_keyed_locks(),
             runtime,

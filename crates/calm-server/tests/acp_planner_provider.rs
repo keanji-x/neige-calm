@@ -5,6 +5,8 @@ mod acp_planner_approvals;
 mod acp_planner_authentication;
 #[path = "cases/acp_planner_catalog.rs"]
 mod acp_planner_catalog;
+#[path = "cases/acp_planner_checkpoint.rs"]
+mod acp_planner_checkpoint;
 #[path = "cases/acp_planner_cli.rs"]
 mod acp_planner_cli;
 #[path = "cases/acp_planner_lifecycle.rs"]

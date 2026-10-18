@@ -9,7 +9,7 @@ use crate::shared_codex_appserver::{SharedThreadStartParams, ThreadConfig};
 
 impl PlannerFactory<'_> {
     /// Registry-miss stop uses only the persisted runtime's binding and fallback fact.
-    pub(crate) async fn shutdown_replay(
+    pub(super) async fn shutdown_codex_replay(
         &self,
         runtime: &crate::session_projection_repo::WorkerSessionProjection,
     ) -> Result<()> {
