@@ -74,6 +74,8 @@ export function useConversationStore(
   const historyReplacementSupported = run.data?.history_replacement_supported === true;
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
+  const canonical = run.data?.input_contract === 'canonical';
+  const inputStalled = stalled && !canonical;
   const executionHeld = run.data?.runtime_state === 'failed' || run.data?.runtime_state === 'exited'
     || run.data?.runtime_state === 'superseded';
   /* Anchored on the response's arrival (`dataUpdatedAt`); the fold keeps the earlier anchor for one turn. */
@@ -159,7 +161,8 @@ export function useConversationStore(
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
   });
-  const restart = useConversationRestart({ cardId, stalled, restart: mutations.restart });
+  const restart = useConversationRestart({ cardId, enabled: run.data?.input_contract === 'historical',
+    stalled: inputStalled, restart: mutations.restart });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landedRun = runReads.startOf(run.data);
@@ -167,7 +170,7 @@ export function useConversationStore(
   const outbox = useConversationOutbox({
     removedMessages, viewerId:currentUser?.userId ?? null,
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntries: pendingQueue,
-    stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
+    stalled: inputStalled, landed, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view } = outbox;
@@ -279,6 +282,7 @@ export function useConversationStore(
     pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,
+    inputStalled,
     executionHeld,
     stopping,
     stopFeedback,

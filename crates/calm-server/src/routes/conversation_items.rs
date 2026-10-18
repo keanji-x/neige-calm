@@ -120,19 +120,14 @@ pub(crate) async fn get_harness_items(
         if q.contract.is_none() {
             Json(HarnessItemsReadResponse::Historical(rows)).into_response()
         } else {
-            let next_cursor = (rows.len() == limit as usize).then(|| {
-                ConversationCursor::new(
-                    &id,
-                    mode,
-                    if descending {
-                        rows.first()
-                    } else {
-                        rows.last()
-                    }
-                    .expect("nonempty page")
-                    .id,
-                )
-            });
+            let boundary = if descending {
+                rows.first()
+            } else {
+                rows.last()
+            };
+            let next_cursor = boundary
+                .filter(|_| rows.len() == limit as usize)
+                .map(|item| ConversationCursor::new(&id, mode, item.id));
             let items = rows
                 .into_iter()
                 .map(|item| ConversationDisplayItem {

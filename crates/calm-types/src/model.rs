@@ -428,6 +428,8 @@ pub struct HarnessInputSegment {
 }
 
 /// Why a segment was in the turn: the observation that produced it and the event behind it.
+/// An optional `queue_entry_id` names the actual addressable input. Older and non-addressable
+/// inputs have none. A native batch alias never identifies its individual inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessInputOrigin {
@@ -437,8 +439,7 @@ pub struct HarnessInputOrigin {
     /// `null` when no event did, e.g. a user message or the Track goal seed.
     #[schema(required = true, nullable = true)]
     pub event_id: Option<i64>,
-    /// Actual addressable input behind this segment. Older and non-addressable inputs
-    /// have none. A batch's native client id is never a substitute for this identity.
+    // Preserve the released origin bytes when this optional identity is absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>)]
     #[ts(optional, type = "string")]

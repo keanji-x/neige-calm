@@ -2,7 +2,7 @@
 use super::*;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 
-async fn login_again(app: &axum::Router) -> String {
+pub(super) async fn login_again(app: &axum::Router) -> String {
     let response = app
         .clone()
         .oneshot(
@@ -28,7 +28,7 @@ async fn login_again(app: &axum::Router) -> String {
         .to_owned()
 }
 
-async fn wait_for_claim(
+pub(super) async fn wait_for_claim(
     fixture: &Fixture,
     track: &str,
     peer: &mut Peer,

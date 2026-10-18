@@ -2681,7 +2681,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Accept ordinary Human text through the canonical transaction before wake.\nThe original source-bound key and acknowledgement survive native unavailability.",
+        "summary": "Select the persisted conversation contract before acceptance or replay.\nCanonical errors never enter the historical queue. Historical public work\nrequires the current deployment owner and its existing Private resources.",
         "operationId": "send_planner_input",
         "parameters": [
           {
@@ -2696,7 +2696,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Required original message key, at most 128 visible ASCII bytes. Its verified author and original request are bound atomically with canonical acceptance.",
+            "description": "Required original message key, at most 128 visible ASCII bytes. The selected conversation contract binds the original request and acknowledgement; canonical receipts additionally bind the verified author.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2715,7 +2715,7 @@
         },
         "responses": {
           "200": {
-            "description": "Canonical Human input committed, or the original acknowledgement replayed after current source and Area authorization. Native wake/start failure cannot undo this acceptance. entry_id names the accepted message; worker_session_id remains the original acknowledgement, not an instruction to recover that runtime.",
+            "description": "Input committed under its persisted conversation contract, or its original acknowledgement replayed after current source/resource authorization. Canonical acceptance survives native wake failure. Historical input retains its original lazy start, queue entry and acknowledgement semantics.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2745,7 +2745,7 @@
             }
           },
           "403": {
-            "description": "Registered current Area collaboration access is required, including before key replay",
+            "description": "Canonical content requires registered current Area collaboration access. Historical public input additionally requires the deployment owner and its existing Private resources, including before key replay",
             "content": {
               "application/json": {
                 "schema": {
@@ -2765,7 +2765,7 @@
             }
           },
           "409": {
-            "description": "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses fresh attachments/history replacement, a missing canonical carrier or historical storage requiring activation; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.",
+            "description": "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses unsupported canonical attachments/history replacement or a missing canonical carrier; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3271,7 +3271,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.\nIdle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.\n`IssuingTurn` also reports `stopped: false`: while `turn/start` is in flight the app-server may not know the turn yet, so the interrupt is dispatched best-effort but only `TurnRunning` guarantees a target.",
+        "summary": "Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.\nIdle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.\nHistorical `IssuingTurn` is best effort and reports `stopped: false`.\nCanonical issuance requires a confirmed exact native target and otherwise\nrefuses with 409; an Actor label or operation payload cannot authorize Stop.",
         "operationId": "interrupt_planner_card",
         "parameters": [
           {
@@ -3306,7 +3306,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "Canonical Stop requires a current verified Human source",
             "content": {
               "application/json": {
                 "schema": {
@@ -3316,7 +3316,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Planner card and current Area/private execution access required",
             "content": {
               "application/json": {
                 "schema": {
@@ -3336,7 +3336,7 @@
             }
           },
           "409": {
-            "description": "No live session for this card; start a fresh one, history is kept (code `planner_harness_dormant`)",
+            "description": "No live session, changed original execution, or canonical issuance has no confirmed native target; retry Stop once the original turn is running. This refuses new control effects.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9253,7 +9253,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Required with first_message; optional for message-less resource creation. A Human first message binds the original request, verified author and exact accepted message to this key. A same-author identical replay rechecks current Area access and returns the original resource acknowledgement without starting or recovering its old runtime. Different original input or an unproven historical binding is idempotency_key_reused. Historical #N delivery attempts are not adopted or implicitly retried. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation.",
+            "description": "Required with first_message; optional for message-less resource creation. The original key permanently selects its creation contract. New blank managed Codex inputs use canonical source-bound acceptance; variants requiring historical preparation retain their original fingerprint and delivery attempts under current deployment-owner/Private-resource authorization. An original canonical receipt is never downgraded. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation.",
             "required": false,
             "schema": {
               "type": [
@@ -9275,7 +9275,7 @@
         },
         "responses": {
           "201": {
-            "description": "Track created. With first_message, canonical input and its original acknowledgement have committed independently of native readiness. Acceptance does not promise execution has started. Identical authorized retries mint no second Track or message.",
+            "description": "Track created or its original acknowledgement replayed. Canonical first input commits independently of native readiness; historical preparation/start retains its original success contract. Identical authorized retries mint no second Track or message.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14772,7 +14772,7 @@
       },
       "HarnessInputOrigin": {
         "type": "object",
-        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.",
+        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.\nAn optional `queue_entry_id` names the actual addressable input. Older and non-addressable\ninputs have none. A native batch alias never identifies its individual inputs.",
         "required": [
           "observation",
           "event_id"
@@ -14789,6 +14789,12 @@
           "observation": {
             "type": "string",
             "description": "The observation's serde `type` tag, e.g. `task_completed`, `track_wake`, `user_message`."
+          },
+          "queue_entry_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -16347,6 +16353,8 @@
                 "type": "object",
                 "required": [
                   "input_contract",
+                  "history_replacement_supported",
+                  "terminal_timeout",
                   "runtime_state",
                   "pending_messages",
                   "active_input",
@@ -16362,6 +16370,10 @@
                         "$ref": "#/components/schemas/ConversationActiveInput"
                       }
                     ]
+                  },
+                  "history_replacement_supported": {
+                    "type": "boolean",
+                    "description": "Current historical edit affordance; every write rechecks its actual source."
                   },
                   "input_contract": {
                     "$ref": "#/components/schemas/ConversationInputContract"
@@ -16386,6 +16398,17 @@
                       {
                         "$ref": "#/components/schemas/WorkerSessionState",
                         "description": "Actual current worker row state. Canonical is always present; null means no current historical runtime."
+                      }
+                    ]
+                  },
+                  "terminal_timeout": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/HarnessTimeoutEvidence",
+                        "description": "Confirmed timeout for this exact current execution, independent of execution admission."
                       }
                     ]
                   }
@@ -17316,14 +17339,14 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
             },
-            "description": "Attachment identifiers retain their wire shape. Fresh Human attachment\ninput is explicitly refused until its owning canonical admission is available."
+            "description": "Historical conversations retain attachment binding. Canonical attachment\ninput requires its owning admission and is currently refused."
           },
           "replaces_turn": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Historical replacement intent. Fresh Human history replacement is\nexplicitly refused until its owning canonical operation is available."
+            "description": "Historical replacement intent. Canonical history replacement requires\nits owning operation and is currently refused."
           },
           "text": {
             "type": "string"
@@ -17345,7 +17368,7 @@
               "string",
               "null"
             ],
-            "description": "Accepted canonical message identity. Historical internal acknowledgements\nretain their original optional entry shape."
+            "description": "Canonical message identity or a real addressable new historical entry.\nStored historical acknowledgements retain their original optional ID."
           },
           "worker_session_id": {
             "type": "string"

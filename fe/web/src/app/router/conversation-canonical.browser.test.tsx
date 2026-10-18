@@ -7,10 +7,10 @@ import type { ConversationDisplayItem, ConversationPage, HarnessPhaseTag, Worker
 
 const identity={userId:'jian',displayName:'Jian',role:'owner',sessionId:'fixture-jian'};
 const cursor=(position:number)=>({contract:'conversation_v1',source:'presentation',card_id:'daily-planner',position} as const);
-const human=(id:string,uid:string,name:string,position:number):ConversationDisplayItem=>({cursor:cursor(position),source:{
-  kind:'human',message_id:id,revision:1,author:{user_id:uid,display_name:name},text:'Same saved words',attachments:[],created_at_ms:position,
+const human=(id:string,uid:string,name:string,position:number,text='Same saved words'):ConversationDisplayItem=>({cursor:cursor(position),source:{
+  kind:'human',message_id:id,revision:1,author:{user_id:uid,display_name:name},text,attachments:[],created_at_ms:position,
 }});
-function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string;terminalTimeout:HarnessTimeoutEvidence|null}>,onSend?:()=>ConversationDisplayItem[]) {
+function fixture(items:ConversationDisplayItem[],run:Readonly<{state:WorkerSessionState;phase:HarnessPhaseTag;blockedReason:string|null;terminalTimeout:HarnessTimeoutEvidence|null}>,onSend?:()=>ConversationDisplayItem[]) {
   let stored=items;
   return renderDailyFixture({identity,initial:'/track/daily?panel=conversations',reply:request=>{
     if(request.path.includes('/harness/items?contract=conversation_v1')) {
@@ -65,21 +65,32 @@ it('an acknowledged message removed before the first read leaves no optimistic o
   f.client.clear();
 });
 
-it('holds a Failed current runtime despite its stored running phase and still permits saving a message',async()=>{
-  const f=fixture([human('saved-before-failure','jian','Jian',1)],{state:'failed',phase:'turn_running',
-    blockedReason:'The provider ended this execution with an error.',terminalTimeout:null});
+it.each(['turn_running','wedged'] as const)('holds a Failed current runtime with stored %s phase and still permits saving a message',async phase=>{
+  const text='Keep this input even while execution is held';
+  const before=human('saved-before-failure','jian','Jian',1);
+  const f=fixture([before],{state:'failed',phase,
+    blockedReason:'The provider ended this execution with an error.',terminalTimeout:null},
+    ()=>[before,human('ack-message','jian','Jian',2,text)]);
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
   await expect.element(page.getByText('Same saved words',{exact:true})).toBeVisible();
   await expect.element(page.getByRole('button',{name:'Paused',exact:true})).toBeVisible();
   expect(screen.queryByText('Running',{exact:true})).toBeNull();
   await page.getByRole('button',{name:'Paused',exact:true}).click();
   await expect.element(page.getByText('The provider ended this execution with an error.',{exact:true})).toBeVisible();
+  await page.screenshot({path:`./__screenshots__/canonical-failed-reason-${phase}.png`});
   expect(f.requests.some(request=>request.path.includes('/harness/live'))).toBe(false);
   const field=page.getByRole('combobox',{name:'Message'});
   await expect.element(field).toHaveAttribute('contenteditable','true');
-  await userEvent.type(field,'Keep this input even while execution is held');
+  expect(screen.queryByRole('button',{name:'Start a fresh session'})).toBeNull();
+  await userEvent.type(field,text);
   await page.getByRole('button',{name:'Send',exact:true}).click();
   await waitFor(()=>expect(f.requests.filter(request=>request.path.endsWith('/planner/input'))).toHaveLength(1));
+  await expect.element(field).toHaveAttribute('contenteditable','true');
+  expect(screen.getAllByText(text,{exact:true})).toHaveLength(1);
+  await expect.element(page.getByRole('button',{name:'Paused',exact:true})).toBeVisible();
+  expect(f.requests.some(request=>request.path.endsWith('/planner/restart'))).toBe(false);
+  expect(f.requests.some(request=>request.path.includes('/harness/live'))).toBe(false);
+  expect(screen.queryByRole('button',{name:'Start a fresh session'})).toBeNull();
   cleanup();f.client.clear();
 });
 
@@ -88,9 +99,10 @@ it('shows a confirmed current timeout as feedback while Idle still accepts the n
     track_id:'daily',thread_id:'thread',turn_id:'turn',reason:'max_turn_duration',requested_at_ms:1,
     effective_elapsed_ms:61000,budget_ms:60000},ended_at_ms:2};
   const f=fixture([human('previous-message','jian','Jian',1)],{state:'idle',phase:'turn_completed',
-    blockedReason:'',terminalTimeout:evidence});
+    blockedReason:null,terminalTimeout:evidence});
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
   await expect.element(page.getByText('The previous response stopped after reaching its time limit. Send a message to continue.',{exact:true})).toBeVisible();
+  await page.screenshot({path:'./__screenshots__/canonical-terminal-timeout.png'});
   const field=page.getByRole('combobox',{name:'Message'});
   await expect.element(field).toHaveAttribute('contenteditable','true');
   await userEvent.type(field,'Continue after the confirmed timeout');

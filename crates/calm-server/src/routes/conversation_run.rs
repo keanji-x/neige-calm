@@ -83,6 +83,10 @@ pub(super) async fn read(
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
     let frame = current_frame(s.repo.as_ref(), &id).await?;
+    let runtime_fence = frame.runtime.clone();
+    let handle_fence = runtime_fence
+        .as_ref()
+        .and_then(|runtime| s.harness.get(&runtime.id));
     let response = if let Some(snapshot) = frame.canonical {
         if query.contract.is_none() {
             return Err(CalmError::Conflict(
@@ -114,6 +118,22 @@ pub(super) async fn read(
             })
             .collect::<Result<Vec<_>>>()?;
         let header = snapshot.header;
+        let issuance_block = match handle_fence.as_ref() {
+            Some(handle) => handle.issuance_block().await,
+            None => None,
+        };
+        let terminal_timeout = s
+            .repo
+            .harness_latest_terminal(&id, &scope.track)
+            .await?
+            .filter(|outcome| {
+                outcome.worker_session_id == runtime.id
+                    && outcome.card_id == id
+                    && outcome.track_id == scope.track
+                    && Some(outcome.thread_id.as_str()) == header.last_thread_id.as_deref()
+                    && Some(outcome.turn_id.as_str()) == header.last_turn_id.as_deref()
+            })
+            .and_then(|outcome| outcome.timeout());
         let active_input = ConversationActiveInput::from_checkpoint(&snapshot.canonical_inputs);
         let selection = crate::planner_model::CardModelSelection::from_payload(&card.payload)
             .unwrap_or_default();
@@ -143,18 +163,16 @@ pub(super) async fn read(
                     at_ms: usage.at_ms,
                 })
         };
-        let blocked_reason = if runtime.state.is_terminal() {
-            Some(if runtime.state == calm_types::worker::WorkerSessionState::Failed {
+        let blocked_reason = header.wedged_reason.clone().or(issuance_block).or_else(|| {
+            runtime.state.is_terminal().then(|| if runtime.state == calm_types::worker::WorkerSessionState::Failed {
                 "Execution is held after this session failed. Messages remain saved."
             } else {
                 "Execution is held because this session is no longer active. Messages remain saved."
             }.into())
-        } else {
-            header.wedged_reason.clone().or_else(|| unknown.then(||
+        }).or_else(|| unknown.then(||
                 "Delivery could not be confirmed. This message is held to avoid sending it twice.".into()))
-                .or_else(|| (!pending_messages.is_empty() && s.harness.get(&runtime.id).is_none())
-                    .then(|| "Message saved. Execution has not started.".into()))
-        };
+                .or_else(|| (!pending_messages.is_empty() && handle_fence.is_none())
+                    .then(|| "Message saved. Execution has not started.".into()));
         Json(PlannerRunReadResponse::Conversation(
             ConversationRunResponse {
                 native_turn_id: (header.phase == crate::harness::HarnessPhaseTag::TurnRunning)
@@ -183,7 +201,7 @@ pub(super) async fn read(
                 },
                 input_contract: ConversationInputContract::Canonical,
                 history_replacement_supported: false,
-                terminal_timeout: None,
+                terminal_timeout,
                 runtime_state: Some(runtime.state),
                 pending_messages,
                 active_input,
@@ -191,11 +209,20 @@ pub(super) async fn read(
         ))
         .into_response()
     } else {
-        let Json(run) = super::planner_cards::historical_planner_run(s.clone(), id).await?;
+        let Json(run) = super::planner_cards::historical_planner_run(s.clone(), id.clone()).await?;
         if query.contract.is_some() {
-            let history_replacement_supported = historical_edit_capability(
-                &s, &principal, source, &scope, &run,
-            ).await?;
+            if run.worker_session_id.as_ref().is_some_and(|id| {
+                runtime_fence
+                    .as_ref()
+                    .is_none_or(|runtime| runtime.id != *id)
+            }) {
+                return Err(CalmError::Conflict(
+                    "conversation runtime changed while reading".into(),
+                ));
+            }
+            let edit_handle = run.worker_session_id.as_ref().and(handle_fence.as_ref());
+            let history_replacement_supported =
+                historical_edit_capability(&s, &principal, source, &scope, edit_handle).await?;
             Json(PlannerRunReadResponse::Conversation(
                 ConversationRunResponse {
                     native_turn_id: run.running_turn.as_ref().map(|turn| turn.turn_id.clone()),
@@ -214,6 +241,27 @@ pub(super) async fn read(
         }
     };
     scope.publish(s.repo.as_ref(), &principal).await?;
+    if query.contract.is_some() {
+        let current = s.repo.conversation_read_frame(&id).await?.runtime;
+        let same_runtime = match (runtime_fence.as_ref(), current.as_ref()) {
+            (Some(before), Some(now)) => before.id == now.id && before.state == now.state,
+            (None, None) => true,
+            _ => false,
+        };
+        let current_handle = current
+            .as_ref()
+            .and_then(|runtime| s.harness.get(&runtime.id));
+        let same_handle = match (handle_fence.as_ref(), current_handle.as_ref()) {
+            (Some(before), Some(now)) => before.same_instance(now),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_runtime || !same_handle {
+            return Err(CalmError::Conflict(
+                "conversation runtime changed while reading".into(),
+            ));
+        }
+    }
     Ok(response)
 }
 
@@ -223,19 +271,21 @@ async fn historical_edit_capability(
     principal: &Principal,
     source: Option<crate::auth::HumanInputSource>,
     scope: &ReadScope,
-    run: &GetPlannerRunResponse,
+    handle: Option<&crate::harness::PlannerHarness>,
 ) -> Result<bool> {
-    let backend_supported = run.worker_session_id.as_ref()
-        .and_then(|runtime| state.harness.get(runtime))
-        .is_some_and(|handle| handle.history_replacement_supported());
-    let Some(source) = source.filter(|_| backend_supported) else { return Ok(false); };
+    let backend_supported = handle.is_some_and(|handle| handle.history_replacement_supported());
+    let Some(source) = source.filter(|_| backend_supported) else {
+        return Ok(false);
+    };
     match source.current_principal() {
-        Ok(current) if current.user_id == principal.user_id => {},
+        Ok(current) if current.user_id == principal.user_id => {}
         Ok(_) | Err(CalmError::Unauthorized | CalmError::Forbidden(_)) => return Ok(false),
         Err(error) => return Err(error),
     }
     match crate::conversation_inputs::HistoricalHumanSource::new(source)
-        .require_area(state.repo.as_ref(), scope.area.as_str()).await {
+        .require_area(state.repo.as_ref(), scope.area.as_str())
+        .await
+    {
         Ok(()) => Ok(true),
         Err(CalmError::Unauthorized | CalmError::Forbidden(_)) => Ok(false),
         Err(error) => Err(error),

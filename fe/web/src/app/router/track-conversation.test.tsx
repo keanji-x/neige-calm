@@ -20,6 +20,7 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
+import { queryKeys } from '../providers/queries.ts';
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import {
   CONVERSATION_CREATE_TEXT, conversationCreateUnknownText, MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId,
@@ -775,26 +776,47 @@ describe('track conversations', () => {
       expect(posts(requests, '/planner/restart')).toHaveLength(1);
     });
 
-    /* TanStack hands an invalidation a read still in flight with no data yet; the restart must stand on a read
-       started after its answer, not on one from before it. */
-    it('settles a restart on a run read started after its answer, not one still out from before', async () => {
-      let first = true;
+    it('keeps a dormant refusal visible without offering Fresh until the input contract is known', async () => {
       const firstRead = new Promise<ApiTransportResponse>(() => undefined);
-      const { requests } = mountRecovery({ runAnswer: () => {
-        if (!first) return undefined;
-        first = false;
-        return firstRead;
-      } });
+      const { requests } = mountRecovery({ runAnswer: () => firstRead });
       await openAssistant();
       await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
-      await write('sent while the first read is out');
-      await screen.findByRole('alert');
+      await write('keep this while the contract is unknown');
+      expect((await screen.findByRole('alert')).textContent).toContain('Not sent.');
+      expect(messageField().textContent).toBe('keep this while the contract is unknown');
+      expect(within(drawerElement()).queryByRole('button', { name: 'Start a fresh session' })).toBeNull();
+      expect(posts(requests, '/planner/restart')).toHaveLength(0);
+      expect(posts(requests, '/planner/input')).toHaveLength(1);
+    });
+
+    /* With the historical contract already declared, TanStack can hand an invalidation
+       an older refetch still in flight. The restart must stand on a later read. */
+    it('settles a restart on a run read started after its answer, not one still out from before', async () => {
+      let reads = 0;
+      const firstRead = new Promise<ApiTransportResponse>(() => undefined);
+      const { requests, client } = mountRecovery({ runAnswer: () => {
+        reads += 1;
+        return reads === 2 ? firstRead : undefined;
+      } });
+      await openAssistant();
+      await waitFor(() => expect(client.getQueryData([...queryKeys.plannerRun(ASSISTANT_CARD.id), 'conversation_v1']))
+        .toMatchObject({ input_contract: 'historical' }));
+      await act(async () => {
+        void client.invalidateQueries({ queryKey: queryKeys.plannerRun(ASSISTANT_CARD.id) });
+        await Promise.resolve();
+      });
       const runReads = () => requests.filter((request) => request.path.includes(`/cards/${ASSISTANT_CARD.id}/planner/run?contract=conversation_v1`)).length;
-      expect(runReads()).toBe(1);
+      await waitFor(() => expect(runReads()).toBe(2));
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+      await write('sent while the earlier refetch is out');
+      await screen.findByRole('alert');
+      expect(runReads()).toBe(2);
 
       await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
       await within(drawerElement()).findByText(/Fresh session started/);
-      expect(runReads()).toBe(2);
+      expect(runReads()).toBe(3);
+      expect(posts(requests, '/planner/restart')).toHaveLength(1);
+      expect(posts(requests, '/planner/input')).toHaveLength(1);
     });
 
     it('offers it while the conversation is paused, and Send works once it started', async () => {
@@ -1000,7 +1022,7 @@ describe('track conversations', () => {
     '[F5] retries a %s failure under its key, then offers Try again without asking', async (mode) => {
       const text = 'repeat the same request';
       let failing = true;
-      let rows: ReturnType<typeof harnessMessage>[] = [];
+      let rows: (ReturnType<typeof harnessMessage> | ReturnType<typeof projectionRow>)[] = [];
       const { requests } = setup((request) => {
         if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
         if (request.path.endsWith('/planner/input')) {
@@ -1191,7 +1213,7 @@ describe('track conversations', () => {
 
   it('[#2068] dismisses a spent unknown send without putting its words or images back; a read then shows it if it was stored', async () => {
     const text = 'Dismissed, maybe delivered';
-    let rows: ReturnType<typeof harnessMessage>[] = [];
+    let rows: (ReturnType<typeof harnessMessage> | ReturnType<typeof projectionRow>)[] = [];
     let dropping = true;
     const { client, requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
@@ -1237,7 +1259,7 @@ describe('track conversations', () => {
 
   it('[#2068] draws a spent unknown send once when its message drains, and its Try again leaves one', async () => {
     const text = 'Drained while unconfirmed';
-    let rows: ReturnType<typeof harnessMessage>[] = [];
+    let rows: (ReturnType<typeof harnessMessage> | ReturnType<typeof projectionRow>)[] = [];
     let accept = false;
     const { client } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
@@ -1260,7 +1282,7 @@ describe('track conversations', () => {
   it('[#2068] keeps a send answered after an unknown attempt shown until a read started after its answer lands', async () => {
     const text = 'Answered on the second attempt';
     let attempts = 0;
-    let rows: ReturnType<typeof harnessMessage>[] = [];
+    let rows: (ReturnType<typeof harnessMessage> | ReturnType<typeof projectionRow>)[] = [];
     /* Reads and the second attempt are answered by hand, so which read started before the 200 is decided here. */
     const held: { input?: () => void; history?: () => void } = {};
     let holdHistory = false;
@@ -1308,7 +1330,7 @@ describe('track conversations', () => {
 
   it('[#2043] keeps the composer closed while a send is out, even once a read shows its message', async () => {
     const text = 'Stored before its answer came';
-    let rows: ReturnType<typeof harnessMessage>[] = [];
+    let rows: (ReturnType<typeof harnessMessage> | ReturnType<typeof projectionRow>)[] = [];
     let answer!: () => void;
     const answered = new Promise<void>((done) => { answer = done; });
     const { client, requests } = setup(async (request) => {
@@ -1449,7 +1471,7 @@ describe('track conversations', () => {
   it('[F4] sends a dropped answer again under its key, with no question and one message', async () => {
     let attempts = 0;
     const text = 'Keep the dropped request';
-    let rows: ReturnType<typeof harnessMessage>[] = [];
+    let rows: (ReturnType<typeof harnessMessage> | ReturnType<typeof projectionRow>)[] = [];
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), rows, null));
       if (!request.path.endsWith('/planner/input')) return undefined;
@@ -3222,7 +3244,7 @@ describe('track conversations', () => {
    * types it again, and the one row that lands belongs to that send. */
   it('leaves the composer open when the first sentence is retyped and one row lands', async () => {
     const minted: Row[] = [];
-    let persisted: ReturnType<typeof harnessMessage>[] = [];
+    let persisted: (ReturnType<typeof harnessMessage> | ReturnType<typeof projectionRow>)[] = [];
     const { requests } = setup((request) => {
       if (request.method === 'POST' && request.path === CONVERSATIONS) {
         const row = derivedRow('w1', request);

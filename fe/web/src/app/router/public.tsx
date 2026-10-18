@@ -751,7 +751,7 @@ function useConversationPane(
                 {store.failedSend.delivery === 'unknown' ? <>
                   {/* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
                      No Edit here — an edited message is a new send under a new key, and the first may have arrived. */}
-                  <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                  <ChatFooterRemedy disabled={store.inputStalled || store.sending || !store.historyReady}
                     onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>
@@ -760,7 +760,7 @@ function useConversationPane(
                     Dismiss
                   </ChatFooterRemedy>
                 </> : <>
-                  <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                  <ChatFooterRemedy disabled={store.inputStalled || store.sending || !store.historyReady}
                     onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>

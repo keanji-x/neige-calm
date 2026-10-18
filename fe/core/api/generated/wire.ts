@@ -371,6 +371,8 @@ export type GitHubPullChanges = { additions: number, deletions: number, changed_
 
 /**
  * Why a segment was in the turn: the observation that produced it and the event behind it.
+ * An optional `queue_entry_id` names the actual addressable input. Older and non-addressable
+ * inputs have none. A native batch alias never identifies its individual inputs.
  */
 export type HarnessInputOrigin = { 
 /**
@@ -381,7 +383,7 @@ observation: string,
  * The `events.id` that produced the observation (for a folded entry, the newest one);
  * `null` when no event did, e.g. a user message or the Track goal seed.
  */
-event_id: number | null, };
+event_id: number | null, queue_entry_id?: string, };
 
 /**
  * How one segment of a harness `userMessage` should be presented to a human. The rendered English
