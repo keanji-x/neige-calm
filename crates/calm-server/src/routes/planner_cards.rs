@@ -115,7 +115,7 @@ pub struct InterruptPlannerCardResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
     pub worker_session_id: String,
-    /// True when a turn was running and an interrupt was dispatched at it; false when idle or a `turn/start` was still in flight. Means the interrupt was *issued* — completion is asynchronous.
+    /// True once Stop was accepted for the exact current native target; false when no turn needs stopping. Acceptance does not confirm completion: the original execution must report its end.
     pub stopped: bool,
 }
 
@@ -286,18 +286,18 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
 }
 
 /// Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.
-/// Idle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.
-/// Historical `IssuingTurn` is best effort and reports `stopped: false`.
-/// Canonical issuance requires a confirmed exact native target and otherwise
-/// refuses with 409; an Actor label or operation payload cannot authorize Stop.
+/// Idle is a graceful no-op (`stopped: false`). The control owner binds and
+/// revalidates the original target at durable acceptance; an unknown or changed
+/// target is refused with 409. An Actor label or stored operation payload cannot
+/// replace the current Human source. Completion remains an independent native fact.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/interrupt",
     tag = "cards",
     params(("id" = String, Path, description = "Planner card id")),
     responses(
-        (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)", body = InterruptPlannerCardResponse),
-        (status = 401, description = "Canonical Stop requires a current verified Human source", body = ErrorBody),
+        (status = 200, description = "Stop accepted for the exact current native target (`stopped: true`); false when no turn needs stopping. Native completion is asynchronous and must be observed separately.", body = InterruptPlannerCardResponse),
+        (status = 401, description = "Stop requires a current verified Human source", body = ErrorBody),
         (status = 403, description = "Planner card and current Area/private execution access required", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 409, description = "No current native target or original execution changed. Retry Stop once the original turn is running.", body = ErrorBody),
