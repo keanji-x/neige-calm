@@ -173,7 +173,7 @@ async fn initial_input_receipt_observation_waits_for_the_entire_issuance_command
                 .to_string(),
         )
         .unwrap();
-    let snapshot = harness.snapshot().await;
+    let snapshot = harness.snapshot().await.unwrap();
     worker.shared_codex_appserver.emit_notification_for_test(calm_server::codex_appserver::Notification::Item {
         method: "item/completed".into(),
         params: json!({"threadId": snapshot.last_thread_id.unwrap(), "turn":{"id":snapshot.last_turn_id.unwrap()},
