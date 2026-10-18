@@ -7,7 +7,7 @@ import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-s
 import { readTrackReport, type ReportBlock, type TrackReport } from '../../../../../core/domain/report.ts';
 import { SOURCE_PANEL_COPY } from '../source/public.tsx';
 import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
-import { ReportDocument } from './public.tsx';
+import { ReportDocument, ReportTextLink } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -505,4 +505,21 @@ describe('ReportDocument', () => {
         .toEqual(['概要', '待你定', '已完成', '决策']);
     });
   });
+});
+
+it('shares destination admission through the public link capability and preserves inert labels', () => {
+  const open = vi.fn();
+  const { rerender } = render(<ReportTextLink href="./notes.md" label="Notes" referenceRepository={null}
+    fileRoot="/workspace" onOpenFileLink={open}><strong>Notes</strong></ReportTextLink>);
+  screen.getByRole('button', { name: 'Notes' }).click();
+  expect(open).toHaveBeenCalledExactlyOnceWith({ path: 'notes.md' });
+  rerender(<ReportTextLink href="/outside/private" label="Notes" referenceRepository={null}
+    fileRoot="/workspace" onOpenFileLink={open}><strong>Notes</strong></ReportTextLink>);
+  expect(screen.queryByRole('button')).toBeNull();
+  expect(screen.queryByRole('link')).toBeNull();
+  rerender(<ReportTextLink href="./notes.md" label="Notes" referenceRepository={null}
+    destinationMode="inert" fileRoot="/workspace" onOpenFileLink={open}><strong>Notes</strong></ReportTextLink>);
+  expect(screen.queryByRole('button')).toBeNull();
+  expect(screen.getByText('Notes').tagName).toBe('STRONG');
+  expect(open).toHaveBeenCalledTimes(1);
 });
