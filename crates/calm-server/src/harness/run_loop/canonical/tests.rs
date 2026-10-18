@@ -167,12 +167,14 @@ impl Fixture {
 #[tokio::test]
 async fn real_loop_requires_live_source_before_claim_and_preserves_pending_head() {
     let fx = Fixture::new().await;
+    let (_client, mut peer) = connect(&fx.daemon).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     let before = fx.frame().await;
     assert_eq!(before.header.phase, HarnessPhaseTag::Idle);
     assert_eq!(before.canonical_inputs.pending.len(), 1);
     assert!(before.canonical_inputs.active.is_none());
     assert!(before.canonical_inputs.attempts.is_empty());
+    let feedback = fx.harness.issuance_block().await;
     fx.auth.sessions.remove(&fx.session).unwrap();
     assert!(
         fx.harness
@@ -181,7 +183,9 @@ async fn real_loop_requires_live_source_before_claim_and_preserves_pending_head(
             .is_err()
     );
     assert_eq!(fx.frame().await, before);
+    peer.close(None).await.unwrap();
     fx.harness.shutdown().await.unwrap();
+    assert_eq!(feedback.as_deref(), Some("A current session must authorize this saved input."));
 }
 
 #[tokio::test]
