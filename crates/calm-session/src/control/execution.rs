@@ -150,16 +150,16 @@ pub enum ExecutionRequest {
     Launch(ConsumeExecution),
     Revoke(ConsumeExecution),
     Control(ExecutionControl),
+    ObserveDirectories(Box<DirectoryRelationRequest>),
+    /// Release this exact immutable lease after its executor references settle.
+    RetireRegistration(ObjectRegistrationReceipt),
+    ObserveTransferredDirectories(Box<TransferredDirectoryRelationRequest>),
     Inspect(ExecutionId),
     Watch,
     Retire {
         execution_id: ExecutionId,
         lifecycle: CapabilityToken,
     },
-    ObserveDirectories(Box<DirectoryRelationRequest>),
-    /// Release this exact immutable lease after its executor references settle.
-    RetireRegistration(ObjectRegistrationReceipt),
-    ObserveTransferredDirectories(Box<TransferredDirectoryRelationRequest>),
 }
 
 /// All process actions, including future variants, must first resolve this exact capability.
@@ -184,9 +184,17 @@ pub enum ProcessAction {
         pixel_h: u16,
     },
     Signal(ProcSignal),
+    /// Reserved released ordinal: Cleanup is no longer accepted or serializable.
+    #[doc(hidden)]
+    ReservedCleanup(RemovedCleanup),
     /// Idempotent scope TERM followed by KILL after the executor grace period.
     Stop,
 }
+
+/// Uninhabited payload reserves the released Cleanup tag while rejecting it on decode.
+#[doc(hidden)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RemovedCleanup {}
 
 /// Output settlement is independent of process scope settlement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,22 +227,6 @@ impl ExecutionState {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ExecutionReply {
-    Absent,
-    Inspected {
-        receipt: Option<ExecutionReceipt>,
-        state: ExecutionState,
-        output_end: OutputEnd,
-    },
-    Retired(ExecutionTombstone),
-    Watching {
-        boot: ExecutorBootId,
-        seq: u64,
-    },
-    Changed {
-        seq: u64,
-        id: ExecutionId,
-    },
-    Busy(BusyReason),
     Handshake {
         envelope_version: u32,
         executor_boot: ExecutorBootId,
@@ -281,6 +273,22 @@ pub enum ExecutionReply {
     ObjectQualificationFailed {
         failure: workspace::execution::objects::ObjectQualificationFailure,
     },
+    Absent,
+    Inspected {
+        receipt: Option<ExecutionReceipt>,
+        state: ExecutionState,
+        output_end: OutputEnd,
+    },
+    Retired(ExecutionTombstone),
+    Watching {
+        boot: ExecutorBootId,
+        seq: u64,
+    },
+    Changed {
+        seq: u64,
+        id: ExecutionId,
+    },
+    Busy(BusyReason),
 }
 
 /// Explicit worktree compatibility, qualified by the released v2 Probe contract or v3 handshake.

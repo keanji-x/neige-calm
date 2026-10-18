@@ -23,6 +23,8 @@ mod scope_helper;
 mod shutdown;
 #[cfg(test)]
 mod stop_tests;
+#[cfg(test)]
+mod tombstone_tests;
 mod validation;
 use validation::*;
 

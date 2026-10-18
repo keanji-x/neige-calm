@@ -14,6 +14,7 @@ impl Executor {
                 t.ticket_id == request.ticket_id,
                 "tombstone ticket mismatch"
             );
+            self.store.remove_execution(&request.execution_id)?;
             return Ok(ExecutionReply::Retired(t.clone()));
         }
         if !self
@@ -99,6 +100,7 @@ impl Executor {
             "invalid execution control capability"
         );
         let required = match &control.action {
+            ProcessAction::ReservedCleanup(never) => match *never {},
             ProcessAction::Observe { .. } => ExecutionControlPurpose::Observe,
             ProcessAction::WriteStdin { .. } | ProcessAction::Resize { .. } => {
                 ExecutionControlPurpose::Interactive
@@ -159,6 +161,7 @@ impl Executor {
                         pixel_h,
                     } => process.resize(cols, rows, pixel_w, pixel_h)?,
                     ProcessAction::Signal(signal) => process.signal(signal)?,
+                    ProcessAction::ReservedCleanup(never) => match never {},
                     ProcessAction::Observe { .. } | ProcessAction::Stop => {
                         unreachable!("handled above")
                     }

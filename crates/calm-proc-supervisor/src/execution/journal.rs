@@ -172,6 +172,7 @@ impl Store {
             self.load_extension("tombstone")?;
         let mut tombstones = std::collections::HashMap::new();
         for value in values {
+            self.remove_execution(&value.execution_id)?;
             anyhow::ensure!(
                 tombstones
                     .insert(value.execution_id.clone(), value)
@@ -186,6 +187,11 @@ impl Store {
             .root
             .join(format!("{}.tombstone", id.as_str()))
             .try_exists()?)
+    }
+
+    /// Idempotent durable removal, shared by publication, startup and tombstone replay.
+    pub fn remove_execution(&self, id: &ExecutionId) -> anyhow::Result<()> {
+        self.remove(&format!("{}.execution", id.as_str()))
     }
 
     pub fn remove(&self, name: &str) -> anyhow::Result<()> {

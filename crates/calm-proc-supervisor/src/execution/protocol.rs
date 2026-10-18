@@ -47,6 +47,7 @@ impl Executor {
     }
     pub(super) fn inspect(&self, id: &ExecutionId) -> anyhow::Result<ExecutionReply> {
         if let Some(tombstone) = self.tombstones.lock().map_err(poison)?.get(id) {
+            self.store.remove_execution(id)?;
             return Ok(ExecutionReply::Retired(tombstone.clone()));
         }
         Ok(match self.records.lock().map_err(poison)?.get(id) {
@@ -79,8 +80,10 @@ impl Executor {
         self.records.lock().map_err(poison)?.remove(&id);
         self.preparations.retire(&id)?;
         self.processes.lock().map_err(poison)?.remove(&id);
-        self.changed(id.clone())?;
-        self.store.remove(&format!("{}.execution", id.as_str()))?;
+        let removal = self.store.remove_execution(&id);
+        // Observers wake only after cleanup was attempted, including a retryable IO failure.
+        self.changed(id)?;
+        removal?;
         Ok(())
     }
     pub(super) async fn retire_execution(
@@ -91,6 +94,7 @@ impl Executor {
         let gate = self.id_gate(&id)?;
         let _id = gate.lock().await;
         if let Some(tombstone) = self.tombstones.lock().map_err(poison)?.get(&id) {
+            self.store.remove_execution(&id)?;
             return Ok(ExecutionReply::Retired(tombstone.clone()));
         }
         let first = self.record(&id)?;

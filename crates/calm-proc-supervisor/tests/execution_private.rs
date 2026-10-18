@@ -254,3 +254,51 @@ async fn private_prepare_wire_exact_replay_ignores_replaced_root_and_boot() {
         }
     ));
 }
+
+#[tokio::test]
+async fn legacy_handshake_server_wire_stable_and_typed_v3_refused() {
+    use calm_session::{
+        control::{ControlMsg, ControlReply},
+        read_frame, write_frame,
+    };
+    use tokio::io::AsyncReadExt;
+    let harness = Harness::start().await;
+    let mut socket = tokio::net::UnixStream::connect(&harness.socket)
+        .await
+        .unwrap();
+    write_frame(
+        &mut socket,
+        &ControlMsg::Execution(Box::new(ExecutionRequest::Handshake(ExecutionHandshake {
+            required_contract: 0,
+            client_secret: CapabilityToken::fresh().unwrap(),
+            mode: ExecutionProtocolMode::LegacyWorktree,
+        }))),
+    )
+    .await
+    .unwrap();
+    let mut header = [0; 10];
+    socket.read_exact(&mut header).await.unwrap();
+    assert_eq!(&header[..6], b"NEIG\x00\x04");
+    let mut bytes = vec![0; u32::from_be_bytes(header[6..10].try_into().unwrap()) as usize];
+    socket.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(bytes.len(), 37);
+    assert_eq!(&bytes[..4], &[14, 0, 0, 32]); // released reply tags and envelope=0
+    assert!(bytes[4..36].iter().all(u8::is_ascii_hexdigit));
+    assert_eq!(bytes[36], 1); // LegacyWorktree
+    // The production client still negotiates Legacy, and the server rejects old typed clients.
+    connect_legacy(&harness.socket).await.unwrap();
+    write_frame(
+        &mut socket,
+        &ControlMsg::Execution(Box::new(ExecutionRequest::Handshake(ExecutionHandshake {
+            required_contract: 3,
+            client_secret: harness.secret.clone(),
+            mode: ExecutionProtocolMode::RegisteredV3,
+        }))),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(read_frame::<ControlReply, _>(&mut socket).await.unwrap(),
+        ControlReply::Execution(r) if matches!(*r, ExecutionReply::Refused { .. }))
+    );
+}
