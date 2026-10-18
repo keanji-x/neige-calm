@@ -1,6 +1,6 @@
 # Track Workspace 框架
 
-状态：S1–S2a 合同已定；S3 的交付/验证实施协议见 [workspace-delivery-protocol.md](workspace-delivery-protocol.md) 与 [workspace-verification-decision.md](workspace-verification-decision.md)，不声称已实现。S2b 的机制修订见 [workspace-view-backend.md](workspace-view-backend.md)，待 fresh 双路完整 L2 设计评审。方向为 Workspace 框架 + git worktree / Linux 同路径 COW 视图两种实现；[track-cow-view.md](track-cow-view.md) 的 overlay 实验只作历史证据。
+状态：S1–S2a 合同已定；S2a（执行）与 M1（workspace_service 迁移）之后的剩余 resource cutover 与隔离等级（`worktree`/`none`/`view`）重新规划见 [workspace-next-steps.md](workspace-next-steps.md)，其中收窄条目待接受；S3 的交付/验证实施协议见 [workspace-delivery-protocol.md](workspace-delivery-protocol.md) 与 [workspace-verification-decision.md](workspace-verification-decision.md)，不声称已实现。S2b 的机制修订见 [workspace-view-backend.md](workspace-view-backend.md)，待 fresh 双路完整 L2 设计评审。方向为 Workspace 框架 + git worktree / Linux 同路径 COW 视图两种实现；[track-cow-view.md](track-cow-view.md) 的 overlay 实验只作历史证据。
 
 ## Outcome 与初版边界
 
