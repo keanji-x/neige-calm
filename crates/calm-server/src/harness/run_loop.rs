@@ -4417,6 +4417,7 @@ async fn persist_snapshot_stamping_issued_head(inner: &Arc<Inner>) -> Result<()>
 }
 
 /// A durable send's key binding, written by the same transaction as the snapshot that holds it.
+#[derive(Clone)]
 struct DurableSendBinding {
     source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     idempotency_key: String,
@@ -4451,13 +4452,16 @@ async fn persist_snapshot_inner(
         &write,
         historical_control::SnapshotWrite::Mutation(_) | historical_control::SnapshotWrite::Stop(_)
     );
-    let (last_seen_head_override, send, admission, stop) = write.parts();
-    let publish_after_adoption = stop.is_some();
+    let publish_after_adoption = matches!(&write, historical_control::SnapshotWrite::Stop(_));
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
     }
     if inner.inputs.canonical().is_some() {
-        if send.is_some() || last_seen_head_override.is_some() {
+        if matches!(
+            &write,
+            historical_control::SnapshotWrite::Send(_)
+                | historical_control::SnapshotWrite::Kernel(Some(_))
+        ) {
             return Err(CalmError::Conflict(
                 "historical snapshot mutation cannot change canonical input".into(),
             ));
@@ -4468,22 +4472,17 @@ async fn persist_snapshot_inner(
     }
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
-    if let Some(admission) = &admission {
-        admission.require(inner).await?;
-    }
-    if let Some(plan) = &stop {
-        plan.require(inner).await?;
-    }
+    write.require(inner).await?;
     flush_dropped_announcements(inner).await?;
-    let mut snapshot = if let Some(plan) = &stop {
+    let mut snapshot = if let historical_control::SnapshotWrite::Stop(plan) = &write {
         let mut snapshot = snapshot_from_state(inner, plan.state()).await?;
         snapshot.interruption_intent = Some(plan.intent());
         snapshot
     } else {
         snapshot_for(inner).await?
     };
-    if let Some(head) = last_seen_head_override {
-        snapshot.last_seen_head = Some(head);
+    if let historical_control::SnapshotWrite::Kernel(Some(head)) = &write {
+        snapshot.last_seen_head = Some(head.clone());
         snapshot.issued_turn_head = None;
     }
     let runtime_id = inner.worker_session_id.clone();
@@ -4495,10 +4494,10 @@ async fn persist_snapshot_inner(
         HarnessPhaseTag::Compacting => inner.state.lock().await.active_turn_id(),
         _ => None,
     };
-    let state_for_status = stop
-        .as_ref()
-        .map(|plan| plan.state().clone())
-        .unwrap_or(inner.state.lock().await.clone());
+    let state_for_status = match &write {
+        historical_control::SnapshotWrite::Stop(plan) => plan.state().clone(),
+        _ => inner.state.lock().await.clone(),
+    };
     let status = run_status_for(&state_for_status);
     let new_phase = snapshot.phase;
     let snapshot_value = serde_json::to_value(snapshot)?;
@@ -4515,21 +4514,14 @@ async fn persist_snapshot_inner(
     }
     let written = write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            if let Some(admission) = &admission {
-                admission
-                    .require_tx(tx, &bound_card_id, &runtime_id)
-                    .await?;
-            }
-            if let Some(plan) = &stop {
-                plan.require_tx(tx).await?;
-            }
+            write.require_tx(tx, &bound_card_id, &runtime_id).await?;
             let written = crate::db::sqlite::session_set_handle_state_tx(
                 tx,
                 &runtime_id,
                 Some(snapshot_value),
             )
             .await?;
-            if written && let Some(send) = &send {
+            if written && let historical_control::SnapshotWrite::Send(send) = &write {
                 crate::db::sqlite::planner_input_bind_tx(
                     tx,
                     &bound_card_id,

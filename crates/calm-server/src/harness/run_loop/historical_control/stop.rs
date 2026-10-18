@@ -91,14 +91,6 @@ impl PreparedStop {
         HarnessInterruptionIntent::Control(HarnessControlIntent::UserStopV1(self.request.clone()))
     }
 
-    pub(in crate::harness::run_loop) async fn require(&self, inner: &Arc<Inner>) -> Result<()> {
-        let plan = self.clone();
-        write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-            Box::pin(async move { plan.require_tx(tx).await })
-        })
-        .await
-    }
-
     pub(in crate::harness::run_loop) async fn require_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,

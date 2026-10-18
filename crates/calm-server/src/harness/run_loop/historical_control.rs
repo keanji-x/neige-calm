@@ -46,6 +46,7 @@ impl Admission {
     }
 }
 
+#[derive(Clone)]
 pub(super) enum SnapshotWrite {
     Kernel(Option<track_vcs::CommitHash>),
     Send(DurableSendBinding),
@@ -54,22 +55,42 @@ pub(super) enum SnapshotWrite {
 }
 
 impl SnapshotWrite {
-    pub(super) fn parts(
-        self,
-    ) -> (
-        Option<track_vcs::CommitHash>,
-        Option<DurableSendBinding>,
-        Option<Admission>,
-        Option<stop::PreparedStop>,
-    ) {
+    pub(super) async fn require(&self, inner: &Arc<Inner>) -> Result<()> {
+        if matches!(
+            self,
+            Self::Kernel(_) | Self::Send(DurableSendBinding { source: None, .. })
+        ) {
+            return Ok(());
+        }
+        let (write, card, worker) = (
+            self.clone(),
+            inner.card_id.to_string(),
+            inner.worker_session_id.clone(),
+        );
+        write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+            Box::pin(async move { write.require_tx(tx, &card, &worker).await })
+        })
+        .await
+    }
+
+    pub(super) async fn require_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        card: &str,
+        worker: &str,
+    ) -> Result<()> {
         match self {
-            Self::Kernel(head) => (head, None, None, None),
+            Self::Kernel(_) => Ok(()),
             Self::Send(send) => {
-                let admission = send.source.clone().map(Admission::Human);
-                (None, Some(send), admission, None)
+                if let Some(source) = &send.source {
+                    source.require_card_tx(tx, card).await?;
+                }
+                // The original Send writer owns runtime CAS and its typed
+                // superseded refusal. A control must not pre-empt that owner.
+                Ok(())
             }
-            Self::Mutation(admission) => (None, None, Some(admission), None),
-            Self::Stop(plan) => (None, None, None, Some(plan)),
+            Self::Mutation(admission) => admission.require_tx(tx, card, worker).await,
+            Self::Stop(plan) => plan.require_tx(tx).await,
         }
     }
 }

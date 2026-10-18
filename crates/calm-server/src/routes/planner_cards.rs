@@ -306,7 +306,7 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
 )]
 pub(crate) async fn interrupt_planner_card(
     State(s): State<RouteState>,
-    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
+    source: crate::auth::HumanInputSource,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<InterruptPlannerCardResponse>> {
@@ -335,8 +335,7 @@ pub(crate) async fn interrupt_planner_card(
     let canonical =
         crate::conversation_inputs::has_canonical_storage(s.repo.as_ref(), card.id.as_str())
             .await?;
-    let canonical_source = if canonical {
-        let source = source.as_ref().ok_or(CalmError::Unauthorized)?.0.clone();
+    let stopped = if canonical {
         let (card, source_for_check) = (card.id.to_string(), source.clone());
         crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
             Box::pin(async move {
@@ -347,11 +346,6 @@ pub(crate) async fn interrupt_planner_card(
             })
         })
         .await?;
-        Some(source)
-    } else {
-        None
-    };
-    let stopped = if let Some(source) = canonical_source {
         let phase = harness.runtime_header().await?.phase;
         if matches!(
             phase,
@@ -363,7 +357,6 @@ pub(crate) async fn interrupt_planner_card(
             false
         }
     } else {
-        let source = source.ok_or(CalmError::Unauthorized)?.0;
         harness
             .stop_historical(crate::conversation_inputs::HistoricalHumanSource::new(
                 source,

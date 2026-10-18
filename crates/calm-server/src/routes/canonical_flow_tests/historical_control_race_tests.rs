@@ -566,3 +566,54 @@ async fn stop_phase_event_follows_committed_memory_publication() {
     );
     assert_eq!(run["phase"], "issuing_interrupt");
 }
+
+#[tokio::test]
+async fn historical_stop_refuses_unconfirmed_issuance_without_claiming_acceptance() {
+    let fx = HistoricalFixture::new(false).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    fx.state
+        .shared_codex_appserver
+        .install_turn_start_return_hook_for_test(
+            crate::shared_codex_appserver::TurnStartReturnHook {
+                entered: entered.clone(),
+                release: release.clone(),
+            },
+        );
+    post(
+        &fx.app,
+        &fx.cookie,
+        &format!("/api/cards/{}/planner/input", fx.card),
+        "unknown-stop-target",
+        json!({"text":"Wait for this exact native turn to be confirmed"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("the original native start has not yet answered");
+    let before = fx.harness.snapshot().await.unwrap();
+    let (status, body) = perform(
+        fx.app.clone(),
+        fx.cookie.clone(),
+        "POST",
+        format!("/api/cards/{}/planner/interrupt", fx.card),
+        json!({}),
+    )
+    .await;
+    let after = fx.harness.snapshot().await.unwrap();
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fx.harness.runtime_header().await.unwrap().phase != HarnessPhaseTag::TurnRunning {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the original start can still complete after refused Stop");
+    fx.shutdown().await;
+    assert_eq!(before.phase, HarnessPhaseTag::IssuingTurn);
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.get("stopped").is_none());
+    assert_eq!(after, before);
+    assert!(native.is_empty());
+}

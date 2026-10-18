@@ -254,3 +254,45 @@ async fn historical_steer_refuses_removed_area_member() {
 async fn historical_stop_refuses_removed_area_member() {
     historical_control_after_membership_removal(Control::Stop).await;
 }
+
+#[tokio::test]
+async fn historical_stop_does_not_derive_a_source_from_actor_or_principal() {
+    let fx = HistoricalFixture::new(true).await;
+    let before = fx.harness.snapshot().await.unwrap();
+    let facts = fx.harness.historical_control_facts_for_test().await;
+    // A declared owner and event label are deliberately not a password issuer.
+    let bare = super::super::router()
+        .layer(axum::Extension(crate::auth::Principal {
+            user_id: LEGACY_OWNER_USER_ID.into(),
+            display_name: "Unverified owner label".into(),
+            role: "owner".into(),
+            session_id: "not-issued".into(),
+        }))
+        .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
+        .with_state(fx.state.clone());
+    let mut statuses = Vec::new();
+    for app in [bare, fx.app.clone()] {
+        for actor in ["user", "ai:codex"] {
+            statuses.push(
+                app.clone()
+                    .oneshot(
+                        Request::post(format!("/api/cards/{}/planner/interrupt", fx.card))
+                            .header(crate::actor::Actor::HEADER, actor)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status(),
+            );
+        }
+    }
+    let after = fx.harness.snapshot().await.unwrap();
+    let after_facts = fx.harness.historical_control_facts_for_test().await;
+    let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
+    fx.shutdown().await;
+    assert_eq!(statuses, vec![StatusCode::UNAUTHORIZED; 4]);
+    assert_eq!(after, before);
+    assert_eq!(after_facts, facts);
+    assert!(native.is_empty());
+}
