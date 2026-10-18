@@ -1,7 +1,6 @@
 //! Actual HTTP commands cross issuer, persistence and native-effect awaits.
 use super::historical_control_admission_tests::{HistoricalFixture, hand_area_to_alice};
 use super::*;
-use crate::db::RepoRead;
 use crate::test_seams::{self, PausePoint};
 
 async fn perform(
@@ -333,7 +332,18 @@ async fn accepted_assistant_stop_drains_after_real_end_archive_and_logout() {
         .id;
     fx.harness = fx.state.harness.get(&fx.worker).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
-        while fx.harness.runtime_header().await.unwrap().phase != HarnessPhaseTag::TurnRunning {
+        loop {
+            let memory = fx.harness.runtime_header().await.unwrap().phase;
+            let runtime = fx
+                .fixture
+                .repo
+                .session_projection_by_id(&fx.worker)
+                .await
+                .unwrap()
+                .unwrap();
+            if memory == HarnessPhaseTag::TurnRunning && runtime.active_turn_id.is_some() {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
@@ -412,12 +422,10 @@ async fn accepted_assistant_stop_drains_after_real_end_archive_and_logout() {
         .await
         .unwrap()
         .unwrap();
-    let archived = fx
-        .fixture
-        .repo
-        .conversation_archived_at(&fx.card)
-        .await
-        .unwrap();
+    let archived =
+        crate::db::RepoRead::conversation_archived_at(fx.fixture.repo.as_ref(), &fx.card)
+            .await
+            .unwrap();
     let native = fx.state.shared_codex_appserver.interrupted_turns_for_test();
     let starts = fx.state.shared_codex_appserver.turn_start_count_for_test();
     release.notify_one();
