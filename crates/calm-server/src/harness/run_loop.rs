@@ -4889,3 +4889,9 @@ mod handoff_activation_test_support;
 
 #[cfg(test)]
 mod handoff_activation_recovery_tests;
+
+#[cfg(test)]
+mod handoff_coordinator_tests;
+
+#[cfg(test)]
+mod handoff_coordinator_recovery_tests;

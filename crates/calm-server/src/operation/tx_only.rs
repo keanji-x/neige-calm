@@ -136,6 +136,27 @@ pub(super) async fn commit_tx_only(
     key: OperationKey,
     payload: Value,
 ) -> Result<KeyedCommit> {
+    commit_tx_only_inner(pool, adapter, key, payload, None).await
+}
+
+/// Composition can require an existing operation's live lease inside the effect transaction.
+pub(super) async fn commit_tx_only_claimed(
+    pool: &SqlitePool,
+    adapter: &dyn TxOnlyAdapter,
+    key: OperationKey,
+    payload: Value,
+    owner: &Operation,
+) -> Result<KeyedCommit> {
+    commit_tx_only_inner(pool, adapter, key, payload, Some(owner)).await
+}
+
+async fn commit_tx_only_inner(
+    pool: &SqlitePool,
+    adapter: &dyn TxOnlyAdapter,
+    key: OperationKey,
+    payload: Value,
+    claimed_owner: Option<&Operation>,
+) -> Result<KeyedCommit> {
     // Before BEGIN: a request paused inside the IMMEDIATE transaction would hold the write lock the
     // concurrent request it waits for needs.
     #[cfg(feature = "fixtures")]
@@ -147,7 +168,7 @@ pub(super) async fn commit_tx_only(
         .await;
     }
     let mut tx = begin_immediate_tx(pool).await?;
-    match commit_in_tx(&mut tx, adapter, key, payload).await {
+    match commit_in_tx(&mut tx, adapter, key, payload, claimed_owner).await {
         Ok(commit @ KeyedCommit::Committed { .. }) => {
             tx.commit().await?;
             Ok(commit)
@@ -168,6 +189,7 @@ async fn commit_in_tx(
     adapter: &dyn TxOnlyAdapter,
     key: OperationKey,
     payload: Value,
+    claimed_owner: Option<&Operation>,
 ) -> Result<KeyedCommit> {
     let kind = adapter.kind();
     // Under the write lock this read is final: no other writer can bind the key before the commit.
@@ -185,6 +207,9 @@ async fn commit_in_tx(
             }
             return Ok(KeyedCommit::Replay(op_id));
         }
+    }
+    if let Some(owner) = claimed_owner {
+        super::repo_sqlite::require_live_claim_tx(tx, owner).await?;
     }
     let op_id = new_id();
     insert_pending_row(&op_id, kind, &key, &payload)?

@@ -12,7 +12,7 @@ fn runtime(f: &Fixture) -> Arc<OperationRuntime> {
     runtime_for_repo(f.repo.clone())
 }
 
-fn runtime_for_repo(repo: Arc<crate::db::sqlite::SqlxRepo>) -> Arc<OperationRuntime> {
+pub(super) fn runtime_for_repo(repo: Arc<crate::db::sqlite::SqlxRepo>) -> Arc<OperationRuntime> {
     let repo: Arc<dyn crate::db::Repo> = repo;
     let state = crate::state::AppState::from_parts(
         repo.clone(),

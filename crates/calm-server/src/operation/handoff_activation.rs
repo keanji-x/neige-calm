@@ -120,6 +120,16 @@ pub(crate) async fn query(
     ))
 }
 
+/// Composition uses the same keyed activation owner without recursively driving the runtime.
+pub(super) async fn enqueue(
+    repo: &dyn super::OperationRepo,
+    cutover_operation_id: String,
+) -> Result<String> {
+    let (key, payload) = activation_key(cutover_operation_id)?;
+    repo.insert_operation(HANDOFF_ACTIVATION, key, payload)
+        .await
+}
+
 fn activation_key(cutover_operation_id: String) -> Result<(OperationKey, Value)> {
     let payload = serde_json::to_value(ActivationInput {
         cutover_operation_id: cutover_operation_id.clone(),
@@ -287,6 +297,18 @@ impl HandoffActivationAdapter {
             output,
             &next,
         )
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE planner_handoff_coordinators SET active=0 WHERE active=1 AND operation_id IN
+            (SELECT id FROM operations WHERE kind='handoff-coordinator' AND
+            json_extract(payload_json,'$.plan_id')=?1 AND
+            json_extract(tx_output_json,'$.result.committed.operation_id')=?2)
+        "#,
+        )
+        .bind(&facts.plan.scope.plan_id)
+        .bind(&facts.cutover_operation_id)
+        .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         *output = next;

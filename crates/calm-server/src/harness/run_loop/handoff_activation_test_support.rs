@@ -50,9 +50,16 @@ pub(super) fn runtime_with_repo(
     );
     OperationRuntime::new_unchecked(
         operations,
-        vec![Arc::new(handoff_activation::HandoffActivationAdapter {
-            start,
-        })],
+        vec![
+            Arc::new(handoff_activation::HandoffActivationAdapter { start }),
+            Arc::new(crate::operation::handoff_cutover::HandoffCutoverAdapter),
+            Arc::new(
+                crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                    registry: registry.clone(),
+                    cache: a.harness.inner.card_role_cache.clone(),
+                },
+            ),
+        ],
         events,
         completion,
         ctx,
@@ -98,4 +105,36 @@ pub(super) async fn wait_for_resource_intent(a: &Fixture) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await.expect("real operation must persist resource intent before the native RPC");
+}
+
+pub(super) async fn coordinator_request(
+    a: &Fixture,
+    b: &Fixture,
+) -> crate::operation::handoff_coordinator::UserHandoffRequest {
+    let (source_generation, target_generation, track_generation): (i64, i64, i64) = sqlx::query_as(
+        r#"
+            SELECT s.generation,t.generation,r.generation FROM planner_handoff_card_generations
+            s,planner_handoff_card_generations t,planner_handoff_track_generations r WHERE
+            s.card_id=?1 AND t.card_id=?2 AND r.track_id=?3
+        "#,
+    )
+    .bind(a.harness.inner.card_id.as_str())
+    .bind(b.harness.inner.card_id.as_str())
+    .bind(a.harness.inner.track_id.as_str())
+    .fetch_one(a.repo.pool())
+    .await
+    .unwrap();
+    crate::operation::handoff_coordinator::UserHandoffRequest {
+        track_id: a.harness.inner.track_id.clone(),
+        source_card_id: a.harness.inner.card_id.clone(),
+        source_session_id: a.harness.inner.worker_session_id.clone(),
+        target_card_id: b.harness.inner.card_id.clone(),
+        target_session_id: b.harness.inner.worker_session_id.clone(),
+        source_generation,
+        target_generation,
+        track_generation,
+        user_audit_id: "original-user-authorized-exact-handoff".into(),
+        actor: ActorId::User,
+        key: crate::model::new_id(),
+    }
 }

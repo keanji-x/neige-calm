@@ -5,8 +5,8 @@ use super::handoff_cutover::{
 };
 use crate::db::sqlite;
 use crate::error::Result;
+use crate::harness::HarnessSnapshot;
 use crate::harness::handoff_pause::PauseState;
-use crate::harness::{HarnessSnapshot, QueueEntry};
 use crate::model::Card;
 use serde_json::json;
 
@@ -41,12 +41,33 @@ async fn paused(tx: &mut Tx<'_>, scope: &CutoverScope, source: bool) -> Result<H
             calm_types::worker::WorkerContract::Assistant,
         )
     };
-    if !crate::harness::profile::current_managed_binding_tx(tx, session, card, &scope.track_id)
-        .await?
+    let snapshot = idle_snapshot(tx, card, session, &scope.track_id, contract).await?;
+    if snapshot.handoff_pause
+        != (PauseState::Paused {
+            receipt: receipt.clone(),
+        })
     {
         return Err(conflict());
     }
-    let row = sqlite::session_get_tx(tx, &session.as_str().into())
+    // Assistant has no system observation ownership contract. Refuse, never silently discard.
+    if !source && (!snapshot.pending_entries().is_empty() || snapshot.push_watermark != 0) {
+        return Err(conflict());
+    }
+    Ok(snapshot)
+}
+
+/// Durable idle facts shared by initial coordinator admission and exact paused precheck.
+pub(super) async fn idle_snapshot(
+    tx: &mut Tx<'_>,
+    card: &crate::ids::CardId,
+    session: &str,
+    track_id: &crate::ids::TrackId,
+    contract: calm_types::worker::WorkerContract,
+) -> Result<HarnessSnapshot> {
+    if !crate::harness::profile::current_managed_binding_tx(tx, session, card, track_id).await? {
+        return Err(conflict());
+    }
+    let row = sqlite::session_get_tx(tx, &session.into())
         .await?
         .ok_or_else(conflict)?;
     if row.state != crate::session_projection_repo::WorkerSessionState::Idle
@@ -56,7 +77,7 @@ async fn paused(tx: &mut Tx<'_>, scope: &CutoverScope, source: bool) -> Result<H
     {
         return Err(conflict());
     }
-    if !crate::ask::open_hold_asks(&mut **tx, &scope.track_id, &session.as_str().into())
+    if !crate::ask::open_hold_asks(&mut **tx, track_id, &session.into())
         .await?
         .is_empty()
     {
@@ -76,65 +97,24 @@ async fn paused(tx: &mut Tx<'_>, scope: &CutoverScope, source: bool) -> Result<H
             return Err(conflict());
         }
     }
-    if snapshot.handoff_pause
-        != (PauseState::Paused {
-            receipt: receipt.clone(),
-        })
-        || !snapshot.handoff_pause.valid_checkpoint(&snapshot)
-        || snapshot
-            .pending_entries()
-            .iter()
-            .any(QueueEntry::is_user_authored)
-    {
-        return Err(conflict());
-    }
-    // Assistant has no system observation ownership contract. Refuse, never silently discard.
-    if !source && (!snapshot.pending_entries().is_empty() || snapshot.push_watermark != 0) {
+    if !PauseState::quiet_checkpoint(&snapshot) {
         return Err(conflict());
     }
     Ok(snapshot)
 }
 
 pub(super) async fn facts(tx: &mut Tx<'_>, scope: &CutoverScope) -> Result<Facts> {
-    let track: Option<StoredTrack> = sqlx::query_as(
-        "SELECT closed_at,purpose,template_id,root_session_id FROM tracks WHERE id=?1",
+    let (source, configuration) = binding_facts(
+        tx,
+        &scope.track_id,
+        &scope.source_card_id,
+        &scope.source_session_id,
+        &scope.target_card_id,
+        &scope.target_session_id,
     )
-    .bind(scope.track_id.as_str())
-    .fetch_optional(&mut **tx)
     .await?;
-    let (closed, purpose, template_id, root) = track.ok_or_else(conflict)?;
-    if closed.is_some() || purpose.is_some() || root.as_deref() != Some(&scope.source_session_id) {
-        return Err(conflict());
-    }
-    let planners: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
-            .bind(scope.track_id.as_str())
-            .fetch_all(&mut **tx)
-            .await?;
-    if planners != vec![scope.source_card_id.to_string()] {
-        return Err(conflict());
-    }
-    let source = card(tx, scope.source_card_id.as_str()).await?;
-    let target = card(tx, scope.target_card_id.as_str()).await?;
-    let roles: (String, String) =
-        sqlx::query_as("SELECT s.role,t.role FROM cards s,cards t WHERE s.id=?1 AND t.id=?2")
-            .bind(scope.source_card_id.as_str())
-            .bind(scope.target_card_id.as_str())
-            .fetch_one(&mut **tx)
-            .await?;
-    if roles != ("planner".into(), "assistant".into()) {
-        return Err(conflict());
-    }
-    let conversation = crate::harness::profile::plan_planner_handoff(&source, &target)?;
     let source_snapshot = paused(tx, scope, true).await?;
     let target_snapshot = paused(tx, scope, false).await?;
-    let hash = crate::routes::idempotency_key::stable_payload_hash;
-    let configuration = CutoverConfiguration {
-        conversation,
-        source_payload_hash: hash(&source.payload)?,
-        target_payload_hash: hash(&target.payload)?,
-        template_id,
-    };
     Ok(Facts {
         configuration,
         source,
@@ -149,6 +129,7 @@ pub(super) async fn cutover(
     operation_id: &str,
 ) -> Result<CutoverResult> {
     let scope = &plan.scope;
+    super::handoff_coordinator_sql::validate_cutover_intent(tx, plan).await?;
     let mut facts = facts(tx, scope).await?;
     if facts.configuration != plan.configuration {
         return Err(conflict());
@@ -235,4 +216,62 @@ pub(super) async fn cutover(
         snapshot_session_id: scope.new_session_id.clone(),
         push_watermark: fresh.push_watermark,
     })
+}
+
+/// Shared identity/configuration admission. Pause and provider policy stay with their owners.
+pub(super) async fn binding_facts(
+    tx: &mut Tx<'_>,
+    track_id: &crate::ids::TrackId,
+    source_card_id: &crate::ids::CardId,
+    source_session_id: &str,
+    target_card_id: &crate::ids::CardId,
+    target_session_id: &str,
+) -> Result<(Card, CutoverConfiguration)> {
+    let track: Option<StoredTrack> = sqlx::query_as(
+        "SELECT closed_at,purpose,template_id,root_session_id FROM tracks WHERE id=?1",
+    )
+    .bind(track_id.as_str())
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (closed, purpose, template_id, root) = track.ok_or_else(conflict)?;
+    if closed.is_some() || purpose.is_some() || root.as_deref() != Some(source_session_id) {
+        return Err(conflict());
+    }
+    let planners: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
+            .bind(track_id.as_str())
+            .fetch_all(&mut **tx)
+            .await?;
+    if planners != vec![source_card_id.to_string()] {
+        return Err(conflict());
+    }
+    let source = card(tx, source_card_id.as_str()).await?;
+    let target = card(tx, target_card_id.as_str()).await?;
+    let roles: (String, String) =
+        sqlx::query_as("SELECT s.role,t.role FROM cards s,cards t WHERE s.id=?1 AND t.id=?2")
+            .bind(source_card_id.as_str())
+            .bind(target_card_id.as_str())
+            .fetch_one(&mut **tx)
+            .await?;
+    if roles != ("planner".into(), "assistant".into()) {
+        return Err(conflict());
+    }
+    let conversation = crate::harness::profile::plan_planner_handoff(&source, &target)?;
+    let hash = crate::routes::idempotency_key::stable_payload_hash;
+    let configuration = CutoverConfiguration {
+        conversation,
+        source_payload_hash: hash(&source.payload)?,
+        target_payload_hash: hash(&target.payload)?,
+        template_id,
+    };
+    for (card, session) in [
+        (source_card_id, source_session_id),
+        (target_card_id, target_session_id),
+    ] {
+        if !crate::harness::profile::current_managed_binding_tx(tx, session, card, track_id).await?
+        {
+            return Err(conflict());
+        }
+    }
+    Ok((source, configuration))
 }

@@ -26,6 +26,14 @@ pub async fn query_handoff_pause(repo: &dyn Repo, request: PauseRequest) -> Resu
     let pool = repo
         .sqlite_pool()
         .ok_or_else(|| CalmError::Internal("handoff query requires durable storage".into()))?;
+    query_handoff_pause_pool(&pool, request).await
+}
+
+pub(crate) async fn query_handoff_pause_pool(
+    pool: &sqlx::SqlitePool,
+    request: PauseRequest,
+) -> Result<PauseQuery> {
+    request.validate().map_err(|_| conflict())?;
     let (card, id, track) = request.identity();
     // One statement observes the complete storage relationship and snapshot atomically.
     // No deferred transaction can park holding read locks across subsequent awaits (#930).
@@ -36,7 +44,7 @@ pub async fn query_handoff_pause(repo: &dyn Repo, request: PauseRequest) -> Resu
          JOIN tracks t ON t.id=c.track_id WHERE ws.id=?1",
     )
     .bind(id)
-    .fetch_optional(&pool)
+    .fetch_optional(pool)
     .await?
     .ok_or_else(conflict)?;
     if session.card_id != card.as_str()

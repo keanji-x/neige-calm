@@ -108,6 +108,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0168_subtrack_route.sql",
     "0169_planner_handoff.sql",
     "0170_planner_handoff_activation.sql",
+    "0171_planner_handoff_coordinator.sql",
 ];
 
 #[test]

@@ -100,13 +100,6 @@ impl CutoverScope {
 }
 
 /// Configuration precheck has no resource effects. Its read transaction is rolled back.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "internal service for the later user-authorized entry point"
-    )
-)]
 pub(crate) async fn precheck(
     pool: &sqlx::SqlitePool,
     scope: CutoverScope,
@@ -145,12 +138,41 @@ pub(crate) async fn commit(
         return Err(conflict());
     };
     let result: CutoverResult = serde_json::from_value(result)?;
-    // Never publish a replay's old grant over a later SQL owner.
-    let pool = runtime.repo.sqlite_pool();
+    publish_cache(&runtime.repo.sqlite_pool(), cache, &plan).await?;
+    Ok(result)
+}
+
+/// Compose the existing atomic keyed primitive while the outer OperationRuntime owns drive.
+/// It has no external side effects and must never acquire a second runtime drive lock.
+pub(super) async fn commit_recorded(
+    pool: &sqlx::SqlitePool,
+    cache: &crate::card_role_cache::CardRoleCache,
+    plan: ValidatedCutoverPlan,
+    owner: &Operation,
+) -> Result<CutoverResult> {
+    let payload = serde_json::to_value(&plan)?;
+    let key = OperationKey {
+        operation_key: plan.scope.plan_id.clone(),
+        idempotency_key: Some(plan.scope.plan_id.clone()),
+        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload)?,
+    };
+    super::tx_only::commit_tx_only_claimed(pool, &HandoffCutoverAdapter, key, payload, owner)
+        .await?;
+    let result = query_recorded(pool, &plan).await?.ok_or_else(conflict)?;
+    publish_cache(pool, cache, &plan).await?;
+    Ok(result)
+}
+
+// Never publish a replay's old grant over a later SQL owner.
+async fn publish_cache(
+    pool: &sqlx::SqlitePool,
+    cache: &crate::card_role_cache::CardRoleCache,
+    plan: &ValidatedCutoverPlan,
+) -> Result<()> {
     for id in [&plan.scope.source_card_id, &plan.scope.target_card_id] {
         let role: String = sqlx::query_scalar("SELECT role FROM cards WHERE id=?1")
             .bind(id.as_str())
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await?;
         cache.insert(
             id.clone(),
@@ -158,7 +180,34 @@ pub(crate) async fn commit(
             plan.scope.track_id.clone(),
         );
     }
-    Ok(result)
+    Ok(())
+}
+
+/// IMMEDIATE serializes with an in-flight SQLite commit, including a missing commit answer.
+/// The exact original payload is checked before consuming a succeeded operation.
+pub(super) async fn query_recorded(
+    pool: &sqlx::SqlitePool,
+    plan: &ValidatedCutoverPlan,
+) -> Result<Option<CutoverResult>> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let row: Option<(String,String,String,Option<String>)> = sqlx::query_as(
+        "SELECT phase,payload_hash,payload_json,tx_output_json FROM operations WHERE kind=?1 AND idempotency_key=?2")
+        .bind(HANDOFF_CUTOVER).bind(&plan.scope.plan_id).fetch_optional(&mut *tx).await?;
+    let Some((phase, hash, payload, output)) = row else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+    let expected = serde_json::to_value(plan)?;
+    if phase != "succeeded"
+        || serde_json::from_str::<Value>(&payload)? != expected
+        || hash != crate::routes::idempotency_key::stable_payload_hash(&expected)?
+    {
+        return Err(conflict());
+    }
+    let output: TxOutput = serde_json::from_str(&output.ok_or_else(conflict)?)?;
+    let result = serde_json::from_value(output.result)?;
+    tx.rollback().await?;
+    Ok(Some(result))
 }
 
 pub(crate) struct HandoffCutoverAdapter;

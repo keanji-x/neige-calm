@@ -223,6 +223,11 @@ impl PauseState {
         if !self.is_paused() {
             return true;
         }
+        Self::quiet_checkpoint(snapshot)
+    }
+
+    /// Shared durable idle facts for exact pause admission and coordinator admission.
+    pub(crate) fn quiet_checkpoint(snapshot: &super::snapshot::HarnessSnapshot) -> bool {
         use super::{HarnessPhaseTag, compact_outcome::CompactStatus};
         matches!(
             snapshot.phase,
@@ -293,4 +298,12 @@ impl ReleaseOutcome {
             }),
         }
     }
+}
+
+/// Separate a definitive owner refusal from a transport/missing-answer uncertainty.
+#[derive(Debug)]
+pub(crate) enum PauseAttempt {
+    Recorded(PauseReceipt),
+    Refused(crate::error::CalmError),
+    Unknown(crate::error::CalmError),
 }

@@ -8,11 +8,14 @@ use crate::harness::handoff_pause::{
 pub(super) enum Action {
     Pause,
     Resume,
+    Resolve,
 }
 
 pub(super) enum Reply {
     State(PauseState),
     Released(ReleaseOutcome),
+    Refused(CalmError),
+    Resolved(PauseQuery),
 }
 
 impl PlannerHarness {
@@ -79,24 +82,66 @@ impl PlannerHarness {
         }
     }
 
+    /// The inner result is a completed owner answer; the outer error is unconfirmed.
+    pub(crate) async fn attempt_handoff_pause(
+        &self,
+        request: PauseRequest,
+    ) -> crate::harness::handoff_pause::PauseAttempt {
+        use crate::harness::handoff_pause::PauseAttempt;
+        match self.handoff_command_confirmed(request, Action::Pause).await {
+            Ok(Ok(Reply::State(
+                PauseState::Paused { receipt }
+                | PauseState::FaultedPaused { receipt, .. }
+                | PauseState::RecoveryHealthUnconfirmed { receipt },
+            ))) => PauseAttempt::Recorded(receipt),
+            Ok(Ok(Reply::Refused(error))) => PauseAttempt::Refused(error),
+            Ok(Err(error)) => PauseAttempt::Unknown(error),
+            Err(error) => PauseAttempt::Unknown(error),
+            _ => unreachable!("pause has a state reply"),
+        }
+    }
+
+    /// Serial barrier behind every accepted original command. Unknown here proves no
+    /// persisted effect only for this still-current, open original owner; no new pause.
+    pub(crate) async fn resolve_original_handoff_pause(
+        &self,
+        request: PauseRequest,
+    ) -> Result<PauseQuery> {
+        match self.handoff_command(request, Action::Resolve).await? {
+            Reply::Resolved(result) => Ok(result),
+            _ => unreachable!("resolve has a query reply"),
+        }
+    }
+
     async fn handoff_command(&self, request: PauseRequest, action: Action) -> Result<Reply> {
+        match self.handoff_command_confirmed(request, action).await?? {
+            Reply::Refused(error) => Err(error),
+            reply => Ok(reply),
+        }
+    }
+
+    async fn handoff_command_confirmed(
+        &self,
+        request: PauseRequest,
+        action: Action,
+    ) -> Result<Result<Reply>> {
         let _ingress = self.inner.durable_observation.lock().await;
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
                 let (answer, reply) = oneshot::channel();
-                sender
-                    .try_send(HarnessObservationCommand::HandoffPause {
-                        request,
-                        action,
-                        answer,
-                    })
-                    .map_err(map_observation_send_error)?;
+                if let Err(error) = sender.try_send(HarnessObservationCommand::HandoffPause {
+                    request,
+                    action,
+                    answer,
+                }) {
+                    return Ok(Ok(Reply::Refused(map_observation_send_error(error))));
+                }
                 reply.await.map_err(|_| {
                     CalmError::Conflict("handoff pause reply lost; query the same claim".into())
-                })?
+                })
             }
             #[cfg(feature = "fixtures")]
-            ObservationIngress::Unstarted(_) => handle(&self.inner, request, action).await,
+            ObservationIngress::Unstarted(_) => Ok(handle(&self.inner, request, action).await),
         }
     }
 }
@@ -163,16 +208,43 @@ pub(super) async fn handle(
     if !request.matches_binding(&inner.card_id, &inner.worker_session_id, &inner.track_id)
         || inner.shutting_down.load(Ordering::SeqCst)
     {
-        return Err(conflict());
+        return if matches!(action, Action::Pause) {
+            Ok(Reply::Refused(conflict()))
+        } else {
+            Err(conflict())
+        };
     }
     ensure_recovered_health(inner).await?;
     let _issuance = inner.issuance.lock().await;
     let before = inner.handoff_pause.lock().await.clone();
+    if matches!(action, Action::Resolve) {
+        let result =
+            crate::db::handoff_pause::query_handoff_pause(inner.repo.as_ref(), request.clone())
+                .await?;
+        if matches!(result, PauseQuery::Unknown) {
+            let pool = inner.repo.sqlite_pool().ok_or_else(conflict)?;
+            let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+            if before != PauseState::Unpaused
+                || !crate::harness::profile::current_managed_binding_tx(
+                    &mut tx,
+                    &inner.worker_session_id,
+                    &inner.card_id,
+                    &inner.track_id,
+                )
+                .await?
+            {
+                return Err(conflict());
+            }
+            tx.rollback().await?;
+        }
+        return Ok(Reply::Resolved(result));
+    }
     if let PauseState::Released { receipt, outcome } = &before
         && receipt.request() == &request
     {
         return match action {
-            Action::Pause => Err(conflict()),
+            Action::Pause => Ok(Reply::Refused(conflict())),
+            Action::Resolve => unreachable!("handled above"),
             Action::Resume => {
                 query_stored(inner, &before).await?;
                 Ok(Reply::Released(outcome.clone()))
@@ -180,13 +252,20 @@ pub(super) async fn handle(
         };
     }
     if before.is_paused() && before.receipt().is_some_and(|r| r.request() != &request) {
-        return Err(conflict());
+        return if matches!(action, Action::Pause) {
+            Ok(Reply::Refused(conflict()))
+        } else {
+            Err(conflict())
+        };
     }
     if matches!(action, Action::Resume) && !before.is_paused() {
         return Err(conflict());
     }
-    if matches!(action, Action::Pause) && !before.is_paused() {
-        admissible(inner).await?;
+    if matches!(action, Action::Pause)
+        && !before.is_paused()
+        && let Err(error) = admissible(inner).await
+    {
+        return Ok(Reply::Refused(error));
     }
     // These are the only fields this command stages. Queue/watermark cannot interleave on
     // this owner; compare the full snapshot after failure before allowing subsequent writes.
@@ -198,6 +277,7 @@ pub(super) async fn handle(
             receipt: PauseReceipt::from_request(request.clone()),
         },
         Action::Resume => before.release_active_claim().ok_or_else(conflict)?,
+        Action::Resolve => unreachable!("handled above"),
     };
     let result = if matches!(action, Action::Pause) && before.is_paused() {
         query_stored(inner, &before).await
@@ -242,6 +322,7 @@ pub(super) async fn handle(
                 }
                 (Action::Pause, state) => Ok(Reply::State(state)),
                 (Action::Resume, _) => Err(conflict()),
+                (Action::Resolve, _) => unreachable!("handled above"),
             }
         }
         Err(error) => {

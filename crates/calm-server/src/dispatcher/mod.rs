@@ -411,7 +411,7 @@ fn dispatcher_operation_runtime(
     let planner_harness_interrupt_adapter =
         Arc::new(PlannerHarnessInterruptAdapter::new(harness.clone()));
     let planner_harness_shutdown_adapter = Arc::new(PlannerHarnessShutdownAdapter::new(
-        harness,
+        harness.clone(),
         shared_codex_appserver.clone(),
         repo,
         claude_planner,
@@ -464,6 +464,12 @@ fn dispatcher_operation_runtime(
             card_create_adapter,
             Arc::new(TrackRecipeCreateAdapter),
             Arc::new(crate::operation::handoff_cutover::HandoffCutoverAdapter),
+            Arc::new(
+                crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                    registry: harness.clone(),
+                    cache: write.role_cache().clone(),
+                },
+            ),
         ],
         events.clone(),
         completion.clone(),

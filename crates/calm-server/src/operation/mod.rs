@@ -1,6 +1,23 @@
 pub(crate) mod handoff_activation;
 mod handoff_activation_briefing;
 mod handoff_activation_sql;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "internal audited service; external ingress deliberately deferred"
+    )
+)]
+pub(crate) mod handoff_coordinator;
+pub(crate) mod handoff_coordinator_adapter;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "internal audited service; external ingress deliberately deferred"
+    )
+)]
+mod handoff_coordinator_sql;
 pub(crate) mod handoff_cutover;
 mod handoff_cutover_sql;
 #[cfg(test)]
@@ -90,7 +107,7 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "child-track",
 ];
 
-pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 12] = [
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 13] = [
     card_create_adapter::CARD_CREATE,
     track_recipe_create_adapter::TRACK_RECIPE_CREATE,
     "terminal-create",
@@ -100,6 +117,7 @@ pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 12] = [
     "planner-harness-start",
     handoff_cutover::HANDOFF_CUTOVER,
     handoff_activation::HANDOFF_ACTIVATION,
+    handoff_coordinator::HANDOFF_COORDINATOR,
     "planner-harness-interrupt",
     "planner-harness-shutdown",
     "forge-action",
@@ -700,6 +718,13 @@ pub enum RecoveryItem {
     },
 }
 
+/// Explicit adapter opt-in after an interrupted storage transition. No sweep rearms it.
+#[derive(Clone, Debug)]
+pub enum ExplicitRetryContinuation {
+    Prepare,
+    Interact(AppServerInteractKind),
+}
+
 /// One-use, adapter-owned evidence collected without the repository writer lock.
 #[async_trait]
 pub trait PreparedTx: Send {
@@ -741,6 +766,12 @@ pub trait ProviderAdapter: Send + Sync {
             "{} does not declare an app_server_interact kind",
             self.kind()
         )))
+    }
+
+    /// Domain opt-in for an explicit generation retry after checkpoint storage failed.
+    /// The runtime still requires a Stuck interaction checkpoint and exact keyed CAS.
+    fn interrupted_interaction_retry(&self, _op: &Operation) -> Option<ExplicitRetryContinuation> {
+        None
     }
 
     /// `Some` only through the blanket impl for a [`TxOnlyAdapter`]: the kinds
@@ -881,11 +912,26 @@ pub trait OperationRepo: Send + Sync {
     ) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    async fn claim_drive_target(&self, id: &str) -> Result<Option<Operation>> {
+        Ok(repo_sqlite::claim_drive(&self.sqlite_pool(), 1, Some(id))
+            .await?
+            .pop())
+    }
     async fn claim_interaction_retry(
         &self,
         op: &Operation,
         expected_attempt: i32,
+        interrupted: Option<ExplicitRetryContinuation>,
     ) -> Result<Option<Operation>> {
+        if let Some(kind) = interrupted {
+            return interaction_retry::claim_interrupted_retry(
+                &self.sqlite_pool(),
+                op,
+                expected_attempt,
+                kind,
+            )
+            .await;
+        }
         interaction_retry::claim_retry(&self.sqlite_pool(), op, expected_attempt).await
     }
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>>;

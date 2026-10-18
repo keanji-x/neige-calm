@@ -525,7 +525,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         Arc::new(PlannerHarnessInterruptAdapter::new(input.harness.clone()));
     let planner_harness_shutdown_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(PlannerHarnessShutdownAdapter::new(
-            input.harness,
+            input.harness.clone(),
             input.shared_codex_appserver,
             input.repo,
             input.claude_planner,
@@ -569,6 +569,12 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         card_create_adapter,
         Arc::new(TrackRecipeCreateAdapter),
         Arc::new(crate::operation::handoff_cutover::HandoffCutoverAdapter),
+        Arc::new(
+            crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                registry: input.harness.clone(),
+                cache: input.card_role_cache.clone(),
+            },
+        ),
     ]
 }
 

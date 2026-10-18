@@ -9,6 +9,12 @@ proposal and follows the existing-conversation investigation, completed event **
 (`7e93be68c1b94d6dac678f815f5602d9:existing-conversation-handoff-contracts`), and the
 backend task context. Review tier **L2**: authority, isolation and persistence boundaries.
 
+The internal durable coordinator composes these accepted owners; its complete state,
+reservation, generation, cancellation and recovery contract is documented in
+[Durable internal handoff coordinator](planner-handoff-coordinator.md). External
+REST/MCP/AI/UI ingress remains outside this delivery. Migration 0171 adds only the
+domain reservation and generation counters; migrations through 0170 remain frozen.
+
 ## Internal pause preparation primitive
 
 The harness now exposes a Rust service API for single-session preparation only:
@@ -152,7 +158,7 @@ Review tier L2: activation crosses authority, credential and durable resource bo
 The accepted cutover result is the sole authority source. An internal explicit operation
 binds its original succeeded cutover row, validated plan and user audit, exact new current
 Planner session, root, ordinary open Track and frozen configuration. An operation row alone
-is not approval. No REST/MCP/AI/UI entry or two-pause coordinator is added. Generic startup,
+is not approval. No REST/MCP/AI/UI entry is added; the internal coordinator is described separately. Generic startup,
 reset, lazy recovery and ACP recovery keep rejecting PendingActivation and history.
 
 | State | Durable evidence | Explicit next action |
@@ -250,7 +256,8 @@ or extra CI pass is introduced by this contract.
 
 Review tier L2: the internal kernel changes persisted identity and write authority.
 This slice exposes only a typed internal user-audited service and registered tx-only
-OperationRuntime adapter. There is no REST, MCP, AI, UI or global handoff coordinator.
+OperationRuntime adapter. The internal coordinator composes it through the same keyed
+transaction owner; REST, MCP, AI and UI ingress remain absent.
 Running workers and all task, attempt, claim, gate, delivery, approval and user-release
 identities are outside this transaction's write set.
 
@@ -273,7 +280,7 @@ identities are outside this transaction's write set.
 3. **Activated:** the separate internal `handoff-activation` operation consumes this
    committed result, creates fresh resources through the shared Planner start owner on
    the fixed new session, and installs its harness. Activation failure requires forward
-   recovery and cannot restore old roles. No external entry or two-pause coordinator exists.
+   recovery and cannot restore old roles. The internal coordinator invokes this owner; no external entry exists.
 
 The sole commit demotes source to explicit planner_history before promoting target,
 retaining the unique Planner index. History has no write, startup or recovery profile.
@@ -301,8 +308,8 @@ a grant. The result names pending activation explicitly and never claims readine
 Migration 0169 follows the actual delivery base (0168),
 with every released migration byte-frozen. Extend role declarations, validators,
 triggers and generated consumers through their owning contracts. Ordinary additions
-need no growing provider/test registry. Future activation and external entry points
-remain separate work.
+need no growing provider/test registry. Activation and coordination now compose these primitives internally. External entry
+points remain separate work.
 
 ### Provider admission belongs to activation and issuance
 
@@ -314,7 +321,7 @@ is not an atomic prerequisite for this SQL transaction. No cross-store health pr
 authentication-file decoder, new lock or copied provider rules belong in this adapter.
 
 The original `PlannerBackend::issuance_hold` and provider activation checks remain in
-place. A future explicit activation owner must recheck them before creating resources or
+place. The explicit activation owner rechecks them before creating resources or
 credentials. Its failure requires forward recovery on the new identity; it cannot restore
 old roles. The persisted `PendingActivation` session carries no active authority, thread,
 token or harness. Generic boot, lazy, ACP and start paths cannot activate or replace it.
@@ -400,7 +407,7 @@ snapshot. Start-operation replay keeps the row's queue, push watermark and repor
 state together while applying its own phase/thread decisions. Dev replay rechecks a missing
 checkpoint inside its write transaction rather than replacing a checkpoint a live ACK repaired.
 This observation owner does not promise automatic in-process recovery from an unknown
-storage outcome. Future activation reuses its suffix catch-up and complete-source CAS.
+storage outcome. Explicit activation reuses its suffix catch-up and complete-source CAS.
 
 This observation foundation is used by current production delivery. The internal cutover
 reuses its complete queue and watermark representation. Neither owner installs a candidate
@@ -415,7 +422,8 @@ at/below the watermark, concurrent keyed replay, changed scope, lost-answer file
 and a real authentication-owner hold arriving after pause. All registered provider wrappers
 pause and commit without native starts; a handoff-specific suffix test uses the shared reader.
 Boot/replacement skips the new inert identity. The existing focused recovery tests cover the shared suffix/catch-up owner.
-Activation, fresh provider resources and repeated activated handoffs remain future work.
+The accepted explicit activation owner supplies fresh resources; the internal durable
+coordinator now composes the complete authorized flow. External entry remains deferred.
 
 No new provider list, test list or CI pass is introduced. A later session state changes its
 owning Rust enum/SQL schema and typed consumers; a later test changes only its module.
@@ -450,13 +458,14 @@ it is not a last-commit-only replay. Both patches use `git apply --reject`; reje
 tests coexist with handoff behavior. Terminology conflicts retain the final counted baseline.
 All replayed files match the old candidate byte for byte before this documentation update.
 Upstream is already an ancestor of that candidate: the new foundation changes delivery ancestry,
-not runtime semantics. Migration 0169 remains the only new migration; released files are unchanged.
+not runtime semantics. In that replay, migration 0169 was the only new migration; released files were unchanged.
 
 The kernel creates one commit above upstream with exact frozen-path ownership trailers.
 No audit policy, allowlist or injected audit base changes. The new head must pass all six gate
 steps; old green steps do not establish that verdict. The verification record and completion
-report identify the actual run. PendingActivation is the delivered internal boundary; activation,
-external API/UI and the Planner's two fresh L2 review channels remain separate work.
+report identify the actual run. That replay delivered the PendingActivation boundary. Accepted activation and the
+current internal coordinator extend it; external API/UI and the Planner's two fresh
+L2 review channels remain separate work.
 
 FE consumer runs on the new foundation exposed fork-pressure failures in unchanged upstream
 tests. Vitest's owning configuration caps workers at two without changing selections,
