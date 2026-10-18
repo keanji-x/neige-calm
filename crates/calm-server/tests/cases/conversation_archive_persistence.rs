@@ -22,12 +22,19 @@ async fn archive_migration_upgrades_current_main_without_rewriting_released_migr
     .await
     .unwrap();
     assert_eq!(absent, 0);
-    head.run(&pool).await.unwrap();
+    let archive = Migrator {
+        migrations: Cow::Owned(head.iter().filter(|m| m.version <= 169).cloned().collect()),
+        ..Migrator::DEFAULT
+    };
+    archive.run(&pool).await.unwrap();
     let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(version, 169);
+    // Later migrations must preserve this released archive capability. Their
+    // head number is not part of the archive migration's contract.
+    head.run(&pool).await.unwrap();
     let present: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE name='assistant_conversation_archives'",
     )
