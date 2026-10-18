@@ -45,7 +45,8 @@ impl CurrentInputCarrier {
         Ok(())
     }
 
-    pub(super) fn phase(&self) -> Result<HarnessPhaseTag> {
+    /// Read the phase from this protected carrier; this fact grants no execution.
+    pub fn phase(&self) -> Result<HarnessPhaseTag> {
         let value = self
             .snapshot
             .get("phase")
