@@ -93,7 +93,7 @@ function mount(count: number) {
     if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card], overlays: [] };
     if (request.path === '/api/settings') body = {};
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: card.id, worker_session_id: 'perf-runtime',
-      phase: 'issuing_turn', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle');
+      phase: 'issuing_turn', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);
     if (request.path.includes('/harness/items')) {
       const url = new URL(request.path, 'http://localhost');
       const cursor = url.searchParams.get('cursor');

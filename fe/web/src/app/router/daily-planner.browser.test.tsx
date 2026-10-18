@@ -259,7 +259,7 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: wedged ? 'wedged' : 'idle', model: null,
       reasoning_effort: null, permission_mode: 'never', blocked_reason: wedged ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null,
       pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null,
-    }, 'idle') };
+    }, 'idle', true) };
     return undefined;
   } });
   await page.getByText('Prioritize the release.', { exact: false }).findElement();

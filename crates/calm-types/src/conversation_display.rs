@@ -1,5 +1,5 @@
 //! Public conversation display facts. Cursors name an index, never an execution grant.
-use crate::model::HarnessItem;
+use crate::model::HarnessItem as TranscriptRow;
 use crate::planner_attachment::PlannerAttachment;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -69,11 +69,11 @@ pub enum ConversationDisplaySource {
         created_at_ms: i64,
     },
     Native {
-        item: HarnessItem,
+        item: TranscriptRow,
     },
     // Original V1 row. Native user text has no proven application author.
     HistoricalRaw {
-        item: HarnessItem,
+        item: TranscriptRow,
     },
     // No body or invented author; exact identities retire acknowledged optimistic text.
     Removed {

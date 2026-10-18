@@ -1,4 +1,4 @@
-import { isOptimisticConversationTurn, isQueuedConversationTurn, type ConversationTurn, type TranscriptEntry } from './conversation.js';
+import { isUserConversationTurn, isOptimisticConversationTurn, isQueuedConversationTurn, type ConversationTurn, type TranscriptEntry } from './conversation.js';
 
 /** The last visible assistant message in this response; never an older response behind a new prompt. */
 export function currentResponseMessage(turns: readonly TranscriptEntry[], terminal: boolean): ConversationTurn | null {
@@ -6,7 +6,7 @@ export function currentResponseMessage(turns: readonly TranscriptEntry[], termin
     const entry = turns[index];
     if (entry.author === 'turn' && index === turns.length - 1 && terminal) continue;
     if (isQueuedConversationTurn(entry)) continue;
-    if (entry.author === 'turn' || entry.author === 'system' || entry.author === 'you') return null;
+    if (entry.author === 'turn' || entry.author === 'system' || isUserConversationTurn(entry)) return null;
     if (entry.author === 'agent' && entry.text.trim() !== '') return entry;
   }
   return null;
@@ -19,7 +19,7 @@ export function latestUserMessage(turns: readonly TranscriptEntry[], terminal = 
     if (entry.author === 'turn' && index === turns.length - 1 && terminal) continue;
     if (isQueuedConversationTurn(entry)) continue;
     if (entry.author === 'turn' || entry.author === 'system') return null;
-    if (entry.author === 'you') return isOptimisticConversationTurn(entry) ? null : entry;
+    if (isUserConversationTurn(entry)) return isOptimisticConversationTurn(entry) ? null : entry;
   }
   return null;
 }

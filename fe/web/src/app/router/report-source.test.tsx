@@ -70,7 +70,7 @@ function setup(reply?: Reply) {
     }
     if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
     if (request.path.includes('/planner/run?contract=conversation_v1')) {
-      return ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+      return ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     }
     if (request.path === '/api/settings') return ok({});
     return ok([]);
@@ -399,7 +399,7 @@ describe('the source panel on the track page', () => {
   it('does not let an Escape inside the source card interrupt a running planner turn', async () => {
     const { requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
-        return ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
+        return ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       }
       return undefined;
     });

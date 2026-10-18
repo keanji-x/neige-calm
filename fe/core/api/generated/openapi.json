@@ -13902,19 +13902,18 @@
                     "type": "null"
                   },
                   {
-                    "$ref": "#/components/schemas/ConversationInitialInputReceipt",
-                    "description": "Required nullable evidence: unknown presence does not erase proven acceptance."
+                    "$ref": "#/components/schemas/ConversationInitialInputReceipt"
                   }
                 ]
               }
             }
           }
         ],
-        "description": "Exact current queue ownership or provider-confirmed projection; no absence\nconclusion is available from an empty queue and incomplete retained history.\nOutbound only; the client decoder enforces reason/receipt correlation."
+        "description": "Exact current queue ownership or provider-confirmed projection; no absence\nconclusion is available from an empty queue and incomplete retained history.\nOutbound only; the client decoder enforces reason/receipt correlation.\nAn unavailable observation carries required nullable evidence: unknown presence never erases proven acceptance."
       },
       "ConversationInitialInputReceipt": {
         "type": "object",
-        "description": "Immutable mint evidence. It does not assert that the input is still queued or visible.",
+        "description": "Immutable mint evidence. It does not assert that the input is still queued or visible.\n`initial_runtime_id` names the original carrier; recovery may move the same entry elsewhere.",
         "required": [
           "version",
           "entryId",
@@ -13933,8 +13932,7 @@
             "minimum": 0
           },
           "initialRuntimeId": {
-            "type": "string",
-            "description": "The original carrier; later recovery may move the same entry to another runtime."
+            "type": "string"
           },
           "queuedAtMs": {
             "type": "integer",
@@ -15049,7 +15047,7 @@
       },
       "HarnessInputOrigin": {
         "type": "object",
-        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.",
+        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.\n`queue_entry` binds identity and actual revision as one fact. Legacy or non-user input\nhas no versioned reference, including released origins that omitted this metadata.",
         "required": [
           "observation",
           "event_id",
@@ -15074,8 +15072,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/HarnessQueueEntryRef",
-                "description": "Identity and actual revision are one fact. Null for non-user/legacy entries;\nreleased historical origins without this metadata remain unversioned."
+                "$ref": "#/components/schemas/HarnessQueueEntryRef"
               }
             ]
           }
@@ -16672,6 +16669,8 @@
                 "type": "object",
                 "required": [
                   "input_contract",
+                  "history_replacement_supported",
+                  "terminal_timeout",
                   "runtime_state",
                   "pending_messages",
                   "active_input",
@@ -16687,6 +16686,10 @@
                         "$ref": "#/components/schemas/ConversationActiveInput"
                       }
                     ]
+                  },
+                  "history_replacement_supported": {
+                    "type": "boolean",
+                    "description": "Current historical edit affordance; every write rechecks its actual source."
                   },
                   "input_contract": {
                     "$ref": "#/components/schemas/ConversationInputContract"
@@ -16711,6 +16714,17 @@
                       {
                         "$ref": "#/components/schemas/WorkerSessionState",
                         "description": "Actual current worker row state. Canonical is always present; null means no current historical runtime."
+                      }
+                    ]
+                  },
+                  "terminal_timeout": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/HarnessTimeoutEvidence",
+                        "description": "Confirmed timeout for this exact current execution, independent of execution admission."
                       }
                     ]
                   }

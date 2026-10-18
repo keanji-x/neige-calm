@@ -28,7 +28,7 @@ pub(super) async fn login_again(app: &axum::Router) -> String {
         .to_owned()
 }
 
-async fn wait_for_claim(
+pub(super) async fn wait_for_claim(
     fixture: &Fixture,
     track: &str,
     peer: &mut Peer,

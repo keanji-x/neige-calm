@@ -89,7 +89,7 @@ function setup(reply?: Reply) {
         track: TRACK_B, can_reopen: false, can_admin: false, can_close: true, cards: [CARD_B], overlays: [],
       });
       if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
-      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun(PLANNER_RUN_IDLE, 'idle'));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun(PLANNER_RUN_IDLE, 'idle', true));
       if (request.path.endsWith('/planner/input')) return ok({ card_id: CARD.id, worker_session_id: 'runtime' });
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true });
       if (request.path === '/api/settings') return ok({});
@@ -250,7 +250,7 @@ const PHASE_SENDS = Object.freeze(Object.entries(PHASE_SEND_TABLE));
 describe('planner conversation regressions', () => {
   it('does not repeat the run phase above the composer while the planner is working', async () => {
     setupWithTurns((request) => request.path.includes('/planner/run?contract=conversation_v1')
-      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle'))
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversationWithTurns();
     expect(screen.queryByText(/Turn complete|Still working|Stopping this turn/)).toBeNull();
@@ -286,7 +286,7 @@ describe('planner conversation regressions', () => {
         ...PLANNER_RUN_IDLE,
         blocked_reason: 'This conversation follows the default model, and codex\'s configuration '
           + 'does not name one. Pick a model to start it again.',
-      }, 'idle'))
+      }, 'idle', true))
       : undefined);
     await openConversationWithTurns();
     expect(await screen.findByText(/Pick a model to start it again/)).toBeTruthy();
@@ -660,7 +660,9 @@ describe('planner conversation regressions', () => {
 
   it('loads only the first history page until the user asks for earlier rows', async () => {
     const { requests } = setup((request) => request.path.includes('/harness/items')
-      ? ok(historicalConversationPage(conversationCardId(request.path), harnessRows(TRANSCRIPT_PAGE_LIMIT), null)) : undefined);
+      ? ok(historicalConversationPage(conversationCardId(request.path), harnessRows(TRANSCRIPT_PAGE_LIMIT),
+        new URL(request.path, 'http://fixture').searchParams.has('cursor') ? null
+          : { contract: 'conversation_v1', source: 'historical_raw', card_id: CARD.id, position: 1 })) : undefined);
     await openConversation();
     const historyRequests = () => requests.filter((request) => request.path.includes('/harness/items'));
     await waitFor(() => expect(historyRequests()).toHaveLength(1));
@@ -686,7 +688,7 @@ describe('planner conversation regressions', () => {
      turn; `data-nc-queued` is present only on the send that was actually queued. */
   it('posts a message sent while a turn is running, and marks it queued', async () => {
     const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
-      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle'))
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     /* The phase arrives a round trip after the drawer, and "running" is the
@@ -717,7 +719,7 @@ describe('planner conversation regressions', () => {
         return ok(historicalConversationRun({
           ...PLANNER_RUN_IDLE, phase: 'turn_running',
           pending: listed ? [entry] : [], pending_overflow: 0,
-        }, 'idle'));
+        }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
         listed = true;
@@ -754,7 +756,8 @@ describe('planner conversation regressions', () => {
         item: { id: entry.entry_id, clientId: entry.entry_id, type: 'userMessage', content: [{ type: 'text', text: 'sent once' }] },
         _projection: true,
       }),
-      input_segments: [{ presentation: 'user', text: 'sent once', attachments: [] }],
+      input_segments: [{ presentation: 'user', text: 'sent once', attachments: [],
+        origin: { observation: 'user_message', event_id: null, queue_entry: { id: entry.entry_id, rev: entry.rev } } }],
       created_at_ms: 7,
     };
     let listed = true;
@@ -763,7 +766,7 @@ describe('planner conversation regressions', () => {
         return ok(historicalConversationRun({
           ...PLANNER_RUN_IDLE, phase: 'issuing_turn',
           pending: listed ? [entry] : [], pending_overflow: 0,
-        }, 'idle'));
+        }, 'idle', true));
       }
       if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [projection], null));
       return undefined;
@@ -774,7 +777,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain('sent once');
     });
     expect(screen.getAllByText('sent once', { ignore: '[aria-hidden="true"] *' })).toHaveLength(1);
-    expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')).toBeNull();
+    expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="unknown"]')).toBeNull();
 
     // The phase change after `turn/start` refetches `planner-run`.
     listed = false;
@@ -782,7 +785,7 @@ describe('planner conversation regressions', () => {
       await client.invalidateQueries({ queryKey: queryKeys.plannerRun(CARD.id) });
     });
     await waitFor(() => {
-      expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')?.textContent).toContain('sent once');
+      expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="unknown"]')?.textContent).toContain('sent once');
     });
     expect(screen.getAllByText('sent once', { ignore: '[aria-hidden="true"] *' })).toHaveLength(1);
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
@@ -793,7 +796,7 @@ describe('planner conversation regressions', () => {
     const entry = { entry_id: 'entry-9', text: 'first words', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
-        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle'));
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
         return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 4, text: null });
@@ -825,7 +828,7 @@ describe('planner conversation regressions', () => {
     const entry = { entry_id: 'entry-9', text: 'now please', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
-        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle'));
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return ok({ card_id: CARD.id, entry_id: entry.entry_id, steered: true, turn_id: 'turn-1' });
@@ -865,7 +868,7 @@ describe('planner conversation regressions', () => {
     const { client, requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
         runReads += 1;
-        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [served], pending_overflow: 0 }, 'idle'));
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [served], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: served.entry_id, steered: true, turn_id: 'turn-1' });
@@ -921,7 +924,7 @@ describe('planner conversation regressions', () => {
     const entry = { entry_id: 'entry-9', text: 'not yet', rev: 0, queued_at_ms: 5 };
     setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
-        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'issuing_turn', pending: [entry], pending_overflow: 0 }, 'idle'));
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'issuing_turn', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       return undefined;
     });
@@ -937,7 +940,7 @@ describe('planner conversation regressions', () => {
     const entry = { entry_id: 'entry-9', text: 'too late', rev: 0, queued_at_ms: 5 };
     setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
-        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle'));
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return {
@@ -971,7 +974,7 @@ describe('planner conversation regressions', () => {
     const entry = { entry_id: 'entry-9', text: 'did it land', rev: 0, queued_at_ms: 5 };
     setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
-        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle'));
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return {
@@ -1012,7 +1015,7 @@ describe('planner conversation regressions', () => {
         return ok(historicalConversationRun({
           ...PLANNER_RUN_IDLE, phase: 'turn_running',
           pending: listed && !deleted ? [entry] : [], pending_overflow: 0,
-        }, 'idle'));
+        }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
         listed = true;
@@ -1064,7 +1067,7 @@ describe('planner conversation regressions', () => {
     const pending = new Promise<ApiTransportResponse>((resolve) => { settle = resolve; });
     const { requests } = setup((request) => {
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
-        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle'));
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true));
       }
       return request.path.endsWith('/planner/input') ? pending : undefined;
     });
@@ -1093,7 +1096,7 @@ describe('planner conversation regressions', () => {
      row until the turn ends. Requests, not DOM: only the transport says a second message left. */
   it('keeps taking messages after one has been queued behind a running turn', async () => {
     const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
-      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle'))
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     await screen.findByRole('button', { name: 'Stop' });
@@ -1126,7 +1129,7 @@ describe('planner conversation regressions', () => {
 
   it('leaves the composer open after a queued send', async () => {
     const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
-      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle'))
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     await screen.findByRole('button', { name: 'Stop' });
@@ -1140,12 +1143,12 @@ describe('planner conversation regressions', () => {
     'phase %s applies %s policy to markers, composer state and subsequent sends',
     async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
-        ? ok(historicalConversationRun({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'))
+        ? ok(historicalConversationRun({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true))
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
           ? ok(historicalConversationRun({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
-              overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] }, 'idle'))
+              overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] }, 'idle', true))
           : undefined);
       await openConversation();
       /* Seeding the cache removes the window in which `phase` is `null` and every row
@@ -1192,7 +1195,7 @@ describe('planner conversation regressions', () => {
 
   it('keeps Stop working, and offers nothing else beside it', async () => {
     const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
-      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle'))
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     const stop = await screen.findByRole('button', { name: 'Stop' });
@@ -1212,7 +1215,7 @@ describe('planner conversation regressions', () => {
       let elapsed = 18_000;
       const { client } = setupWithTurns((request) => {
         if (request.path.includes('/planner/run?contract=conversation_v1')) {
-          return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } }, 'idle'));
+          return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } }, 'idle', true));
         }
         return request.path === '/api/tracks/w1'
           ? ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
@@ -1266,7 +1269,7 @@ describe('planner conversation regressions', () => {
         return ok(historicalConversationRun({
           card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running',
           model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-        }, 'idle'));
+        }, 'idle', true));
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;
     });

@@ -27,6 +27,8 @@ const THREAD: &str = "http-canonical-original-thread";
 const TURN: &str = "http-canonical-original-turn";
 
 mod control_tests;
+mod presentation_capability_tests;
+mod presentation_read_feedback_tests;
 
 struct Fixture {
     repo: Arc<SqlxRepo>,

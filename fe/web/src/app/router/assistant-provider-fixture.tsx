@@ -84,7 +84,7 @@ export function renderAssistantProviderFixture(options: {
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: cardId, worker_session_id: restarted ? 'replacement' : null,
       phase: 'idle', model: selectedModel, reasoning_effort: null, permission_mode: null, blocked_reason: null,
       attachments_supported: options.runAttachmentsSupported ?? false, manual_compact_supported: false, compact_outcome: null,
-      context_usage_invalidated: false, running_turn: null }, 'idle');
+      context_usage_invalidated: false, running_turn: null }, 'idle', options.answers.find(answer => answer.availability.provider === rows.find(row => row.id === cardId)?.provider)?.capabilities.history_replacement === true);
     if (request.path.endsWith('/planner/model')) {
       const input = request.body as { model: string | null; reasoning_effort: string | null };
       selectedModel = input.model;

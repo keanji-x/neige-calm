@@ -1,5 +1,5 @@
 import {
-  isConversationMessage, isOptimisticConversationTurn, mergeTranscript, reconcileUserEchoes,
+  isConversationMessage, isOptimisticConversationTurn, isUserConversationTurn, mergeTranscript, inputBodyMatchesEcho,
   type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry, type PendingQueueEntry, type PlannerInputMutation,
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
@@ -182,7 +182,7 @@ export function initialInputNeedsObservation(op: AcceptedInitialInput): boolean 
 
 function isCurrentInitialInputSource(op: AcceptedInitialInput, entry: TranscriptEntry): entry is ConversationTurn {
   const current = currentInitialInput(op);
-  return entry.author === 'you' && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined
+  return isUserConversationTurn(entry) && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined
     && entry.inputSource.entryRev === current.rev && current.text !== null;
 }
 
@@ -192,7 +192,7 @@ function initialInputSource(op: AcceptedInitialInput, entries: readonly Transcri
 
 /** Only a real paired raw source can report a canonical input version. */
 export function reportedInputSource(entry: TranscriptEntry): ReportedInput | null {
-  return entry.author === 'you' && entry.queueEntryId != null && entry.inputSource?.entryRev != null
+  return isUserConversationTurn(entry) && entry.queueEntryId != null && entry.inputSource?.entryRev != null
     ? { kind: 'source', entryId: entry.queueEntryId, rev: entry.inputSource.entryRev, text: entry.text } : null;
 }
 
@@ -209,7 +209,7 @@ function drawsInitialInput(op: AcceptedInitialInput, observed?: ObservedInitialI
 
 /** Bound provenance is positive evidence; unknown versions and provisional rows cannot certify it. */
 function isBoundInitialInputSource(op: AcceptedInitialInput, entry: TranscriptEntry): entry is ConversationTurn & { inputSource: BoundInputSource } {
-  return entry.author === 'you' && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined
+  return isUserConversationTurn(entry) && entry.queueEntryId === op.receipt.entryId && entry.inputSource !== undefined
     && entry.inputSource.entryRev !== null && entry.inputSource.entryRev >= op.receipt.entryRev && entry.inputSource.turnId != null;
 }
 
@@ -230,7 +230,7 @@ function placeInitialInputs(entries: readonly TranscriptEntry[], inputs: readonl
     const bound = highestBoundSource(op, entries);
     (bound !== null && bound.entryRev < currentInitialInput(op).rev ? later : first).push(initialInputEcho(op));
   }
-  const response = entries.findIndex(entry => entry.author !== 'you' && entry.author !== 'system');
+  const response = entries.findIndex(entry => !isUserConversationTurn(entry) && entry.author !== 'system');
   const split = response < 0 ? entries.length : response;
   return mergeTranscript([...entries.slice(0, split), ...first, ...entries.slice(split)], later);
 }
@@ -254,7 +254,7 @@ export function withInitialInputSources(ops: readonly ConversationOutboxOp[], en
 
 /** Only exact older unbound versions are superseded; actual bound history remains historical fact. */
 function supersededInputSource(entry: TranscriptEntry, ops: readonly ConversationOutboxOp[]): boolean {
-  if (entry.author !== 'you' || entry.queueEntryId == null || entry.inputSource?.entryRev == null || entry.inputSource.turnId !== null) return false;
+  if (!isUserConversationTurn(entry) || entry.queueEntryId == null || entry.inputSource?.entryRev == null || entry.inputSource.turnId !== null) return false;
   const revision = entry.inputSource.entryRev;
   return ops.some(op => {
     if (op.phase === 'initial-accepted') {
@@ -265,43 +265,37 @@ function supersededInputSource(entry: TranscriptEntry, ops: readonly Conversatio
   });
 }
 
-/** Exact provenance permits folded ops to share one carrier. Historical/unknown input uses the bounded,
- * one-to-one text/high-water rule; rows claimed by exact provenance are reserved from that fallback. */
+/** A raw carrier must be newer than the sender's observed history. */
 function afterSend(turn: ConversationTurn, op: SendOp): boolean {
   const sequence = Number.parseInt(turn.id.split(':', 1)[0] ?? '', 10);
   return sequence > op.echo.serverHighWaterBefore;
 }
 
+/** Identity comes from an actual acknowledgement and complete published source pair.
+ * Unknown authors remain Unknown. Body qualification for an unknown accepted revision
+ * is applied only after exact identity and scope, through the existing published rule. */
 export function matchSendOps(
-  serverTurns: readonly ConversationMessage[], ops: readonly ConversationOutboxOp[], spent: readonly string[],
+  serverTurns: readonly ConversationMessage[], ops: readonly ConversationOutboxOp[], spent: readonly string[], cardId: string,
 ): ReadonlyMap<string, string> {
-  const rows = serverTurns.filter((turn): turn is ConversationTurn => turn.author === 'you');
+  const rows = serverTurns.filter((turn): turn is ConversationTurn => isUserConversationTurn(turn));
   const matched = new Map<string, string>();
-  const exactRows = new Set<string>();
   for (const op of ops) {
-    const entryId = op.phase === 'initial-accepted' ? op.receipt.entryId : op.echo.entryId;
-    if (entryId === null) continue;
-    const revision = op.phase === 'confirmed' ? op.queueRevision : null;
-    const row = op.phase === 'initial-accepted' ? initialInputSource(op, rows)
-      : op.phase === 'confirmed' ? rows.find((turn) => turn.queueEntryId === entryId && afterSend(turn, op)
-        && revision !== null && turn.inputSource?.entryRev != null && turn.inputSource.entryRev >= revision) : undefined;
-    if (row === undefined) continue;
-    matched.set(op.key, row.id);
-    exactRows.add(row.id);
-  }
-  const available = rows.filter((turn) => !spent.includes(turn.id) && !exactRows.has(turn.id));
-  for (const op of ops.filter(isOrdinarySend).sort((left, right) => left.echo.atMs - right.echo.atMs)) {
-    if (matched.has(op.key)) continue;
-    const match = available.findIndex((turn) => {
-      if (turn.human !== undefined) return op.echo.entryId === turn.human.messageId
+    if (op.phase === 'initial-accepted') {
+      const row = initialInputSource(op, rows);
+      if (row?.inputSource?.cardId === cardId) matched.set(op.key, row.id);
+      continue;
+    }
+    if (op.echo.entryId === null) continue;
+    const row = rows.find(turn => {
+      if (turn.human !== undefined) return !spent.includes(turn.id) && op.echo.entryId === turn.human.messageId
         && op.echo.authorUserId === turn.human.userId;
-      if (op.echo.entryId !== null && turn.queueEntryId != null
-        && (turn.queueEntryId !== op.echo.entryId || (op.phase === 'confirmed' && op.queueRevision !== null))) return false;
-      return afterSend(turn, op) && reconcileUserEchoes([turn], [op.echo]).length === 0;
+      const source = turn.inputSource;
+      if (turn.queueEntryId !== op.echo.entryId || source?.cardId !== cardId || source.entryRev === null
+        || !afterSend(turn, op)) return false;
+      if (op.phase === 'confirmed' && op.queueRevision !== null) return source.entryRev >= op.queueRevision;
+      return !spent.includes(turn.id) && inputBodyMatchesEcho(turn, op.echo);
     });
-    if (match < 0) continue;
-    matched.set(op.key, available[match].id);
-    available.splice(match, 1);
+    if (row !== undefined) matched.set(op.key, row.id);
   }
   return matched;
 }
@@ -448,7 +442,8 @@ export function outboxView(input: Parameters<typeof outboxFacts>[0] & Readonly<{
  * One conversation's thread: server state plus its outbox. An op's message is drawn here unless the
  * queue region draws its claimed entry, or a newer persisted row already stands for it.
  */
-export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed, initialInput }: {
+export function outboxFacts({ cardId, serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed, initialInput }: {
+  cardId: string;
   /** The transcript as read, rows the queue region lists already removed. */
   serverEntries: readonly TranscriptEntry[];
   /** Every persisted message, queue-listed ones included. */
@@ -461,7 +456,7 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
   landed: LandedReads;
   initialInput?: ReadonlyMap<string, ObservedInitialInput>;
 }): OutboxFacts {
-  const matched = matchSendOps(serverTurns, ops, spent);
+  const matched = matchSendOps(serverTurns, ops, spent, cardId);
   const ordinary = ops.filter(isOrdinarySend);
   const initial = ops.filter((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
   const inspectedQueueIds = new Set(initial.filter((op) => {
@@ -471,7 +466,7 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
   })
     .map((op) => op.receipt.entryId));
   const currentEntries = serverEntries.filter(entry => {
-    if (entry.author !== 'you' || entry.queueEntryId == null) return true;
+    if (!isUserConversationTurn(entry) || entry.queueEntryId == null) return true;
     return !inspectedQueueIds.has(entry.queueEntryId) && !supersededInputSource(entry, ops);
   });
   const displayedEntries = withoutReplacedTurns(currentEntries, ordinary);
@@ -521,13 +516,13 @@ export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalle
 
 /** A conversation's remembered entries with the confirmed messages no read has shown yet. */
 export function withConfirmedSends(
-  entries: readonly TranscriptEntry[], ops: readonly ConversationOutboxOp[], spent: readonly string[],
+  entries: readonly TranscriptEntry[], ops: readonly ConversationOutboxOp[], spent: readonly string[], cardId: string,
 ): readonly TranscriptEntry[] {
   const confirmed = ops.filter((op): op is SendOp & { phase: 'confirmed' } => op.phase === 'confirmed');
   const initial = ops.filter((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
   if (confirmed.length === 0 && initial.length === 0) return entries;
   const current = entries.filter(entry => !supersededInputSource(entry, ops));
-  const matched = matchSendOps(current.filter(isConversationMessage), [...confirmed, ...initial], spent);
+  const matched = matchSendOps(current.filter(isConversationMessage), [...confirmed, ...initial], spent, cardId);
   return mergeTranscript(placeInitialInputs(withoutReplacedTurns(current, confirmed),
     initial.filter((op) => drawsInitialInput(op) && !matched.has(op.key))),
   confirmed.filter((op) => !matched.has(op.key)).map((op) => op.echo));

@@ -304,7 +304,7 @@ it('keeps Area editor actions inside the visible viewport when its keyboard open
 it('interrupts the current working conversation from its portalled mobile editor without dismissing it', async () => {
   await page.viewport(390, 844);
   const { requests } = renderDailyFixture({ emptyWorkspace: true, reply: request => {
-    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, 'idle'));
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, 'idle', true));
     if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', stopped: true });
     return undefined;
   } });

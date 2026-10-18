@@ -49,8 +49,6 @@ export function useConversationStore(
   const scopeUpdatedAt = scope?.updatedAt;
   const scopeKind = scope?.kind ?? 'shared-spec';
   const capabilities = useQuery({ ...managedProvidersQueryOptions(transport, unauthorized), enabled: scope?.kind === 'track-assistant' });
-  const historicalReplacementSupported = scopeKind !== 'track-assistant' || (!capabilities.isError
-    && capabilities.data?.find(answer => answer.availability.provider === scope?.provider)?.capabilities.history_replacement === true);
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.rows;
   const rememberOn = routeIntent.rememberOn;
@@ -74,7 +72,7 @@ export function useConversationStore(
   const modelCatalog = useQuery({
     ...modelCatalogQueryOptions(transport, { kind: 'card', cardId }, unauthorized), enabled: scope !== null,
   });
-  const historyReplacementSupported = run.data?.input_contract === 'historical' && historicalReplacementSupported;
+  const historyReplacementSupported = run.data?.history_replacement_supported === true;
   const displayItems = useMemo(() => (history.data?.pages ?? []).flatMap(page => page.items), [history.data]);
   const items = useMemo(() => nativeDisplayRows(displayItems), [displayItems]);
   const removedMessages = useMemo(() => removedHumanIds(displayItems), [displayItems]);
@@ -103,6 +101,8 @@ export function useConversationStore(
     : null;
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
+  const canonical = run.data?.input_contract === 'canonical';
+  const inputStalled = stalled && !canonical;
   const executionHeld = run.data?.runtime_state === 'failed' || run.data?.runtime_state === 'exited'
     || run.data?.runtime_state === 'superseded';
   /* Anchored on the response's arrival (`dataUpdatedAt`); the fold keeps the earlier anchor for one turn. */
@@ -158,10 +158,7 @@ export function useConversationStore(
   shownCardId.current = cardId;
   const serverEntries = useMemo(() => {
     if (rememberedEntries !== null) return rememberedEntries.filter(entry => !isOptimisticConversationTurn(entry));
-    const shownItems = displayItems.filter(({ source }) => source.kind !== 'historical_raw'
-      || source.item.input_segments?.some(segment => segment.origin?.queue_entry != null)
-      || source.item.item_uuid === null || !pendingQueueIds.has(source.item.item_uuid));
-    return buildConversationTranscript(shownItems, currentUser?.userId ?? null)
+    return buildConversationTranscript(displayItems, currentUser?.userId ?? null)
       .filter(entry => !isUserConversationTurn(entry) || entry.queueEntryId == null || !pendingQueueIds.has(entry.queueEntryId)
         || (entry.inputSource?.entryRev != null && entry.inputSource.entryRev !== pendingQueueIds.get(entry.queueEntryId)));
   }, [displayItems, currentUser?.userId, pendingQueueIds, rememberedEntries]);
@@ -183,14 +180,14 @@ export function useConversationStore(
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
   });
-  const restart = useConversationRestart({ cardId, stalled, restart: mutations.restart });
+  const restart = useConversationRestart({ cardId, enabled: run.data?.input_contract === 'historical', stalled: inputStalled, restart: mutations.restart });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
   const outbox = useConversationOutbox({
     removedMessages, viewerId:currentUser?.userId ?? null,
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntries: pendingQueue,
-    stalled, landed, initialInput, reportedInput, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
+    stalled: inputStalled, landed, initialInput, reportedInput, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view, accountQueueDisplay } = outbox;
@@ -302,6 +299,7 @@ export function useConversationStore(
     pending: pendingConversationIds(conversation, working, !stalled && view.sending),
     working,
     stalled,
+    inputStalled,
     executionHeld,
     stopping,
     stopFeedback,
@@ -369,6 +367,7 @@ export function useConversationStore(
     retryRun: () => { void run.refetch().catch(() => undefined); if (acceptedInitial !== undefined) void initialObservation.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
     blockedReason: run.data?.blocked_reason ?? null,
+    terminalTimeout: run.data?.terminal_timeout ?? null,
     /* Before the first answer the conversation is following the default, which is
            what a card with no selection really does. */
     model,

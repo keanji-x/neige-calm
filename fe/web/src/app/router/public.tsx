@@ -768,7 +768,7 @@ function useConversationPane(
                 {store.failedSend.delivery === 'unknown' ? <>
                   {/* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
                      No Edit here — an edited message is a new send under a new key, and the first may have arrived. */}
-                  <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                  <ChatFooterRemedy disabled={store.inputStalled || store.sending || !store.historyReady}
                     onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>
@@ -777,7 +777,7 @@ function useConversationPane(
                     Dismiss
                   </ChatFooterRemedy>
                 </> : <>
-                  <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                  <ChatFooterRemedy disabled={store.inputStalled || store.sending || !store.historyReady}
                     onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>
@@ -812,6 +812,9 @@ function useConversationPane(
               <ChatFooterNotice>
                 <ChatFooterError message={store.blockedReason} />
               </ChatFooterNotice>
+            )}
+            {!store.stalled && !store.executionHeld && store.terminalTimeout !== null && (
+              <ChatFooterNotice tone="neutral">The previous response stopped after reaching its time limit. Send a message to continue.</ChatFooterNotice>
             )}
             {plannerRow !== null && <OperationFeedback feedback={plannerRow.role.feedback} />}
             {composerNode}

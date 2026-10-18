@@ -1105,6 +1105,13 @@ impl PlannerHarness {
         self.inner.live_claim.install();
     }
 
+    /// The bound execution backend's ability, independent of the caller's authority.
+    pub(crate) fn history_replacement_supported(&self) -> bool {
+        PlannerBackend::metadata(&self.inner.backend.provider())
+            .capabilities
+            .history_replacement
+    }
+
     /// Which provider runs this harness's turns.
     pub fn provider(&self) -> crate::session_projection_repo::AgentProvider {
         self.inner.backend.provider()
