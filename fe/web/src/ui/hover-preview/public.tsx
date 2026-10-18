@@ -1,8 +1,11 @@
 export { PreviewSummary, PreviewTextLink } from './summary.tsx';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { isImeKeyEvent } from '@astryxdesign/core/utils';
 import { LayerDepthProvider, useLayer, useLayerDismissal } from '@astryxdesign/core/Layer';
 
+import { useSurfacePresence } from '../motion/surface-presence.ts';
+import { readSurfaceFrame, type BindingView } from '../motion/geometry.ts';
 import { useState } from '../state/public.ts';
 import { restoreDrawerFocus } from '../drawer/restore-focus.ts';
 import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_MIN_HEIGHT, type Placement } from './placement.ts';
@@ -13,6 +16,27 @@ const HOVER_DELAY = 300;
 const LEAVE_DELAY = 180;
 const TRAVEL_DELAY = 800;
 const NAVIGATION_DISMISS = 'nc-preview-navigation';
+const INTERACTION_REGISTER = 'nc-preview-register';
+type ParentView = { kind: 'pending' | 'revoked' } | { kind: 'admitted'; token: object; read: () => boolean };
+type NestedInteraction = { setParent: (view: ParentView) => void; release: (() => void) | null };
+type Paint = { kind: 'empty' } | { kind: 'suspended' | 'retained'; actual: HTMLDivElement; part: HTMLDivElement }
+  | { kind: 'admitted'; actual: HTMLDivElement; part: HTMLDivElement; binding: Extract<BindingView, { kind: 'ready' }>; cycle: object; ancestor: object; slot: Placement; height: number };
+
+// Render initializes new DOM safely, before child autofocus/layout work.
+// The post-bind gate is the sole dynamic writer of public DOM permissions.
+function gate(slot: HTMLElement | null, actual: HTMLElement | null, part: HTMLElement | null, admitted: boolean, paint: boolean) {
+  const attribute = (element: HTMLElement, name: string, value: string | null) => {
+    if (element.getAttribute(name) === value) return;
+    if (value === null) element.removeAttribute(name); else element.setAttribute(name, value);
+  };
+  for (const element of [slot, part]) if (element !== null) {
+    if (element.inert !== !admitted) element.inert = !admitted;
+    attribute(element, 'aria-hidden', admitted ? null : 'true');
+  }
+  if (part !== null) for (const name of ['data-nc-link-preview', 'data-nc-escape-layer']) attribute(part, name, admitted ? '' : null);
+  const clip = paint ? 'none' : 'inset(50%)';
+  if (actual !== null && actual.style.clipPath !== clip) actual.style.clipPath = clip;
+}
 
 /** Transient, non-modal preview. The host owns destination admission and content.
  * Timers, portal and listeners live only as long as this trigger.
@@ -28,29 +52,66 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   getReadingSurface?: (trigger: HTMLElement) => HTMLElement | null;
   getAvoidSurfaces?: (trigger: HTMLElement) => readonly HTMLElement[];
 }>) {
+  const parent = useRef<ParentView>({ kind: 'admitted', token: {}, read: () => true });
+  const paint = useRef<Paint>({ kind: 'empty' });
+  const cycle = useRef<object>({});
+  const intent = useRef<Phase>('closed');
+  const [, refresh] = useState(0);
+  const schedule = useCallback(() => refresh(value => value + 1), [refresh]);
+  const nested = useRef(new Set<NestedInteraction>());
+  const inform = (view: ParentView) => { for (const child of nested.current) child.setParent(view); };
   const id = useId();
   const anchor = useRef<HTMLSpanElement>(null);
   const card = useRef<HTMLDivElement>(null);
+  const actual = useRef<HTMLDivElement>(null);
+  // A committed paint node is the retention capability, not merely open intent.
+  const [candidate, setCandidate] = useState<HTMLDivElement | null>(null);
+  const header = useRef<HTMLDivElement>(null);
+  const intrinsic = useRef<HTMLDivElement>(null);
+  const [actualHeight, setActualHeight] = useState(PREVIEW_MAX_HEIGHT);
+  const positioner = useRef<HTMLDivElement>(null);
   const body = useRef<HTMLDivElement>(null);
   const focusOnOpen = useRef(false);
   const skipFocus = useRef(false);
   const travelling = useRef(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [engaged, setEngaged] = useState(false);
   const [phase, setPhase] = useState<Phase>('closed');
   const [placement, setPlacement] = useState<Placement>({ x: PREVIEW_GAP, y: PREVIEW_GAP, width: PREVIEW_WIDTH, maxHeight: PREVIEW_MAX_HEIGHT, side: 'right' });
-  const visible = phase === 'open';
+  const requested = phase === 'open';
+  const present = requested || paint.current.kind !== 'empty';
   const layer = useLayer({ mode: 'context', lazyMount: true });
   const { show, hide, ref: layerRef } = layer;
+  const [layerHost, setLayerHost] = useState<HTMLElement | null>(null);
   const captureAnchor = useCallback((element: HTMLSpanElement | null) => {
     anchor.current = element;
     layerRef(element);
-  }, [layerRef]);
-  useLayoutEffect(() => { if (visible) show(); else hide(); }, [visible, show, hide]);
+    // Viewport slots must sit outside ancestor paint/zoom. Keep them in the
+    // nearest native dialog's top-layer scope, or the document's viewport root.
+    setLayerHost(element === null ? null : element.closest('dialog') ?? element.ownerDocument.body);
+  }, [layerRef, setLayerHost]);
+  // Native hosting follows paint retention; interaction follows post-bind admission.
+  useLayoutEffect(() => { if (present) show(); else hide(); }, [present, show, hide]);
+  const readParent = () => parent.current.kind === 'admitted' && parent.current.read() ? parent.current.token : null;
+  const admitted = () => paint.current.kind === 'admitted' && paint.current.cycle === cycle.current
+    && paint.current.part === card.current && paint.current.actual === actual.current
+    && paint.current.ancestor === readParent() && intent.current === 'open'
+    && measurement.readBinding() === paint.current.binding;
+  const parentView = (): ParentView => {
+    const token = paint.current;
+    return admitted() ? { kind: 'admitted', token, read: () => paint.current === token && admitted() }
+      : { kind: intent.current === 'open' ? 'pending' : 'revoked' };
+  };
+  const readAdmission = useEffectEvent(admitted);
   const cancelLeave = useCallback(() => {
     travelling.current = false;
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
     leaveTimer.current = null;
+  }, []);
+  const cancelOpen = useCallback(() => {
+    if (openTimer.current !== null) clearTimeout(openTimer.current);
+    openTimer.current = null;
   }, []);
   const focusTrigger = useCallback(() => {
     skipFocus.current = true;
@@ -59,17 +120,61 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     skipFocus.current = false;
   }, []);
   const close = useCallback(() => {
-    cancelLeave();
+    // Revoke the port before DOM permission, descendant intent and notifications.
+    const old = paint.current;
+    paint.current = old.kind === 'empty' ? old : { kind: 'retained', actual: old.actual, part: old.part };
+    intent.current = 'closed'; cycle.current = {};
+    gate(positioner.current, actual.current, card.current, false, old.kind !== 'empty');
+    for (const child of nested.current) child.setParent({ kind: 'revoked' });
+    if (old.kind === 'admitted') positioner.current?.dispatchEvent(new Event('nc-preview-layout', { bubbles: true }));
+    cancelLeave(); cancelOpen();
+    setEngaged(false);
+    focusOnOpen.current = false;
     setPhase('closed');
-  }, [cancelLeave, setPhase]);
+  }, [cancelLeave, cancelOpen, setEngaged, setPhase]);
   const dismissLayer = useCallback(() => {
     close();
     if (card.current?.contains(document.activeElement)) focusTrigger();
   }, [close, focusTrigger]);
   useLayerDismissal({
-    isActive: visible, onDismiss: dismissLayer, getContainer: () => card.current,
-    isPresent: () => card.current?.isConnected ?? false,
+    isActive: requested, onDismiss: dismissLayer, getContainer: () => card.current,
+    isPresent: () => admitted(),
   });
+  const delayClose = useCallback((delay: number) => {
+    const generation = cycle.current;
+    leaveTimer.current = setTimeout(() => { if (cycle.current === generation) close(); }, delay);
+  }, [close]);
+  // The stable trigger endpoint exists before this preview can mount a portal.
+  // Descendants register only with the explicit nearest owner, never a DOM broadcast.
+  const registerChild = useEffectEvent((event: Event) => {
+    event.stopPropagation();
+    const child = (event as CustomEvent<NestedInteraction>).detail;
+    nested.current.add(child);
+    child.release = () => { nested.current.delete(child); };
+    child.setParent(parentView());
+  });
+  useLayoutEffect(() => {
+    const endpoint = anchor.current!;
+    const register = (event: Event) => registerChild(event);
+    endpoint.addEventListener(INTERACTION_REGISTER, register);
+    return () => { endpoint.removeEventListener(INTERACTION_REGISTER, register); };
+  }, []);
+  useLayoutEffect(() => {
+    const trigger = anchor.current!;
+    const owner = trigger.closest<HTMLElement>('[data-nc-preview-owner]');
+    if (owner === null) return;
+    const endpoint = trigger.ownerDocument.getElementById(owner.dataset.ncPreviewOwner!);
+    if (endpoint === null) throw new Error('Preview interaction owner is missing');
+    const child: NestedInteraction = { release: null, setParent: view => {
+      if (parent.current.kind === view.kind && (view.kind !== 'admitted' || parent.current.kind === 'admitted' && parent.current.token === view.token)) return;
+      parent.current = view;
+      if (view.kind === 'revoked') close();
+      schedule();
+    } };
+    endpoint.dispatchEvent(new CustomEvent(INTERACTION_REGISTER, { detail: child }));
+    if (child.release === null) throw new Error('Preview interaction owner did not register child');
+    return () => { child.release?.(); };
+  }, [close, schedule]);
   const dismissForNavigation = useCallback(() => {
     close();
     // Hand the destination a connected opener before it captures return focus.
@@ -81,15 +186,19 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   }, [close, focusTrigger]);
   useEffect(() => {
     const element = card.current;
-    if (!visible || element === null) return;
+    if (!requested || element === null) return;
     element.addEventListener(NAVIGATION_DISMISS, dismissForNavigation);
     return () => { element.removeEventListener(NAVIGATION_DISMISS, dismissForNavigation); };
-  }, [visible, layer.isOpen, dismissForNavigation]);
-  const activate = () => { cancelLeave(); setPhase('open'); };
+  }, [requested, layer.isOpen, dismissForNavigation]);
+  const activate = useCallback(() => {
+    if (parent.current.kind === 'revoked') return;
+    cancelLeave(); cancelOpen(); intent.current = 'open'; setPhase('open'); schedule();
+  }, [cancelLeave, cancelOpen, setPhase, schedule]);
   const focusContent = useCallback(() => {
     body.current?.focus({ preventScroll: true });
   }, []);
   const enter = () => {
+    if (readParent() === null) return;
     cancelLeave();
     setEngaged(true);
     setPhase((current) => current === 'closed' ? 'waiting' : current);
@@ -97,62 +206,111 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   const leave = () => {
     cancelLeave();
     setEngaged(false);
-    leaveTimer.current = setTimeout(() => {
-      setPhase('closed');
-    }, LEAVE_DELAY);
+    delayClose(LEAVE_DELAY);
   };
   useEffect(() => () => {
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
   }, []);
   useEffect(() => {
     if (!engaged || phase !== 'waiting') return;
-    const timeout = setTimeout(() => setPhase('open'), HOVER_DELAY);
-    return () => { clearTimeout(timeout); };
-  }, [phase, engaged]);
+    const generation = cycle.current;
+    const timeout = setTimeout(() => {
+      if (cycle.current === generation && intent.current !== 'open') activate();
+    }, HOVER_DELAY);
+    openTimer.current = timeout;
+    return () => { clearTimeout(timeout); if (openTimer.current === timeout) openTimer.current = null; };
+  }, [phase, engaged, activate]);
 
-  useLayoutEffect(() => {
-    if (!visible || card.current === null || !focusOnOpen.current) return;
-    focusOnOpen.current = false;
-    focusContent();
-  }, [visible, layer.isOpen, focusContent]);
-
-  const reposition = useCallback(() => {
+  // All input reads happen before submission. Output equality is exact; updaters
+  // are pure. A committed slot is always usable, including while another is queued.
+  const reposition = useEffectEvent(() => {
+    if (!requested || readParent() === null) return false;
     const triggerElement = anchor.current;
     const cardElement = card.current;
-    if (triggerElement === null || cardElement === null) return;
-    const parent = triggerElement.closest<HTMLElement>('[data-nc-link-preview]');
-    const reading = parent ?? getReadingSurface?.(triggerElement) ?? null;
-    const bounds = cardElement.getBoundingClientRect();
-    const next = placePreview({ readingAreas: getAvoidSurfaces?.(triggerElement).map((element) => element.getBoundingClientRect()), anchor: triggerElement.getBoundingClientRect(), reading: reading?.getBoundingClientRect() ?? null,
-      obstacles: Array.from(document.querySelectorAll<HTMLElement>('[data-nc-link-preview]'))
-        .filter((element) => element !== cardElement).map((element) => element.getBoundingClientRect()),
+    const slot = positioner.current;
+    if (triggerElement === null || cardElement === null || slot === null) return;
+    const source = triggerElement.getBoundingClientRect();
+    const owner = triggerElement.closest<HTMLElement>('[data-nc-preview-owner]');
+    const reading = owner ?? getReadingSurface?.(triggerElement) ?? null;
+    const next = placePreview({
+      anchor: source, reading: reading === null ? null : reading.getBoundingClientRect(),
+      readingAreas: getAvoidSurfaces?.(triggerElement).map(element => element.getBoundingClientRect()),
+      // Neige's own portal order is the total order. Retention keeps its position;
+      // only earlier interactive reservations participate. There is no reverse edge.
+      obstacles: Array.from(document.querySelectorAll<HTMLElement>('[data-nc-preview-slot]'))
+        .filter(element => element !== slot && !element.inert
+          && Boolean(element.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING))
+        .map(element => element.getBoundingClientRect()),
       viewport: { width: window.innerWidth, height: window.innerHeight },
-      naturalHeight: bounds.height + (body.current === null ? 0 : body.current.scrollHeight - body.current.clientHeight),
     });
     if (next === null) {
-      setPhase('closed');
+      close();
       if (cardElement.contains(document.activeElement)) focusTrigger();
-      cancelLeave();
-      return;
+      cancelLeave(); return;
     }
-    setPlacement((current) => current.x === next.x && current.y === next.y && current.width === next.width
-      && current.maxHeight === next.maxHeight && current.side === next.side ? current : next);
-  }, [getReadingSurface, getAvoidSurfaces, setPhase, setPlacement, focusTrigger, cancelLeave]);
-  useLayoutEffect(() => { if (visible) reposition(); }, [visible, layer.isOpen, reposition]);
+    const equal = placement.x === next.x && placement.y === next.y && placement.width === next.width
+      && placement.maxHeight === next.maxHeight && placement.side === next.side;
+    if (!equal) setPlacement(next);
+    return equal;
+  });
+  const measureContent = useEffectEvent(() => {
+    if (!requested || readParent() === null) return false;
+    if (header.current === null || intrinsic.current === null || card.current === null) return;
+    // Computed border-box sizes retain layout fractions and exclude native paint.
+    // Intrinsic flow is never constrained by the scrolling viewport.
+    const size = (element: HTMLElement) => {
+      const css = getComputedStyle(element);
+      return parseFloat(css.height) + (css.boxSizing === 'border-box' ? 0
+        : parseFloat(css.paddingTop) + parseFloat(css.paddingBottom) + parseFloat(css.borderTopWidth) + parseFloat(css.borderBottomWidth));
+    };
+    const css = getComputedStyle(card.current);
+    const natural = size(header.current) + size(intrinsic.current)
+      + parseFloat(css.borderTopWidth) + parseFloat(css.borderBottomWidth);
+    const height = Math.min(natural, placement.maxHeight);
+    if (!Number.isFinite(height) || height <= 0) return false;
+    if (actualHeight !== height) setActualHeight(height);
+    return actualHeight === height;
+  });
+  const updateLayout = useEffectEvent(() => {
+    if (!requested || readParent() === null) return;
+    const slotReady = reposition(); const frameReady = measureContent();
+    // Prepare each newly mounted wrapper once, at its committed candidate width
+    // and natural size. Subsequent committed frames remain valid during retarget.
+    if (candidate !== actual.current && slotReady && frameReady && readSurfaceFrame(actual.current) !== null) setCandidate(actual.current);
+  });
+  useLayoutEffect(() => { updateLayout(); });
+  // Rebind only for actual node/owner changes, never a placement/callback identity.
+  const observed = useRef<{ nodes: readonly HTMLElement[]; dispose: () => void } | null>(null);
+  useLayoutEffect(() => {
+    const nodes = requested && anchor.current !== null && positioner.current !== null ? [anchor.current, header.current, intrinsic.current,
+      actual.current, anchor.current.closest<HTMLElement>('[data-nc-preview-owner]'),
+      getReadingSurface?.(anchor.current), ...(getAvoidSurfaces?.(anchor.current) ?? []),
+      ...Array.from(document.querySelectorAll<HTMLElement>('[data-nc-preview-slot]'))
+        .filter(element => element !== positioner.current && Boolean(element.compareDocumentPosition(positioner.current!) & Node.DOCUMENT_POSITION_FOLLOWING)),
+    ].filter((node): node is HTMLElement => node != null) : [];
+    if (observed.current !== null && observed.current.nodes.length === nodes.length
+      && observed.current.nodes.every((node, index) => node === nodes[index])) return;
+    observed.current?.dispose(); observed.current = null;
+    if (nodes.length === 0) return;
+    const observer = new ResizeObserver(() => { updateLayout(); });
+    for (const node of nodes) observer.observe(node);
+    observed.current = { nodes, dispose: () => observer.disconnect() };
+  });
+  useLayoutEffect(() => () => { observed.current?.dispose(); observed.current = null; }, []);
   useEffect(() => {
-    if (!visible || card.current === null || anchor.current === null) return;
-    const observer = new ResizeObserver(reposition);
-    observer.observe(card.current);
-    observer.observe(anchor.current);
-    const reading = anchor.current.closest<HTMLElement>('[data-nc-link-preview]') ?? getReadingSurface?.(anchor.current);
-    if (reading != null) observer.observe(reading);
-    for (const element of getAvoidSurfaces?.(anchor.current) ?? []) observer.observe(element);
-    return () => { observer.disconnect(); };
-  }, [visible, layer.isOpen, reposition, getReadingSurface, getAvoidSurfaces]);
+    if (!requested) return;
+    const upstream = (event: Event) => {
+      const earlier = event.target; const own = positioner.current;
+      if (earlier instanceof HTMLElement && own !== null && earlier !== own
+        && Boolean(earlier.compareDocumentPosition(own) & Node.DOCUMENT_POSITION_FOLLOWING)) schedule();
+    };
+    document.addEventListener('nc-preview-layout', upstream);
+    return () => { document.removeEventListener('nc-preview-layout', upstream); };
+  }, [requested, schedule]);
   useEffect(() => {
-    if (!visible) return;
+    if (!requested) return;
     const move = (event: PointerEvent) => {
-      if (event.pointerType === 'touch' || leaveTimer.current === null || anchor.current === null || card.current === null) return;
+      if (!readAdmission() || event.pointerType === 'touch' || leaveTimer.current === null || anchor.current === null || card.current === null) return;
       const target = event.target;
       const anotherControl = target instanceof Element && target.closest('button, a[href], input, select, textarea, [role="button"], [role="link"]') !== null
         && !anchor.current.contains(target) && !card.current.contains(target);
@@ -160,17 +318,17 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
         anchor.current.getBoundingClientRect(), card.current.getBoundingClientRect(), placement.side)) {
         cancelLeave();
         travelling.current = true;
-        leaveTimer.current = setTimeout(() => setPhase('closed'), TRAVEL_DELAY);
+        delayClose(TRAVEL_DELAY);
       } else if (travelling.current) {
         cancelLeave();
-        leaveTimer.current = setTimeout(() => setPhase('closed'), LEAVE_DELAY);
+        delayClose(LEAVE_DELAY);
       }
     };
     document.addEventListener('pointermove', move);
     return () => { document.removeEventListener('pointermove', move); };
-  }, [visible, placement.side, cancelLeave, setPhase]);
+  }, [requested, placement.side, cancelLeave, delayClose]);
   useEffect(() => {
-    if (!visible) return;
+    if (!requested) return;
     const outsidePress = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || anchor.current?.contains(target)) return;
@@ -181,22 +339,68 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     const scroll = (event: Event) => {
       // Only scrolling an ancestor moves this preview's anchor; portal children own their scrolling.
       if (event.target instanceof Node && event.target.contains(anchor.current)
-        && !card.current?.contains(event.target)) setPhase('closed');
+        && !card.current?.contains(event.target)) close();
     };
-    window.addEventListener('resize', reposition);
+    window.addEventListener('resize', updateLayout);
+    window.visualViewport?.addEventListener('resize', updateLayout);
+    window.visualViewport?.addEventListener('scroll', updateLayout);
     document.addEventListener('pointerdown', outsidePress, true);
     document.addEventListener('scroll', scroll, true);
     return () => {
-      window.removeEventListener('resize', reposition);
+      window.removeEventListener('resize', updateLayout);
+      window.visualViewport?.removeEventListener('resize', updateLayout);
+      window.visualViewport?.removeEventListener('scroll', updateLayout);
       document.removeEventListener('pointerdown', outsidePress, true);
       document.removeEventListener('scroll', scroll, true);
     };
-  }, [visible, reposition, focusTrigger, close, cancelLeave]);
+  }, [requested, focusTrigger, close, cancelLeave]);
 
-  return <span ref={captureAnchor} className={styles.anchor} role="presentation"
+  const measurement = useSurfacePresence({ parts: { kind: 'single', primary: { element: card, readFrame: () => candidate !== null && candidate === actual.current && (intent.current !== 'open' || readParent() !== null) ? readSurfaceFrame(actual.current) : null } },
+    geometry: { kind: 'lift', origin: { kind: 'anchor', anchor: { ref: anchor }, unavailable: 'surface-center' } },
+    open: requested, present, enabled: true, onMeasurementChange: schedule,
+    // Native paint invalidates only later portals. The publisher never schedules
+    // itself here; listeners schedule commits rather than publishing recursively.
+    onVisualChange: () => { if (admitted()) positioner.current?.dispatchEvent(new Event('nc-preview-layout', { bubbles: true })); },
+    onExited: () => { if (intent.current === 'open') return; paint.current = { kind: 'empty' }; setCandidate(null); schedule(); } });
+
+  // This phase is deliberately after motion's committed binding update. Notices
+  // only schedule this local commit; publication never runs in a notice stack.
+  useLayoutEffect(() => {
+    const binding = measurement.readBinding();
+    const before = paint.current;
+    const part = card.current; const node = actual.current;
+    const ancestor = readParent();
+    const valid = intent.current === 'open' && ancestor !== null && node !== null && part !== null
+      && candidate === node && binding.kind === 'ready' && binding.parts.length === 1 && binding.parts[0].element === part;
+    if (valid) paint.current = { kind: 'admitted', actual: node, part, binding, cycle: cycle.current, ancestor, slot: placement, height: actualHeight };
+    else if (before.kind !== 'empty') paint.current = { kind: intent.current === 'open' ? 'suspended' : 'retained', actual: before.actual, part: before.part };
+    let current = paint.current;
+    const changed = current.kind === 'admitted' ? before.kind !== 'admitted' || before.binding !== current.binding
+      || before.cycle !== current.cycle || before.ancestor !== current.ancestor || before.actual !== current.actual || before.part !== current.part
+      || before.slot !== current.slot || before.height !== current.height : before.kind === 'admitted';
+    if (current.kind === 'admitted' && !changed) { paint.current = before; current = before; }
+    gate(positioner.current, node, part, valid, valid || current.kind === 'retained' && current.actual === node && current.part === part);
+    if (valid && focusOnOpen.current) { focusOnOpen.current = false; focusContent(); }
+    if (paint.current !== current || valid && !admitted()) return;
+    if (changed) {
+      inform(parentView());
+      positioner.current?.dispatchEvent(new Event('nc-preview-layout', { bubbles: true }));
+    }
+  });
+  useLayoutEffect(() => () => {
+    cycle.current = {};
+    paint.current = { kind: 'empty' };
+    gate(positioner.current, actual.current, card.current, false, false);
+  }, []);
+  const attachSlot = useCallback((node: HTMLDivElement | null) => { positioner.current = node; if (node !== null) gate(node, null, null, false, false); }, []);
+  const attachActual = useCallback((node: HTMLDivElement | null) => { actual.current = node; if (node !== null) gate(null, node, null, false, false); }, []);
+  const attachCard = useCallback((node: HTMLDivElement | null) => { card.current = node; if (node !== null) gate(null, null, node, false, false); }, []);
+
+  return <span ref={captureAnchor} id={`${id}-owner`} className={styles.anchor} role="presentation"
     onPointerEnter={(event) => { if (event.pointerType !== 'touch') enter(); }}
-    onPointerLeave={leave} onFocus={() => { if (!skipFocus.current) enter(); }}
+    onPointerLeave={event => { if (readParent() !== null && event.target instanceof Node && anchor.current?.contains(event.target)) leave(); }} onFocus={() => { if (!skipFocus.current) enter(); }}
     onBlur={(event) => {
+      if (readParent() === null || !admitted() && event.target instanceof Node && card.current?.contains(event.target)) return;
       if (event.relatedTarget instanceof Node && (anchor.current?.contains(event.relatedTarget)
         || card.current?.contains(event.relatedTarget))) return;
       leave();
@@ -208,32 +412,34 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         activate();
-        if (card.current === null) focusOnOpen.current = true;
-        else focusContent();
+        if (!admitted()) focusOnOpen.current = true; else focusContent();
       }
-      if (event.key === 'Escape' && phase === 'waiting') { event.preventDefault(); close(); }
+      if (event.key === 'Escape' && !admitted() && phase !== 'closed') { event.preventDefault(); close(); }
     }}>
     {trigger(activate, dismissForNavigation)}
-    {layer.render(<LayerDepthProvider>{visible && <div ref={card} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog"
-      aria-label={`Preview: ${title}`} id={id} data-nc-link-preview=""
-      data-nc-escape-layer=""
-      style={{ left: placement.x, top: placement.y, width: placement.width, maxHeight: placement.maxHeight }}
-      onPointerEnter={enter} onPointerLeave={leave}
+    {layerHost !== null && createPortal(layer.render(<LayerDepthProvider>{present && <div ref={attachSlot} className={styles.positioner} data-nc-preview-slot="" inert aria-hidden="true"
+      onClickCapture={event => { if (!admitted()) { event.preventDefault(); event.stopPropagation(); } }}
+      style={{ left: placement.x, top: placement.y, width: placement.width, height: placement.maxHeight, justifyContent: placement.side === 'above' ? 'flex-end' : 'flex-start' }}>
+      <div ref={attachActual} className={styles.actual} style={{ height: Math.min(actualHeight, placement.maxHeight), clipPath: 'inset(50%)' }}>
+      <div ref={attachCard} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog" data-nc-preview-owner={`${id}-owner`}
+      aria-label={`Preview: ${title}`} id={id} inert aria-hidden="true"
+      onPointerEnter={enter} onPointerLeave={() => { if (admitted()) leave(); }}
       onFocus={enter} onBlur={(event) => {
+        if (!admitted()) return;
         if (event.relatedTarget instanceof Node && card.current?.contains(event.relatedTarget)) return;
         leave();
       }}>
-      <div className={styles.header}>
+      <div ref={header} className={styles.header}>
         <span className={styles.title}>{title}</span>
       </div>
       <div ref={body} className={styles.body} tabIndex={-1} role="region" aria-label={`Preview content: ${title}`}>
-        {typeof children === 'function' ? children(dismissForNavigation) : children}
+        <div ref={intrinsic} className={styles.intrinsic}>{typeof children === 'function' ? children(dismissForNavigation) : children}</div>
       </div>
-    </div>}</LayerDepthProvider>, { positioning: 'custom',
-      // Layer owns native presentation and safe hosting; the existing card
-      // owns viewport placement, geometry and all visual styling.
+    </div></div></div>}</LayerDepthProvider>, { positioning: 'custom',
+      // Layer owns native presentation and safe hosting; the slot/actual/card
+      // retain viewport placement, measurement and physical paint ownership.
       style: { position: 'fixed', inset: 0, width: 0, height: 0, margin: 0, padding: 0,
         border: 0, overflow: 'visible', background: 'transparent' },
-    })}
+    }), layerHost)}
   </span>;
 }

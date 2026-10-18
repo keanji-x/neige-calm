@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useRef, type ReactNode } from 'react';
+import { useSurfacePresence } from '../motion/surface-presence.ts';
+import { readSurfaceFrame } from '../motion/geometry.ts';
 import { useState } from '../state/public.ts';
 import { useRovingTabindex } from '../focus/public.ts';
 
@@ -15,12 +17,20 @@ export interface MenuProps {
 
 export function Menu({ items, trigger, wrapClassName, menuClassName, itemClassName, emptyState, emptyClassName, separatorClassName }: MenuProps) {
   const [open, setOpen] = useState(false);
+  const [retained, setRetained] = useState(false);
+  const anchor = useRef<HTMLSpanElement | null>(null);
+  const placement = useRef<HTMLDivElement | null>(null);
+  const surface = useRef<HTMLUListElement | null>(null);
+  const present = open || retained;
+  useSurfacePresence({ parts: { kind: 'single', primary: { element: surface, readFrame: () => readSurfaceFrame(placement.current) } },
+    geometry: { kind: 'lift', origin: { kind: 'anchor', anchor: { ref: anchor }, unavailable: 'surface-center' } },
+    open, present, enabled: true, onExited: () => setRetained(false) });
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const closeAndRestoreFocus = () => { setOpen(false); triggerRef.current?.focus(); };
   const activate = (index: number) => {
     const item = items[index];
-    if (!item || item.disabled) return;
+    if (!open || !item || item.disabled) return;
     closeAndRestoreFocus();
     item.onSelect();
   };
@@ -38,8 +48,11 @@ export function Menu({ items, trigger, wrapClassName, menuClassName, itemClassNa
     return () => document.removeEventListener('mousedown', onMouseDown);
   }, [open, setOpen]);
   return <div className={wrapClassName} ref={wrapperRef}>
-    {trigger({ ref: (element) => { triggerRef.current = element; }, onClick: () => setOpen((value) => !value), 'aria-haspopup': 'menu', 'aria-expanded': open })}
-    {open && <ul className={menuClassName} role="menu">
+    <span ref={anchor} style={{ display: 'inline-flex', maxWidth: '100%' }}>{trigger({ ref: (element) => { triggerRef.current = element; }, onClick: () => { setRetained(true); setOpen((value) => !value); }, 'aria-haspopup': 'menu', 'aria-expanded': open })}</span>
+    {present && <div ref={placement} className={menuClassName} inert={!open} aria-hidden={!open || undefined}
+      style={{ display: 'grid', padding: 0, border: 0, background: 'transparent', boxShadow: 'none', overflow: 'visible' }}>
+    <ul ref={surface} className={menuClassName} role="menu" inert={!open} aria-hidden={!open || undefined}
+      style={{ position: 'relative', inset: 'auto', translate: 'none', width: '100%', maxHeight: 'inherit', margin: 0 }}>
       {items.length === 0 ? <li className={emptyClassName}>{emptyState}</li> : items.map((item, index) => {
         const props = getItemProps(index);
         return <Fragment key={`${item.label}:${index}`}>
@@ -47,11 +60,11 @@ export function Menu({ items, trigger, wrapClassName, menuClassName, itemClassNa
           <li role="none"><button
           ref={props.ref} type="button" role="menuitem" tabIndex={props.tabIndex}
           className={`${itemClassName ?? ''}${index === activeIndex ? ' is-active' : ''}`.trim() || undefined}
-          onKeyDown={props.onKeyDown} onClick={() => activate(index)} onMouseMove={() => setActiveIndex(index)}
+          onKeyDown={open ? props.onKeyDown : undefined} onClick={() => activate(index)} onMouseMove={() => { if (open) setActiveIndex(index); }}
           aria-current={item.current ? 'page' : undefined}
           aria-disabled={item.disabled || undefined} aria-label={item.labelContent === undefined ? undefined : item.label}>{item.icon}{item.labelContent ?? item.label}</button></li>
         </Fragment>;
       })}
-    </ul>}
+    </ul></div>}
   </div>;
 }

@@ -1,5 +1,5 @@
 import { useEffectEvent, useLayoutEffect, useRef, type RefObject } from 'react';
-import { playSpring, type SpringPlayback } from './spring.ts';
+import { playSpring, type Playback } from './spring.ts';
 
 type Surface = HTMLElement | SVGElement;
 
@@ -9,9 +9,9 @@ export function useSpringTarget(
   target: number, initial: number, present: boolean, enabled: boolean,
   onSettled: (value: number) => void, paint: (value: number) => Keyframe,
 ) {
-  const active = useRef<SpringPlayback | null>(null);
+  const active = useRef(createPlaybackTarget<number>());
   const settled = useRef(initial);
-  const cancel = useEffectEvent(() => { active.current?.cancel(); active.current = null; });
+  const cancel = useEffectEvent(() => { active.current.cancel(); });
   const immediate = useEffectEvent((target: number, present: boolean, onSettled: (value: number) => void) => {
     cancel(); settled.current = target;
     if (present) onSettled(target);
@@ -22,17 +22,13 @@ export function useSpringTarget(
     if (!enabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { immediate(target, present, onSettled); return; }
     const element = primary.current;
     if (element === null) return;
-    const moving = active.current !== null;
-    const from = active.current?.sample() ?? { value: settled.current, velocity: 0 };
+    const moving = active.current.moving();
+    const from = active.current.sample() ?? { value: settled.current, velocity: 0 };
     cancel();
     if (!moving && from.value === target && from.velocity === 0) { settled.current = target; onSettled(target); return; }
     const paired = peer?.current;
     const playback = playSpring(paired == null ? [element] : [element, paired], from.value, target, from.velocity, paint);
-    active.current = playback;
-    void playback.finished.then(() => {
-      if (active.current !== playback) return;
-      settled.current = target; cancel(); onSettled(target);
-    }, () => { /* Cancellation discarded this phase. */ });
+    active.current.replace(playback, () => { settled.current = target; onSettled(target); });
   });
   useLayoutEffect(() => { move(target, present, enabled); }, [target, present, enabled]);
   useLayoutEffect(() => {
@@ -41,4 +37,23 @@ export function useSpringTarget(
     preference.addEventListener('change', change);
     return () => { preference.removeEventListener('change', change); cancel(); };
   }, []);
+}
+
+/** Shared identity/cancellation owner for multi-channel geometry targets as well as scalar targets. */
+export function createPlaybackTarget<Value>() {
+  let active: Playback<Value> | null = null;
+  const cancel = () => { const previous = active; active = null; previous?.cancel(); };
+  return {
+    sample: () => active?.sample() ?? null,
+    moving: () => active !== null,
+    setOnVisualChange: (callback: (() => void) | undefined) => { active?.setOnVisualChange(callback); },
+    cancel,
+    replace: (playback: Playback<Value>, onSettled: () => void) => {
+      cancel(); active = playback;
+      void playback.finished.then(() => {
+        if (active !== playback) return;
+        cancel(); onSettled();
+      }, () => { if (active === playback) cancel(); });
+    },
+  };
 }

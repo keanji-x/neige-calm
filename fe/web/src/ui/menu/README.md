@@ -12,9 +12,22 @@ The structure is menu → presentation list item → menuitem so list semantics 
 
 Consumers locate the menu and items by role and label. Rendered DOM and keyboard tests lock the role/ARIA structure, horizontal-key pass-through, initial-item focus, and synchronous restore-before-select ordering without depending on source spelling.
 
-## Deliberately not done
+## Source lift and retention
 
-This slice freezes the props surface and behavioral contract, not visual styling. The rendered class names, including the `is-active` state hook, are placeholders; their CSS Modules and global-class ownership belong to §13 sequence 8 (the styles layer, global-class manifest, and unlayered-exception manifest) and the implementation phase. The current rendering is intentionally not visually finished, which is not a defect in this slice.
+The trigger lives in a stable nonpressed shell; caller styling still owns centered
+placement on the unanimated positioner and visual styling on the inner menu list.
+Shared motion reads the shell’s real visual DOM source and projects it using the
+independent final layout frame. Menu has no descendant inverse endpoint, placement
+strategy or visual-notification subscription. Open is immediate;
+retained positioner and list are inert/aria-hidden immediately, including outer
+hit testing, and activation is guarded, so selection,
+focus restoration and onSelect never wait for settlement. Reopening reverses the
+same native playback with its sampled velocity. No props or business policy are
+added to the frozen caller API. The [primitive browser target](public.browser.test.tsx)
+covers immediate selection,
+focus, keyboard input and inert exit paint without application dependencies.
+The real AreaSelector source, centered placement and press isolation are covered
+by the [app composition target](../../app/shell/area-selector-motion.browser.test.tsx).
 
 ## Mobile Area selection seam
 

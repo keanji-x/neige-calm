@@ -49,3 +49,56 @@ it('samples both point axes on one native clock and preserves their reversal vel
   expect(reverse.sample()).toEqual({ value: { x: 0, y: 0 }, velocity: { x: 0, y: 0 } });
   reverse.cancel();
 });
+
+const frames = async (count: number) => { for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame); };
+it('invalidates changing native time and the terminal sample without paused settled or cancelled pumping', async () => {
+  const element = document.body.appendChild(document.createElement('div'));
+  const request = vi.spyOn(window, 'requestAnimationFrame');
+  const times: (number | null)[] = [];
+  const trajectory = { duration: 500, sample: (time: number) => ({ value: time / 500, velocity: 0 }) };
+  const { playTrajectory } = await import('./spring.ts');
+  const playback = playTrajectory([element], trajectory, opacity => ({ opacity }), () => { times.push(playback.animations[0].currentTime as number | null); });
+  void playback.finished.catch(() => {});
+  await frames(3);
+  expect(times.length).toBeGreaterThan(0);
+  const animation = playback.animations[0]; animation.pause(); await animation.ready;
+  await frames(3); const held = times.length; request.mockClear();
+  await frames(20); expect(request).toHaveBeenCalledTimes(20); expect(times).toHaveLength(held);
+  animation.finish(); await playback.finished;
+  expect(times.at(-1)).toBe(500); expect(times).toHaveLength(held + 1);
+  request.mockClear(); await frames(20); expect(request).toHaveBeenCalledTimes(20); expect(times).toHaveLength(held + 1);
+  playback.cancel();
+  const cancelled = vi.fn();
+  const other = playTrajectory([element], trajectory, opacity => ({ opacity }), cancelled);
+  void other.finished.catch(() => {}); other.cancel();
+  request.mockClear(); await frames(20); expect(request).toHaveBeenCalledTimes(20); expect(cancelled).not.toHaveBeenCalled();
+});
+
+
+it('rearms native play after a drained pause without replacing the effect or promises', async () => {
+  const { playTrajectory } = await import('./spring.ts');
+  const element = document.body.appendChild(document.createElement('div'));
+  const notices = vi.fn();
+  const playback = playTrajectory([element], { duration: 1000, sample: time => ({ value: time / 1000, velocity: 1 }) }, opacity => ({ opacity }), notices);
+  void playback.finished.catch(() => {});
+  const animation = playback.animations[0]; const effect = animation.effect; const finished = animation.finished;
+  animation.pause(); await animation.ready; await frames(3); notices.mockClear();
+  animation.play(); await animation.ready; await frames(4);
+  expect(notices.mock.calls.length).toBeGreaterThan(1);
+  expect(element.getAnimations()[0]).toBe(animation); expect(animation.effect).toBe(effect); expect(animation.finished).toBe(finished);
+  playback.cancel();
+});
+
+it('publishes a paused native seek once then returns to zero work', async () => {
+  const { playTrajectory } = await import('./spring.ts');
+  const element = document.body.appendChild(document.createElement('div'));
+  const notices = vi.fn(); const request = vi.spyOn(window, 'requestAnimationFrame');
+  const playback = playTrajectory([element], { duration: 1000, sample: time => ({ value: time / 1000, velocity: 1 }) }, opacity => ({ opacity }), notices);
+  void playback.finished.catch(() => {});
+  const animation = element.getAnimations()[0]; animation.pause(); await animation.ready; await frames(3); notices.mockClear();
+  animation.currentTime = 80; await frames(3);
+  expect(notices).toHaveBeenCalledOnce(); expect(getComputedStyle(element).opacity).toBe('0.08');
+  notices.mockClear(); request.mockClear(); await frames(20);
+  expect(request).toHaveBeenCalledTimes(20); expect(notices).not.toHaveBeenCalled();
+  playback.cancel();
+});

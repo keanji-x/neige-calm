@@ -20,38 +20,28 @@ function clamp(value: number, low: number, high: number): number {
 /** Protect the source first, then existing previews and the host's reading area.
  * Side space may narrow the card. Vertical fallbacks scroll within the available
  * height; no legal placement means no popup, rather than hiding its own trigger. */
-export function placePreview({ anchor, reading, readingAreas, obstacles, viewport, naturalHeight }: Readonly<{
+export function placePreview({ anchor, reading, readingAreas, obstacles, viewport }: Readonly<{
   anchor: Bounds;
   reading: Bounds | null;
   readingAreas?: readonly Bounds[];
   obstacles: readonly Bounds[];
   viewport: Readonly<{ width: number; height: number }>;
-  naturalHeight: number;
 }>): Placement | null {
   const width = Math.max(0, Math.min(PREVIEW_WIDTH, viewport.width - 2 * PREVIEW_GAP));
   const height = Math.max(0, Math.min(PREVIEW_MAX_HEIGHT, viewport.height - 2 * PREVIEW_GAP));
   if (width === 0 || height === 0) return null;
-  const desiredHeight = Math.min(naturalHeight, height);
   type Candidate = Readonly<{ placement: Placement; occupied: number; reading: number; sideRank: number; lost: number; order: number }>;
   const candidates: Candidate[] = [];
   const areas = readingAreas ?? (reading === null ? [] : [reading]);
   const boundaries = [reading ?? anchor, anchor, ...obstacles, ...areas];
   const add = (placement: Placement, minimumHeight: number) => {
     if (placement.width < Math.min(MIN_WIDTH, width) || placement.maxHeight < minimumHeight) return;
-    const actualHeight = Math.min(desiredHeight, placement.maxHeight);
-    const bounds = { left: placement.x, right: placement.x + placement.width, top: placement.y, bottom: placement.y + actualHeight };
-    // Score the space a loaded card can occupy, so a short loading state does
-    // not select a different side from the completed resource.
-    const reservedTop = placement.side === 'above' ? bounds.bottom - placement.maxHeight
-      : placement.side === 'below' ? placement.y
-        : clamp(anchor.top, PREVIEW_GAP, viewport.height - PREVIEW_GAP - placement.maxHeight);
-    const reserved = { ...bounds, top: reservedTop, bottom: reservedTop + placement.maxHeight };
-    if (bounds.left < PREVIEW_GAP || bounds.top < PREVIEW_GAP || bounds.right > viewport.width - PREVIEW_GAP
-      || bounds.bottom > viewport.height - PREVIEW_GAP || reserved.top < PREVIEW_GAP
-      || reserved.bottom > viewport.height - PREVIEW_GAP) return;
-    if (overlap(bounds, anchor) > 0 || overlap(reserved, anchor) > 0) return;
-    const side: Side = bounds.left >= anchor.right ? 'right' : bounds.right <= anchor.left ? 'left'
-      : bounds.top >= anchor.bottom ? 'below' : 'above';
+    const reserved = { left: placement.x, right: placement.x + placement.width,
+      top: placement.y, bottom: placement.y + placement.maxHeight };
+    if (reserved.left < PREVIEW_GAP || reserved.top < PREVIEW_GAP || reserved.right > viewport.width - PREVIEW_GAP
+      || reserved.bottom > viewport.height - PREVIEW_GAP || overlap(reserved, anchor) > 0) return;
+    const side: Side = reserved.left >= anchor.right ? 'right' : reserved.right <= anchor.left ? 'left'
+      : reserved.top >= anchor.bottom ? 'below' : 'above';
     candidates.push({ placement: { ...placement, side }, occupied: obstacles.reduce((area, obstacle) => area + overlap(reserved, obstacle), 0),
       reading: areas.reduce((area, occupied) => area + overlap(reserved, occupied), 0),
       sideRank: side === 'right' || side === 'left' ? 0 : 1,
@@ -61,14 +51,14 @@ export function placePreview({ anchor, reading, readingAreas, obstacles, viewpor
     for (const boundary of boundaries) {
       const rightWidth = Math.min(width, viewport.width - PREVIEW_GAP - boundary.right - PREVIEW_GAP);
       const leftWidth = Math.min(width, boundary.left - 2 * PREVIEW_GAP);
-      const y = clamp(anchor.top, PREVIEW_GAP, viewport.height - PREVIEW_GAP - desiredHeight);
+      const y = clamp(anchor.top, PREVIEW_GAP, viewport.height - PREVIEW_GAP - height);
       add({ x: boundary.right + PREVIEW_GAP, y, width: rightWidth, maxHeight: height, side: 'right' }, minimumHeight);
       add({ x: boundary.left - PREVIEW_GAP - leftWidth, y, width: leftWidth, maxHeight: height, side: 'left' }, minimumHeight);
       const below = Math.min(height, viewport.height - PREVIEW_GAP - boundary.bottom - PREVIEW_GAP);
       const above = Math.min(height, boundary.top - 2 * PREVIEW_GAP);
       const x = clamp(anchor.left, PREVIEW_GAP, viewport.width - PREVIEW_GAP - width);
       add({ x, y: boundary.bottom + PREVIEW_GAP, width, maxHeight: below, side: 'below' }, minimumHeight);
-      add({ x, y: boundary.top - PREVIEW_GAP - Math.min(desiredHeight, above), width, maxHeight: above, side: 'above' }, minimumHeight);
+      add({ x, y: boundary.top - PREVIEW_GAP - above, width, maxHeight: above, side: 'above' }, minimumHeight);
     }
     if (candidates.length > 0) break;
   }

@@ -28,12 +28,12 @@ describe('report preview placement through the production renderer', () => {
     await page.getByRole('button', { name: 'Other report', exact: true }).hover();
     const parent = page.getByRole('dialog', { name: 'Preview: Other report', exact: true });
     await expect.element(page.getByRole('heading', { name: 'Nested report', exact: true })).toBeVisible();
-    const before = parent.element().getBoundingClientRect();
+    const before = parent.element().parentElement!.getBoundingClientRect();
     await page.getByRole('button', { name: 'Evidence', exact: true }).hover();
     await expect.element(page.getByText('Captured evidence contents.', { exact: true })).toBeVisible();
     for (let frame = 0; frame < 10; frame++) {
       await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
-      const after = parent.element().getBoundingClientRect();
+      const after = parent.element().parentElement!.getBoundingClientRect();
       expect(after.left).toBe(before.left);
       expect(after.top).toBe(before.top);
     }
@@ -51,7 +51,7 @@ describe('report preview placement through the production renderer', () => {
     await page.getByRole('button', { name: 'Notes', exact: true }).hover();
     await expect.poll(() => page.getByRole('heading', { name: 'Long contents' }).query()).not.toBeNull();
     const link = page.getByRole('button', { name: 'Notes', exact: true }).element().getBoundingClientRect();
-    const card = page.getByRole('dialog').element().getBoundingClientRect();
+    const card = page.getByRole('dialog').element().parentElement!.getBoundingClientRect();
     expect(card.left).toBeGreaterThanOrEqual(592);
     expect(card.right).toBeLessThanOrEqual(1188);
     expect(card.left >= link.right || card.right <= link.left || card.top >= link.bottom || card.bottom <= link.top).toBe(true);
@@ -74,16 +74,18 @@ it('highlights a source hover through the file resource owner and keeps its card
   if (view === null) throw new Error('Source view missing');
   await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
   const card = screen.getByRole('dialog');
-  const before = card.getBoundingClientRect();
+  const before = card.parentElement!.getBoundingClientRect();
   const trigger = page.getByRole('button', { name: 'Source', exact: true }).element().getBoundingClientRect();
   expect(before.left >= trigger.right || before.right <= trigger.left || before.top >= trigger.bottom || before.bottom <= trigger.top).toBe(true);
+  // Browser hover may scroll the target into view; establish pointer position
+  // before the reading position whose preservation this test observes.
+  await page.getByRole('textbox', { name: 'Code' }).hover();
   view.focus();
   view.scrollDOM.scrollTop = 120;
   view.scrollDOM.scrollLeft = 60;
-  await page.getByRole('textbox', { name: 'Code' }).hover();
   for (let frame = 0; frame < 10; frame++) {
     await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
-    const after = card.getBoundingClientRect();
+    const after = card.parentElement!.getBoundingClientRect();
     expect(after.left).toBe(before.left);
     expect(after.top).toBe(before.top);
   }

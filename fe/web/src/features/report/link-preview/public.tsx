@@ -85,7 +85,7 @@ function readingAreas(): readonly HTMLElement[] {
   // Rendered reports inside a preview belong to that card, not the underlying
   // reading column. Treating them as avoidance areas makes a card chase itself.
   return Array.from(document.querySelectorAll<HTMLElement>('[data-nc-link-reading]'))
-    .filter((element) => element.getClientRects().length > 0 && element.closest('[data-nc-link-preview]') === null);
+    .filter((element) => element.getClientRects().length > 0 && element.closest('[data-nc-preview-owner]') === null);
 }
 
 function FileContent({ path, files, renderMarkdown }: Readonly<{

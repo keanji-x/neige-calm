@@ -1,4 +1,5 @@
 import { calcGeneratorDuration, spring } from 'motion';
+import { createNativeVisual } from './native-visual.ts';
 
 // One shared response frequency and lightly underdamped response, with normalized mass.
 const RESPONSE = 20;
@@ -8,11 +9,12 @@ const SAMPLE_MS = 10;
 
 export type SpringSample = Readonly<{ value: number; velocity: number }>;
 export type SpringPoint = Readonly<{ x: number; y: number }>;
-type Playback<Value> = Readonly<{
+export type Playback<Value> = Readonly<{
   animations: readonly Animation[];
   finished: Promise<void>;
   sample: () => Readonly<{ value: Value; velocity: Value }>;
   cancel: () => void;
+  setOnVisualChange: (callback: (() => void) | undefined) => void;
 }>;
 
 export type SpringPlayback = Playback<number>;
@@ -34,34 +36,48 @@ export function springTrajectory(from: number, to: number, velocity: number) {
 }
 
 /** Shared native renderer, independent of scalar/vector geometry. */
-function playTrajectory<Value>(
+export function playTrajectory<Value>(
   elements: readonly (HTMLElement | SVGElement)[],
   trajectory: Readonly<{ duration: number; sample: (time: number) => Readonly<{ value: Value; velocity: Value }> }>,
-  paint: (value: Value) => Keyframe,
+  paint: (value: Value, index: number) => Keyframe,
+  onVisualChange?: () => void,
 ): Playback<Value> {
   if (elements.length === 0) throw new Error('Spring requires a surface');
   const document = elements[0].ownerDocument;
   if (elements.some(element => element.ownerDocument !== document)) throw new Error('Spring surfaces must share a document');
   const steps = Math.max(1, Math.ceil(trajectory.duration / SAMPLE_MS));
-  const keyframes = Array.from({ length: steps + 1 }, (_, index) => paint(trajectory.sample(trajectory.duration * index / steps).value));
+  const samples = Array.from({ length: steps + 1 }, (_, index) => trajectory.sample(trajectory.duration * index / steps).value);
   const animations: Animation[] = [];
   try {
-    for (const element of elements) animations.push(element.animate(keyframes, {
+    for (const [index, element] of elements.entries()) animations.push(element.animate(samples.map(value => paint(value, index)), {
       duration: trajectory.duration, easing: 'linear', fill: 'both',
     }));
+    // An explicit document clock also covers acquisition across a rendering boundary.
+    const start = document.timeline.currentTime;
+    if (typeof start === 'number') for (const animation of animations) animation.startTime = start;
   } catch (error) {
     for (const animation of animations) { void animation.finished.catch(() => {}); animation.cancel(); }
     throw error;
   }
+  const visual = createNativeVisual(animations, document.defaultView!);
+  try { visual.setCallback(onVisualChange); } catch (error) {
+    visual.cancel();
+    for (const animation of animations) { void animation.finished.catch(() => {}); animation.cancel(); }
+    throw error;
+  }
+  const finished = Promise.all(animations.map(animation => animation.finished)).then(() => {
+    visual.terminal();
+  }, error => { visual.cancel(); throw error; });
   return {
     animations,
-    finished: Promise.all(animations.map(animation => animation.finished)).then(() => {}),
+    finished,
+    setOnVisualChange: visual.setCallback,
     sample: () => {
       const time = animations[0].currentTime;
       if (time !== null && typeof time !== 'number') throw new Error('Unsupported spring timeline');
       return trajectory.sample(Math.max(0, Math.min(trajectory.duration, time ?? 0)));
     },
-    cancel: () => { for (const animation of animations) animation.cancel(); },
+    cancel: () => { visual.cancel(); for (const animation of animations) animation.cancel(); },
   };
 }
 

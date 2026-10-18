@@ -54,8 +54,135 @@ remains caller-owned. Controls must use native disabled or aria-disabled semanti
 
 Unit trajectory contracts verify proportional response and analytical velocity continuity without copying the solver. Production browser tests cover real long-message refill/focus, unscaled text, native interpolation, dynamic retargeting, queued finish, reversal, paired seam disposal and reduced motion. The jsdom-only native Animation stub supplies platform controls without simulating physics or paint; actual browser behavior remains authoritative.
 
-
 `CollapsePresence` retains one departing flow item until its shared spring settles.
 It animates a clipped grid track and opacity, preserving text size and keyed children.
 Consumers own collection order, revision handling, focus recovery and final removal;
 reappearance reverses the same item, while reduced motion settles without waiting.
+
+## Source lift and paint retention
+
+`geometry.ts` and `useSurfacePresence` supply typed single/paired lift parts with
+explicit final unanimated frames and stable anchor/center/paired-edge origins.
+Menu and HoverPreview consume this contract; the existing Dialog/Drawer adapters
+remain on `useSpringPresence` pending their own migration. Each part projects the
+same viewport source into its local fractional positive scale/translation frame.
+The shared progress and per-part fixed x/y compensation channels reuse
+`springTrajectory`, native
+`playTrajectory` and the target cancellation/identity owner. Origin/frame retargets
+preserve each part's local motion contribution and analytical velocity through its
+own old/new frame; primary compensation is never copied onto its peer. All parts
+retain one progress, playback identity and explicit native clock, with no second
+physics model. A newly declared peer joins the current shared progress/velocity
+with zero compensation because it has no earlier paint contribution.
+
+The layout owner declares a final frame from an unanimated positioner. Source
+snapshots freeze after detach/hidden/ref replacement until full exit; first missing
+sources use the explicit center fallback. Semantic open, permitted paint and exit
+completion are separate, with no business work delayed. Present-scoped observers
+and coalesced geometry events dispose on release; reduced motion settles directly.
+A dynamic null part ref or frame samples position/velocity, cancels the complete
+playback and invalidates its target. The saved sample resumes after recovery even
+when node/frame/open are unchanged; preparation nulls never claim exit. Layout
+commits refresh observation so refs first acquired after preparation are observed.
+
+Actual paint elements, declaration order, final frames, sample, target and playback
+share one binding. Same-commit React keyed replacements transfer the current
+position/analytical velocity after cancelling the whole old group. Retained
+actual elements carry their channels through reorder/cardinality changes;
+unmatched replacements inherit an absent old element's same slot; genuinely new
+slots join shared progress with zero compensation. No old channel is duplicated
+when its element moves to another slot. Source-anchor replacement still freezes
+the cycle source; it does not freeze the paint node. Completion rechecks current
+refs and connectivity, invalidates obsolete targets for recovery, and can release
+retention only once for the current group. Settled open replacement stays at rest.
+The [real React identity tests](surface-presence.browser.test.tsx) exercise these
+transitions through the production hook and native effects.
+
+See [the adoption design](../../../../../docs/source-surface-motion.md) for equations,
+limits, maintenance cost and remaining consumers.
+
+`useSurfacePresence` returns a stable `SurfaceBinding` with `readBinding()` only.
+`SurfaceSource` carries a ref only; its real DOM rectangle supplies the visual
+source, including parent paint. Source bounds injection and descendant inverse
+measurement are removed. The independent unanimated wrapper still supplies the
+target frame. Source freeze, per-part compensation, native identity and suspension
+remain unchanged. Rotation/reflection/perspective remain rejected.
+
+Optional `onVisualChange` belongs to the current native playback. `native-visual.ts`
+installs own controls on only the owner's Animation instances when first observed;
+Playback.animations and DOM getAnimations() return those same native instances.
+play/pause/reverse/finish/cancel, currentTime/startTime/playbackRate setters and
+updatePlaybackRate delegate to their original public native operations before
+invalidation. All nine entries use the actual receiver's membership in this
+playback's complete animations group, including a control/setter borrowed from
+another member. Getters are the original native getters. Native return values,
+brand/conversion exceptions and ready/finished promise transitions are preserved;
+controls are never bound to the instance from which they were read. Member cancel
+synchronously revokes observation for the whole group.
+
+The supported observation surface is these public instance entries and same-owner
+borrowing. A legal foreign receiver still receives the native operation, but does
+not notify or cancel this group; the adapter does not discover another owner.
+Direct calls to Animation.prototype methods/accessors bypass the instance entries
+and are outside control observation. Ordinary native terminal promise delivery
+still works independently. No prototype is patched or play/seek event invented.
+First observation requires fresh, extensible native instances with the public
+prototype descriptors and no existing own controls. The entire group is preflighted;
+definition failure rolls back all installed controls and propagates the original
+error, without retaining a callback or marking installation complete. A failed
+initial acquisition cancels its newly created effects. There is no silent fallback.
+Each observed Animation retains nine own properties and their closures until GC,
+including after disable/cancel; these dormant delegates retain native semantics
+but cannot restore a cancelled watcher's authority.
+The frame pump compares every part's existing currentTime, coalesces a control
+batch, and continues only while a native clock is running at nonzero rate. A
+paused seek publishes its new paint once then stops; a paused rate change alone
+is silent. Native startTime follows WAAPI semantics (a resolved start can release
+the hold and run). Pending operations use native ready with an identity guard,
+not recurring polling. Terminal sample publication deduplicates the frame sample.
+
+`Playback.setOnVisualChange` switches this optional observation without replacing
+an effect, promise, clock, sample or binding. useSurfacePresence reconciles it on
+each commit: none→callback samples current paint, callback→none stops immediately,
+and callback replacement uses the latest callback. Default consumers install no
+controls, ready handlers or frame work. Cancellation (including direct native
+cancel), suspension, reduction, stale replacement and unmount permanently revoke
+the watcher; captured controls and pending ready cannot restart it. A new playback
+has fresh authority. Settled/reduced states have no idle loop. There is no second
+progress clock, binding revision, solver, subscription registry or DOM write.
+
+Geometry observation refreshes declarations every commit but rebinds observers
+only when actual nodes, source ownership or presence change. Cleanup clears the
+observation binding so effect replay/reconnection can acquire the same nodes.
+Measurements never write a consumer's slot. The UI layout owner decides committed-frame readiness;
+the shared hook retains its existing null preparation and suspension contract.
+
+### Committed measurement revisions
+
+The approved optional `onMeasurementChange(BindingView)` reports binding facts;
+Menu may omit it. `SurfaceBinding.readBinding()` reads that same typed view.
+A ready view carries a lifetime, logical revision and the actual declared parts
+with their accepted frames. Preparation, null suspension and absent paint are
+unavailable, even when the old binding still retains an analytical sample.
+Declarations and the stable reader update before notification. Acquire, accepted
+frame/node/order changes, suspension and same-frame recovery change the revision;
+paint ticks and equivalent reduced-motion Binding allocations do not. Cleanup
+invalidates the lifetime without notifying an unmounted owner, and effect replay
+acquires a fresh lifetime. Readers reject replaced/disconnected/null declarations.
+This channel owns neither caller admission nor a second solver or subscription.
+
+Geometry callbacks also check the accepted measurement lifetime and current
+observation record before queuing or running work. A captured delivery after
+disconnect/unmount cannot reacquire a still-connected external paint part, notify
+an unmounted caller, or act on a reconnected StrictMode lifetime.
+
+The 428491 visual-source contract changes nested semantics: children follow their
+parent paint, including possible side changes or existing placement rejection.
+Each edge is checked within 1/64 viewport CSS px against the same physical visual
+inputs through production placement and an independent empty CSS ruler. Exact
+same-input/phase revisits and 20-frame zero idle work are required; deep trajectories
+are separate diagnostics. Root progress alone omits downstream compensation and
+therefore cannot identify equal physical inputs. The coordinate target keeps
+that distinction explicit. See the [design/history](../../../../../docs/source-surface-motion.md)
+for the old failures and the changed oracle. Finite Chromium evidence is not a
+precision theorem or exhaustive browser/CSS coverage.
