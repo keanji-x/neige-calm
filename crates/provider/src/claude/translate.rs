@@ -325,7 +325,11 @@ impl TurnTranslator {
             "id": uuid.to_string(),
             "type": "userMessage",
             "clientId": self.ctx.client_id,
-            "content": self.ctx.input,
+            // Preserve the existing transcript projection, independently of native input codecs.
+            "content": self.ctx.input.iter().map(|item| match item {
+                InputItem::Text { text } => json!({"type":"text","text":text}),
+                InputItem::LocalImage { path } => json!({"type":"localImage","path":path}),
+            }).collect::<Vec<_>>(),
         })
     }
 

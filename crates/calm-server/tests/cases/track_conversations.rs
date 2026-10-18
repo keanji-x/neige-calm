@@ -267,10 +267,9 @@ impl Boot {
                 .map(|(_, items)| {
                     items
                         .iter()
-                        .map(|item| {
-                            serde_json::to_string(item)
-                                .map(|s| s.matches(needle).count())
-                                .unwrap_or(0)
+                        .map(|item| match item {
+                            provider::InputItem::Text { text } => text.matches(needle).count(),
+                            provider::InputItem::LocalImage { .. } => 0,
                         })
                         .sum::<usize>()
                 })

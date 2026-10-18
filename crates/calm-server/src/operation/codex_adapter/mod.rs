@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::codex_appserver::{InputItem, TurnApprovals};
+use crate::codex_appserver::TurnApprovals;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_update_tx, card_with_codex_create_tx,
     session_bind_attribution_tx, session_projection_active_for_card_tx,
@@ -47,6 +47,7 @@ use crate::shared_codex_appserver::{
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
+use provider::InputItem;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,

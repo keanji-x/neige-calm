@@ -150,6 +150,17 @@ async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state:
     )
 }
 
+/// Codex reads local images itself; deliberately omit the optional `detail` field.
+fn encode_input(input: &[InputItem]) -> Vec<Value> {
+    input
+        .iter()
+        .map(|item| match item {
+            InputItem::Text { text } => json!({ "type": "text", "text": text }),
+            InputItem::LocalImage { path } => json!({ "type": "localImage", "path": path }),
+        })
+        .collect()
+}
+
 /// Build the `turn/start` params frame, split out so the frame can be asserted on without a daemon.
 /// A `None` in `selection` omits the key entirely, never `null`: codex's overrides are sticky, and an omitted key means "leave the thread's current override alone". `approvals` adds the three approval settings or none of them.
 /// `effort` is spelled `effort` (not `reasoningEffort`); `clientUserMessageId` is echoed back by codex as `item.clientId` on the `userMessage` item, the kernel's only key for matching that echo.
@@ -160,7 +171,7 @@ fn turn_start_params(
     approvals: TurnApprovals,
     client_user_message_id: Option<&str>,
 ) -> Value {
-    let mut params = json!({ "threadId": thread_id, "input": input });
+    let mut params = json!({ "threadId": thread_id, "input": encode_input(input) });
     let map = params
         .as_object_mut()
         .expect("a json! object literal is an object");
@@ -190,7 +201,7 @@ fn turn_steer_params(
     let mut params = json!({
         "threadId": thread_id,
         "expectedTurnId": expected_turn_id,
-        "input": input,
+        "input": encode_input(input),
     });
     if let Some(client_id) = client_user_message_id {
         params

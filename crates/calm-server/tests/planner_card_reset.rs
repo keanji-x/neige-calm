@@ -757,9 +757,10 @@ async fn planner_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
     loop {
         let pending =
             serde_json::to_string(&harness.snapshot().await.pending_observations()).unwrap();
-        let started =
-            serde_json::to_string(&boot.state.shared_codex_appserver.started_turns_for_test())
-                .unwrap();
+        let started = format!(
+            "{:?}",
+            boot.state.shared_codex_appserver.started_turns_for_test()
+        );
         if pending.contains("hello chat") || started.contains("hello chat") {
             break;
         }

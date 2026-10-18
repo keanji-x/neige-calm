@@ -50,6 +50,21 @@ impl From<StartFailure> for CalmError {
 mod tests {
     use super::*;
     #[test]
+    fn m1_mapping_acp_receipt_preserves_input_codec() {
+        assert_eq!(
+            receipt_input(&[
+                provider::InputItem::text("before"),
+                provider::InputItem::local_image("/w/a.png"),
+                provider::InputItem::text("after"),
+            ]),
+            serde_json::json!([
+                {"type":"text","text":"before"},
+                {"type":"localImage","path":"/w/a.png"},
+                {"type":"text","text":"after"},
+            ])
+        );
+    }
+    #[test]
     fn m1_mapping_acp_start_keeps_receipt_ownership_and_setup_policy() {
         for case in [
             "registered",
@@ -113,3 +128,20 @@ mod tests {
 /// Exact queue proof frozen by the harness; ACP stores and compares it without host queue types.
 #[derive(Debug)]
 pub struct FrozenClaim(pub serde_json::Value);
+
+/// Preserve the existing durable ACP receipt codec independently of native prompt encoding.
+pub(super) fn receipt_input(items: &[provider::InputItem]) -> serde_json::Value {
+    serde_json::Value::Array(
+        items
+            .iter()
+            .map(|item| match item {
+                provider::InputItem::Text { text } => {
+                    serde_json::json!({"type":"text","text":text})
+                }
+                provider::InputItem::LocalImage { path } => {
+                    serde_json::json!({"type":"localImage","path":path})
+                }
+            })
+            .collect(),
+    )
+}

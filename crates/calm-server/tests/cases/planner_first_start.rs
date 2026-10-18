@@ -198,9 +198,7 @@ impl Boot {
         };
         let daemon = &self.state.shared_codex_appserver;
         queued
-            || serde_json::to_string(&daemon.started_turns_for_test())
-                .unwrap()
-                .contains(text)
+            || format!("{:?}", daemon.started_turns_for_test()).contains(text)
             || format!("{:?}", daemon.steered_turns_for_test()).contains(text)
     }
 

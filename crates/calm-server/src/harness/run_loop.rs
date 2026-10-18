@@ -20,7 +20,6 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::codex_appserver::InputItem;
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
@@ -47,6 +46,7 @@ use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::{DeletionThreadSeals, ThreadSeals};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
+use provider::InputItem;
 
 /// Fixtures-only: park a runtime immediately before it turns its pending queue into a turn.
 /// Parked one statement before `inner.issuance` is taken, because `shutdown_inner` takes that

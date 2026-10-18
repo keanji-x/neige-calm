@@ -2076,11 +2076,12 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
     // THE assertion: the daemon got it. The row is correct by construction, so a harvest that reached the row and nowhere else would still pass a row assertion.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let delivered = loop {
-        let handed_over =
-            serde_json::to_string(&state.shared_codex_appserver.started_turns_for_test())
-                .unwrap_or_default()
-                .matches(STRANDED)
-                .count();
+        let handed_over = format!(
+            "{:?}",
+            state.shared_codex_appserver.started_turns_for_test()
+        )
+        .matches(STRANDED)
+        .count();
         if handed_over > 0 || std::time::Instant::now() >= deadline {
             break handed_over;
         }
@@ -2284,9 +2285,10 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
     // Give the run loop room to drain anything it thinks it owes before concluding.
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while std::time::Instant::now() < deadline {
-        let handed_over =
-            serde_json::to_string(&state.shared_codex_appserver.started_turns_for_test())
-                .unwrap_or_default();
+        let handed_over = format!(
+            "{:?}",
+            state.shared_codex_appserver.started_turns_for_test()
+        );
         assert!(
             !handed_over.contains(MOVED_AWAY),
             "the re-drive started the harness from the queue its output has been carrying since \

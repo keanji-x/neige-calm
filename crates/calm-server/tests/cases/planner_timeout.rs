@@ -71,7 +71,7 @@ async fn planner_timeout_confirmed_record_and_next_real_start() {
         "timeout cannot wake itself"
     );
     start(&boot).await;
-    let input = serde_json::to_string(&boot.daemon.started_turns_for_test()[1]).unwrap();
+    let input = format!("{:?}", boot.daemon.started_turns_for_test()[1]);
     assert!(input.contains("Trusted previous turn timeout"), "{input}");
     assert!(
         input.contains(&format!("planner_turn_timeout:{}", row["id"])),
@@ -160,11 +160,7 @@ async fn planner_timeout_failed_start_replays_until_a_new_terminal() {
         matches!(s, HarnessState::TurnRunning { .. })
     })
     .await;
-    assert!(
-        serde_json::to_string(&boot.daemon.started_turns_for_test())
-            .unwrap()
-            .contains(&key)
-    );
+    assert!(format!("{:?}", boot.daemon.started_turns_for_test()).contains(&key));
     let next = boot
         .harness
         .state_for_test()
@@ -173,11 +169,7 @@ async fn planner_timeout_failed_start_replays_until_a_new_terminal() {
         .unwrap();
     finish(&boot, &next, "failed").await;
     start(&boot).await;
-    assert!(
-        !serde_json::to_string(boot.daemon.started_turns_for_test().last().unwrap())
-            .unwrap()
-            .contains(&key)
-    );
+    assert!(!format!("{:?}", boot.daemon.started_turns_for_test().last().unwrap()).contains(&key));
     boot.harness.shutdown().await.unwrap();
 }
 
@@ -207,8 +199,7 @@ async fn planner_timeout_recovery_reads_terminal_and_keeps_system_projection() {
         matches!(s, HarnessState::TurnRunning { .. })
     })
     .await;
-    let delivered =
-        serde_json::to_string(boot.daemon.started_turns_for_test().last().unwrap()).unwrap();
+    let delivered = format!("{:?}", boot.daemon.started_turns_for_test().last().unwrap());
     assert_eq!(delivered.matches(&key).count(), 1, "{delivered}");
     let (_, rows) = crate::support::planner_queue_fixture::get(
         boot.app.clone(),
@@ -260,8 +251,7 @@ async fn planner_timeout_assistant_still_receives_previous_timeout() {
         matches!(s, HarnessState::TurnRunning { .. })
     })
     .await;
-    let delivered =
-        serde_json::to_string(boot.daemon.started_turns_for_test().last().unwrap()).unwrap();
+    let delivered = format!("{:?}", boot.daemon.started_turns_for_test().last().unwrap());
     assert!(
         delivered.contains(&format!("planner_turn_timeout:{}", row.id)),
         "{delivered}"
@@ -487,8 +477,7 @@ async fn planner_timeout_legacy_provider_payload_does_not_become_trusted_evidenc
         "legacy provider data must not acquire kernel time authority"
     );
     start(&boot).await;
-    let delivered =
-        serde_json::to_string(boot.daemon.started_turns_for_test().last().unwrap()).unwrap();
+    let delivered = format!("{:?}", boot.daemon.started_turns_for_test().last().unwrap());
     assert!(
         !delivered.contains("Trusted previous turn timeout"),
         "{delivered}"

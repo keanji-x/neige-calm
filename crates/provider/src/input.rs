@@ -1,17 +1,9 @@
-//! Inputs shared by agent providers; preserve the existing transcript and wire shapes.
+//! Neutral inputs shared by agent providers.
 
-use serde::Serialize;
-
-/// A single `turn/start` / `turn/steer` input item.
-/// codex's `UserInput` is `camelCase` while this enum is `rename_all = "lowercase"`: a variant added without its own `rename` would serialize as `"localimage"`, which codex rejects with no signal on our side.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+/// A single text or local-image input, interpreted by the consuming provider.
+#[derive(Debug, Clone)]
 pub enum InputItem {
-    /// `{"type":"text","text":"…"}`.
     Text { text: String },
-    /// `{"type":"localImage","path":"/abs/path"}` — codex reads the file itself (same mount namespace). `detail` is deliberately not sent.
-    /// A read or decode failure on codex's side is silent (placeholder text, no error), so a successful `turn/start` is no evidence the image was seen.
-    #[serde(rename = "localImage")]
     LocalImage { path: String },
 }
 

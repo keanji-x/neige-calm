@@ -231,9 +231,15 @@ async fn thread_resume_with_config_omits_config_when_none() {
 }
 
 #[test]
-fn input_item_text_serializes_to_schema_shape() {
-    let item = InputItem::text("hello");
-    let v = serde_json::to_value(&item).unwrap();
+fn turn_start_text_uses_schema_shape() {
+    let v = turn_start_params(
+        "thread",
+        &[InputItem::text("hello")],
+        &TurnModelSelection::inherit(),
+        TurnApprovals::Unchanged,
+        None,
+    )["input"][0]
+        .clone();
     assert_eq!(v, json!({ "type": "text", "text": "hello" }));
 }
 
@@ -391,7 +397,7 @@ fn a_steer_frame_carries_the_client_id_and_omits_it_otherwise() {
     let frame = turn_steer_params("t", "turn-7", &input, Some("entry-0002"));
     assert_eq!(frame["threadId"], json!("t"));
     assert_eq!(frame["expectedTurnId"], json!("turn-7"));
-    assert_eq!(frame["input"], serde_json::to_value(&input).unwrap());
+    assert_eq!(frame["input"], json!([{"type":"text","text":"now"}]));
     assert_eq!(frame["clientUserMessageId"], json!("entry-0002"));
     let keys = frame
         .as_object()
@@ -552,27 +558,50 @@ fn notification_thread_id_reads_item_and_other_params() {
     assert_eq!(other.thread_id(), Some("thread-other"));
 }
 
-/// Asserts the exact bytes because the only reader is codex, whose types are not a compilable dependency: deleting the variant-level `#[serde(rename = "localImage")]` turns only this red.
+/// Assert the native start entry, independently of the private encoder.
 #[test]
-fn local_image_serializes_with_the_camel_case_tag() {
-    let json = serde_json::to_value(InputItem::local_image("/w/.neige/a.png")).unwrap();
-    assert_eq!(
-        json,
-        serde_json::json!({"type": "localImage", "path": "/w/.neige/a.png"}),
+fn turn_start_preserves_exact_mixed_input_wire() {
+    let wire = turn_start_params(
+        "thread",
+        &[
+            InputItem::text("before"),
+            InputItem::local_image("/w/a.png"),
+            InputItem::text("after"),
+        ],
+        &TurnModelSelection::inherit(),
+        TurnApprovals::Unchanged,
+        Some("client"),
     );
-    // The sibling variant is unaffected: the rename is scoped to the one variant that needs it.
+    let expected = json!({
+        "threadId":"thread", "clientUserMessageId":"client",
+        "input":[{"type":"text","text":"before"},{"type":"localImage","path":"/w/a.png"},{"type":"text","text":"after"}]
+    });
+    // Full equality also pins omission of model, effort and image detail.
     assert_eq!(
-        serde_json::to_value(InputItem::text("hi")).unwrap(),
-        serde_json::json!({"type": "text", "text": "hi"}),
+        serde_json::to_vec(&wire).unwrap(),
+        serde_json::to_vec(&expected).unwrap()
     );
 }
 
-/// `detail` is optional on codex's side and we deliberately send nothing.
+/// The steer entry must use the same encoding, retaining order and its target/client keys.
 #[test]
-fn a_local_image_item_has_exactly_two_keys() {
-    let json = serde_json::to_value(InputItem::local_image("/w/a.png")).unwrap();
-    let object = json.as_object().expect("an input item is an object");
-    let mut keys = object.keys().cloned().collect::<Vec<_>>();
-    keys.sort();
-    assert_eq!(keys, vec!["path".to_string(), "type".to_string()]);
+fn turn_steer_preserves_exact_mixed_input_wire() {
+    let wire = turn_steer_params(
+        "thread",
+        "turn",
+        &[
+            InputItem::local_image("/w/a.png"),
+            InputItem::text("after"),
+            InputItem::local_image("/w/b.png"),
+        ],
+        Some("client"),
+    );
+    let expected = json!({
+        "threadId":"thread", "expectedTurnId":"turn", "clientUserMessageId":"client",
+        "input":[{"type":"localImage","path":"/w/a.png"},{"type":"text","text":"after"},{"type":"localImage","path":"/w/b.png"}]
+    });
+    assert_eq!(
+        serde_json::to_vec(&wire).unwrap(),
+        serde_json::to_vec(&expected).unwrap()
+    );
 }

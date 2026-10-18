@@ -444,23 +444,23 @@ impl Boot {
             .map(|(_, items)| {
                 items
                     .iter()
-                    .map(|item| {
-                        serde_json::to_string(item)
-                            .map(|s| s.matches(needle).count())
-                            .unwrap_or(0)
+                    .map(|item| match item {
+                        provider::InputItem::Text { text } => text.matches(needle).count(),
+                        provider::InputItem::LocalImage { .. } => 0,
                     })
                     .sum::<usize>()
             })
             .sum::<usize>()
     }
 
-    /// Everything the fake app-server was ever asked to run a turn on, as one JSON blob of *rendered* text.
+    /// Everything the fake app-server was ever asked to run a turn on, as diagnostic text.
     async fn started_turn_text(&self, needle: &str) -> String {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            let text =
-                serde_json::to_string(&self.state.shared_codex_appserver.started_turns_for_test())
-                    .unwrap_or_default();
+            let text = format!(
+                "{:?}",
+                self.state.shared_codex_appserver.started_turns_for_test()
+            );
             if text.contains(needle) || std::time::Instant::now() >= deadline {
                 return text;
             }

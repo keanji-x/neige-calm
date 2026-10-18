@@ -251,10 +251,9 @@ async fn a_queued_entry_is_steered_into_the_running_turn_and_its_row_is_upgraded
         "expectedTurnId is the turn that is running"
     );
     assert_eq!(client_id.as_deref(), Some(entry_id.as_str()));
-    assert_eq!(
-        serde_json::to_value(items).unwrap(),
-        json!([{ "type": "text", "text": "User says:\nsecond, now" }]),
-        "the entry's own segment: no diff block, no briefing"
+    assert!(
+        matches!(items.as_slice(), [InputItem::Text { text }] if text == "User says:\nsecond, now"),
+        "the entry's own segment: no diff block, no briefing: {items:?}"
     );
     assert_eq!(
         boot.daemon.turn_start_count_for_test(),
@@ -447,9 +446,8 @@ async fn a_steered_entry_carries_its_attachments_as_local_images() {
     assert_eq!(steered.len(), 1);
     let items = &steered[0].2;
     assert_eq!(items.len(), 2, "text then one image: {items:?}");
-    assert_eq!(
-        serde_json::to_value(&items[0]).unwrap(),
-        json!({ "type": "text", "text": "User says:\nlook at this now" })
+    assert!(
+        matches!(&items[0], InputItem::Text { text } if text == "User says:\nlook at this now")
     );
     let InputItem::LocalImage { path } = &items[1] else {
         panic!("second item is the image: {items:?}");

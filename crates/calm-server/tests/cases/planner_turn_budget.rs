@@ -58,7 +58,7 @@ async fn planner_turn_budget_rest_existing_harness_warns_and_stops() {
         matches!(s, HarnessState::TurnRunning { .. })
     })
     .await;
-    let input = serde_json::to_string(&boot.daemon.started_turns_for_test()).unwrap();
+    let input = format!("{:?}", boot.daemon.started_turns_for_test());
     assert!(
         input.contains("budget"),
         "initial trusted budget missing: {input}"
@@ -170,7 +170,7 @@ async fn planner_turn_budget_corrupt_storage_leaves_input_queued_until_reset() {
     })
     .await
     .unwrap();
-    let input = serde_json::to_string(&boot.daemon.started_turns_for_test()).unwrap();
+    let input = format!("{:?}", boot.daemon.started_turns_for_test());
     assert!(input.contains("30 minutes"));
     boot.harness.shutdown().await.unwrap();
 }
@@ -350,7 +350,7 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
             matches!(s, HarnessState::TurnRunning { .. })
         })
         .await;
-        let input = serde_json::to_string(&boot.daemon.started_turns_for_test()).unwrap();
+        let input = format!("{:?}", boot.daemon.started_turns_for_test());
         assert!(!input.contains("turn budget"), "{role}: {input}");
         boot.harness
             .rewind_turn_clock_for_test(Duration::from_secs(61))
@@ -583,7 +583,7 @@ async fn planner_turn_budget_failed_start_replays_its_frozen_attempt() {
     })
     .await;
     assert_eq!(frozen, boot.harness.snapshot().await.turn_budget);
-    let input = serde_json::to_string(&boot.daemon.started_turns_for_test()).unwrap();
+    let input = format!("{:?}", boot.daemon.started_turns_for_test());
     assert!(
         input.contains("1 minutes"),
         "the durable attempt must not be resampled: {input}"

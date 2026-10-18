@@ -195,7 +195,7 @@ impl AcpPlannerSession {
         {
             return Err(refused("ACP live owner identity changed"));
         }
-        let input = serde_json::to_value(&items).map_err(CalmError::from)?;
+        let input = super::start::receipt_input(&items);
         if let Some(receipt) =
             acp_submission_get(pool.read_pool(), &params.worker_session_id, client)
                 .await

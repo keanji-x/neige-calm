@@ -31,7 +31,6 @@ use super::spawn::{self, InstructionsFile, ResumeTruncation, SessionStart, Spawn
 use super::stop::stop;
 use super::translate::{ToolNames, TurnContext, TurnTranslator};
 use super::turn_slot::{TerminalCause, TurnSlot};
-use crate::codex_appserver::InputItem;
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
 use crate::harness::held_requests::HeldRequestSender;
@@ -40,6 +39,7 @@ use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
+use provider::InputItem;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 pub const STOP_TIMER: Duration = Duration::from_secs(10);
