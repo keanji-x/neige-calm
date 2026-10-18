@@ -697,3 +697,14 @@ impl From<workspace::error::Error> for CalmError {
         }
     }
 }
+
+impl From<workspace_runtime::error::WorkspaceError> for CalmError {
+    fn from(error: workspace_runtime::error::WorkspaceError) -> Self {
+        use workspace_runtime::error::WorkspaceError;
+        match error {
+            WorkspaceError::BadRequest(message) => Self::BadRequest(message),
+            WorkspaceError::Conflict(message) => Self::Conflict(message),
+            WorkspaceError::Internal(message) => Self::Internal(message),
+        }
+    }
+}

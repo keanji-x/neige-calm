@@ -50,7 +50,7 @@ pub(super) async fn recover(
         .track_get(card.track_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound("conversation track no longer exists".into()))?;
-    if !crate::workspace_service::workspace_recycle::workspace_allows_runtime_recovery(&track) {
+    if !workspace_runtime::recycle::workspace_allows_runtime_recovery(&track) {
         return Err(CalmError::Conflict(
             "Restore this conversation's workspace before resuming; history is retained.".into(),
         ));

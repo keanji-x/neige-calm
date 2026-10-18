@@ -6076,9 +6076,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "calm-session",
+ "calm-types",
  "serde",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "workspace",
 ]
 

@@ -9,6 +9,9 @@ session-executor = []
 test-support = []
 
 [dependencies]
+calm-types = { path = "../calm-types" }
+tracing = "0.1"
+thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 workspace = { path = "../workspace" }
 calm-session = { path = "../calm-session" }

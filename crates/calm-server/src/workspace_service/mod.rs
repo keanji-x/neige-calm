@@ -6,7 +6,6 @@ pub(crate) mod identity;
 pub(crate) mod sweep;
 pub(crate) mod track_worktree;
 pub mod workspace_materialize;
-pub mod workspace_recycle;
 pub(crate) mod worktree_clean;
 pub(crate) fn git_repo_root_for_track_cwd(track_id: &str, cwd: &str) -> Result<PathBuf> {
     let cwd_path = Path::new(cwd);

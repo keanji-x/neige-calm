@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{CalmError, Result};
-use crate::model::{AreaKind, Track, TrackWorkspace, TrackWorkspaceKind};
+use crate::error::{Result, WorkspaceError};
+use calm_types::model::{AreaKind, Track, TrackWorkspace, TrackWorkspaceKind};
 
 /// Boot/lazy recovery fence: a managed workspace is recoverable only while its original path still carries
 /// this track's marker, which persists deletion quarantine across restarts.
@@ -206,7 +206,7 @@ pub fn recycle_area_workspaces(
             Ok(decision) => decision,
             Err(error) => {
                 if let Err(restore_error) = restore_area_recycle_report(&report) {
-                    return Err(CalmError::Internal(format!(
+                    return Err(WorkspaceError::Internal(format!(
                         "area workspace recycle failed ({error}), and partial rollback failed: {restore_error}"
                     )));
                 }
@@ -233,7 +233,7 @@ pub fn restore_area_recycle_report(report: &AreaRecycleReport) -> Result<()> {
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(CalmError::Internal(errors.join("; ")))
+        Err(WorkspaceError::Internal(errors.join("; ")))
     }
 }
 

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::model::{TrackWorkspace, TrackWorkspaceKind};
+use calm_types::model::{TrackWorkspace, TrackWorkspaceKind};
 use workspace::materialize::materialize_managed_workspace;
 
 struct Fixture {

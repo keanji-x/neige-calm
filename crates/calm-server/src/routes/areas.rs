@@ -24,7 +24,6 @@ use crate::routes::planner_cards::quiesce_shared_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::workspace_service::workspace_materialize::validate_attached_workspace;
-use crate::workspace_service::workspace_recycle;
 use axum::{
     Router,
     extract::State,
@@ -36,6 +35,7 @@ use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
+use workspace_runtime::recycle as workspace_recycle;
 
 use super::area_folders::normalize_path;
 use super::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
@@ -551,7 +551,7 @@ impl QuiescedAreaDeletion {
                         prepared.thread_seals.unseal_after_rollback(thread_id);
                     }
                 }
-                Err(error)
+                Err(CalmError::from(error))
             }
             Err(_) => {
                 if prepared

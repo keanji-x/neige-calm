@@ -235,9 +235,7 @@ impl WakeContext {
                     .ok_or_else(|| {
                         crate::error::CalmError::NotFound("conversation track".into())
                     })?;
-                if !crate::workspace_service::workspace_recycle::workspace_allows_runtime_recovery(
-                    &track,
-                ) {
+                if !workspace_runtime::recycle::workspace_allows_runtime_recovery(&track) {
                     return Err(crate::error::CalmError::Conflict(
                         "Restore this conversation's workspace before resuming".into(),
                     ));

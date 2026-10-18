@@ -50,7 +50,6 @@ use crate::track_report::{
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_read::load_report_read_snapshot;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
-use crate::workspace_service::workspace_recycle;
 use axum::{
     Router,
     extract::State,
@@ -62,6 +61,7 @@ use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
+use workspace_runtime::recycle as workspace_recycle;
 
 #[cfg(feature = "fixtures")]
 use std::collections::HashMap;
