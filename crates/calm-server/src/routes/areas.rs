@@ -437,6 +437,12 @@ impl PreparedAreaDeletion {
             worker.daemon.proc_supervisor_sock.as_deref(),
         )
         .await?;
+        crate::execution_quiesce::quiesce(
+            route.repo.as_ref(),
+            route.operation_runtime.execution().engine(),
+            crate::operation::terminal_disposal::Scope::Area(self.id.clone()),
+        )
+        .await?;
         let mut terminal_ids = Vec::new();
         let mut terminal_card_ids = Vec::new();
         let mut card_ids: HashSet<String> = HashSet::new();
@@ -579,7 +585,7 @@ async fn finish_area_deletion(
     let scope = EventScope::Area {
         area: id.clone().into(),
     };
-    let ((sweeps, deleted_track_ids), _event_ids) = write_with_actor_events_typed(
+    let (((sweeps, deleted_track_ids), retire), _event_ids) = write_with_actor_events_typed(
         route.repo.as_ref(),
         None,
         &route.events,
@@ -592,12 +598,14 @@ async fn finish_area_deletion(
                     &crate::operation::terminal_disposal::Scope::Area(id.clone()),
                 )
                 .await?;
+                let mut retire = Vec::new();
                 for terminal_id in &terminal_ids {
                     match terminal_delete_tx(tx, terminal_id)
                         .await
                         .map_err(CalmError::from)
                     {
-                        Ok(()) | Err(CalmError::NotFound(_)) => {}
+                        Ok(deleted) => retire.push(deleted),
+                        Err(CalmError::NotFound(_)) => {}
                         Err(error) => return Err(error),
                     }
                 }
@@ -619,11 +627,15 @@ async fn finish_area_deletion(
                 }
                 area_delete_tx(tx, &id).await?;
                 events.push((actor, scope, Event::AreaDeleted { id: id.into() }));
-                Ok(((sweeps, deleted_track_ids), events))
+                Ok((((sweeps, deleted_track_ids), retire), events))
             })
         },
     )
     .await?;
+    route
+        .operation_runtime
+        .execution()
+        .drive(retire.into_iter().filter_map(|deleted| deleted.retire));
     Ok((sweeps, deleted_track_ids))
 }
 

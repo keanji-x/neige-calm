@@ -24,6 +24,7 @@ pub(crate) async fn worker_spawn_failure_preserved(
 }
 
 pub(crate) async fn compensate_worker_rows(
+    execution: &crate::execution_quiesce::ExecutionLifecycle,
     repo: &dyn RouteRepo,
     terminal_renderer: &TerminalRendererRegistry,
     card_role_cache: &CardRoleCache,
@@ -75,14 +76,18 @@ pub(crate) async fn compensate_worker_rows(
     let card_id_for_tx = card_id.to_string();
     let term_id_for_tx = terminal_id.to_string();
     let cache_for_tx = card_role_cache.clone();
-    let rollback = repo
-        .write_in_tx(Box::new(move |tx| {
-            Box::pin(async move {
+    let rollback = crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            Ok(
                 card_with_terminal_rollback_tx(tx, &card_id_for_tx, &term_id_for_tx, &cache_for_tx)
-                    .await
-            })
-        }))
-        .await;
+                    .await?,
+            )
+        })
+    })
+    .await;
+    if let Ok(deleted) = &rollback {
+        execution.drive(deleted.retire.clone());
+    }
     if let Err(e) = rollback {
         tracing::error!(
             card_id = %card_id,

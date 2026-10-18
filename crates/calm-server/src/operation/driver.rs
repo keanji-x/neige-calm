@@ -63,6 +63,10 @@ pub struct OperationRuntime {
 }
 
 impl OperationRuntime {
+    pub fn execution(&self) -> &crate::execution_quiesce::ExecutionLifecycle {
+        &self.spawn_ctx.execution
+    }
+
     /// Kinds installed in this runtime's production adapter registry.
     pub fn registered_adapter_kinds(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.kinds.keys().copied()

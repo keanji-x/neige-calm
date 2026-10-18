@@ -555,35 +555,39 @@ impl ProviderAdapter for TerminalAdapter {
             self.card_role_cache.clone(),
             self.track_area_cache.clone(),
         );
-        ctx.repo
-            .write_with_event(
-                ActorId::Kernel,
-                scope,
-                None,
-                &ctx.events,
-                &write,
-                Box::new(move |tx| {
-                    let event_card = card.clone();
-                    let event_track = track.clone();
-                    let card_id = card_id.clone();
-                    let terminal_id = terminal_id.clone();
-                    let cache = cache.clone();
-                    Box::pin(async move {
-                        crate::dispatcher::card_with_terminal_rollback_tx(
-                            tx,
-                            &card_id,
-                            &terminal_id,
-                            &cache,
-                        )
-                        .await?;
-                        Ok(Event::CardDeleted {
+        let (deleted, _) = crate::db::write_with_event_typed(
+            ctx.repo.as_ref(),
+            ActorId::Kernel,
+            scope,
+            None,
+            &ctx.events,
+            &write,
+            move |tx| {
+                let event_card = card.clone();
+                let event_track = track.clone();
+                let card_id = card_id.clone();
+                let terminal_id = terminal_id.clone();
+                let cache = cache.clone();
+                Box::pin(async move {
+                    let deleted = crate::dispatcher::card_with_terminal_rollback_tx(
+                        tx,
+                        &card_id,
+                        &terminal_id,
+                        &cache,
+                    )
+                    .await?;
+                    Ok((
+                        deleted,
+                        Event::CardDeleted {
                             id: event_card,
                             track_id: event_track,
-                        })
-                    })
-                }),
-            )
-            .await?;
+                        },
+                    ))
+                })
+            },
+        )
+        .await?;
+        ctx.execution.drive(deleted.retire);
         Ok(())
     }
 }
@@ -915,6 +919,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 CalmError::Internal("terminal worker cleanup missing terminal_id".into())
             })?;
         compensate_worker_rows(
+            &ctx.execution,
             ctx.repo.as_ref(),
             ctx.terminal_renderer.as_ref(),
             &self.card_role_cache,

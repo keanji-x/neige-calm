@@ -29,3 +29,6 @@ mod worker_flow_claude_suite;
 mod worker_flow_codex_suite;
 #[path = "worker_flow_driver_suite.rs"]
 mod worker_flow_driver_suite;
+
+#[path = "execution_hooks.rs"]
+mod execution_hooks;

@@ -40,6 +40,7 @@ static NEXT_SUB_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Everything `dispatch` needs to service one inbound request.
 pub struct CallbackCtx<'a> {
+    pub execution: crate::execution_quiesce::ExecutionLifecycle,
     /// The kernel-enforced plugin identity. NOT taken from request params.
     pub plugin_id: &'a str,
     /// `RouteRepo`, not `Repo`: raw sync-domain writes are unreachable so a plugin's inbound RPC cannot bypass the audit log.
@@ -513,19 +514,20 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     }
     let terminal_id = term.map(|t| t.id);
 
-    let _ = write_with_actor_events_typed(
+    let (retire, _) = write_with_actor_events_typed(
         ctx.repo.as_ref(),
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         &ctx.write,
         move |tx| {
             Box::pin(async move {
+                let mut retire = None;
                 if let Some(tid) = terminal_id.as_deref() {
                     match terminal_delete_tx(tx, tid)
                         .await
                         .map_err(crate::error::CalmError::from)
                     {
-                        Ok(()) => {}
+                        Ok(deleted) => retire = Some(deleted),
                         Err(crate::error::CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),
                     }
@@ -549,7 +551,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                         track_id,
                     },
                 ));
-                Ok(((), events))
+                Ok((retire, events))
             })
         },
     )
@@ -558,6 +560,8 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         crate::error::CalmError::NotFound(s) => entity_not_found(s),
         other => internal_repo_err(other),
     })?;
+    ctx.execution
+        .drive(retire.into_iter().filter_map(|deleted| deleted.retire));
     Ok(json!({}))
 }
 
@@ -951,6 +955,7 @@ mod tests {
             // The explicit `Arc<dyn RouteRepo>` binding drives trait-object upcasting; `Arc::clone` alone wouldn't coerce.
             let route_repo: Arc<dyn RouteRepo> = self.ctx_storage.repo.clone();
             CallbackCtx {
+                execution: Default::default(),
                 plugin_id: &self.ctx_storage.plugin_id,
                 repo: route_repo,
                 event_bus: Arc::clone(&self.ctx_storage.event_bus),

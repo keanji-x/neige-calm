@@ -595,6 +595,12 @@ pub(crate) async fn delete_card(
         w.daemon.proc_supervisor_sock.as_deref(),
     )
     .await?;
+    crate::execution_quiesce::quiesce(
+        s.repo.as_ref(),
+        s.operation_runtime.execution().engine(),
+        crate::operation::terminal_disposal::Scope::Card(id.clone()),
+    )
+    .await?;
     let card_id = card.id.clone();
     let track_id = card.track_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone()).await?;
@@ -610,7 +616,7 @@ pub(crate) async fn delete_card(
 
     let write_for_tx = s.write.clone();
     let delete_actor = actor.to_actor_id();
-    let (_unit, _ids) =
+    let (retire, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
                 crate::operation::terminal_disposal::require_safe_tx(
@@ -619,9 +625,10 @@ pub(crate) async fn delete_card(
                 )
                 .await?;
                 // Drop the terminal row first so the RESTRICT FK lets the card delete through. NotFound is OK (the sweeper may have raced us).
+                let mut retire = None;
                 if let Some(tid) = terminal_id.as_deref() {
                     match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
-                        Ok(()) => {}
+                        Ok(deleted) => retire = Some(deleted),
                         Err(CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),
                     }
@@ -647,9 +654,12 @@ pub(crate) async fn delete_card(
                         track_id,
                     },
                 ));
-                Ok(((), events))
+                Ok((retire, events))
             })
         })
         .await?;
+    s.operation_runtime
+        .execution()
+        .drive(retire.into_iter().filter_map(|deleted| deleted.retire));
     Ok(StatusCode::NO_CONTENT)
 }

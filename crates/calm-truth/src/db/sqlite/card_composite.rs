@@ -127,19 +127,19 @@ pub async fn card_with_terminal_rollback_tx(
     card_id: &str,
     terminal_id: &str,
     card_role_cache: &CardRoleCache,
-) -> Result<()> {
+) -> Result<super::TerminalDeleted> {
     // Order matters — the FK on `terminals.card_id` is `ON DELETE RESTRICT`.
-    match terminal_delete_tx(tx, terminal_id).await {
-        Ok(()) => {}
-        Err(e) if e.is_not_found() => {}
+    let deleted = match terminal_delete_tx(tx, terminal_id).await {
+        Ok(deleted) => deleted,
+        Err(e) if e.is_not_found() => super::TerminalDeleted::default(),
         Err(e) => return Err(e),
-    }
+    };
     match card_delete_tx(tx, card_id, card_role_cache).await {
         Ok(()) => {}
         Err(e) if e.is_not_found() => {}
         Err(e) => return Err(e),
     }
-    Ok(())
+    Ok(deleted)
 }
 
 /// Atomically create a `codex`-kind card, its terminal row, and the initial `Starting` worker-session row. The caller

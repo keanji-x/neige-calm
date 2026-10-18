@@ -63,6 +63,15 @@ pub(crate) async fn clean_idle_closed_track_worktrees(
         {
             continue;
         }
+        if !calm_truth::db::sqlite::workspace_execution::unsettled_executions(
+            &mut *pool.acquire().await?,
+            calm_truth::db::sqlite::workspace_execution::Scope::Track(&key.0),
+        )
+        .await?
+        .is_empty()
+        {
+            continue;
+        }
         let track_id = key.0.clone();
         let result = tokio::task::spawn_blocking(move || {
             workspace::worktree::clean_ignored(&track_id, &worktree, super::track_worktree::observe)

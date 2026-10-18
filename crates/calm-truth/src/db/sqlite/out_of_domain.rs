@@ -356,13 +356,9 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn terminal_delete(&self, id: &str) -> Result<()> {
-        let res = sqlx::query("DELETE FROM terminals WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(CalmError::NotFound(format!("terminal {id}")));
-        }
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let _deleted = super::terminal_delete_tx(&mut tx, id).await?;
+        tx.commit().await?;
         Ok(())
     }
 

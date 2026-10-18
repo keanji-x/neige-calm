@@ -6,6 +6,7 @@ pub mod builtin_plugins;
 pub mod card_kind;
 mod conversation_archive;
 pub mod execution_boot;
+pub mod execution_quiesce;
 pub mod execution_store;
 pub mod forge_trust;
 pub mod harness;
@@ -50,6 +51,24 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String
     let mut running = 0usize;
     let mut marked_stale = Vec::new();
     for term in rows {
+        if let Some(pool) = state.sqlite_pool() {
+            match sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM workspace_executions WHERE alias = ?)",
+            )
+            .bind(calm_truth::db::sqlite::workspace_execution::terminal_alias(
+                &term.id,
+            ))
+            .fetch_one(&pool)
+            .await
+            {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "typed execution lookup failed; retaining terminal");
+                    continue;
+                }
+            }
+        }
         match probe_supervisor_for_terminal(state, &term.id).await {
             Ok(true) => running += 1,
             Ok(false) => {

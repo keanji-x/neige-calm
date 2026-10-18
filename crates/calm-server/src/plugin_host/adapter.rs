@@ -15,6 +15,7 @@ use plugin::host::ports::{
 };
 use std::sync::Arc;
 pub struct Adapter {
+    pub execution: crate::execution_quiesce::ExecutionLifecycle,
     pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
     pub write: WriteContext,
@@ -108,6 +109,7 @@ impl Callbacks for Adapter {
         params: serde_json::Value,
     ) -> Result<serde_json::Value, RpcError> {
         let ctx = callbacks::CallbackCtx {
+            execution: self.execution.clone(),
             plugin_id: &invocation.plugin_id,
             repo: self.repo.clone(),
             event_bus: Arc::new(self.events.clone()),

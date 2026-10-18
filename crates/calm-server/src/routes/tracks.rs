@@ -2688,6 +2688,12 @@ async fn teardown_track_deletion(
         plan.track_id.as_str(),
     )
     .await?;
+    crate::execution_quiesce::quiesce(
+        s.repo.as_ref(),
+        s.operation_runtime.execution().engine(),
+        crate::operation::terminal_disposal::Scope::Track(plan.track_id.to_string()),
+    )
+    .await?;
     for terminal in &plan.terminals {
         quiesce_terminal_artifacts_for_deletion(
             Some(w.terminal_renderer.as_ref()),
@@ -2759,7 +2765,7 @@ async fn finish_track_deletion(
         track: track_id.clone(),
         area: area_id.clone(),
     };
-    let (sweeps, _ids) =
+    let ((sweeps, retire), _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
                 // A leaf deletion changes N in the root budget's B/N split: resolve the root while the
@@ -2770,12 +2776,13 @@ async fn finish_track_deletion(
                 )
                 .await?;
                 let surviving_root = surviving_root_before_leaf_removal(tx, &track_id).await?;
+                let mut retire = Vec::new();
                 for terminal in &terminals {
                     match terminal_delete_tx(tx, &terminal.id)
                         .await
                         .map_err(CalmError::from)
                     {
-                        Ok(()) => {}
+                        Ok(deleted) => retire.push(deleted),
                         Err(CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),
                     }
@@ -2815,10 +2822,16 @@ async fn finish_track_deletion(
                         events.extend(projection.kernel_events);
                     }
                 }
-                Ok((release.sweep.into_iter().collect::<Vec<_>>(), events))
+                Ok((
+                    (release.sweep.into_iter().collect::<Vec<_>>(), retire),
+                    events,
+                ))
             })
         })
         .await?;
+    s.operation_runtime
+        .execution()
+        .drive(retire.into_iter().filter_map(|deleted| deleted.retire));
     Ok(sweeps)
 }
 

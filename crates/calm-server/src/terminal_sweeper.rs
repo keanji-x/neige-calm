@@ -241,19 +241,30 @@ where
     before_write().await;
 
     let session_id = session.id.clone();
-    let claimed = write_in_tx_typed(state.repo.as_ref(), move |tx| {
+    let terminal_id = session.terminal_id.clone();
+    let (claimed, stop) = write_in_tx_typed(state.repo.as_ref(), move |tx| {
         Box::pin(async move {
             // A regate/dispatch either committed before this BEGIN and excludes the row,
             // or waits behind this IMMEDIATE transaction.
             if !in_settled_worker_set(tx, &session_id).await? {
-                return Ok(false);
+                return Ok((false, None));
             }
             crate::db::sqlite::session_complete_tx(tx, &session_id, WorkerSessionState::Exited)
                 .await?;
-            Ok(true)
+            let stop = calm_truth::db::sqlite::workspace_execution::current(
+                tx,
+                &calm_truth::db::sqlite::workspace_execution::terminal_alias(&terminal_id),
+            )
+            .await?;
+            if let Some(id) = &stop {
+                calm_truth::db::sqlite::workspace_execution::request(tx, id.as_str(), "stop")
+                    .await?;
+            }
+            Ok((true, stop))
         })
     })
     .await?;
+    crate::execution_quiesce::drive(state.execution.as_deref(), stop);
     if !claimed {
         tracing::debug!(
             worker_session_id = %session.id,
@@ -378,6 +389,12 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         state.daemon.proc_supervisor_sock.as_deref(),
     )
     .await?;
+    crate::execution_quiesce::quiesce(
+        state.repo.as_ref(),
+        state.execution.as_deref(),
+        crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
+    )
+    .await?;
     reap_terminal_artifacts(state, term).await;
 
     // Audit-log + row delete in one transaction. If the card has already been deleted (the common
@@ -395,7 +412,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         },
         None => EventScope::System,
     };
-    let (_unit, _event_id) = write_with_event_typed(
+    let (retire, _event_id) = write_with_event_typed(
         state.repo.as_ref(),
         sweeper_actor(),
         scope,
@@ -411,21 +428,22 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
                 .await?;
                 // The eager-teardown handlers (and a prior sweep tick) may already have removed the row:
                 // NotFound is translated to Ok(()).
-                match terminal_delete_tx(tx, &terminal_id)
+                let retire = match terminal_delete_tx(tx, &terminal_id)
                     .await
                     .map_err(crate::error::CalmError::from)
                 {
-                    Ok(()) => {}
+                    Ok(deleted) => Some(deleted),
                     Err(crate::error::CalmError::NotFound(_)) => {
                         tracing::debug!(
                             terminal_id = %terminal_id,
                             "terminal row already gone (eager teardown or prior sweep)"
                         );
+                        None
                     }
                     Err(e) => return Err(e),
-                }
+                };
                 Ok((
-                    (),
+                    retire,
                     Event::TerminalDeleted {
                         id: terminal_id,
                         card_id,
@@ -435,6 +453,10 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         },
     )
     .await?;
+    crate::execution_quiesce::drive(
+        state.execution.as_deref(),
+        retire.into_iter().filter_map(|deleted| deleted.retire),
+    );
     Ok(())
 }
 

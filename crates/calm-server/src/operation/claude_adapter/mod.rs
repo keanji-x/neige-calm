@@ -1180,6 +1180,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 let card_id = step_arg_string(step, "card_id")?;
                 let terminal_id = step_arg_string(step, "terminal_id")?;
                 compensate_worker_rows(
+                    &ctx.execution,
                     ctx.repo.as_ref(),
                     ctx.terminal_renderer.as_ref(),
                     &self.card_role_cache,

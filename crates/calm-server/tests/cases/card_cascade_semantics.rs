@@ -264,7 +264,8 @@ async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
 
     // The terminal row must go first — terminals.card_id is ON DELETE RESTRICT.
     let mut tx = boot.repo.pool().begin().await.unwrap();
-    terminal_delete_tx(&mut tx, &term.id).await.unwrap();
+    let deleted = terminal_delete_tx(&mut tx, &term.id).await.unwrap();
+    assert!(deleted.retire.is_none());
     card_delete_tx(&mut tx, card.id.as_ref(), boot.repo.card_role_cache())
         .await
         .unwrap();

@@ -1025,6 +1025,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 })
             });
         let outcome = compensate_worker_rows(
+            &ctx.execution,
             ctx.repo.as_ref(),
             ctx.terminal_renderer.as_ref(),
             &self.card_role_cache,

@@ -267,6 +267,7 @@ impl TxOutput {
 
 #[derive(Clone)]
 pub struct SpawnCtx {
+    pub execution: crate::execution_quiesce::ExecutionLifecycle,
     pub repo: Arc<dyn crate::db::RouteRepo>,
     pub operation_repo: Arc<dyn OperationRepo>,
     pub daemon: Arc<DaemonClient>,
@@ -293,6 +294,7 @@ impl SpawnCtx {
             events,
             completion,
             shared_codex_appserver: None,
+            execution: Default::default(),
         }
     }
 

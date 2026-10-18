@@ -52,6 +52,7 @@ impl plugin::host::PluginListDb<CalmError> for ListBridge {
 pub struct PluginHost {
     inner: Arc<plugin::host::PluginHost<CalmError>>,
     write: WriteContext,
+    pub execution: crate::execution_quiesce::ExecutionLifecycle,
 }
 impl std::ops::Deref for PluginHost {
     type Target = plugin::host::PluginHost<CalmError>;
@@ -74,7 +75,9 @@ impl PluginHost {
         events: EventBus,
         write: WriteContext,
     ) -> Self {
+        let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         let adapter = Arc::new(adapter::Adapter {
+            execution: execution.clone(),
             repo,
             events,
             write: write.clone(),
@@ -92,6 +95,7 @@ impl PluginHost {
         });
         Self {
             inner: Arc::new(inner),
+            execution,
             write,
         }
     }

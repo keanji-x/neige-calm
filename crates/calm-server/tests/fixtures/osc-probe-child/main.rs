@@ -369,6 +369,15 @@ fn parse_osc11_bg(buf: &[u8]) -> Option<(u8, u8, u8)> {
 }
 
 fn main() {
+    let helper_args: Vec<String> = std::env::args().collect();
+    if helper_args.get(1).map(String::as_str) == Some("--execution-helper") {
+        calm_proc_supervisor::execution::run_scope_helper(
+            helper_args[2].parse().unwrap(),
+            helper_args[3].parse().unwrap(),
+        )
+        .unwrap();
+        return;
+    }
     // #293 cutover — when invoked as `codex app-server --listen unix://<sock>`
     // by the shared-daemon boot path, act as a minimal fake `codex app-server`:
     // bind the socket, answer the JSON-RPC handshake (initialize /

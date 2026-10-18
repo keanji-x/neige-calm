@@ -108,6 +108,11 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
 
 /// Transaction recheck immediately before removing rows or replacing workspace ownership; no supervisor I/O happens in this writer.
 pub(crate) async fn require_safe_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<()> {
+    if !unsettled(tx, scope).await?.is_empty() {
+        return Err(CalmError::Conflict(
+            "unsettled workspace executions; rows and workspace retained".into(),
+        ));
+    }
     if let Some(unresolved) = unresolved_tx(tx, scope).await?.first() {
         return Err(unresolved.error());
     }
@@ -132,5 +137,58 @@ pub(crate) async fn require_safe(
     match unresolved.first() {
         Some(launch) => Err(launch.error()),
         None => Ok(()),
+    }
+}
+
+pub(crate) async fn unsettled(
+    tx: &mut Tx<'_>,
+    scope: &Scope,
+) -> Result<Vec<workspace::execution::ExecutionId>> {
+    use calm_truth::db::sqlite::workspace_execution::{self as sql, Scope as ExecutionScope};
+    let alias;
+    let scope = match scope {
+        Scope::Track(id) => ExecutionScope::Track(id),
+        Scope::Area(id) => ExecutionScope::Area(id),
+        Scope::Terminal(id) => {
+            alias = sql::terminal_alias(id);
+            ExecutionScope::Alias(&alias)
+        }
+        Scope::Card(id) => {
+            let terminal: Option<String> =
+                sqlx::query_scalar("SELECT id FROM terminals WHERE card_id = ?")
+                    .bind(id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            let Some(terminal) = terminal else {
+                return Ok(Vec::new());
+            };
+            alias = sql::terminal_alias(&terminal);
+            ExecutionScope::Alias(&alias)
+        }
+    };
+    Ok(sql::unsettled_executions(tx, scope).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+    use workspace_runtime::execution::{Store, test_support};
+
+    #[tokio::test]
+    async fn require_safe_tx_rejects_unsettled_typed() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let store = crate::execution_store::SqliteExecutionStore::new(repo.pool().clone());
+        let intent = test_support::intent("/".into());
+        let scope = Scope::Track(intent.metadata.track.0.clone());
+        let mut tx = repo.pool().begin().await.unwrap();
+        store.insert(&mut tx, &intent).await.unwrap();
+        assert!(matches!(
+            require_safe_tx(&mut tx, &scope).await,
+            Err(CalmError::Conflict(_))
+        ));
+        tx.rollback().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
+        require_safe_tx(&mut tx, &scope).await.unwrap();
     }
 }

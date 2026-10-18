@@ -562,7 +562,16 @@ pub async fn card_delete_tx(
     Ok(())
 }
 
-pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+#[must_use = "drive retirement after the deleting transaction commits"]
+#[derive(Debug, Default)]
+pub struct TerminalDeleted {
+    pub retire: Option<workspace::execution::ExecutionId>,
+}
+
+pub async fn terminal_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<TerminalDeleted> {
     let res = sqlx::query("DELETE FROM terminals WHERE id = ?1")
         .bind(id)
         .execute(&mut **tx)
@@ -570,7 +579,13 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
     if res.rows_affected() == 0 {
         return Err(CalmError::NotFound(format!("terminal {id}")));
     }
-    Ok(())
+    let retire =
+        super::workspace_execution::current(tx, &super::workspace_execution::terminal_alias(id))
+            .await?;
+    if let Some(id) = &retire {
+        super::workspace_execution::request(tx, id.as_str(), "retire").await?;
+    }
+    Ok(TerminalDeleted { retire })
 }
 
 /// Transactional terminal-row insert, composable inside `write_with_event` closures alongside the card write.
