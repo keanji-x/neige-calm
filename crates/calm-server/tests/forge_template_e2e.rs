@@ -27,9 +27,9 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
-    session_mark_track_root_tx, session_mcp_token_set_tx, session_projection_active_for_card_tx,
-    session_start_runtime_tx,
+    SqlxRepo, begin_immediate_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
+    session_bind_attribution_tx, session_mark_track_root_tx, session_mcp_token_set_tx,
+    session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use calm_server::db::write_with_actor_events_typed;
 use calm_server::event::{Event, EventBus, EventScope};
@@ -1799,7 +1799,9 @@ async fn insert_workspace_lease(
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    let mut tx = repo.pool().begin().await.expect("begin runtime tx");
+    let mut tx = begin_immediate_tx(repo.pool())
+        .await
+        .expect("begin runtime tx");
     let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .expect("active runtime lookup")

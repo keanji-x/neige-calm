@@ -10,7 +10,7 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, session_bind_attribution_tx,
+    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
     session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
@@ -160,7 +160,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
