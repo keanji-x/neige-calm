@@ -22,6 +22,7 @@ pub mod claude_cards;
 pub mod claude_version;
 pub mod codex;
 pub mod codex_cards;
+pub mod conversation_initial_input;
 pub(crate) mod conversation_items;
 mod conversation_read;
 pub(crate) mod conversation_run;
@@ -130,3 +131,5 @@ async fn openapi_spec() -> Json<utoipa::openapi::OpenApi> {
 
 mod planner_recovery;
 mod planner_session;
+
+pub(crate) mod track_catalog;

@@ -148,6 +148,28 @@ export type ConversationDisplaySource = { "kind": "human", message_id: string, r
 
 export type ConversationHumanAuthor = { user_id: string, display_name: string, };
 
+/**
+ * Exact current queue ownership or provider-confirmed projection; no absence
+ * conclusion is available from an empty queue and incomplete retained history.
+ * Outbound only; the client decoder enforces reason/receipt correlation.
+ */
+export type ConversationInitialInputObservation = { "kind": "queued", receipt: ConversationInitialInputReceipt, runtimeId: string, entryId: string, rev: number, text: string, textSha256: string, } | { "kind": "projected", receipt: ConversationInitialInputReceipt, runtimeId: string, itemId: number, segmentIndex: number, entryRev: number, } | { "kind": "unavailable", reason: InitialInputUnavailableReason, 
+/**
+ * Required nullable evidence: unknown presence does not erase proven acceptance.
+ */
+receipt: ConversationInitialInputReceipt | null, };
+
+/**
+ * Immutable mint evidence. It does not assert that the input is still queued or visible.
+ */
+export type ConversationInitialInputReceipt = { version: InitialInputReceiptVersion, entryId: string, entryRev: number, queuedAtMs: number, textSha256: string, 
+/**
+ * The original carrier; later recovery may move the same entry to another runtime.
+ */
+initialRuntimeId: string, };
+
+export type ConversationInitialInputReceiptResult = { "kind": "known", receipt: ConversationInitialInputReceipt, } | { "kind": "legacy-unavailable" };
+
 export type ConversationInputContract = "canonical" | "historical";
 
 export type ConversationLiveReplies = { contract: ConversationReadContract, turn: ConversationLiveTurn | null, };
@@ -381,7 +403,12 @@ observation: string,
  * The `events.id` that produced the observation (for a folded entry, the newest one);
  * `null` when no event did, e.g. a user message or the Track goal seed.
  */
-event_id: number | null, };
+event_id: number | null, 
+/**
+ * Identity and actual revision are one fact. Null for non-user/legacy entries;
+ * released historical origins without this metadata remain unversioned.
+ */
+queue_entry: HarnessQueueEntryRef | null, };
 
 /**
  * How one segment of a harness `userMessage` should be presented to a human. The rendered English
@@ -451,6 +478,11 @@ export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" |
 export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" | "dropped";
 
 /**
+ * The actual addressable queue entry and the revision its input was built from.
+ */
+export type HarnessQueueEntryRef = { id: string, rev: number, };
+
+/**
  * Written exclusively at the kernel terminal-outcome boundary after confirmation.
  */
 export type HarnessTimeoutEvidence = { "version": "v1", request: HarnessTimeoutRequest, ended_at_ms: number, };
@@ -459,6 +491,10 @@ export type HarnessTimeoutEvidence = { "version": "v1", request: HarnessTimeoutR
  * All facts are sampled by the watchdog before issuing the interrupt.
  */
 export type HarnessTimeoutRequest = { session_id: string, card_id: string, track_id: string, thread_id: string, turn_id: string, reason: HarnessInterruptionReason, requested_at_ms: number, effective_elapsed_ms: number, budget_ms: number, };
+
+export type InitialInputReceiptVersion = "initial-input-v1";
+
+export type InitialInputUnavailableReason = "legacy-operation" | "creation-incomplete" | "runtime-unavailable" | "runtime-changed" | "shutting-down" | "legacy-projection" | "integrity";
 
 /**
  * `POST /api/read-receipts/{kind}/{target_id}/read`: the activity instant the reader has seen.
@@ -719,6 +755,40 @@ creator_track_id: string | null,
  * The raw idempotency key that creator passed; set exactly when `creator_track_id` is.
  */
 creator_key: string | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
+
+export type TrackConversationCreated = { initialInput: ConversationInitialInputReceiptResult, provider: AgentProvider, 
+/**
+ * The source conversation of a discussion branch; absent for ordinary conversations.
+ */
+sourceCardId?: string, 
+/**
+ * The assistant card's id; the conversation's identity everywhere.
+ */
+id: string, 
+/**
+ * The track this conversation lives on.
+ */
+trackId: string, 
+/**
+ * The conversation's own name, or null before it has one.
+ */
+title: string | null, 
+/**
+ * Always `"track-assistant"`, derived from the card's persisted marker.
+ */
+kind: string, 
+/**
+ * The live session's state, or **null when the card has no session row**. Never fill it with an invented value.
+ */
+state: WorkerSessionState | null, 
+/**
+ * The session's last update, falling back to the card's own.
+ */
+updatedAt: number, 
+/**
+ * When the conversation's last non-interrupted turn ended, or `null` when there is none.
+ */
+lastTurnCompletedAt: number | null, };
 
 /**
  * One row of `GET /api/tracks/{track_id}/conversations`.

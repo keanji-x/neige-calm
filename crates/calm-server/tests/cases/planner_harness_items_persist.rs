@@ -35,10 +35,9 @@ async fn seed_harness(
 async fn seed_harness_with_pending(
     repo: Arc<SqlxRepo>,
     events: EventBus,
-    pending: Vec<Observation>,
+    pending: Vec<QueueEntry>,
 ) -> (PlannerHarness, Arc<SharedCodexAppServer>, String, String) {
-    let mut snapshot =
-        HarnessSnapshot::initial(0, QueueEntry::entries_from_observations_for_test(pending));
+    let mut snapshot = HarnessSnapshot::initial(0, pending);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(SEED_THREAD_ID.into());
     seed_harness_with_snapshot(repo, events, snapshot).await
@@ -348,6 +347,9 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
             error: "boom".into(),
         },
     ];
+    let pending = QueueEntry::entries_from_observations_for_test(pending);
+    let user_entry_id = pending[1].id().unwrap().to_string();
+    let user_entry_rev = pending[1].user_view().unwrap().rev;
     let (harness, daemon, card_id, _track_id) =
         seed_harness_with_pending(repo.clone(), events, pending).await;
     wait_for_notification_receiver(&daemon).await;
@@ -369,6 +371,7 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
     let client_id = daemon.started_turn_client_ids_for_test()[0]
         .clone()
         .expect("the drain sends clientUserMessageId");
+    assert_eq!(client_id, user_entry_id);
 
     // The projection row is written before `turn/start`.
     let rows = wait_for_rows(&repo, &card_id, 1).await;
@@ -407,9 +410,9 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
         )
         .unwrap(),
         json!([
-            {"observation": "task_completed", "event_id": null},
-            {"observation": "user_message", "event_id": null},
-            {"observation": "task_failed", "event_id": null}
+            {"observation": "task_completed", "event_id": null, "queue_entry": null},
+            {"observation": "user_message", "event_id": null, "queue_entry": {"id":user_entry_id,"rev":user_entry_rev}},
+            {"observation": "task_failed", "event_id": null, "queue_entry": null}
         ])
     );
     assert!(

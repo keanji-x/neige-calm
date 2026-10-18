@@ -90,7 +90,7 @@ async fn grant_admin_other_answers_grant_nothing() {
 
 #[tokio::test]
 async fn grant_admin_answer_rechecks_eligibility() {
-    for change in ["plugin_scope = 'new-owner'", "admin_granted_at = 1"] {
+    for change in ["purpose = 'area-chat'", "admin_granted_at = 1"] {
         let boot = admin_boot().await;
         let id = request_admin(&boot).await;
         sqlx::query(&format!("UPDATE tracks SET {change} WHERE id = ?1"))

@@ -93,6 +93,8 @@
      * composer well and user bubble use `--radius-chat` = 8. `features/chat`
      * reads both of these off this element.
      */
+    /* Shared physical projection point: the card/seam edge midpoint. */
+    transform-origin: 100% 50%;
     --nc-card-inset: var(--space-2);
     --nc-card-radius: var(--radius-lg);
     --radius-chat: calc(var(--nc-card-radius) - var(--nc-card-inset));
@@ -174,6 +176,7 @@
    * has to argue its contrast against `--bg`. `features/chat` does.
    */
   .seam {
+    transform-origin: 0% 50%;
     position: absolute;
     /* The card's own block range, repeated from `.drawer` rather than derived,
        because a seam that is taller than the card can put ink off the end of
@@ -189,6 +192,11 @@
     transition: none;
     pointer-events: none;
   }
+
+  /* Mirror the same physical origin with the owning logical geometry.
+     Embedded/stacked siblings share this edge and block range too. */
+  .drawer:dir(rtl) { transform-origin: 0% 50%; }
+  .seam:dir(rtl) { transform-origin: 100% 50%; }
 
   .seam > * {
     pointer-events: auto;
@@ -349,29 +357,11 @@
       var(--space-3);
   }
 
-  /*
-   * It lifts and fades along one Motion spring progress shared with its seam.
-   * Reversal inherits current progress and velocity from the same solver.
-   *
-   * The 12px is kept from the edge-panel shape, and it is still the right
-   * motion for the card one, for a different reason. A panel welded to an edge
-   * animates *along* its own axis: it travels its own width, in from off-screen
-   * and back out, because "still there, pushed off-screen" is the fact it has
-   * to state. A card is not off-screen anywhere; it appears in place, and the
-   * vocabulary for appearing in place is a short lift plus opacity — the same
-   * one `ui/dialog` and the account menu use. Restoring an inline travel here
-   * would have to be a travel of the full `--panel-span`, sliding out over the
-   * page from behind the rail edge, which says the card came *from* somewhere
-   * it never was.
-   *
-   * §7.6 asked for an instant exit, which is right for a dialog (a thing that
-   * was in the way and is now gone) and wrong here: the conversation is not
-   * destroyed by closing it. See the note in public.tsx.
-   */
+  /* Card and seam share the UI-owned camera depth and spring. Closing only
+     changes opacity and hit testing here; no CSS travel may jump under a
+     reversing native effect. The conversation retains its live exit content. */
   .drawerClosing {
     opacity: 0;
-    translate: 0 var(--space-3);
-
 
     /* It is on its way out; it must not intercept a click meant for the page
        behind it. */
@@ -384,8 +374,6 @@
      turned back on and a box on its way out must not keep. */
   .seamClosing {
     opacity: 0;
-    translate: 0 var(--space-3);
-
   }
 
   .seamClosing > * {

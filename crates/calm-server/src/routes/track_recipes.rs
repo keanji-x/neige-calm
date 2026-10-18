@@ -174,7 +174,11 @@ pub struct UpdateRecipeBody {
     ),
 )]
 pub(crate) async fn list_recipes(State(s): State<RouteState>) -> Result<Json<Vec<TrackRecipe>>> {
-    Ok(Json(s.repo.track_recipe_list().await?))
+    Ok(Json(list(&s).await?))
+}
+
+pub(crate) async fn list(s: &RouteState) -> Result<Vec<TrackRecipe>> {
+    Ok(s.repo.track_recipe_list().await?)
 }
 
 #[utoipa::path(
@@ -189,10 +193,13 @@ pub(crate) async fn get_recipe(
     State(s): State<RouteState>,
     Path(id): Path<String>,
 ) -> Result<Json<TrackRecipe>> {
+    Ok(Json(detail(&s, &id).await?))
+}
+
+pub(crate) async fn detail(s: &RouteState, id: &str) -> Result<TrackRecipe> {
     s.repo
-        .track_recipe_get(&id)
+        .track_recipe_get(id)
         .await?
-        .map(Json)
         .ok_or_else(|| CalmError::NotFound(format!("track recipe {id}")))
 }
 

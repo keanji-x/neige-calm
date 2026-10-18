@@ -1,4 +1,5 @@
 import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { useConversationStore } from '../conversations/store.ts';
@@ -121,7 +122,8 @@ function projectionRow(id: number, clientId: string, text: string) {
       item: { id: clientId, clientId, type: 'userMessage', content: [{ type: 'text', text: `User says:\n${text}` }] },
       _projection: true,
     }),
-    input_segments: [{ presentation: 'user', text: `User says:\n${text}`, attachments: [] }],
+    input_segments: [{ presentation: 'user', text: `User says:\n${text}`, attachments: [],
+      origin: { observation: 'user', event_id: null, queue_entry: { id: clientId, rev: 0 } } }],
   };
 }
 
@@ -148,8 +150,8 @@ function ok(body: unknown): ApiTransportResponse {
 const inputAccepted = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' });
 const runIdle = () => ok(historicalConversationRun({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle'));
 
-function created(body: unknown): ApiTransportResponse {
-  return { status: 201, statusText: 'Created', body };
+function created(body: Row, request: ApiRequest): ApiTransportResponse {
+  return { status: 201, statusText: 'Created', body: { ...body, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'entry-0001', 0) } } };
 }
 
 function failure(status: number, code: string, error: string): ApiTransportResponse {
@@ -176,7 +178,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
         const response = await reply(request);
         if (response) return response;
       }
-      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true, conversationSide: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true, conversationSide: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -195,6 +197,14 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
       });
       if (request.path === CONVERSATIONS) return ok([assistantRow()]);
       if (request.path === BARE_CONVERSATIONS) return ok([]);
+      if (request.path.endsWith('/initial-input')) {
+        const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
+          && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
+        if (post === undefined) throw new Error('No creation journal for this key');
+        const receipt = initialReceiptFor(post, 'entry-0001', 0);
+        return ok({ kind: 'queued', receipt, runtimeId: 'runtime', entryId: receipt.entryId, rev: 0,
+          text: (post.body as { text: string }).text, textSha256: receipt.textSha256 });
+      }
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
       /* Both card endpoints echo the card in the path, as the kernel does; a fixed id
          would be a trap for the first case that reads the field. */
@@ -2285,11 +2295,12 @@ describe('track conversations', () => {
     const deleteIn = (card: string) => within(entryOf(card)!).getByRole('button', { name: 'Delete this message' });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
+    await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false));
     fireEvent.click(deleteIn(ASSISTANT_CARD.id));
     await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(true));
     await pickPlanner();
     await waitFor(() => expect(entryOf(PLANNER_CARD.id)).toBeDefined());
-    expect(deleteIn(PLANNER_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false);
+    await waitFor(() => expect(deleteIn(PLANNER_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false));
     await act(async () => { answer(); await answered; });
   });
 
@@ -2316,6 +2327,7 @@ describe('track conversations', () => {
     const deleteIn = (card: string) => within(entryOf(card)!).getByRole('button', { name: 'Delete this message' });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     await waitFor(() => expect(entryOf(ASSISTANT_CARD.id)).toBeDefined());
+    await waitFor(() => expect(deleteIn(ASSISTANT_CARD.id).getAttribute('aria-disabled') === 'true').toBe(false));
     fireEvent.click(deleteIn(ASSISTANT_CARD.id));
     await waitFor(() => expect(deletes()).toHaveLength(1));
     await pickPlanner();
@@ -2902,7 +2914,7 @@ describe('track conversations', () => {
       if (request.method === 'POST' && request.path === BARE_CONVERSATIONS) {
         const row = derivedRow('w2', request);
         minted.push(row);
-        return created(row);
+        return created(row, request);
       }
       return request.path === BARE_CONVERSATIONS ? ok([...minted]) : undefined;
     });
@@ -2918,13 +2930,13 @@ describe('track conversations', () => {
     expect(post?.body).toEqual({ text: 'what is in this repo?', provider: 'codex' });
     expect(post?.headers?.['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
     /* The drawer moves off the draft onto the row the derived id names. */
-    await screen.findByRole('complementary', { name: 'Assistant' });
+    await screen.findByRole('complementary', { name: 'what is in this repo?' });
   });
 
   it('[G4] sends the first message once, to the track in the URL and no other', async () => {
     const { requests } = setup((request) =>
       request.method === 'POST' && request.path === CONVERSATIONS
-        ? created(derivedRow('w1', request))
+        ? created(derivedRow('w1', request), request)
         : undefined);
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await openDraft();
@@ -2947,7 +2959,7 @@ describe('track conversations', () => {
       const attempt = (attempts.get(request.path) ?? 0) + 1;
       attempts.set(request.path, attempt);
       if (attempt === 1) return failure(500, 'internal', 'boom');
-      return created(derivedRow(request.path === CONVERSATIONS ? 'w1' : 'w2', request));
+      return created(derivedRow(request.path === CONVERSATIONS ? 'w1' : 'w2', request), request);
     });
 
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
@@ -3004,7 +3016,7 @@ describe('track conversations', () => {
       if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
       return creates(requests, CONVERSATIONS).length === 1
         ? firstCreate
-        : created(derivedRow('w1', request));
+        : created(derivedRow('w1', request), request);
     });
 
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
@@ -3026,10 +3038,10 @@ describe('track conversations', () => {
     const first = creates(requests, CONVERSATIONS)[0];
     landed = derivedRow('w1', first);
     await act(async () => {
-      releaseFirst(created(landed));
+      releaseFirst(created(landed, first));
       await firstCreate;
     });
-    await screen.findByRole('complementary', { name: 'Assistant' });
+    await screen.findByRole('complementary', { name: 'words still in flight' });
     expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
   });
 
@@ -3038,7 +3050,7 @@ describe('track conversations', () => {
       if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
       return creates(requests, CONVERSATIONS).length === 1
         ? failure(409, 'idempotency_key_exhausted', 'this key is used up')
-        : created(derivedRow('w1', request));
+        : created(derivedRow('w1', request), request);
     });
 
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
@@ -3061,7 +3073,7 @@ describe('track conversations', () => {
       if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
       return creates(requests, CONVERSATIONS).length === 1
         ? failure(409, 'idempotency_key_reused', 'this key was already used for another first message')
-        : created(derivedRow('w1', request));
+        : created(derivedRow('w1', request), request);
     });
 
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
@@ -3085,7 +3097,7 @@ describe('track conversations', () => {
       if (request.path !== CONVERSATIONS || request.method !== 'POST') return undefined;
       return creates(requests, CONVERSATIONS).length === 1
         ? failure(409, 'idempotency_key_reused', 'this key was already used for another first message')
-        : created(derivedRow('w1', request));
+        : created(derivedRow('w1', request), request);
     });
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
     await openDraft();
@@ -3179,7 +3191,13 @@ describe('track conversations', () => {
         /* The kernel writes the projection row before answering codex; the first item
                    read after the 201 already has it. */
         persisted = [projectionRow(1, 'entry-0001', 'start this thread')];
-        return created(row);
+        return created(row, request);
+      }
+      if (request.path.endsWith('/initial-input')) {
+        const receipt = initialReceiptFor(creates(requests, CONVERSATIONS)[0], 'entry-0001', 0);
+        return typeof persisted[0]?.turn_id === 'string'
+          ? ok({ kind: 'projected', entryRev: 0, runtimeId: 'r', itemId: 1, segmentIndex: 0, receipt })
+          : ok({ kind: 'unavailable', reason: 'runtime-unavailable', receipt });
       }
       if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [...persisted], null));
@@ -3198,6 +3216,7 @@ describe('track conversations', () => {
       [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
     ).toEqual(['start this thread']));
     expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
+    await waitFor(() => expect(drawer.querySelector('[data-nc-thread]')).not.toBeNull());
     const before = drawer.querySelector('[data-nc-turn="you"]');
 
     /* codex echoes: the kernel upgrades the row in place. */
@@ -3213,21 +3232,30 @@ describe('track conversations', () => {
     expect(drawer.querySelector('[data-nc-turn="you"]')).toBe(before);
   });
 
-  /* The create's message never drained, so the kernel wrote no row; the reader
-   * types it again, and the one row that lands belongs to that send. */
+  /* The reader cancels the accepted first queue entry, then explicitly sends the same words again. */
   it('leaves the composer open when the first sentence is retyped and one row lands', async () => {
     const minted: Row[] = [];
+    let pending = true;
     let persisted: ReturnType<typeof harnessMessage>[] = [];
     const { requests } = setup((request) => {
       if (request.method === 'POST' && request.path === CONVERSATIONS) {
         const row = derivedRow('w1', request);
         minted.push(row);
-        return created(row);
+        return created(row, request);
       }
+      if (request.path.endsWith('/initial-input')) return ok({ kind: 'unavailable', reason: 'runtime-unavailable',
+        receipt: initialReceiptFor(creates(requests, CONVERSATIONS)[0], 'entry-0001', 0) });
       if (request.path === CONVERSATIONS) return ok([assistantRow(), ...minted]);
       if (request.path.includes(HISTORY_PATH)) return ok(historicalConversationPage(conversationCardId(request.path), [...persisted], null));
       if (request.path.endsWith('/planner/input')) return inputAccepted();
-      if (request.path.includes('/planner/run?contract=conversation_v1')) return runIdle();
+      if (request.method === 'DELETE' && request.path.endsWith('/planner/input/entry-0001')) {
+        pending = false;
+        return ok({ card_id: pathCardId(request.path), entry_id: 'entry-0001', rev: 1, text: null });
+      }
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle',
+        model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true,
+        compact_outcome: null, context_usage_invalidated: false, running_turn: null,
+        pending: pending ? [{ entry_id: 'entry-0001', text: 'hi', rev: 0, queued_at_ms: 1 }] : [], pending_overflow: 0 }, 'idle'));
       return undefined;
     });
     await screen.findByRole('button', { name: 'Conversation Planner chat' });
@@ -3236,9 +3264,14 @@ describe('track conversations', () => {
     await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull());
     const drawer = drawerElement();
-    expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0);
+    await waitFor(() => {
+      const remove = within(drawer).getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
+      expect(remove.disabled || remove.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Delete this message' }));
+    await waitFor(() => expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0));
 
-    /* Nothing came back, so they say it again. The composer allows it. */
+    /* Cancellation was acknowledged; sending the words again is a new explicit input. */
     await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
     persisted = [harnessMessage(1, 'userMessage', { content: [{ text: 'hi' }] })];
     await write('hi');
@@ -3384,7 +3417,7 @@ describe('track conversations', () => {
       await write('words in flight');
       await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
       act(() => { access.change('offline'); });
-      await act(async () => { answer(created(derivedRow('w1', creates(requests, CONVERSATIONS)[0]))); await Promise.resolve(); });
+      await act(async () => { answer(created(derivedRow('w1', creates(requests, CONVERSATIONS)[0]), creates(requests, CONVERSATIONS)[0])); await Promise.resolve(); });
       await says(CONVERSATION_CREATE_TEXT.unknown);
       expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
     });
@@ -3844,13 +3877,13 @@ it.each([false, true])('selects a model before the first conversation message an
   const access = new RecoveryAccess(); access.change('connected');
   const { requests } = setup(request => {
     if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
-      syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
+      syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset-fast', model: 'gpt-5', resolved_model: null, display_name: 'GPT-5', description: '', is_default: false,
         supported_reasoning_efforts: [{ reasoning_effort: 'low', description: 'Faster' }, { reasoning_effort: 'high', description: 'Thinks longer' }], default_reasoning_effort: 'high' }],
       default: { model: 'gpt-5', reasoning_effort: 'high', supported_reasoning_efforts: null }, default_source: 'config_read', source: 'live', fetched_at_ms: 1,
     });
-    if (request.method === 'POST' && request.path === CONVERSATIONS) return created(derivedRow('w1', request));
+    if (request.method === 'POST' && request.path === CONVERSATIONS) return created(derivedRow('w1', request), request);
     return undefined;
   }, undefined, bundled ? access : undefined);
   await openDraft();
@@ -3920,7 +3953,7 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
   const pending = new Promise<ApiTransportResponse>(resolve => { settle = resolve; });
   const { requests } = setup(request => {
     if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
-      syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
+      syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset', model: 'chosen-model', resolved_model: null, display_name: 'Chosen model', description: '', is_default: false,
         supported_reasoning_efforts: [], default_reasoning_effort: 'low' }],
@@ -4148,24 +4181,26 @@ it('an edited conversation retry cannot cross recovery after its reconciliation 
   await screen.findByRole('button', { name: 'Conversation Planner chat' });
   await openDraft(); await write('original words');
   await screen.findByRole('button', { name: 'Try again' });
-  const fetchQuery = client.fetchQuery.bind(client);
-  const fetch = vi.spyOn(client, 'fetchQuery').mockImplementation(async options => {
-    const rows = await fetchQuery(options);
-    // Deliver the real result, with recovery occurring at the promise boundary
-    // between Query's completed read and the caller's continuation.
+  let reconciled = false;
+  const unsubscribe = client.getQueryCache().subscribe(event => {
+    if (event.type !== 'updated' || event.action.type !== 'success') return;
+    const [family] = event.query.queryKey as readonly unknown[];
+    if (family !== 'track-conversations') return;
+    // The production refresh publishes only after its synchronous receipt import.
+    // Invalidate recovery at that real read/publication boundary, before the caller continues.
+    reconciled = true;
     access.invalidate('recovering'); access.change('connected');
-    return rows;
   });
   try {
     await write('edited words');
-    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    await waitFor(() => expect(reconciled).toBe(true));
     await screen.findByRole('button', { name: 'Try again' });
     expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
-  } finally { fetch.mockRestore(); }
+  } finally { unsubscribe(); }
 });
 
 
-const sideVersion = () => ok({ assistantProviders: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 1, dbInstanceId: 'side-db' });
+const sideVersion = () => ok({ assistantProviders: true, conversationInitialInput: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 1, dbInstanceId: 'side-db' });
 
 describe('side conversations', () => {
   it('keeps the parent open, creates an independent child with a text snapshot and reopens it', async () => {
@@ -4174,7 +4209,7 @@ describe('side conversations', () => {
       if (request.path === '/api/version') return sideVersion();
       if (request.path === CONVERSATIONS && request.method === 'POST') {
         child = { ...derivedRow('w1', request), sourceCardId: ASSISTANT_CARD.id };
-        return created(child);
+        return created(child, request);
       }
       if (request.path === CONVERSATIONS) return ok([assistantRow(), ...(child === null ? [] : [child])]);
       if (request.path.startsWith(`/api/cards/${ASSISTANT_CARD.id}/harness/items`)) return ok(historicalConversationPage(conversationCardId(request.path), [
@@ -4301,7 +4336,7 @@ it('consumes automatic side submission once before an exhausted retry key change
     if (request.path === CONVERSATIONS && request.method === 'POST') {
       if (creates(requests, CONVERSATIONS).length === 1) return failure(409, 'idempotency_key_exhausted', 'key exhausted');
       child = { ...derivedRow('w1', request), sourceCardId: ASSISTANT_CARD.id };
-      return created(child);
+      return created(child, request);
     }
     if (request.path === CONVERSATIONS) return ok([assistantRow(), ...(child === null ? [] : [child])]);
     return undefined;

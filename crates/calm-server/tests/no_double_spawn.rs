@@ -180,8 +180,11 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         &self,
         op: &Operation,
         adapter: &dyn ProviderAdapter,
-    ) -> CalmResult<Option<(Operation, Vec<BroadcastEnvelope>)>> {
-        self.inner.prepare_tx_and_advance(op, adapter).await
+        prepared: Option<Box<dyn calm_server::operation::PreparedTx>>,
+    ) -> CalmResult<calm_server::operation::PrepareAdvance> {
+        self.inner
+            .prepare_tx_and_advance(op, adapter, prepared)
+            .await
     }
 
     async fn set_phase(&self, op: &Operation, phase: Phase) -> CalmResult<Option<Operation>> {
@@ -309,8 +312,11 @@ impl OperationRepo for DriveErrorOnceRepo {
         &self,
         op: &Operation,
         adapter: &dyn ProviderAdapter,
-    ) -> CalmResult<Option<(Operation, Vec<BroadcastEnvelope>)>> {
-        self.inner.prepare_tx_and_advance(op, adapter).await
+        prepared: Option<Box<dyn calm_server::operation::PreparedTx>>,
+    ) -> CalmResult<calm_server::operation::PrepareAdvance> {
+        self.inner
+            .prepare_tx_and_advance(op, adapter, prepared)
+            .await
     }
 
     async fn set_phase(&self, op: &Operation, phase: Phase) -> CalmResult<Option<Operation>> {
@@ -2498,12 +2504,13 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     let payload = codex_worker_payload(&boot.track_id, idem);
     let op = pending_operation("codex-worker", &boot.track_id, payload.clone());
     insert_pending_operation_row(&boot.repo, &op).await;
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let output = codex_adapter
-        .prepare_tx(&mut tx, &payload, &op)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let (output, op) = crate::support::worker_preparation::prepare(
+        boot.repo.clone(),
+        &boot.state,
+        codex_adapter.as_ref(),
+        &op,
+    )
+    .await;
     assert!(git_repo.join(".git").is_dir());
     mark_operation_succeeded(&boot.repo, &op.id).await;
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();

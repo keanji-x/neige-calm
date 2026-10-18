@@ -1,4 +1,5 @@
 import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -31,7 +32,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     requests.push(request);
     let body: unknown = [];
     let status = 200;
-    if (request.path === '/api/version') body = { assistantProviders: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 1, dbInstanceId: 'browser-side' };
+    if (request.path === '/api/version') body = { assistantProviders: true, conversationInitialInput: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 1, dbInstanceId: 'browser-side' };
     if (request.path.startsWith('/api/agent-providers/managed')) body = [{
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
       capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -46,8 +47,16 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
       if (request.method === 'POST') {
         const id = trackConversationCardId(track.id, request.headers?.['Idempotency-Key'] ?? '');
         const created: typeof parent = { ...parent, id, title: 'Side discussion', sourceCardId: parent.id, updatedAt: 3 };
-        rows.push(created); body = created; status = 201;
+        rows.push(created); body = { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } }; status = 201;
       } else body = rows;
+    }
+    if (request.path.endsWith('/initial-input')) {
+      const post = requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
+        && candidate.headers?.['Idempotency-Key'] === request.headers?.['Idempotency-Key']);
+      if (post === undefined) throw new Error('No original creation request');
+      const receipt = initialReceiptFor(post, 'first-entry', 0);
+      body = { kind: 'queued', receipt, runtimeId: 'runtime', entryId: receipt.entryId, rev: 0,
+        text: (post.body as { text: string }).text, textSha256: receipt.textSha256 };
     }
     const cardId = request.path.split('/')[3];
     if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: cardId, worker_session_id: `session-${cardId}`,
@@ -135,6 +144,8 @@ it('runs /side through the production router and shows two independent desktop c
   expect(requests.find((request) => request.method === 'POST' && request.path.endsWith('/conversations'))?.body)
     .toMatchObject({ text: 'Explain the tradeoff', side: { source_card_id: 'parent' } });
   await expect.element(side.getByRole('combobox', { name: 'Message' })).toBeEnabled();
+  // Compare resting layout after both independent presence effects are cleaned up.
+  await expect.poll(() => [...host.querySelectorAll('[data-nc-drawer]')].every(card => card.getAnimations().length === 0)).toBe(true);
   const mainBox = (await main.findElement()).getBoundingClientRect();
   const sideBox = (await side.findElement()).getBoundingClientRect();
   const mobileChat = document.querySelector<HTMLElement>('[data-nc-mobile-report-chat]');

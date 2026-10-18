@@ -77,6 +77,16 @@
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 
+# #2740 bounded contract exception: runtime_id/crates 1224 -> 1243 and fe 0 -> 32
+# cover the declared receipt/current-presence wire fields, typed constructors and consumers,
+# serde/schema oracle, generated declarations, actual-response fixtures, and existing TxOutput key reads.
+# harness_item/crates 288 -> 298 covers the existing transcript repository read and tests
+# of projection failure, restart transfer, version floors and provider-bound acceptance on the frozen table.
+# harness_item/fe 106 -> 135 covers existing wire-row/derivation imports, fixtures and query keys
+# used to pin actual identity/version, acknowledgements and page handoff. No new domain name,
+# excluded file, pattern, count rule or executable policy is introduced; ordinary additional
+# contract references update this counted baseline without adding a file/test roster.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

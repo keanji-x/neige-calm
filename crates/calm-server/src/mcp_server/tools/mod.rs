@@ -24,6 +24,7 @@ pub mod track_rename;
 pub mod track_report;
 pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
+pub mod track_sources;
 pub mod track_state;
 pub mod user_ask;
 pub mod worker_report;
@@ -48,6 +49,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     preview::register_into(registry);
     track_state::register_into(registry);
     track_add::register_into(registry);
+    track_sources::register_into(registry);
     track_report::register_into(registry);
     track_report_blocks::register_into(registry);
     track_file::register_into(registry);
@@ -216,7 +218,12 @@ mod tests {
         // #2617 item E: `plugin_gitforge_gh_run_rerun` (description 800, schema 363) has no tool
         // to replace; the user's approval is kernel-owned, so the Planner needs no separate ask.
         // The cap is the measured 32,320.
-        const SURFACE_MAX_BYTES: usize = 32_320;
+        // #2777: the frozen gate measured 34,011 bytes after adding catalog discovery and
+        // template/workspace creation. Conforming catalog names and source_id add 9 net bytes.
+        // Keep one aggregate cap, not per-tool pins.
+        // #2777: four optional compiled history tools add 1740 bytes to the declared
+        // Planner surface; runtime discovery still applies bound-track and lifecycle gates.
+        const SURFACE_MAX_BYTES: usize = 35_760;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

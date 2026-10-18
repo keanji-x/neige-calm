@@ -353,6 +353,10 @@ enum HarnessObservationCommand {
         source: crate::auth::HumanInputSource,
         observed: oneshot::Sender<Result<()>>,
     },
+    InspectInput {
+        entry_id: QueueEntryId,
+        answer: oneshot::Sender<Result<input_inspection::InputInspection>>,
+    },
     Hibernate {
         done: oneshot::Sender<Result<bool>>,
     },
@@ -908,8 +912,12 @@ impl PlannerHarness {
             return Err(CalmError::Conflict("Stop contract changed".into()));
         }
         let target = canonical::control::select_human_stop(&self.inner, &source).await?;
-        let ObservationIngress::Running(sender) = &self.inner.observations else {
-            return Err(CalmError::Conflict("canonical runtime is closed".into()));
+        let sender = match &self.inner.observations {
+            ObservationIngress::Running(sender) => sender,
+            #[cfg(feature = "fixtures")]
+            ObservationIngress::Unstarted(_) => {
+                return Err(CalmError::Conflict("canonical runtime is closed".into()));
+            }
         };
         let (answer, result) = oneshot::channel();
         sender
@@ -1690,6 +1698,9 @@ async fn run_loop(
                         };
                         let _ = persisted.send(result);
                     }
+                    HarnessObservationCommand::InspectInput { entry_id, answer } => {
+                        let _ = answer.send(input_inspection::inspect(&inner, &entry_id).await);
+                    }
                     HarnessObservationCommand::Mutate { mutation, actor, applied } => {
                         let outcome = handle_queue_mutation(&inner, &mutation, &actor).await;
                         let _ = applied.send(outcome);
@@ -2131,7 +2142,12 @@ async fn restore_steered_entries_codex_dropped(
     // One rev up before it goes back, so the client hiding the entry can tell the restored page
     // from the one it read before the steer.
     for entry in &mut restored {
-        entry.bump_rev_for_restore();
+        // Accepted steers reserve this increment in apply_mutation. A retained
+        // historical edge must still preserve its input if that proof is absent.
+        if !entry.bump_rev_for_restore() && entry.user_view().is_some() {
+            tracing::error!(card_id = %inner.card_id, entry_id = ?entry.id(),
+                "restored input has no revision capacity; preserving its unchanged body");
+        }
     }
     rebuffer_head(inner, restored).await?;
     Ok(ids)
@@ -2825,7 +2841,9 @@ async fn on_notification(
             live.delta(&turn_id, &item_id, &delta);
             return Ok(());
         }
-        PlannerEventKind::Ignored => {}
+        // The provider declares these frames have no harness state to change. In particular,
+        // high-frequency reasoning deltas must not contend for the database's writer lock.
+        PlannerEventKind::Ignored => return Ok(()),
     }
     persist_snapshot(inner).await
 }
@@ -3460,18 +3478,19 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let refresh_repo = Arc::clone(&inner.repo);
         let refresh_track_id = inner.track_id.clone();
         transcript_refresh_with_timeout(
-            write_in_tx_typed::<track_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
-                Box::pin(async move {
-                    track_vcs::snapshot_transcripts_for_cards_in_track(
-                        tx,
-                        &refresh_track_id,
-                        None,
-                        track_vcs::MANIFEST_SCHEMA_VERSION,
-                    )
-                    .await
-                    .map_err(CalmError::from)
-                })
-            }),
+            async move {
+                let pool = refresh_repo.sqlite_pool().ok_or_else(|| {
+                    CalmError::Internal("transcript refresh requires a SQLite pool".into())
+                })?;
+                track_vcs::snapshot_transcripts_for_cards_in_track(
+                    &pool,
+                    &refresh_track_id,
+                    None,
+                    track_vcs::MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .map_err(CalmError::from)
+            },
             TRANSCRIPT_REFRESH_TIMEOUT,
             &inner.worker_session_id,
             inner.card_id.as_str(),
@@ -4939,6 +4958,13 @@ mod compact_command;
 mod compact_tests;
 mod held;
 mod hibernation;
+pub(crate) mod input_inspection;
+#[cfg(test)]
+mod input_inspection_recovery_tests;
+#[cfg(test)]
+mod input_inspection_tests;
+#[cfg(test)]
+mod input_version_tests;
 mod live_reply;
 mod native_ask;
 mod replace_command;
@@ -4949,6 +4975,8 @@ mod turn_permission;
 mod checkpoint_tests;
 #[cfg(test)]
 mod completed_commit_tests;
+#[cfg(test)]
+mod notification_write_tests;
 
 #[cfg(test)]
 mod report_edit_replay_tests;

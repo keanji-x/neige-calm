@@ -805,6 +805,10 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
+    await waitFor(() => {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
 
     await waitFor(() => {
@@ -833,6 +837,10 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
+    await waitFor(() => {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Say it now' });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
 
     await waitFor(() => {
@@ -870,6 +878,10 @@ describe('planner conversation regressions', () => {
     });
     const readsBeforeSteer = runReads;
 
+    await waitFor(() => {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Say it now' });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
     await waitFor(() => {
       expect(requests.some((request) => request.path.endsWith('/steer'))).toBe(true);
@@ -894,6 +906,10 @@ describe('planner conversation regressions', () => {
     expect(screen.getByRole('button', { name: 'Say it now' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
     /* And a steer from here writes against the rev the page lists now. */
+    await waitFor(() => {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Say it now' });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
     await waitFor(() => {
       expect(requests.filter((request) => request.path.endsWith('/steer'))).toHaveLength(2);
@@ -939,6 +955,10 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
+    await waitFor(() => {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Say it now' });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
 
     expect(await screen.findByText(/stays queued and will go with the next turn/)).toBeTruthy();
@@ -969,6 +989,10 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
+    await waitFor(() => {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Say it now' });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
 
     const notice = await screen.findByText(/not known whether this message reached/);
@@ -1009,6 +1033,10 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
+    await waitFor(() => {
+      const action = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete this message' });
+      expect(action.disabled || action.getAttribute('aria-disabled') === 'true').toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
 
     await waitFor(() => {

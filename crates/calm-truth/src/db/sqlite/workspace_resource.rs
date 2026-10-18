@@ -9,7 +9,7 @@ use crate::{
     model::{TrackWorkspace, TrackWorkspaceKind, new_id, now_ms},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceObservation {
     pub track_id: String,
     pub workspace_id: WorkspaceId,
@@ -17,6 +17,18 @@ pub struct WorkspaceObservation {
     pub selected_path: String,
     pub ownership: WorkspaceOwnership,
     pub state: DirectoryObservation,
+}
+
+impl WorkspaceObservation {
+    /// Whether this exact persisted observation describes the retained directory proof.
+    pub fn matches_identity(&self, identity: &workspace::directory::DirectoryIdentity) -> bool {
+        matches!(&self.state, DirectoryObservation::Observed(observed)
+            if observed.root == identity.root().to_str().expect("validated workspace UTF-8 root")
+                && observed.cwd == *identity.cwd()
+                && observed.common_dir == identity.common_dir().to_str().expect("validated Git common directory")
+                && observed.device == identity.device() && observed.inode == identity.inode()
+                && observed.owner.as_deref() == identity.owner())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,10 +182,7 @@ pub async fn workspace_observe_tx(
         || current.selection_version != snapshot.selection_version
         || current.selected_path != snapshot.selected_path
         || current.ownership != snapshot.ownership;
-    let identical_facts = matches!(&current.state, DirectoryObservation::Observed(observed)
-        if observed.root == root && observed.cwd == *identity.cwd()
-            && observed.common_dir == common_dir && observed.device == identity.device()
-            && observed.inode == identity.inode() && observed.owner.as_deref() == identity.owner());
+    let identical_facts = current.matches_identity(identity);
     if selection_changed || current.state != snapshot.state {
         // Converge only a completed identical observation of this exact selection. An old
         // selection or different probe must never overwrite a newer binding/observation.

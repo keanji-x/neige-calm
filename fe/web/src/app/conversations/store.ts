@@ -4,9 +4,10 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { FOLLOW_INSTALLATION_DEFAULT, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, transcriptRowToTurnOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
+import { FOLLOW_INSTALLATION_DEFAULT, isOptimisticConversationTurn, isConversationMessage, isUserConversationTurn, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, transcriptRowToTurnOutcome, type PlannerQueueWriteOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
 import { describeConversation, pendingConversationIds, withRememberedConversation, withRememberedTitle, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
-import { synchronizeQueuedSends, rememberQueuePlacements, presentPendingMessages, queueTombstoneHides as tombstoneHides } from '../../../../core/domain/conversation-outbox.ts';
+import { useInitialInputObservation } from './initial-input.ts';
+import { rememberQueuePlacements, presentPendingMessages, initialInputNeedsObservation, queueTombstoneHides as tombstoneHides, initialInputQueueView, withInitialInputFacts, reportedInputSource, type ReportedInput, type AcceptedInitialInput } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { PERMISSION_MODE_CHANGE_TEXT, PLANNER_PERMISSION_MODE_FAILURES } from '../../../../core/domain/planner-permission-mode.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
@@ -39,7 +40,7 @@ export function useConversationStore(
 ): ConversationStore {
   const registry = useConversationRegistry();
   const currentUser = useCurrentUser();
-  const { remember, turnsOf: rememberedTurnsOf, conversations: rememberedConversations } = registry;
+  const { remember, rememberedTurnsOf, conversations: rememberedConversations } = registry;
   const cardId = scope?.cardId ?? '';
   const trackId = scope?.id;
   const provider = scope?.provider;
@@ -74,6 +75,32 @@ export function useConversationStore(
     ...modelCatalogQueryOptions(transport, { kind: 'card', cardId }, unauthorized), enabled: scope !== null,
   });
   const historyReplacementSupported = run.data?.input_contract === 'historical' && historicalReplacementSupported;
+  const displayItems = useMemo(() => (history.data?.pages ?? []).flatMap(page => page.items), [history.data]);
+  const items = useMemo(() => nativeDisplayRows(displayItems), [displayItems]);
+  const removedMessages = useMemo(() => removedHumanIds(displayItems), [displayItems]);
+  const rememberedEntries = history.data === undefined ? rememberedTurnsOf(cardId) : null;
+  const serverTurns = useMemo(
+    () => (rememberedEntries ?? buildConversationTranscript(displayItems, currentUser?.userId ?? null)).filter(isConversationMessage),
+    [displayItems, currentUser?.userId, rememberedEntries],
+  );
+  const landedRun = runReads.startOf(run.data);
+  const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
+  const accepted = registry.outboxOf(cardId).find((op): op is AcceptedInitialInput => op.phase === 'initial-accepted');
+  const initialObservation = useInitialInputObservation(transport, unauthorized, cardId, accepted,
+    scope !== null && routeIntent.visible !== false, history.isFetching || run.isFetching, registry.nextRead);
+  const reportedInput = useMemo(() => {
+    const facts: ReportedInput[] = servedQueue.map(entry => ({ kind: 'queue', entryId: entry.entry_id, rev: entry.rev, text: entry.text }));
+    for (const turn of serverTurns) { const fact = reportedInputSource(turn); if (fact !== null) facts.push(fact); }
+    const observation = initialObservation.data?.observation;
+    if (observation?.kind === 'queued') facts.push({ kind: 'queue', entryId: observation.entryId, rev: observation.rev, text: observation.text });
+    return facts;
+  }, [servedQueue, serverTurns, initialObservation.data]);
+  const acceptedInitial = useMemo(() => accepted === undefined ? undefined : withInitialInputFacts(accepted, reportedInput), [accepted, reportedInput]);
+  const initialInput = useMemo(() => new Map(acceptedInitial !== undefined && initialInputNeedsObservation(acceptedInitial) && initialObservation.data !== undefined
+    ? [[acceptedInitial.key, initialObservation.data]] : []), [acceptedInitial, initialObservation.data]);
+  const initialInputError = acceptedInitial === undefined || !initialInputNeedsObservation(acceptedInitial) ? null : initialObservation.error !== null
+    ? readErrorText(initialObservation.error, 'The first message’s current status could not be checked.')
+    : null;
   const phase = run.data?.phase ?? null;
   const stalled = phase === 'wedged';
   const executionHeld = run.data?.runtime_state === 'failed' || run.data?.runtime_state === 'exited'
@@ -89,12 +116,13 @@ export function useConversationStore(
        the value is the rev written against, so an entry the kernel puts back one rev
        up is shown again (`tombstoneHides`). */
   const [forgotten, setForgotten] = useState<ReadonlyMap<string, number>>(() => new Map());
-  const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
+  // Let the initial-input owner account for its suppressed rows before ordinary local tombstones filter the queue.
+  const initialQueue = useMemo(() => initialInputQueueView(servedQueue, acceptedInitial, initialObservation.data, landedRun),
+    [servedQueue, acceptedInitial, initialObservation.data, landedRun]);
   const pendingQueue = useMemo(
-    () => (forgotten.size === 0
-      ? servedQueue
-      : servedQueue.filter((entry) => !tombstoneHides(forgotten.get(forgottenKey(cardId, entry.entry_id)), entry.rev))),
-    [servedQueue, forgotten, cardId],
+    () => forgotten.size === 0 ? initialQueue.entries : initialQueue.entries.filter(entry =>
+      !tombstoneHides(forgotten.get(forgottenKey(cardId, entry.entry_id)), entry.rev)),
+    [initialQueue.entries, forgotten, cardId],
   );
   useEffect(() => {
     if (forgotten.size === 0) return;
@@ -117,6 +145,9 @@ export function useConversationStore(
     setForgotten((current) => new Map([...current, [forgottenKey(cardId, entry.entry_id), entry.rev]]));
   };
   const pendingQueueOverflow = run.data?.pending_overflow ?? 0;
+  const pendingQueueIds = useMemo(
+    () => new Map(pendingQueue.map((entry) => [entry.entry_id, entry.rev])), [pendingQueue],
+  );
   const mutations = usePlannerMutations(transport, cardId, unauthorized);
   /** What went wrong with an action of the card it names; another card's is never this one's. */
   const [compactPending, setCompactPending] = useState<ReadonlySet<string>>(() => new Set());
@@ -125,24 +156,15 @@ export function useConversationStore(
   /** The card shown now; a model write's answer is that of the card it was made in. */
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
-  const displayItems = useMemo(() => (history.data?.pages ?? []).flatMap(page => page.items), [history.data]);
-  const items = useMemo(() => nativeDisplayRows(displayItems),[displayItems]);
-  const removedMessages = useMemo(() => removedHumanIds(displayItems),[displayItems]);
-  /* A remembered transcript is the reopen fallback while the first page is unknown;
-       once any query data exists the server wins, even when empty. */
-  /* Queued rows are supplied by the display projection, not twice from the server
-     transcript. Raw `serverTurns` still sees every row for delivery reconciliation. */
-  const rememberedEntries = history.data === undefined ? rememberedTurnsOf(cardId) : null;
-  const serverEntries = useMemo(
-    () => rememberedEntries !== null
-      ? rememberedEntries.filter((entry) => !isOptimisticConversationTurn(entry))
-      : buildConversationTranscript(displayItems,currentUser?.userId ?? null),
-    [displayItems,currentUser?.userId,rememberedEntries],
-  );
-  const serverTurns = useMemo(
-    () => serverEntries.filter(isConversationMessage),
-    [serverEntries],
-  );
+  const serverEntries = useMemo(() => {
+    if (rememberedEntries !== null) return rememberedEntries.filter(entry => !isOptimisticConversationTurn(entry));
+    const shownItems = displayItems.filter(({ source }) => source.kind !== 'historical_raw'
+      || source.item.input_segments?.some(segment => segment.origin?.queue_entry != null)
+      || source.item.item_uuid === null || !pendingQueueIds.has(source.item.item_uuid));
+    return buildConversationTranscript(shownItems, currentUser?.userId ?? null)
+      .filter(entry => !isUserConversationTurn(entry) || entry.queueEntryId == null || !pendingQueueIds.has(entry.queueEntryId)
+        || (entry.inputSource?.entryRev != null && entry.inputSource.entryRev !== pendingQueueIds.get(entry.queueEntryId)));
+  }, [displayItems, currentUser?.userId, pendingQueueIds, rememberedEntries]);
   useEffect(() => { setActionError(null); }, [cardId]);
   /* The running turn's streamed replies: drawn at the tail, never remembered, never counted. */
   const liveReplies = useLiveReplies({
@@ -164,15 +186,14 @@ export function useConversationStore(
   const restart = useConversationRestart({ cardId, stalled, restart: mutations.restart });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
-  const landedRun = runReads.startOf(run.data);
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
   const outbox = useConversationOutbox({
     removedMessages, viewerId:currentUser?.userId ?? null,
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntries: pendingQueue,
-    stalled, landed, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
+    stalled, landed, initialInput, reportedInput, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
-  const { view } = outbox;
+  const { view, accountQueueDisplay } = outbox;
   const queueOps = registry.outboxOf(cardId);
   const [placementMemory, setPlacementMemory] = useState(() => ({ cardId, ops: queueOps, queue: pendingQueue,
     placements: rememberQueuePlacements(new Map(), queueOps, pendingQueue) }));
@@ -184,6 +205,8 @@ export function useConversationStore(
   const presentation = useMemo(() => presentPendingMessages(view.transcript, pendingQueue, view.shown,
     placements, view.failed, stalled, queueOps),
   [view.transcript, pendingQueue, view.shown, placements, view.failed, stalled, queueOps]);
+  const queueDisplayAccounting = useMemo(() => accountQueueDisplay(presentation.transcript, initialQueue.suppressedRefs),
+    [accountQueueDisplay, initialQueue.suppressedRefs, presentation.transcript]);
   /* What the reader is looking at, and what the tab may remember: a message is the conversation's only once the
      server has answered it, and only until a read shows it in its place. */
   const turns = useMemo(
@@ -255,24 +278,22 @@ export function useConversationStore(
   const model = useMemo(() => run.data === undefined ? FOLLOW_INSTALLATION_DEFAULT
     : { model: run.data.model, reasoning_effort: run.data.reasoning_effort }, [run.data]);
 
+  const observeQueueOutcome = <T extends PlannerQueueWriteOutcome>(outcome: T): T => {
+    if (outcome.kind === 'stale') outbox.observeQueuedInput({ kind: 'queue', entryId: outcome.entryId, rev: outcome.rev, text: outcome.text });
+    return outcome;
+  };
+
   /* Held in the registry, so a strip remounted on the way back still sees its conversation's write out (#2068). */
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
-    registry.holdQueueWrite(cardId, () => mutations.deleteQueued(entry.entry_id, entry.rev)).then((outcome) => {
-      /* `gone` is not a retirement: the entry drained and its transcript row is on its way. */
-      if (outcome.kind === 'done') {
-        outbox.forgetQueuedEntry(entry.entry_id);
-        forgetQueuedEntry(entry);
-      }
-      return outcome;
-    });
-  /* On a steer's `done` the entry is forgotten but its send is NOT: a steer delivers the sentence, and the
-       kernel's transcript row shows it. */
+    registry.holdQueueWrite(cardId, () => mutations.deleteQueued(entry.entry_id, entry.rev, removed => {
+      // Import the real ACK before the mutation owner starts either reconciliation read.
+      outbox.forgetQueuedEntry(removed);
+      forgetQueuedEntry(entry);
+    }).then(observeQueueOutcome));
+  /* A successful steer delivers this entry; only its queue copy departs. */
   const steerQueuedEntry = phase === 'turn_running'
-    ? (entry: PendingQueueEntry) =>
-      registry.holdQueueWrite(cardId, () => mutations.steerQueued(entry.entry_id, entry.rev)).then((outcome) => {
-        if (outcome.kind === 'done') forgetQueuedEntry(entry);
-        return outcome;
-      })
+    ? (entry: PendingQueueEntry) => registry.holdQueueWrite(cardId,
+      () => mutations.steerQueued(entry.entry_id, entry.rev, () => { forgetQueuedEntry(entry); }).then(observeQueueOutcome))
     : undefined;
 
   return {
@@ -286,14 +307,17 @@ export function useConversationStore(
     stopFeedback,
     sending: view.sending,
     sendBlocked: view.blocked,
+    initialInputChecking: view.checkingInitialInput && initialInputError === null,
+    initialInputError,
+    retryInitialInput: () => { void initialObservation.refetch().catch(() => undefined); void history.refetch().catch(() => undefined); },
     awaitingConversationUpdate: view.awaitingReconciliation && history.error === null && run.error === null,
     pendingQueue: presentation.queue,
     pendingSends: presentation.sending,
+    queueDisplayAccounting,
     pendingQueueOverflow,
-    editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => mutations.editQueued(entry, text)).then(outcome => {
-      if (outcome.kind === 'done') registry.editOutbox(cardId, current => synchronizeQueuedSends(current, [outcome.entry]));
-      return outcome;
-    }),
+    editQueuedEntry: (entry, text) => registry.holdQueueWrite(cardId, () => mutations.editQueued(entry, text, saved => {
+      outbox.acknowledgeQueuedEdit(entry, saved);
+    }).then(observeQueueOutcome)),
     deleteQueuedEntry,
     queueWriteOut: registry.queueWriteOutOf(cardId),
     steerQueuedEntry,
@@ -341,8 +365,8 @@ export function useConversationStore(
     },
     interrupt: stop.interrupt,
     restart: { strip: restart.strip, pending: restart.pending, start: restart.start },
-    retryHistory: () => { void history.refetch().catch(() => undefined); },
-    retryRun: () => { void run.refetch().catch(() => undefined); },
+    retryHistory: () => { void history.refetch().catch(() => undefined); if (acceptedInitial !== undefined) void initialObservation.refetch().catch(() => undefined); },
+    retryRun: () => { void run.refetch().catch(() => undefined); if (acceptedInitial !== undefined) void initialObservation.refetch().catch(() => undefined); },
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
     blockedReason: run.data?.blocked_reason ?? null,
     /* Before the first answer the conversation is following the default, which is

@@ -169,13 +169,16 @@ impl DirectoryIdentity {
 
     /// Check both the retained descriptor and the currently named root. A rename/replacement
     /// is recovery, even when the replacement contains an otherwise valid repository.
-    pub fn validate(&self) -> Result<()> {
+    pub fn is_current(&self) -> Result<bool> {
         let opened = self
             .directory
             .metadata()
             .map_err(|error| Error::Internal(format!("stat open workspace: {error}")))?;
-        let named = std::fs::symlink_metadata(&self.root)
-            .map_err(|error| Error::Internal(format!("stat named workspace: {error}")))?;
+        let named = match std::fs::symlink_metadata(&self.root) {
+            Ok(named) => named,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(Error::Internal(format!("stat named workspace: {error}"))),
+        };
         if !named.is_dir()
             || named.file_type().is_symlink()
             || opened.dev() != named.dev()
@@ -183,6 +186,13 @@ impl DirectoryIdentity {
             || i64::try_from(opened.dev()).ok() != Some(self.device)
             || i64::try_from(opened.ino()).ok() != Some(self.inode)
         {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !self.is_current()? {
             return Err(Error::Internal(
                 "workspace directory identity changed; recovery required".into(),
             ));

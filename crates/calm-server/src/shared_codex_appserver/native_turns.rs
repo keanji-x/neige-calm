@@ -703,6 +703,7 @@ impl NativeTurns {
         snapshot
     }
 
+    #[cfg(feature = "fixtures")]
     pub(super) fn insert(&self, thread: String, turn: String) {
         let mut state = self.lock();
         let slot = state.slots.entry(thread).or_default();

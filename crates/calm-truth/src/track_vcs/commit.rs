@@ -4,9 +4,10 @@ use crate::ids::{ActorId, TrackId};
 use crate::model::now_ms;
 use sqlx::{Sqlite, Transaction};
 
-use super::delta::{PathDelta, add_card_event_paths, apply_delta_tx, paths_changed_by_event};
-use super::snapshot::{cards_for_track_tx, snapshot_tree_at_tx};
+use super::delta::{PathDelta, apply_delta_tx, paths_changed_by_event};
+use super::snapshot::snapshot_tree_at_tx;
 use super::store::{CommitTreeMeta, commit_tree_at_tx, head_in_tx, store_tree, tree_at_in_tx};
+use super::transcripts::HookInputs;
 use super::types::{CardVisibility, has_legacy_card_lens_paths};
 use super::{CommitHash, TreeSnapshot};
 
@@ -133,54 +134,18 @@ pub async fn commit_events_with_author_in_tx(
             manifest_schema_version,
             created_at: now,
         },
+        HookInputs::Live,
     )
     .await
     .map(Some)
 }
 
-pub async fn snapshot_transcripts_for_cards_in_track(
-    tx: &mut Transaction<'_, Sqlite>,
-    track_id: &TrackId,
-    event_id: Option<i64>,
-    manifest_schema_version: i64,
-) -> Result<CommitHash> {
-    let card_visibility = match head_in_tx(tx, track_id).await? {
-        Some(parent) => {
-            let parent_manifest = tree_at_in_tx(tx, &parent).await?.ok_or_else(|| {
-                CalmError::Internal(format!("track-vcs: missing tree for {parent}"))
-            })?;
-            CardVisibility::from_manifest(&parent_manifest)
-        }
-        None => CardVisibility::announced_only(),
-    };
-    let cards = cards_for_track_tx(tx, track_id, &card_visibility).await?;
-    let mut delta = PathDelta::default();
-    for card in cards {
-        add_card_event_paths(&mut delta, &card.card.id);
-    }
-
-    let author = ActorId::Kernel.to_string();
-    commit_delta_in_tx(
-        tx,
-        track_id,
-        delta,
-        CommitTreeMeta {
-            parent_hash: None,
-            author: Some(author.as_str()),
-            event_id,
-            message: "transcript refresh",
-            manifest_schema_version,
-            created_at: now_ms(),
-        },
-    )
-    .await
-}
-
-async fn commit_delta_in_tx(
+pub(super) async fn commit_delta_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,
     delta: PathDelta,
     meta: CommitTreeMeta<'_>,
+    hooks: HookInputs<'_>,
 ) -> Result<CommitHash> {
     let parent_hash = head_in_tx(tx, track_id).await?;
     let tree = if let Some(parent) = parent_hash.as_deref() {
@@ -196,6 +161,7 @@ async fn commit_delta_in_tx(
                 meta.created_at,
                 &None,
                 &card_visibility,
+                hooks,
             )
             .await?
         } else {
@@ -206,6 +172,7 @@ async fn commit_delta_in_tx(
                 delta,
                 &card_visibility,
                 meta.created_at,
+                hooks,
             )
             .await?;
             store_tree(
@@ -224,6 +191,7 @@ async fn commit_delta_in_tx(
             meta.created_at,
             &None,
             &CardVisibility::announced_only(),
+            hooks,
         )
         .await?
     };

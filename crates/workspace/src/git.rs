@@ -51,17 +51,13 @@ pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Resul
 /// The match is exact on purpose: a near-miss (`.neige` vs `.neige/`) would still hide the directory but append a second line on every call.
 pub fn ensure_git_exclude_entry(repo_root: &Path, entry: &str) -> Result<()> {
     let exclude_path = git_exclude_path(repo_root)?;
-    let existing = match std::fs::read_to_string(&exclude_path) {
-        Ok(existing) => existing,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => {
-            return Err(Error::Internal(format!(
-                "read git exclude {}: {error}",
-                exclude_path.display()
-            )));
-        }
-    };
-    if existing.lines().any(|line| line.trim() == entry) {
+    ensure_exclude_entry_at(&exclude_path, entry)
+}
+
+/// Append at Git's already reported location. No Git command is executed here.
+pub(crate) fn ensure_exclude_entry_at(exclude_path: &Path, entry: &str) -> Result<()> {
+    let existing = read_exclude(exclude_path)?;
+    if has_exclude_entry(&existing, entry) {
         return Ok(());
     }
     if let Some(parent) = exclude_path.parent() {
@@ -75,7 +71,7 @@ pub fn ensure_git_exclude_entry(repo_root: &Path, entry: &str) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&exclude_path)
+        .open(exclude_path)
         .map_err(|error| {
             Error::Internal(format!(
                 "open git exclude {}: {error}",
@@ -98,6 +94,23 @@ pub fn ensure_git_exclude_entry(repo_root: &Path, entry: &str) -> Result<()> {
             ))
         })?;
     Ok(())
+}
+
+fn read_exclude(exclude_path: &Path) -> Result<String> {
+    match std::fs::read_to_string(exclude_path) {
+        Ok(existing) => Ok(existing),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(Error::Internal(format!(
+            "read git exclude {}: {error}",
+            exclude_path.display()
+        ))),
+    }
+}
+fn has_exclude_entry(existing: &str, entry: &str) -> bool {
+    existing.lines().any(|line| line.trim() == entry)
+}
+pub(crate) fn exclude_entry_present(exclude_path: &Path, entry: &str) -> Result<bool> {
+    Ok(has_exclude_entry(&read_exclude(exclude_path)?, entry))
 }
 
 pub(crate) fn git_exclude_path(repo_root: &Path) -> Result<PathBuf> {

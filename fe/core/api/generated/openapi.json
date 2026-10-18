@@ -2681,7 +2681,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Accept ordinary Human text through the canonical transaction before wake.\nThe original source-bound key and acknowledgement survive native unavailability.",
+        "summary": "Select the persisted conversation contract before acceptance or replay.\nCanonical errors never enter the historical queue. Historical public work\nrequires the current deployment owner and its existing Private resources.",
         "operationId": "send_planner_input",
         "parameters": [
           {
@@ -2696,7 +2696,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Required original message key, at most 128 visible ASCII bytes. Its verified author and original request are bound atomically with canonical acceptance.",
+            "description": "Required original message key, at most 128 visible ASCII bytes. The selected conversation contract binds the original request and acknowledgement; canonical receipts additionally bind the verified author.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2715,7 +2715,7 @@
         },
         "responses": {
           "200": {
-            "description": "Canonical Human input committed, or the original acknowledgement replayed after current source and Area authorization. Native wake/start failure cannot undo this acceptance. entry_id names the accepted message; worker_session_id remains the original acknowledgement, not an instruction to recover that runtime.",
+            "description": "Input committed under its persisted conversation contract, or its original acknowledgement replayed after current source/resource authorization. Canonical acceptance survives native wake failure. Historical input retains its original lazy start, queue entry and acknowledgement semantics.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2745,7 +2745,7 @@
             }
           },
           "403": {
-            "description": "Registered current Area collaboration access is required, including before key replay",
+            "description": "Canonical content requires registered current Area collaboration access. Historical public input additionally requires the deployment owner and its existing Private resources, including before key replay",
             "content": {
               "application/json": {
                 "schema": {
@@ -2765,7 +2765,7 @@
             }
           },
           "409": {
-            "description": "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses fresh attachments/history replacement, a missing canonical carrier or historical storage requiring activation; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.",
+            "description": "idempotency_key_reused binds a different author/request or unproven historical key; idempotency_key_concurrent means a competing transaction won. conflict refuses unsupported canonical attachments/history replacement or a missing canonical carrier; those refusals accept no new message. A V2 refusal never falls back to the historical body queue. Preserve the original key for an uncertain outcome rather than automatically creating another intent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3271,7 +3271,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.\nIdle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.\n`IssuingTurn` also reports `stopped: false`: while `turn/start` is in flight the app-server may not know the turn yet, so the interrupt is dispatched best-effort but only `TurnRunning` guarantees a target.",
+        "summary": "Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.\nIdle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.\nHistorical `IssuingTurn` is best effort and reports `stopped: false`.\nCanonical issuance requires a confirmed exact native target and otherwise\nrefuses with 409; an Actor label or operation payload cannot authorize Stop.",
         "operationId": "interrupt_planner_card",
         "parameters": [
           {
@@ -3306,7 +3306,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "Canonical Stop requires a current verified Human source",
             "content": {
               "application/json": {
                 "schema": {
@@ -3316,7 +3316,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Planner card and current Area/private execution access required",
             "content": {
               "application/json": {
                 "schema": {
@@ -3336,7 +3336,7 @@
             }
           },
           "409": {
-            "description": "No live session for this card; start a fresh one, history is kept (code `planner_harness_dormant`)",
+            "description": "No live session, changed original execution, or canonical issuance has no confirmed native target; retry Stop once the original turn is running. This refuses new control effects.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9253,7 +9253,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Required with first_message; optional for message-less resource creation. A Human first message binds the original request, verified author and exact accepted message to this key. A same-author identical replay rechecks current Area access and returns the original resource acknowledgement without starting or recovering its old runtime. Different original input or an unproven historical binding is idempotency_key_reused. Historical #N delivery attempts are not adopted or implicitly retried. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation.",
+            "description": "Required with first_message; optional for message-less resource creation. The original key permanently selects its creation contract. New blank managed Codex inputs use canonical source-bound acceptance; variants requiring historical preparation retain their original fingerprint and delivery attempts under current deployment-owner/Private-resource authorization. An original canonical receipt is never downgraded. Preserve the original key when the outcome is uncertain; a new key denotes an explicit new creation.",
             "required": false,
             "schema": {
               "type": [
@@ -9275,7 +9275,7 @@
         },
         "responses": {
           "201": {
-            "description": "Track created. With first_message, canonical input and its original acknowledgement have committed independently of native readiness. Acceptance does not promise execution has started. Identical authorized retries mint no second Track or message.",
+            "description": "Track created or its original acknowledgement replayed. Canonical first input commits independently of native readiness; historical preparation/start retains its original success contract. Identical authorized retries mint no second Track or message.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11976,11 +11976,11 @@
         },
         "responses": {
           "201": {
-            "description": "Conversation card minted, harness started, first message delivered — all three in the mint operation's own transaction, so a 201 means the message is on the assistant's queue and not merely that a card exists. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).",
+            "description": "Created or replayed with immutable first-input acceptance; query current presence separately.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TrackConversationSummary"
+                  "$ref": "#/components/schemas/TrackConversationCreated"
                 }
               }
             }
@@ -12067,6 +12067,95 @@
           },
           "500": {
             "description": "Internal error, including a shared Codex app-server that is not running. The message rides inside the mint operation, so the card and the delivery fail together: a terminally failed attempt is compensated (no card, no session) and the same `Idempotency-Key` retries under a `#N` operation key, re-deriving the same card id and delivering the message again. The `harness.user_message.enqueued` row a failed attempt already committed is NOT rolled back — `events` is append-only — and records only that a delivery was attempted, never that one happened. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it; there the card survives with the message still queued on a runtime that never started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tracks/{track_id}/conversations/{card_id}/initial-input": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "get_conversation_initial_input",
+        "parameters": [
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Conversation card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Required original conversation creation key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Receipt-bound observation from the current queue owner; unavailable never means absent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationInitialInputObservation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or missing creation key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Conversation does not belong to this track/key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Read failed; no presence conclusion",
             "content": {
               "application/json": {
                 "schema": {
@@ -13709,6 +13798,194 @@
           }
         }
       },
+      "ConversationInitialInputObservation": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "receipt",
+              "runtimeId",
+              "entryId",
+              "rev",
+              "text",
+              "textSha256",
+              "kind"
+            ],
+            "properties": {
+              "entryId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "queued"
+                ]
+              },
+              "receipt": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceipt"
+              },
+              "rev": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "runtimeId": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "textSha256": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "receipt",
+              "runtimeId",
+              "itemId",
+              "segmentIndex",
+              "entryRev",
+              "kind"
+            ],
+            "properties": {
+              "entryRev": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "itemId": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "projected"
+                ]
+              },
+              "receipt": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceipt"
+              },
+              "runtimeId": {
+                "type": "string"
+              },
+              "segmentIndex": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "receipt",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "$ref": "#/components/schemas/InitialInputUnavailableReason"
+              },
+              "receipt": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ConversationInitialInputReceipt",
+                    "description": "Required nullable evidence: unknown presence does not erase proven acceptance."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Exact current queue ownership or provider-confirmed projection; no absence\nconclusion is available from an empty queue and incomplete retained history.\nOutbound only; the client decoder enforces reason/receipt correlation."
+      },
+      "ConversationInitialInputReceipt": {
+        "type": "object",
+        "description": "Immutable mint evidence. It does not assert that the input is still queued or visible.",
+        "required": [
+          "version",
+          "entryId",
+          "entryRev",
+          "queuedAtMs",
+          "textSha256",
+          "initialRuntimeId"
+        ],
+        "properties": {
+          "entryId": {
+            "type": "string"
+          },
+          "entryRev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "initialRuntimeId": {
+            "type": "string",
+            "description": "The original carrier; later recovery may move the same entry to another runtime."
+          },
+          "queuedAtMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "textSha256": {
+            "type": "string"
+          },
+          "version": {
+            "$ref": "#/components/schemas/InitialInputReceiptVersion"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConversationInitialInputReceiptResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "receipt",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "known"
+                ]
+              },
+              "receipt": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceipt"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A successful historical operation did not record an exact entry binding.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "legacy-unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
       "ConversationInputContract": {
         "type": "string",
         "enum": [
@@ -14775,7 +15052,8 @@
         "description": "Why a segment was in the turn: the observation that produced it and the event behind it.",
         "required": [
           "observation",
-          "event_id"
+          "event_id",
+          "queue_entry"
         ],
         "properties": {
           "event_id": {
@@ -14789,6 +15067,17 @@
           "observation": {
             "type": "string",
             "description": "The observation's serde `type` tag, e.g. `task_completed`, `track_wake`, `user_message`."
+          },
+          "queue_entry": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HarnessQueueEntryRef",
+                "description": "Identity and actual revision are one fact. Null for non-user/legacy entries;\nreleased historical origins without this metadata remain unversioned."
+              }
+            ]
           }
         }
       },
@@ -15047,6 +15336,24 @@
           "wedged"
         ]
       },
+      "HarnessQueueEntryRef": {
+        "type": "object",
+        "description": "The actual addressable queue entry and the revision its input was built from.",
+        "required": [
+          "id",
+          "rev"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "HarnessTimeoutEvidence": {
         "oneOf": [
           {
@@ -15124,6 +15431,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "InitialInputReceiptVersion": {
+        "type": "string",
+        "enum": [
+          "initial-input-v1"
+        ]
+      },
+      "InitialInputUnavailableReason": {
+        "type": "string",
+        "enum": [
+          "legacy-operation",
+          "creation-incomplete",
+          "runtime-unavailable",
+          "runtime-changed",
+          "shutting-down",
+          "legacy-projection",
+          "integrity"
+        ]
       },
       "InstallBody": {
         "type": "object",
@@ -17316,14 +17641,14 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
             },
-            "description": "Attachment identifiers retain their wire shape. Fresh Human attachment\ninput is explicitly refused until its owning canonical admission is available."
+            "description": "Historical conversations retain attachment binding. Canonical attachment\ninput requires its owning admission and is currently refused."
           },
           "replaces_turn": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Historical replacement intent. Fresh Human history replacement is\nexplicitly refused until its owning canonical operation is available."
+            "description": "Historical replacement intent. Canonical history replacement requires\nits owning operation and is currently refused."
           },
           "text": {
             "type": "string"
@@ -17345,7 +17670,7 @@
               "string",
               "null"
             ],
-            "description": "Accepted canonical message identity. Historical internal acknowledgements\nretain their original optional entry shape."
+            "description": "Canonical message identity or a real addressable new historical entry.\nStored historical acknowledgements retain their original optional ID."
           },
           "worker_session_id": {
             "type": "string"
@@ -18348,6 +18673,24 @@
             "type": "boolean"
           }
         }
+      },
+      "TrackConversationCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TrackConversationSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "initialInput"
+            ],
+            "properties": {
+              "initialInput": {
+                "$ref": "#/components/schemas/ConversationInitialInputReceiptResult"
+              }
+            }
+          }
+        ]
       },
       "TrackConversationSummary": {
         "type": "object",
@@ -19572,6 +19915,7 @@
           "areaCreateIdempotency",
           "conversationCreateModel",
           "conversationSide",
+          "conversationInitialInput",
           "kernelVersion",
           "apiVersion",
           "syncEventVersion",
@@ -19605,6 +19949,10 @@
           "conversationCreateModel": {
             "type": "boolean",
             "description": "First-message model selection is part of atomic conversation creation."
+          },
+          "conversationInitialInput": {
+            "type": "boolean",
+            "description": "Exact first-input receipt and coherent current-carrier inspection."
           },
           "conversationSide": {
             "type": "boolean",

@@ -32,6 +32,8 @@ it('stacks independent cards and preserves the parent DOM and draft across openi
     await page.getByRole('textbox', { name: 'Main message' }).fill('Unsent main words');
     await page.getByRole('button', { name: 'Open discussion' }).click();
     const cards = document.querySelectorAll<HTMLElement>('[data-nc-drawer]');
+    // Compare resting layout after each card's production presence effects are cleaned up.
+    await expect.poll(() => [...cards].every(card => card.getAnimations().length === 0)).toBe(true);
     const main = cards[0].getBoundingClientRect();
     const side = cards[1].getBoundingClientRect();
     expect(side.top).toBeGreaterThan(main.bottom);

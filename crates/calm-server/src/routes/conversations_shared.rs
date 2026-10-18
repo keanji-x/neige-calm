@@ -1,12 +1,10 @@
 //! Shared mechanics for lazily minting a Track assistant conversation on its
 //! first message.
 
-use sha2::{Digest, Sha256};
-
 use calm_truth::session_projection_row::ACTIVE_CARD_RUNTIME_SELECT;
 
 use crate::error::{CalmError, Result};
-use crate::operation::Phase;
+use crate::operation::{Operation, Phase};
 use crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS;
 use crate::state::{RouteState, WorkerState};
 
@@ -29,13 +27,6 @@ pub(crate) fn validate_first_message(text: &str) -> Result<()> {
     Ok(())
 }
 
-/// SHA-256 of the first message, verbatim — no trim, no normalisation.
-pub(crate) fn first_message_digest(text: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
 /// The existing bounded start-retry namespace, shared with pure acceptance's
 /// refusal to adopt any historical start attempt. No suffix is stripped.
 pub(crate) fn operation_key_attempts(base: &str) -> impl Iterator<Item = String> + '_ {
@@ -51,6 +42,14 @@ pub(crate) fn operation_key_attempts(base: &str) -> impl Iterator<Item = String>
 /// A terminally `Failed` predecessor is stepped over with a `#N` suffix; `Stuck` is
 /// not, because its compensation may not have finished and the card may still exist.
 pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Result<String> {
+    Ok(retryable_operation(s, base).await?.0)
+}
+
+/// The same authoritative key walk, retaining its read for receipt lookup.
+pub(crate) async fn retryable_operation(
+    s: &RouteState,
+    base: &str,
+) -> Result<(String, Option<Operation>)> {
     // Reads absence as "nothing has happened under this key yet", so this is only
     // correct while keyed `operations` rows are permanent.
     for key in operation_key_attempts(base) {
@@ -59,8 +58,8 @@ pub(crate) async fn retryable_operation_key(s: &RouteState, base: &str) -> Resul
             .find_by_kind_and_idempotency(PLANNER_HARNESS_START, &key)
             .await?;
         match existing {
-            None => return Ok(key),
-            Some(op) if op.phase != Phase::Failed => return Ok(key),
+            None => return Ok((key, None)),
+            Some(op) if op.phase != Phase::Failed => return Ok((key, Some(op))),
             Some(_) => continue,
         }
     }

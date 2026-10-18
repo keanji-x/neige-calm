@@ -410,7 +410,7 @@ describe('dragged conversation width', () => {
   function ConversationDrawer({ open, title, onClose, stacked = false }: { open: boolean; title: string; onClose: () => void; stacked?: boolean }) {
     return (
       <Drawer open={open} stacked={stacked} title={title} onClose={onClose} resize={useConversationDrawerResize()}>
-        <ChatThread canContinue conversation={conversation} turns={TURNS} cards={{}} stalled={false} />
+        <ChatThread hasPendingMessages={false} canContinue conversation={conversation} turns={TURNS} cards={{}} stalled={false} />
       </Drawer>
     );
   }

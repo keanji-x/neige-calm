@@ -20,15 +20,15 @@ import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
-function setup(prepareReport: ReportPreparationPort = prepareReportDocument, initial = '/track/a') {
+function setup(prepareReport: ReportPreparationPort = prepareReportDocument, initial = '/track/a', withProgress = false) {
   const tracks = ['a', 'b'].map((id) => ({ id, area_id: 'area', title: `Track ${id}`, sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null,
     created_at: 1, updated_at: 2 }));
   const cardsFor = (id: string) => [{ id: `report-${id}`, track_id: id, title: null, kind: 'track-report',
     sort: 0, deletable: false, created_at: 1, updated_at: 2,
-    payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: Array.from({ length: 50 }, (_, i) => ({
+    payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: [...(withProgress ? [{ id: 'progress-task', rev: 1, kind: 'task', payload: { key: 'progress-task', kind: 'codex', declared_by: 'user', ready: true, goal: 'Check progress' } }] : []), ...Array.from({ length: 50 }, (_, i) => ({
       id: `paragraph-${i}`, kind: 'prose', rev: 1, payload: { markdown: `Paragraph ${i}. A long report to read and return to.${i === 0 ? `\n\n[Jump to paragraph](${trackReportLinkUrl('a')}#paragraph-40) and [Read file](README.md)` : ''}` },
-    })) } }, ...Array.from({ length: 8 }, (_, i) => ({ id: `${id}-card-${i}`, track_id: id,
+    }))] } }, ...Array.from({ length: 8 }, (_, i) => ({ id: `${id}-card-${i}`, track_id: id,
       title: `Surface ${i}`, kind: 'view-state-surface', sort: i + 1, deletable: true,
       created_at: 1, updated_at: 2, payload: {},
     }))];
@@ -238,4 +238,32 @@ it('does not replay a served report hash when a same-Track panel destination cha
   await settle(); expect(reportPage().scrollTop).toBe(100);
   await act(() => router.navigate({ to: '/track/a', search: {}, hash: true }));
   await settle(); expect(reportPage().scrollTop).toBe(100);
+});
+
+it('remembers Progress expansion and collapse independently through sidebar navigation', async () => {
+  await page.viewport(1440, 900);
+  setup(prepareReportDocument, '/track/a', true);
+  const progress = () => document.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
+  const toggle = () => page.getByText('Progress', { exact: true });
+  await expect.element(toggle()).toBeVisible();
+  expect(progress().open).toBe(false);
+  await toggle().click();
+  expect(progress().open).toBe(true);
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click();
+  await expect.element(toggle()).toBeVisible();
+  expect(progress().open).toBe(false);
+  await page.getByRole('button', { name: /^Track Track a\b/ }).click();
+  await expect.element(toggle()).toBeVisible();
+  expect(progress().open).toBe(true);
+  await toggle().click();
+  expect(progress().open).toBe(false);
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click();
+  await expect.element(toggle()).toBeVisible();
+  await toggle().click();
+  await page.getByRole('button', { name: /^Track Track a\b/ }).click();
+  await expect.element(toggle()).toBeVisible();
+  expect(progress().open).toBe(false);
+  await page.getByRole('button', { name: /^Track Track b\b/ }).click();
+  await expect.element(toggle()).toBeVisible();
+  expect(progress().open).toBe(true);
 });

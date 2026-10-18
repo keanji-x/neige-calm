@@ -106,39 +106,6 @@ async fn track_add_admits_an_admin_planner() {
 }
 
 #[tokio::test]
-async fn track_add_admin_eligibility_refuses_bound_creator() {
-    let boot = boot(16).await;
-    let (creator, planner) = boot.user_track("portfolio").await;
-    let (status, _) = send(
-        boot.app.clone(),
-        "PATCH",
-        &format!("/api/tracks/{creator}"),
-        Some(json!({"admin": false})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    sqlx::query("UPDATE tracks SET plugin_scope = 'dev.neige.owner' WHERE id = ?1")
-        .bind(&creator)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
-    let (status, _) = send(
-        boot.app.clone(),
-        "PATCH",
-        &format!("/api/tracks/{creator}"),
-        Some(json!({"admin": true})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    let before = boot.track_count().await;
-    assert_forbidden(
-        boot.add(&planner, boot.args("k1")).await,
-        "a bound creator may not add a Track",
-    );
-    assert_eq!(boot.track_count().await, before);
-}
-
-#[tokio::test]
 async fn track_add_admin_eligibility_refuses_created_creator() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track("portfolio").await;

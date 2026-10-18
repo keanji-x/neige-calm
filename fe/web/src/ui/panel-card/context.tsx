@@ -32,10 +32,12 @@ export function ContextItem({ icon, label, metadata, trailing, buttonProps, menu
 }
 
 /** Shared group title, disclosure, spacing and optional host action. */
-export function ContextGroup({ title, children, collapsible = false, count, action, secondaryAction, actionVisibility = 'intent' }: Readonly<{
+export function ContextGroup({ title, children, collapsible = false, open, onOpenChange, count, action, secondaryAction, actionVisibility = 'intent' }: Readonly<{
   title: string;
   children: ReactNode;
   collapsible?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   count?: number;
   action?: ReactNode;
   secondaryAction?: ReactNode;
@@ -44,7 +46,7 @@ export function ContextGroup({ title, children, collapsible = false, count, acti
   const heading = <ListText as={collapsible ? 'span' : 'h2'} tone="secondary" emphasis="medium" className={styles.title}>
     {title}{count === undefined ? null : ` · ${count}`}
   </ListText>;
-  return collapsible ? <details className={styles.group}>
+  return collapsible ? <details className={styles.group} open={open} onToggle={event => onOpenChange?.(event.currentTarget.open)}>
     <summary className={styles.head}>{heading}<span className={styles.endSlot}><Icon name="chevron-right" size="sm" /></span></summary>
     {children}
   </details> : <section className={styles.group} aria-label={title}>

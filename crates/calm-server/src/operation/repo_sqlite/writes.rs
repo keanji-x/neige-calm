@@ -52,7 +52,7 @@ fn original_operation_query(original: &Operation) -> Result<QueryBuilder<'static
 /// The generic kernel owns the phase and live claim. Provider checkpoints may
 /// change phase detail and owned output within that phase, so neither is a
 /// frozen row-wide claim snapshot.
-pub(super) async fn has_live_claim_tx(tx: &mut Tx<'_>, original: &Operation) -> Result<bool> {
+pub(crate) async fn has_live_claim_tx(tx: &mut Tx<'_>, original: &Operation) -> Result<bool> {
     let mut query = original_operation_query(original)?;
     query
         .push(" AND phase=")

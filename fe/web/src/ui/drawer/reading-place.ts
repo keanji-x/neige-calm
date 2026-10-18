@@ -1,3 +1,5 @@
+import { scrollGeometry } from './scroll-geometry.ts';
+
 // Where the reader is in the drawer's pane, taken before its width moves and put back after. The browser's scroll anchoring stands down when an ancestor's width changes, so a reflowed transcript would otherwise move under the reader.
 
 /** What the reader is on: a character of text, or the block at the probe line. */
@@ -43,7 +45,7 @@ export function readingPlaceIn(pane: HTMLElement): ReadingPlace {
   return {
     atEnd: pane.scrollHeight - pane.scrollTop - pane.clientHeight <= 1,
     mark,
-    top: mark === null ? 0 : mark.getBoundingClientRect().top - box.top,
+    top: mark === null ? 0 : scrollGeometry(pane).y(mark.getBoundingClientRect().top),
   };
 }
 
@@ -54,6 +56,6 @@ export function restoreReadingPlace(pane: HTMLElement | null, place: ReadingPlac
   if (place === null || pane === null) return;
   if (place.atEnd) pane.scrollTop = pane.scrollHeight;
   else if (place.mark !== null && markConnected(place.mark)) {
-    pane.scrollTop += place.mark.getBoundingClientRect().top - pane.getBoundingClientRect().top - place.top;
+    pane.scrollTop += scrollGeometry(pane).y(place.mark.getBoundingClientRect().top) - place.top;
   }
 }

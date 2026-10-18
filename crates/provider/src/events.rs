@@ -49,8 +49,8 @@ pub enum PlannerEventKind {
         params: Value,
         questions: Vec<AskQuestion>,
     },
-    /// The next piece of an `agentMessage` item's text (#1923). Handled in memory only: unlike
-    /// every other event but `Approval`, it does not write the snapshot.
+    /// The next piece of an `agentMessage` item's text (#1923). Handled in memory only;
+    /// it writes neither a transcript row nor the snapshot.
     ReplyDelta {
         turn_id: String,
         item_id: String,
@@ -74,8 +74,8 @@ pub enum PlannerEventKind {
     Approval {
         method: String,
     },
-    /// Nothing the run loop acts on, such as a reasoning delta or a frame it does not model. It
-    /// still passes the thread filter and writes the snapshot.
+    /// Nothing the run loop acts on, such as a reasoning delta or a frame it does not model.
+    /// Dropped without changing harness state, writing the snapshot, or emitting durable events.
     Ignored,
 }
 

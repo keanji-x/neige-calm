@@ -7,7 +7,7 @@ const cursor = (position:number) => ({ contract:'conversation_v1',source:'presen
 const human = (id:string,uid:string,position:number): ConversationDisplayItem => ({cursor:cursor(position),source:{
   kind:'human',message_id:id,revision:1,author:{user_id:uid,display_name:uid},text:'same words',attachments:[],created_at_ms:position,
 }});
-const op:SendOp = { key:'key',phase:'confirmed',fromComposer:true,replaces:null,echo:{
+const op:SendOp = { key:'key',phase:'confirmed',queueRevision:null,fromComposer:true,replaces:null,echo:{
   id:'echo',author:'you',authorUserId:'jian',entryId:'message-a',text:'same words',atMs:1,
   serverHighWaterBefore:0,queued:false,
 }};

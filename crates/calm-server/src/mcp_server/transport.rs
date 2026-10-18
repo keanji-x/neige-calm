@@ -620,13 +620,7 @@ async fn dispatch_plugin_tools_call(
                 .ok_or_else(|| {
                     RpcError::unavailable(format!("plugin `{plugin_id}` not running"))
                 })?;
-            // Only a Planner's call carrying a track is recorded for `neige_source_capture`; the identity is the resolved one, never anything in the request.
-            let record_for = match (&identity.role, identity.track_id.as_deref()) {
-                (CardRole::Planner, Some(track_id)) => {
-                    Some((track_id.to_string(), arguments.clone()))
-                }
-                _ => None,
-            };
+            let recorded_args = arguments.clone();
             let called = match &client {
                 // The Track rides along only to LOCAL plugins; a remote connector is a third party that must not learn which Track a reader is looking at.
                 // So does the resolved caller, never anything in the request's `_meta` or `arguments`.
@@ -646,19 +640,17 @@ async fn dispatch_plugin_tools_call(
                 ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await,
                 // An `Ok` result carries the child's own `isError` verdict, an `Err` is a kernel-side refusal.
                 ConnectorClient::Cli(c) => c.tools_call(&tool_name, arguments).await,
-                ConnectorClient::Builtin(c) => c.tools_call(&tool_name, &arguments),
+                ConnectorClient::Builtin(c) => c.tools_call(&tool_name, &arguments).await,
             };
             // A call that produced no result (transport error, unparseable reply, disconnect) still replaces the key's entry with `Error`, so the previous body is not capturable any more.
-            if let Some((track_id, args)) = record_for {
-                match &called {
-                    Ok(result) => ctx
-                        .plugin_results
-                        .record(&track_id, &plugin_id, &tool_name, &args, result),
-                    Err(_) => ctx
-                        .plugin_results
-                        .record_failure(&track_id, &plugin_id, &tool_name, &args),
-                }
-            }
+            super::plugin_record::record(
+                ctx,
+                &identity,
+                &plugin_id,
+                &tool_name,
+                &recorded_args,
+                called.as_ref().ok(),
+            );
             let result = called?;
             serde_json::to_value(result)
                 .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))

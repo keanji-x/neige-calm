@@ -2,7 +2,8 @@ import type { ManagedProviderAvailability } from '../../../../core/domain/agent-
 import { managedProviderProblem } from '../../../../core/domain/agent-providers.ts';
 import { onlineManager } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
-import { CONVERSATION_CREATE_TEXT, conversationCreateFailure, conversationCreateUnknownText, CONVERSATION_TEXT_MAX, FOLLOW_INSTALLATION_DEFAULT, type Conversation } from '../../../../core/domain/conversation.ts';
+import { CONVERSATION_CREATE_TEXT, conversationCreateFailure, conversationCreateUnknownText, CONVERSATION_TEXT_MAX, FOLLOW_INSTALLATION_DEFAULT, type Conversation, type CreatedConversation } from '../../../../core/domain/conversation.ts';
+import type { SubmittedConversationInput } from '../../../../core/domain/conversation-initial-input.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import { admitTransport } from '../providers/recovery-mutation.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
@@ -13,7 +14,7 @@ import type { ConversationCreationSource } from './contracts.ts';
 type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'creating' | 'error' | 'remedy'>>;
 
 export type ConversationDraftActionInput = Readonly<{
-  registry: Pick<ConversationRegistry, 'editDraft' | 'startDraft' | 'adoptDraft' | 'discardDraft'>;
+  registry: Pick<ConversationRegistry, 'editDraft' | 'startDraft' | 'acceptDraft' | 'discardDraft'>;
   draft: ConversationDraft | null;
   creating: boolean;
   source: ConversationCreationSource;
@@ -21,6 +22,7 @@ export type ConversationDraftActionInput = Readonly<{
   transport: ApiTransportPort;
   supportsSideConversation: boolean;
   supportsDraftModel: boolean;
+  supportsInitialInput: boolean;
   supportsAssistantProviders: boolean;
   managedProviders: readonly ManagedProviderAvailability[] | undefined;
   recheckManagedProviders: () => Promise<readonly ManagedProviderAvailability[]>;
@@ -33,7 +35,7 @@ export type ConversationDraftActionInput = Readonly<{
 /** A command assembly for this render's draft. Construction has no side effects;
  * dispatched attempts retain their original scope/key and settle through Registry. */
 export function createConversationDraftActions({ registry, draft, creating, source, sourceScopeId, transport,
-  supportsSideConversation, supportsDraftModel, supportsAssistantProviders, managedProviders, recheckManagedProviders, openDraft, closeView, onGone, onAdopt,
+  supportsSideConversation, supportsDraftModel, supportsInitialInput, supportsAssistantProviders, managedProviders, recheckManagedProviders, openDraft, closeView, onGone, onAdopt,
 }: ConversationDraftActionInput) {
   /* Every draft write goes through one of these three, each a whole-object update,
        and each a no-op when the draft it was computed from is no longer the one held. */
@@ -45,17 +47,17 @@ export function createConversationDraftActions({ registry, draft, creating, sour
   const amendDraft = (from: ConversationDraft, change: DraftEdit) => {
     withDraft(from, (current) => ({ ...current, ...change }));
   };
-  /* The only way to change the key, and it always clears `sentText`: a key is the
-       identity of an attempt and `sentText` is what that attempt sent. */
+  /* The only way to change the key, and it always clears `submitted`: a key is the
+       identity of an attempt and `submitted` is what that attempt sent. */
   const rekeyDraft = (from: ConversationDraft, key: string, change: DraftEdit = {}): ConversationDraft => {
-    const next = { ...from, ...change, key, sentText: null };
-    withDraft(from, (current) => ({ ...current, ...change, key, sentText: null }));
+    const next = { ...from, ...change, key, submitted: null };
+    withDraft(from, (current) => ({ ...current, ...change, key, submitted: null }));
     return next;
   };
   /** Records that a POST is going out under this key with these words. Called
    *  before the request, so a failure finds the right baseline. */
-  const markDraftSent = (from: ConversationDraft, text: string) => {
-    withDraft(from, (current) => ({ ...current, text, sentText: text }));
+  const markDraftSent = (from: ConversationDraft, submitted: SubmittedConversationInput) => {
+    withDraft(from, (current) => ({ ...current, text: submitted.text, submitted }));
   };
 
   /* The `+` opens a draft scoped to one concrete Track; Today materialises the
@@ -63,7 +65,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
   const begin = (text: string | null): boolean => {
     /* A draft that was sent and failed is still open business: reopened with the
            same key, so the next attempt is a retry and not a second conversation. */
-    if (draft !== null && draft.sentText !== null) {
+    if (draft !== null && draft.submitted !== null) {
       openDraft();
       return false;
     }
@@ -73,7 +75,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
       scopeId: sourceScopeId,
       provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT,
       key: mintIdempotencyKey(),
-      text, autoSend: text !== null, sentText: null, creating: false, error: null, remedy: null,
+      text, autoSend: text !== null, submitted: null, creating: false, error: null, remedy: null,
     });
     openDraft();
     return true;
@@ -83,45 +85,59 @@ export function createConversationDraftActions({ registry, draft, creating, sour
 
   /* `from` is not decoration: this runs after an `await`, and the reducer records
        the row only if `from` is still held. */
-  const adopt = (from: ConversationDraftId, row: Conversation) => {
-    onAdopt(from, row.id);
-    registry.adoptDraft(from, row.id);
-    /* Nothing is minted for the first sentence here: the kernel writes it to the
-           transcript at drain, and the item read serves it back. */
+  const adopt = (from: ConversationDraft, result: CreatedConversation) => {
+    if (from.submitted === null || result.conversation.id !== source.derivedCardId(from.key)) {
+      throw new Error('The first-message result does not match this conversation.');
+    }
+    if (registry.acceptDraft(from, result, from.submitted)) onAdopt(from, result.conversation.id);
   };
 
-  /* A press that sent nothing is refused (#2131), unless an earlier attempt under this key, `sentText`, may have
+  /* A press that sent nothing is refused (#2131), unless an earlier attempt under this key, `submitted`, may have
      created the conversation: then it stays unconfirmed. Why nothing went out is the global indicator's to say. */
-  const notSentText = (sentText: string | null): string =>
-    sentText === null ? CONVERSATION_CREATE_TEXT.refused : CONVERSATION_CREATE_TEXT.unknown;
+  const notSentText = (submitted: SubmittedConversationInput | null): string =>
+    submitted === null ? CONVERSATION_CREATE_TEXT.refused : CONVERSATION_CREATE_TEXT.unknown;
 
   /* Re-read the list and adopt this draft's OWN row (by derived id), never "the
        list grew". Three answers: `'unknown'` is the re-read itself failing, and
        treating it as `'absent'` would mint a new key over an attempt that may have
        committed. */
   const adoptIfItLanded = async (
-    refresh: () => Promise<readonly Conversation[]>,
+    refresh: (beforePublish: (rows: readonly Conversation[]) => void) => Promise<readonly Conversation[]>,
     derivedCardId: (idempotencyKey: string) => string,
-    scopeId: string,
-    key: string,
+    from: ConversationDraft,
     current: () => boolean,
   ): Promise<'landed' | 'absent' | 'unknown'> => {
     if (!current()) return 'unknown';
-    const rows = await refresh().catch(() => null);
+    const cardId = derivedCardId(from.key);
+    const observation = await source.inspect(cardId, from.key).catch(() => null);
+    if (!current()) return 'unknown';
+    let adopted = false;
+    const rows = await refresh((rows) => {
+      const landed = rows.find((row) => row.id === cardId);
+      if (!current() || observation === null || landed === undefined) return;
+      if (observation.kind === 'unavailable' && observation.receipt === null) {
+        if (observation.reason !== 'legacy-operation') return;
+        adopt(from, { conversation: landed, initialInput: { kind: 'legacy-unavailable' } });
+      } else {
+        if (observation.receipt === null) return;
+        adopt(from, { conversation: landed, initialInput: { kind: 'known', receipt: observation.receipt } });
+      }
+      adopted = true;
+    }).catch(() => null);
     if (!current() || rows === null) return 'unknown';
-    const cardId = derivedCardId(key);
-    const landed = rows.find((row) => row.id === cardId);
-    if (landed === undefined) return 'absent';
-    adopt({ scopeId, key }, landed);
-    return 'landed';
+    return adopted ? 'landed' : rows.some(row => row.id === cardId) ? 'unknown' : 'absent';
   };
 
   /* The draft's own send: it runs while there is no card, and its text lives in the
        registry's draft entry until the row it created is adopted. */
   const refuseOfflineDraft = (attempt: ConversationDraft, text: string, answers = managedProviders): boolean => {
+    if (!supportsInitialInput) {
+      amendDraft(attempt, { text, error: 'This server does not support first-message receipts. Update or reconnect before sending.', remedy: 'retry' });
+      return true;
+    }
     const providerProblem = !supportsAssistantProviders
       ? 'This server does not support Assistant provider selection. Update or reconnect before sending.'
-      : attempt.sentText === null ? managedProviderProblem(answers, attempt.provider) : null;
+      : attempt.submitted === null ? managedProviderProblem(answers, attempt.provider) : null;
     if (providerProblem !== null) {
       amendDraft(attempt, { text, error: providerProblem, remedy: 'retry' });
       return true;
@@ -135,7 +151,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
       return true;
     }
     if (onlineManager.isOnline()) return false;
-    amendDraft(attempt, { text, error: notSentText(attempt.sentText), remedy: 'retry' });
+    amendDraft(attempt, { text, error: notSentText(attempt.submitted), remedy: 'retry' });
     return true;
   };
 
@@ -146,7 +162,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
       return () => { try { checkpoint?.(); return true; } catch { return false; } };
     } catch {
       // Initial submit has handed these words to the held draft, even when no POST can leave.
-      amendDraft(attempt, { text, error: notSentText(attempt.sentText), remedy: 'retry' });
+      amendDraft(attempt, { text, error: notSentText(attempt.submitted), remedy: 'retry' });
       return null;
     }
   };
@@ -157,16 +173,15 @@ export function createConversationDraftActions({ registry, draft, creating, sour
    */
   const createDraft = (from: ConversationDraft, text: string, current: () => boolean, recheck: ConversationDraft['remedy'], answers = managedProviders) => {
     const { create, refresh, derivedCardId } = source;
-    const scopeId = sourceScopeId;
     /* The draft this send is for, fixed here: a send that outlives its draft changes nothing. */
     let attempt = from;
-    let previouslySentText = attempt.sentText;
+    let previouslySubmitted = attempt.submitted;
     void (async () => {
       try {
         // A frozen retry may already have landed while the drawer was closed.
         // Reconcile first, retaining the original key when its row is absent.
-        if (recheck === null && attempt.sentText !== null) {
-          const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
+        if (recheck === null && attempt.submitted !== null) {
+          const landing = await adoptIfItLanded(refresh, derivedCardId, attempt, current);
           if (landing === 'landed') return;
           if (landing === 'unknown') {
             amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
@@ -175,9 +190,9 @@ export function createConversationDraftActions({ registry, draft, creating, sour
         }
         // Refresh display metadata, but a frozen dispatched request keeps its original
         // admission: neither probe failure nor new capabilities can prevent reconciliation/replay.
-        if (attempt.sentText !== null) void recheckManagedProviders().catch(() => undefined);
+        if (attempt.submitted !== null) void recheckManagedProviders().catch(() => undefined);
         if (recheck !== null) {
-          const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
+          const landing = await adoptIfItLanded(refresh, derivedCardId, attempt, current);
           if (landing === 'landed') return;
           if (landing === 'unknown') {
             amendDraft(attempt, { error: conversationCreateUnknownText(recheck), remedy: recheck });
@@ -185,22 +200,23 @@ export function createConversationDraftActions({ registry, draft, creating, sour
           }
           attempt = rekeyDraft(attempt, mintIdempotencyKey());
         }
-        if (!current()) { amendDraft(attempt, { error: notSentText(attempt.sentText), remedy: 'retry' }); return; }
+        if (!current()) { amendDraft(attempt, { error: notSentText(attempt.submitted), remedy: 'retry' }); return; }
         if (refuseOfflineDraft(attempt, text, answers)) return;
-        previouslySentText = attempt.sentText;
-        markDraftSent(attempt, text);
-        attempt = { ...attempt, text, sentText: text };
-        const created = await create(text, attempt.key, attempt.provider, attempt.model, attempt.side);
-        if (current()) adopt(attempt, created);
-        else amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
+        previouslySubmitted = attempt.submitted;
+        const submitted = attempt.submitted ?? Object.freeze({ text, atMs: Date.now() });
+        markDraftSent(attempt, submitted);
+        attempt = { ...attempt, text, submitted };
+        await create(submitted.text, attempt.key, attempt.provider, attempt.model, attempt.side, (result) => {
+          if (current()) adopt(attempt, result);
+        });
       } catch (error: unknown) {
         if (error instanceof NotSentError) {
           // Marking a request optimistically must not invent dispatch when the
           // mutation's later guard refused it. Keep any earlier unknown send.
-          registry.editDraft(attempt, (current) => ({ ...current, sentText: previouslySentText }));
-          amendDraft(attempt, { error: notSentText(previouslySentText), remedy: 'retry' });
+          registry.editDraft(attempt, (current) => ({ ...current, submitted: previouslySubmitted }));
+          amendDraft(attempt, { error: notSentText(previouslySubmitted), remedy: 'retry' });
         } else {
-          attempt = await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt, current);
+          attempt = await handleCreateFailure(error, refresh, derivedCardId, attempt, current);
         }
       } finally {
         amendDraft(attempt, { creating: false });
@@ -229,15 +245,14 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     amendDraft(draft, { text, creating: true, error: null, remedy: null });
     /* Editing the text after a failure has to look at the list first: the old key may have succeeded with the old
        text, and only a re-read saying "no new row" earns a new key. */
-    createDraft(draft, text, current, draft.sentText !== null && draft.sentText !== text ? 'retry' : null, answers);
+    createDraft(draft, text, current, draft.submitted !== null && draft.submitted.text !== text ? 'retry' : null, answers);
     return true;
   };
 
   async function handleCreateFailure(
     error: unknown,
-    refresh: () => Promise<readonly Conversation[]>,
+    refresh: (beforePublish: (rows: readonly Conversation[]) => void) => Promise<readonly Conversation[]>,
     derivedCardId: (idempotencyKey: string) => string,
-    scopeId: string,
     attempt: ConversationDraft,
     current: () => boolean,
   ): Promise<ConversationDraft> {
@@ -254,7 +269,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
         return attempt;
       case 'exhausted':
         /* A spent key can never succeed again, so a new one is minted and takes
-                   `sentText` with it: nothing was posted under this key. */
+                   `submitted` with it: nothing was posted under this key. */
         return rekeyDraft(attempt, mintIdempotencyKey(), { error: message, remedy: 'retry' });
       case 'stale-payload':
         amendDraft(attempt, { error: message, remedy: 'new-conversation' });
@@ -267,7 +282,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
         /* The derived card exists, so this key can never mint again; a new key is
                    offered only once the re-read has said there is no row. */
         amendDraft(attempt, { error: message });
-        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
+        const landing = await adoptIfItLanded(refresh, derivedCardId, attempt, current);
         if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
         if (landing === 'unknown') amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
         return attempt;
@@ -276,7 +291,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
         /* Ambiguous (a 503 included: on this endpoint it is raised after the card is
                  minted), so the look for this key's card is not skipped. */
         amendDraft(attempt, { error: message });
-        if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current) !== 'landed') {
+        if (await adoptIfItLanded(refresh, derivedCardId, attempt, current) !== 'landed') {
           amendDraft(attempt, { remedy: 'retry' });
         }
         return attempt;
@@ -299,7 +314,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
      local takeover, not a dispatched/accepted POST or capability confirmation. */
   const retryDraft = () => {
     if (creating || draft === null || draft.text === null) return false;
-    if (draft.sentText !== null) return sendDraft(draft.sentText);
+    if (draft.submitted !== null) return sendDraft(draft.submitted.text);
     const text = draft.text;
     if (!onlineManager.isOnline()) return false;
     const current = admitDraft(draft, text); if (current === null) return false;
@@ -318,7 +333,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
        was sent and failed keeps its key and words so the next attempt is a retry. */
   const closeDrawer = () => {
     closeView();
-    if (draft !== null && draft.sentText === null) registry.discardDraft(draft);
+    if (draft !== null && draft.submitted === null) registry.discardDraft(draft);
   };
 
   return { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer };

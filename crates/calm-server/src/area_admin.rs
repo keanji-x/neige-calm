@@ -22,7 +22,7 @@ pub async fn eligible_tx<'e>(
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM tracks t JOIN areas a ON a.id = t.area_id \
          WHERE t.id = ?1 AND t.parent_track_id IS NULL AND t.creator_track_id IS NULL \
-         AND COALESCE(t.purpose, '') <> 'area-chat' AND t.plugin_scope IS NULL \
+         AND COALESCE(t.purpose, '') <> 'area-chat' \
          AND a.kind <> 'system' AND NOT EXISTS \
          (SELECT 1 FROM managed_track_identities m WHERE m.track_id = t.id))",
     )

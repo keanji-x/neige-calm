@@ -10,8 +10,8 @@ pub use crate::ids::{ActorId, AreaId, CardId, TrackId};
 pub use calm_types::model::{
     Area, AreaFolder, AreaKind, AreaResolve, Card, CardRole, CardRuntimeView, FolderConflict,
     FolderConflictKind, HarnessInputOrigin, HarnessInputPresentation, HarnessInputSegment,
-    HarnessItem, NewTrackRecipe, Overlay, Track, TrackConversationSummary, TrackRecipe,
-    TrackWorkspace, TrackWorkspaceKind, default_deletable,
+    HarnessItem, HarnessQueueEntryRef, NewTrackRecipe, Overlay, Track, TrackConversationSummary,
+    TrackRecipe, TrackWorkspace, TrackWorkspaceKind, default_deletable,
 };
 pub use calm_types::task_execution::{TaskAccess, TaskStart};
 

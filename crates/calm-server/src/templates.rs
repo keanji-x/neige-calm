@@ -27,12 +27,13 @@ pub const SITE_PREFIX: &str = "site/";
 
 /// The builtin template files, in picker order. Parsed at first use; a file that does not
 /// parse is a panic there, deliberately.
-static BUILTIN_SOURCES: [&str; 5] = [
+static BUILTIN_SOURCES: [&str; 6] = [
     include_str!("../templates/builtin/daily-planner.md"),
     include_str!("../templates/builtin/dev.md"),
     include_str!("../templates/builtin/small-change.md"),
     include_str!("../templates/builtin/investigation.md"),
     include_str!("../templates/builtin/investment-research.md"),
+    include_str!("../templates/builtin/opencode-history-rebuild.md"),
 ];
 
 /// One roster entry. Every field is private and there is no constructor/`Clone`/`Default`, so in
@@ -375,7 +376,7 @@ mod tests {
     use calm_types::track_report::{research_header, work_brief_header};
     use std::collections::BTreeSet;
 
-    /// The three plan templates; `investment-research` is the one report-only entry.
+    /// Plan templates with a shared working-method contract; other entries use their own briefs.
     const PLAN_TEMPLATES: [&str; 3] = [DEV, SMALL_CHANGE, INVESTIGATION];
 
     fn roster() -> &'static TemplateRoster {
@@ -400,7 +401,8 @@ mod tests {
                 DEV,
                 SMALL_CHANGE,
                 INVESTIGATION,
-                INVESTMENT_RESEARCH
+                INVESTMENT_RESEARCH,
+                "opencode-history-rebuild"
             ]
         );
     }

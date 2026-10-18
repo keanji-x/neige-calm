@@ -590,9 +590,15 @@ impl ProviderAdapter for TerminalAdapter {
 
 #[async_trait]
 impl ProviderAdapter for TerminalWorkerAdapter {
-    async fn prepare_external(&self, input: &Value, ctx: &SpawnCtx) -> Result<()> {
+    async fn prepare_external(
+        &self,
+        input: &Value,
+        _op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> Result<Option<Box<dyn crate::operation::PreparedTx>>> {
         let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        target::prepare(ctx, &payload.track_id, explicit_terminal_cwd(payload.cwd)).await
+        target::prepare(ctx, &payload.track_id, explicit_terminal_cwd(payload.cwd)).await?;
+        Ok(None)
     }
 
     fn kind(&self) -> &'static str {

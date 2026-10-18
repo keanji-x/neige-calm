@@ -168,6 +168,9 @@ async fn codex_reader_prompt_states_repo_checkout_head_and_base() {
     );
     assert!(output.data.get("declared_head").is_none());
 
+    // The independent writer-prompt check needs an unoccupied checkout; the readers above
+    // intentionally retain their dispatched tasks and read-only leases.
+    let harness = worker_lease_harness().await;
     let (output, _) = prepare_worker(&harness, "writer").await;
     let prompt = output.output_string("prompt", "test").unwrap();
     assert_eq!(

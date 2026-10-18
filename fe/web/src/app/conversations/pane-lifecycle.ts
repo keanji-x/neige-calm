@@ -103,7 +103,7 @@ export function useConversationDraftAutoSend({ draftOpen, draft, creating, regis
   const sendDraftRef = useRef(sendDraft);
   sendDraftRef.current = sendDraft;
   useEffect(() => {
-    if (!draftOpen || draft?.autoSend !== true || draft.text === null || draft.sentText !== null
+    if (!draftOpen || draft?.autoSend !== true || draft.text === null || draft.submitted !== null
       || creating || autoSent.current === draft.key) return;
     autoSent.current = draft.key;
     // Consume the one-shot intent before delivery; retry keys must never re-arm it.

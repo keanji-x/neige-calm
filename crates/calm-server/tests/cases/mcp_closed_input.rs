@@ -5,8 +5,6 @@
 
 #![cfg(unix)]
 
-use std::sync::Arc;
-
 use crate::support;
 
 use calm_server::mcp_server::build_default_registry;
@@ -32,27 +30,7 @@ fn kernel_tools() -> Vec<(String, Vec<String>, Value)> {
     tools
 }
 
-/// The built-in plugins' native tools sit behind their plugin's fence; bind a host that runs every
-/// built-in so a call reaches them.
-async fn bind_running_builtins(boot: &support::mcp::CardBoot) {
-    let host = Arc::new(calm_server::plugin_host::PluginHost::new_full(
-        Arc::new(calm_server::plugin_host::PluginRegistry::empty().with_builtins()),
-        boot.repo.clone(),
-        boot._tmp.path().join("plugins"),
-        boot._tmp.path().join("plugin-data"),
-        Vec::new(),
-        boot.events.clone(),
-        calm_server::state::WriteContext::new(
-            boot.card_role_cache.clone(),
-            boot.track_area_cache.clone(),
-        ),
-    ));
-    host.reconcile_builtins().await.unwrap();
-    for plugin in calm_server::builtin_plugins::catalog() {
-        host.enable(&plugin.manifest().id).await.unwrap();
-    }
-    assert!(boot.plugin_host.set(host).is_ok());
-}
+use crate::support::builtins as configured;
 
 async fn scope_track(boot: &support::mcp::CardBoot, scope: Option<&str>) {
     let pool = boot.repo.sqlite_pool().expect("sqlite-backed boot");
@@ -67,7 +45,7 @@ async fn scope_track(boot: &support::mcp::CardBoot, scope: Option<&str>) {
 #[tokio::test]
 async fn every_kernel_tool_refuses_unknown_arguments() {
     let boot = boot_with_role(CardRole::Planner).await;
-    bind_running_builtins(&boot).await;
+    let _builtins = configured::running(&boot).await;
 
     let tools = kernel_tools();
     assert!(
@@ -128,7 +106,7 @@ async fn every_kernel_tool_refuses_unknown_arguments() {
 #[tokio::test]
 async fn compiled_plugin_tools_dispatch_under_their_minted_names() {
     let boot = boot_with_role(CardRole::Planner).await;
-    bind_running_builtins(&boot).await;
+    let _builtins = configured::running(&boot).await;
     let call = |name: &'static str, args: Value| {
         let boot = &boot;
         async move {
@@ -187,7 +165,7 @@ async fn compiled_plugin_tools_dispatch_under_their_minted_names() {
 #[tokio::test]
 async fn every_gitforge_tool_refuses_unknown_arguments() {
     let boot = boot_with_role(CardRole::Planner).await;
-    bind_running_builtins(&boot).await;
+    let _builtins = configured::running(&boot).await;
     scope_track(&boot, Some("gitforge")).await;
     let manifest = calm_server::builtin_plugins::catalog()
         .iter()

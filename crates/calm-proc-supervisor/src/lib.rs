@@ -459,7 +459,7 @@ impl ProcRegistry {
 
     pub async fn terminate_all_process_groups(&self) {
         if let Some(executor) = &self.executor {
-            executor.stop_known().await;
+            executor.graceful_shutdown().await;
         }
         self.terminate_all_process_groups_sync();
     }

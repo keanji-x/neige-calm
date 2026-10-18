@@ -65,7 +65,7 @@ test('edits the latest message in the composer and replaces it on Send, in one k
     const input = (cardId: string) => [
       { presentation: 'system_planner_turn_budget', text: "[Trusted Planner turn budget]\nThis turn's execution budget is 30 minutes, excluding held requests. Begin wrapping up with 300 seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.", attachments: [] },
       { presentation: 'user', text: 'User says:\nOriginal prompt',
-      origin: { observation: 'user_message', event_id: null },
+      origin: { observation: 'user_message', event_id: null, queue_entry: null },
       attachments: [{ id: imageId, contentType: 'image/png', size: 68, url: `/api/cards/${cardId}/planner/attachments/${imageId}` }] }];
     await page.route('**/api/cards/*/harness/items?**', async (route) => {
       const response = await route.fetch();

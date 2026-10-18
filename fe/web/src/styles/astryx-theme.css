@@ -6,7 +6,7 @@
  * disjoint from ours — measured: zero name collisions against tokens.css.
  * The vendor package documents `astryx-theme` as the layer where a host
  * app overrides those variables, and that is exactly what this file is:
- * behaviour and structure stay Astryx's, appearance stays ours.
+ * structure stays Astryx's; appearance and shared press feedback stay ours.
  *
  * Ordering: entry.css imports vendor.css (which carries Astryx's own
  * `astryx-base` sublayer) BEFORE this file, and both land inside the
@@ -49,6 +49,15 @@
      the composer's inherited concentric button radius. Send/Stop stay circles. */
   .astryx-chat-send-button {
     border-radius: var(--radius-full);
+  }
+
+  /* Published Button theme hook. UI DepthFeedback owns the only press
+     transform; neutralize vendor resting/active transforms in the theme layer.
+     Caller layout transforms (inline or component-layer) still win the cascade,
+     and the UI effect composes additively with them. No private StyleX classes. */
+  .astryx-button,
+  .astryx-button:active {
+    transform: none;
   }
 
   :root {

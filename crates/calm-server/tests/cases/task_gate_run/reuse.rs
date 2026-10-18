@@ -9,7 +9,9 @@ use calm_server::ids::ActorId;
 use calm_server::operation::task_verify_adapter::{
     TASK_VERIFY_KIND, TaskVerifyAdapter, TaskVerifyOperationPayload,
 };
-use calm_server::operation::{Operation, Phase};
+use calm_server::operation::{
+    OperationKey, OperationRepo, PreparedTxResult, SpawnCtx, SqlxOperationRepo,
+};
 
 /// Report `a` done and settle its delivery: the forge Operation to terminal, then the settlement
 /// step the stopped listener would have run.
@@ -304,32 +306,53 @@ async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
         attempt: 1,
     })
     .unwrap();
-    let op = Operation {
-        id: "u7-uncommitted-prepare".into(),
-        operation_key: "u7-uncommitted-prepare".into(),
-        kind: TASK_VERIFY_KIND.into(),
-        idempotency_key: Some(format!("{}#g1", task.id)),
-        payload_hash: String::new(),
-        target_type: "track".into(),
-        target_id: Some(task.track_id.clone()),
-        target: json!({}),
-        payload: payload.clone(),
-        tx_output: None,
-        phase: Phase::Pending,
-        phase_detail: None,
-        attempt: 0,
-        last_error: None,
-        compensation_state: None,
-        lease_owner: None,
-        lease_until_ms: None,
-        spawn_artifacts: None,
-        parked_at_ms: None,
-        parked_deadline_ms: None,
-    };
     let pool = fx.pool();
+    let repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
+    let op_id = repo
+        .insert_operation(
+            TASK_VERIFY_KIND,
+            OperationKey {
+                operation_key: calm_server::model::new_id(),
+                idempotency_key: Some(format!("{}#g1", task.id)),
+                payload_hash: calm_server::routes::idempotency_key::stable_payload_hash(&payload)
+                    .unwrap(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let op = repo
+        .claim_drive_batch(32)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|op| op.id == op_id)
+        .unwrap();
+    let ctx = SpawnCtx::new(
+        fx.boot.ctx.repo.clone(),
+        repo,
+        Arc::new(calm_server::state::DaemonClient::new_stub()),
+        calm_server::terminal_renderer::TerminalRendererRegistry::new(),
+        fx.boot.ctx.events.clone(),
+        calm_server::operation::OperationCompletionBus::new(),
+    );
+    let prepared = adapter
+        .prepare_external(&payload, &op, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+    let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, &op).await.unwrap() else {
+        panic!("stable preparation became stale");
+    };
     tx.rollback().await.unwrap();
+    // The same persisted Pending op is retried by the real scheduler; only its lease expires.
+    sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
+        .bind(calm_server::model::now_ms() - 1)
+        .bind(&op_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     output.data["target"]["kind"] == "reused"
 }
 
@@ -402,3 +425,6 @@ async fn a_reprepared_reuse_neither_fails_nor_truncates_the_run_log() {
     let gate_log = std::fs::read_to_string(&g1_log).unwrap();
     assert!(gate_log.contains("::gate-step say"), "{gate_log}");
 }
+
+#[path = "reuse_preparation.rs"]
+mod reuse_preparation;

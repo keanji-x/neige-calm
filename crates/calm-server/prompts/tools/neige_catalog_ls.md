@@ -1,0 +1,1 @@
+Planner-only: list template or recipe starting points in pages of 1..50, at most 64 KiB. Follow next_cursor unchanged; catalog changes require restarting without cursor. Templates share the REST picker's availability, input_schema and tasks; recipes include identity/revision. Discovery grants no admission. Use neige_catalog_cat for content before creating.

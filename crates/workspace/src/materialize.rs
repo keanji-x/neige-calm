@@ -1,7 +1,7 @@
 //! Managed repository materialization; callers own when and for whom it runs.
 use crate::command::{isolated_git_command, neige_git_command};
 use crate::error::{Error, Result};
-use crate::git::ensure_git_exclude_entry;
+use crate::git::{ensure_exclude_entry_at, exclude_entry_present, git_exclude_path};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,6 +39,79 @@ pub fn materialize_managed_workspace(
 /// remains responsible for repairing or refusing that directory at its existing call time.
 pub fn is_materialized(path: &Path, track_id: &str) -> Result<bool> {
     Ok(read_owner_marker(path)?.as_deref() == Some(track_id) && git_head_resolves(path))
+}
+
+/// One-use steady-state materialization proof. Git-derived paths are observed outside SQL.
+pub struct ManagedWorkspaceObservation {
+    identity: crate::directory::DirectoryIdentity,
+    exclude_path: PathBuf,
+}
+impl ManagedWorkspaceObservation {
+    pub fn identity(&self) -> &crate::directory::DirectoryIdentity {
+        &self.identity
+    }
+}
+
+pub fn observe_materialized(
+    path: &Path,
+    track_id: &str,
+) -> Result<Option<ManagedWorkspaceObservation>> {
+    let lock = path_lock(path);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if !is_materialized(path, track_id)? {
+        return Ok(None);
+    }
+    let identity =
+        crate::directory::DirectoryIdentity::open(path, true)?.verify_managed_owner(track_id)?;
+    let exclude_path = git_exclude_path(path)?;
+    // Required metadata must already be ready before clean status. Its absence is an explicit
+    // repair classification, never an ordinary dirty-tree fallback.
+    if !exclude_entry_present(&exclude_path, NEIGE_GIT_EXCLUDE_ENTRY)? {
+        return Ok(None);
+    }
+    Ok(Some(ManagedWorkspaceObservation {
+        identity,
+        exclude_path,
+    }))
+}
+
+/// Complete only the observed steady state. False requests a fresh observation, never repair.
+/// Marker ownership is re-read under the original path lock; an ownership mismatch fails closed.
+pub fn consume_materialized(
+    observation: ManagedWorkspaceObservation,
+    workspace_root: &Path,
+    path: &Path,
+    track_id: &str,
+) -> Result<bool> {
+    let lock = path_lock(path);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if !observation.identity.is_current()? {
+        return Ok(false);
+    }
+    let real = match std::fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(Error::Internal(format!(
+                "canonicalize managed workspace: {error}"
+            )));
+        }
+    };
+    if real != observation.identity.root() {
+        return Ok(false);
+    }
+    if read_owner_marker(path)?.as_deref() != Some(track_id) {
+        return Err(Error::Internal(
+            "managed workspace ownership requires recovery".into(),
+        ));
+    }
+    finish_metadata(workspace_root, path, &observation.exclude_path)?;
+    Ok(true)
+}
+
+fn finish_metadata(workspace_root: &Path, path: &Path, exclude_path: &Path) -> Result<()> {
+    ensure_exclude_entry_at(exclude_path, NEIGE_GIT_EXCLUDE_ENTRY)?;
+    assert_physically_inside_root(workspace_root, path)
 }
 
 /// Mutation seam: production always passes `Create`; a test passes `Skip` to prove `git worktree add` then dies.
@@ -156,10 +229,8 @@ fn materialize_managed_workspace_inner(
     }
 
     // `.neige/` is the server's own subtree inside the work tree; excluded so a worker's `git add -A` never sees it.
-    ensure_git_exclude_entry(path, NEIGE_GIT_EXCLUDE_ENTRY)?;
-
-    assert_physically_inside_root(workspace_root, path)?;
-    Ok(())
+    let exclude_path = git_exclude_path(path)?;
+    finish_metadata(workspace_root, path, &exclude_path)
 }
 
 /// `create_dir_all` follows symlinks, so a symlink under the root would pass every lexical prefix check

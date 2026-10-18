@@ -1,12 +1,14 @@
 //! Builtin domain implementations and their declarations.
 pub mod calendar;
 pub mod gitforge;
+pub mod opencode_history;
 pub mod tools;
 
 use crate::manifest::Manifest;
 use std::sync::LazyLock;
 pub enum Binding {
     Calendar,
+    OpenCodeHistory,
     Gitforge,
 }
 pub struct Definition {
@@ -29,6 +31,17 @@ impl Definition {
 }
 static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
     vec![
+        Definition {
+            binding: Binding::OpenCodeHistory,
+            tool_prompt_directory: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/builtin/opencode_history/prompts"
+            ),
+            manifest: Manifest::parse(opencode_history::MANIFEST)
+                .expect("compiled history manifest"),
+            optional: true,
+            tools: opencode_history::descriptors(),
+        },
         Definition {
             binding: Binding::Gitforge,
             tool_prompt_directory: concat!(

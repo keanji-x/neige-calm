@@ -1,5 +1,10 @@
 # #1830 S2 — workers run where the Planner runs
 
+> **#2791 后续修订：普通 worker 准备不再持 writer 等待 Git。** Codex/Claude 共用 workspace worker owner 的一次性 typed evidence：短 `BEGIN IMMEDIATE` 读取并核对原 operation claim、当前任务/分配/context、workspace selection/observation 与 occupancy/lease facts，关闭事务后执行普通 checkout 的 clean/base/HEAD/声明 head/reader repo 观察；最终短事务重验同一组事实与保留的目录对象，再原子发布 lease/card/session、freeze 与事件。变更后的事实丢弃整批旧观察，包括旧错误，复用 operation 层已有有界重试；旧 claim 不能借新 claim 消费证据。没有新 DB 层、缓存、schema 或 provider 名单。
+>
+> 已就绪 managed workspace 的 marker/HEAD/exclude 路径也在外部观察；exclude 位置取 Git 的报告，提交阶段在原 path lock 内复核目录与 owner，仅复用纯文件 metadata tail，不再间接执行 Git。两种**明确的低频事务例外**继续使用原 owner 路径：需要真正初始化/修复的 managed workspace（也包括缺失必需 `.neige/` exclude metadata，必须先修再判 clean），以及 `start: upstream` 的完整 catch-up/reset sequence。二者仍可能持 writer 等待 Git；没有把 dirty/error 当作隐式 fallback，也没有扩大既有 reset/materialization 的失效或崩溃窗口。本修订解决每次普通启动的热路径，不声称新的 resource-wide fence 或跨 kernel 文件系统事务。
+
+
 **Owner rules.** (1) Simple first, pain points only; hypotheticals are one-line KNOWN GAPS.
 (2) Compatibility means the 4140 database only. (3) S1–S3 land before anything is deployed to
 4140. Attached create on a non-git directory is refused, so it is not designed for.

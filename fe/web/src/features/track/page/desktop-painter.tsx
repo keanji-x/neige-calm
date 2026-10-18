@@ -35,6 +35,7 @@ type ModuleLeaf = Readonly<{ slot: 'module'; node: ReactNode }>;
 export type DesktopLeaf = PendingLeaf | ModuleLeaf;
 
 export type DesktopPainterDeps = Readonly<{
+  progressDisclosure?: Readonly<{ open: boolean; onOpenChange: (open: boolean) => void }>;
   /** Other contextual content already gives the card its visible empty state. */
   suppressEmpty?: boolean;
   onOpenCard?: (cardId: string) => void;
@@ -233,7 +234,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
         <div data-nc-work-inventory="">
           {!rows
             ? (deps.suppressEmpty ? <VisuallyHidden>{children}</VisuallyHidden> : children)
-            : <ContextGroup title="Progress" collapsible>
+            : <ContextGroup title="Progress" collapsible {...deps.progressDisclosure}>
               <ContextList aria-label="Execution progress">{children}</ContextList>
             </ContextGroup>}
         </div>

@@ -9,7 +9,7 @@ pub enum ConnectorClient {
     /// `kind: app` — the stdio child process.
     Stdio(Arc<McpClient>),
     /// Trusted compiled implementation; no process or IPC.
-    Builtin(&'static dyn super::ports::BuiltinBackend),
+    Builtin(Arc<dyn super::ports::BuiltinRun>),
     /// `kind: mcp-http` — remote streamable-HTTP MCP server.
     Http(Arc<HttpMcpClient>),
     /// `kind: cli-query` — a pinned local query binary; no child is supervised, each `tools/call` forks a fresh short-lived process.
