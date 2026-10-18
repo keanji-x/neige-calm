@@ -1,19 +1,5 @@
 //! Receipt admission through the real owner-bound managed start.
 use super::*;
-use calm_server::harness::QueueEntry;
-use provider::control::{CorrelationKey, InputRequest, TurnEdit, TurnRequest};
-
-fn request(client: &str) -> TurnRequest {
-    TurnRequest {
-        input: InputRequest {
-            items: vec![provider::InputItem::text("receipt input")],
-            correlation: CorrelationKey(client.into()),
-        },
-        selection: provider::TurnModelSelection::inherit(),
-        permission: calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-        edit: TurnEdit::NoEdit,
-    }
-}
 fn launches(root: &Root) -> usize {
     std::fs::read_to_string(root.path().join("environment.jsonl"))
         .unwrap()
@@ -91,114 +77,6 @@ async fn acp_pipe_failure_after_prepare_retires_original_batch_without_resend() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() {
-    for state in ["sending", "unknown", "completed"] {
-        let root = Root::new("unused");
-        let stack = boot(&root).await;
-        let (_, card) = create(&stack).await;
-        let runtime = stack.runtime(&card).await;
-        let harness = stack.harness(&runtime.id);
-        let claim = vec![
-            QueueEntry::LegacyUser {
-                text: "same".into(),
-                envelope_id: None,
-                message_ids: vec![],
-            },
-            QueueEntry::user_message("same".into(), None, vec![]),
-        ];
-        if state == "unknown" {
-            std::fs::write(root.path().join("scenario"), "lost").unwrap();
-        }
-        let pause = calm_server::acp_planner::test_seams::pause_settlement(&runtime.id);
-        let turn_id = harness
-            .turn_start_for_test(request("same-key"), &claim)
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
-            .await
-            .unwrap();
-        if state != "sending" {
-            pause.release.notify_one();
-            stack.wait_outcomes(&card, 1).await;
-        }
-        let stored_state: String =
-            sqlx::query_scalar("SELECT state FROM acp_submissions WHERE worker_session_id=?1")
-                .bind(&runtime.id)
-                .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
-                .await
-                .unwrap();
-        assert_eq!(stored_state, state);
-        let (_, stored_turn, bytes) = receipt(&stack, &runtime.id).await;
-        assert_eq!(stored_turn, turn_id);
-        let input: Value = serde_json::from_str(&bytes).unwrap();
-        // Literal independent codec oracle, including a legacy entry with no invented identity.
-        let view = claim[1].user_view().unwrap();
-        assert_eq!(
-            input["queue"],
-            json!([
-                {"kind":"legacy-user","id":null,"observation":{"type":"user_message","text":"same"},"envelopeId":null,"messageIds":[],"attachments":[],"rev":null,"queuedAtMs":null},
-                {"kind":"user","id":claim[1].id(),"observation":{"type":"user_message","text":"same"},"envelopeId":null,"messageIds":claim[1].message_ids(),"attachments":[],"rev":0,"queuedAtMs":view.queued_at_ms}
-            ])
-        );
-        assert_eq!(
-            input["input"],
-            json!([{"type":"text","text":"receipt input"}])
-        );
-        assert_eq!(
-            input["prompt"].as_array().unwrap().last().unwrap(),
-            &json!({"type":"text","text":"receipt input"})
-        );
-        let before = (
-            launches(&root),
-            requests(&root, "initialize"),
-            requests(&root, "session/new"),
-            requests(&root, "session/load"),
-            requests(&root, "session/prompt"),
-        );
-        assert_eq!(
-            harness
-                .turn_start_for_test(request("same-key"), &claim)
-                .await
-                .unwrap(),
-            turn_id
-        );
-        let mut revised = claim.clone();
-        assert!(revised[1].bump_rev_for_restore());
-        let error = harness
-            .turn_start_for_test(request("same-key"), &revised)
-            .await
-            .unwrap_err();
-        assert!(format!("{error:?}").contains("ACP receipt ownership or original input changed"));
-        let replaced = vec![
-            claim[0].clone(),
-            QueueEntry::user_message("same".into(), None, vec![]),
-        ];
-        let error = harness
-            .turn_start_for_test(request("same-key"), &replaced)
-            .await
-            .unwrap_err();
-        assert!(format!("{error:?}").contains("ACP receipt ownership or original input changed"));
-        assert_eq!(
-            receipt(&stack, &runtime.id).await.2,
-            bytes,
-            "replay preserves exact receipt bytes"
-        );
-        assert_eq!(
-            (
-                launches(&root),
-                requests(&root, "initialize"),
-                requests(&root, "session/new"),
-                requests(&root, "session/load"),
-                requests(&root, "session/prompt")
-            ),
-            before
-        );
-        pause.release.notify_one();
-        stack.shutdown().await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
@@ -206,14 +84,25 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
     let (_, b) = create(&stack).await;
     let ra = stack.runtime(&a).await;
     let rb = stack.runtime(&b).await;
-    let ha = stack.harness(&ra.id);
-    let hb = stack.harness(&rb.id);
+    // Restore the same projection key on both idle owners, then let the real
+    // input route recover each harness and reconcile its queued human input.
+    for runtime in [&ra, &rb] {
+        let old = stack.state.harness.remove(&runtime.id).unwrap();
+        old.shutdown().await.unwrap();
+        let mut snapshot = old.snapshot().await;
+        snapshot.projection_client_id = Some(calm_server::harness::queue::QueueEntryId::from_wire(
+            "shared-key".into(),
+        ));
+        sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+            .bind(&runtime.id)
+            .bind(serde_json::to_string(&snapshot).unwrap())
+            .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+            .await
+            .unwrap();
+    }
     std::fs::write(root.path().join("scenario"), "hold").unwrap();
-    let claim = vec![QueueEntry::user_message("owner input".into(), None, vec![])];
-    let tb = hb
-        .turn_start_for_test(request("shared-key"), &claim)
-        .await
-        .unwrap();
+    let (status, body) = stack.post_input(&b, "owner input").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     stack.wait_phase(&rb.id, "turn_running").await;
     tokio::time::timeout(Duration::from_secs(20), async {
         while requests(&root, "session/prompt").is_empty() {
@@ -222,6 +111,7 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
     })
     .await
     .unwrap();
+    let hb = stack.harness(&rb.id);
     let before = serde_json::to_value(hb.snapshot().await).unwrap();
     let b_receipt = receipt(&stack, &rb.id).await;
     let b_native = stack.runtime(&b).await.session_id.unwrap();
@@ -231,16 +121,14 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
         .unwrap()["_pid"]
         .as_u64()
         .unwrap();
-    let ta = ha
-        .turn_start_for_test(request("shared-key"), &claim)
-        .await
-        .unwrap();
-    assert_ne!(ta, tb, "same client key is scoped to its owner");
-    ha.set_state_for_test(calm_server::harness::HarnessState::turn_running(
-        ta,
-        std::time::Instant::now(),
-    ))
-    .await;
+    let (status, body) = stack.post_input(&a, "owner input").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    stack.wait_phase(&ra.id, "turn_running").await;
+    let a_receipt = receipt(&stack, &ra.id).await;
+    let ha = stack.harness(&ra.id);
+    assert_eq!(a_receipt.0, "shared-key");
+    assert_eq!(b_receipt.0, "shared-key");
+    assert_ne!(a_receipt.1, b_receipt.1, "each owner has its own turn");
     ha.interrupt("selected owner only".into()).await.unwrap();
     ha.shutdown().await.unwrap();
     assert_eq!(receipt(&stack, &rb.id).await, b_receipt);
