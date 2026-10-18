@@ -9,6 +9,8 @@ const COMMIT_READ_BATCH: usize = 32;
 const COMMIT_NODE_LIMIT: usize = 256;
 const COMMIT_ROUND_LIMIT: usize = 32;
 
+type CommitRow = (String, Option<String>, String, Option<String>, Option<i64>);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct UnknownRevision(i64);
 #[derive(Clone, Copy)]
@@ -174,8 +176,7 @@ pub(super) async fn reconcile(
             separated.push_bind(hash);
         }
         separated.push_unseparated(")");
-        let rows: Vec<(String, Option<String>, String, Option<String>, Option<i64>)> =
-            query.build_query_as().fetch_all(&mut *connection).await?;
+        let rows: Vec<CommitRow> = query.build_query_as().fetch_all(&mut *connection).await?;
         // Missing parent rows terminate exactly as the authoritative recursive JOIN does.
         for (_, parent, hash, kind, length) in rows {
             let tree = TreeMeta::checked(hash, kind, length)?;
