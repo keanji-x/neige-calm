@@ -56,7 +56,8 @@ async fn count_marker(pool: &SqlitePool, key: &str) -> sqlx::Result<i64> {
 #[tokio::test]
 async fn in_memory_db_survives_closing_every_pool_connection() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let pool = repo.pool();
+    let db = repo.db();
+    let pool = db.read_pool();
 
     assert!(
         repo.has_memory_cache_anchor(),
@@ -66,6 +67,12 @@ async fn in_memory_db_survives_closing_every_pool_connection() {
     insert_marker(pool, "926-marker").await;
 
     close_all_pool_connections(pool).await;
+    close_all_pool_connections(db.writer_pool()).await;
+    assert_eq!(
+        (db.read_pool().size(), db.writer_pool().size()),
+        (0, 0),
+        "both pool roles must be cold before reopening the database"
+    );
 
     let count = count_marker(pool, "926-marker")
         .await
@@ -84,7 +91,8 @@ async fn on_disk_db_unaffected_by_closing_every_pool_connection() {
         tmp.path().join("anchor_disk.db").display()
     );
     let repo = SqlxRepo::open(&url).await.unwrap();
-    let pool = repo.pool();
+    let db = repo.db();
+    let pool = db.read_pool();
 
     assert!(
         !repo.has_memory_cache_anchor(),
@@ -94,6 +102,12 @@ async fn on_disk_db_unaffected_by_closing_every_pool_connection() {
     insert_marker(pool, "926-disk-marker").await;
 
     close_all_pool_connections(pool).await;
+    close_all_pool_connections(db.writer_pool()).await;
+    assert_eq!(
+        (db.read_pool().size(), db.writer_pool().size()),
+        (0, 0),
+        "both pool roles must be cold before reopening the database"
+    );
 
     let count = count_marker(pool, "926-disk-marker").await.unwrap();
     assert_eq!(count, 1, "on-disk data must survive pool-connection churn");
