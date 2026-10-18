@@ -22,7 +22,9 @@ use calm_server::operation::planner_harness_shutdown_adapter::PlannerHarnessShut
 use calm_server::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload,
 };
-use calm_server::operation::{OperationKey, OperationOutcome, PhaseTag, TxOutput};
+use calm_server::operation::{
+    OperationKey, OperationOutcome, OperationRepo, PhaseTag, SqlxOperationRepo, TxOutput,
+};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::{
@@ -388,16 +390,44 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
 
     let harness = state.harness.get(&runtime.id).unwrap();
     let thread_id = runtime.thread_id.clone().unwrap();
-    let turn_id = "turn-interrupt".to_string();
-    state
-        .shared_codex_appserver
-        .set_active_turn_for_test(&thread_id, &turn_id);
+    // Advance the real loop/provider and persist its real original target. A
+    // synthetic Running cache over an Idle stored projection is not a receipt.
     harness
-        .set_state_for_test(HarnessState::turn_running(turn_id.clone(), Instant::now()))
-        .await;
-    let interrupt_id = state
-        .operation_runtime
-        .submit(
+        .observe_user_message_durable(
+            "Run the original adapter lifecycle turn".into(),
+            Vec::new(),
+            calm_server::harness::SendKey::unique_for_test(),
+        )
+        .await
+        .unwrap();
+    let original_runtime = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let original = repo
+                .session_projection_by_id(&runtime.id)
+                .await
+                .unwrap()
+                .unwrap();
+            if original.active_turn_id.is_some() {
+                break original;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("original running projection is committed");
+    assert_eq!(
+        original_runtime.thread_id.as_deref(),
+        Some(thread_id.as_str())
+    );
+    let mut original_output = TxOutput::new(
+        "runtime",
+        Some(runtime.id.clone()),
+        serde_json::to_value(&original_runtime).unwrap(),
+    );
+    original_output.data = json!({"runtime_id":runtime.id,"reason":"test interrupt"});
+    let legacy_store = SqlxOperationRepo::new(repo.pool().clone());
+    let interrupt_id = legacy_store
+        .insert_operation(
             "planner-harness-interrupt",
             key(),
             serde_json::to_value(PlannerHarnessInterruptOperationPayload {
@@ -408,6 +438,13 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         )
         .await
         .unwrap();
+    // This is a released already-prepared row, not a newly accepted unbound
+    // public request. The installed adapter exists only for its lifetime service.
+    sqlx::query("UPDATE operations SET phase='tx_committed',tx_output_json=?2,target_type=?3,target_id=?4,target_json=?5 WHERE id=?1")
+        .bind(&interrupt_id).bind(serde_json::to_string(&original_output).unwrap())
+        .bind(&original_output.target_type).bind(&original_output.target_id)
+        .bind(json!({"type":original_output.target_type,"id":original_output.target_id}).to_string())
+        .execute(repo.pool()).await.unwrap();
     assert!(matches!(
         wait_op(&state, &interrupt_id).await,
         OperationOutcome::Succeeded { .. }

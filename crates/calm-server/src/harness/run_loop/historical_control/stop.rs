@@ -35,13 +35,7 @@ impl PreparedStop {
         let value = runtime.handle_state_json.clone().ok_or_else(|| {
             CalmError::Conflict("original Stop has no recorded harness snapshot".into())
         })?;
-        if value.get("schema_version").and_then(Value::as_u64) != Some(1) {
-            return Err(CalmError::Conflict(
-                "historical Stop requires its recorded historical snapshot".into(),
-            ));
-        }
-        let snapshot = HarnessSnapshot::parse_known(value)
-            .ok_or_else(|| CalmError::Conflict("original Stop snapshot is invalid".into()))?;
+        let snapshot: HarnessSnapshot = HarnessRuntimeSnapshot::decode(value)?.try_into()?;
         let phase = snapshot.phase;
         if matches!(
             phase,

@@ -93,24 +93,11 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let runtime_id = output.output_string("runtime_id", "planner harness")?;
-        let reason = output.output_string("reason", "planner harness")?;
+        let (original, reason) = original_receipt(op, output)?;
         let harness = self
             .harness_registry
-            .get(&runtime_id)
-            .ok_or_else(|| CalmError::NotFound(format!("harness {runtime_id}")))?;
-        let original: crate::session_projection_repo::WorkerSessionProjection =
-            serde_json::from_value(output.result.clone()).map_err(|_| {
-                CalmError::Conflict("old interruption has no valid original runtime receipt".into())
-            })?;
-        if output.target_type != "runtime"
-            || output.target_id.as_deref() != Some(runtime_id.as_str())
-            || original.id != runtime_id
-        {
-            return Err(CalmError::Conflict(
-                "old interruption receipt target contradicts its original runtime".into(),
-            ));
-        }
+            .get(&original.id)
+            .ok_or_else(|| CalmError::NotFound(format!("harness {}", original.id)))?;
         let requested_at_ms = super::repo_sqlite::original_request_created_at(
             &ctx.operation_repo.sqlite_pool(),
             &op.id,
@@ -146,4 +133,40 @@ impl ProviderAdapter for PlannerHarnessInterruptAdapter {
     ) -> Result<()> {
         Ok(())
     }
+}
+
+/// Lifetime decoder for the released operation's mutually bound original facts.
+/// New callers cannot create this receipt; missing or contradictory old values
+/// are held rather than interpreted as a new current-target request.
+fn original_receipt(
+    op: &Operation,
+    output: &TxOutput,
+) -> Result<(
+    crate::session_projection_repo::WorkerSessionProjection,
+    String,
+)> {
+    let payload: PlannerHarnessInterruptOperationPayload =
+        serde_json::from_value(op.payload.clone())?;
+    let runtime = output.output_string("runtime_id", "planner harness")?;
+    let reason = output.output_string("reason", "planner harness")?;
+    let original: crate::session_projection_repo::WorkerSessionProjection =
+        serde_json::from_value(output.result.clone()).map_err(|_| {
+            CalmError::Conflict("old interruption has no valid original runtime receipt".into())
+        })?;
+    if runtime.is_empty()
+        || payload.worker_session_id != runtime
+        || payload.reason != reason
+        || op.target_type != "runtime"
+        || op.target_id.as_deref() != Some(runtime.as_str())
+        || op.target.get("type").and_then(Value::as_str) != Some("runtime")
+        || op.target.get("id").and_then(Value::as_str) != Some(runtime.as_str())
+        || output.target_type != "runtime"
+        || output.target_id.as_deref() != Some(runtime.as_str())
+        || original.id != runtime
+    {
+        return Err(CalmError::Conflict(
+            "old interruption receipt contradicts its original request or target".into(),
+        ));
+    }
+    Ok((original, reason))
 }
