@@ -1,6 +1,8 @@
 // Rename / entry actions stay off this component; the DOM slots and class names are the CSS contract.
 
 import type { ReactNode } from 'react';
+import { DrawerHeader } from '../../../ui/drawer/header.tsx';
+import type { CardHeaderPresentation } from '../registry.js';
 
 import { Icon } from '../../../ui/icon/public.tsx';
 import { LetterAvatar } from './letter-avatar.tsx';
@@ -13,6 +15,7 @@ export function CardHead({
   children,
   onClose,
   closeAriaLabel,
+  header,
 }: {
   title?: ReactNode;
   status?: ReactNode;
@@ -21,7 +24,10 @@ export function CardHead({
   children?: ReactNode;
   onClose?: () => void;
   closeAriaLabel?: string;
+  header?: CardHeaderPresentation;
 }) {
+  if (header !== undefined) return <DrawerHeader title={title} status={status} closeLabel={header.hideLabel} onClose={header.onHide}
+    onDelete={onClose} deleteLabel={closeAriaLabel}>{children}</DrawerHeader>;
   const rootClass = className ? `card-head ${className}` : 'card-head';
   let iconNode: ReactNode = null;
   if (icon !== undefined) {

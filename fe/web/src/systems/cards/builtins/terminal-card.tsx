@@ -6,12 +6,13 @@ import { useState } from '../../../ui/state/public.ts';
 import { TerminalSurface, type TerminalConnectionStatus } from '../../terminal/surface.tsx';
 import type { CardHostCapabilities } from '../contracts.ts';
 import { PathLabel } from '../../../ui/path-label/public.tsx';
+import type { CardHeaderPresentation } from '../registry.js';
 import { CardHead } from '../ui/card-head.tsx';
 import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
 import { activityLabelOf, cardActivityState, type CardActivity } from '../../../../../core/domain/activity.js';
 
 export function TerminalCardView({
-  card, host, onRemove, activity, notice, fallbackTitle = 'terminal', headActions = null, attachKey = null,
+  card, host, onRemove, activity, notice, fallbackTitle = 'terminal', headActions = null, attachKey = null, header,
 }: {
   card: {
     readonly id: string;
@@ -23,6 +24,7 @@ export function TerminalCardView({
   };
   host: CardHostCapabilities;
   onRemove?: () => void;
+  header?: CardHeaderPresentation;
   /** The head's indicator comes from this alone — not `card.sessionState` (alive while a process exists) nor the surface's connection status (this tab's attachment). */
   activity: CardActivity | null;
   /** The composer's state line, shown as given above the terminal; it never gates input. */
@@ -34,10 +36,16 @@ export function TerminalCardView({
   /** A new value mounts a fresh terminal attach: a restarted child on the same terminal (a Claude card's new runtime). */
   attachKey?: string | null;
 }) {
+  const [focused, setFocused] = useState(() => host.lifecycle.getSnapshot().focused);
   const [visible, setVisible] = useState(() => host.lifecycle.getSnapshot().visible);
-  useEffect(() => host.lifecycle.subscribe(() => {
+  useEffect(() => {
+    const sync = () => {
     setVisible(host.lifecycle.getSnapshot().visible);
-  }), [host]);
+    setFocused(host.lifecycle.getSnapshot().focused);
+    };
+    sync();
+    return host.lifecycle.subscribe(sync);
+  }, [host]);
   const [connection, setConnection] = useState<Readonly<{
     terminalId: string | null; attachKey: string | null; status: TerminalConnectionStatus;
   }>>({ terminalId: card.terminalId, attachKey, status: 'connecting' });
@@ -76,6 +84,7 @@ export function TerminalCardView({
         </>}
         onClose={onRemove}
         closeAriaLabel={`Delete card ${card.title || fallbackTitle}`}
+        header={header}
       />
       {card.cwd !== null && (
         <PathLabel label="Working directory" path={card.cwd} />
@@ -90,7 +99,7 @@ export function TerminalCardView({
         {attached
           ? (
             <Suspense fallback={<div className="term-line">Loading terminal…</div>}>
-              <TerminalSurface key={attachKey ?? ''} recovery={host.recovery} card={card} visible={visible} onStatusChange={onStatusChange} />
+              <TerminalSurface key={attachKey ?? ''} recovery={host.recovery} card={card} visible={visible} focused={focused} onStatusChange={onStatusChange} />
             </Suspense>
           )
           : <div className="term-line">{ended ? 'No terminal session available.' : message}</div>}

@@ -101,6 +101,8 @@ function setup({ createFails = false, deferCreate = false, answers = [] as reado
 }
 
 async function pickKind(label: string) {
+  const hide = screen.queryByRole('button', { name: 'Hide terminal' });
+  if (hide !== null) await userEvent.click(hide);
   const trigger = await screen.findByRole('button', { name: 'Tools' });
   /* The popover's close from the previous cycle can land after the next click and
        read as a close, so the click is retried until the menu is actually showing. */
@@ -190,9 +192,9 @@ describe('adding a card from the CARDS module', () => {
 
   it('keeps reporting the create in flight when a superseded attempt lands', async () => {
     const { router, releases, posts } = setup({ deferCreate: true });
-    await pickKind('terminal');
+    await pickKind('claude');
     await waitFor(() => { expect(posts()).toHaveLength(1); });
-    await pickKind('terminal');
+    await pickKind('claude');
     await waitFor(() => { expect(posts()).toHaveLength(2); });
 
     // Open a kind with fields purely to read the busy state off its submit.

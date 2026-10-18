@@ -58,7 +58,7 @@ const TASKS: readonly ReportTaskRow[] = [
 
 /** Strings only the painted row modules can put on screen; read as substrings of the subtree's `textContent`. */
 const PAINTED_TEXT: readonly string[] = [
-  'Workspace', 'harness', 'alpha-gate', 'beta-gate',
+  'Progress', 'Workbench', 'harness', 'alpha-gate', 'beta-gate',
 ];
 
 /** The desktop panel subtree: the mobile surface is a sibling that is in the DOM at the same time. */
@@ -74,9 +74,9 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
 
     expect(calls.length, 'paintDesktopPanel calls').toBe(1);
     expect(calls[0].view).toEqual(deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).desktop);
-    expect(calls[0].view.rowModules.map((module) => module.key)).toEqual(['work']);
+    expect(calls[0].view.rowModules.map((module) => module.key)).toEqual(['work', 'cards']);
     expect(calls[0].view.rowModules.map((module) => module.rows.length))
-      .toEqual([TASKS.length + CARDS.length - 1]);
+      .toEqual([TASKS.length, CARDS.length - 1]);
   });
 
   it('renders what it handed back, inside the desktop panel', () => {
@@ -86,7 +86,7 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
     expect(root.querySelectorAll('[data-entry-oracle-tag]').length, 'the painter’s node').toBe(1);
     expect(MARKER.module).toBe('data-nc-module');
     expect(MARKER.row).toBe('data-nc-row');
-    expect(root.querySelectorAll('[data-nc-module]').length).toBe(1);
+    expect(root.querySelectorAll('[data-nc-module]').length).toBe(2);
     expect(root.querySelectorAll('[data-nc-row]').length).toBe(CARDS.length + TASKS.length - 1);
     for (const text of PAINTED_TEXT) {
       expect(root.textContent, `wrap renders ${text}`).toContain(text);

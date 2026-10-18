@@ -452,12 +452,12 @@ describe('TrackPage task inventory', () => {
   it('has no Folder module: nobody chooses a track cwd any more', () => {
     renderPage({ tasks: [] });
     expect(screen.queryByText('Folder')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Workspace' })).toBeTruthy();
+    expect(within(screen.getByRole('region', { name: 'Workbench' })).getByRole('heading', { name: 'Workbench' })).toBeTruthy();
   });
 
   it('says no tasks are declared yet when the report has none', () => {
     renderPage({ tasks: [] });
-    expect(screen.getByText('Nothing to show yet.')).toBeTruthy();
+    expect(screen.getByText('No tasks declared yet.')).toBeTruthy();
   });
 
   it('names only the states that are not the ordinary one', () => {
@@ -520,7 +520,7 @@ describe('TrackPage task inventory', () => {
 
   it('includes canceled tasks in the compact status totals', () => {
     renderPage({ tasks: [running('stopped', 'canceled', null)] });
-    expect(screen.getByText('Progress').closest('details')?.open).toBe(false);
+    expect(screen.getByText('Progress', { selector: 'summary > span' }).closest('details')?.open).toBe(false);
     expect(document.querySelector('[data-nc-row="task:b-stopped"] [data-nc-status]')?.textContent).toBe('canceled');
   });
 
@@ -767,7 +767,7 @@ describe('TrackPage card inventory', () => {
 
   it('says the track has no cards yet when the list is empty', () => {
     renderPage({ cards: [] });
-    expect(screen.getByText('Nothing to show yet.')).toBeTruthy();
+    expect(screen.getByText('No tools yet.')).toBeTruthy();
   });
 
   it('labels a card by its title and keeps the kind beside it', () => {

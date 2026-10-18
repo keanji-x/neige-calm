@@ -151,7 +151,11 @@ it('runs /side through the production router and shows two independent desktop c
   expect(mobileChat).toBeNull();
   expect(sideBox.top).toBeGreaterThan(mainBox.bottom);
   expect(sideBox.bottom).toBeLessThanOrEqual(window.innerHeight);
-  await expect.poll(async () => (await side.findElement()).getBoundingClientRect().bottom).toBe(host.getBoundingClientRect().bottom);
+  const choices = await page.getByRole('group', { name: 'Discussion and terminal' }).findElement();
+  await expect.poll(async () => (await side.findElement()).getBoundingClientRect().bottom).toBe(choices.getBoundingClientRect().top);
+  expect(choices.getBoundingClientRect().bottom).toBe(host.getBoundingClientRect().bottom);
+  expect(choices.getBoundingClientRect().left).toBe(sideBox.left);
+  expect(choices.getBoundingClientRect().width).toBe(sideBox.width);
   expect(mainBox.left).toBe(sideBox.left);
   expect(mainBox.width).toBe(sideBox.width);
   const handles = document.querySelectorAll<HTMLElement>('[role=separator][aria-label="Resize conversation"]');
@@ -166,6 +170,12 @@ it('runs /side through the production router and shows two independent desktop c
   await expect.poll(() => Number(handles[0].getAttribute('aria-valuenow'))).toBeGreaterThan(initialShare);
   await field.fill('Unsent main question');
   await side.getByRole('combobox', { name: 'Message' }).fill('Unsent side question');
+  const sideElement = await side.findElement();
+  const seam = sideElement.parentElement!.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
+  expect(seam.getBoundingClientRect().left).toBeGreaterThanOrEqual(sideElement.getBoundingClientRect().right);
+  const dot = seam.querySelector<HTMLButtonElement>('button')!;
+  const dotBox = dot.getBoundingClientRect();
+  expect(document.elementFromPoint(dotBox.x + dotBox.width / 2, dotBox.y + dotBox.height / 2)?.closest('button')).toBe(dot);
   await page.screenshot({ path: '../../../../test-results/side-conversation-integrated.png' });
   await side.getByRole('button', { name: 'Close side conversation' }).click();
   await expect.element(field).toHaveTextContent('Unsent main question');

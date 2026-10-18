@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react';
 /*
  * The drawer's claims only a rendering engine can answer: jsdom parses CSS and
  * declines to compute it. `focus()` on a `visibility: hidden` element is a silent
@@ -576,10 +577,14 @@ describe('dragged conversation width', () => {
     expect(document.activeElement).not.toBe(edge());
   });
 
-  it('steps from the keyboard, says its share of the region, and resets on Home or a double click', async () => {
+  it.each([false, true])('steps from the keyboard and resets with reduced motion %s', async reduce => {
+    try {
     await page.viewport(1400, 900);
     const preferences = mount({ initiallyOpen: true });
     await settled();
+    edge()!.focus();
+    await userEvent.keyboard('{Home}');
+    await commands.emulateReducedMotion(reduce);
     const before = widthOf(drawer());
     expect(edge()!.getAttribute('aria-valuenow')).toBe('40');
     edge()!.focus();
@@ -598,6 +603,7 @@ describe('dragged conversation width', () => {
     await userEvent.dblClick(edge()!);
     expect(spanOf(drawer())).toBeCloseTo(0.4, 2);
     expect(preferences.drawerWidth()).toBeNull();
+    } finally { await commands.emulateReducedMotion(false); }
   });
 
   it('keeps a source card on its own at the default width, and a stacked one at the conversation width, with no edge of its own', async () => {
@@ -903,4 +909,151 @@ it('settles the panel allocation immediately when reduced motion is enabled duri
   } finally {
     await commands.emulateReducedMotion(false);
   }
+});
+
+// Exercise the real Drawer → ResizeEdge → shell width/preferences contract.
+function RetainedHarness({ mainOpen, visible = true, resizable = true }: { mainOpen: boolean; visible?: boolean; resizable?: boolean }) {
+  const [preferences] = useState(() => createUiPreferences());
+  useSyncExternalStore(preferences.subscribe, preferences.getSnapshot, preferences.getSnapshot);
+  const host = useDrawerWidthHost(preferences);
+  return <div className={shell.shell}><div /><main ref={host.mainRef} className={shell.main} style={host.style}>
+    <Drawer open={mainOpen} title="Primary" onClose={() => {}} retainCompanion companionVisible={visible}
+      resize={resizable ? host.resize : undefined}
+      companion={group => <Drawer inline open={visible} resizeGroup={group} resize={host.resize} title="Independent" onClose={() => {}}><p>Retained content</p></Drawer>}>
+      <p>Primary content</p>
+    </Drawer>
+    <output data-testid="saved-width">{preferences.drawerWidth()}</output>
+  </main></div>;
+}
+
+const hostWidth = () => document.querySelector('[data-nc-drawer-stack]')!.getBoundingClientRect().width;
+const savedWidth = () => Number(document.querySelector('[data-testid="saved-width"]')!.textContent) * 16;
+const resizeEdge = () => page.getByRole('separator', { name: 'Resize conversation' });
+
+it('resizes an independently visible companion with pointer and keyboard and saves the actual width', async () => {
+  await page.viewport(1400, 950);
+  render(<RetainedHarness mainOpen={false} />);
+  expect(document.querySelector('[data-nc-drawer-open][role="complementary"]')).toBeNull();
+  await expect.element(resizeEdge()).toBeVisible();
+  expect(document.querySelectorAll('[role="separator"]')).toHaveLength(1);
+  expect(document.querySelectorAll('[data-nc-drawer-resizable]')).toHaveLength(1);
+  const before = hostWidth();
+  const edge = await resizeEdge().findElement();
+  const box = edge.getBoundingClientRect();
+  const main = document.querySelector('main')!;
+  const region = main.getBoundingClientRect();
+  await userEvent.dragAndDrop(edge, main, {
+    sourcePosition: { x: box.width / 2, y: box.height / 2 },
+    targetPosition: { x: box.left + box.width / 2 - 96 - region.left, y: box.top + box.height / 2 - region.top },
+    force: true, steps: 6,
+  });
+  await expect.poll(hostWidth).toBeCloseTo(before + 96, 0);
+  expect(savedWidth()).toBeCloseTo(hostWidth(), 0);
+  const dragged = hostWidth();
+  (await resizeEdge().findElement() as HTMLElement).focus();
+  await userEvent.keyboard('{ArrowLeft}');
+  await expect.poll(hostWidth).toBeCloseTo(dragged + 16, 0);
+  expect(savedWidth()).toBeCloseTo(hostWidth(), 0);
+});
+
+it('keeps one shared width when the primary closes and removes controls when hidden or disabled', async () => {
+  await page.viewport(1400, 950);
+  const view = render(<RetainedHarness mainOpen />);
+  await expect.element(resizeEdge()).toBeVisible();
+  (await resizeEdge().findElement() as HTMLElement).focus();
+  await userEvent.keyboard('{ArrowLeft}');
+  const width = hostWidth();
+  expect(savedWidth()).toBeCloseTo(width, 0);
+  view.rerender(<RetainedHarness mainOpen={false} />);
+  await expect.poll(() => document.querySelector('[role="complementary"]')).toBeNull();
+  expect(hostWidth()).toBeCloseTo(width, 0);
+  expect(document.querySelectorAll('[role="separator"]')).toHaveLength(1);
+  (await resizeEdge().findElement() as HTMLElement).focus();
+  await userEvent.keyboard('{ArrowRight}');
+  expect(hostWidth()).toBeCloseTo(width - 16, 0);
+  view.rerender(<RetainedHarness mainOpen={false} visible={false} />);
+  expect(document.querySelector('[role="separator"]')).toBeNull();
+  expect(document.querySelector('[data-nc-drawer-resizable]')).toBeNull();
+  view.rerender(<RetainedHarness mainOpen={false} resizable={false} />);
+  expect(document.querySelector('[role="separator"]')).toBeNull();
+  expect(document.querySelector('[data-nc-drawer-resizable]')).toBeNull();
+});
+
+
+it.each(['cancel', 'hidden', 'disabled'] as const)('settles an independent companion drag on %s without leaving a live edge', async reason => {
+  await page.viewport(1400, 950);
+  const view = render(<RetainedHarness mainOpen={false} />);
+  const edge = await resizeEdge().findElement();
+  const box = edge.getBoundingClientRect();
+  const before = hostWidth();
+  let pointerId = 0;
+  edge.addEventListener('pointerdown', event => { pointerId = (event as PointerEvent).pointerId; }, { once: true });
+  await commands.mouseButton('[role="separator"]', true);
+  try {
+    await act(() => fireEvent.pointerMove(edge, { pointerId, clientX: box.left + box.width / 2 - 80 }));
+    await expect.poll(hostWidth).toBeCloseTo(before + 80, 0);
+    const laid = hostWidth();
+    if (reason === 'cancel') await act(() => fireEvent.pointerCancel(edge, { pointerId }));
+    else view.rerender(<RetainedHarness mainOpen={false} visible={reason !== 'hidden'} resizable={reason !== 'disabled'} />);
+    await expect.poll(savedWidth).toBeCloseTo(laid, 0);
+    expect(document.querySelector('[data-nc-resizing]')).toBeNull();
+    if (reason !== 'cancel') expect(document.querySelector('[role="separator"]')).toBeNull();
+  } finally { await commands.mouseButton('body', false); }
+});
+
+it.each([false, true])('accumulates retained host keyboard width after same-page motion change %s', async reduced => {
+  await page.viewport(1280, 950);
+  const view = render(<RetainedHarness mainOpen={false} />);
+  await expect.element(resizeEdge()).toBeVisible();
+  await commands.emulateReducedMotion(reduced);
+  try {
+    (await resizeEdge().findElement() as HTMLElement).focus();
+    await userEvent.keyboard('{Home}');
+    const before = hostWidth();
+    for (const [key, delta] of [['ArrowLeft', 16], ['ArrowLeft', 32], ['ArrowRight', 16]] as const) {
+      await userEvent.keyboard(`{${key}}`);
+      expect(hostWidth()).toBeCloseTo(before + delta, 0);
+      expect(savedWidth()).toBeCloseTo(hostWidth(), 0);
+    }
+    await userEvent.keyboard('{Home}');
+    expect(hostWidth()).toBeCloseTo(before, 0);
+    expect(document.querySelector('[data-testid="saved-width"]')!.textContent).toBe('');
+    const main = document.querySelector('main')!;
+    const region = main.getBoundingClientRect();
+    for (const [targetX, limit, outward, inward, delta] of [
+      [1, region.width * 0.75, 'ArrowLeft', 'ArrowRight', -16],
+      [region.width - 1, 22 * 16, 'ArrowRight', 'ArrowLeft', 16],
+    ] as const) {
+      const edge = await resizeEdge().findElement();
+      const box = edge.getBoundingClientRect();
+      await userEvent.dragAndDrop(edge, main, {
+        sourcePosition: { x: box.width / 2, y: box.height / 2 },
+        targetPosition: { x: targetX, y: box.top + box.height / 2 - region.top },
+        force: true, steps: 6,
+      });
+      expect(hostWidth()).toBeCloseTo(limit, 0);
+      expect(savedWidth()).toBeCloseTo(limit, 0);
+      (edge as HTMLElement).focus();
+      await userEvent.keyboard(`{${outward}}`);
+      expect(hostWidth()).toBeCloseTo(limit, 0);
+      expect(savedWidth()).toBeCloseTo(limit, 0);
+      await userEvent.keyboard(`{${inward}}`);
+      expect(hostWidth()).toBeCloseTo(limit + delta, 0);
+      expect(savedWidth()).toBeCloseTo(hostWidth(), 0);
+    }
+    view.rerender(<RetainedHarness mainOpen />);
+    await expect.poll(() => document.querySelector('[role="complementary"]')?.getAnimations().length).toBe(0);
+    (await resizeEdge().findElement() as HTMLElement).focus();
+    await userEvent.keyboard('{Home}{ArrowLeft}{ArrowLeft}{ArrowRight}');
+    expect(hostWidth()).toBeCloseTo(before + 16, 0);
+    expect(document.querySelector('[role="complementary"]')!.getBoundingClientRect().width).toBeCloseTo(hostWidth(), 0);
+    expect(savedWidth()).toBeCloseTo(hostWidth(), 0);
+    view.rerender(<RetainedHarness mainOpen={false} />);
+    await expect.poll(() => document.querySelector('[role="complementary"]')).toBeNull();
+    expect(hostWidth()).toBeCloseTo(before + 16, 0);
+    (await resizeEdge().findElement() as HTMLElement).focus();
+    await userEvent.keyboard('{Home}');
+    expect(hostWidth()).toBeCloseTo(before, 0);
+    expect(document.querySelector('[data-testid="saved-width"]')!.textContent).toBe('');
+  } finally { await commands.emulateReducedMotion(false); }
 });

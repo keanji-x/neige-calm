@@ -1649,8 +1649,8 @@
     "defends": [
       "oracle:INV-APP-118"
     ],
-    "target": "web/src/systems/cards/ui/board-host.tsx",
-    "patch": "diff --git a/web/src/systems/cards/ui/board-host.tsx b/web/src/systems/cards/ui/board-host.tsx\nindex 07d387ea8..9dddafd79 100644\n--- a/web/src/systems/cards/ui/board-host.tsx\n+++ b/web/src/systems/cards/ui/board-host.tsx\n@@ -272,5 +272,6 @@ function BoardCell({ host, item, focused, visible, onRemove }: {\n       </div>\n     );\n   }\n-  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} notice={item.notice} />;\n+  // MUT-1722-S2B-8: the cell drops the verdict on the floor\n+  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={null} notice={item.notice} />;\n }\n",
+    "target": "web/src/systems/cards/ui/card-cell.tsx",
+    "patch": "diff --git a/web/src/systems/cards/ui/card-cell.tsx b/web/src/systems/cards/ui/card-cell.tsx\n--- a/web/src/systems/cards/ui/card-cell.tsx\n+++ b/web/src/systems/cards/ui/card-cell.tsx\n@@ -92,2 +92,3 @@\n-  return <><span ref={elementRef} hidden /><Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} notice={item.notice} header={header} /></>;\n+  // MUT-1722-S2B-8: the cell drops the verdict on the floor\n+  return <><span ref={elementRef} hidden /><Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={null} notice={item.notice} header={header} /></>;\n }\n",
     "expected_red": [
       "claude terminal head, connected speaks a request for input",
       "claude terminal head, connected speaks the kernel verdict beside its marker",

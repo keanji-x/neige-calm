@@ -44,6 +44,7 @@ interface XtermViewProps {
   onStatusChange?: (status: TerminalConnectionStatus) => void;
   /** The view stays mounted after first open; hidden cards must not ResizeCommit or accept OSC 52. */
   visible?: boolean;
+  focused?: boolean;
 }
 
 export interface XtermViewHandle {
@@ -100,6 +101,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   onExitChange,
   onStatusChange,
   visible = true,
+  focused = false,
 }, ref) {
   // Playwright instrumentation, gated on `?testMounts=1`: counts real mounts in `window.__xtermMounts__`.
   useEffect(() => {
@@ -120,8 +122,14 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // The bridge-mount effect omits `theme` from its deps on purpose; it reads the current value here.
   const latestThemeRef = useRef<'light' | 'dark'>(theme);
   latestThemeRef.current = theme;
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
+  const focusOrigin = useRef(document.activeElement);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  useEffect(() => {
+    if (visible && focused) termRef.current?.focus();
+  }, [visible, focused]);
   const flushResizeRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (visible) flushResizeRef.current?.();
@@ -286,6 +294,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
       if (e.isComposing) return true;
+      // Shift+Tab returns to the host controls; bare Tab remains shell completion.
+      if (e.key === 'Tab' && e.shiftKey) return false;
+      if (e.key === 'Escape' || (e.ctrlKey && e.key.toLowerCase() === 'c')) e.stopPropagation();
       // xterm.js sends CR for both Enter and Shift+Enter. This host maps
       // Shift+Enter to ESC CR (the chord hosted TUIs use for a newline).
       if (
@@ -317,12 +328,14 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       }
       return true;
     });
-    // xterm's helper textarea captures every Tab once focused, making the terminal a focus trap during page Tab navigation; demote it out of the Tab order (clicking still focuses it).
+    // Reachable by Tab; Shift+Tab exits to the host while bare Tab stays shell completion.
     const helperTextarea = container.querySelector<HTMLTextAreaElement>(
       '.xterm-container textarea.xterm-helper-textarea',
     );
     if (helperTextarea) {
-      helperTextarea.setAttribute('tabindex', '-1');
+      helperTextarea.setAttribute('tabindex', '0');
+      helperTextarea.setAttribute('data-nc-terminal-input', '');
+      if (visibleRef.current && focusedRef.current && document.activeElement === focusOrigin.current) term.focus();
     }
     try {
       fit.fit();
@@ -835,11 +848,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
 
   return (
     <div ref={rootRef} className="xterm-view" data-nc-terminal-id={terminalId}>
-      {/* xterm's per-cell spans are presentational, not navigable text; `aria-hidden` scopes axe and AT to the helper textarea, which carries its own ARIA wiring. */}
+      {/* xterm hides its presentation rows itself; keep its labelled input in the accessibility tree. */}
       <div
         ref={containerRef}
         className="xterm-container"
-        aria-hidden="true"
+        data-nc-terminal-viewport=""
         role="presentation"
       />
       {/* While waiting for usable layout, keep only a neutral loading state;

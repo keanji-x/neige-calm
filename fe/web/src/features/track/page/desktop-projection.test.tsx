@@ -62,8 +62,8 @@ function desktopPanel(container: Element): Element {
 }
 
 const ALL_MODULES: readonly RowModuleView[] = [
-  ...deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).rowModules,
-  ...deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() }).rowModules,
+  ...deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }).desktop.rowModules,
+  ...deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() }).desktop.rowModules,
 ];
 const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module.rows]);
 
@@ -104,7 +104,7 @@ describe('fixture shape guard', () => {
   });
 
   it('every module key is exercised both empty and non-empty', () => {
-    for (const key of ['tasks', 'cards'] as const) {
+    for (const key of ['work', 'cards'] as const) {
       const mine = ALL_MODULES.filter((module) => module.key === key);
       expect(mine.some((module) => module.rows.length === 0)).toBe(true);
       expect(mine.some((module) => module.rows.length > 0)).toBe(true);
@@ -141,7 +141,7 @@ describe('the rendered desktop panel projects its view model faithfully', () => 
     expect(MARKER.row).toBe('data-nc-row');
     expect(MARKER.module).toBe('data-nc-module');
     expect(root.querySelectorAll('[data-nc-row]').length).toBe(CARDS.length + TASKS.length - 1);
-    expect(root.querySelectorAll('[data-nc-module]').length).toBe(1);
+    expect(root.querySelectorAll('[data-nc-module]').length).toBe(2);
   });
 });
 

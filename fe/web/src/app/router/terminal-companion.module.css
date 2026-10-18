@@ -1,0 +1,9 @@
+@layer features {
+  .companion { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; min-inline-size: 0; background: var(--surface-card); border-radius: var(--nc-card-radius, var(--radius-lg)); }
+  .tabs { display: flex; flex: none; gap: var(--space-2); padding: var(--nc-card-inset, var(--space-2)); }
+  .tabs button { min-block-size: var(--control-h); padding-inline: var(--space-2); }
+  .tabs [aria-pressed="true"] { background: var(--selection-bg); border-radius: var(--radius-highlight); }
+  .tabs [aria-pressed="true"]:is(:hover, :focus-visible) { background: var(--selection-hover-bg); }
+  .content { position: relative; flex: 1; min-block-size: 0; }
+  .companion[hidden], .content[hidden] { display: none; }
+}

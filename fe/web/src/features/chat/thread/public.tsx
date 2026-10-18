@@ -1,3 +1,4 @@
+import { terminalCommand, TERMINAL_ARGUMENTS_MESSAGE, TERMINAL_DESKTOP_MESSAGE } from '../../../../../core/domain/terminal-command.ts';
 import { useThreadReadingView, type ThreadReadingView } from './reading-view.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 import { floatingControlClassName, floatingControlMaterialClassName } from '../../../ui/floating-control/public.ts';
@@ -333,13 +334,14 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
 
 export const COMPACT_CONVERSATION_COMMAND = Object.freeze({ id: 'compact-conversation', label: 'Compact context' });
 
+const TERMINAL_COMMAND = Object.freeze({ id: 'terminal-workbench', label: 'Terminal' });
 export const SIDE_CONVERSATION_COMMAND = Object.freeze({ id: 'side-conversation', label: 'Side conversation' });
 
 /** Astryx's ChatComposer; we own the value and the send callback so the kernel path stays a string. */
 export type ComposerFocusHandle = Readonly<{ ownsFocus: () => boolean }>;
 
 export function ChatComposer({
-  onSend, onStop, onCompact, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
+  onSend, onStop, onCompact, onNewConversation, onSideConversation, onTerminal, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
   draft: controlledDraft, footerActions, sendAdornment,
   drawer, headerActions, allowEmptyText = false, mentionTrigger, onFiles, layout = 'standard', focusHandle,
 }: {
@@ -356,6 +358,8 @@ export function ChatComposer({
   onCompact?: () => void;
   /** Starts a separate discussion using a frozen context excerpt. */
   onSideConversation?: (question: string) => void | boolean;
+  /** Opens the Track terminal UI; never accepts shell arguments. */
+  onTerminal?: () => void;
   /** Hide this command on surfaces that cannot open a second card. */
   showSideCommand?: boolean;
   disabled?: boolean;
@@ -385,6 +389,7 @@ export function ChatComposer({
   /** The `@` menu (`useMentionTrigger`), present only where a Planner reads what is sent; the caller keeps it stable. */
   mentionTrigger?: ChatComposerTrigger;
 }) {
+  const compactViewport = useCompactViewport();
   const [localDraft, setLocalDraft] = useState('');
   const draft = controlledDraft?.text ?? localDraft;
   const sendIcon = useIcon('arrowUp');
@@ -398,6 +403,17 @@ export function ChatComposer({
   newConversationRef.current = onNewConversation;
   const sideConversationRef = useRef(onSideConversation);
   sideConversationRef.current = onSideConversation;
+
+  const terminalRef = useRef(onTerminal);
+  terminalRef.current = onTerminal;
+  const [terminalError, setTerminalError] = useState<string | null>(null);
+  const refusedTerminal = useRef<string | null>(null);
+  useEffect(() => {
+    if (draft !== '' || refusedTerminal.current === null) return;
+    const text = refusedTerminal.current;
+    refusedTerminal.current = null;
+    setDraft(text);
+  }, [draft, setDraft]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const messageInputRef = useRef<HTMLDivElement>(null);
@@ -439,6 +455,7 @@ export function ChatComposer({
     parkedFocus.current = document.activeElement;
   }, [sendCount, disabled, focusRequest]);
 
+  const hasTerminalCommand = onTerminal !== undefined && !compactViewport;
   const hasCompactCommand = onCompact !== undefined;
   const hasNewCommand = onNewConversation !== undefined;
   const hasSideCommand = onSideConversation !== undefined && showSideCommand;
@@ -448,26 +465,28 @@ export function ChatComposer({
       ...(hasNewCommand ? [NEW_CONVERSATION_COMMAND] : []),
       ...(hasSideCommand ? [SIDE_CONVERSATION_COMMAND] : []),
       ...(hasCompactCommand ? [COMPACT_CONVERSATION_COMMAND] : []),
+      ...(hasTerminalCommand ? [TERMINAL_COMMAND] : []),
     ]),
     menuLabel: 'Commands',
     emptySearchResultsText: 'No command by that name',
     /* `item.label` is deliberately not rendered. */
     renderItem: (item) => (
       <span className={styles.commandItem}>
-        <Icon name={item.id === COMPACT_CONVERSATION_COMMAND.id ? 'compact' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'chat' : 'plus'} size="sm" />
-        <span className={styles.commandName}>{item.id === COMPACT_CONVERSATION_COMMAND.id ? 'compact' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'side' : 'new'}</span>
-        <span className={styles.commandHint}>{item.id === COMPACT_CONVERSATION_COMMAND.id ? 'Compress this conversation’s context' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'Discuss with a text snapshot' : 'This one stays in the list'}</span>
+        <Icon name={item.id === TERMINAL_COMMAND.id ? 'terminal' : item.id === COMPACT_CONVERSATION_COMMAND.id ? 'compact' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'chat' : 'plus'} size="sm" />
+        <span className={styles.commandName}>{item.id === TERMINAL_COMMAND.id ? 'terminal' : item.id === COMPACT_CONVERSATION_COMMAND.id ? 'compact' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'side' : 'new'}</span>
+        <span className={styles.commandHint}>{item.id === TERMINAL_COMMAND.id ? 'Open the Track terminal workbench' : item.id === COMPACT_CONVERSATION_COMMAND.id ? 'Compress this conversation’s context' : item.id === SIDE_CONVERSATION_COMMAND.id ? 'Discuss with a text snapshot' : 'This one stays in the list'}</span>
       </span>
     ),
     /* A command is run, not inserted: returning `''` leaves the composer clear, and Astryx has already deleted the typed `/new`. */
     onSelect: (item) => {
-      if (item.id === COMPACT_CONVERSATION_COMMAND.id) compactRef.current?.();
+      if (item.id === TERMINAL_COMMAND.id) terminalRef.current?.();
+      else if (item.id === COMPACT_CONVERSATION_COMMAND.id) compactRef.current?.();
       else if (item.id === SIDE_CONVERSATION_COMMAND.id) sideConversationRef.current?.('');
       else newConversationRef.current?.();
       return '';
     },
-  }), [hasNewCommand, hasSideCommand, hasCompactCommand]);
-  const hasCommands = hasNewCommand || hasSideCommand || hasCompactCommand;
+  }), [hasNewCommand, hasSideCommand, hasCompactCommand, hasTerminalCommand]);
+  const hasCommands = hasNewCommand || hasSideCommand || hasCompactCommand || hasTerminalCommand;
   /* One array per combination: a new array per render would make `useTriggerMenu` drop an open menu. */
   const triggers = useMemo<ChatComposerTrigger[]>(() => [
     ...(hasCommands ? [commandTrigger] : []),
@@ -479,6 +498,16 @@ export function ChatComposer({
     const text = value.trim();
     /* `allowEmptyText` is the caller saying the message carries an image. */
     if ((text === '' && !allowEmptyText) || disabled || editing?.canSubmit === false) return;
+    const terminal = onTerminal === undefined && !compactViewport ? null : terminalCommand(text);
+    if (terminal !== null) {
+      if (compactViewport || terminal === 'arguments') {
+        setTerminalError(compactViewport ? TERMINAL_DESKTOP_MESSAGE : TERMINAL_ARGUMENTS_MESSAGE);
+        // Restore after the vendor's empty controlled value has committed, even on repeated refusal.
+        refusedTerminal.current = value;
+        setDraft('');
+      } else { setTerminalError(null); setDraft(''); onTerminal?.(); }
+      return;
+    }
     const question = onSideConversation === undefined ? null : sideQuestion(text);
     if (question !== null) {
       if (onSideConversation?.(question) === false) {
@@ -501,6 +530,7 @@ export function ChatComposer({
   };
 
   /* `Send image`: `ChatSendButton` takes its availability from `canSend`, false on an empty draft, and an image-only message is an empty draft. Shown only while the vendor's own button is unavailable. */
+  const commandError = terminalError === null ? null : <p role="alert">{terminalError}</p>;
   const sendDoor = allowEmptyText && draft.trim() === '' && !stopShown && !sendWaiting && editing === undefined ? (
     <button
       type="button"
@@ -583,7 +613,7 @@ export function ChatComposer({
           onStop={onStop}
           /* Astryx's own `handleSubmit` refuses only an empty draft and `isDisabled`, never `isStopShown`. */
           onSubmit={submit}
-          {...(drawer === undefined ? {} : { drawer })}
+          {...(drawer === undefined && commandError === null ? {} : { drawer: <>{commandError}{drawer}</> })}
           {...(editing === undefined && headerActions === undefined ? {} : { headerActions: editing === undefined ? headerActions : (
             <div className={styles.editBar} data-nc-edit-bar="">
               <span className={styles.editBarLabel}>Editing message</span>

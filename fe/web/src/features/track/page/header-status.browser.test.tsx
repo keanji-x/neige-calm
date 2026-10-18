@@ -451,7 +451,7 @@ describe('the report-to-Planner entry', () => {
     const reason = 'Validation failed because the expected report snapshot is missing. '.repeat(4);
     renderPage({ tasks: [{ blockId: 'verify', key: 'verify', state: 'ready', declaration: null,
       status: 'failed', statusDetail: reason, kind: 'codex', workerCardId: null, pendingReason: null }] });
-    const group = browserPage.getByText('Progress', { exact: true }).element().closest('details')!;
+    const group = document.querySelector<HTMLDetailsElement>('[data-nc-work-inventory] details')!;
     expect(group.open).toBe(false);
     await userEvent.click(group.querySelector('summary')!);
     const reveal = group.querySelector<HTMLElement>('[data-nc-row-action="reveal-block"]')!;

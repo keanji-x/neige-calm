@@ -1,0 +1,76 @@
+@layer ui {
+  /*
+   * ── The header row ─────────────────────────────────────────────────────────
+   *
+   * **A quiet row, not a band.** Desktop paints the conversation's name on the
+   * left and Close on the right, on one row as
+   * tall as the controls (`--control-h`). It shares the card's ground (no new
+   * fill) and is set off by one full-width hairline below it — the design
+   * system's "internal structure takes the separators it needs". The scroller
+   * starts below the line, so the transcript never runs under the controls. The title is the drawer's accessible
+   * name (`aria-labelledby`), so it is said once. Compact viewports paint the
+   * shared `MobileHeader` instead and never this row.
+   *
+   * The title is one line at the interface rank and ellipsizes; the full name
+   * stays reachable through its `title`. It takes the free space, so the
+   * fixed 28px close never moves it.
+   *
+   * **Why the close is a chevron and may never be an X.** The page header's
+   * *delete track* sits in the same column a pointer-flick above; two
+   * identical boxes with opposite consequences would be a mis-click reported
+   * as data loss. `chevron-right` is this app's "collapse it away" word, the
+   * same one the rail's collapse uses, and closing a conversation does not
+   * end it. X stays reserved for destruction. Anything added to this row
+   * inherits that obligation.
+   *
+   * Controls keep `--space-6` from the title, the gap §4.3 asks of
+   * adjacent controls, and the full 28px hit area (§5, 2.5.8).
+   */
+  .header {
+    /* The host can align this header with adjacent reading surfaces. */
+    box-sizing: border-box;
+    min-block-size: var(--nc-card-header-height, auto);
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--nc-card-inset, var(--space-2));
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .title {
+    flex: 1;
+    min-inline-size: 0;
+    margin: 0;
+    overflow: hidden;
+    font: var(--type-reading);
+    letter-spacing: var(--type-reading-tracking);
+    color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .close {
+    line-height: 1;
+    flex: none;
+    color: var(--text-3);
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .close:hover,
+  .close:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .delete { opacity: 0; }
+  .header:hover .delete,
+  .header:focus-within .delete,
+  [data-nc-header-scope]:is(:hover, :focus-within) .delete { opacity: 1; }
+  .status { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-3); }
+}

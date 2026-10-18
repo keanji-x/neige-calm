@@ -263,7 +263,7 @@ export function deriveTrackPageView(input: Readonly<{
   const resourceEntries = cards.rows.filter(row => !absorbed.has(row.id)).map(row => ({
     row: { ...row, id: `tool:${row.id}` }, recency: resourceRecency(resourcesById.get(row.id)!),
   }));
-  const progress = [...taskEntries, ...resourceEntries].toSorted((left, right) => {
+  const orderEntries = (entries: typeof taskEntries) => entries.toSorted((left, right) => {
     const phase = Number(progressRowFinished(left.row)) - Number(progressRowFinished(right.row));
     if (phase !== 0) return phase;
     if (left.recency === null) return right.recency === null ? 0 : 1;
@@ -273,7 +273,9 @@ export function deriveTrackPageView(input: Readonly<{
   return {
     rowModules: [tasks, cards],
     desktop: { rowModules: [{
-      key: 'work', title: 'Workspace', empty: 'Nothing to show yet.', rows: progress.map(entry => entry.row),
+      key: 'work', title: 'Progress', empty: 'No tasks declared yet.', rows: orderEntries(taskEntries).map(entry => entry.row),
+    }, {
+      key: 'cards', title: 'Workbench', empty: 'No tools yet.', rows: orderEntries(resourceEntries).map(entry => entry.row),
     }] },
   };
 }

@@ -7,9 +7,9 @@ import { CardHead } from './card-head.tsx';
 type PreviewCard = Readonly<{ type: 'motion-preview'; id: string; title: string; detail: string }>;
 declare module '../registry.js' { interface CardDataMap { motionPreview: PreviewCard } }
 
-function PreviewCardView({ card, onRemove }: CardComponentProps<PreviewCard>) {
+function PreviewCardView({ card, onRemove, header }: CardComponentProps<PreviewCard>) {
   return <div className="term">
-    <CardHead className="card-drag-handle" title={card.title} onClose={onRemove} closeAriaLabel={`删除${card.title}`} />
+    <CardHead header={header} className="card-drag-handle" title={card.title} onClose={onRemove} closeAriaLabel={`删除${card.title}`} />
     <div className="term-body"><p>{card.detail}</p></div>
   </div>;
 }

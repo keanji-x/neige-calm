@@ -64,3 +64,11 @@ heading, accessible label and close/focus behavior are unchanged.
 open marker to reveal covered content and start layout restoration, rather than
 waiting for the exit node to disappear. The shell owns its panel allocation;
 Drawer and its seam keep their existing shared presence spring.
+
+## Retained companion slots
+
+`retainCompanion` keeps only the independent companion slot mounted when hidden. Drawer internally retains the final title/body/footer through its closing spring, then removes its DOM, id and drawer markers. A parent may immediately hide or remove a side conversation, so its final frame is not guaranteed to remain visible. Compact viewport transfer releases the desktop panel immediately so the native sheet is the only conversation scrollport. The default still unmounts the whole closed drawer. `companionVisible` controls the second cell independently, so it can remain mounted while hidden or open without the primary card. Callers own resource visibility and must send it separately; retaining DOM does not create, stop or dispose a resource.
+
+The terminal companion's own trailing chevron follows the conversation header's collapse affordance. Its caller owns hide-only focus return and card URL cleanup separately from resource deletion.
+
+The generic stack host owns the resizable marker and one shared ResizeEdge while either pane is open. Its marker remains through primary exit, including when only the independent companion is visible; the primary still unmounts after exit. Hiding the last pane or removing its resize contract removes the edge and commits only the last laid-out drag width through the existing shell contract. Inline children with a supplied resize group never publish a second width marker or handle.

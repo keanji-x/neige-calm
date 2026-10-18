@@ -172,21 +172,22 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
   await page.viewport(1200, 900);
   const worker = card({ id: 'worker', title: 'A longer worker title', kind: 'codex', deletable,
     runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
-  const view = deriveTrackPageView({ cards: [worker],
-    tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'worker' }],
-    activity: { cards: { worker: 'working' } }, openableCards: new Set(['worker']) });
+  const view = deriveTrackPageView({ cards: [worker, card({ id: 'execution-worker', title: 'Execution', kind: 'codex' })],
+    tasks: [{ ...task('work', 'running', 'codex'), workerCardId: 'execution-worker' }],
+    activity: { cards: { worker: 'working', 'execution-worker': 'working' } }, openableCards: new Set(['worker', 'execution-worker']) });
   const onDeleteCard = vi.fn();
   const onOpenCard = vi.fn();
-  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onDeleteCard, onOpenCard }), view)}</PanelCard></div>);
-  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="cards"] details:not([open]) > summary')) await userEvent.click(summary);
-  const cardRow = document.querySelector<HTMLElement>('[data-nc-row="worker"]')!;
-  const taskRow = document.querySelector<HTMLElement>('[data-nc-row="work"]')!;
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onDeleteCard, onOpenCard }), view.desktop)}</PanelCard></div>);
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="work"] details:not([open]) > summary')) await userEvent.click(summary);
+  const cardRow = document.querySelector<HTMLElement>('[data-nc-row="tool:worker"]')!;
+  const taskRow = document.querySelector<HTMLElement>('[data-nc-row="task:work"]')!;
   const cardKind = cardRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
   const taskKind = taskRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
   const cardIcon = cardRow.querySelector('svg')!.getBoundingClientRect();
   expect(cardKind.textContent).toBe('codex');
-  expect(cardKind.getBoundingClientRect().width).toBeGreaterThan(1);
-  const taskIcon = taskKind.querySelector('svg')!.getBoundingClientRect();
+  expect(cardKind.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+  expect(taskKind.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+  const taskIcon = taskRow.querySelector('svg')!.getBoundingClientRect();
   expect(cardIcon.left).toBeCloseTo(taskIcon.left, 0);
   for (const row of [cardRow, taskRow]) {
     const icon = row.querySelector('svg')!.getBoundingClientRect();
@@ -200,9 +201,10 @@ it.each([false, true])('left-aligns type icons beside names with deletable=%s', 
   }
   if (deletable) {
     await userEvent.hover(cardRow);
-    const remove = cardRow.querySelector<HTMLElement>('[data-nc-row-action="delete-card"]')!;
-    expect(remove.getBoundingClientRect().right).toBeCloseTo(cardRow.getBoundingClientRect().right - 4, 0);
-    await userEvent.click(remove);
+    const menu = cardRow.querySelector<HTMLElement>('button[aria-haspopup="menu"]')!;
+    expect(menu.getBoundingClientRect().right).toBeCloseTo(cardRow.getBoundingClientRect().right - 4, 0);
+    await userEvent.click(menu);
+    await page.getByRole('menuitem', { name: 'Delete card A longer worker title' }).click();
     expect(onDeleteCard).toHaveBeenCalledWith('worker');
     expect(onOpenCard).not.toHaveBeenCalled();
   }
@@ -276,12 +278,12 @@ it('reveals module actions on hover and keyboard focus', async () => {
   }), derive({ cards: [card()], tasks: [] }))}</PanelCard></div>);
   const action = document.querySelector<HTMLElement>('[aria-label="Add a tool"]')!;
   await page.elementLocator(document.body).hover();
-  expect(getComputedStyle(action).opacity).toBe('0');
+  expect(getComputedStyle(action.parentElement!).opacity).toBe('0');
   action.focus();
-  expect(getComputedStyle(action).opacity).toBe('1');
+  expect(getComputedStyle(action.parentElement!).opacity).toBe('1');
   action.blur();
   await page.elementLocator(action.closest('section')!).hover();
-  expect(getComputedStyle(action).opacity).toBe('1');
+  expect(getComputedStyle(action.parentElement!).opacity).toBe('1');
 });
 
 
@@ -310,7 +312,7 @@ it('groups work and conversation entries in the real page without duplicating st
     cardsAction: <button type="button" onClick={newConversation}>New</button>,
   });
   const desktop = document.querySelector<HTMLElement>('[data-nc-desktop-panel]')!;
-  expect([...desktop.querySelectorAll('h2')].map(title => title.textContent)).toEqual(['Conversations', 'Workspace']);
+  expect([...desktop.querySelectorAll('h2')].map(title => title.textContent)).toEqual(['Conversations', 'Progress', 'Workbench', 'Workbench']);
   const entries = desktop;
   const conversation = [...entries.querySelectorAll('button')].find(button => button.textContent === 'Planner conversation')!;
   await userEvent.click(conversation);
@@ -330,7 +332,7 @@ it.each(['input', 'failed'] as const)('keeps kernel %s visible alongside a runni
   const view = deriveTrackPageView({ cards: [worker], tasks: [],
     activity: { cards: { [worker.id]: activity } }, openableCards: new Set([worker.id]) });
   render(<PanelCard>{paintDesktopPanel(makeDesktopPainter({}), view)}</PanelCard>);
-  const name = document.querySelector('[data-nc-row="busy-worker"] > button > span:first-child')!;
+  const name = document.querySelector('[data-nc-row="busy-worker"]')!;
   const expected = activity === 'input' ? 'Needs input' : 'Needs attention';
   const label = [...name.querySelectorAll('span')].find(element => element.textContent === expected);
   expect(label, 'attention must be in the visible name area, outside clipped metadata').toBeDefined();

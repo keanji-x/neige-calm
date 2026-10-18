@@ -464,7 +464,9 @@ it('joins only drawable current workers, preserves maintenance actions, and isol
   });
   expect(view.rowModules.find(module => module.key === 'cards')!.rows).toHaveLength(3);
   const rows = view.desktop.rowModules[0].rows;
-  expect(rows.map(row => row.id)).toEqual(['task:unopenable', 'tool:same', 'tool:unknown', 'task:same']);
+  expect(rows.map(row => row.id)).toEqual(['task:unopenable', 'task:same']);
+  expect(view.desktop.rowModules[1]).toMatchObject({ key: 'cards', title: 'Workbench' });
+  expect(view.desktop.rowModules[1].rows.map(row => row.id)).toEqual(['tool:same', 'tool:unknown']);
   const joined = rows.find(row => row.id === 'task:same')!;
   expect(joined.actions).toContainEqual({ kind: 'delete-card', cardId: 'worker', label: 'Delete card Runtime', hint: 'Delete card', description: null });
   expect(joined.actions.some(action => action.kind === 'reveal-block' && action.blockId === 'same')).toBe(true);
@@ -474,7 +476,7 @@ it('gives an independent tool its exact session status as the primary action des
   const view = deriveTrackPageView({ cards: [card({ id: 'failed', title: 'Build log', kind: 'terminal',
     runtime: { worker_session_id: 'session', kind: 'terminal', status: 'failed' } })],
     tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set(['failed']) });
-  const row = view.desktop.rowModules[0].rows[0];
+  const row = view.desktop.rowModules[1].rows[0];
   expect(row.actions.find(action => action.kind === 'open-card')?.description).toBe('session failed');
 });
 
@@ -514,7 +516,7 @@ it('orders independent resources by recency within live and ended partitions', (
     card({ id: 'failed', updated_at: 900, runtime: { worker_session_id: 'sf', kind: 'terminal', status: 'failed' } }),
     card({ id: 'finished', updated_at: 700, runtime: { worker_session_id: 'sd', kind: 'terminal', status: 'exited' } })];
   const view = deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set(cards.map(card => card.id)) });
-  expect(view.desktop.rowModules[0].rows.map(row => row.id)).toEqual(['tool:latest', 'tool:old', 'tool:failed', 'tool:finished']);
+  expect(view.desktop.rowModules[1].rows.map(row => row.id)).toEqual(['tool:latest', 'tool:old', 'tool:failed', 'tool:finished']);
 });
 
 
@@ -538,14 +540,21 @@ it('retains zero timestamps and stable ties without a request-time substitute', 
     activity: NEUTRAL_ACTIVITY, openableCards: new Set(),
   });
   expect(view.desktop.rowModules[0].rows.map(row => row.id))
-    .toEqual(['tool:zero-a', 'tool:zero-b', 'task:unknown-a', 'task:unknown-b']);
+    .toEqual(['task:unknown-a', 'task:unknown-b']);
+  expect(view.desktop.rowModules[1].rows.map(row => row.id)).toEqual(['tool:zero-a', 'tool:zero-b']);
 });
 
 
 it('does not describe a live harness turn_pending state as queued work', () => {
   const view = deriveTrackPageView({ cards: [card({ runtime: { worker_session_id: 'live', kind: 'codex', status: 'turn_pending' } })],
     tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
-  const row = view.desktop.rowModules[0].rows[0];
+  const row = view.desktop.rowModules[1].rows[0];
   expect(row.status?.token).toBe('turn_pending');
   expect(progressStatusLabel(row)).toBe('Working');
+});
+
+it('keeps an empty desktop Workbench beside Progress without changing mobile modules', () => {
+  const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
+  expect(view.desktop.rowModules.map(module => [module.key, module.title, module.rows])).toEqual([['work', 'Progress', []], ['cards', 'Workbench', []]]);
+  expect(view.rowModules.map(module => [module.key, module.title])).toEqual([['tasks', 'Tasks'], ['cards', 'Tools']]);
 });

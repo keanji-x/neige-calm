@@ -762,6 +762,7 @@
       inset-block: var(--workspace-header-inset);
     }
 
+    .main [data-nc-drawer-stack],
     .main [data-nc-drawer] {
       --nc-card-header-height: var(--workspace-header-row-height);
     }

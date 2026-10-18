@@ -15,7 +15,6 @@ import type {
 } from '../../../../../core/view/panel.ts';
 import { executionActivityLabelOf, progressStatusLabel } from '../../../../../core/view/track-page.ts';
 import { activityLabelOf } from '../../../../../core/domain/activity.ts';
-import { Icon } from '../../../ui/icon/public.tsx';
 import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { InventoryIcon, InventoryKind } from './inventory-kind.tsx';
 import styles from './page.module.css';
@@ -43,6 +42,7 @@ export type DesktopPainterDeps = Readonly<{
   onDeleteCard?: (cardId: string) => void;
   /** The Cards module head's `+`, composed by `app/router`; travels as an opaque node. */
   cardsAction?: ReactNode;
+  terminalAction?: ReactNode;
   /** Compact, already-derived progress for the Tasks module head. */
   taskSummary?: string | null;
   /** Related entry content composed by the host; belongs inside the tools section. */
@@ -99,37 +99,6 @@ function rowMetadata(row: PanelRow, moduleKey: RowModuleView['key'], activityTex
   </VisuallyHidden>;
 }
 
-/** A Cards row. The delete is a sibling of the row button, never a child: a `<button>` inside a `<button>` is dropped by every HTML parser. */
-function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
-  const open = control(row, 'open-card');
-  const remove = control(row, 'delete-card');
-  const attention = inventoryNeedsAttention(row, 'cards') && (row.activity === 'attention' || row.activity === 'failed')
-    ? activityLabelOf(row.activity) : null;
-  return <li key={row.id} className={styles.cardItem} {...mark(MARKER.row, row.id)}>
-    <button type="button" className={styles.cardRow}
-      {...(open === null ? {} : { ...mark(MARKER.action, 'open-card'), ...wording(open) })}
-      onClick={open === null ? undefined : () => deps.onOpenCard?.(open.id)}>
-      <span className={`${styles.cardName} ${remove === null ? '' : styles.cardNameRemovable}`}>
-        <ListText tone="primary" className={styles.cardKind} title={row.title} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
-        <span className={styles.toolStatuses}>
-          {row.status !== null && <ListText tone="secondary" className={styles.toolStatus}
-            {...mark(MARKER.status, row.status.token)} title={row.status.phrase}>{row.status.token}</ListText>}
-          {attention !== null && <ListText tone="secondary" className={styles.toolStatus}>{attention}</ListText>}
-        </span>
-        <span className={styles.cardMeta}>
-          {row.kind !== null && <ListText tone="secondary" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>}
-          {row.badges.filter(badge => badge.id === 'task').map(badge => <ListText key={badge.id} tone="secondary"
-            className={styles.cardContext} title={`Task: ${badge.text}`}><span aria-hidden="true"> · </span><span {...mark(MARKER.badge, badge.id)}>{badge.text}</span></ListText>)}
-        </span>
-      </span>
-      {row.kind !== null && <span className={styles.cardKindTag} aria-hidden="true"><InventoryIcon kind={row.kind} /></span>}
-      {rowMetadata(row, 'cards', attention !== null || row.activity === null ? null : activityLabelOf(row.activity))}
-    </button>
-    {remove !== null && <button type="button" data-nc-role="icon" className={styles.cardRemove}
-      {...mark(MARKER.action, 'delete-card')} {...wording(remove)} onClick={() => deps.onDeleteCard?.(remove.id)}><Icon name="close" size="sm" /></button>}
-  </li>;
-}
-
 /** A Task row: the reveal button always reveals the block; the kind is the worker-card affordance. A `<button>` may not nest inside a `<button>`, so the row is a plain `<li>`; "the row reveals the block" is a CSS sheet (`.taskReveal::before`), not DOM containment. */
 function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
@@ -166,8 +135,8 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   );
 }
 
-/** One item recipe inside folded background progress; source and execution destinations stay distinct. */
-function workTaskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
+/** Shared contextual task/tool row; source and execution destinations stay distinct. */
+function contextRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const reveal = control(row, 'reveal-block');
   const open = control(row, 'open-card');
   const primary = reveal ?? open;
@@ -175,11 +144,14 @@ function workTaskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
   const secondary = row.actions.filter(action => action.kind !== (isTask ? 'reveal-block' : 'open-card'));
   const icon = row.kind === null ? (isTask ? 'tasks' : 'file') : <InventoryIcon kind={row.kind} />;
   const statusLabel = progressStatusLabel(row);
+  const attention = !isTask && (row.activity === 'attention' || row.activity === 'failed') ? activityLabelOf(row.activity) : null;
   const detail = [row.title, row.kind, row.status?.phrase, executionActivityLabelOf(row.activity)].filter(Boolean).join(' · ');
   return <li key={row.id} title={detail} {...mark(MARKER.row, row.id)}>
     <ContextItem icon={icon} label={<span className={row.badges.some(badge => badge.struck) ? styles.taskWithdrawn : undefined}
         {...mark(MARKER.field, FIELD.title)}>{row.title}</span>}
-      trailing={statusLabel === null ? undefined : <ListText tone="secondary">{statusLabel}</ListText>}
+      trailing={statusLabel === null && attention === null ? undefined : <ListText tone="secondary">
+        {statusLabel}{statusLabel !== null && attention !== null ? ' · ' : null}{attention !== null && <span>{attention}</span>}
+      </ListText>}
       metadata={<>
         {row.kind !== null && <VisuallyHidden aria-hidden="true" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</VisuallyHidden>}
         {rowMetadata(row, isTask ? 'tasks' : 'cards', executionActivityLabelOf(row.activity))}
@@ -216,7 +188,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
       slot: 'row',
       needsAttention: key => inventoryNeedsAttention(row, key),
       group: (key) => panelRowGroup(row, key),
-      paint: (moduleKey) => moduleKey === 'work' ? workTaskRow(row, deps) : moduleKey === 'cards' ? cardRow(row, deps) : taskRow(row, deps),
+      paint: (moduleKey) => moduleKey === 'tasks' ? taskRow(row, deps) : contextRow(row, deps),
     }),
 
     empty: (text) => ({
@@ -234,25 +206,29 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
         <div data-nc-work-inventory="">
           {!rows
             ? (deps.suppressEmpty ? <VisuallyHidden>{children}</VisuallyHidden> : children)
-            : <ContextGroup title="Progress" collapsible {...deps.progressDisclosure}>
+            : <ContextGroup title={parts.title} collapsible {...deps.progressDisclosure}>
               <ContextList aria-label="Execution progress">{children}</ContextList>
             </ContextGroup>}
         </div>
+      </PanelModule> : parts.key === 'cards' ? <PanelModule key={parts.key} title={parts.title} bare
+        moduleMarker={parts.key} titleFieldMarker={FIELD.moduleTitle}>
+        <ContextGroup title={parts.title} action={deps.terminalAction} secondaryAction={deps.cardsAction} actionVisibility="always">
+          <div data-nc-card-inventory="">{rows ? <ContextList aria-label="Workbench tools">{children}</ContextList> : children}</div>
+          {deps.cardEntries}
+        </ContextGroup>
       </PanelModule> : (
         <PanelModule
           key={parts.key}
           title={parts.title}
           revealActions
-          action={parts.key === 'cards'
-            ? deps.cardsAction
-            : deps.taskSummary
+          action={deps.taskSummary
               ? <ListText tone="count" className={styles.taskSummary} title={deps.taskSummary}>{deps.taskSummary}</ListText>
               : undefined}
           moduleMarker={parts.key}
           titleFieldMarker={FIELD.moduleTitle}
         >
-          <div {...(parts.key === 'cards' ? { 'data-nc-card-inventory': '' } : { 'data-nc-task-inventory': '' })}>
-          {!rows ? children : parts.key === 'cards' ? <ul className={styles.cards}>{children}</ul> : <InventoryGroups
+          <div data-nc-task-inventory="">
+          {!rows ? children : <InventoryGroups
             groups={inventorySections(parts.children, leaf => {
               if (leaf.slot === 'module') throw new Error('Nested inventory module');
               return leaf.group(parts.key);
@@ -261,7 +237,6 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
             renderRows={leaves => <ul className={styles.tasks}>{leaves.map(leaf => finish(leaf, parts.key))}</ul>}
           />}
           </div>
-          {parts.key === 'cards' && deps.cardEntries}
         </PanelModule>
       );
       return {

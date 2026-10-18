@@ -35,9 +35,14 @@ export type CardCreateStrategy =
   | Readonly<{ mode: 'catalog'; catalog: string }>
   | Readonly<{ mode: 'kernel-minted-only' }>;
 
+/** A surface's optional collapse action, independent of resource deletion. */
+export type CardHeaderPresentation = Readonly<{ onHide: () => void; hideLabel: string }>;
+
 export interface CardComponentProps<Card extends { readonly id: string; readonly type: string } = RegisteredCard> {
   readonly card: Card;
   readonly host: CardHostCapabilities;
+  /** Consumed by CardHead; absent keeps ordinary board presentation. */
+  readonly header?: CardHeaderPresentation;
   /** Already resolved: `undefined` means no delete on this card, whether kernel-owned or the surface offers none. */
   readonly onRemove?: () => void;
   /** The kernel's activity verdict, or `null`; a prop rather than a capability because it changes every tick and `host` is frozen at mount. */

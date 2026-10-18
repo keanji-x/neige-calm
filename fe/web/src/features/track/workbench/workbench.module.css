@@ -1,0 +1,28 @@
+@layer features {
+  .workbench {
+    display: flex;
+    flex-direction: column;
+    block-size: 100%;
+    min-block-size: 0;
+    min-inline-size: 0;
+    color: var(--text);
+    background: var(--surface-card);
+  }
+
+  .workbench[hidden] { display: none; }
+
+  .workbench > p {
+    margin: var(--space-2) var(--nc-card-inset, var(--space-2));
+    color: var(--text-2);
+  }
+
+  .workbench > [data-nc-card-dock][hidden] { display: none; }
+
+  .workbench > [data-nc-card-dock] {
+    flex: 1;
+    min-block-size: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+}

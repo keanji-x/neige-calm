@@ -30,7 +30,7 @@ describe('AddCardMenu', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add card' }));
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['terminal', 'codex']);
     await userEvent.click(screen.getByRole('menuitem', { name: 'codex' }));
-    expect(onSelect).toHaveBeenCalledWith(CODEX);
+    expect(onSelect).toHaveBeenCalledWith(CODEX, screen.getByRole('button', { name: 'Add card' }));
   });
 
   it('keeps the trigger and says so when no kind is available', async () => {

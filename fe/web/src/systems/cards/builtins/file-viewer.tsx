@@ -27,10 +27,11 @@ function pathFromPayload(payload: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
 }
 
-function FileViewerCardView({ card, host, onRemove }: CardComponentProps<FileViewerCard>) {
+function FileViewerCardView({ card, host, onRemove, header }: CardComponentProps<FileViewerCard>) {
   return (
     <div className="term fv-card" data-nc-file-card="">
       <CardHead
+        header={header}
         className="card-drag-handle"
         title={card.title ?? 'file'}
         onClose={onRemove}

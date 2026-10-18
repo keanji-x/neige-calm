@@ -3222,13 +3222,12 @@ describe('track conversations', () => {
    * claim the card and put an empty terminal in this panel. */
   it('keeps assistant cards out of the CARDS panel, listing only the worker', async () => {
     setup();
-    /* The unified work list contains only the independently openable worker. */
+    /* Workbench contains the independent worker; Progress contains only task executions. */
     const list = await waitFor(() => {
-      const found = document.querySelector('[data-nc-work-inventory]');
+      const found = document.querySelector('[data-nc-card-inventory]');
       if (found === null) throw new Error('card inventory has not rendered');
       return found as HTMLElement;
     });
-    fireEvent.click(within(list).getByText('Progress', { exact: true }));
     const labels = within(list).getAllByRole('listitem').map((row) => row.textContent ?? '');
     /* Title then kernel kind; the assistant card is absent entirely. */
     expect(labels).toEqual(['Workercodex']);

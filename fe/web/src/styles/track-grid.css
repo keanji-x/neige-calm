@@ -178,6 +178,16 @@
     overflow-wrap: anywhere;
   }
 
+  /* Layer: overrides. Selector owner: CardDockHost's existing dock marker.
+     A retained dock shares Chat chrome, not the board's nested card frame.
+     Verify with terminal-workbench browser coverage and board/mobile replay;
+     keep scrollports, flex measurement and optional close space unchanged. */
+  [data-nc-card-dock] .term {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
   .card-head-icon {
     display: inline-flex;
     flex: 0 0 auto;

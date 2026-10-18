@@ -130,6 +130,7 @@ export type TrackPageProps = Readonly<{
   onStartConversation?: () => void;
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
+  terminalAction?: ReactNode;
   /** Browser-local file history, composed by the report feature through app. */
   recentFiles?: ReactNode;
   onOpenCard?: (cardId: string) => void;
@@ -175,7 +176,7 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
 export function TrackPage({ mobileReportIntro, mobileChatComposer,
   panelContent, progressDisclosure, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
-  cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
+  cardsAction, terminalAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
   canReopenTrack, canCloseTrack, adminGrantedAt, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack, onTrackDeleted,
@@ -292,7 +293,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   const panelView = deriveTrackPageView({ cards, tasks, activity: track, openableCards });
   const desktopConversations = conversationContextList ?? conversationList;
   const hasDesktopConversations = desktopConversations !== undefined || onStartConversation !== undefined;
-  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, progressDisclosure,
+  const desktopPainter = makeDesktopPainter({ cardsAction, terminalAction, onOpenCard, onOpenTask, onDeleteCard, progressDisclosure,
     suppressEmpty: desktopConversations !== undefined || onStartConversation !== undefined || recentFiles !== undefined || backlinks !== undefined,
   });
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);
@@ -552,8 +553,8 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
             inert={mobilePanelOpen}
           >
           <PanelCard className={styles.workCard}>
-            <ContextFrame action={hasDesktopConversations ? undefined : cardsAction}>
-              {hasDesktopConversations && <ContextGroup title="Conversations" secondaryAction={cardsAction}
+            <ContextFrame>
+              {hasDesktopConversations && <ContextGroup title="Conversations"
                 actionVisibility="always" action={onStartConversation === undefined ? undefined : <ContextAction
                   label="New conversation" icon="plus" onClick={onStartConversation} />}>
                 {desktopConversations}

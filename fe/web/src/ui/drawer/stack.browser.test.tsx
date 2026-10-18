@@ -62,3 +62,20 @@ it('keeps the ordinary single-card layout on compact screens', async () => {
     expect(card.getBoundingClientRect().bottom).toBeLessThanOrEqual(844);
   } finally { view.unmount(); }
 });
+
+it('gives the visible companion one host resize contract while inline panes and hidden hosts own none', () => {
+  const resize = { onPreview: () => {}, onCommit: () => {} };
+  const content = (visible: boolean, enabled: boolean) => <Drawer open={false} title="Primary" onClose={() => {}}
+    retainCompanion companionVisible={visible} resize={enabled ? resize : undefined}
+    companion={group => <Drawer inline open={visible} title="Independent" onClose={() => {}} resize={resize} resizeGroup={group}>Content</Drawer>}>Primary content</Drawer>;
+  const view = render(content(true, true));
+  expect(document.querySelectorAll('[data-nc-drawer-resizable]')).toHaveLength(1);
+  expect(document.querySelector('[data-nc-drawer-resizable]')).toBe(document.querySelector('[data-nc-drawer-stack]'));
+  expect(document.querySelectorAll('[role="separator"]')).toHaveLength(1);
+  view.rerender(content(false, true));
+  expect(document.querySelector('[role="separator"]')).toBeNull();
+  expect(document.querySelector('[data-nc-drawer-resizable]')).toBeNull();
+  view.rerender(content(true, false));
+  expect(document.querySelector('[role="separator"]')).toBeNull();
+  expect(document.querySelector('[data-nc-drawer-resizable]')).toBeNull();
+});
