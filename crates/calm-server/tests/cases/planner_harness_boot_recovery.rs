@@ -615,7 +615,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     .unwrap();
     assert_eq!(recovered, 1);
     let handle = registry.get(&runtime_id).expect("recovered harness");
-    let restored = handle.snapshot().await;
+    let restored = handle.snapshot().await.unwrap();
     assert_eq!(restored.push_watermark, 42);
     assert_eq!(restored.pending_observations().len(), 1);
     assert_eq!(restored.last_turn_id.as_deref(), Some("turn-recovered"));
@@ -705,9 +705,9 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let runtime_id = seed_recoverable_runtime(&repo, "deferred-race", "thread-race").await;
+    let worker_session_id = seed_recoverable_runtime(&repo, "deferred-race", "thread-race").await;
     let runtime = repo
-        .session_projection_by_id(&runtime_id)
+        .session_projection_by_id(&worker_session_id)
         .await
         .unwrap()
         .unwrap();
@@ -717,33 +717,42 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
     let events = EventBus::new();
 
     // The user's harness, built but NOT registered yet — the hook lands it inside the eligibility→claim window.
+    let actual_track = repo
+        .card_get(&runtime.card_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .track_id;
     let user_handle = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
-        track_id: TrackId::from(
-            repo.card_get(&runtime.card_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .track_id
-                .to_string(),
-        ),
+        worker_session_id: worker_session_id.clone(),
+        track_id: actual_track.clone(),
         card_id: CardId::from(runtime.card_id.clone()),
         thread_id: runtime.thread_id.clone(),
         repo: repo.clone(),
         events: events.clone(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            &runtime.card_id,
+            actual_track.as_str(),
+            &worker_session_id,
+        )
+        .unwrap(),
+        registry: registry.clone(),
         config: HarnessConfig::default(),
-        snapshot: HarnessSnapshot::initial(0, vec![]),
-    });
+        snapshot: (HarnessSnapshot::initial(0, vec![]))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     let hook_fired = Arc::new(AtomicUsize::new(0));
     let pending_user_install = Arc::new(std::sync::Mutex::new(Some(user_handle.clone())));
     let hook_registry = registry.clone();
     let hook_fired_in_hook = hook_fired.clone();
-    let hook_target = runtime_id.clone();
+    let hook_target = worker_session_id.clone();
     let post_eligibility_hook: std::sync::Arc<dyn Fn(&String) + Send + Sync> =
         std::sync::Arc::new(move |eligible_runtime_id: &String| {
             if *eligible_runtime_id != hook_target {
@@ -788,7 +797,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         })
         .expect("user harness must never be shutdown-replaced by deferred recovery");
     registry
-        .remove(&runtime_id)
+        .remove(&worker_session_id)
         .expect("user harness still registered")
         .shutdown()
         .await

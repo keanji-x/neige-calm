@@ -59,7 +59,7 @@ pub(super) async fn resolve(
     // Codex not answering and codex answering "no model" are different facts; only the first
     // is worth waiting out, so the read's failure returns here rather than degrading to `None`.
     let config = daemon
-        .config_read(Some(cwd.as_str()), deadline)
+        .config_read_admitted(Some(cwd.as_str()), deadline, || source.admit_native_read())
         .await
         .map_err(|e| {
             // The sentence is DERIVED: this branch is entered by a disjunction (model, effort, or both
@@ -95,7 +95,7 @@ pub(super) async fn resolve(
             .as_ref()
             .is_none_or(|d| d.reasoning_effort.is_none())
     {
-        catalog_default_effort(daemon, &card, defaults.as_ref(), deadline).await?
+        catalog_default_effort(daemon, source, &card, defaults.as_ref(), deadline).await?
     } else {
         None
     };
@@ -112,6 +112,7 @@ fn unresolved(e: crate::planner_model::UnresolvedSelection) -> IssuanceRefusal {
 /// catalog genuinely has no answer; a read that failed is an `Err`.
 async fn catalog_default_effort(
     daemon: &SharedCodexAppServer,
+    source: &impl SelectionSource,
     card: &CardModelSelection,
     defaults: Option<&InstallationDefaults>,
     deadline: tokio::time::Instant,
@@ -121,7 +122,10 @@ async fn catalog_default_effort(
         // real absence, not a failed read.
         return Ok(None);
     };
-    match daemon.model_list(deadline).await {
+    match daemon
+        .model_list_admitted(deadline, || source.admit_native_read())
+        .await
+    {
         Ok(models) => Ok(models
             .into_iter()
             .find(|m| m.model == slug)

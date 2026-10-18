@@ -20,7 +20,7 @@ impl PlannerHarness {
             ObservationIngress::Unstarted(sender) => sender.capacity() == sender.max_capacity(),
         };
         if self.inner.shutting_down.load(Ordering::SeqCst)
-            || !idle_for_lifecycle(&self.inner, ingress_empty).await
+            || !idle_for_lifecycle(&self.inner, ingress_empty).await?
         {
             return Err(CalmError::Conflict("Wait for the reply and queued messages to finish before archiving this conversation.".into()));
         }
@@ -89,18 +89,20 @@ pub(super) async fn quiesce(
     ingress_empty: bool,
     reply: Option<&oneshot::Sender<Result<bool>>>,
 ) -> Result<bool> {
-    if !idle_for_lifecycle(inner, ingress_empty).await {
+    if !idle_for_lifecycle(inner, ingress_empty).await? {
         return Ok(false);
     }
-    // Persist before closing input: the snapshot writer deliberately skips a
-    // shutting-down owner. A failed write leaves the owner live and retryable.
+    // The selected input owner establishes its checkpoint before input closes.
+    // A failed historical write or changed canonical checkpoint stays live.
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(
         crate::test_seams::PLANNER_HIBERNATION_QUIESCE,
         inner.card_id.as_str(),
     )
     .await;
-    persist_snapshot(inner).await?;
+    if !inner.inputs.checkpoint_for_lifecycle(inner).await? {
+        return Ok(false);
+    }
     // observe_delivery holds this mutex through enqueue. Recheck the ingress under
     // that gate so an enqueue cannot disappear behind the stop command.
     {
@@ -121,24 +123,24 @@ pub(super) async fn quiesce(
     Ok(true)
 }
 
-async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> bool {
+async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> Result<bool> {
     let state = inner.state.lock().await.clone();
     if !ingress_empty
         || !matches!(
             state,
             HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }
         )
-        || !inner.pending_queue.lock().await.is_empty()
+        || !inner.inputs.idle_for_lifecycle(inner).await?
         || !inner.steered_into_running_turn.lock().await.is_empty()
     {
-        return false;
+        return Ok(false);
     }
     let thread = inner.thread_id.read().await.clone();
     if thread
         .as_deref()
         .is_some_and(|thread| inner.backend.active_turn_id_for_thread(thread).is_some())
     {
-        return false;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }

@@ -84,7 +84,7 @@ async fn compact_rest_submits_to_current_thread_and_reports_busy_without_sending
     assert_eq!(body["card_id"], boot.planner_card.id.as_str());
     assert_eq!(boot.daemon.compacted_threads_for_test(), [SEED_THREAD_ID]);
     assert_eq!(
-        boot.harness.snapshot().await.phase,
+        boot.harness.snapshot().await.unwrap().phase,
         HarnessPhaseTag::Compacting
     );
     let (status, _) = send_json(boot.app.clone(), "POST", uri, "user", json!({})).await;

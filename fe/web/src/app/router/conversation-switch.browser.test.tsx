@@ -1,8 +1,10 @@
+import { historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import type { HarnessItem as TranscriptRow } from '../../../../core/api/generated/wire.ts';
+import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { queryKeys } from '../providers/queries.ts';
 import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
@@ -11,7 +13,7 @@ declare module 'vitest/internal/browser' {
   interface BrowserCommands { recordConversationSwitchPerformance(count: number, report: string): Promise<void> }
 }
 
-function transcriptKey() { return queryKeys.harnessItems('second-planner'); }
+function transcriptKey() { return [...queryKeys.harnessItems('second-planner'),'conversation_v1']; }
 
 function history(count: number, cardId = 'second-planner'): TranscriptRow[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -51,9 +53,9 @@ it.each([20, 900])('presents the selected shell before mounting %i cached messag
         provider: 'codex', state: 'idle', updatedAt: count, archivedAt: null, lastTurnCompletedAt: count,
       }] };
       return request.path.includes('/second-planner/harness/items')
-        ? { status: 200, statusText: 'OK', body: rows }
+        ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) }
         : request.path.includes('/daily-planner/harness/items')
-          ? { status: 200, statusText: 'OK', body: history(20, 'daily-planner') } : undefined;
+          ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), history(20, 'daily-planner'), null) } : undefined;
     },
   });
   try {
@@ -62,7 +64,7 @@ it.each([20, 900])('presents the selected shell before mounting %i cached messag
     await expect.poll(() => document.getElementById('conversation-daily-planner')?.querySelectorAll('[data-nc-turn="agent"]').length).toBe(20);
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await expect.element(page.getByRole('button', { name: /Conversation Other conversation/ })).toBeVisible();
-    fixture.client.setQueryData(transcriptKey(), { pages: [rows], pageParams: [0] });
+    fixture.client.setQueryData(transcriptKey(), { pages: [historicalConversationPage('second-planner', rows, null)], pageParams: [null] });
     const start = performance.now();
     observing = true;
     fireEvent.click(screen.getByRole('button', { name: /Conversation Other conversation/ }));
@@ -98,11 +100,11 @@ it.each([390, 1400])('can close at the first shell frame before cached content m
       });
     },
     reply: request => request.path.includes('/second-planner/harness/items')
-      ? { status: 200, statusText: 'OK', body: rows } : undefined,
+      ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) } : undefined,
   });
   try {
     await expect.element(page.getByRole('button', { name: /Conversation Other conversation/ })).toBeVisible();
-    fixture.client.setQueryData(transcriptKey(), { pages: [rows], pageParams: [0] });
+    fixture.client.setQueryData(transcriptKey(), { pages: [historicalConversationPage('second-planner', rows, null)], pageParams: [null] });
     fireEvent.click(screen.getByRole('button', { name: /Conversation Other conversation/ }));
     await expect.poll(() => frame).toEqual({ thread: false, closed: true });
     await expect.poll(() => document.getElementById('conversation-second-planner')).toBeNull();
@@ -110,16 +112,19 @@ it.each([390, 1400])('can close at the first shell frame before cached content m
   } finally { cleanup(); fixture.client.clear(); }
 });
 
-it('lets a slow history read finish after closing without painting its body', async () => {
+it('cancels a closing history read and fetches fresh history on reopen without publishing the late body', async () => {
   const rows = history(1);
-  let release!: () => void;
-  const pending = new Promise<void>(resolve => { release = resolve; });
+  const reads: ApiRequest[] = [];
+  let release!: (reply: ApiTransportResponse) => void;
+  const pending = new Promise<ApiTransportResponse>(resolve => { release = resolve; });
+  const lateReply = { status: 200, statusText: 'OK', body: historicalConversationPage('second-planner', rows, null) };
   const receipts = createReadReceiptsKernel({ baselineMs: 0 });
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, receipts,
-    reply: async request => {
+    reply: request => {
       if (request.path.includes('/second-planner/harness/items')) {
-        await pending;
-        return { status: 200, statusText: 'OK', body: rows };
+        reads.push(request);
+        if (reads.length === 1) return pending;
+        return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) };
       }
       return undefined;
     },
@@ -129,12 +134,22 @@ it('lets a slow history read finish after closing without painting its body', as
     await expect.element(page.getByText('Loading conversation…')).toBeVisible();
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await expect.poll(() => document.getElementById('conversation-second-planner')).toBeNull();
-    await act(async () => { release(); await pending; });
-    await expect.poll(() => fixture.client.getQueryState(transcriptKey())?.status).toBe('success');
+    expect(reads).toHaveLength(1);
+    expect(reads[0].signal?.aborted).toBe(true);
+    // Negotiated reads retain the refresh abort fence. Closing cancels first-read cache warming too.
+    await act(async () => { release(lateReply); await pending; });
+    await expect.poll(() => fixture.client.getQueryState(transcriptKey())?.fetchStatus).toBe('idle');
+    expect(fixture.client.getQueryData(transcriptKey())).toBeUndefined();
     expect(document.getElementById('conversation-second-planner')).toBeNull();
     expect(screen.queryByText(/Switch reply 0/)).toBeNull();
     expect(receipts.posts().filter(request => request.path.includes('/second-planner/'))).toHaveLength(0);
-  } finally { release(); cleanup(); fixture.client.clear(); }
+    await page.getByRole('button', { name: /Conversation Other conversation/ }).click();
+    await expect.poll(() => reads.length).toBe(2);
+    expect(reads[1].signal).not.toBe(reads[0].signal);
+    expect(reads[1].signal?.aborted).toBe(false);
+    await expect.element(page.getByText('Switch reply 0.', { exact: false })).toBeVisible();
+    await expect.poll(() => fixture.client.getQueryState(transcriptKey())?.status).toBe('success');
+  } finally { release(lateReply); cleanup(); fixture.client.clear(); }
 });
 
 it('gives a late history result its own rendering opportunity before first mounting', async () => {
@@ -152,7 +167,7 @@ it('gives a late history result its own rendering opportunity before first mount
     reply: async request => {
       if (!request.path.includes('/second-planner/harness/items')) return undefined;
       await pending;
-      return { status: 200, statusText: 'OK', body: rows };
+      return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) };
     },
   });
   try {

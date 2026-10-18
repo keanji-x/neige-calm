@@ -31,6 +31,9 @@ struct CardEntry {
 /// The active turn's open replies, in the order they started.
 struct LiveTurn {
     turn_id: String,
+    // Only a native source observation can qualify the negotiated live view.
+    // Legacy V1 callers deliberately retain an unqualified turn.
+    native_thread_id: Option<String>,
     /// Set when the run loop's input lagged: the turn may have lost a delta, so none of its
     /// replies is shown or stored from here on.
     lost: bool,
@@ -94,6 +97,45 @@ impl LiveReplies {
                 turn_id: None,
                 items: Vec::new(),
             },
+        }
+    }
+
+    /// One atomic snapshot of actual native identity and its body, with the same
+    /// installed-writer fence as the original view. Never infer identity from run hints.
+    pub fn read_conversation(
+        &self,
+        card_id: &CardId,
+        expected_runtime_id: &str,
+    ) -> calm_types::conversation_display::ConversationLiveReplies {
+        use calm_types::conversation_display::{
+            ConversationLiveReplies, ConversationLiveTurn, ConversationReadContract,
+        };
+        let cards = self.lock();
+        let turn = cards
+            .get(card_id)
+            .filter(|entry| entry.worker_session_id == expected_runtime_id)
+            .and_then(|entry| entry.turn.as_ref())
+            .and_then(|turn| {
+                if turn.lost {
+                    return None;
+                }
+                let thread_id = turn.native_thread_id.as_ref()?;
+                Some(ConversationLiveTurn {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn.turn_id.clone(),
+                    items: turn
+                        .items
+                        .iter()
+                        .map(|item| HarnessLiveReply {
+                            item_id: item.item_id.clone(),
+                            text: item.text.clone(),
+                        })
+                        .collect(),
+                })
+            });
+        ConversationLiveReplies {
+            contract: ConversationReadContract::ConversationV1,
+            turn,
         }
     }
 
@@ -187,6 +229,28 @@ impl LiveReplyWriter {
             if turn.as_ref().is_none_or(|turn| turn.turn_id != turn_id) {
                 *turn = Some(LiveTurn {
                     turn_id: turn_id.to_owned(),
+                    native_thread_id: None,
+                    lost: false,
+                    settled: false,
+                    items: Vec::new(),
+                });
+            }
+        });
+    }
+
+    /// Actual normalized native source identity, checked by the run-loop owner.
+    /// Required fields prevent an unqualified legacy start from becoming a native scope.
+    pub(crate) fn turn_started_native(&self, thread_id: &str, turn_id: &str) {
+        if thread_id.is_empty() || turn_id.is_empty() {
+            return;
+        }
+        self.with_turn(|turn| {
+            if turn.as_ref().is_none_or(|current| {
+                current.turn_id != turn_id || current.native_thread_id.as_deref() != Some(thread_id)
+            }) {
+                *turn = Some(LiveTurn {
+                    turn_id: turn_id.into(),
+                    native_thread_id: Some(thread_id.into()),
                     lost: false,
                     settled: false,
                     items: Vec::new(),

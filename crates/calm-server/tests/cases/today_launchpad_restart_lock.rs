@@ -24,7 +24,7 @@ fn ensure(app: axum::Router) -> tokio::task::JoinHandle<(StatusCode, Value)> {
 #[tokio::test]
 async fn a_send_during_the_launchpad_restart_waits_on_the_cards_lock() {
     let (tmp, repo, state) = app_state(AppServer::Running).await;
-    let (status, launchpad) = joined(ensure(router(&state)), "the first ensure").await;
+    let (status, launchpad) = joined(ensure(router(&state).await), "the first ensure").await;
     assert_eq!(status, StatusCode::CREATED, "body={launchpad}");
     let planner_card_id = launchpad["planner_card_id"].as_str().unwrap().to_string();
     let old_runtime = repo
@@ -41,7 +41,7 @@ async fn a_send_during_the_launchpad_restart_waits_on_the_cards_lock() {
     // The same server over a moved workspace root: the next ensure re-points the existing card.
     let state = state.with_workspace_root(tmp.path().join("workspaces-moved"));
     let boot = Boot {
-        app: router(&state),
+        app: router(&state).await,
         state,
         repo,
         planner_card_id,

@@ -72,6 +72,28 @@ impl SqlxRepo {
 
 #[async_trait]
 impl RepoRead for SqlxRepo {
+    async fn card_track_id(&self, card_id: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+            .bind(card_id)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+    async fn conversation_read_frame(
+        &self,
+        card_id: &str,
+    ) -> Result<crate::db::ConversationReadFrame> {
+        super::conversation_read::current_frame(&self.pool, card_id).await
+    }
+    async fn conversation_presentation_page(
+        &self,
+        card_id: &str,
+        after: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<calm_types::conversation_display::ConversationPage> {
+        super::conversation_read::page(&self.pool, card_id, after, limit, descending).await
+    }
+
     async fn track_area_membership(
         &self,
         track_id: &str,

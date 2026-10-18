@@ -175,7 +175,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
     let terminal_id = non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned);
     let thread_id = non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned);
     let session_id = non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned);
-    let source = (runtime.kind == WorkerSessionKind::SharedPlanner).then(|| "shared".to_string());
+    let source = projected_shared_codex_source(runtime).map(ToOwned::to_owned);
     let thread_status = projected_thread_status(runtime).map(ToOwned::to_owned);
 
     card.runtime = Some(runtime_view_from_runtime(runtime));
@@ -194,7 +194,7 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
         map.insert("claude_session_id".into(), Value::String(session_id));
     }
 
-    if projects_codex_fields(runtime)
+    if runtime_uses_codex(runtime)
         && let Some(thread_id) = thread_id
     {
         map.insert("codex_thread_id".into(), Value::String(thread_id));
@@ -219,7 +219,7 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
         terminal_id: non_empty(runtime.terminal_run_id.as_deref()).map(ToOwned::to_owned),
         thread_id: non_empty(runtime.thread_id.as_deref()).map(ToOwned::to_owned),
         session_id: non_empty(runtime.session_id.as_deref()).map(ToOwned::to_owned),
-        source: (runtime.kind == WorkerSessionKind::SharedPlanner).then(|| "shared".to_string()),
+        source: projected_shared_codex_source(runtime).map(ToOwned::to_owned),
         thread_status: projected_thread_status(runtime).map(ToOwned::to_owned),
         last_turn_completed_ms: runtime.last_turn_completed_ms,
         claude_version: claude_running_version(runtime).map(ToOwned::to_owned),
@@ -245,16 +245,23 @@ pub fn claude_running_version(runtime: &WorkerSessionProjection) -> Option<&str>
         .filter(|version| !version.is_empty())
 }
 
-fn projects_codex_fields(runtime: &WorkerSessionProjection) -> bool {
-    matches!(
-        runtime.kind,
-        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner
-    ) || (runtime.kind == WorkerSessionKind::ManagedAssistant
-        && runtime.agent_provider == Some(AgentProvider::Codex))
+fn runtime_uses_codex(runtime: &WorkerSessionProjection) -> bool {
+    runtime.agent_provider == Some(AgentProvider::Codex)
+        && matches!(
+            runtime.kind,
+            WorkerSessionKind::CodexCard
+                | WorkerSessionKind::SharedPlanner
+                | WorkerSessionKind::ManagedAssistant
+        )
+}
+
+fn projected_shared_codex_source(runtime: &WorkerSessionProjection) -> Option<&'static str> {
+    (runtime_uses_codex(runtime) && runtime.kind == WorkerSessionKind::SharedPlanner)
+        .then_some("shared")
 }
 
 fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static str> {
-    if !projects_codex_fields(runtime) {
+    if !runtime_uses_codex(runtime) {
         return None;
     }
 
@@ -273,10 +280,11 @@ fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static
 }
 
 /// Runtime-first shared-codex discriminator; falls back to the legacy payload
-/// stamp when no active runtime is available.
-pub fn card_is_shared_planner(card: &Card, runtime: Option<&WorkerSessionProjection>) -> bool {
+/// stamp when no active runtime is available. False excludes the Codex owner;
+/// it says nothing about another backend's liveness or teardown obligations.
+pub fn card_uses_shared_codex(card: &Card, runtime: Option<&WorkerSessionProjection>) -> bool {
     if let Some(runtime) = runtime {
-        return runtime_marks_shared(runtime);
+        return runtime_uses_shared_codex(runtime);
     }
 
     let legacy_shared = card
@@ -288,26 +296,145 @@ pub fn card_is_shared_planner(card: &Card, runtime: Option<&WorkerSessionProject
         tracing::warn!(
             target: "session_projection_lookup::fallback",
             card_id = %card.id,
-            "runtime shared-card discriminator missed; falling back to card payload"
+            "runtime shared-Codex discriminator missed; falling back to card payload"
         );
     }
     legacy_shared
 }
 
-fn runtime_marks_shared(runtime: &WorkerSessionProjection) -> bool {
-    matches!(runtime.kind, WorkerSessionKind::SharedPlanner)
-        || (matches!(
-            runtime.kind,
-            WorkerSessionKind::CodexCard | WorkerSessionKind::ManagedAssistant
-        ) && runtime.agent_provider == Some(AgentProvider::Codex)
-            && runtime
-                .thread_id
-                .as_deref()
-                .is_some_and(|thread_id| !thread_id.trim().is_empty()))
+fn runtime_uses_shared_codex(runtime: &WorkerSessionProjection) -> bool {
+    runtime_uses_codex(runtime)
+        && (runtime.kind == WorkerSessionKind::SharedPlanner
+            || non_empty(runtime.thread_id.as_deref()).is_some())
 }
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod shared_codex_identity_tests {
+    use super::*;
+    use crate::ids::{CardId, TrackId};
+    use serde_json::json;
+
+    fn runtime(
+        kind: WorkerSessionKind,
+        provider: Option<AgentProvider>,
+        thread: Option<&str>,
+    ) -> WorkerSessionProjection {
+        WorkerSessionProjection {
+            id: "worker".into(),
+            card_id: "card".into(),
+            kind,
+            agent_provider: provider,
+            status: WorkerSessionState::Running,
+            terminal_run_id: None,
+            thread_id: thread.map(str::to_owned),
+            session_id: Some("native-session".into()),
+            active_turn_id: None,
+            handle_state_json: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            completed_at_ms: None,
+            last_turn_completed_ms: None,
+        }
+    }
+
+    fn card(payload: Value) -> Card {
+        Card {
+            id: CardId::from("card"),
+            track_id: TrackId::from("track"),
+            kind: "conversation".into(),
+            sort: 0.0,
+            payload,
+            title: None,
+            runtime: None,
+            deletable: true,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn shared_codex_owner_requires_the_actual_provider() {
+        use AgentProvider::{Claude, Codex, OpenCode};
+        use WorkerSessionKind::{ClaudeCard, CodexCard, ManagedAssistant, SharedPlanner, Terminal};
+        let cases = [
+            (SharedPlanner, Some(Codex), None, true),
+            (SharedPlanner, Some(Claude), Some("thread"), false),
+            (SharedPlanner, Some(OpenCode), Some("thread"), false),
+            (SharedPlanner, None, Some("thread"), false),
+            (CodexCard, Some(Codex), Some("thread"), true),
+            (CodexCard, Some(Codex), Some(" "), false),
+            (CodexCard, Some(Codex), None, false),
+            (CodexCard, None, Some("thread"), false),
+            (ManagedAssistant, Some(Codex), Some("thread"), true),
+            (ManagedAssistant, Some(Codex), None, false),
+            (ManagedAssistant, Some(Claude), Some("thread"), false),
+            (ManagedAssistant, Some(OpenCode), Some("thread"), false),
+            (ClaudeCard, Some(Claude), Some("thread"), false),
+            (Terminal, None, Some("thread"), false),
+        ];
+        let card = card(json!({}));
+        for (kind, provider, thread, expected) in cases {
+            let runtime = runtime(kind, provider, thread);
+            assert_eq!(
+                card_uses_shared_codex(&card, Some(&runtime)),
+                expected,
+                "{runtime:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_codex_planners_project_codex_source_and_thread_status() {
+        for (provider, expected_source) in [
+            (Some(AgentProvider::Codex), Some("shared")),
+            (Some(AgentProvider::Claude), None),
+            (Some(AgentProvider::OpenCode), None),
+            (None, None),
+        ] {
+            let runtime = runtime(WorkerSessionKind::SharedPlanner, provider, Some("thread"));
+            let mut card = card(json!({}));
+            project_runtime_fields(&mut card, &runtime);
+            let view = card.runtime.as_ref().unwrap();
+            assert_eq!(view.provider, runtime.agent_provider);
+            assert_eq!(view.source.as_deref(), expected_source, "{runtime:?}");
+            assert_eq!(
+                view.thread_status.as_deref(),
+                expected_source.map(|_| "started"),
+                "{runtime:?}"
+            );
+            assert_eq!(card.payload["codex_source"].as_str(), expected_source);
+            assert_eq!(
+                card.payload["codex_thread_id"].as_str(),
+                expected_source.map(|_| "thread")
+            );
+            assert_eq!(
+                card.payload["codex_thread_status"].as_str(),
+                expected_source.map(|_| "started")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_shared_stamp_applies_only_without_an_active_runtime() {
+        let legacy = card(json!({"codex_source":"shared"}));
+        assert!(card_uses_shared_codex(&legacy, None));
+        assert!(!card_uses_shared_codex(&card(json!({})), None));
+        for provider in [
+            None,
+            Some(AgentProvider::Claude),
+            Some(AgentProvider::OpenCode),
+        ] {
+            let active = runtime(WorkerSessionKind::SharedPlanner, provider, Some("thread"));
+            assert!(
+                !card_uses_shared_codex(&legacy, Some(&active)),
+                "an active runtime must override a stale legacy stamp: {active:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

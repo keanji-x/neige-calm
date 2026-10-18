@@ -41,7 +41,7 @@ pub(crate) async fn ordinary_track() -> Boot {
         )
         .await
         .unwrap();
-    let app = router(&state);
+    let app = router(&state).await;
     let (status, track) = request(
         app.clone(),
         "POST",

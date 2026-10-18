@@ -43,7 +43,7 @@ it('keeps the real composer drawer queue controls tappable above a floating inpu
   const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => Promise.resolve({ kind: 'done' }));
   render(<ConversationSurface mobileSheet open title="Conversation" onClose={() => undefined}
     footer={<ChatComposer layout="mobile" disabled={false} onSend={() => undefined}
-      drawer={<PendingQueue queueDisplayAccounting={{ displayed: [], suppressed: [] }} entries={[{ entry_id: 'queued', text: 'Queued question', rev: 0, queued_at_ms: 1 }]}
+      drawer={<PendingQueue pendingInputCount={0} queueDisplayAccounting={{ displayed: [], suppressed: [] }} entries={[{ entry_id: 'queued', text: 'Queued question', rev: 0, queued_at_ms: 1 }]}
         overflow={0} busy={false} onEdit={() => undefined} canEdit editingEntryId={null} savedEntry={null} onFocusComposer={() => undefined} onDelete={onDelete} />} />}>
     <p>Scroll behind the floating controls.</p>
   </ConversationSurface>);

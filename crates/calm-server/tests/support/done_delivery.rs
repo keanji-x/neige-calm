@@ -31,6 +31,11 @@ pub struct Wiring {
     shared: Arc<SharedCodexAppServer>,
     renderer: Arc<TerminalRendererRegistry>,
     daemon: Arc<DaemonClient>,
+    plugin: Arc<calm_server::plugin_host::PluginHost>,
+    planner_start_adapter:
+        Arc<calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter>,
+    claude_planner: Arc<calm_server::claude_planner::config::ClaudePlannerHost>,
+    acp_planner: Arc<calm_server::acp_planner::config::AcpPlannerHost>,
     harness: HarnessRegistry,
 }
 
@@ -39,7 +44,6 @@ impl Wiring {
         &self,
         repo: Arc<SqlxRepo>,
         ctx: Arc<AppContext>,
-        plugin: Arc<calm_server::plugin_host::PluginHost>,
         cache: CardRoleCache,
         track_areas: TrackAreaCache,
         workspace: PathBuf,
@@ -52,7 +56,7 @@ impl Wiring {
             events: ctx.events.clone(),
             daemon: self.daemon.clone(),
             terminal_renderer: self.renderer.clone(),
-            plugin,
+            plugin: self.plugin.clone(),
             codex: Arc::new(CodexClient::new_stub()),
             db_instance_id: Arc::new(calm_server::model::new_id()),
             database_id: repo.database_id(),
@@ -74,19 +78,14 @@ impl Wiring {
             ),
             pending_codex_threads_spawn_serial: Arc::new(tokio::sync::Mutex::new(())),
             operation_runtime: self.runtime.clone(),
+            planner_start_adapter: self.planner_start_adapter.clone(),
             worker_flow: calm_server::worker_flow::WorkerFlowDriver::from_state_parts(
                 repo_dyn,
                 self.shared.clone(),
                 ctx.events.clone(),
             ),
-            claude_planner: Arc::new(
-                calm_server::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
-                    .unwrap(),
-            ),
-            acp_planner: Arc::new(
-                calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
-                    .expect("ACP host"),
-            ),
+            claude_planner: self.claude_planner.clone(),
+            acp_planner: self.acp_planner.clone(),
             activity_wake: calm_server::track_activity::ActivityWake::detached(),
         }
         .into_app_state()
@@ -96,6 +95,7 @@ impl Wiring {
 #[allow(clippy::too_many_arguments)]
 pub async fn wire(
     repo: Arc<SqlxRepo>,
+    plugin: Arc<calm_server::plugin_host::PluginHost>,
     events: EventBus,
     write: WriteContext,
     cache: CardRoleCache,
@@ -119,7 +119,28 @@ pub async fn wire(
         completion.clone(),
     )
     .with_shared_codex_appserver(shared.clone());
+    let harness = HarnessRegistry::new();
+    let claude_planner = Arc::new(
+        calm_server::claude_planner::config::ClaudePlannerHost::unconfigured_scratch().unwrap(),
+    );
+    let acp_planner =
+        Arc::new(calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap());
+    let planner_start_adapter = Arc::new(
+        calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter::new(
+            repo_dyn.clone(),
+            shared.clone(),
+            shared.thread_seals().clone(),
+            harness.clone(),
+            plugin.clone(),
+            cache.clone(),
+            track_areas.clone(),
+            Some(mcp.shim_config.socket_path.clone()),
+            claude_planner.clone(),
+            acp_planner.clone(),
+        ),
+    );
     let adapters: Vec<Arc<dyn ProviderAdapter>> = vec![
+        planner_start_adapter.clone(),
         Arc::new(ForgeActionAdapter::new()),
         Arc::new(TaskVerifyAdapter::new(gate_logs.to_path_buf())),
         Arc::new(CodexWorkerAdapter::new(
@@ -137,7 +158,6 @@ pub async fn wire(
             .await
             .unwrap(),
     );
-    let harness = HarnessRegistry::new();
     let planner_recovery_locks = calm_server::per_card_lock::new_per_card_locks();
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
         repo_dyn,
@@ -160,6 +180,10 @@ pub async fn wire(
         ),
     );
     Wiring {
+        plugin,
+        planner_start_adapter,
+        claude_planner,
+        acp_planner,
         runtime,
         dispatcher: Arc::new(dispatcher),
         planner_recovery_locks,
@@ -370,6 +394,7 @@ pub async fn complete(repo: &SqlxRepo, socket: &Path, started: &Started, message
 #[cfg(feature = "codex-e2e")]
 pub async fn local_candidate(fx: &super::codex_fixture::Fixture) -> String {
     let repo = fx.repo.clone();
+    let plugin = fx.plugin_host.clone();
     let ctx = fx.ctx.clone();
     let registry = fx.registry.clone();
     let planner = super::planner_turn::planner_identity(fx);
@@ -388,6 +413,7 @@ pub async fn local_candidate(fx: &super::codex_fixture::Fixture) -> String {
         let candidate = rt.block_on(async {
             let _wiring = wire(
                 repo.clone(),
+                plugin,
                 ctx.events.clone(),
                 ctx.write.clone(),
                 cache,

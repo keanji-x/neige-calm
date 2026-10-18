@@ -268,6 +268,13 @@ async fn run_harness(
     let listening = daemon.notification_receiver_count_for_test();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.as_ref(),
+            track.as_ref(),
+            session_id,
+        )
+        .unwrap(),
         worker_session_id: session_id.to_string(),
         track_id: track.clone(),
         card_id: card.clone(),
@@ -276,11 +283,15 @@ async fn run_harness(
         events: events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: area_cache.clone(),
-        backend: daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig::default(),
-        snapshot: snapshot(thread),
-    });
+        snapshot: (snapshot(thread))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     wait_for("the harness to listen", || async {
         daemon.notification_receiver_count_for_test() > listening
     })

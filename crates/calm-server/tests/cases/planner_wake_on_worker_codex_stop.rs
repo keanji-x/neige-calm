@@ -44,7 +44,7 @@ struct Boot {
     track_id: TrackId,
     planner_card_id: CardId,
     worker_card_id: CardId,
-    runtime_id: String,
+    worker_session_id: String,
     harness: PlannerHarness,
     harness_registry: HarnessRegistry,
     codex: Arc<CodexClient>,
@@ -144,7 +144,7 @@ async fn boot() -> Boot {
         .layer(axum::middleware::from_fn(actor_middleware))
         .with_state(state);
 
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = "planner-thread-existing".to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Resumed;
@@ -153,7 +153,7 @@ async fn boot() -> Boot {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: planner_card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -172,8 +172,16 @@ async fn boot() -> Boot {
     tx.commit().await.unwrap();
 
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let harness_registry = HarnessRegistry::new();
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            shared.clone(),
+            planner_card.id.as_ref(),
+            track.id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),
         thread_id: Some(thread_id),
@@ -181,13 +189,16 @@ async fn boot() -> Boot {
         events: events.clone(),
         card_role_cache: card_role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        backend: shared.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: harness_registry.clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
-    let harness_registry = HarnessRegistry::new();
-    harness_registry.insert(runtime_id.clone(), harness.clone());
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
+    harness_registry.insert(worker_session_id.clone(), harness.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let renderer = TerminalRendererRegistry::new_with_repo(route_repo);
@@ -203,7 +214,7 @@ async fn boot() -> Boot {
         track_id: track.id,
         planner_card_id: planner_card.id,
         worker_card_id: worker_card.id,
-        runtime_id,
+        worker_session_id,
         harness,
         harness_registry,
         codex,
@@ -438,7 +449,7 @@ async fn worker_codex_stop_hook_reaches_planner_harness_observation_queue() {
     }
 
     assert_ne!(boot.worker_card_id, boot.planner_card_id);
-    assert!(boot.harness_registry.get(&boot.runtime_id).is_some());
+    assert!(boot.harness_registry.get(&boot.worker_session_id).is_some());
     boot.harness.shutdown().await.unwrap();
 }
 

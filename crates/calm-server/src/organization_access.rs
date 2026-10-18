@@ -80,3 +80,81 @@ pub(crate) fn require_deployment_owner(principal: &Principal) -> Result<()> {
     }
     Ok(())
 }
+
+/// Legacy native execution spends this deployment's credentials. Collaboration
+/// membership and ownership of an unrelated user's Private Area do not grant it.
+pub(crate) async fn require_legacy_input_execution_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    area_id: &str,
+    principal: &Principal,
+) -> Result<()> {
+    require_deployment_owner(principal)?;
+    require_legacy_deployment_area_tx(tx, area_id, &principal.user_id).await?;
+    Ok(())
+}
+
+/// The sole registered-owner/Private resource decision. Source-specific wrappers
+/// qualify execution identities before consuming these current organization facts.
+async fn require_legacy_deployment_area_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    area_id: &str,
+    owner: &str,
+) -> Result<Area> {
+    use crate::db::sqlite::area_membership;
+    area_membership::application_user_require_registered(tx, owner).await?;
+    let area = area_membership::area_get(tx, area_id).await?;
+    if area.kind != AreaKind::System
+        && area_membership::area_member_role(tx, area_id, owner).await?
+            != Some(AreaMemberRole::Owner)
+    {
+        return Err(CalmError::Forbidden(
+            "legacy deployment execution requires ownership of this Area".into(),
+        ));
+    }
+    if crate::db::sqlite::conversation::area_history_contract_tx(tx, area_id).await?
+        != calm_types::conversation::ConversationHistoryContract::Private
+    {
+        return Err(CalmError::Forbidden(
+            "legacy deployment execution cannot run SharedHistory".into(),
+        ));
+    }
+    Ok(area)
+}
+
+/// Current Kernel automation is the actual sole issuer's policy, never attribution
+/// of an old anonymous User event. Human membership policy is not widened.
+pub(crate) async fn require_legacy_event_execution_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    area_id: &str,
+    declaration: &crate::auth::LegacyPrivateExecution,
+) -> Result<String> {
+    let owner = declaration.current_owner()?;
+    let area = require_legacy_deployment_area_tx(tx, area_id, &owner).await?;
+    let extra_users: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM application_users WHERE id<>?1)")
+            .bind(&owner)
+            .fetch_one(&mut **tx)
+            .await?;
+    if extra_users {
+        return Err(CalmError::Forbidden(
+            "legacy automation requires the sole registered deployment identity".into(),
+        ));
+    }
+    let members: Vec<(String, String)> =
+        sqlx::query_as("SELECT user_id,role FROM area_members WHERE area_id=?1 ORDER BY user_id")
+            .bind(area_id)
+            .fetch_all(&mut **tx)
+            .await?;
+    let valid = if area.kind == AreaKind::System {
+        members.is_empty()
+    } else {
+        members.as_slice() == [(owner.clone(), "owner".into())]
+    };
+    if !valid {
+        return Err(CalmError::Forbidden(
+            "legacy automation requires exactly the current deployment owner".into(),
+        ));
+    }
+    declaration.current_owner()?;
+    Ok(owner)
+}

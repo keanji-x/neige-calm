@@ -98,7 +98,7 @@ export function createConversationOwner() {
   };
   const commands: ConversationRegistry = {
     rememberedTurnsOf: id => state.entries[id]?.turns ?? NO_TURNS,
-    turnsOf: id => withConfirmedSends(state.entries[id]?.turns ?? NO_TURNS, state.outboxes[id] ?? NO_SENDS, state.spentRows[id] ?? NO_ROWS),
+    turnsOf: id => withConfirmedSends(state.entries[id]?.turns ?? NO_TURNS, state.outboxes[id] ?? NO_SENDS, state.spentRows[id] ?? NO_ROWS, id),
     remember: (conversation, turns) => { rememberEntry(conversation.id, conversation, turns); },
     updateExisting: (id, amend) => {
       const entry = state.entries[id];

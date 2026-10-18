@@ -50,7 +50,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // Child task route is sub-track; older clients must reload before writing reports.
 // #2672 bumps 54 -> 55: template lists require author descriptions and authoritative availability.
 // #2640: 55 -> 56 requires Assistant archive metadata and read-only archived conversations.
-pub const WEB_COMPAT_VERSION: u32 = 56;
+// #2671: 56 -> 57 requires negotiated canonical conversation pages and reference-only run reads.
+pub const WEB_COMPAT_VERSION: u32 = 57;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

@@ -6,10 +6,10 @@ use crate::db::sqlite::{card_delete_tx, card_update_tx, terminal_delete_tx};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::extract::{Json, JsonBody, Path, Query};
+use crate::extract::{Json, JsonBody, Path};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
-use crate::model::{Card, CardPatch, HarnessItem, new_id};
+use crate::model::{Card, CardPatch, new_id};
 use crate::operation::card_create_adapter::{CARD_CREATE, CardCreateOperationPayload};
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::operation::{OperationId, OperationKey};
@@ -20,7 +20,7 @@ use crate::routes::idempotency_key::{
 };
 use crate::routes::planner_cards::{
     card_runs_headless_harness, get_planner_run, interrupt_planner_card,
-    interrupt_shared_card_active_turn, reset_planner_card, restart_planner_card,
+    interrupt_shared_codex_card_active_turn, reset_planner_card, restart_planner_card,
 };
 use crate::session_projection_lookup::{
     project_runtime_into_card_payload, project_runtime_into_cards_payload,
@@ -38,7 +38,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 
 /// Resolve the (track, area) ancestor pair for a track id into an `EventScope::Card`.
 /// Do not call from inside a transaction that has written `tracks`: this reads through the pool (a second connection) and the task deadlocks against its own lock. Use `card_scope_tx`.
@@ -150,62 +150,8 @@ pub(crate) async fn list_cards_by_track(
     Ok(Json(cards))
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum HarnessItemsDirection {
-    #[default]
-    Asc,
-    Desc,
-}
-
-#[derive(Debug, Deserialize, IntoParams, ToSchema)]
-pub struct HarnessItemsQuery {
-    /// Return items with database ids greater than this value.
-    #[serde(default)]
-    pub after_id: Option<i64>,
-    /// Maximum number of rows to return. Defaults to 100 and is capped at 500.
-    #[serde(default)]
-    pub limit: Option<i64>,
-    /// Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`.
-    #[serde(default)]
-    pub direction: HarnessItemsDirection,
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/cards/{id}/harness/items",
-    tag = "cards",
-    params(
-        ("id" = String, Path, description = "Planner card id"),
-        HarnessItemsQuery,
-    ),
-    responses(
-        (status = 200, description = "Persisted planner harness items", body = Vec<HarnessItem>),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
-        (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    ),
-)]
-pub(crate) async fn get_harness_items(
-    State(s): State<RouteState>,
-    Path(id): Path<String>,
-    Query(q): Query<HarnessItemsQuery>,
-) -> Result<Json<Vec<HarnessItem>>> {
-    let card = harness_card(&s, &id).await?;
-    let after_id = q.after_id.unwrap_or(0).max(0);
-    let limit = q.limit.unwrap_or(100).clamp(0, 500);
-    let descending = q.direction == HarnessItemsDirection::Desc;
-    // The transcript-only read: `limit` is the frontend's page budget and must be spent on rows the transcript renders, not captured `turn/plan/updated` frames.
-    let mut items = s
-        .repo
-        .harness_item_list_transcript_by_card(card.id.as_str(), after_id, limit, descending)
-        .await?;
-    // Redacted at the serialization boundary, not at the write: the stored blob is a verbatim record of what codex sent. Attachments reach the transcript as an id and a server-built url.
-    for item in &mut items {
-        item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
-    }
-    Ok(Json(items))
-}
+pub(crate) use super::conversation_items::get_harness_items;
+pub use super::conversation_items::{HarnessItemsDirection, HarnessItemsQuery};
 
 /// The card a `harness/*` read names, refused unless it runs a headless Planner harness.
 pub(crate) async fn harness_card(s: &RouteState, id: &str) -> Result<Card> {
@@ -599,7 +545,7 @@ pub(crate) async fn delete_card(
     let track_id = card.track_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone()).await?;
 
-    interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, &card).await;
+    interrupt_shared_codex_card_active_turn(s.repo.as_ref(), &cs, &card).await;
 
     // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal row must be removed, and its daemon + socket reaped, before the card row delete. Cleanup runs outside the write txn; if it fails the row stays and the sweeper retries next tick. The txn then deletes both rows in one commit under `Event::CardDeleted`.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;

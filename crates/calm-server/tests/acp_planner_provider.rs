@@ -333,7 +333,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
     let outcome = turn(&stack, &card, "dispatched checkpoint", 1).await;
     let runtime = stack.runtime(&card).await;
     let pool = stack.repo().sqlite_pool().unwrap();
-    let mut snapshot = stack.harness(&runtime.id).snapshot().await;
+    let mut snapshot = stack.harness(&runtime.id).snapshot().await.unwrap();
     stack.shutdown().await;
     // Restore the durable state at the real post-dispatch/pre-settlement crash checkpoint.
     snapshot.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
@@ -421,6 +421,7 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
         .harness(&runtime.id)
         .snapshot()
         .await
+        .unwrap()
         .pending_entries();
     assert!(queued.iter().all(|entry|!matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="original operational input")));
     assert!(queued.iter().any(|entry|matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="later input")));
@@ -519,7 +520,7 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
     let outcome = turn(&stack, &card, "retain this reply", 1).await;
     let runtime = stack.runtime(&card).await;
     let pool = stack.repo().sqlite_pool().unwrap();
-    let mut checkpoint = stack.harness(&runtime.id).snapshot().await;
+    let mut checkpoint = stack.harness(&runtime.id).snapshot().await.unwrap();
     stack.shutdown().await;
     checkpoint.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
@@ -591,6 +592,7 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
         .harness(&runtime.id)
         .snapshot()
         .await
+        .unwrap()
         .last_turn_id
         .unwrap();
     // Crash replay uses the operation's original Idle snapshot while boot has
@@ -600,7 +602,7 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
     calm_server::recover_operations_on_boot(&stack.state)
         .await
         .unwrap();
-    let restored = stack.harness(&runtime.id).snapshot().await;
+    let restored = stack.harness(&runtime.id).snapshot().await.unwrap();
     assert_eq!(restored.last_turn_id.as_deref(), Some(issued.as_str()));
     assert!(restored.pending_entries().is_empty());
     assert_eq!(requests(&root, "session/prompt").len(), 1);
@@ -732,7 +734,7 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
     .unwrap();
     tx.commit().await.unwrap();
     let stack = boot(&root).await;
-    let recovered = stack.harness(&runtime.id).snapshot().await;
+    let recovered = stack.harness(&runtime.id).snapshot().await.unwrap();
     let entries = recovered.pending_entries();
     assert_eq!(
         entries.len(),

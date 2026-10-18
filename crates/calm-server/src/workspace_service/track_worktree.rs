@@ -15,11 +15,24 @@ use workspace::worktree::track_worktree_target;
 /// (#2112); git refuses whatever else is at the path. A diverged checkout is refused
 /// (`attached-repo-diverged`) and a repository without a commit fails.
 pub(crate) async fn ensure_track_worktree(track: &Track) -> Result<()> {
+    ensure_track_worktree_admitted(track, || async { Ok(()) }).await
+}
+
+pub(crate) async fn ensure_track_worktree_admitted<F, A>(track: &Track, admit: F) -> Result<()>
+where
+    F: Fn() -> A + Send + Sync,
+    A: std::future::Future<Output = Result<()>> + Send,
+{
     let Some(worktree) = track.workspace.worktree.as_deref() else {
         return Ok(());
     };
     let target = track_worktree_target(track.id.as_str(), worktree)?;
-    crate::operation::workspace_lease::upstream_fetch::refresh_upstream(&target.repo_root).await;
+    crate::operation::workspace_lease::upstream_fetch::refresh_upstream_admitted(
+        &target.repo_root,
+        &admit,
+    )
+    .await?;
+    admit().await?;
     tokio::task::spawn_blocking(move || {
         workspace::worktree::ensure_track_worktree(&target, prepare_branch, observe)
     })

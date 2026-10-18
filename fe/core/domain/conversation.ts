@@ -4,7 +4,7 @@ import { agentProviderSchema } from '../api/schemas.js';
 import type {
   AgentProvider, ConversationInitialInputReceiptResult, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
   HarnessInterruptionReason, HarnessTimeoutEvidence,
-  PlannerAttachment, PlannerPermissionMode, TrackConversationSummary, UploadAttachmentResponse,
+  PlannerAttachment, PlannerPermissionMode, SystemInputPresentation, TrackConversationSummary, UploadAttachmentResponse,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
@@ -105,11 +105,14 @@ export function byRecency(left: Conversation, right: Conversation): number {
 }
 
 /** Who wrote a turn. Tool calls, shell runs and the like are not speech; they arrive as `ConversationActivity`. */
-export type TurnAuthor = 'you' | 'agent';
+export type TurnAuthor = 'you' | 'agent' | 'human' | 'unknown';
 
 export type ConversationTurn = Readonly<{
   id: string;
   author: TurnAuthor;
+  /** Present only for actual canonical Human identity; native user echoes have none. */
+  human?: Readonly<{ userId: string; displayName: string; messageId: string; revision: number }>;
+  displayPosition?: number;
   /** Verbatim. Line breaks are the author's and are preserved on render. */
   text: string;
   atMs: number;
@@ -120,7 +123,7 @@ export type ConversationTurn = Readonly<{
   /** Exact input provenance, including a known acceptance receipt; only inputSource names raw stored source. */
   queueEntryId?: string | null;
   /** Canonical structured-input source; rendered ids remain the renderer's separate identity. */
-  inputSource?: Readonly<{ itemId: number; segmentIndex: number; turnId: string | null; entryRev: number | null }>;
+  inputSource?: Readonly<{ cardId: string; threadId: string; itemId: number; segmentIndex: number; turnId: string | null; entryRev: number | null }>;
 }>;
 
 /**
@@ -129,6 +132,7 @@ export type ConversationTurn = Readonly<{
  */
 export type OptimisticConversationTurn = ConversationTurn & Readonly<{
   serverHighWaterBefore: number;
+  authorUserId?: string;
   /**
    * True when the kernel put this message on the harness `pending_queue` instead of issuing it
    * as a turn. Required rather than optional: an absent flag would read as *not* queued, and an
@@ -146,6 +150,8 @@ export type OptimisticConversationTurn = ConversationTurn & Readonly<{
 export type ConversationSystemEntry = Readonly<{
   id: string;
   author: 'system';
+  /** Present for a canonical source's actual conversation cursor. */
+  displayPosition?: number;
   /** Stable short label selected from structured kernel metadata. */
   label: string;
   /** Full rendered observation, retained as disclosure/title context. */
@@ -171,6 +177,10 @@ const harnessInputPresentationSchema: z.ZodType<HarnessInputPresentation> = z.en
   'system_planner_turn_budget',
 ]);
 
+/** The presentation owner supplies the closed set; System cannot acquire User presentation. */
+export const systemInputPresentationSchema = z.custom<SystemInputPresentation>(value =>
+  harnessInputPresentationSchema.safeParse(value).success && value !== 'user');
+
 const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
   id: z.string(), contentType: z.string(), size: z.number(), url: z.string(),
 });
@@ -193,7 +203,7 @@ export const harnessInputSegmentSchema: z.ZodType<HarnessInputSegment> = z.objec
   origin: harnessInputOriginSchema.optional(),
 });
 
-const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
+export const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
   id: z.number(), worker_session_id: z.string(), card_id: z.string(), track_id: z.string(),
   thread_id: z.string(), turn_id: z.string().nullable(), item_uuid: z.string().nullable(),
   item_type: z.string().nullable(), method: z.string(), params: z.string(), created_at_ms: z.number(),
@@ -894,7 +904,7 @@ const DIFF_END = '\n\n---\n\n';
 const USER_SAYS = 'User says:\n';
 
 export const SYSTEM_PRESENTATION_LABELS: Readonly<
-Record<Exclude<HarnessInputPresentation, 'user'>, string>
+Record<SystemInputPresentation, string>
 > = Object.freeze({
   system: 'System update',
   system_worker_turn_finished: 'Worker turn finished',
@@ -1013,7 +1023,7 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
         ? String(item.id) : `${item.id}:${index}`;
       if (segment.presentation === 'user') {
         return [{ id, author: 'you' as const, text, atMs, attachments,
-          inputSource: { itemId: item.id, segmentIndex: index, turnId: item.turn_id, entryRev: segment.origin?.queue_entry?.rev ?? null },
+          inputSource: { cardId: item.card_id, threadId: item.thread_id, itemId: item.id, segmentIndex: index, turnId: item.turn_id, entryRev: segment.origin?.queue_entry?.rev ?? null },
           ...(segment.origin === undefined ? {} : { queueEntryId: segment.origin.queue_entry?.id ?? null }) }];
       }
       return [{
@@ -1113,7 +1123,7 @@ export type TranscriptEntry = ConversationMessage | ConversationActivity | Conve
 
 /** The speakers; neither an activity line nor a turn outcome is one. */
 export function isConversationMessage(entry: TranscriptEntry): entry is ConversationMessage {
-  return entry.author === 'you' || entry.author === 'agent' || entry.author === 'system';
+  return entry.author === 'you' || entry.author === 'human' || entry.author === 'unknown' || entry.author === 'agent' || entry.author === 'system';
 }
 
 /** `bash -lc '…'` is how codex spells every command; the line shows what was actually run. */
@@ -1305,18 +1315,16 @@ const turnOutcomeParamsSchema = z.object({
 });
 
 /** The released cause-only string and complete v1 proof; never read unprotected `harness_timeout`. */
-const harnessInterruptionSchema = z.union([
-  z.literal('max_turn_duration'),
-  z.object({
-    version: z.literal('v1'),
-    request: z.strictObject({
-      session_id: z.string(), card_id: z.string(), track_id: z.string(), thread_id: z.string(), turn_id: z.string(),
-      reason: z.literal('max_turn_duration'), requested_at_ms: z.number().int(),
-      effective_elapsed_ms: z.number().int().nonnegative(), budget_ms: z.number().int().nonnegative(),
-    }),
-    ended_at_ms: z.number().int(),
+export const harnessTimeoutEvidenceSchema: z.ZodType<HarnessTimeoutEvidence> = z.object({
+  version: z.literal('v1'),
+  request: z.strictObject({
+    session_id: z.string(), card_id: z.string(), track_id: z.string(), thread_id: z.string(), turn_id: z.string(),
+    reason: z.literal('max_turn_duration'), requested_at_ms: z.number().int(),
+    effective_elapsed_ms: z.number().int().nonnegative(), budget_ms: z.number().int().nonnegative(),
   }),
-]);
+  ended_at_ms: z.number().int(),
+});
+const harnessInterruptionSchema = z.union([z.literal('max_turn_duration'), harnessTimeoutEvidenceSchema]);
 
 /** A recorded duration only when it is a finite, non-negative integer; anything else is unknown, not 0. */
 function recordedDurationMs(value: unknown): number | null {
@@ -1454,7 +1462,7 @@ function placeTurnOutcomes(
  * A finished `Thought` survives only while nothing but turn outcomes follows it. Shared by
  * `buildTranscript` and `mergeTranscript` so the two agree on which thought is "followed".
  */
-function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
+export function retireFollowedThoughts(entries: readonly TranscriptEntry[]): readonly TranscriptEntry[] {
   return entries.filter((entry, index) => {
     if (entry.author !== 'activity' || entry.verb !== 'Thought') return true;
     return !entries.slice(index + 1).some((later) => later.author !== 'turn');
@@ -1490,6 +1498,11 @@ function userAttachmentsMatchEcho(
   return echoIds.every((attachment) => rowIds.has(attachment.id));
 }
 
+/** Body qualification is separate from identity, attribution and source-version evidence. */
+export function inputBodyMatchesEcho(turn: ConversationTurn, echo: ConversationTurn): boolean {
+  return userTextMatchesEcho(turn.text, echo.text) || userAttachmentsMatchEcho(turn, echo);
+}
+
 /** Reconcile recent persisted user rows with optimistic echoes one-to-one. */
 export function reconcileUserEchoes(
   serverTurns: readonly ConversationMessage[],
@@ -1501,7 +1514,7 @@ export function reconcileUserEchoes(
   return echoes.filter((echo) => {
     const match = userTurns.findIndex((turn, index) =>
       !matchedUserIndexes.has(index)
-      && (userTextMatchesEcho(turn.text, echo.text) || userAttachmentsMatchEcho(turn, echo)));
+      && inputBodyMatchesEcho(turn, echo));
     if (match < 0) return true;
     matchedUserIndexes.add(match);
     return false;
@@ -1529,11 +1542,16 @@ export function serverItemHighWater(items: readonly Readonly<{ id: number }>[]):
   return items.reduce((highest, item) => Math.max(highest, item.id), 0);
 }
 
-/** An exchange opens at a turn authored by you whose predecessor was not. */
+/** User-role display data includes unknown historical authors; this is never an ownership test. */
+export function isUserConversationTurn(entry:TranscriptEntry|undefined):entry is ConversationTurn & Readonly<{ author: 'you' | 'human' | 'unknown' }> {
+  return entry?.author === 'you' || entry?.author === 'human' || entry?.author === 'unknown';
+}
+
+/** An exchange opens at a user-role message after an agent/activity boundary. */
 export function opensExchange(turns: readonly TranscriptEntry[], index: number): boolean {
   const turn = turns[index];
   if (turn === undefined) return false;
-  return turn.author === 'you' && turns[index - 1]?.author !== 'you';
+  return isUserConversationTurn(turn) && !isUserConversationTurn(turns[index-1]);
 }
 
 /** The gap after which a transcript is worth stamping with a time; the time is a separator, not a label. */

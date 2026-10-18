@@ -874,6 +874,8 @@ pub trait OperationRepo: Send + Sync {
     ) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    /// The same drive phase/lease predicate restricted to one existing operation.
+    async fn claim_drive_operation(&self, op_id: &str) -> Result<Option<Operation>>;
     async fn claim_interaction_retry(
         &self,
         op: &Operation,

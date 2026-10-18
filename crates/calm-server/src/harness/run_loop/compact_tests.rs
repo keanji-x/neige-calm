@@ -16,11 +16,14 @@ async fn compact_blocks_issuance_until_its_turn_starts_and_snapshot_recovers_bus
         ["thread-commit-wake"]
     );
     assert_eq!(
-        f.harness.snapshot().await.phase,
+        f.harness.snapshot().await.unwrap().phase,
         HarnessPhaseTag::Compacting
     );
-    let snapshot = snapshot_for(&f.harness.inner).await;
-    assert!(!state_from_snapshot(&snapshot).can_issue_turn());
+    let snapshot = snapshot_for(&f.harness.inner).await.unwrap();
+    assert!(
+        !state_from_runtime_header(&snapshot.runtime_header(), &f.harness.inner.inputs)
+            .can_issue_turn()
+    );
     assert!(!f.harness.inner.state.lock().await.can_issue_turn());
 }
 
@@ -36,7 +39,8 @@ async fn compact_refuses_busy_queued_missing_history_and_shutting_down_without_p
     *f.harness.inner.state.lock().await = HarnessState::Idle;
     f.harness
         .inner
-        .pending_queue
+        .historical_queue()
+        .unwrap()
         .lock()
         .await
         .push_back(QueueEntry::user_message("waiting".into(), None, vec![]));
@@ -44,7 +48,13 @@ async fn compact_refuses_busy_queued_missing_history_and_shutting_down_without_p
         f.harness.compact().await,
         Err(CalmError::Conflict(_))
     ));
-    f.harness.inner.pending_queue.lock().await.clear();
+    f.harness
+        .inner
+        .historical_queue()
+        .unwrap()
+        .lock()
+        .await
+        .clear();
     *f.harness.inner.last_turn_id.lock().await = None;
     assert!(matches!(
         f.harness.compact().await,
@@ -66,7 +76,10 @@ async fn compact_start_timeout_wedges_instead_of_silently_resuming() {
         since: Instant::now() - Duration::from_secs(60),
     };
     watchdog_tick(&f.harness.inner).await.unwrap();
-    assert_eq!(f.harness.snapshot().await.phase, HarnessPhaseTag::Wedged);
+    assert_eq!(
+        f.harness.snapshot().await.unwrap().phase,
+        HarnessPhaseTag::Wedged
+    );
     assert!(!f.harness.inner.state.lock().await.can_issue_turn());
 }
 
@@ -94,7 +107,7 @@ async fn compact_accepts_only_new_turn_and_releases_issuance_on_its_completion()
         .await
         .unwrap();
         assert_eq!(
-            f.harness.snapshot().await.phase,
+            f.harness.snapshot().await.unwrap().phase,
             HarnessPhaseTag::Compacting
         );
     }
@@ -111,7 +124,7 @@ async fn compact_accepts_only_new_turn_and_releases_issuance_on_its_completion()
     .await
     .unwrap();
     assert_eq!(
-        f.harness.snapshot().await.phase,
+        f.harness.snapshot().await.unwrap().phase,
         HarnessPhaseTag::Compacting
     );
     on_notification(
@@ -127,7 +140,7 @@ async fn compact_accepts_only_new_turn_and_releases_issuance_on_its_completion()
     .await
     .unwrap();
     assert_eq!(
-        f.harness.snapshot().await.phase,
+        f.harness.snapshot().await.unwrap().phase,
         HarnessPhaseTag::Compacting
     );
     on_notification(
@@ -162,9 +175,9 @@ async fn compact_accepts_only_new_turn_and_releases_issuance_on_its_completion()
 async fn compact_recovery_requires_reset_instead_of_reissuing_maintenance() {
     let f = ready().await;
     f.harness.compact().await.unwrap();
-    let snapshot = snapshot_for(&f.harness.inner).await;
+    let snapshot = snapshot_for(&f.harness.inner).await.unwrap();
     assert!(matches!(
-        state_from_snapshot(&snapshot),
+        state_from_runtime_header(&snapshot.runtime_header(), &f.harness.inner.inputs),
         HarnessState::Wedged { .. }
     ));
 }
@@ -195,7 +208,7 @@ async fn compact_only_completed_confirms_success_and_invalidates_reading() {
             .await
             .unwrap();
         }
-        let snapshot = serde_json::to_value(snapshot_for(&f.harness.inner).await).unwrap();
+        let snapshot = serde_json::to_value(snapshot_for(&f.harness.inner).await.unwrap()).unwrap();
         let expected = match status {
             "completed" => "completed",
             "interrupted" => "interrupted",
@@ -224,7 +237,7 @@ async fn compact_only_completed_confirms_success_and_invalidates_reading() {
         )
         .await
         .unwrap();
-        let snapshot = serde_json::to_value(snapshot_for(&f.harness.inner).await).unwrap();
+        let snapshot = serde_json::to_value(snapshot_for(&f.harness.inner).await.unwrap()).unwrap();
         assert_eq!(snapshot["compact_outcome"], previous["compact_outcome"]);
         assert_eq!(snapshot["last_turn_id"], "old-turn");
     }
@@ -278,7 +291,7 @@ async fn compact_boundary_invalidates_even_when_maintenance_fails_or_is_interrup
             watchdog_tick(&f.harness.inner).await.unwrap();
             deliver(&f, reading("old-turn")).await;
         }
-        let snapshot = snapshot_for(&f.harness.inner).await;
+        let snapshot = snapshot_for(&f.harness.inner).await.unwrap();
         assert!(snapshot.context_usage_invalidated, "{terminal}");
         assert!(snapshot.visible_context_usage().is_none());
         assert_ne!(
@@ -308,9 +321,11 @@ async fn compact_boundary_invalidates_even_when_maintenance_fails_or_is_interrup
                 card_role_cache: old.card_role_cache.clone(),
                 track_area_cache: old.track_area_cache.clone(),
                 backend: old.backend.clone(),
-                live_replies: crate::harness::LiveReplies::for_test(),
+                registry: crate::harness::HarnessRegistry::new(),
                 config: HarnessConfig::default(),
-                snapshot,
+                snapshot: (snapshot)
+                    .try_into()
+                    .expect("historical fixture snapshot contract"),
             },
             8,
         );
@@ -326,7 +341,7 @@ async fn compact_boundary_invalidates_even_when_maintenance_fails_or_is_interrup
         .await
         .unwrap();
         assert!(
-            reloaded.snapshot().await.context_usage_invalidated,
+            reloaded.snapshot().await.unwrap().context_usage_invalidated,
             "reload {terminal}"
         );
         *reloaded.inner.state.lock().await = HarnessState::Issuing {
@@ -356,7 +371,7 @@ async fn compact_boundary_invalidates_even_when_maintenance_fails_or_is_interrup
         )
         .await
         .unwrap();
-        assert!(!reloaded.snapshot().await.context_usage_invalidated);
+        assert!(!reloaded.snapshot().await.unwrap().context_usage_invalidated);
     }
 }
 
@@ -383,6 +398,7 @@ async fn compact_automatic_boundary_is_not_manual_success_and_needs_a_new_turn_r
         assert!(
             !snapshot_for(&f.harness.inner)
                 .await
+                .unwrap()
                 .context_usage_invalidated
         );
     }
@@ -415,6 +431,7 @@ async fn compact_automatic_boundary_is_not_manual_success_and_needs_a_new_turn_r
         assert!(
             snapshot_for(&f.harness.inner)
                 .await
+                .unwrap()
                 .context_usage_invalidated
         );
     }
@@ -430,7 +447,7 @@ async fn compact_automatic_boundary_is_not_manual_success_and_needs_a_new_turn_r
     )
     .await
     .unwrap();
-    let snapshot = snapshot_for(&f.harness.inner).await;
+    let snapshot = snapshot_for(&f.harness.inner).await.unwrap();
     assert!(!snapshot.context_usage_invalidated);
     assert!(snapshot.compact_outcome.is_none());
     assert_eq!(snapshot.token_usage.unwrap().used_tokens, 16000);
@@ -485,7 +502,13 @@ async fn compact_boundary_during_real_interrupt_and_after_completion_is_correlat
             },
         )
         .await;
-        assert!(f.harness.snapshot().await.context_usage_invalidated);
+        assert!(
+            f.harness
+                .snapshot()
+                .await
+                .unwrap()
+                .context_usage_invalidated
+        );
         release.notify_one();
         interrupt.await.unwrap();
         deliver(
@@ -496,9 +519,21 @@ async fn compact_boundary_during_real_interrupt_and_after_completion_is_correlat
         )
         .await;
         deliver(&f, reading("old-turn")).await;
-        assert!(f.harness.snapshot().await.context_usage_invalidated);
+        assert!(
+            f.harness
+                .snapshot()
+                .await
+                .unwrap()
+                .context_usage_invalidated
+        );
         assert_eq!(
-            f.harness.snapshot().await.token_usage.unwrap().total_tokens,
+            f.harness
+                .snapshot()
+                .await
+                .unwrap()
+                .token_usage
+                .unwrap()
+                .total_tokens,
             30
         );
     }
@@ -519,7 +554,13 @@ async fn compact_boundary_during_real_interrupt_and_after_completion_is_correlat
         },
     )
     .await;
-    assert!(f.harness.snapshot().await.context_usage_invalidated);
+    assert!(
+        f.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .context_usage_invalidated
+    );
     *f.harness.inner.state.lock().await = HarnessState::Issuing {
         since: Instant::now(),
         kind: IssuingKind::TurnStart,
@@ -542,7 +583,13 @@ async fn compact_boundary_during_real_interrupt_and_after_completion_is_correlat
             },
         )
         .await;
-        assert!(!f.harness.snapshot().await.context_usage_invalidated);
+        assert!(
+            !f.harness
+                .snapshot()
+                .await
+                .unwrap()
+                .context_usage_invalidated
+        );
     }
 }
 
@@ -564,7 +611,14 @@ async fn compact_feedback_is_cleared_only_by_an_accepted_new_user_start() {
         },
     )
     .await;
-    assert!(f.harness.snapshot().await.compact_outcome.is_some());
+    assert!(
+        f.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .compact_outcome
+            .is_some()
+    );
     deliver(
         &f,
         PlannerEventKind::TurnStarted {
@@ -572,7 +626,14 @@ async fn compact_feedback_is_cleared_only_by_an_accepted_new_user_start() {
         },
     )
     .await;
-    assert!(f.harness.snapshot().await.compact_outcome.is_some());
+    assert!(
+        f.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .compact_outcome
+            .is_some()
+    );
     *f.harness.inner.state.lock().await = HarnessState::Issuing {
         since: Instant::now(),
         kind: IssuingKind::TurnStart,
@@ -587,7 +648,14 @@ async fn compact_feedback_is_cleared_only_by_an_accepted_new_user_start() {
         },
     )
     .await;
-    assert!(f.harness.snapshot().await.compact_outcome.is_none());
+    assert!(
+        f.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .compact_outcome
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -625,7 +693,7 @@ async fn compact_codex_fresh_recv_keeps_ordinary_boundary_item_and_billing() {
         .await
         .unwrap();
     deliver(&f, reading("old-turn")).await;
-    let snapshot = f.harness.snapshot().await;
+    let snapshot = f.harness.snapshot().await.unwrap();
     assert!(snapshot.context_usage_invalidated);
     assert!(snapshot.visible_context_usage().is_none());
     assert_eq!(snapshot.token_usage.unwrap().total_tokens, 30);

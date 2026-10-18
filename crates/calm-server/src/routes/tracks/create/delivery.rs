@@ -149,6 +149,12 @@ pub(super) async fn start_planner_harness_with_first_message(
         &request.planner_card_id,
     )
     .await;
+    let fence = match &actor.human_source {
+        Some(source) => {
+            fence.with_historical_human(s.planner_start_adapter.clone(), source.clone())
+        }
+        None => fence,
+    };
     // A genuine retry follows a failed start, and a reset or re-point may have given the card a
     // conversation since (#2212). That is the send's to continue, not this start's to supersede.
     if arm == SubmitArm::GenuineRetry

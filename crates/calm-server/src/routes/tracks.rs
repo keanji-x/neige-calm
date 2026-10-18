@@ -32,7 +32,7 @@ use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::codex_cards::default_cwd;
 use crate::routes::idempotency_key::stable_payload_hash;
-use crate::routes::planner_cards::quiesce_shared_card_active_turn;
+use crate::routes::planner_cards::quiesce_shared_codex_card_active_turn;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -71,6 +71,7 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use tokio::sync::Notify;
 
 mod add;
+mod allocation;
 mod create;
 mod fork_guard;
 mod preparation;
@@ -242,8 +243,9 @@ pub struct CreateTrackRequest {
     #[schema(required = false)]
     pub title: String,
     pub sort: Option<f64>,
-    /// Omitted / null persists `default_cwd()` and skips `area_folders`; present values
-    /// (including the empty string) keep the absolute-path + claim rules.
+    /// Message-less resource creation keeps the existing cwd/claim contract.
+    /// Human first-message creation supports only the configured managed root;
+    /// an explicit cwd requires its own preparation and is currently refused.
     #[serde(default)]
     pub cwd: Option<String>,
     /// A built-in roster template to instantiate the report from; mutually exclusive with
@@ -268,9 +270,9 @@ pub struct CreateTrackRequest {
     /// inside the track-create transaction.
     #[serde(default)]
     pub fork_report_from: Option<String>,
-    /// The user's first sentence, seeded into the planner harness as a user message. Supplying
-    /// it makes `Idempotency-Key` required and turns a harness-start failure into a 500 (the
-    /// committed track is not undone).
+    /// The verified Human's first accepted message. Requires Idempotency-Key.
+    /// Canonical input and original resource acknowledgement commit before any
+    /// native startup; a later startup failure cannot undo that acceptance.
     #[serde(default)]
     pub first_message: Option<String>,
     /// Model slug for the planner's first and subsequent turns (for a `claude` Planner, a value of
@@ -664,26 +666,64 @@ pub(crate) async fn get_track_detail(
     path = "/api/tracks",
     tag = "tracks",
     params(
-        ("Idempotency-Key" = Option<String>, Header, description = "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201 and starts its Planner again only when every earlier start of it failed (a Planner that already has a session, from the first start or a reset or re-point since, keeps it; one with no session yet while another start of it is running answers 503), a different create shape under the same key is 409 `idempotency_key_reused`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `idempotency_key_reused`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, non-null `model` / `reasoning_effort`, and a `planner_provider` other than `codex`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `idempotency_key_reused`, including after a terminal operation failure. A different `first_message` is also `idempotency_key_reused` after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries, unless the track's Planner already has a session (a reset or re-point started it since): that retry is 409 `conflict`, starts nothing and delivers nothing, so send the message through `POST /api/cards/{id}/planner/input`. With no session yet but another start of the Planner running, it is 503. A `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 `idempotency_key_reused` because the server cannot prove request equality. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Required with first_message; keep the original key to reconcile retries under the same creation contract."),
     ),
     request_body = CreateTrackRequest,
     responses(
-        (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
-        (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty, non-ASCII or over 128 bytes; code `idempotency_key_invalid`) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
-        (status = 404, description = "Area not found", body = ErrorBody),
-        (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `idempotency_key_reused` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, `idempotency_key_concurrent` when another create under the same key committed at the same moment (nothing of this request was kept; retry the identical request under the same key and it resolves to that track), `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized, or `conflict` naming `attached-repo-diverged` when the attached checkout has unpushed commits and its upstream moved on, so the track's worktree cannot be made (the track is already committed and stays, as after a failed managed materialization; reconcile the checkout, then retry under the same key), or `conflict` when a `first_message` retry after a failed start finds that the track's Planner already has a session, so the retry starts nothing (send the message through `POST /api/cards/{id}/planner/input`). Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request after `idempotency_key_reused` (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
-        (status = 500, description = "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.", body = ErrorBody),
-        (status = 503, description = "A keyed retry found the Planner with no session yet and a start running; it started nothing. Retry shortly.", body = ErrorBody),
+        (status = 201, description = "Track created or original receipt replayed. Canonical input is saved independently of native readiness.", body = Track),
+        (status = 400, description = "Invalid creation request or unsupported canonical first-input preparation.", body = ErrorBody),
+        (status = 401, description = "No verified live Human source for first_message, or the session is invalid or revoked", body = ErrorBody),
+        (status = 403, description = "Registered current Area collaboration access is required for Human input; System targets are not Human Track creation", body = ErrorBody),
+        (status = 404, description = "Area or surviving accepted resource not found", body = ErrorBody),
+        (status = 409, description = "Key or resource conflict. Reconcile with the original key; a new key creates a new intent.", body = ErrorBody),
+        (status = 500, description = "Internal storage or response error; an uncertain outcome must be reconciled under the original key", body = ErrorBody),
+        (status = 503, description = "A message-less resource creation found a concurrent Planner start; no Human input acceptance is inferred", body = ErrorBody),
     ),
 )]
 #[allow(deprecated)]
 pub(crate) async fn create_track(
     State(s): State<RouteState>,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
     actor: Actor,
     headers: HeaderMap,
     State(codex): State<CodexShellState>,
     JsonBody(mut request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
+    let source = source.map(|source| source.0);
+    if request.first_message.is_some()
+        && create::first_message_storage_contract(
+            &s,
+            source.as_ref().ok_or(CalmError::Unauthorized)?,
+            &headers,
+            &request,
+        )
+        .await?
+            == crate::conversation_inputs::InputStorageContract::Canonical
+    {
+        let source = source.ok_or(CalmError::Unauthorized)?;
+        let accepted = create::dormant::accept_dormant_human_track(
+            s.clone(),
+            source.clone(),
+            headers,
+            request,
+        )
+        .await?;
+        let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 {
+            planner_card_id, ..
+        } = accepted.ack;
+        crate::operation::planner_start_fence::wake_canonical_human(
+            s,
+            CardId::from(planner_card_id),
+            source,
+        );
+        return Ok((StatusCode::CREATED, Json(accepted.track)).into_response());
+    }
+    let historical_source = source.map(crate::conversation_inputs::HistoricalHumanSource::new);
+    if let Some(source) = &historical_source {
+        source
+            .require_area(s.repo.as_ref(), request.area_id.as_str())
+            .await?;
+    }
     if request.admin {
         super::track_report_blocks::require_rest_user_actor_for(
             &actor,
@@ -734,22 +774,7 @@ pub(crate) async fn create_track(
         request.area_id.as_str(),
         // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
         // must not depend on `admit_template`, so a replay whose template left the roster still replays.
-        create::CreateRequestShape {
-            admin,
-            planner_provider: request.planner_provider.clone(),
-            model: request.model.clone(),
-            reasoning_effort: request.reasoning_effort.clone(),
-            title: request.title.clone(),
-            sort: request.sort,
-            cwd: request.cwd.clone(),
-            template_id: request.template_id.clone(),
-            recipe_id: request.recipe_id.clone(),
-            template_input: request.template_input.clone(),
-            attach_folder: request.attach_folder,
-            allow_cross_area_cwd: request.allow_cross_area_cwd.clone(),
-            theme: request.theme,
-            fork_report_from: request.fork_report_from.clone(),
-        },
+        create::CreateRequestShape::from_request(&request),
     )
     .await?;
     // The arm decision comes BEFORE the create path's request validation: the resuming arms
@@ -757,12 +782,16 @@ pub(crate) async fn create_track(
     // `message_less` carries the per-key claim guard that must be held until after the mint.
     let (plan, message_less) = match plan {
         create::CreatePlan::Resume(resume) => {
-            let track =
-                create::resume_prior_attempt(s, &create::KeyedActor::rest(&actor), resume).await?;
+            let track = create::resume_prior_attempt(
+                s,
+                &create::KeyedActor::rest(&actor, historical_source.clone()),
+                resume,
+            )
+            .await?;
             return Ok((StatusCode::CREATED, Json(track)).into_response());
         }
         create::CreatePlan::MessageLessResume(resume) => {
-            return create::resume_message_less(s, actor, resume).await;
+            return create::resume_message_less(s, actor, resume, historical_source).await;
         }
         create::CreatePlan::Legacy => (None, None),
         create::CreatePlan::Mint(plan) => (Some(plan), None),
@@ -815,6 +844,18 @@ pub(crate) async fn create_track(
     let planner_provider = request.planner_provider.clone();
     let (p, named_source, cwd_omitted) = request.into_parts()?;
 
+    if let Some(source) = &historical_source {
+        if let NamedSource::Fork(source_track_id) = &named_source {
+            source
+                .require_track(s.repo.as_ref(), source_track_id)
+                .await?;
+        }
+        if let Some(cross) = &allow_cross_area_cwd {
+            source
+                .require_area(s.repo.as_ref(), cross.area_id.as_str())
+                .await?;
+        }
+    }
     let preparation::PreparedCreate {
         p,
         folder_claim,
@@ -825,6 +866,7 @@ pub(crate) async fn create_track(
         conflict,
     } = preparation::prepare(&s, p, named_source, cwd_omitted, allow_cross_area_cwd).await?;
     let options = CreateTrackOptions {
+        human_source: historical_source.clone(),
         admin,
         planner_provider,
         model,
@@ -846,7 +888,7 @@ pub(crate) async fn create_track(
         None => create_track_with_planner_harness(s, actor, p, options).await,
         Some(plan) => create::create_track_with_first_message(
             s,
-            &create::KeyedActor::rest(&actor),
+            &create::KeyedActor::rest(&actor, historical_source),
             p,
             options,
             plan,
@@ -1115,6 +1157,7 @@ enum TrackInit {
 }
 
 struct CreateTrackOptions {
+    human_source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     admin: bool,
     managed_identity: Option<crate::managed_track::ManagedTrackIdentity>,
     /// The Track whose Planner is creating this one with `neige_track_add`: its open-created cap is
@@ -1153,6 +1196,7 @@ async fn create_track_with_planner_harness(
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<Response> {
+    let human_source = options.human_source.clone();
     let area_id = options.body_area_id.clone();
     if s.repo.area_get(&area_id).await?.is_none() {
         return Err(CalmError::NotFound(format!("area {area_id}")));
@@ -1173,32 +1217,21 @@ async fn create_track_with_planner_harness(
         &CardId::from(planner_card_id.clone()),
     )
     .await;
+    let fence = match human_source {
+        Some(source) => fence.with_historical_human(s.planner_start_adapter.clone(), source),
+        None => fence,
+    };
     start_planner_harness(&fence, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
 
-#[allow(deprecated)]
 async fn create_track_structure(
     s: RouteState,
     actor: ActorId,
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<(Track, bool, String, String)> {
-    let CreateTrackOptions {
-        admin,
-        managed_identity,
-        creator,
-        creation_message,
-        planner_provider,
-        model,
-        reasoning_effort,
-        folder_claim,
-        body_area_id,
-        normalized_cwd,
-        init,
-        workspace_plan,
-        idempotency_claim,
-    } = options;
+    let human_source = options.human_source.clone();
     let workspace_root_for_materialize = s.workspace_root.clone();
     let templates = s.templates;
     let planner_card_id = new_id();
@@ -1207,265 +1240,29 @@ async fn create_track_structure(
     let write_for_tx = s.write.clone();
     let planner_card_id_for_tx = planner_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
-    let area_id_for_attach = body_area_id;
-    let normalized_cwd_for_tx = normalized_cwd;
-    let idempotency_claim_for_tx = idempotency_claim;
     // The fork path deliberately derives no `EditAuthor`: the fork's normalization and
     // guard are author-independent, so nothing here may classify the caller.
     let replay = std::sync::Arc::new(std::sync::OnceLock::<String>::new());
     let replay_tx = replay.clone();
-    let written = write_with_actor_events_typed(
-        s.repo.as_ref(),
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
+    let written =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
-                if let Some(identity) = &managed_identity {
-                    let existing: Option<crate::managed_track::ManagedTrackBinding> = sqlx::query_as(concat!(
-"SELECT ",
-"m.track_id,t.area_id,m.report_read_scope,m.report_time_zone,m.tool_policy,m.kernel_controls_lifecycle,t.template_id",
-" FROM managed_track_identities m JOIN tracks t ON t.id=m.track_id WHERE m.owner=?1 AND ",
-"m.identity=?2",
-))
-                        .bind(&identity.owner).bind(&identity.identity).fetch_optional(&mut **tx).await?;
-                    if let Some(binding) = existing {
-                        if !binding.matches(identity, p.area_id.as_str(), &p.template_id) {
-                            return Err(CalmError::Conflict("managed Track identity belongs to different creation metadata".into()));
-                        }
-                        let _ = replay_tx.set(binding.track_id);
-                        return Err(CalmError::Conflict("managed Track already exists".into()));
-                    }
-                }
-                // Counted in this transaction, so two concurrent adds cannot both take the last slot.
-                if let Some(creator) = &creator {
-                    creator.admit_tx(tx).await?;
-                }
-                // Claim scan + insert, atomic with the track row; must stay first so every branch
-                // either rolls back or leaves the claim table consistent.
-                enforce_folder_claim_tx(
+                allocation::allocate_track_structure_tx(
                     tx,
-                    &folder_claim,
-                    &area_id_for_attach,
-                    &normalized_cwd_for_tx,
-                    FolderClaimIntent::Create,
-                    FolderClaimPass::Authoritative,
-                )
-                .await?;
-
-                // The recipe is read inside the transaction, once, before the INSERT: its `revision` is
-                // stamped onto the row, and reading twice would let a concurrent edit split the
-                // recorded revision from the report.
-                let recipe_source = match &init {
-                    TrackInit::Recipe { recipe_id } => {
-                        Some(track_recipe_get_tx(tx, recipe_id).await?.ok_or_else(|| {
-                            CalmError::BadRequest(format!(
-                                "track create: recipe `{recipe_id}` does not exist"
-                            ))
-                        })?)
-                    }
-                    _ => None,
-                };
-                let recipe_origin = recipe_source.as_ref().map(|recipe| TrackRecipeOrigin {
-                    recipe_id: recipe.id.clone(),
-                    revision: recipe.revision,
-                });
-
-                let mut track = track_create_tx(
-                    tx,
+                    actor_id_for_tx,
                     p,
-                    None,
-                    &workspace_plan,
-                    recipe_origin.as_ref(),
-                    write_for_tx.area_cache(),
+                    options,
+                    (planner_card_id_for_tx, report_card_id_for_tx),
+                    allocation::TrackAllocationOwners {
+                        write: write_for_tx,
+                        templates,
+                    },
+                    replay_tx,
                 )
-                .await?;
-                if let Some(creator) = &creator {
-                    creator.stamp_tx(tx, &mut track).await?;
-                }
-                let track_id = track.id.clone();
-                let area_id = track.area_id.clone();
-                if let Some(identity) = &managed_identity {
-                    crate::managed_track::bind_tx(tx, identity, track_id.as_str()).await?;
-                }
-
-                if admin {
-                    track = crate::area_admin::set_tx(tx, &track, true).await?;
-                }
-
-                // The `Idempotency-Key` → track binding is written in the same transaction that mints
-                // the id; the `operations` row cannot carry it (written after validation on a pooled connection).
-                if let Some(claim) = idempotency_claim_for_tx.as_ref() {
-                    track_create_idempotency_claim_tx(
-                        tx,
-                        area_id.as_str(),
-                        &claim.key,
-                        &calm_truth::db::sqlite::TrackCreateBindingClaim {
-                            track_id: track_id.to_string(),
-                            planner_card_id: planner_card_id_for_tx.clone(),
-                            report_card_id: report_card_id_for_tx.clone(),
-                            create_request_sha256: claim.create_request_sha256.clone(),
-                            first_message_sha256: claim.first_message_sha256.clone(),
-                        },
-                    )
-                    // A primary-key violation is the cross-instance racer: 409
-                    // `idempotency_key_concurrent`, and its retry resolves to `Resume`. Not recovered
-                    // in place because this transaction already wrote a track row it must not keep.
-                    .await?;
-                }
-
-                // Matched on `(&init, recipe_source)` as one value so the `Recipe` arm binds its
-                // recipe by pattern.
-                let init_snapshot = match (&init, recipe_source) {
-                    (TrackInit::Blank, _) => None,
-                    (TrackInit::Template { key, .. }, _) => {
-                        Some(prepare_template_report(templates, key)?)
-                    }
-                    (TrackInit::Recipe { recipe_id }, None) => {
-                        // Not a caller error, so not a 400.
-                        return Err(CalmError::Internal(format!(
-                            "track create: recipe `{recipe_id}` was resolved to a Recipe init \
-                             without the recipe row the same `init` was supposed to read"
-                        )));
-                    }
-                    (TrackInit::Recipe { recipe_id }, Some(recipe)) => {
-                        // The stored body is already normalized by the write boundary; nothing is re-normalized here.
-                        Some(prepare_initial_report_payload(
-                            recipe_id,
-                            TrackReportPayload::new(recipe.title, recipe.body),
-                        )?)
-                    }
-                    (TrackInit::Fork { source_track_id }, _) => {
-                    // A fork records no recipe provenance, even when the source was recipe-born: a fork was
-                    // instantiated from a track, not from a recipe.
-                    let source_track_id = source_track_id.as_str();
-                    let source_id = TrackId::from(source_track_id.to_string());
-                    let source_track = track_get_tx(tx, &source_id).await.map_err(|error| {
-                        if matches!(error, CalmError::NotFound(_)) {
-                            CalmError::BadRequest(format!(
-                                "track create: fork source track `{source_track_id}` does not exist"
-                            ))
-                        } else {
-                            error
-                        }
-                    })?;
-                    let source_area_kind: String =
-                        sqlx::query_scalar("SELECT kind FROM areas WHERE id=?1")
-                            .bind(source_track.area_id.as_str())
-                            .fetch_one(&mut **tx)
-                            .await?;
-                    if source_track.area_id != area_id
-                        && source_area_kind != AreaKind::System.as_db_str()
-                    {
-                        return Err(CalmError::BadRequest(format!(
-                            "track create: fork source track `{source_track_id}` must be in the target area or the system area"
-                        )));
-                    }
-                    let (summary, blocks) =
-                        report_blocks_snapshot_tx(tx, source_track_id).await?;
-                    // The resolved `chart.series` rows travel with the report (block ids survive the fork).
-                    // Pinned rows stay immutable in the child; unpinned rows refresh per track from here on.
-                    crate::report_series::store::copy_rows_tx(
-                        tx,
-                        source_track_id,
-                        track_id.as_str(),
-                    )
-                    .await?;
-                    // The captured sources travel too, verbatim, so the child resolves them independently
-                    // of the parent's lifetime.
-                    crate::report_sources::store::copy_rows_tx(
-                        tx,
-                        source_track_id,
-                        track_id.as_str(),
-                    )
-                    .await?;
-                    // The report's tags describe the copied content, so they travel too, in order.
-                    crate::report_tags::store::copy_rows_tx(
-                        tx,
-                        source_track_id,
-                        track_id.as_str(),
-                    )
-                    .await?;
-                    Some(prepare_fork_report(
-                        summary,
-                        blocks,
-                        source_track_id,
-                        track_id.as_str(),
-                    )?)
-                    }
-                };
-
-                let mut planner_payload =
-                    planner_card_payload(None, planner_provider, init_snapshot.as_ref())?;
-                if model.is_some() || reasoning_effort.is_some() {
-                    crate::planner_model::CardModelSelection::apply_to_payload(
-                        planner_payload.as_object_mut().ok_or_else(|| {
-                            CalmError::Internal("planner payload is not an object".into())
-                        })?,
-                        model.as_deref(),
-                        reasoning_effort.as_deref(),
-                    );
-                }
-                let mut structure = initialize_track_tx(
-                    tx,
-                    &track,
-                    (&planner_card_id_for_tx, &report_card_id_for_tx),
-                    TrackInitialization::Independent { planner_payload },
-                    write_for_tx.role_cache(),
-                )
-                .await?;
-
-                let mut init_projection = None;
-                if let Some(InitialReportSnapshot {
-                    payload,
-                    mut doc,
-                    declarations,
-                    diagnostics,
-                    template_context: _,
-                }) = init_snapshot
-                {
-                    // The structural door takes no author, actor, event bus or CAS input, so this closure
-                    // can neither emit `track.report_edited` nor reach `guard_task_declarations`.
-                    let (persisted_report, projection) =
-                        crate::track_report::write::structural_init_report_tx(
-                            tx,
-                            crate::track_report::write::InitialReportTarget {
-                                report_card_id: structure.report.id.as_str(),
-                                track_id: track_id.as_str(),
-                                payload: &payload,
-                                doc: &mut doc,
-                                declarations: &declarations,
-                                diagnostics: &diagnostics,
-                            },
-                        )
-                        .await?;
-                    structure.report = persisted_report;
-                    init_projection = Some(projection);
-                }
-
-                let mut events = structure.creation_events(&track, &actor_id_for_tx, creation_message);
-                if let Some(projection) = init_projection {
-                    if !projection.changed_keys.is_empty() {
-                        events.push((
-                            actor_id_for_tx.clone(),
-                            EventScope::Track {
-                                track: track_id.clone(),
-                                area: area_id.clone(),
-                            },
-                            Event::PlanUpdated {
-                                track_id,
-                                changed_keys: projection.changed_keys,
-                                agent_message: None,
-                            },
-                        ));
-                    }
-                    events.extend(projection.kernel_events);
-                }
-                Ok(((track, true), events))
+                .await
             })
-        },
-    )
-    .await;
+        })
+        .await;
     let (track, created, planner_card_id, report_card_id) = match written {
         Ok(((track, created), _)) => (track, created, planner_card_id, report_card_id),
         Err(_) if replay.get().is_some() => {
@@ -1499,6 +1296,11 @@ async fn create_track_structure(
     // Materialize outside the transaction and before the planner harness starts. A failure
     // here MUST surface as a non-2xx; a 201 would leave a track whose first worker dies
     // with `spawn-failed`.
+    if let Some(source) = &human_source {
+        source
+            .require_track(s.repo.as_ref(), track.id.as_str())
+            .await?;
+    }
     crate::workspace_service::workspace_materialize::materialize_workspace(
         &track.workspace,
         &workspace_root_for_materialize,
@@ -1514,7 +1316,7 @@ async fn create_track_structure(
         error
     })?;
     // The attached twin of the managed materialization above, with the same contract.
-    crate::workspace_service::track_worktree::ensure_track_worktree(&track)
+    ensure_creation_worktree(&s, &track, human_source.as_ref())
         .await
         .map_err(|error| {
             tracing::error!(
@@ -1527,6 +1329,22 @@ async fn create_track_structure(
         })?;
 
     Ok((track, created, planner_card_id, report_card_id))
+}
+
+async fn ensure_creation_worktree(
+    state: &RouteState,
+    track: &Track,
+    source: Option<&crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<()> {
+    match source {
+        Some(source) => {
+            crate::workspace_service::track_worktree::ensure_track_worktree_admitted(track, || {
+                source.require_track(state.repo.as_ref(), track.id.as_str())
+            })
+            .await
+        }
+        None => crate::workspace_service::track_worktree::ensure_track_worktree(track).await,
+    }
 }
 
 /// Trusted callers reuse the ordinary cards, report initialization and workspace materialization.
@@ -1546,6 +1364,7 @@ pub(crate) async fn create_managed_track(
         .and_then(|id| s.templates.get(id))
         .ok_or_else(|| CalmError::Internal("managed Track template is not registered".into()))?;
     let options = CreateTrackOptions {
+        human_source: None,
         admin: false,
         managed_identity: Some(identity),
         creator: None,
@@ -2051,6 +1870,10 @@ async fn repoint_track_workspace(
                      default that can be changed only before any work happens in it"
                 )));
             }
+            // This lifecycle replaces all carriers. The conversation owner must
+            // allow that before any native shutdown or directory change occurs.
+            crate::conversation_inputs::require_recreatable_track_carriers_tx(tx, &track_id)
+                .await?;
             // The one predicate that does not enumerate writers: it asks the disk. Repeated after
             // the commit because SQLite isolates none of it.
             let verdict = workspace_pristine(std::path::Path::new(&old_workspace.path));
@@ -2106,7 +1929,7 @@ async fn repoint_track_workspace(
         let outcome = shutdown_fenced_harness(&harness, &track_id).await;
         match outcome {
             Ok(()) => {
-                w.harness.remove_if_same(runtime_id, &harness);
+                w.harness.retire_if_same(runtime_id, &harness);
             }
             Err(error) => tracing::error!(
                 track_id,
@@ -2669,7 +2492,7 @@ async fn teardown_track_deletion(
     .await?;
     let mut seals = crate::thread_seals::DeletionThreadSeals::new(s.thread_seals.clone());
     for card in &plan.cards {
-        if let Some(thread_id) = quiesce_shared_card_active_turn(s, cs, card).await? {
+        if let Some(thread_id) = quiesce_shared_codex_card_active_turn(s, cs, card).await? {
             seals.seal(thread_id);
         }
     }

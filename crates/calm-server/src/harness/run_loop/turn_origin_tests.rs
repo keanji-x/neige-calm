@@ -104,7 +104,7 @@ async fn a_user_message_turn_records_a_user_message_with_no_event() {
         )
         .await
         .unwrap();
-    let pending = fx.harness.snapshot().await.pending_entries();
+    let pending = fx.harness.snapshot().await.unwrap().pending_entries();
     let actual = pending.iter().find_map(|entry| entry.user_view()).unwrap();
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);

@@ -467,6 +467,8 @@ mod input_ref_tests {
 }
 
 /// Why a segment was in the turn: the observation that produced it and the event behind it.
+/// `queue_entry` binds identity and actual revision as one fact. Legacy or non-user input
+/// has no versioned reference, including released origins that omitted this metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessInputOrigin {
@@ -476,8 +478,7 @@ pub struct HarnessInputOrigin {
     /// `null` when no event did, e.g. a user message or the Track goal seed.
     #[schema(required = true, nullable = true)]
     pub event_id: Option<i64>,
-    /// Identity and actual revision are one fact. Null for non-user/legacy entries;
-    /// released historical origins without this metadata remain unversioned.
+    // Identity and actual revision are one fact. Legacy or non-user input remains unversioned.
     #[serde(default)]
     #[schema(required = true, nullable = true)]
     pub queue_entry: Option<HarnessQueueEntryRef>,
@@ -636,3 +637,6 @@ mod track_workspace_agent_cwd_tests {
         assert_eq!(workspace.agent_cwd(), "/repo/.claude/worktrees/track-t");
     }
 }
+
+mod system_presentation;
+pub use system_presentation::SystemInputPresentation;

@@ -52,7 +52,7 @@ async fn launchpad_planner(repo: &SqlxRepo) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_concurrent_first_ensures_start_the_planner_once() {
     let (_tmp, repo, state) = app_state(AppServer::Running).await;
-    let app = router(&state);
+    let app = router(&state).await;
 
     let thread_start = state
         .shared_codex_appserver
@@ -110,12 +110,12 @@ async fn two_concurrent_first_ensures_start_the_planner_once() {
 #[tokio::test]
 async fn a_failed_repoint_does_not_wedge_later_ensures() {
     let (tmp, repo, state) = app_state(AppServer::Running).await;
-    let (status, body) = joined(ensure(router(&state)), "the bootstrap ensure").await;
+    let (status, body) = joined(ensure(router(&state).await), "the bootstrap ensure").await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     // The same server over a moved workspace root: the next ensure re-points the card.
     let state = state.with_workspace_root(tmp.path().join("workspaces-moved"));
-    let app = router(&state);
+    let app = router(&state).await;
     state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();

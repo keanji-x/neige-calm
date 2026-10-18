@@ -598,7 +598,7 @@ async fn assistant_provider_projection_preserves_shared_codex_without_mislabelin
         );
         let codex = provider == AgentProvider::Codex;
         assert_eq!(
-            crate::session_projection_lookup::card_is_shared_planner(&card, Some(&projection)),
+            crate::session_projection_lookup::card_uses_shared_codex(&card, Some(&projection)),
             codex
         );
         assert_eq!(

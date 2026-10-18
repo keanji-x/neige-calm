@@ -1,3 +1,5 @@
+import { conversationCursorSchema } from '../../../../core/api/schemas.ts';
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -86,8 +88,8 @@ function setup(reply?: Reply) {
       if (request.path === '/api/tracks/w2') return ok({
         track: TRACK_B, can_reopen: false, can_admin: false, can_close: true, cards: [CARD_B], overlays: [],
       });
-      if (request.path.includes('/harness/items')) return ok([]);
-      if (request.path.endsWith('/planner/run')) return ok(PLANNER_RUN_IDLE);
+      if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun(PLANNER_RUN_IDLE, 'idle', true));
       if (request.path.endsWith('/planner/input')) return ok({ card_id: CARD.id, worker_session_id: 'runtime' });
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true });
       if (request.path === '/api/settings') return ok({});
@@ -140,7 +142,7 @@ function messageField(): HTMLElement {
 
 function setupWithTurns(reply?: Reply) {
   return setup(async (request) => await reply?.(request)
-    ?? (request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined));
+    ?? (request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), harnessRows(1), null)) : undefined));
 }
 
 async function openConversationWithTurns() {
@@ -166,11 +168,11 @@ it('renders local screenshot references from planner history using the agent wor
       track: { ...TRACK, workspace: { worktree: agentRoot } },
       can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [],
     });
-    if (request.path.includes('/harness/items')) return ok([{
+    if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [{
       ...harnessRows(1)[0],
       params: JSON.stringify({ item: { text:
         `![Screenshot](${agentRoot}/screenshots/page.png)\n\n![Detail](screenshots/detail.png)` } }),
-    }]);
+    }], null));
     return undefined;
   });
   await openConversation();
@@ -181,9 +183,9 @@ it('renders local screenshot references from planner history using the agent wor
 });
 
 it('binds the same relative screenshot path to the newly opened conversation track', async () => {
-  const { router } = setup((request) => request.path.includes('/harness/items') ? ok([{
+  const { router } = setup((request) => request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), [{
     ...harnessRows(1)[0], params: JSON.stringify({ item: { text: '![Screenshot](screenshots/page.png)' } }),
-  }]) : undefined);
+  }], null)) : undefined);
   await openConversation();
   expect((await screen.findByRole('img', { name: 'Screenshot' })).getAttribute('src'))
     .toBe('/api/tracks/w1/workspace/readfile-raw?path=screenshots%2Fpage.png');
@@ -247,8 +249,8 @@ const PHASE_SENDS = Object.freeze(Object.entries(PHASE_SEND_TABLE));
 
 describe('planner conversation regressions', () => {
   it('does not repeat the run phase above the composer while the planner is working', async () => {
-    setupWithTurns((request) => request.path.endsWith('/planner/run')
-      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+    setupWithTurns((request) => request.path.includes('/planner/run?contract=conversation_v1')
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversationWithTurns();
     expect(screen.queryByText(/Turn complete|Still working|Stopping this turn/)).toBeNull();
@@ -279,12 +281,12 @@ describe('planner conversation regressions', () => {
   });
 
   it('shows why a queued message is not being sent when the reader has to act', async () => {
-    setupWithTurns((request) => request.path.endsWith('/planner/run')
-      ? ok({
+    setupWithTurns((request) => request.path.includes('/planner/run?contract=conversation_v1')
+      ? ok(historicalConversationRun({
         ...PLANNER_RUN_IDLE,
         blocked_reason: 'This conversation follows the default model, and codex\'s configuration '
           + 'does not name one. Pick a model to start it again.',
-      })
+      }, 'idle', true))
       : undefined);
     await openConversationWithTurns();
     expect(await screen.findByText(/Pick a model to start it again/)).toBeTruthy();
@@ -384,7 +386,7 @@ describe('planner conversation regressions', () => {
 
   it('follows a card swapped out and back, showing the transcript of whichever row is open', async () => {
     const { client } = setup((request) => request.path.includes('/harness/items')
-      ? ok(harnessRows(3)) : undefined);
+      ? ok(historicalConversationPage(conversationCardId(request.path), harnessRows(3), null)) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
     /* Wait for all transcript messages before swapping the selected conversation. */
     await screen.findByRole('complementary', { name: 'Planner chat' });
@@ -405,7 +407,7 @@ describe('planner conversation regressions', () => {
   });
 
   it('renders a server-sent reply from the history fixture', async () => {
-    setup((request) => request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined);
+    setup((request) => request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), harnessRows(1), null)) : undefined);
     await openConversation();
     expect(await screen.findByText('reply 0')).toBeTruthy();
   });
@@ -425,7 +427,7 @@ describe('planner conversation regressions', () => {
         params: JSON.stringify({ completedAtMs: 30, item: { command: 'npm test', exitCode: 0 } }),
       },
     ];
-    setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
+    setup((request) => request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), rows, null)) : undefined);
     await openConversation();
     /* The history is fetched when the row is opened, so the transcript lands a round trip after the drawer. */
     await screen.findByText('interleaved reply');
@@ -449,7 +451,7 @@ describe('planner conversation regressions', () => {
       command(3, 'command-2', 'item/completed', { command: 'ls', exitCode: 0, durationMs: 12 }),
       command(4, 'command-3', 'item/started', { command: 'cargo build' }),
     ];
-    const { client } = setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
+    const { client } = setup((request) => request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), rows, null)) : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '3 tool calls' });
     const header = group.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="false"]')!;
@@ -476,8 +478,8 @@ describe('planner conversation regressions', () => {
     expect(within(group).getByText('error: no test specified')).toBeTruthy();
   });
 
-  /* The page boundary is made here by the infinite query's cursor (`after_id` = the
-     oldest id of the page before), and can fall inside a run of calls. */
+  /* The negotiated cursor carries the oldest visible position of the page before,
+     and can fall inside a run of calls. */
   it('extends a group cut by the page boundary when Load earlier brings the rest of its run', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, uuid: string, method: string, item: Record<string, unknown>) => ({
@@ -497,7 +499,8 @@ describe('planner conversation regressions', () => {
       command(100, 'command-100', 'item/completed', { command: 'old command 2', exitCode: 0 }),
     ];
     const { requests } = setup((request) => request.path.includes('/harness/items')
-      ? ok(request.path.includes('after_id=0&') ? firstPage : earlierPage) : undefined);
+      ? ok(historicalConversationPage(CARD.id, !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? firstPage : earlierPage,
+        !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? {contract:'conversation_v1',source:'historical_raw',card_id:CARD.id,position:firstPage[0].id} : null)) : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '2 tool calls' });
     const header = group.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="false"]')!;
@@ -514,7 +517,8 @@ describe('planner conversation regressions', () => {
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
     expect((drawer.textContent ?? '').indexOf('Let me check.')).toBeLessThan((drawer.textContent ?? '').indexOf('old command 1'));
     expect(requests.filter((request) => request.path.includes('/harness/items'))
-      .map((request) => new URL(request.path, 'http://localhost').searchParams.get('after_id'))).toEqual(['0', '101']);
+      .map(request => { const cursor=new URL(request.path, 'http://fixture').searchParams.get('cursor');
+        return cursor === null ? null : conversationCursorSchema.parse(JSON.parse(cursor)).position; })).toEqual([null, 101]);
   });
 
   /* A refetch re-reads the newest page from the top and can leave the open run with
@@ -541,7 +545,8 @@ describe('planner conversation regressions', () => {
     ];
     let refetched = false;
     const { client } = setup((request) => request.path.includes('/harness/items')
-      ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : [initial[0]])
+      ? ok(historicalConversationPage(CARD.id, !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? (refetched ? shifted : initial) : [initial[0]],
+        !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? {contract:'conversation_v1',source:'historical_raw',card_id:CARD.id,position:(refetched ? shifted : initial)[0].id} : null))
       : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '2 tool calls' });
@@ -580,7 +585,8 @@ describe('planner conversation regressions', () => {
     const shifted = [...retained, ...Array.from({ length: TRANSCRIPT_PAGE_LIMIT - 2 }, (_, i) => reply(104 + i))];
     let refetched = false;
     const { client } = setup((request) => request.path.includes('/harness/items')
-      ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : [failed])
+      ? ok(historicalConversationPage(CARD.id, !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? (refetched ? shifted : initial) : [failed],
+        !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? {contract:'conversation_v1',source:'historical_raw',card_id:CARD.id,position:(refetched ? shifted : initial)[0].id} : null))
       : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '3 tool calls' });
@@ -619,7 +625,8 @@ describe('planner conversation regressions', () => {
     const shifted = Array.from({ length: TRANSCRIPT_PAGE_LIMIT }, (_, i) => reply(103 + i));
     let refetched = false;
     const { client } = setup((request) => request.path.includes('/harness/items')
-      ? ok(request.path.includes('after_id=0&') ? (refetched ? shifted : initial) : calls)
+      ? ok(historicalConversationPage(CARD.id, !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? (refetched ? shifted : initial) : calls,
+        !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? {contract:'conversation_v1',source:'historical_raw',card_id:CARD.id,position:(refetched ? shifted : initial)[0].id} : null))
       : undefined);
     await openConversation();
     const group = await screen.findByRole('group', { name: '2 tool calls' });
@@ -641,7 +648,7 @@ describe('planner conversation regressions', () => {
       ...harnessRows(1)[0], item_uuid: 'thought-1', item_type: 'reasoning',
       params: JSON.stringify({ item: { summary: [] } }),
     };
-    setup((request) => request.path.includes('/harness/items') ? ok([thought]) : undefined);
+    setup((request) => request.path.includes('/harness/items') ? ok(historicalConversationPage(conversationCardId(request.path), [thought], null)) : undefined);
     await openConversation();
     expect(await screen.findByText('Thought')).toBeTruthy();
     const field = messageField();
@@ -653,7 +660,9 @@ describe('planner conversation regressions', () => {
 
   it('loads only the first history page until the user asks for earlier rows', async () => {
     const { requests } = setup((request) => request.path.includes('/harness/items')
-      ? ok(harnessRows(TRANSCRIPT_PAGE_LIMIT)) : undefined);
+      ? ok(historicalConversationPage(conversationCardId(request.path), harnessRows(TRANSCRIPT_PAGE_LIMIT),
+        new URL(request.path, 'http://fixture').searchParams.has('cursor') ? null
+          : { contract: 'conversation_v1', source: 'historical_raw', card_id: CARD.id, position: 1 })) : undefined);
     await openConversation();
     const historyRequests = () => requests.filter((request) => request.path.includes('/harness/items'));
     await waitFor(() => expect(historyRequests()).toHaveLength(1));
@@ -678,8 +687,8 @@ describe('planner conversation regressions', () => {
   /* `send_planner_input` accepts at any phase and queues the text behind the running
      turn; `data-nc-queued` is present only on the send that was actually queued. */
   it('posts a message sent while a turn is running, and marks it queued', async () => {
-    const { requests } = setup((request) => request.path.endsWith('/planner/run')
-      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+    const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     /* The phase arrives a round trip after the drawer, and "running" is the
@@ -706,11 +715,11 @@ describe('planner conversation regressions', () => {
     const entry = { entry_id: 'entry-9', text: 'queued once', rev: 0, queued_at_ms: 5 };
     let listed = false;
     setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({
           ...PLANNER_RUN_IDLE, phase: 'turn_running',
           pending: listed ? [entry] : [], pending_overflow: 0,
-        });
+        }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
         listed = true;
@@ -747,18 +756,19 @@ describe('planner conversation regressions', () => {
         item: { id: entry.entry_id, clientId: entry.entry_id, type: 'userMessage', content: [{ type: 'text', text: 'sent once' }] },
         _projection: true,
       }),
-      input_segments: [{ presentation: 'user', text: 'sent once', attachments: [] }],
+      input_segments: [{ presentation: 'user', text: 'sent once', attachments: [],
+        origin: { observation: 'user_message', event_id: null, queue_entry: { id: entry.entry_id, rev: entry.rev } } }],
       created_at_ms: 7,
     };
     let listed = true;
     const { client } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({
           ...PLANNER_RUN_IDLE, phase: 'issuing_turn',
           pending: listed ? [entry] : [], pending_overflow: 0,
-        });
+        }, 'idle', true));
       }
-      if (request.path.includes('/harness/items')) return ok([projection]);
+      if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [projection], null));
       return undefined;
     });
     await openConversation();
@@ -767,7 +777,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain('sent once');
     });
     expect(screen.getAllByText('sent once', { ignore: '[aria-hidden="true"] *' })).toHaveLength(1);
-    expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')).toBeNull();
+    expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="unknown"]')).toBeNull();
 
     // The phase change after `turn/start` refetches `planner-run`.
     listed = false;
@@ -775,7 +785,7 @@ describe('planner conversation regressions', () => {
       await client.invalidateQueries({ queryKey: queryKeys.plannerRun(CARD.id) });
     });
     await waitFor(() => {
-      expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')?.textContent).toContain('sent once');
+      expect(document.querySelector('[data-nc-thread] [data-nc-entry] [data-nc-turn="unknown"]')?.textContent).toContain('sent once');
     });
     expect(screen.getAllByText('sent once', { ignore: '[aria-hidden="true"] *' })).toHaveLength(1);
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).toBeNull();
@@ -785,8 +795,8 @@ describe('planner conversation regressions', () => {
   it('sends the listed revision as if_entry_rev when removing a queued message', async () => {
     const entry = { entry_id: 'entry-9', text: 'first words', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
         return ok({ card_id: CARD.id, entry_id: entry.entry_id, rev: 4, text: null });
@@ -817,8 +827,8 @@ describe('planner conversation regressions', () => {
   it('offers "Say it now" while a turn is running, and posts the listed revision to the steer route', async () => {
     const entry = { entry_id: 'entry-9', text: 'now please', rev: 3, queued_at_ms: 5 };
     const { requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return ok({ card_id: CARD.id, entry_id: entry.entry_id, steered: true, turn_id: 'turn-1' });
@@ -856,9 +866,9 @@ describe('planner conversation regressions', () => {
     let served = { entry_id: 'entry-9', text: 'came back', rev: 3, queued_at_ms: 5 };
     let runReads = 0;
     const { client, requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
         runReads += 1;
-        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [served], pending_overflow: 0 });
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [served], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: served.entry_id, steered: true, turn_id: 'turn-1' });
@@ -913,8 +923,8 @@ describe('planner conversation regressions', () => {
   it('does not offer "Say it now" while the turn is still being issued', async () => {
     const entry = { entry_id: 'entry-9', text: 'not yet', rev: 0, queued_at_ms: 5 };
     setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({ ...PLANNER_RUN_IDLE, phase: 'issuing_turn', pending: [entry], pending_overflow: 0 });
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'issuing_turn', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       return undefined;
     });
@@ -929,8 +939,8 @@ describe('planner conversation regressions', () => {
   it('says the message stays queued when the steer finds no running turn', async () => {
     const entry = { entry_id: 'entry-9', text: 'too late', rev: 0, queued_at_ms: 5 };
     setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return {
@@ -963,8 +973,8 @@ describe('planner conversation regressions', () => {
   it('says the outcome is not known when the steer times out on the kernel side', async () => {
     const entry = { entry_id: 'entry-9', text: 'did it land', rev: 0, queued_at_ms: 5 };
     setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 });
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', pending: [entry], pending_overflow: 0 }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/steer')) {
         return {
@@ -1001,11 +1011,11 @@ describe('planner conversation regressions', () => {
     let deleted = false;
     let listed = false;
     setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({
           ...PLANNER_RUN_IDLE, phase: 'turn_running',
           pending: listed && !deleted ? [entry] : [], pending_overflow: 0,
-        });
+        }, 'idle', true));
       }
       if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
         listed = true;
@@ -1056,8 +1066,8 @@ describe('planner conversation regressions', () => {
     let settle!: (response: ApiTransportResponse) => void;
     const pending = new Promise<ApiTransportResponse>((resolve) => { settle = resolve; });
     const { requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' });
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true));
       }
       return request.path.endsWith('/planner/input') ? pending : undefined;
     });
@@ -1085,8 +1095,8 @@ describe('planner conversation regressions', () => {
   /* A queued echo can never be counted down: the pending queue writes no transcript
      row until the turn ends. Requests, not DOM: only the transport says a second message left. */
   it('keeps taking messages after one has been queued behind a running turn', async () => {
-    const { requests } = setup((request) => request.path.endsWith('/planner/run')
-      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+    const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     await screen.findByRole('button', { name: 'Stop' });
@@ -1118,8 +1128,8 @@ describe('planner conversation regressions', () => {
   });
 
   it('leaves the composer open after a queued send', async () => {
-    const { requests } = setup((request) => request.path.endsWith('/planner/run')
-      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+    const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     await screen.findByRole('button', { name: 'Stop' });
@@ -1132,13 +1142,13 @@ describe('planner conversation regressions', () => {
   it.each(PHASE_SENDS)(
     'phase %s applies %s policy to markers, composer state and subsequent sends',
     async (phase, policy) => {
-      const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
-        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null })
+      const { client, requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
+        ? ok(historicalConversationRun({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true))
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
-          ? ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
-              overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
+          ? ok(historicalConversationRun({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
+              overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] }, 'idle', true))
           : undefined);
       await openConversation();
       /* Seeding the cache removes the window in which `phase` is `null` and every row
@@ -1184,8 +1194,8 @@ describe('planner conversation regressions', () => {
   );
 
   it('keeps Stop working, and offers nothing else beside it', async () => {
-    const { requests } = setup((request) => request.path.endsWith('/planner/run')
-      ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
+    const { requests } = setup((request) => request.path.includes('/planner/run?contract=conversation_v1')
+      ? ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running' }, 'idle', true))
       : undefined);
     await openConversation();
     const stop = await screen.findByRole('button', { name: 'Stop' });
@@ -1204,8 +1214,8 @@ describe('planner conversation regressions', () => {
       vi.setSystemTime(1_000_000);
       let elapsed = 18_000;
       const { client } = setupWithTurns((request) => {
-        if (request.path.endsWith('/planner/run')) {
-          return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } });
+        if (request.path.includes('/planner/run?contract=conversation_v1')) {
+          return ok(historicalConversationRun({ ...PLANNER_RUN_IDLE, phase: 'turn_running', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } }, 'idle', true));
         }
         return request.path === '/api/tracks/w1'
           ? ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
@@ -1238,16 +1248,16 @@ describe('planner conversation regressions', () => {
     await openConversation();
     await waitFor(() => {
       expect(requests.filter((request) => request.path.includes('/harness/items')).length).toBeGreaterThan(0);
-      expect(requests.filter((request) => request.path.endsWith('/planner/run')).length).toBeGreaterThan(0);
+      expect(requests.filter((request) => request.path.includes('/planner/run?contract=conversation_v1')).length).toBeGreaterThan(0);
     });
     const beforeHistory = requests.filter((request) => request.path.includes('/harness/items')).length;
-    const beforeRun = requests.filter((request) => request.path.endsWith('/planner/run')).length;
+    const beforeRun = requests.filter((request) => request.path.includes('/planner/run?contract=conversation_v1')).length;
     const field = messageField();
     await typeInto(field, 'hello');
     await sendWithEnter(field);
     await waitFor(() => {
       expect(requests.filter((request) => request.path.includes('/harness/items'))).toHaveLength(beforeHistory + 1);
-      expect(requests.filter((request) => request.path.endsWith('/planner/run'))).toHaveLength(beforeRun + 1);
+      expect(requests.filter((request) => request.path.includes('/planner/run?contract=conversation_v1'))).toHaveLength(beforeRun + 1);
     });
   });
 
@@ -1255,11 +1265,11 @@ describe('planner conversation regressions', () => {
     let resolveInterrupt!: (response: ApiTransportResponse) => void;
     const pendingInterrupt = new Promise<ApiTransportResponse>((resolve) => { resolveInterrupt = resolve; });
     const { requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({
           card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running',
           model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-        });
+        }, 'idle', true));
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;
     });
@@ -1267,7 +1277,7 @@ describe('planner conversation regressions', () => {
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
     /* The phase query starts with the drawer, so the turn is only known to be
        running a round trip later — and Escape does nothing until it is. */
-    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/run'))).toBe(true));
+    await waitFor(() => expect(requests.some((request) => request.path.includes('/planner/run?contract=conversation_v1'))).toBe(true));
     await waitFor(() => {
       fireEvent.keyDown(drawer, { key: 'Escape' });
       expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);

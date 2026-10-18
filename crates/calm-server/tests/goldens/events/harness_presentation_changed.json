@@ -1,0 +1,16 @@
+{
+  "description": "The presentation refresh carries its protected card-scoped index cursor, with no input body or execution grant.",
+  "wire": {
+    "ev": "harness.presentation.changed",
+    "data": {
+      "card_id": "card-01",
+      "track_id": "track-01",
+      "cursor": {
+        "contract": "conversation_v1",
+        "card_id": "card-01",
+        "source": "presentation",
+        "position": 7
+      }
+    }
+  }
+}

@@ -20,7 +20,7 @@ use crate::operation::workspace_lease::{
 use crate::organization_access::{
     require_area_access, require_area_access_tx, require_deployment_owner,
 };
-use crate::routes::planner_cards::quiesce_shared_card_active_turn;
+use crate::routes::planner_cards::quiesce_shared_codex_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::workspace_service::workspace_materialize::validate_attached_workspace;
@@ -445,7 +445,8 @@ impl PreparedAreaDeletion {
             let cards = route.repo.cards_by_track(track.id.as_str()).await?;
             for card in &cards {
                 card_ids.insert(card.id.to_string());
-                if let Some(thread_id) = quiesce_shared_card_active_turn(route, codex, card).await?
+                if let Some(thread_id) =
+                    quiesce_shared_codex_card_active_turn(route, codex, card).await?
                 {
                     seals.seal(thread_id);
                 }

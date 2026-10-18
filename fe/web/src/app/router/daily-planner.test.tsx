@@ -18,7 +18,7 @@ it('uses the real Planner and opens cited reports from the daily homepage withou
   expect(within(sidebar).queryByText('system')).toBeNull();
   await userEvent.click(await screen.findByRole('button', { name: '讨论这项工作' }));
   await screen.findByRole('complementary', { name: 'Daily Planner conversation' });
-  expect(requests.some((request) => request.path.endsWith('/planner/run'))).toBe(true);
+  expect(requests.some((request) => request.path.includes('/planner/run?contract=conversation_v1'))).toBe(true);
   expect(requests.every((request) => request.method === 'GET')).toBe(true);
   await userEvent.keyboard('{Escape}');
   await userEvent.click(await screen.findByRole('button', { name: 'Project evidence' }));

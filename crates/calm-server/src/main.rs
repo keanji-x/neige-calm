@@ -4,7 +4,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::{response::Redirect, routing::get};
-use calm_server::auth::AuthState;
 use calm_server::config::Config;
 use calm_server::routes;
 use calm_server::state::AppState;
@@ -31,65 +30,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Template roster, then storage, then the state — `AppState::boot` owns that order: a
     // refused `--templates-dir` exits here with no database file, WAL or directory created.
-    let state = AppState::boot(&cfg).await?;
-
-    calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
-
-    // Refuse to serve on an ambiguous `area_folders` table: folder resolution would hand a
-    // track to an arbitrary area.
-    calm_server::assert_area_folders_disjoint_on_boot(&state).await?;
-
-    // Shared codex app-server boot/takeover failures are logged so boot can still bind.
-    if let Err(e) = calm_server::boot_harnesses(&state).await {
-        tracing::warn!(
-            error = %e,
-            "planner harness boot recovery failed; continuing without recovered harness tasks"
-        );
-    }
-    // #1817: one availability check per Planner provider, off the boot path; a provider that
-    // cannot run is a warning, never a boot failure. The handle is detached on purpose.
-    drop(calm_server::agent_providers::spawn_boot_check(&state));
-    // #2516: the installed Claude version, read at boot and every 10 minutes, off the boot path.
-    // The handle is detached on purpose.
-    drop(calm_server::claude_version::spawn_periodic_refresh(&state));
-
-    let stale_terminals = calm_server::reconcile_supervisor_on_boot(&state).await;
-
-    if let Err(e) = calm_server::worker_flow::start_on_boot(&state).await {
-        tracing::warn!(
-            error = %e,
-            "worker-flow recorder boot start failed; capture stream disabled this boot"
-        );
-    }
-
-    if let Err(e) = calm_server::task_context_sweep_on_boot(&state).await {
-        tracing::warn!(
-            error = %e,
-            "task context boot sweep failed; recovery gates remain closed"
-        );
-    }
-
-    calm_server::recover_operations_on_boot(&state).await?;
-
-    // #2516: after operation recovery, one `claude-restart` per owner-created Claude card whose
-    // PTY the reconcile above found lost. Off the boot path; the handle is detached on purpose.
-    drop(calm_server::claude_auto_resume::spawn_on_boot(
-        &state,
-        stale_terminals,
-    ));
-
-    calm_server::reaper_on_boot();
-
-    // Scheduler boot sweep. Must follow operation recovery.
-    calm_server::scheduler_sweep_on_boot(&state).await;
-    let daily_state =
-        <calm_server::state::RouteState as axum::extract::FromRef<AppState>>::from_ref(&state);
-    if let Err(error) =
-        calm_server::daily_planner::reconcile(&daily_state, chrono::Utc::now()).await
-    {
-        tracing::warn!(%error, "daily Planner boot reconciliation failed; periodic retry remains enabled");
-    }
-    calm_server::daily_planner::spawn(daily_state);
+    let application = AppState::boot(&cfg).await?;
+    let (state, auth_state) = application.into_parts();
 
     // When `RECORD_SESSION=<path>` is set, every event on the bus is appended to that file as
     // line-delimited JSON, directly playable by `cargo run --bin replay`.
@@ -120,7 +62,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Global session gate: `auth_routes` and `public_routes` are public; `protected_routes` + WS
     // are gated by `auth::require_session` / `auth::require_session_ws`.
-    let auth_state = AuthState::from_config(&cfg)?;
     if auth_state.config.dev_autologin {
         tracing::warn!(
             "auth: DEV AUTOLOGIN is ON — every request is auto-promoted to owner. \
@@ -185,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let mobile_shutdown = auth_state.mobile.clone();
+    let dispatcher_shutdown = state.dispatcher.clone();
     let (preview, preview_auth) = (state.preview(), auth_state.clone());
 
     let mut app = routes::application_router(state, auth_state);
@@ -222,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
 
+    dispatcher_shutdown.retire();
     preview_shutdown.cancel();
     // Keep total drain below neige-app's five-second stop grace. Parent-death
     // ownership also kills the tunnel helper if shutdown is abrupt.
@@ -387,7 +330,17 @@ mod tests {
         cfg.plugins_dir = Some(runtime.path().join("plugins"));
         cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
         // `db_url` is the `mock` default: the boot opens `sqlite::memory:`.
-        let state = calm_server::state::AppState::boot(&cfg).await.unwrap();
+        cfg.auth_password = Some("fixture-password".into());
+        cfg.codex_bin = runtime
+            .path()
+            .join("no-real-codex")
+            .to_string_lossy()
+            .into_owned();
+        let state = calm_server::state::AppState::boot(&cfg)
+            .await
+            .unwrap()
+            .into_parts()
+            .0;
         let routes = calm_server::routes::router().with_state(state);
         let baseline = routes.clone();
         let app = super::mount_frontends(routes, Some(web.path()), Some(fe.path()));
@@ -437,6 +390,8 @@ mod tests {
         cfg.plugins_dir = Some(runtime.join("plugins"));
         cfg.plugins_data_dir = Some(runtime.join("plugins-data"));
         cfg.workspace_root = Some(runtime.join("workspaces"));
+        cfg.auth_password = Some("fixture-password".into());
+        cfg.codex_bin = runtime.join("no-real-codex").to_string_lossy().into_owned();
         cfg
     }
 
@@ -507,7 +462,9 @@ mod tests {
 
         let state = calm_server::state::AppState::boot(&cfg)
             .await
-            .expect("a loadable templates dir boots");
+            .expect("a loadable templates dir boots")
+            .into_parts()
+            .0;
         // Positive control for the refusal test's absence assertions.
         assert!(
             runtime.path().join("calm.db").exists(),

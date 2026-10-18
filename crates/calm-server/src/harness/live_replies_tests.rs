@@ -240,3 +240,54 @@ fn a_new_harness_of_the_card_takes_over_and_the_old_writer_changes_nothing() {
         "a run loop's end clears its card"
     );
 }
+
+#[test]
+fn negotiated_live_requires_actual_thread_and_reads_identity_with_its_body() {
+    let replies = LiveReplies::for_test();
+    let writer = installed(&replies, "runtime");
+    writer.turn_started("same-turn");
+    writer.reply_started("same-turn", "X", &started("X"));
+    writer.delta("same-turn", "X", "unqualified");
+    assert!(replies.read_conversation(&card(), "runtime").turn.is_none());
+    writer.turn_started_native("thread-B", "same-turn");
+    writer.reply_started("same-turn", "X", &started("X"));
+    writer.delta("same-turn", "X", "actual B");
+    let turn = replies.read_conversation(&card(), "runtime").turn.unwrap();
+    assert_eq!(
+        (turn.thread_id.as_str(), turn.turn_id.as_str()),
+        ("thread-B", "same-turn")
+    );
+    assert_eq!(turn.items[0].text, "actual B");
+    assert_eq!(
+        replies.read(&card()),
+        live("same-turn", &[("X", "actual B")])
+    );
+}
+
+#[test]
+fn same_named_turn_in_a_new_thread_replaces_body_and_old_writer_cannot_relabel_it() {
+    let replies = LiveReplies::for_test();
+    let old = installed(&replies, "old");
+    old.turn_started_native("A", "T");
+    old.reply_started("T", "X", &started("X"));
+    old.delta("T", "X", "A");
+    old.turn_started_native("B", "T");
+    assert!(
+        replies
+            .read_conversation(&card(), "old")
+            .turn
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let current = installed(&replies, "current");
+    current.turn_started_native("C", "T");
+    current.reply_started("T", "X", &started("X"));
+    current.delta("T", "X", "C");
+    old.turn_started_native("A", "T");
+    old.delta("T", "X", "stale");
+    assert!(replies.read_conversation(&card(), "old").turn.is_none());
+    let turn = replies.read_conversation(&card(), "current").turn.unwrap();
+    assert_eq!(turn.thread_id, "C");
+    assert_eq!(turn.items[0].text, "C");
+}

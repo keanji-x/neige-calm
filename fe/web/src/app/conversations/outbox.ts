@@ -9,7 +9,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  queueDisplayAccounting, acknowledgeQueueMutation, initialInputNeedsObservation, withInitialInputSources, outboxFacts, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp, type ObservedInitialInput, type ReportedInput, type QueueDisplayAccounting,
+  queueDisplayAccounting, acknowledgeQueueMutation, initialInputNeedsObservation, withInitialInputSources, outboxFactsWithRemovedInputs, synchronizeQueuedSends, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp, type ConversationOutboxOp, type ObservedInitialInput, type ReportedInput, type QueueDisplayAccounting,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
@@ -54,7 +54,7 @@ export function useRunReads(nextRead: () => number): RunReads {
 function rememberSent(
   entry: RememberedConversation, ops: readonly ConversationOutboxOp[], spent: readonly string[], text: string, atMs: number,
 ): RememberedConversation {
-  const shown = withConfirmedSends(entry.turns, ops, spent);
+  const shown = withConfirmedSends(entry.turns, ops, spent, entry.conversation.id);
   return {
     conversation: {
       ...entry.conversation,
@@ -74,8 +74,10 @@ function rememberSent(
  */
 export function useConversationOutbox({
   cardId, transport, send, serverEntries, serverTurns, liveReplies, queuedEntries, stalled, landed,
-  queuesInput, highWater, pressed, initialInput, reportedInput,
+  queuesInput, highWater, pressed, initialInput, reportedInput, removedMessages, viewerId,
 }: {
+  removedMessages: ReadonlySet<string>;
+  viewerId: string | null;
   cardId: string;
   transport: ApiTransportPort;
   /** `POST …/planner/input` for this card; `answered` runs when its 200 is in hand, before its refresh reads start. */
@@ -108,8 +110,8 @@ export function useConversationOutbox({
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
   const facts = useMemo(
-    () => outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops: observedOps, spent, landed, initialInput }),
-    [serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed, initialInput],
+    () => outboxFactsWithRemovedInputs({ cardId, serverEntries, serverTurns, queuedEntryIds, stalled, ops: observedOps, spent, landed, initialInput }, removedMessages),
+    [cardId, serverEntries, serverTurns, queuedEntryIds, stalled, observedOps, spent, landed, initialInput, removedMessages],
   );
   const sourcedOps = useMemo(() => withInitialInputSources(observedOps, facts.entries), [observedOps, facts.entries]);
   const accountQueueDisplay = useCallback((entries: readonly TranscriptEntry[], suppressed: QueueDisplayAccounting['suppressed']) =>
@@ -178,7 +180,7 @@ export function useConversationOutbox({
       if (fromComposer) releaseComposerImages(sentTo, attachments);
       /* Not claimed: the answer may replay an entry deleted, rewound or reset since, which no read would ever
          show. The echo stays until reads started after this answer land, and they alone then show the message. */
-      if (everUnknown) { settle({ key, echo, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return; }
+      if (everUnknown) { settle({ key, echo:{ ...echo,entryId:sent.entry_id }, fromComposer, replaces, phase: 'replayed', afterRead: answeredRead }); return; }
       const confirmed = settle({ key, echo: { ...echo, entryId: sent.entry_id }, fromComposer, replaces, phase: 'confirmed', queueRevision: null });
       /* The answer can outlive the drawer: the row is written straight through for the conversation it was sent
          to, through `updateExisting` because a background refresh may already have put newer data there. */
@@ -239,6 +241,7 @@ export function useConversationOutbox({
           /* The op's, not the run's: a resumed op's first attempt may already be in the transcript, above any high
              water read later, and only this one lets that row stand for the op. */
           serverHighWaterBefore: highWater,
+          ...(viewerId === null ? {} : { authorUserId:viewerId }),
           /* Read at the press from the last `GET /planner/run` snapshot, against the kernel's whitelist, and never
              recomputed from the live phase later. */
           queued: queuesInput,

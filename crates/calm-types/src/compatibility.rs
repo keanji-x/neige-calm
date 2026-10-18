@@ -35,4 +35,5 @@
 // Revision 32: managed Assistant provider identity, wire and capability.
 // Revision 33 (#2672): template lists require author descriptions and server-owned availability.
 // Revision 34 (#2640): Assistant conversation summaries require nullable archive metadata.
-pub const REST_API_VERSION: &str = "34";
+// Revision 35 (#2671): negotiated canonical conversation pages and reference-only run reads.
+pub const REST_API_VERSION: &str = "35";

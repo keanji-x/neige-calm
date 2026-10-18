@@ -160,6 +160,10 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         Ok(batch)
     }
 
+    async fn claim_drive_operation(&self, op_id: &str) -> CalmResult<Option<Operation>> {
+        self.inner.claim_drive_operation(op_id).await
+    }
+
     async fn abandoned_running_operations_on_boot(&self) -> CalmResult<Vec<Operation>> {
         self.inner.abandoned_running_operations_on_boot().await
     }
@@ -286,6 +290,10 @@ impl OperationRepo for DriveErrorOnceRepo {
             return Err(CalmError::Internal("forced drive failure".into()));
         }
         self.inner.claim_drive_batch(limit).await
+    }
+
+    async fn claim_drive_operation(&self, op_id: &str) -> CalmResult<Option<Operation>> {
+        self.inner.claim_drive_operation(op_id).await
     }
 
     async fn abandoned_running_operations_on_boot(&self) -> CalmResult<Vec<Operation>> {

@@ -233,6 +233,16 @@ export const harnessPhaseTagSchema = z.enum([
 ]);
 export type HarnessPhaseTag = z.infer<typeof harnessPhaseTagSchema>;
 
+export const conversationCursorSchema = z.object({
+  contract:z.literal('conversation_v1'), card_id:z.string(),
+  source:z.enum(['presentation','historical_raw']),position:z.number().int().positive(),
+}).strict();
+export const harnessPresentationChangedSchema = z.object({
+  ev:z.literal('harness.presentation.changed'), data:z.object({
+    card_id:z.string(),track_id:z.string(),cursor:conversationCursorSchema,
+  }).strict(),
+});
+
 export const harnessItemAddedSchema = z.object({
   ev: z.literal('harness.item.added'),
   data: z.object({
@@ -986,6 +996,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   runtimeStartedSchema,
   runtimeStatusChangedSchema,
   runtimeSupersededSchema,
+  harnessPresentationChangedSchema,
   harnessItemAddedSchema,
   harnessPhaseChangedSchema,
   harnessTranscriptClearedSchema,

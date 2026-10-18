@@ -20,6 +20,15 @@ pub(crate) async fn observation(
     track_id: &TrackId,
     event: &Event,
 ) -> Result<Option<Observation>> {
+    qualified_observation(repo, track_id, event, false).await
+}
+
+pub(super) async fn qualified_observation(
+    repo: &dyn RepoEventWrite,
+    track_id: &TrackId,
+    event: &Event,
+    strict: bool,
+) -> Result<Option<Observation>> {
     let Event::TaskGitDeliverySettled {
         task_id,
         track_id: event_track_id,
@@ -38,6 +47,11 @@ pub(crate) async fn observation(
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let Some(task) = crate::db::sqlite::task_get_tx(tx, &task_id).await? else {
+                if strict {
+                    return Err(crate::error::CalmError::Conflict(
+                        "settlement source execution is unavailable".into(),
+                    ));
+                }
                 return Ok(None);
             };
             if task.track_id != track_id.as_str() {

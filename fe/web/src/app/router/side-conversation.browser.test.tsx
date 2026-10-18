@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -58,23 +59,24 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
         text: (post.body as { text: string }).text, textSha256: receipt.textSha256 };
     }
     const cardId = request.path.split('/')[3];
-    if (request.path.endsWith('/planner/run')) body = { card_id: cardId, worker_session_id: `session-${cardId}`,
-      phase: cardId === 'parent' && live !== undefined ? 'issuing_turn' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
+    if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: cardId, worker_session_id: `session-${cardId}`,
+      phase: cardId === 'parent' && live !== undefined ? 'issuing_turn' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);
     if (request.path.endsWith('/harness/live')) body = cardId === 'parent' && live !== undefined
       ? { turn_id: 'live-parent', items: [{ item_id: 'streaming', text: live.text }] } : { turn_id: null, items: [] };
     if (request.path.endsWith('/planner/input')) body = { card_id: cardId, worker_session_id: `session-${cardId}` };
-    if (request.path.startsWith('/api/cards/parent/harness/items')) body = [{ id: 1, worker_session_id: 'session-parent',
+    if (request.path.includes('/harness/items')) body = historicalConversationPage(conversationCardId(request.path), [], null);
+    if (request.path.startsWith('/api/cards/parent/harness/items')) body = historicalConversationPage(conversationCardId(request.path), [{ id: 1, worker_session_id: 'session-parent',
       card_id: 'parent', track_id: track.id, thread_id: 'thread-parent', turn_id: null, turn_error_text: null,
       item_uuid: null, item_type: 'agentMessage', method: 'item/completed', created_at_ms: 1,
-      params: JSON.stringify({ item: { id: 'explanation', type: 'agentMessage', text: 'The main conversation keeps working while a separate discussion explores this design.' } }) }];
-    if (longText !== undefined && request.path.includes('/harness/items')) body = [{ id: 1, worker_session_id: `session-${cardId}`,
+      params: JSON.stringify({ item: { id: 'explanation', type: 'agentMessage', text: 'The main conversation keeps working while a separate discussion explores this design.' } }) }], null);
+    if (longText !== undefined && request.path.includes('/harness/items')) body = historicalConversationPage(conversationCardId(request.path), [{ id: 1, worker_session_id: `session-${cardId}`,
       card_id: cardId, track_id: track.id, thread_id: `thread-${cardId}`, turn_id: null, turn_error_text: null,
       item_uuid: null, item_type: 'agentMessage', method: 'item/completed', created_at_ms: 1,
-      params: JSON.stringify({ item: { id: 'long-reply', type: 'agentMessage', text: longText } }) }];
+      params: JSON.stringify({ item: { id: 'long-reply', type: 'agentMessage', text: longText } }) }], null);
     if (outcome !== undefined && request.path.startsWith('/api/cards/parent/harness/items')) {
-      body = [{ id: 99, worker_session_id: 'session-parent', card_id: 'parent', track_id: track.id, thread_id: 'thread-parent',
+      body = historicalConversationPage(conversationCardId(request.path), [{ id: 99, worker_session_id: 'session-parent', card_id: 'parent', track_id: track.id, thread_id: 'thread-parent',
         turn_id: 'finished-turn', turn_error_text: null, item_uuid: null, item_type: null, method: 'turn/completed',
-        created_at_ms: 1, params: JSON.stringify({ id: 'finished-turn', status: outcome, error: null }) }];
+        created_at_ms: 1, params: JSON.stringify({ id: 'finished-turn', status: outcome, error: null }) }], null);
     }
     return { status, statusText: status === 201 ? 'Created' : 'OK', body };
   } };

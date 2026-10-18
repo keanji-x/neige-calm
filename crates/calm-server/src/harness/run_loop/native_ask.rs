@@ -8,7 +8,7 @@ use calm_types::worker::WorkerSessionId;
 use super::Inner;
 use crate::db::write_with_actor_events_typed;
 use crate::event::Event;
-use crate::harness::profile::HarnessProfile;
+use crate::harness::profile::{HarnessProfile, HarnessProfileExt};
 use crate::ids::ActorId;
 use crate::state::WriteContext;
 

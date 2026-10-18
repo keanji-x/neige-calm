@@ -214,7 +214,7 @@ async fn a_seam_failed_first_turn_keeps_the_input_queued_until_the_seam_clears()
     assert_eq!(spawn_count(&root), 0);
     assert!(stack.outcomes(&card_id).await.is_empty());
     assert_eq!(
-        harness.snapshot().await.pending_entries().len(),
+        harness.snapshot().await.unwrap().pending_entries().len(),
         1,
         "still queued"
     );
@@ -287,10 +287,14 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
         card_role_cache: stack.state.card_role_cache.clone(),
         track_area_cache: stack.state.track_area_cache.clone(),
         backend: PlannerBackend::claude_for_test(session),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     let asked = std::time::Instant::now();
     while loser.refused_issuances_for_test() == 0 {
         assert!(

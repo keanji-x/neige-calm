@@ -1,3 +1,6 @@
+mod driver;
+use driver::{DriveInput, drive};
+mod execution_end;
 use super::{
     config::AcpPlannerHost,
     process::{Process, setup_request},
@@ -8,12 +11,14 @@ use crate::db::sqlite::{
 };
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
-use crate::harness::backend::TurnStartFailure;
+use crate::harness::backend::{ExecutionInput, TurnStartFailure};
 use crate::harness::held_requests::HeldRequestSender;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
+use calm_types::conversation::SubmissionDispatchProof;
 use calm_types::runtime::AgentProvider;
 use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSessionId};
+use execution_end::{DriverIdentity, DriverSlot, join_driver};
 use provider::acp::{
     Incoming,
     approvals::Approvals,
@@ -52,13 +57,39 @@ struct Shared {
     events: broadcast::Sender<PlannerEvent>,
     state: Mutex<State>,
     issue: tokio::sync::Mutex<()>,
-    driver: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    driver: tokio::sync::Mutex<Option<DriverSlot>>,
     /// Set when the registry installed the harness: the channel the turns' approvals go to.
     installed: OnceLock<HeldRequestSender>,
 }
 pub struct AcpPlannerSession {
     shared: Arc<Shared>,
 }
+/// V1 evidence keeps its original bytes; V2 has only immutable references.
+enum PromptProof<'a> {
+    Legacy(&'a [crate::harness::QueueEntry]),
+    V2(
+        &'a calm_types::conversation::LogicalTurnId,
+        &'a SubmissionDispatchProof,
+    ),
+}
+
+pub(crate) struct AcpPromptReport {
+    outcome: std::result::Result<String, TurnStartFailure>,
+    locally_owned: bool,
+    native_session_id: Option<String>,
+}
+impl AcpPromptReport {
+    pub(crate) fn locally_owned(&self) -> bool {
+        self.locally_owned
+    }
+    pub(crate) fn native_session_id(&self) -> Option<&str> {
+        self.native_session_id.as_deref()
+    }
+    pub(crate) fn into_outcome(self) -> std::result::Result<String, TurnStartFailure> {
+        self.outcome
+    }
+}
+
 impl AcpPlannerSession {
     pub fn open(params: SessionParams) -> Self {
         let (events, _) = broadcast::channel(1024);
@@ -112,6 +143,61 @@ impl AcpPlannerSession {
         client: &str,
         claim: &[crate::harness::QueueEntry],
     ) -> std::result::Result<String, TurnStartFailure> {
+        self.start_prompt(
+            thread,
+            items,
+            selection,
+            permission,
+            client,
+            PromptProof::Legacy(claim),
+            &mut false,
+            &mut None,
+        )
+        .await
+    }
+
+    pub(crate) async fn dispatch_input(
+        &self,
+        logical_turn_id: &calm_types::conversation::LogicalTurnId,
+        thread: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        permission: PlannerPermissionMode,
+        proof: &SubmissionDispatchProof,
+    ) -> AcpPromptReport {
+        let mut locally_owned = false;
+        let mut native_session_id = None;
+        let outcome = self
+            .start_prompt(
+                thread,
+                items,
+                selection,
+                permission,
+                proof.attempt().submission_id.as_str(),
+                PromptProof::V2(logical_turn_id, proof),
+                &mut locally_owned,
+                &mut native_session_id,
+            )
+            .await;
+        AcpPromptReport {
+            outcome,
+            locally_owned,
+            native_session_id,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_prompt(
+        &self,
+        thread: &str,
+        items: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        permission: PlannerPermissionMode,
+        client: &str,
+        proof: PromptProof<'_>,
+        locally_owned: &mut bool,
+        native_session_id: &mut Option<String>,
+    ) -> std::result::Result<String, TurnStartFailure> {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
@@ -152,16 +238,29 @@ impl AcpPlannerSession {
         {
             return Err(refused("ACP live owner identity changed"));
         }
-        let input = serde_json::to_value(&items).map_err(CalmError::from)?;
+        // A failed lookup cannot establish that an earlier exact-key dispatch is absent.
+        *locally_owned = true;
         if let Some(receipt) = acp_submission_get(&pool, &params.worker_session_id, client)
             .await
             .map_err(CalmError::from)?
         {
             let issued: Value =
                 serde_json::from_str(&receipt.input_json).map_err(CalmError::from)?;
+            *native_session_id = Some(receipt.native_session_id.clone());
+            let matches_proof = match &proof {
+                PromptProof::Legacy(claim) => {
+                    issued.get("version").is_none()
+                        && issued.get("queue")
+                            == Some(&crate::harness::submission_claims::freeze(claim))
+                }
+                PromptProof::V2(_, proof) => {
+                    serde_json::from_value::<SubmissionDispatchProof>(issued.clone())
+                        .is_ok_and(|stored| stored == **proof)
+                }
+            };
             if receipt.thread_id != thread
                 || row.agent_session_id.as_deref() != Some(&receipt.native_session_id)
-                || issued.get("queue") != Some(&crate::harness::submission_claims::freeze(claim))
+                || !matches_proof
             {
                 return Err(refused("ACP receipt ownership or original input changed"));
             }
@@ -186,6 +285,11 @@ impl AcpPlannerSession {
             });
             return Ok(turn);
         }
+        *locally_owned = false;
+        let legacy_input = match &proof {
+            PromptProof::Legacy(_) => Some(serde_json::to_value(&items).map_err(CalmError::from)?),
+            PromptProof::V2(..) => None,
+        };
         if shared.state.lock().expect("ACP state").active.is_some()
             || acp_submission_unresolved(&pool, &params.worker_session_id)
                 .await
@@ -349,11 +453,21 @@ impl AcpPlannerSession {
                 turn_id: turn.clone(),
                 thread_id: thread.into(),
                 native_session_id: native.clone(),
-                input_json: serde_json::to_string(&json!({"input":input,"prompt":blocks,"queue":crate::harness::submission_claims::freeze(claim)}))
-                    .map_err(CalmError::from)?,
+                input_json: match &proof {
+                    PromptProof::Legacy(claim) => serde_json::to_string(&json!({
+                        "input": legacy_input.as_ref().expect("legacy input"),
+                        "prompt": blocks,
+                        "queue": crate::harness::submission_claims::freeze(claim),
+                    })),
+                    PromptProof::V2(_, proof) => serde_json::to_string(proof),
+                }
+                .map_err(CalmError::from)?,
                 state: crate::db::sqlite::AcpSubmissionState::Sending,
                 outcome_json: None,
             };
+            // A failed durable write may have committed; keep ownership conservative.
+            *locally_owned = true;
+            *native_session_id = Some(native.clone());
             acp_submission_prepare(&pool, &receipt, crate::model::now_ms())
                 .await
                 .map_err(CalmError::from)?;
@@ -394,19 +508,26 @@ impl AcpPlannerSession {
         .await;
         let mut driver_slot = shared.driver.lock().await;
         let task_shared = Arc::clone(shared);
+        let canonical = matches!(proof, PromptProof::V2(..));
+        let execution_input = match &proof {
+            PromptProof::Legacy(_) => ExecutionInput::Legacy,
+            PromptProof::V2(logical_turn_id, proof) => {
+                ExecutionInput::canonical(logical_turn_id, proof)
+            }
+        };
         let driver = tokio::spawn(async move {
             drive(
                 task_shared,
                 process,
-                receipt,
+                DriveInput { receipt, canonical },
                 translator,
                 pending,
                 cancelled,
                 approvals,
             )
-            .await;
+            .await
         });
-        *driver_slot = Some(driver);
+        *driver_slot = Some(DriverSlot::new(driver, execution_input));
         // A durable dispatch attempt always hands ownership to the Harness, even if its pipe failed.
         Ok(turn)
     }
@@ -446,21 +567,6 @@ impl AcpPlannerSession {
         stopped?;
         Ok(())
     }
-}
-async fn join_driver(shared: &Shared) -> Result<()> {
-    // Await by reference: cancelling a shutdown must leave task ownership here.
-    let mut slot = shared.driver.lock().await;
-    let result = if let Some(driver) = slot.as_mut() {
-        driver.await.map_err(|error| {
-            CalmError::Conflict(format!(
-                "ACP receipt writer did not finish normally: {error}"
-            ))
-        })
-    } else {
-        Ok(())
-    };
-    slot.take();
-    result
 }
 fn refused(reason: &str) -> TurnStartFailure {
     TurnStartFailure::Refused {
@@ -537,155 +643,4 @@ async fn revoke(params: &SessionParams) -> Result<()> {
         })
     })
     .await
-}
-async fn drive(
-    shared: Arc<Shared>,
-    mut process: Process,
-    receipt: AcpSubmission,
-    mut translator: TurnTranslator,
-    pending: std::result::Result<provider::acp::PendingResponse, provider::acp::Error>,
-    mut cancelled: watch::Receiver<bool>,
-    approvals: Approvals,
-) {
-    let params = &shared.params;
-    let mut retained = Vec::<Value>::new();
-    let outcome=async {
-        let pending=pending.map_err(wire_error)?;
-        let response=pending.wait(Duration::from_secs(3600));tokio::pin!(response);
-        let mut stop_at=None;
-        loop {tokio::select! {
-            result=&mut response=>{
-                while let Ok(incoming)=process.connection.incoming.try_recv() {
-                    match incoming {
-                        Incoming::Notification{method,params:frame} if method=="session/update"=>{
-                            for event in translator.update(&frame,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
-                        },
-                        Incoming::Request{..}=>return Err(CalmError::Conflict("ACP completed while a client request was still pending".into())),
-                        _=>{},
-                    }
-                }
-                let response=match result {
-                    // The agent answered: the turn is over, so its outcome is known.
-                    Err(provider::acp::Error::Remote{message,..})=>return Ok(translator.fail(&message,crate::model::now_ms())),
-                    result=>result.map_err(wire_error)?,
-                };
-                let response:protocol::PromptResponse=protocol::decode(response).map_err(wire_error)?;
-                return Ok::<_,CalmError>(translator.finish(response.stop_reason,crate::model::now_ms()));
-            },
-            changed=cancelled.changed(),if stop_at.is_none()=>{
-                if changed.is_err() || *cancelled.borrow() {
-                    stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
-                    tokio::time::timeout(Duration::from_secs(3),async {
-                        approvals.cancel(&receipt.native_session_id).await.map_err(wire_error)
-                    }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
-                }
-            },
-            _=async{match stop_at{Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}}=>return Err(CalmError::Conflict("ACP cancellation outcome is unknown".into())),
-            incoming=process.connection.incoming.recv()=>match incoming {
-                Some(Incoming::Notification{method,params}) if method=="session/update"=>{
-                    for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
-                },
-                Some(Incoming::Request{id,method,params})=>approvals.request(id,&method,params).await.map_err(wire_error)?,
-                Some(Incoming::Notification{..})=>{},
-                None=>return Err(CalmError::Conflict("ACP prompt connection closed".into())),
-            }
-        }}
-    }.await;
-    // Every frame of this process that will ever be read has been: its requests end here, before
-    // any teardown await, so no answer reaches the agent after its turn.
-    approvals.close().await;
-    #[cfg(feature = "fixtures")]
-    super::test_seams::wait_after_fence(&params.worker_session_id).await;
-    drop(approvals);
-    let revoked = revoke(params).await;
-    if let Err(error) = &revoked {
-        tracing::error!(%error,"ACP credential revocation failed");
-    }
-    let stopped = process.stop(&params.host, &params.worker_session_id).await;
-    let (mut events, known) = match outcome {
-        Ok(events) if stopped.is_ok() && revoked.is_ok() => (events, true),
-        _ => (
-            vec![PlannerEvent {
-                thread_id: Some(receipt.thread_id.clone()),
-                kind: PlannerEventKind::TurnCompleted {
-                    turn: unknown_outcome(&receipt.turn_id),
-                },
-            }],
-            false,
-        ),
-    };
-    let mut turn = events
-        .iter()
-        .find_map(|event| match &event.kind {
-            PlannerEventKind::TurnCompleted { turn } => Some(turn.clone()),
-            _ => None,
-        })
-        .expect("ACP terminal event");
-    for event in &events {
-        retain_item(&mut retained, event);
-    }
-    let mut durable = turn.clone();
-    durable["items"] = Value::Array(retained);
-    #[cfg(feature = "fixtures")]
-    super::test_seams::wait_at_settlement(&params.worker_session_id).await;
-    let settle = async {
-        // The receipt owns settlement; projections can always be rebuilt from it.
-        // Never publish success before its final frames are durable.
-        acp_submission_finish(
-            &params
-                .repo
-                .sqlite_pool()
-                .ok_or_else(|| CalmError::Internal("ACP journal pool missing".into()))?,
-            &receipt.worker_session_id,
-            &receipt.client_id,
-            known
-                .then(|| serde_json::to_string(&durable))
-                .transpose()?
-                .as_deref(),
-        )
-        .await
-    }
-    .await;
-    if let Err(error) = settle {
-        tracing::error!(%error,"ACP settlement failed; durable submission remains fenced");
-        turn = unknown_outcome(&receipt.turn_id);
-        events = vec![PlannerEvent {
-            thread_id: Some(receipt.thread_id.clone()),
-            kind: PlannerEventKind::TurnCompleted { turn: turn.clone() },
-        }];
-    }
-    if let Err(error) = crate::harness::turn_outcome::record(
-        params.repo.as_ref(),
-        &params.worker_session_id,
-        &params.card_id,
-        &params.track_id,
-        &receipt.thread_id,
-        &receipt.turn_id,
-        &turn,
-        crate::harness::turn_outcome::Confirmation::ProviderTerminal,
-    )
-    .await
-    {
-        tracing::error!(%error,"ACP terminal projection failed; receipt remains authoritative");
-    }
-    let mut state = shared.state.lock().expect("ACP state");
-    state.active = None;
-    for event in events {
-        let _ = shared.events.send(event);
-    }
-}
-fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
-    if let PlannerEventKind::Item { params, phase, .. } = &event.kind
-        && let Some(id) = params["item"]["id"].as_str()
-    {
-        let frame = json!({"method":phase.method(),"params":params});
-        if let Some(prior) = retained
-            .iter_mut()
-            .find(|frame| frame["params"]["item"]["id"] == id)
-        {
-            *prior = frame;
-        } else {
-            retained.push(frame);
-        }
-    }
 }

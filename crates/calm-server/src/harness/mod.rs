@@ -8,6 +8,7 @@ mod codex_selection;
 pub mod compact_outcome;
 pub mod config;
 pub mod held_requests;
+pub(crate) mod input_dispatch;
 pub(crate) mod instructions;
 pub(crate) mod issuance;
 pub mod live_replies;
@@ -59,8 +60,8 @@ pub use observation::{HookKind, Observation};
 pub use queue::{QueueEntry, QueueEntryId};
 pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
 pub use run_loop::{
-    MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams, SendKey, SteerApplied,
-    SteerRefused, SteerResult,
+    HarnessRuntimeSnapshot, MAX_PENDING_QUEUE_LEN, PlannerHarness, PlannerHarnessParams, SendKey,
+    SteerApplied, SteerRefused, SteerResult,
 };
 pub use snapshot::{
     HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, QueueEntryMeta, is_harness_snapshot_value,
@@ -153,6 +154,48 @@ pub async fn spawn_recovered_harness(
     runtime: WorkerSessionProjection,
     claim_mode: ClaimMode,
 ) -> Result<RecoveryOutcome> {
+    spawn_recovered_harness_admitted(
+        repo,
+        events,
+        card_role_cache,
+        track_area_cache,
+        daemon,
+        seals,
+        claude,
+        registry,
+        track_delete_locks,
+        runtime,
+        claim_mode,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments, deprecated)]
+pub(crate) async fn spawn_recovered_harness_admitted(
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    card_role_cache: CardRoleCache,
+    track_area_cache: TrackAreaCache,
+    daemon: Arc<SharedCodexAppServer>,
+    seals: Arc<ThreadSeals>,
+    claude: &ClaudePlannerWiring,
+    registry: &HarnessRegistry,
+    track_delete_locks: &KeyedLocks,
+    runtime: WorkerSessionProjection,
+    claim_mode: ClaimMode,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<RecoveryOutcome> {
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
+    // Boot has no current human invocation. In particular, neither an absent
+    // pointer nor an old operation may route a V2 conversation into V1 replay,
+    // credential setup or a newly minted native session. Explicit live-source
+    // activation uses the original retained-carrier lifecycle instead.
+    if crate::conversation_inputs::has_canonical_storage(repo.as_ref(), &runtime.card_id).await? {
+        return Ok(RecoveryOutcome::Skipped);
+    }
     let Some(card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
@@ -284,6 +327,9 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     }
     // The reservation sits after recovery replay, immediately before handle construction/install.
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
     let reservation = match claim_mode {
         ClaimMode::Replace | ClaimMode::ReplaceIfOpen => {
             registry.reserve_after_shutdown(runtime_id.clone()).await?
@@ -316,6 +362,9 @@ pub async fn spawn_recovered_harness(
             }
         }
     };
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
     if provider == AgentProvider::Claude {
         record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
@@ -340,6 +389,9 @@ pub async fn spawn_recovered_harness(
             .await?;
         }
     }
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
     let backend = PlannerBackend::open(
         provider,
         daemon,
@@ -358,6 +410,11 @@ pub async fn spawn_recovered_harness(
         },
     )
     .await?;
+    if let Some(source) = &source {
+        source.require_card(repo.as_ref(), &runtime.card_id).await?;
+    }
+    let source_repo = repo.clone();
+    let source_card = runtime.card_id.clone();
     let handle = PlannerHarness::run(PlannerHarnessParams {
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
@@ -370,10 +427,19 @@ pub async fn spawn_recovered_harness(
         card_role_cache,
         track_area_cache,
         backend,
-        live_replies: registry.live_replies().clone(),
+        registry: registry.clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot).try_into()?,
+    })
+    .await?;
+    if let Some(source) = &source
+        && let Err(error) = source
+            .require_card(source_repo.as_ref(), &source_card)
+            .await
+    {
+        handle.shutdown().await?;
+        return Err(error);
+    }
     Ok(match install_or_shutdown(reservation, handle).await? {
         Some(handle) => RecoveryOutcome::Installed(handle),
         None => RecoveryOutcome::Skipped,
@@ -808,15 +874,24 @@ mod tests {
         );
         let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone());
         let registry = HarnessRegistry::new();
-        let runtime_id = "rt-install-failure".to_string();
+        let worker_session_id = "rt-install-failure".to_string();
 
-        let reservation = registry.try_reserve(runtime_id.clone()).expect("vacant");
+        let reservation = registry
+            .try_reserve(worker_session_id.clone())
+            .expect("vacant");
         // Concurrent replace lands between reserve and install.
-        let (winner, previous_live) = registry.reserve_replacing(runtime_id.clone());
+        let (winner, previous_live) = registry.reserve_replacing(worker_session_id.clone());
         assert!(previous_live.is_none());
 
         let handle = PlannerHarness::run(PlannerHarnessParams {
-            worker_session_id: runtime_id.clone(),
+            backend: crate::harness::backend::PlannerBackend::codex(
+                daemon,
+                "card-install-failure",
+                "track-install-failure",
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from("track-install-failure".to_string()),
             card_id: CardId::from("card-install-failure".to_string()),
             thread_id: None,
@@ -824,11 +899,15 @@ mod tests {
             events: EventBus::new(),
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
-            backend: daemon.into(),
-            live_replies: registry.live_replies().clone(),
+
+            registry: registry.clone(),
             config: HarnessConfig::default(),
-            snapshot: HarnessSnapshot::initial(0, vec![]),
-        });
+            snapshot: (HarnessSnapshot::initial(0, vec![]))
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
         let installed = install_or_shutdown(reservation, handle.clone())
             .await
             .unwrap();
@@ -850,9 +929,9 @@ mod tests {
         .await
         .expect("shut-down harness must stop accepting observations");
         // The newer claim was untouched throughout.
-        assert!(registry.get(&runtime_id).is_none());
+        assert!(registry.get(&worker_session_id).is_none());
         drop(winner);
-        assert!(registry.try_reserve(runtime_id).is_some());
+        assert!(registry.try_reserve(worker_session_id).is_some());
     }
 
     use crate::card_role_cache::CardRoleCache;
@@ -1235,7 +1314,7 @@ mod tests {
             );
         }
 
-        let after_issue = handle.snapshot().await;
+        let after_issue = handle.snapshot().await.unwrap();
         assert!(after_issue.pending_entries().is_empty());
         assert_eq!(after_issue.push_watermark, last_id);
         assert_eq!(

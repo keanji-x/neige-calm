@@ -132,27 +132,51 @@ claude_version?: string, };
  */
 export type ClaudeInstalledVersion = { version: string | null, };
 
+export type ConversationActiveInput = { logical_turn_id: string, submissions: Array<ConversationSubmissionDelivery>, };
+
+export type ConversationCursor = { contract: ConversationReadContract, card_id: string, source: ConversationCursorSource, position: number, };
+
+export type ConversationCursorSource = "presentation" | "historical_raw";
+
+export type ConversationDelivery = "crossing_unknown" | "unknown" | "not_dispatched" | "accepted";
+
+export type ConversationDisplayIdentity = { "kind": "human", message_id: string, } | { "kind": "system", observation_id: string, } | { "kind": "native", thread_id: string, item_id: string, };
+
+export type ConversationDisplayItem = { cursor: ConversationCursor, source: ConversationDisplaySource, };
+
+export type ConversationDisplaySource = { "kind": "human", message_id: string, revision: number, author: ConversationHumanAuthor, text: string, attachments: Array<PlannerAttachment>, created_at_ms: number, } | { "kind": "system", observation_id: string, presentation: SystemInputPresentation, text: string, created_at_ms: number, } | { "kind": "native", item: HarnessItem, } | { "kind": "historical_raw", item: HarnessItem, } | { "kind": "removed", identity: ConversationDisplayIdentity, };
+
+export type ConversationHumanAuthor = { user_id: string, display_name: string, };
+
 /**
  * Exact current queue ownership or provider-confirmed projection; no absence
  * conclusion is available from an empty queue and incomplete retained history.
  * Outbound only; the client decoder enforces reason/receipt correlation.
+ * An unavailable observation carries required nullable evidence: unknown presence never erases proven acceptance.
  */
-export type ConversationInitialInputObservation = { "kind": "queued", receipt: ConversationInitialInputReceipt, runtimeId: string, entryId: string, rev: number, text: string, textSha256: string, } | { "kind": "projected", receipt: ConversationInitialInputReceipt, runtimeId: string, itemId: number, segmentIndex: number, entryRev: number, } | { "kind": "unavailable", reason: InitialInputUnavailableReason, 
-/**
- * Required nullable evidence: unknown presence does not erase proven acceptance.
- */
-receipt: ConversationInitialInputReceipt | null, };
+export type ConversationInitialInputObservation = { "kind": "queued", receipt: ConversationInitialInputReceipt, runtimeId: string, entryId: string, rev: number, text: string, textSha256: string, } | { "kind": "projected", receipt: ConversationInitialInputReceipt, runtimeId: string, itemId: number, segmentIndex: number, entryRev: number, } | { "kind": "unavailable", reason: InitialInputUnavailableReason, receipt: ConversationInitialInputReceipt | null, };
 
 /**
  * Immutable mint evidence. It does not assert that the input is still queued or visible.
+ * `initial_runtime_id` names the original carrier; recovery may move the same entry elsewhere.
  */
-export type ConversationInitialInputReceipt = { version: InitialInputReceiptVersion, entryId: string, entryRev: number, queuedAtMs: number, textSha256: string, 
-/**
- * The original carrier; later recovery may move the same entry to another runtime.
- */
-initialRuntimeId: string, };
+export type ConversationInitialInputReceipt = { version: InitialInputReceiptVersion, entryId: string, entryRev: number, queuedAtMs: number, textSha256: string, initialRuntimeId: string, };
 
 export type ConversationInitialInputReceiptResult = { "kind": "known", receipt: ConversationInitialInputReceipt, } | { "kind": "legacy-unavailable" };
+
+export type ConversationInputContract = "canonical" | "historical";
+
+export type ConversationLiveReplies = { contract: ConversationReadContract, turn: ConversationLiveTurn | null, };
+
+export type ConversationLiveTurn = { thread_id: string, turn_id: string, items: Array<HarnessLiveReply>, };
+
+export type ConversationPage = { contract: ConversationReadContract, source: ConversationCursorSource, items: Array<ConversationDisplayItem>, next_cursor: ConversationCursor | null, };
+
+export type ConversationPendingInput = { "kind": "human", message_id: string, revision: number, queue_position: number, queued_at_ms: number, } | { "kind": "system", observation_id: string, queue_position: number, queued_at_ms: number, };
+
+export type ConversationReadContract = "conversation_v1";
+
+export type ConversationSubmissionDelivery = { submission_id: string, attempt_id: string | null, delivery: ConversationDelivery | null, };
 
 export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
 
@@ -302,7 +326,7 @@ status_detail?: string,
 /**
  * #1727 S4: what the verdict was checked against (D3); absent on pre-slice-4 producers.
  */
-target?: VerifyTarget, } } | { "ev": "task.regate_requested", "data": { attempt_id: string, key: string, previous_gate_attempt: number, reserved_gate_attempt: number, agent_message: string, } };
+target?: VerifyTarget, } } | { "ev": "task.regate_requested", "data": { attempt_id: string, key: string, previous_gate_attempt: number, reserved_gate_attempt: number, agent_message: string, } } | { "ev": "harness.presentation.changed", "data": { card_id: CardId, track_id: TrackId, cursor: ConversationCursor, } };
 
 /**
  * Where an event lives in the area → track → card hierarchy.
@@ -363,6 +387,8 @@ export type GitHubPullChanges = { additions: number, deletions: number, changed_
 
 /**
  * Why a segment was in the turn: the observation that produced it and the event behind it.
+ * `queue_entry` binds identity and actual revision as one fact. Legacy or non-user input
+ * has no versioned reference, including released origins that omitted this metadata.
  */
 export type HarnessInputOrigin = { 
 /**
@@ -373,12 +399,7 @@ observation: string,
  * The `events.id` that produced the observation (for a folded entry, the newest one);
  * `null` when no event did, e.g. a user message or the Track goal seed.
  */
-event_id: number | null, 
-/**
- * Identity and actual revision are one fact. Null for non-user/legacy entries;
- * released historical origins without this metadata remain unversioned.
- */
-queue_entry: HarnessQueueEntryRef | null, };
+event_id: number | null, queue_entry: HarnessQueueEntryRef | null, };
 
 /**
  * How one segment of a harness `userMessage` should be presented to a human. The rendered English
@@ -633,6 +654,8 @@ export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
  * One anchor of a source: `text` is a byte-exact substring of the body (`body[start..end]`, UTF-8 byte offsets).
  */
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
+
+export type SystemInputPresentation = Exclude<HarnessInputPresentation, 'user'>;
 
 /**
  * A report tag of the area; `insert` is ``@`tag:<tag>` ``.

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 fn private_state() -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
@@ -74,6 +75,42 @@ async fn paired_owner_keeps_host_file_reads_and_revocation() {
         app.oneshot(request()).await.unwrap().status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn mobile_grants_input_source_uses_actual_backend_and_observes_device_revocation() {
+    let (_temp, path) = private_state();
+    let store = Arc::new(open(&path));
+    let token = store
+        .mint(ORIGIN, "Input phone".into(), DeviceGrant::Scan)
+        .unwrap();
+    let auth = crate::auth::AuthState::new(crate::auth::AuthConfig {
+        username: Some("Owner".into()),
+        password: Some("fixture-password".into()),
+        dev_autologin: false,
+        display_name: "Owner".into(),
+    });
+    auth.sessions.set_backend(store.clone());
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::COOKIE,
+        format!("{}={token}", crate::auth::SESSION_COOKIE)
+            .parse()
+            .unwrap(),
+    );
+    let (status, source) = crate::auth::authenticated_source(auth, headers).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let source = source.unwrap();
+    assert_eq!(
+        source.current_principal().unwrap().user_id,
+        crate::auth::OWNER_USER_ID
+    );
+    assert!(!format!("{source:?}").contains(&token));
+    store.revoke(&store.list()[0].id).unwrap();
+    assert!(matches!(
+        source.current_principal(),
+        Err(CalmError::Unauthorized)
+    ));
 }
 
 #[test]

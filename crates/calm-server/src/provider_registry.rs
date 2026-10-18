@@ -17,7 +17,7 @@ pub struct WorkerProviderRegistry {
 impl provider::worker::managed::ManagedSessionProbe for crate::harness::HarnessRegistry {
     async fn active_turn(&self, worker_session_id: &str) -> Option<Option<String>> {
         let handle = self.get(&worker_session_id.to_owned())?;
-        let (snapshot, running) = handle.snapshot_with_running_turn().await;
+        let (snapshot, running) = handle.snapshot_with_running_turn().await.ok()?;
         if snapshot.phase == calm_types::harness::HarnessPhaseTag::Wedged {
             return None;
         }

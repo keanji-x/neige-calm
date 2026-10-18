@@ -125,3 +125,17 @@ describe('harnessLiveOperation', () => {
     expect(operation.responseSchema.safeParse({ turn_id: 'T', items: [{ item_id: 'x' }] }).success).toBe(false);
   });
 });
+
+it('canonical live copies retire only against the actual thread, turn and item tuple',()=>{
+  const observed:LiveReplyObservation={kind:'native-poll',reply:{contract:'conversation_v1',turn:{
+    thread_id:'B',turn_id:'T',items:[{item_id:'X',text:'B partial'}],
+  }},atMs:1};
+  const held=reconcileLiveReplies([],observed);
+  expect(reconcileLiveReplies(held,transcript(2,[{method:'item/completed',item_uuid:'X',thread_id:'A',turn_id:'T'}]))).toBe(held);
+  expect(reconcileLiveReplies(held,transcript(2,[{method:'item/completed',item_uuid:'X',thread_id:'B',turn_id:'other'}]))).toBe(held);
+  expect(reconcileLiveReplies(held,transcript(2,[{method:'item/completed',item_uuid:'X',thread_id:'B',turn_id:'T'}]))).toEqual([]);
+  const switched=reconcileLiveReplies(held,{kind:'native-poll',reply:{contract:'conversation_v1',turn:{
+    thread_id:'C',turn_id:'T',items:[{item_id:'X',text:'C'}],
+  }},atMs:2});
+  expect(switched[0].nativeThreadId).toBe('C');expect(switched[0].text).toBe('C');
+});

@@ -807,6 +807,12 @@ args = ["--bar"]
         cfg.plugins_dir = Some(runtime.path().join("plugins"));
         cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
 
+        cfg.auth_password = Some("fixture-password".into());
+        cfg.codex_bin = runtime
+            .path()
+            .join("no-real-codex")
+            .to_string_lossy()
+            .into_owned();
         let _state = calm_server::state::AppState::boot(&cfg)
             .await
             .expect("boot");

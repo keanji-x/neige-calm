@@ -34,9 +34,12 @@ pub mod area_membership;
 mod area_ownership_tests;
 mod card;
 mod card_composite;
+pub mod conversation;
 mod conversation_archive;
+mod conversation_read;
 pub use conversation_archive::conversation_archive_set_tx;
 mod database_identity;
+pub mod event_inputs;
 mod events;
 mod infra;
 mod out_of_domain;
@@ -121,7 +124,8 @@ pub use overlay::{
     overlay_delete_subtree_by_area_tx, overlay_delete_tx, overlay_upsert_tx,
 };
 pub use planner_input_idempotency::{
-    PlannerInputBinding, planner_input_bind_tx, planner_input_binding_get,
+    CANONICAL_PLANNER_INPUT_BINDING_PREFIX, PlannerInputBinding, planner_input_bind_tx,
+    planner_input_binding_get,
 };
 pub use session_mirror::{
     session_delete_tx, session_prepare_deferred_planner_tx, session_start_runtime_tx,
@@ -130,18 +134,18 @@ pub use session_mirror::{
 pub use session_projection::{
     HarvestOutcome, HarvestedFrom, HarvestedMessage, HarvestedQueues,
     harvest_pending_user_messages_tx, session_bind_attribution_tx,
-    session_clear_queue_harvested_tx, session_clear_terminal_run_id_tx,
-    session_complete_for_card_tx, session_complete_for_terminal_tx, session_complete_tx,
-    session_fail_if_active_runtime_tx, session_handle_state_by_id_tx,
-    session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx,
-    session_projection_active_by_session_tx, session_projection_active_for_card_tx,
-    session_projection_active_for_terminal_tx, session_projection_by_id_tx,
-    session_projection_failed_carrier_for_card_tx, session_projection_projectable_for_card_tx,
-    session_restore_failed_carrier_runtime_tx, session_restore_from_superseded_runtime_tx,
-    session_set_active_turn_tx, session_set_handle_state_of_any_runtime_tx,
-    session_set_handle_state_of_retired_runtime_tx, session_set_handle_state_tx,
-    session_set_harness_observation_runtime_tx, session_set_status_for_card_tx,
-    session_set_status_tx,
+    session_claim_start_operation_tx, session_clear_queue_harvested_tx,
+    session_clear_terminal_run_id_tx, session_complete_for_card_tx,
+    session_complete_for_terminal_tx, session_complete_tx, session_fail_if_active_runtime_tx,
+    session_handle_state_by_id_tx, session_mark_queue_harvested_tx,
+    session_mark_superseded_runtime_tx, session_projection_active_by_session_tx,
+    session_projection_active_for_card_tx, session_projection_active_for_terminal_tx,
+    session_projection_by_id_tx, session_projection_failed_carrier_for_card_tx,
+    session_projection_projectable_for_card_tx, session_restore_failed_carrier_runtime_tx,
+    session_restore_from_superseded_runtime_tx, session_set_active_turn_tx,
+    session_set_handle_state_of_any_runtime_tx, session_set_handle_state_of_retired_runtime_tx,
+    session_set_handle_state_tx, session_set_harness_observation_runtime_tx,
+    session_set_status_for_card_tx, session_set_status_tx,
 };
 pub use session_row::{
     ClaudePlannerScope, claude_planner_revoke_tx, session_commit_exit_tx,
@@ -184,9 +188,9 @@ pub use worker_flow_capture::worker_flow_cursor_set_for_test;
 pub use track::{
     AttachedInheritedPath, TrackCreateBinding, TrackCreateBindingClaim,
     TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan,
-    track_create_idempotency_claim_tx, track_create_idempotency_get_pool, track_create_tx,
-    track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx,
-    track_require_reopenable_tx, track_update_tx,
+    track_create_idempotency_claim_tx, track_create_idempotency_get_pool,
+    track_create_idempotency_get_tx, track_create_tx, track_delete_tx, track_find_tx, track_get_tx,
+    track_require_leaf_tx, track_require_reopenable_tx, track_update_tx,
 };
 pub use track_occupancy::{
     CheckoutOccupancy, CheckoutWait, checkout_admission, checkout_occupancy,

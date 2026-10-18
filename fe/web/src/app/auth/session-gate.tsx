@@ -1,7 +1,8 @@
 /** SessionGate sits outside ServerCompatGate so the whoami verdict lands before any route loader or the compatibility query can leak a preliminary 401. */
 import { type QueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
-import { whoamiOperation } from '../../../../core/api/auth.ts';
+import { CurrentUserScope } from './current-user.tsx';
+import { whoamiOperation, type SessionIdentity } from '../../../../core/api/auth.ts';
 import { performApiRequest } from '../../../../core/api/client.ts';
 import { resolveSessionProbe, type SessionProbeState } from '../../../../core/api/session.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -30,10 +31,11 @@ export function SessionGate({ children, transport, unauthorized, client, runtime
   runtime: SessionCleanupRuntime; cursorStore: SessionCursorStore;
   renderLogin: () => ReactNode; renderError: (retry: () => void) => ReactNode;
 }>) {
-  const [state, setState] = useState<SessionProbeState<unknown>>({ status: 'unknown' });
+  const [state, setState] = useState<SessionProbeState<SessionIdentity>>({ status: 'unknown' });
   const epoch = useRef(0);
   const mounted = useRef(false);
   const activeProbe = useRef<AbortController | null>(null);
+  const previousUser = useRef<string | null>(null);
   const probe = useCallback(() => {
     activeProbe.current?.abort();
     const controller = new AbortController();
@@ -44,7 +46,9 @@ export function SessionGate({ children, transport, unauthorized, client, runtime
     void performApiRequest(transport, { ...whoamiOperation(), signal: controller.signal }, undefined).then((result) => {
       if (!mounted.current || epoch.current !== probeEpoch) return;
       const verdict = resolveSessionProbe(result);
-      if (verdict.status === 'unauthed') clearSessionArtifacts(client, cursorStore, runtime);
+      if (verdict.status === 'unauthed' || (verdict.status === 'authed' && previousUser.current !== null
+        && previousUser.current !== verdict.value.userId)) clearSessionArtifacts(client, cursorStore, runtime);
+      if (verdict.status === 'authed') previousUser.current = verdict.value.userId;
       setState(verdict);
     });
     return () => { controller.abort(); if (activeProbe.current === controller) activeProbe.current = null; };
@@ -64,5 +68,5 @@ export function SessionGate({ children, transport, unauthorized, client, runtime
   if (state.status === 'unknown') return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
   if (state.status === 'unauthed') return renderLogin();
   if (state.status === 'error') return renderError(probe);
-  return children;
+  return <CurrentUserScope key={state.value.userId} value={state.value}>{children}</CurrentUserScope>;
 }

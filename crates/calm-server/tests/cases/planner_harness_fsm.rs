@@ -86,7 +86,7 @@ async fn harness_with(
     } else {
         "thread-offline".to_string()
     };
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = phase;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -100,7 +100,7 @@ async fn harness_with(
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -119,7 +119,14 @@ async fn harness_with(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon,
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id.clone()),
@@ -127,12 +134,16 @@ async fn harness_with(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config,
-        snapshot,
-    });
-    (repo, harness, runtime_id, thread_id)
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
+    (repo, harness, worker_session_id, thread_id)
 }
 
 async fn harness_from_snapshot(
@@ -141,7 +152,7 @@ async fn harness_from_snapshot(
     snapshot: HarnessSnapshot,
 ) -> (PlannerHarness, String) {
     let card = seed_card(&repo).await;
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = snapshot
         .last_thread_id
         .clone()
@@ -150,7 +161,7 @@ async fn harness_from_snapshot(
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -169,7 +180,14 @@ async fn harness_from_snapshot(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon,
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id),
@@ -177,12 +195,16 @@ async fn harness_from_snapshot(
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
-    (harness, runtime_id)
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
+    (harness, worker_session_id)
 }
 
 async fn wait_for_state(
@@ -362,7 +384,7 @@ async fn stale_turn_completed_ignored_during_active_turn() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == turn2
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn2.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -400,7 +422,7 @@ async fn stale_turn_started_ignored_when_other_turn_active() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -448,7 +470,7 @@ async fn replayed_turn_started_after_completed_ignored() {
         HarnessState::TurnCompleted { last_turn_id } if last_turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -496,7 +518,7 @@ async fn stale_turn_started_in_turn_completed_ignored() {
         HarnessState::TurnCompleted { last_turn_id } if last_turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -535,7 +557,7 @@ async fn stale_turn_started_in_issuing_with_foreign_id_ignored() {
             ..
         }
     ));
-    assert!(harness.snapshot().await.last_turn_id.is_none());
+    assert!(harness.snapshot().await.unwrap().last_turn_id.is_none());
     harness.shutdown().await.unwrap();
 }
 
@@ -574,7 +596,7 @@ async fn recovered_resumed_accepts_matching_turn_started() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == "turn-prior"
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some("turn-prior")
     );
     harness.shutdown().await.unwrap();
@@ -612,7 +634,7 @@ async fn turn_started_without_id_ignored() {
         HarnessState::TurnRunning { turn_id, .. } if turn_id == turn1
     ));
     assert_eq!(
-        harness.snapshot().await.last_turn_id.as_deref(),
+        harness.snapshot().await.unwrap().last_turn_id.as_deref(),
         Some(turn1.as_str())
     );
     harness.shutdown().await.unwrap();
@@ -767,7 +789,7 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         )
         .await
         .unwrap();
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(
         0,
         QueueEntry::entries_from_observations_for_test(vec![Observation::TrackGoal {
@@ -780,7 +802,7 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -804,7 +826,14 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         ..HarnessConfig::default()
     };
     let harness = PlannerHarness::run(PlannerHarnessParams {
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: card.track_id,
         card_id: card.id,
         thread_id: Some(thread_id),
@@ -812,11 +841,15 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         events: EventBus::new(),
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
-        backend: daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config,
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     tokio::time::timeout(
         config.debounce_min_idle + Duration::from_millis(300),

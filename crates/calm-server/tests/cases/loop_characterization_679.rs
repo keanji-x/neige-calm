@@ -132,7 +132,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     // `harness_runtime_id_for_planner_card` requires an active SharedPlanner runtime whose
     // handle_state is a harness snapshot.
     let thread_id = format!("thread-{tag}");
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -140,7 +140,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: planner_card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -166,7 +166,14 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     // Unstarted: no debounce / turn issuance racing the assertions.
     let (harness, obs_rx) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
-            worker_session_id: runtime_id.clone(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                daemon.clone(),
+                planner_card.id.as_ref(),
+                track.id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
             track_id: track.id.clone(),
             card_id: planner_card.id.clone(),
             thread_id: Some(thread_id),
@@ -174,14 +181,16 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             events: events.clone(),
             card_role_cache: CardRoleCache::new(),
             track_area_cache: TrackAreaCache::new(),
-            backend: daemon.clone().into(),
-            live_replies: calm_server::harness::LiveReplies::for_test(),
+
+            registry: calm_server::harness::HarnessRegistry::new(),
             config: HarnessConfig::default(),
-            snapshot,
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         8,
     );
-    registry.insert(runtime_id, harness.clone());
+    registry.insert(worker_session_id, harness.clone());
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo_dyn,
         events.clone(),

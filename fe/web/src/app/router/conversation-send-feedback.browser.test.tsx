@@ -1,8 +1,10 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { commands, page } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { HarnessQueueEntryRef } from '../../../../core/api/generated/wire.ts';
 import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { initialReceiptFor } from './initial-input-fixture.ts';
@@ -11,8 +13,10 @@ import { renderDailyFixture } from './daily-planner-fixture.tsx';
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const text = 'A message submitted while its request stays pending.';
 const field = () => screen.getByRole('combobox', { name: 'Message' });
-const outgoing = () => document.querySelector<HTMLElement>('[data-nc-turn="you"]')!;
+const userMessages = () => document.querySelectorAll<HTMLElement>(':is([data-nc-turn="you"], [data-nc-turn="unknown"])');
+const outgoing = () => userMessages()[0];
 const surface = () => outgoing().closest<HTMLElement>('[data-nc-entry]') ?? outgoing();
+const ORDINARY_ENTRY: HarnessQueueEntryRef = Object.freeze({ id: 'ordinary-entry', rev: 0 });
 
 function mount({ persistSent = false, running = false, message = text }: { persistSent?: boolean; running?: boolean; message?: string } = {}) {
   const replies: { promise: Promise<ApiTransportResponse | undefined>; resolve: (value: ApiTransportResponse | undefined) => void }[] = [];
@@ -42,17 +46,17 @@ function mount({ persistSent = false, running = false, message = text }: { persi
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
       capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
     }]);
-    if (request.path === '/api/cards/second-planner/planner/run') return ok({ card_id: 'second-planner', worker_session_id: 'runtime',
+    if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return ok(historicalConversationRun({ card_id: 'second-planner', worker_session_id: 'runtime',
       phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     if (request.path.endsWith('/harness/live')) return ok({ turn_id: 'running-turn', items: [] });
     if (request.path.includes('/second-planner/harness/items')) {
       if (storedText !== null) canonicalReads++;
-      return ok([{
+      return ok(historicalConversationPage(conversationCardId(request.path), [{
       id: 1, worker_session_id: 'runtime', card_id: 'second-planner', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: 'Stored history remains still.' } }), created_at_ms: 1,
-    }, ...(storedText === null ? [] : [userRow('second-planner', storedText, null, null)])]);
+    }, ...(storedText === null ? [] : [userRow('second-planner', storedText, null, ORDINARY_ENTRY)])], null));
     }
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
     if (created !== null && request.path.endsWith('/initial-input')) {
@@ -63,7 +67,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
     }
     if (created !== null && request.path.includes(`/${created.id}/harness/items`)) {
       canonicalReads++;
-      return ok([userRow(created.id, message, 'accepted-initial-turn', { id: 'first-entry', rev: 0 })]);
+      return ok(historicalConversationPage(conversationCardId(request.path), [userRow(created.id, message, 'accepted-initial-turn', { id: 'first-entry', rev: 0 })], null));
     }
     if (request.method === 'POST' && (request.path.endsWith('/planner/input') || request.path.endsWith('/conversations'))) {
       return responseAt(posts++).promise.then(result => {
@@ -79,7 +83,7 @@ function mount({ persistSent = false, running = false, message = text }: { persi
           const body = request.body as { text: string };
           storedText = body.text;
         }
-        return ok({ card_id: 'second-planner', worker_session_id: 'runtime' });
+        return ok({ card_id: 'second-planner', worker_session_id: 'runtime', entry_id: ORDINARY_ENTRY.id });
       });
     }
     return undefined;
@@ -126,7 +130,7 @@ it.each([false, true])('shows a readable local message and Sending before the re
       .some(animation => animation.effect?.getTiming().iterations === Infinity)).toBe(true);
     expect(screen.getByText('Sending…')).toBeDefined();
     expect(screen.queryByText('Running')).toBeNull();
-    expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1);
+    expect(userMessages()).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull());
   } finally { cleanup(); view.answer(); view.client.clear(); }
@@ -144,7 +148,8 @@ it.each([false, true])('keeps text readable when a fast answer replaces the echo
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
     await waitFor(expectReadableMessage);
     expect(screen.queryByText('Sending…')).toBeNull();
-    expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1);
+    expect(userMessages()).toHaveLength(1);
+    expect(outgoing().getAttribute('data-nc-turn')).toBe('unknown');
   } finally { cleanup(); view.answer(); view.client.clear(); }
 });
 
@@ -178,7 +183,7 @@ it('keeps Stop available during an additional queued send', async () => {
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
     await act(async () => { field().textContent = 'Another queued message'; fireEvent.input(field()); await Promise.resolve(); });
     act(() => { fireEvent.keyDown(field(), { key: 'Enter' }); });
-    expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(2);
+    expect(userMessages()).toHaveLength(2);
     expect(screen.getByText('Sending…')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Stop' }).getAnimations({ subtree: true })
       .some(animation => animation.effect?.getTiming().iterations === Infinity)).toBe(false);
@@ -255,7 +260,8 @@ it.each([1400, 390])('keeps the first message bubble and mentions consistent thr
     await waitFor(() => expect(field().getAttribute('contenteditable')).toBe('true'));
     await waitFor(() => expect(outgoing().textContent).toBe(visible));
     expect(appearance()).toEqual(before);
-    expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1);
+    expect(userMessages()).toHaveLength(1);
+    expect(outgoing().getAttribute('data-nc-turn')).toBe('unknown');
     expect(outgoing().querySelectorAll('[data-nc-sent-mention]')).toHaveLength(1);
     const afterPosition = position();
     expect(afterPosition.top).toBeCloseTo(beforePosition.top, 0);

@@ -436,6 +436,20 @@ golden_test!(
 );
 
 golden_test!(
+    harness_presentation_changed,
+    "harness_presentation_changed.json",
+    Event::HarnessPresentationChanged {
+        card_id: CardId::from("card-01"),
+        track_id: TrackId::from("track-01"),
+        cursor: calm_types::conversation_display::ConversationCursor::new(
+            "card-01",
+            calm_types::conversation_display::ConversationCursorSource::Presentation,
+            7,
+        ),
+    }
+);
+
+golden_test!(
     track_report_edited_full,
     "track_report_edited.full.json",
     Event::TrackReportEdited {
@@ -1398,7 +1412,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 58] = [
+const ALL_KIND_TAGS: [&str; 59] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1457,6 +1471,7 @@ const ALL_KIND_TAGS: [&str; 58] = [
     "worktree.removed",
     "task.gate_result",
     "task.regate_requested",
+    "harness.presentation.changed",
 ];
 
 /// Every golden must parse, every canonical `ev` must be a known tag, and every tag must have a golden.
@@ -1488,7 +1503,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 92,
+        files, 93,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1563,6 +1578,7 @@ fn kind_tag_list_matches_enum() {
             Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::TaskGateResult { .. } => "task.gate_result",
             Event::TaskRegateRequested { .. } => "task.regate_requested",
+            Event::HarnessPresentationChanged { .. } => "harness.presentation.changed",
         }
     }
     let sample = Event::AreaDeleted {
@@ -1571,7 +1587,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        58,
+        59,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

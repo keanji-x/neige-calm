@@ -15,7 +15,6 @@ use calm_server::harness::{
 };
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::{Value, json};
@@ -65,7 +64,7 @@ async fn a_queue_entry_id_survives_a_snapshot_round_trip() {
     let entry_id = posted["entry_id"].as_str().expect("id").to_string();
 
     // What boot recovery does: serialize the live snapshot, read it back strictly, and hand it to a fresh harness.
-    let persisted = serde_json::to_value(boot.harness.snapshot().await).unwrap();
+    let persisted = serde_json::to_value(boot.harness.snapshot().await.unwrap()).unwrap();
     let restored = HarnessSnapshot::from_value_strict(persisted);
     let entries = restored.pending_entries();
 
@@ -142,7 +141,7 @@ async fn pre_1505_queue_entries_are_withheld_and_counted_not_minted() {
     );
 
     // Still legacy in the live queue — nothing on the read path repaired it.
-    let entries = boot.harness.snapshot().await.pending_entries();
+    let entries = boot.harness.snapshot().await.unwrap().pending_entries();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].id(), None, "no id was minted on the way through");
 }
@@ -215,11 +214,7 @@ async fn a_card_with_no_runtime_reports_an_empty_pending_page() {
         Some(role_cache.clone()),
         Some(track_area_cache),
     );
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state);
+    let app = crate::support::authenticated_router::application(state).await;
 
     let (status, run) = get(app, format!("/api/cards/{}/planner/run", card.id.as_str())).await;
     assert_eq!(status, StatusCode::OK, "body={run}");
@@ -281,7 +276,7 @@ async fn folding_onto_a_pre_1505_tail_answers_with_a_null_entry_id() {
          would point the client at an entry that does not exist"
     );
 
-    let entries = boot.harness.snapshot().await.pending_entries();
+    let entries = boot.harness.snapshot().await.unwrap().pending_entries();
     assert_eq!(
         entries.len(),
         MAX_PENDING_QUEUE_LEN,
@@ -381,7 +376,7 @@ async fn truncating_a_restored_queue_announces_each_dropped_user_entry() {
     assert_eq!(dropped["card_id"], json!(boot.planner_card.id.as_str()));
     assert_eq!(dropped["worker_session_id"], json!(boot.worker_session_id));
 
-    let remaining = boot.harness.snapshot().await.pending_entries();
+    let remaining = boot.harness.snapshot().await.unwrap().pending_entries();
     assert_eq!(
         remaining.len(),
         MAX_PENDING_QUEUE_LEN - 1,
@@ -517,7 +512,12 @@ async fn a_queue_within_the_cap_announces_no_drop() {
     let boot = boot_with(idle_snapshot(entries)).await;
 
     assert_eq!(
-        boot.harness.snapshot().await.pending_entries().len(),
+        boot.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .len(),
         MAX_PENDING_QUEUE_LEN,
         "a queue exactly at the cap is not truncated"
     );

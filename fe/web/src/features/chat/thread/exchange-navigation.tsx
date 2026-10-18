@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { markdownExcerpt } from '../../../../../core/markdown/public.ts';
-import { opensExchange, type TranscriptEntry } from '../../../../../core/domain/conversation.ts';
+import { isUserConversationTurn, opensExchange, type TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 import { scrollGeometry } from '../../../ui/drawer/scroll-geometry.ts';
 import { EdgeNavigator } from '../../../ui/edge-navigation/public.tsx';
 import { observeResize } from '../../../ui/edge-navigation/resize.ts';
@@ -96,7 +96,7 @@ function exchangesOf(turns: readonly TranscriptEntry[]): readonly Exchange[] {
   const found: Exchange[] = [];
   let open: { id: string; text: string; reply: string | null } | null = null;
   for (const [index, turn] of turns.entries()) {
-    if (turn.author === 'you' && opensExchange(turns, index)) {
+    if (isUserConversationTurn(turn) && opensExchange(turns, index)) {
       if (open !== null) found.push(open);
       open = { id: turn.id, text: turn.text, reply: null };
     } else if (open !== null && open.reply === null && turn.author === 'agent') {

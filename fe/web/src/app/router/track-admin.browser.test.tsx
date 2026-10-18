@@ -1,3 +1,4 @@
+import { historicalConversationRun, historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // An existing Track's Area admin role on the real router, in a real engine: the Role picker in the Planner
 // conversation's composer sends `PATCH {admin}` and shows what the server then reports, the Track page keeps only the
@@ -54,7 +55,8 @@ function renderTrack({ adminGrantedAt, canAdmin, refuse = false, theme = 'light'
     if (request.path === '/api/tracks/w1') {
       return ok({ track, can_reopen: false, can_close: true, can_admin: canAdmin, cards: [PLANNER], overlays: [] });
     }
-    if (request.path.endsWith('/planner/run')) return ok(PLANNER_RUN);
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun(PLANNER_RUN, 'idle', true));
+    if (request.path.includes('/harness/items?contract=conversation_v1')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
     if (request.path.endsWith('/harness/live')) return ok({ turn_id: null, items: [] });
     if (request.path === '/api/settings') return ok({});
     return ok([]);

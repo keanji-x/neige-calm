@@ -6,6 +6,7 @@
 //! cause unbounded tasks or memory.
 use super::approvals::{ApprovalRequest, ApprovalResponder, ApprovalRoutes, HandedRequests};
 use super::*;
+use futures_util::SinkExt;
 use tokio::task::JoinSet;
 
 const REPLY_LIMIT: usize = 32;

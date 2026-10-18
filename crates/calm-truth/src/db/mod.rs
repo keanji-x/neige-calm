@@ -147,6 +147,20 @@ pub struct WorkspaceLease {
 
 // Each sub-trait carries `Send + Sync + 'static` and is dyn-compatible; `dyn RouteRepo` upcasts to its supertraits via the merged vtable.
 
+/// Current content carrier facts; absent live handles do not erase stored V2 state.
+#[derive(Clone, Debug)]
+pub struct CurrentConversationRuntime {
+    pub id: String,
+    pub state: calm_types::worker::WorkerSessionState,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConversationReadFrame {
+    pub runtime: Option<CurrentConversationRuntime>,
+    pub snapshot: Option<serde_json::Value>,
+    pub has_presentations: bool,
+}
+
 /// Universal read surface; no writes are reachable from here.
 #[async_trait]
 pub trait RepoRead: Send + Sync + 'static {
@@ -159,6 +173,15 @@ pub trait RepoRead: Send + Sync + 'static {
         track_id: &str,
         user_id: &str,
     ) -> Result<Option<TrackAreaMembership>>;
+    async fn card_track_id(&self, card_id: &str) -> Result<Option<String>>;
+    async fn conversation_read_frame(&self, card_id: &str) -> Result<ConversationReadFrame>;
+    async fn conversation_presentation_page(
+        &self,
+        card_id: &str,
+        after: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<calm_types::conversation_display::ConversationPage>;
     async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>>;
     async fn area_require_access(
         &self,

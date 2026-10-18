@@ -1,11 +1,12 @@
 //! `/api/cards/{id}/planner/*` — the headless planner-harness card surface: interrupt, run
 //! snapshot, reset, restart and the harness start they share, plus the input-length rule and the
-//! shared-planner turn teardown used by card, track and area deletion.
+//! shared-Codex turn teardown used by card, track and area deletion.
 
 use crate::actor::Actor;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path};
+use crate::harness::token_usage::TokenUsageExt;
 use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
 use crate::ids::CardId;
 use crate::model::{Card, CardRole, Track, new_id};
@@ -19,7 +20,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::routes::planner_session::dormant;
-use crate::session_projection_lookup::card_is_shared_planner;
+use crate::session_projection_lookup::card_uses_shared_codex;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState};
 
@@ -34,7 +35,7 @@ pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
 }
 
-pub(crate) async fn interrupt_shared_card_active_turn(
+pub(crate) async fn interrupt_shared_codex_card_active_turn(
     repo: &dyn RouteRepo,
     cs: &CodexShellState,
     card: &Card,
@@ -49,12 +50,12 @@ pub(crate) async fn interrupt_shared_card_active_turn(
                 target: "session_projection_lookup::fallback",
                 card_id = %card.id,
                 error = %e,
-                "runtime shared-card discriminator query failed; falling back to card payload"
+                "runtime shared-Codex discriminator query failed; falling back to card payload"
             );
             None
         }
     };
-    if !card_is_shared_planner(card, active_runtime.as_ref()) {
+    if !card_uses_shared_codex(card, active_runtime.as_ref()) {
         return;
     }
     if let Err(e) = cs
@@ -72,8 +73,9 @@ pub(crate) async fn interrupt_shared_card_active_turn(
     }
 }
 
-/// Deletion-grade form of [`interrupt_shared_card_active_turn`]: every failure is propagated, since a destructive workspace move may only follow a confirmed quiesce.
-pub(crate) async fn quiesce_shared_card_active_turn(
+/// Deletion-grade Codex leg: every failure is propagated. Other backend owners
+/// must still quiesce their sessions before a destructive workspace move.
+pub(crate) async fn quiesce_shared_codex_card_active_turn(
     s: &RouteState,
     cs: &CodexShellState,
     card: &Card,
@@ -82,7 +84,7 @@ pub(crate) async fn quiesce_shared_card_active_turn(
         .repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
-    if card_is_shared_planner(card, active_runtime.as_ref()) {
+    if card_uses_shared_codex(card, active_runtime.as_ref()) {
         let thread_id = active_runtime
             .as_ref()
             .and_then(crate::harness::effective_runtime_thread_id);
@@ -287,7 +289,9 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
 
 /// Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.
 /// Idle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.
-/// `IssuingTurn` also reports `stopped: false`: while `turn/start` is in flight the app-server may not know the turn yet, so the interrupt is dispatched best-effort but only `TurnRunning` guarantees a target.
+/// Historical `IssuingTurn` is best effort and reports `stopped: false`.
+/// Canonical issuance requires a confirmed exact native target and otherwise
+/// refuses with 409; an Actor label or operation payload cannot authorize Stop.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/interrupt",
@@ -295,14 +299,16 @@ pub(crate) fn validate_planner_input(text: &str, has_attachments: bool) -> Resul
     params(("id" = String, Path, description = "Planner card id")),
     responses(
         (status = 200, description = "Interrupt dispatched at the running turn (`stopped: true`); `stopped: false` when no turn was running (graceful no-op) or a turn was still being issued (best-effort dispatch only — press Stop again once the turn is running)", body = InterruptPlannerCardResponse),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
+        (status = 401, description = "Canonical Stop requires a current verified Human source", body = ErrorBody),
+        (status = 403, description = "Planner card and current Area/private execution access required", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "No live session for this card; start a fresh one, history is kept (code `planner_harness_dormant`)", body = ErrorBody),
+        (status = 409, description = "No current native target or original execution changed. Retry Stop once the original turn is running.", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn interrupt_planner_card(
     State(s): State<RouteState>,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<InterruptPlannerCardResponse>> {
@@ -328,7 +334,26 @@ pub(crate) async fn interrupt_planner_card(
         .ok_or_else(dormant)?;
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
 
-    let phase = harness.snapshot().await.phase;
+    let canonical =
+        crate::conversation_inputs::has_canonical_storage(s.repo.as_ref(), card.id.as_str())
+            .await?;
+    let canonical_source = if canonical {
+        let source = source.ok_or(CalmError::Unauthorized)?.0;
+        let (card, source_for_check) = (card.id.to_string(), source.clone());
+        crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let principal = source_for_check.current_principal()?;
+                crate::conversation_inputs::authorize_human_tx(tx, &principal, &card)
+                    .await
+                    .map(drop)
+            })
+        })
+        .await?;
+        Some(source)
+    } else {
+        None
+    };
+    let phase = harness.runtime_header().await?.phase;
     // Dispatch for IssuingTurn too (best-effort), but only TurnRunning reports `stopped: true`.
     let dispatch = matches!(
         phase,
@@ -336,11 +361,15 @@ pub(crate) async fn interrupt_planner_card(
     );
     let stopped = matches!(phase, HarnessPhaseTag::TurnRunning);
     if dispatch {
-        let payload = serde_json::to_value(PlannerHarnessInterruptOperationPayload {
-            worker_session_id: runtime.id.clone(),
-            reason: "user_stop".into(),
-        })?;
-        run_planner_card_operation(&s, "planner-harness-interrupt", payload).await?;
+        if let Some(source) = canonical_source {
+            harness.stop_canonical(source).await?;
+        } else {
+            let payload = serde_json::to_value(PlannerHarnessInterruptOperationPayload {
+                worker_session_id: runtime.id.clone(),
+                reason: "user_stop".into(),
+            })?;
+            run_planner_card_operation(&s, "planner-harness-interrupt", payload).await?;
+        }
     }
 
     tracing::info!(
@@ -364,17 +393,29 @@ pub(crate) async fn interrupt_planner_card(
     get,
     path = "/api/cards/{id}/planner/run",
     tag = "cards",
-    params(("id" = String, Path, description = "Planner card id")),
+    params(("id" = String, Path, description = "Planner card id"), super::conversation_run::RunReadQuery),
     responses(
-        (status = 200, description = "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)", body = GetPlannerRunResponse),
-        (status = 403, description = "Card is not a planner codex card", body = ErrorBody),
+        (status = 200, description = "Current run; worker_session_id and phase are null when dormant.", body = super::conversation_run::PlannerRunReadResponse),
+        (status = 401, description = "Verified session required", body = ErrorBody),
+        (status = 409, description = "Canonical read requires conversation_v1", body = ErrorBody),
+        (status = 403, description = "Current Area access or Planner shape refused", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn get_planner_run(
     State(s): State<RouteState>,
+    principal: crate::auth::Principal,
+    source: Option<axum::Extension<crate::auth::HumanInputSource>>,
     Path(id): Path<String>,
+    crate::extract::Query(query): crate::extract::Query<super::conversation_run::RunReadQuery>,
+) -> Result<axum::response::Response> {
+    super::conversation_run::read(s, principal, source.map(|source| source.0), id, query).await
+}
+
+pub(super) async fn historical_planner_run(
+    s: RouteState,
+    id: String,
 ) -> Result<Json<GetPlannerRunResponse>> {
     let card = s
         .repo
@@ -461,7 +502,7 @@ pub(crate) async fn get_planner_run(
         return Ok(Json(dormant));
     };
     // Phase and the running turn come from one state read, so a running turn is never paired with another phase.
-    let (snapshot, running_turn) = harness.snapshot_with_running_turn().await;
+    let (snapshot, running_turn) = harness.snapshot_with_running_turn().await?;
     let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
         attachments_supported,
