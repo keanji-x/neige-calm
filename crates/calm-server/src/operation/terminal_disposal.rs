@@ -154,15 +154,11 @@ pub(crate) async fn unsettled(
             ExecutionScope::Alias(&alias)
         }
         Scope::Card(id) => {
-            let terminal: Option<String> =
-                sqlx::query_scalar("SELECT id FROM terminals WHERE card_id = ?")
-                    .bind(id)
-                    .fetch_optional(&mut **tx)
-                    .await?;
+            let terminal = crate::db::sqlite::terminal_get_by_card_tx(tx, id).await?;
             let Some(terminal) = terminal else {
                 return Ok(Vec::new());
             };
-            alias = sql::terminal_alias(&terminal);
+            alias = sql::terminal_alias(&terminal.id);
             ExecutionScope::Alias(&alias)
         }
     };

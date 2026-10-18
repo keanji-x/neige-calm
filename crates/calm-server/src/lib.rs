@@ -52,13 +52,10 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String
     let mut marked_stale = Vec::new();
     for term in rows {
         if let Some(pool) = state.sqlite_pool() {
-            match sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM workspace_executions WHERE alias = ?)",
+            match calm_truth::db::sqlite::workspace_execution::alias_has_execution(
+                &pool,
+                &calm_truth::db::sqlite::workspace_execution::terminal_alias(&term.id),
             )
-            .bind(calm_truth::db::sqlite::workspace_execution::terminal_alias(
-                &term.id,
-            ))
-            .fetch_one(&pool)
             .await
             {
                 Ok(true) => continue,

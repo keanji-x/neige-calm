@@ -7,6 +7,14 @@ pub fn terminal_alias(id: &str) -> String {
 }
 pub const TERMINAL_ALIAS_SQL: &str = "'term:' || terminals.id";
 
+/// Whether an alias has any execution history, including retired and finished rows.
+pub async fn alias_has_execution(pool: &SqlitePool, alias: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_executions WHERE alias = ?)")
+        .bind(alias)
+        .fetch_one(pool)
+        .await
+}
+
 #[derive(sqlx::FromRow)]
 pub struct ExecutionRow {
     pub intent_json: String,
@@ -143,4 +151,39 @@ pub async fn current(
     .await?;
     id.map(|id| id.try_into().map_err(crate::error::CalmError::Internal))
         .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+
+    #[tokio::test]
+    async fn alias_has_execution_includes_retired() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let pool = repo.pool();
+        let alias = terminal_alias("history");
+        assert!(!alias_has_execution(pool, &alias).await.unwrap());
+
+        let mut tx = pool.begin().await.unwrap();
+        insert(&mut tx, "history-id", "track", &alias, "{}", "{}")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(alias_has_execution(pool, &alias).await.unwrap());
+        assert!(
+            !alias_has_execution(pool, &terminal_alias("missing"))
+                .await
+                .unwrap()
+        );
+
+        let mut tx = pool.begin().await.unwrap();
+        request(&mut tx, "history-id", "retire").await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(alias_has_execution(pool, &alias).await.unwrap());
+
+        settle(pool, "history-id", "{}", 1).await.unwrap();
+        finish(pool, "history-id").await.unwrap();
+        assert!(alias_has_execution(pool, &alias).await.unwrap());
+    }
 }

@@ -226,11 +226,11 @@ impl Fixture {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
     async fn desired(&self, id: &ExecutionId) -> String {
-        sqlx::query_scalar("SELECT desired FROM workspace_executions WHERE execution_id = ?")
-            .bind(id.as_str())
-            .fetch_one(self.repo.pool())
+        sqlite::workspace_execution::load(self.repo.pool(), id.as_str())
             .await
             .unwrap()
+            .unwrap()
+            .desired
     }
     async fn retired(&self, id: &ExecutionId) {
         wait(|| async {
