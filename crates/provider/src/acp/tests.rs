@@ -234,7 +234,7 @@ async fn new_load_and_cancel_use_native_identity_without_creating_a_prompt() {
             json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"ses_native"}})
         );
     });
-    let initialized = protocol::initialize(&connection.client, "test", "1")
+    protocol::initialize(&connection.client, "test", "1")
         .await
         .unwrap();
     let mcp = [protocol::McpServer::Stdio {
@@ -246,30 +246,34 @@ async fn new_load_and_cancel_use_native_identity_without_creating_a_prompt() {
             value: "explicit".into(),
         }],
     }];
-    let native = protocol::new_session(&connection.client, "/workspace", &mcp)
+    let response = connection
+        .client
+        .request(
+            "session/new",
+            protocol::encode_new_session(std::path::Path::new("/workspace"), &mcp),
+            Duration::from_secs(2),
+        )
         .await
         .unwrap();
-    protocol::load_session(
-        &connection.client,
-        &initialized.agent_capabilities,
-        &native,
-        "/workspace",
-        &mcp,
-    )
-    .await
-    .unwrap();
+    let native = protocol::decode::<protocol::NewSessionResponse>(response)
+        .unwrap()
+        .session_id;
+    connection
+        .client
+        .request(
+            "session/load",
+            protocol::encode_load_session(&native, std::path::Path::new("/workspace"), &mcp),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
     protocol::cancel(&connection.client, &native).await.unwrap();
     agent.await.unwrap();
 }
 #[tokio::test]
-async fn unsupported_load_and_image_are_refused_before_any_write() {
+async fn unsupported_image_is_refused_before_any_write() {
     let (connection, mut reader, _writer) = peer();
     let capabilities = protocol::AgentCapabilities::default();
-    assert!(
-        protocol::load_session(&connection.client, &capabilities, "native", "/w", &[])
-            .await
-            .is_err()
-    );
     assert!(
         protocol::prompt(
             &connection.client,
@@ -282,11 +286,6 @@ async fn unsupported_load_and_image_are_refused_before_any_write() {
         )
         .await
         .is_err()
-    );
-    assert!(
-        protocol::new_session(&connection.client, "relative", &[])
-            .await
-            .is_err()
     );
     let mut line = String::new();
     assert!(
@@ -455,5 +454,53 @@ async fn abandoned_dispatched_response_closes_the_pipe_before_more_requests() {
             .unwrap()
             .unwrap(),
         0
+    );
+}
+
+#[test]
+fn setup_new_wire_contains_only_production_fields() {
+    let mcp = [protocol::McpServer::Stdio {
+        name: "neige".into(),
+        command: "/shim".into(),
+        args: vec!["--structured-content-as-text".into()],
+        env: vec![protocol::EnvVariable {
+            name: "TOKEN".into(),
+            value: "secret".into(),
+        }],
+    }];
+    assert_eq!(
+        protocol::encode_new_session(std::path::Path::new("/workspace"), &mcp),
+        json!({
+            "cwd":"/workspace", "mcpServers":[{"name":"neige", "command":"/shim",
+            "args":["--structured-content-as-text"], "env":[{"name":"TOKEN","value":"secret"}]}]
+        })
+    );
+    assert_eq!(
+        protocol::encode_new_session(std::path::Path::new("/discovery"), &[]),
+        json!({"cwd":"/discovery","mcpServers":[]})
+    );
+}
+
+#[test]
+fn setup_load_wire_contains_only_production_fields() {
+    assert_eq!(
+        protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
+        json!({"sessionId":"native","cwd":"/workspace","mcpServers":[]})
+    );
+}
+
+#[test]
+fn setup_config_wire_contains_only_production_fields() {
+    assert_eq!(
+        protocol::encode_set_config_option("native", "model-id", "selected"),
+        json!({"sessionId":"native","configId":"model-id","value":"selected"})
+    );
+}
+
+#[test]
+fn setup_close_wire_contains_only_production_fields() {
+    assert_eq!(
+        protocol::encode_close_session("native"),
+        json!({"sessionId":"native"})
     );
 }

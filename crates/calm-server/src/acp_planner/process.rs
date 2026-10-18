@@ -215,7 +215,10 @@ mod setup_tests {
         let mut connection = provider::acp::Connection::new(read, write);
         let pending = connection
             .client
-            .submit("session/load", json!({"sessionId":"native"}))
+            .submit(
+                "session/load",
+                protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
+            )
             .await
             .unwrap();
         let (read, mut write) = tokio::io::split(peer);
@@ -244,6 +247,129 @@ mod setup_tests {
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty)
             ),
             "load history must not leak into the next live translator"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pump_tests {
+    use super::*;
+    use serde_json::json;
+
+    // Real child pipes and the production setup pump; the peer controls frame ordering.
+    async fn peer(script: &str) -> Process {
+        let mut command = Command::new("python3");
+        command
+            .args(["-u", "-c", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true);
+        set_process_group_leader(&mut command);
+        let mut child = spawn_within(
+            command,
+            tokio::time::Instant::now() + Duration::from_secs(2),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let connection = Connection::new(child.stdout().unwrap(), child.stdin().unwrap());
+        Process {
+            child,
+            connection,
+            capabilities: protocol::AgentCapabilities::default(),
+        }
+    }
+
+    async fn cleanup(process: &mut Process) {
+        process.connection.client.close();
+        let _ = process.child.start_kill();
+        reap(&mut process.child).await;
+    }
+
+    #[tokio::test]
+    async fn setup_pump_refuses_early_peer_request_with_provider_encoder() {
+        let mut process = peer(r#"
+import json,sys
+request=json.loads(sys.stdin.readline())
+print(json.dumps({'jsonrpc':'2.0','id':'early','method':'session/request_permission','params':{}}),flush=True)
+refusal=json.loads(sys.stdin.readline())
+assert refusal == {'jsonrpc':'2.0','id':'early','result':{'outcome':{'outcome':'cancelled'}}}, refusal
+print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'sessionId':'native'}}),flush=True)
+sys.stdin.read()
+"#).await;
+        let result = setup_request(
+            &mut process,
+            "session/new",
+            protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
+        )
+        .await;
+        cleanup(&mut process).await;
+        assert_eq!(result.unwrap(), json!({"sessionId":"native"}));
+    }
+
+    #[tokio::test]
+    async fn setup_pump_drains_history_with_provider_encoder() {
+        let mut process = peer(r#"
+import json,sys
+request=json.loads(sys.stdin.readline())
+print(json.dumps({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'native','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'history'}}}}))
+print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{}}),flush=True)
+sys.stdin.read()
+"#).await;
+        let result = setup_request(
+            &mut process,
+            "session/load",
+            protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
+        )
+        .await;
+        assert_eq!(result.unwrap(), json!({}));
+        assert!(matches!(
+            process.connection.incoming.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        cleanup(&mut process).await;
+    }
+
+    #[tokio::test]
+    async fn setup_pump_malformed_result_reaches_shared_decoder() {
+        let mut process = peer(
+            r#"
+import json,sys
+request=json.loads(sys.stdin.readline())
+print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'sessionId':42}}),flush=True)
+sys.stdin.read()
+"#,
+        )
+        .await;
+        let result = setup_request(
+            &mut process,
+            "session/new",
+            protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
+        )
+        .await;
+        cleanup(&mut process).await;
+        // The pump returns the native value; shared decoding rejects it without validation
+        // moving into the encoder or transport. The existing mapping test pins retry policy.
+        assert!(matches!(
+            protocol::decode::<protocol::NewSessionResponse>(result.unwrap()),
+            Err(provider::acp::Error::Protocol("malformed method result"))
+        ));
+    }
+
+    #[tokio::test]
+    async fn setup_pump_disconnect_keeps_native_failure_classification() {
+        let mut process = peer("import sys\nsys.stdin.readline()\n").await;
+        let result = setup_request(
+            &mut process,
+            "session/set_config_option",
+            protocol::encode_set_config_option("native", "model", "chosen"),
+        )
+        .await;
+        cleanup(&mut process).await;
+        assert!(
+            matches!(result, Err(StartFailure::Failed(CalmError::Conflict(message)))
+            if message == "ACP setup connection closed" || message == "ACP connection closed; dispatched request outcomes may be unknown")
         );
     }
 }

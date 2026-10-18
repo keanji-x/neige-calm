@@ -126,40 +126,18 @@ pub async fn initialize(
     }
     Ok(response)
 }
-pub async fn new_session(client: &Client, cwd: &str, mcp: &[McpServer]) -> Result<String, Error> {
-    validate_cwd(cwd)?;
-    let response: NewSessionResponse = decode(
-        client
-            .request(
-                "session/new",
-                json!({"cwd":cwd,"mcpServers":mcp}),
-                SETUP_TIMEOUT,
-            )
-            .await?,
-    )?;
-    if response.session_id.is_empty() {
-        return Err(Error::Protocol("empty session identity"));
-    }
-    Ok(response.session_id)
+/// Encode native setup only. The host owns validation, authority and response pumping.
+pub fn encode_new_session(cwd: &std::path::Path, mcp: &[McpServer]) -> Value {
+    json!({"cwd":cwd,"mcpServers":mcp})
 }
-pub async fn load_session(
-    client: &Client,
-    capabilities: &AgentCapabilities,
-    session: &str,
-    cwd: &str,
-    mcp: &[McpServer],
-) -> Result<Value, Error> {
-    if !capabilities.load_session {
-        return Err(Error::Protocol("agent does not support session/load"));
-    }
-    validate_cwd(cwd)?;
-    client
-        .request(
-            "session/load",
-            json!({"sessionId":session,"cwd":cwd,"mcpServers":mcp}),
-            SETUP_TIMEOUT,
-        )
-        .await
+pub fn encode_load_session(session: &str, cwd: &std::path::Path, mcp: &[McpServer]) -> Value {
+    json!({"sessionId":session,"cwd":cwd,"mcpServers":mcp})
+}
+pub fn encode_set_config_option(session: &str, config_id: &str, value: &str) -> Value {
+    json!({"sessionId":session,"configId":config_id,"value":value})
+}
+pub fn encode_close_session(session: &str) -> Value {
+    json!({"sessionId":session})
 }
 pub async fn prompt(
     client: &Client,
@@ -191,10 +169,4 @@ pub async fn cancel(client: &Client, session: &str) -> Result<(), Error> {
 }
 pub fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
     serde_json::from_value(value).map_err(|_| Error::Protocol("malformed method result"))
-}
-fn validate_cwd(cwd: &str) -> Result<(), Error> {
-    if !std::path::Path::new(cwd).is_absolute() {
-        return Err(Error::Protocol("cwd must be absolute"));
-    }
-    Ok(())
 }

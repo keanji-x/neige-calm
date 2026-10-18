@@ -297,7 +297,7 @@ impl AcpPlannerSession {
                     let result = setup_request(
                         &mut process,
                         "session/load",
-                        json!({"sessionId":native,"cwd":params.cwd,"mcpServers":mcp}),
+                        protocol::encode_load_session(&native, &params.cwd, &mcp),
                     )
                     .await?;
                     (
@@ -310,7 +310,7 @@ impl AcpPlannerSession {
                     let result = setup_request(
                         &mut process,
                         "session/new",
-                        json!({"cwd":params.cwd,"mcpServers":mcp}),
+                        protocol::encode_new_session(&params.cwd, &mcp),
                     )
                     .await?;
                     let configuration =
@@ -344,7 +344,7 @@ impl AcpPlannerSession {
                 let result = setup_request(
                     &mut process,
                     "session/set_config_option",
-                    json!({"sessionId":native,"configId":option.id,"value":value}),
+                    protocol::encode_set_config_option(&native, &option.id, value),
                 )
                 .await?;
                 configuration = provider::acp::configuration::Configuration::from_response(&result)

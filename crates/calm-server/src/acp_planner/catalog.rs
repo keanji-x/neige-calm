@@ -6,7 +6,6 @@ use super::{
 use crate::error::{CalmError, Result};
 use calm_types::runtime::AgentProvider;
 use provider::acp::{configuration::Configuration, protocol};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -51,7 +50,7 @@ impl AcpPlannerHost {
                 let result = setup_request(
                     &mut process,
                     "session/new",
-                    json!({"cwd":cwd,"mcpServers":[]}),
+                    protocol::encode_new_session(cwd, &[]),
                 )
                 .await?;
                 let native: protocol::NewSessionResponse = protocol::decode(result.clone())
@@ -66,7 +65,7 @@ impl AcpPlannerHost {
                     setup_request(
                         &mut process,
                         "session/close",
-                        json!({"sessionId":native.session_id}),
+                        protocol::encode_close_session(&native.session_id),
                     )
                     .await?;
                 }
