@@ -157,6 +157,8 @@ pub(crate) async fn begin(
     };
     let id =
         super::handoff_coordinator_sql::admit(&runtime.repo.sqlite_pool(), request.clone()).await?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("handoff-begin-admitted", &request.key).await;
     runtime.drive_target_locked(&id).await?;
     if let CoordinatorResult::Forward { cutover, .. } = query(runtime, &request).await? {
         let CutoverResult::CutoverCommittedPendingActivation { operation_id, .. } = *cutover;

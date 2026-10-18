@@ -312,6 +312,12 @@ impl HandoffActivationAdapter {
         .await?;
         tx.commit().await?;
         *output = next;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            "handoff-activation-committed",
+            facts.plan.scope.target_card_id.as_str(),
+        )
+        .await;
         Ok(AppServerInteractOutcome::NotApplicable)
     }
 }
