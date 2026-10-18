@@ -321,7 +321,7 @@ async fn managed_lifecycle(stack: &Stack, card: &str, track: &str) {
     );
     assert!(
         stack.row_hash(&reset.id).await.is_none(),
-        "aborted deletion still revokes credentials"
+        "aborted deletion still revokes credentials; status={status}, refusal={response}"
     );
     let (status, response) = stack.post_input(card, "after aborted deletion").await;
     assert_eq!(status, StatusCode::OK, "{response}");
