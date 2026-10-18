@@ -168,7 +168,7 @@ enum ForgeEventBuildError {
 
 #[derive(Clone, Copy)]
 struct ForgeCompletionRefs<'a> {
-    pool: &'a sqlx::SqlitePool,
+    pool: &'a crate::db::sqlite::SqliteDb,
     completion: &'a OperationCompletionBus,
     events: &'a EventBus,
     repo: &'a dyn RouteRepo,
@@ -798,7 +798,7 @@ async fn persist_forge_artifact_if_needed(
 }
 
 async fn complete_forge_op_failed(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     completion: &OperationCompletionBus,
     op_id: &str,
     reason: String,
@@ -827,7 +827,7 @@ async fn complete_forge_op_failed(
 }
 
 pub(crate) async fn complete_forge_op_with_result(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     completion: &OperationCompletionBus,
     events: &EventBus,
     op_id: &str,
@@ -931,7 +931,7 @@ async fn complete_forge_op_from_live_result(
 }
 
 async fn complete_forge_op_succeeded(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     completion: &OperationCompletionBus,
     events: &EventBus,
     op_id: &str,
@@ -1025,7 +1025,7 @@ async fn run_probe(
 /// `not_landed` is the failure reason when the probe reports the action did not land.
 #[allow(clippy::too_many_arguments)]
 async fn complete_from_probe(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     completion: &OperationCompletionBus,
     events: &EventBus,
     repo: &dyn RouteRepo,
@@ -1084,7 +1084,7 @@ async fn complete_from_probe(
 /// Once the go-token is released the probe is authoritative; gate-infra is only terminal when no probe can produce a verdict.
 /// An `Err` from `complete_from_probe` means the probe reported `Landed` but the completion tx failed, so the parked row must remain for a retry.
 async fn resolve_post_release_via_probe(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     completion: &OperationCompletionBus,
     events: &EventBus,
     repo: &dyn RouteRepo,
@@ -1149,7 +1149,7 @@ async fn resolve_post_release_via_probe(
 
 /// Prefer the durable result files (written via tmp+rename only after the action completed), fall back to the plugin probe, fail only if neither can answer.
 async fn resolve_dead_outcome(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     completion: &OperationCompletionBus,
     events: &EventBus,
     repo: &dyn RouteRepo,
@@ -1332,7 +1332,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         };
         ctx.record_spawn_artifacts(op, &artifacts).await?;
 
-        let pool = ctx.operation_repo.sqlite_pool();
+        let pool = ctx.operation_repo.sqlite_db();
         let completion = ctx.completion.clone();
         let events = ctx.events.clone();
         let op_id = op.id.clone();
@@ -1509,7 +1509,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         if alive && verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
             return match mode {
                 RecoveryMode::Boot => {
-                    let pool = ctx.operation_repo.sqlite_pool();
+                    let pool = ctx.operation_repo.sqlite_db();
                     let completion = ctx.completion.clone();
                     let events = ctx.events.clone();
                     let repo = ctx.repo.clone();
@@ -1549,7 +1549,7 @@ impl ProviderAdapter for ForgeActionAdapter {
         // The durable result files are authoritative (written via tmp+rename only after the action ran to completion); a read failure falls through to the probe path.
         if let Ok(result) = read_result_file(&frozen.result_path).await {
             // Propagate completion tx errors so the op stays parked for a later sweep.
-            let pool = ctx.operation_repo.sqlite_pool();
+            let pool = ctx.operation_repo.sqlite_db();
             complete_forge_op_from_live_result(
                 ForgeCompletionRefs {
                     pool: &pool,
@@ -1576,7 +1576,7 @@ impl ProviderAdapter for ForgeActionAdapter {
             });
         }
         resolve_post_release_via_probe(
-            &ctx.operation_repo.sqlite_pool(),
+            &ctx.operation_repo.sqlite_db(),
             &ctx.completion,
             &ctx.events,
             ctx.repo.as_ref(),

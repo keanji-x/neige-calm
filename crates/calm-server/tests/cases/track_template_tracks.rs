@@ -186,14 +186,14 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 }
 
 async fn planner_harness_ops_for_track(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
-    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let pool = repo.sqlite_db().expect("sqlite pool");
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM operations \
          WHERE kind = 'planner-harness-start' \
            AND json_extract(payload_json, '$.wave_id') = ?1",
     )
     .bind(track_id)
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .expect("track planner-harness-start count")
 }
@@ -217,13 +217,13 @@ fn create_body(area_id: &str, title: &str, extra: Value) -> Value {
 
 /// A whole-database snapshot: every user table, rendered through SQLite's `quote()`, ordered so the digest is stable.
 async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
-    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let pool = repo.sqlite_db().expect("sqlite pool");
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master \
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> '_sqlx_migrations' \
          ORDER BY name",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool.read_pool())
     .await
     .expect("table list");
     assert!(!tables.is_empty(), "snapshot found no tables to compare");
@@ -231,7 +231,7 @@ async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     for table in tables {
         let columns: Vec<String> =
             sqlx::query_scalar(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
+                .fetch_all(pool.read_pool())
                 .await
                 .unwrap_or_else(|error| panic!("columns of {table}: {error}"));
         let row_text = columns
@@ -243,7 +243,7 @@ async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
             "SELECT coalesce(group_concat(row_text, char(10)), '') FROM \
              (SELECT {row_text} AS row_text FROM \"{table}\" ORDER BY 1)"
         ))
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap_or_else(|error| panic!("digest of {table}: {error}"));
         snapshot.push((table, digest));
@@ -677,7 +677,7 @@ async fn a_template_and_an_explicit_fork_source_are_a_400() {
         "SELECT id FROM worker_sessions WHERE track_id=?1 ORDER BY created_at_ms DESC LIMIT 1",
     )
     .bind(&source_id)
-    .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .fetch_one(boot.repo.sqlite_db().expect("sqlite pool").read_pool())
     .await
     .expect("source planner runtime");
     let source_harness = boot

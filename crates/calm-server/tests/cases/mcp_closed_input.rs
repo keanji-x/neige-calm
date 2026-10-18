@@ -33,11 +33,11 @@ fn kernel_tools() -> Vec<(String, Vec<String>, Value)> {
 use crate::support::builtins as configured;
 
 async fn scope_track(boot: &support::mcp::CardBoot, scope: Option<&str>) {
-    let pool = boot.repo.sqlite_pool().expect("sqlite-backed boot");
+    let pool = boot.repo.sqlite_db().expect("sqlite-backed boot");
     sqlx::query("UPDATE tracks SET plugin_scope = ?1 WHERE id = ?2")
         .bind(scope)
         .bind(boot.track_id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
 }

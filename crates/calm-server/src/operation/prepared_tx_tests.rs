@@ -91,7 +91,7 @@ async fn stale_preparation_is_bounded_and_wait_reclaims_pending_after_lease_expi
     let truth = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = Arc::new(SqlxOperationRepo::new(truth.pool().clone()));
+    let repo = Arc::new(SqlxOperationRepo::new(truth.db().clone()));
     let adapter = Arc::new(ChangingFacts {
         collections: AtomicUsize::new(0),
     });
@@ -126,7 +126,7 @@ async fn stale_preparation_is_bounded_and_wait_reclaims_pending_after_lease_expi
     sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
         .bind(now_ms() - 1)
         .bind(&id)
-        .execute(&repo.sqlite_pool())
+        .execute(repo.sqlite_db().writer_pool())
         .await
         .unwrap();
     // This exercises the actual wait -> 25ms drive -> claim_drive_batch path, without a daemon

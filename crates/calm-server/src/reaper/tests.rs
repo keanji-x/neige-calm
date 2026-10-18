@@ -53,7 +53,7 @@ async fn seeded_repo_with_plan(
     .await
     .expect("seed area");
     let track = crate::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         NewTrack {
             template_input: None,
             area_id: area.id,
@@ -133,7 +133,7 @@ async fn insert_session(repo: &SqlxRepo, mut session: WorkerSession) -> Card {
     )
     .await
     .expect("seed runtime card");
-    let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
     let session_id = session.id.clone();
     session.card_id = Some(CardId(card.id.to_string()));
     session_insert_tx(&mut tx, session)
@@ -213,7 +213,7 @@ async fn insert_task(repo: &SqlxRepo, track_id: &TrackId, key: &str, status: Tas
         updated_at_ms: now,
         finished_at_ms: None,
     };
-    let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
     crate::test_support::insert_task_tx(&mut tx, &task)
         .await
         .expect("insert task");
@@ -226,7 +226,7 @@ async fn insert_spawn_operation(
     task_id: Option<&str>,
     target_card_id: Option<&str>,
 ) -> String {
-    let op_repo = SqlxOperationRepo::new(repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(repo.db().clone());
     let op_id = op_repo
         .insert_operation(
             "terminal-worker",
@@ -263,8 +263,8 @@ async fn acquire_test_workspace_lease(
     track_id: &TrackId,
     lease_owner: &str,
 ) -> (String, String) {
-    crate::test_support::ensure_track_worktree(repo.pool(), track_id.as_str()).await;
-    let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+    crate::test_support::ensure_track_worktree(repo.db(), track_id.as_str()).await;
+    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
     let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
         &mut tx,
         track_id.as_str(),

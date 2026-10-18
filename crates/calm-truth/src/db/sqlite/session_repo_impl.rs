@@ -46,7 +46,7 @@ impl SessionRepo for SqlxRepo {
                WHERE id = ?1"#,
         )
         .bind(id.as_str())
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         row.as_ref().map(worker_session_from_row).transpose()
     }
@@ -64,7 +64,7 @@ impl SessionRepo for SqlxRepo {
                WHERE state IN ('starting', 'running', 'idle', 'turn_pending')
                ORDER BY track_id ASC, created_at_ms ASC, id ASC"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         rows.iter().map(worker_session_from_row).collect()
     }
@@ -75,7 +75,7 @@ impl SessionRepo for SqlxRepo {
         liveness: &Liveness,
         probed_at_ms: i64,
     ) -> Result<Option<WorkerSession>> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = session_set_liveness_tx(&mut tx, id, liveness, probed_at_ms).await?;
         tx.commit().await?;
         Ok(out)
@@ -87,7 +87,7 @@ impl SessionRepo for SqlxRepo {
         last_activity_ms: i64,
         last_thread_status: &str,
     ) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         session_record_activity_tx(&mut tx, id, last_activity_ms, last_thread_status).await?;
         tx.commit().await?;
         Ok(())
@@ -100,7 +100,7 @@ impl SessionRepo for SqlxRepo {
         last_thread_status: &str,
         turn_completed_ms: Option<i64>,
     ) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         session_record_activity_by_thread_tx(
             &mut tx,
             thread_id,
@@ -130,7 +130,7 @@ impl SessionRepo for SqlxRepo {
         exit_code: Option<i32>,
         exit_interpretation: &str,
     ) -> Result<CommitExitOutcome> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let session = match session_commit_exit_tx(
             &mut tx,
             id,
@@ -164,7 +164,7 @@ impl SessionRepo for SqlxRepo {
                ORDER BY created_at_ms ASC, id ASC"#,
         )
         .bind(track_id.as_str())
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         rows.iter().map(worker_session_from_row).collect()
     }
@@ -189,7 +189,7 @@ impl SessionRepo for SqlxRepo {
                 ORDER BY ended.thread_id ASC"#,
         )
         .bind(wanted)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows)
     }
@@ -200,21 +200,21 @@ impl SessionRepo for SqlxRepo {
 #[async_trait]
 impl RepoSyncDomainRaw for SqlxRepo {
     async fn area_create(&self, owner_user_id: &str, p: NewArea) -> Result<Area> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = area_create_tx(&mut tx, owner_user_id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = area_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn area_delete(&self, id: &str) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         overlay_delete_subtree_by_area_tx(&mut tx, id).await?;
         overlay_delete_by_entity_tx(&mut tx, "area", id).await?;
         area_delete_tx(&mut tx, id).await?;
@@ -223,7 +223,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
     }
 
     async fn track_create(&self, p: NewTrack) -> Result<Track> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = track_create_tx(
             &mut tx,
             p,
@@ -238,14 +238,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
     }
 
     async fn track_update(&self, id: &str, p: TrackPatch) -> Result<Track> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = track_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn track_delete(&self, id: &str) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         overlay_delete_card_overlays_by_track_tx(&mut tx, id).await?;
         overlay_delete_by_entity_tx(&mut tx, "track", id).await?;
         overlay_delete_by_entity_tx(&mut tx, "view", id).await?;
@@ -255,7 +255,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
     }
 
     async fn card_create(&self, p: NewCard) -> Result<Card> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = if p.kind == "track-report" {
             card_create_with_id_tx(
                 &mut tx,
@@ -274,21 +274,21 @@ impl RepoSyncDomainRaw for SqlxRepo {
     }
 
     async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = card_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn card_delete(&self, id: &str) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         card_delete_tx(&mut tx, id, &self.card_role_cache).await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let out = overlay_upsert_tx(&mut tx, p).await?;
         tx.commit().await?;
         Ok(out)
@@ -301,7 +301,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
         entity_id: &str,
         kind: &str,
     ) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         overlay_delete_tx(&mut tx, plugin_id, entity_kind, entity_id, kind).await?;
         tx.commit().await?;
         Ok(())

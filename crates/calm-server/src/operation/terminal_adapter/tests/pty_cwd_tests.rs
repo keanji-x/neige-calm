@@ -32,7 +32,7 @@ async fn rejects_prepared_cwd(source: Source) {
             Source::Worktree => TrackWorkspacePlan::AttachedWithTrackWorktree(root.path().into()),
             Source::Explicit | Source::PrimaryCheckout => TrackWorkspacePlan::AttachedFromCwd,
         };
-        let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
         let track = crate::db::sqlite::track_create_tx(
             &mut tx,
             crate::model::NewTrack {
@@ -94,7 +94,7 @@ async fn rejects_prepared_cwd(source: Source) {
             }),
         })
         .unwrap();
-        let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+        let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
         let op_id = op_repo
             .insert_operation(
                 "terminal-create",
@@ -114,7 +114,7 @@ async fn rejects_prepared_cwd(source: Source) {
             .into_iter()
             .find(|op| op.id == op_id)
             .unwrap();
-        let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
         let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
         tx.commit().await.unwrap();
         assert_eq!(output.data["cwd"], invalid);

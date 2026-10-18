@@ -1740,7 +1740,7 @@ mod tests {
     }
 
     fn app_context(repo: Arc<SqlxRepo>, host: Option<Arc<PluginHost>>) -> Arc<AppContext> {
-        let sqlite_pool = crate::db::Repo::sqlite_pool(repo.as_ref());
+        let sqlite_db = crate::db::Repo::sqlite_db(repo.as_ref());
         let repo_dyn: Arc<dyn crate::db::Repo> = repo;
         let route_repo: Arc<dyn crate::db::RouteRepo> = repo_dyn;
         let plugin_host = Arc::new(tokio::sync::OnceCell::new());
@@ -1766,7 +1766,7 @@ mod tests {
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
             read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
             preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
-            sqlite_pool,
+            sqlite_db,
             gate_run_wait: crate::operation::task_gate_run::GateRunWait::DEFAULT,
         })
     }

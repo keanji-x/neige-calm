@@ -1,9 +1,9 @@
+use crate::db::sqlite::SqliteDb;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::ids::TrackId;
 use crate::track_vcs::{self, CommitHash, CommitLog, CommitRecord, FileDiff, HistoricalBlob};
 use async_trait::async_trait;
-use sqlx::SqlitePool;
 use std::sync::Arc;
 
 #[async_trait]
@@ -51,15 +51,15 @@ pub trait TrackVcsRepo: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct SqlxTrackVcsRepo {
-    pool: SqlitePool,
+    pool: SqliteDb,
 }
 
 impl SqlxTrackVcsRepo {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: SqliteDb) -> Self {
         Self { pool }
     }
 
-    pub fn shared(pool: SqlitePool) -> Arc<dyn TrackVcsRepo> {
+    pub fn shared(pool: SqliteDb) -> Arc<dyn TrackVcsRepo> {
         Arc::new(Self::new(pool))
     }
 }
@@ -67,7 +67,7 @@ impl SqlxTrackVcsRepo {
 #[async_trait]
 impl TrackVcsRepo for SqlxTrackVcsRepo {
     async fn head(&self, track_id: &TrackId) -> Result<Option<CommitHash>> {
-        track_vcs::head(&self.pool, track_id).await
+        track_vcs::head(self.pool.read_pool(), track_id).await
     }
 
     async fn diff_with_patches(
@@ -77,11 +77,11 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
         path: Option<&str>,
         max_patch_lines: usize,
     ) -> Result<Vec<FileDiff>> {
-        track_vcs::diff_with_patches(&self.pool, from, to, path, max_patch_lines).await
+        track_vcs::diff_with_patches(self.pool.read_pool(), from, to, path, max_patch_lines).await
     }
 
     async fn cat_at(&self, commit_hash: &str, path: &str) -> Result<HistoricalBlob> {
-        track_vcs::cat_at(&self.pool, commit_hash, path).await
+        track_vcs::cat_at(self.pool.read_pool(), commit_hash, path).await
     }
 
     async fn log(
@@ -92,11 +92,19 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
         limit: usize,
         include_empty: bool,
     ) -> Result<CommitLog> {
-        track_vcs::log(&self.pool, track_id, path, after, limit, include_empty).await
+        track_vcs::log(
+            self.pool.read_pool(),
+            track_id,
+            path,
+            after,
+            limit,
+            include_empty,
+        )
+        .await
     }
 
     async fn commit_record(&self, commit_hash: &str) -> Result<Option<CommitRecord>> {
-        track_vcs::commit_record(&self.pool, commit_hash).await
+        track_vcs::commit_record(self.pool.read_pool(), commit_hash).await
     }
 
     async fn resolve_commit_prefix(
@@ -104,7 +112,7 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
         track_id: &TrackId,
         prefix: &str,
     ) -> Result<Option<CommitRecord>> {
-        track_vcs::resolve_commit_prefix(&self.pool, track_id, prefix).await
+        track_vcs::resolve_commit_prefix(self.pool.read_pool(), track_id, prefix).await
     }
 
     async fn prune_track_history(
@@ -128,7 +136,9 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
     }
 
     async fn vacuum(&self) -> Result<()> {
-        sqlx::query("VACUUM").execute(&self.pool).await?;
+        sqlx::query("VACUUM")
+            .execute(self.pool.writer_pool())
+            .await?;
         Ok(())
     }
 }

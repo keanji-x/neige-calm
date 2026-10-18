@@ -138,7 +138,7 @@ pub(crate) async fn write_today_summary(
     let cs = CodexShellState::from_ref(&app);
     let pool = w
         .repo
-        .sqlite_pool()
+        .sqlite_db()
         .ok_or_else(|| CalmError::Internal("today summary requires a sqlite-backed repo".into()))?;
 
     // Read the launchpad, do NOT ensure it: ensuring here would mean an empty day still
@@ -146,8 +146,11 @@ pub(crate) async fn write_today_summary(
     let launchpad = app.repo.track_get_launchpad().await?;
     // The shared entry point, not a second computation: the conversation-create path
     // reads the same window.
-    let activity =
-        todays_workspace_activity(&pool, launchpad.as_ref().map(|track| track.id.as_str())).await?;
+    let activity = todays_workspace_activity(
+        pool.read_pool(),
+        launchpad.as_ref().map(|track| track.id.as_str()),
+    )
+    .await?;
 
     // The empty-day gate lives here rather than in the frontend: hiding the button is UI,
     // and a POST straight at this endpoint would sail past it. Only this endpoint refuses;

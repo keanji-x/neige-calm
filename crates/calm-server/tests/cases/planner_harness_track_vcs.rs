@@ -493,7 +493,7 @@ async fn log_worker_codex_hook(boot: &Boot, card: &Card, key: &str, prompt: &str
 
 async fn refresh_transcripts(boot: &Boot) -> track_vcs::CommitHash {
     track_vcs::snapshot_transcripts_for_cards_in_track(
-        boot.repo.pool(),
+        boot.repo.db(),
         &boot.track_id,
         None,
         track_vcs::MANIFEST_SCHEMA_VERSION,

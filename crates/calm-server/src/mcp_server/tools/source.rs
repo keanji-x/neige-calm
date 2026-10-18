@@ -528,10 +528,10 @@ async fn source_list(
         require_object(&args, tool)?;
     }
     let pool = ctx
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| RpcError::internal(format!("{tool}: requires a sqlite-backed repo")))?;
-    let rows = store::list(pool, track_id)
+    let rows = store::list(pool.read_pool(), track_id)
         .await
         .map_err(|e| map_err(tool, e))?;
     let sources: Vec<Value> = rows.iter().map(list_entry).collect();

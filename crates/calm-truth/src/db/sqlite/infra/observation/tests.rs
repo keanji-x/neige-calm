@@ -1,5 +1,5 @@
 use super::*;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx, begin_immediate_tx_once};
+use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use std::collections::BTreeMap;
 use std::future::{Future, poll_fn};
 use std::sync::{Arc, Mutex};
@@ -129,19 +129,19 @@ async fn observation_commit_rollback_and_active_drop_have_one_truthful_terminal_
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     async {
-        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
         sqlx::query("INSERT INTO observation_probe VALUES('private-observation-sentinel')")
             .execute(&mut **tx)
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
         sqlx::query("INSERT INTO observation_probe VALUES('rolled back')")
             .execute(&mut **tx)
             .await
             .unwrap();
         tx.rollback().await.unwrap();
-        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
         sqlx::query("INSERT INTO observation_probe VALUES('dropped')")
             .execute(&mut **tx)
             .await
@@ -185,12 +185,36 @@ async fn observation_commit_rollback_and_active_drop_have_one_truthful_terminal_
 }
 
 #[tokio::test]
-async fn observation_pool_wait_is_separate_from_begin_wait() {
+async fn writer_admission_remains_available_when_all_read_connections_are_leased() {
     let fx = Fixture::new().await;
-    let pool = fx.repo.pool().clone();
+    let pool = fx.repo.pool();
     let mut held = Vec::new();
+    // Lease connections without opening read transactions: only pool capacity is occupied.
     for _ in 0..pool.options().get_max_connections() {
         held.push(pool.acquire().await.unwrap());
+    }
+
+    let result = timeout(LIMIT, async {
+        begin_immediate_tx(fx.repo.db()).await?.rollback().await?;
+        Ok::<(), crate::error::CalmError>(())
+    })
+    .await;
+
+    // A failed assertion must not strand leased connections or pool cleanup tasks.
+    drop(held);
+    fx.repo.db().close().await;
+    result
+        .expect("writer admission must not wait for leased read-pool connections")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn observation_pool_wait_is_separate_from_begin_wait() {
+    let fx = Fixture::new().await;
+    let pool = fx.repo.db().clone();
+    let mut held = Vec::new();
+    for _ in 0..pool.writer_pool().options().get_max_connections() {
+        held.push(pool.writer_pool().acquire().await.unwrap());
     }
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
@@ -223,10 +247,10 @@ async fn observation_pool_wait_is_separate_from_begin_wait() {
 #[tokio::test]
 async fn observation_begin_wait_is_separate_when_a_connection_is_available() {
     let fx = Fixture::new().await;
-    let holder = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let holder = fx.repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
     // Ensure the observed task can acquire an existing connection rather than establish one.
-    drop(fx.repo.pool().acquire().await.unwrap());
-    let pool = fx.repo.pool().clone();
+    drop(fx.repo.db().writer_pool().acquire().await.unwrap());
+    let pool = fx.repo.db().clone();
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     let (started, ready) = oneshot::channel();
@@ -257,10 +281,10 @@ async fn observation_begin_wait_is_separate_when_a_connection_is_available() {
 #[tokio::test]
 async fn observation_cancelling_pool_wait_records_interruption_without_a_begin() {
     let fx = Fixture::new().await;
-    let pool = fx.repo.pool().clone();
+    let pool = fx.repo.db().clone();
     let mut held = Vec::new();
-    for _ in 0..pool.options().get_max_connections() {
-        held.push(pool.acquire().await.unwrap());
+    for _ in 0..pool.writer_pool().options().get_max_connections() {
+        held.push(pool.writer_pool().acquire().await.unwrap());
     }
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
@@ -281,7 +305,7 @@ async fn observation_cancelling_pool_wait_records_interruption_without_a_begin()
     assert_eq!(record["outcome"], "acquire_interrupted");
     assert_eq!(record["attempts"], 1);
     assert_eq!(record["begin_attempts"], 0);
-    begin_immediate_tx(fx.repo.pool())
+    begin_immediate_tx(fx.repo.db())
         .await
         .unwrap()
         .commit()
@@ -292,9 +316,9 @@ async fn observation_cancelling_pool_wait_records_interruption_without_a_begin()
 #[tokio::test]
 async fn observation_cancelling_begin_preserves_pool_recovery_and_unknown_outcome() {
     let fx = Fixture::new().await;
-    let holder = begin_immediate_tx(fx.repo.pool()).await.unwrap();
-    drop(fx.repo.pool().acquire().await.unwrap());
-    let pool = fx.repo.pool().clone();
+    let holder = fx.repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
+    drop(fx.repo.db().writer_pool().acquire().await.unwrap());
+    let pool = fx.repo.db().clone();
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     let (started, ready) = oneshot::channel();
@@ -313,7 +337,7 @@ async fn observation_cancelling_begin_preserves_pool_recovery_and_unknown_outcom
     assert!(task.await.unwrap_err().is_cancelled());
     holder.commit().await.unwrap();
     timeout(LIMIT, async {
-        begin_immediate_tx(fx.repo.pool())
+        begin_immediate_tx(fx.repo.db())
             .await
             .unwrap()
             .commit()
@@ -339,7 +363,7 @@ async fn observation_failed_commit_is_not_recorded_as_a_completed_rollback() {
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     async {
-        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
         sqlx::query("INSERT INTO observation_child VALUES(42)")
             .execute(&mut **tx)
             .await
@@ -354,7 +378,7 @@ async fn observation_failed_commit_is_not_recorded_as_a_completed_rollback() {
         .unwrap();
     assert_eq!(count, 0);
     assert_eq!(recorder.only()["outcome"], "commit_error");
-    begin_immediate_tx(fx.repo.pool())
+    begin_immediate_tx(fx.repo.db())
         .await
         .unwrap()
         .commit()
@@ -367,7 +391,7 @@ async fn observation_interrupted_commit_can_persist_and_must_report_unknown() {
     let fx = Fixture::new().await;
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
-    let mut tx = async { begin_immediate_tx(fx.repo.pool()).await.unwrap() }
+    let mut tx = async { begin_immediate_tx(fx.repo.db()).await.unwrap() }
         .with_subscriber(dispatch.clone())
         .await;
     sqlx::query("INSERT INTO observation_probe VALUES('committed after cancellation')")
@@ -393,10 +417,22 @@ async fn observation_interrupted_commit_can_persist_and_must_report_unknown() {
     let entered = tokio::task::spawn_blocking(move || waiting.recv_timeout(LIMIT)).await;
     task.abort();
     let aborted = task.await;
+    // The cancelled COMMIT still occupies its worker. Capacity must not be reused early.
+    let writer_pool = fx.repo.db().writer_pool();
+    let capacity_held = writer_pool.size() == 1 && writer_pool.num_idle() == 0;
+    let mut next_lease = Box::pin(writer_pool.acquire());
+    let next_result = poll_fn(|cx| std::task::Poll::Ready(next_lease.as_mut().poll(cx))).await;
+    let remained_queued = next_result.is_pending();
+    let no_extra_connection = writer_pool.size() == 1;
     // Always release and drain BEFORE inspecting any result; an assertion must not strand SQLx.
     let _ = release.send(());
     let drained = timeout(LIMIT, async {
-        begin_immediate_tx(fx.repo.pool())
+        let lease = match next_result {
+            std::task::Poll::Ready(result) => result,
+            std::task::Poll::Pending => next_lease.await,
+        };
+        drop(lease.unwrap());
+        begin_immediate_tx(fx.repo.db())
             .await
             .unwrap()
             .commit()
@@ -414,6 +450,10 @@ async fn observation_interrupted_commit_can_persist_and_must_report_unknown() {
         "public SQLite commit hook was reached"
     );
     assert!(aborted.unwrap_err().is_cancelled());
+    assert!(
+        capacity_held && remained_queued && no_extra_connection,
+        "writer capacity must stay leased until native COMMIT cleanup finishes"
+    );
     assert_eq!(values.unwrap(), vec!["committed after cancellation"]);
     assert_eq!(recorder.only()["outcome"], "commit_interrupted");
 }
@@ -443,7 +483,13 @@ async fn observation_acquire_busy_preserves_once_errors_and_bounded_retry_policy
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     let error = async {
-        match begin_immediate_tx_once(&pool).await {
+        match super::super::begin_observed(
+            &pool,
+            std::panic::Location::caller(),
+            super::super::RetryPolicy::Once,
+        )
+        .await
+        {
             Err(error) => error,
             Ok(_) => panic!("WAL-mode connection establishment must be blocked by fixture"),
         }
@@ -459,12 +505,16 @@ async fn observation_acquire_busy_preserves_once_errors_and_bounded_retry_policy
     let next_pool = pool.clone();
     let task = tokio::spawn(
         async move {
-            begin_immediate_tx(&next_pool)
-                .await
-                .unwrap()
-                .commit()
-                .await
-                .unwrap();
+            super::super::begin_observed(
+                &next_pool,
+                std::panic::Location::caller(),
+                super::super::RetryPolicy::Bounded,
+            )
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
         }
         .with_subscriber(dispatch),
     );
@@ -486,7 +536,7 @@ async fn observation_acquire_busy_preserves_once_errors_and_bounded_retry_policy
 #[tokio::test]
 async fn observation_cancelling_active_body_keeps_rollback_owned_by_sqlx() {
     let fx = Fixture::new().await;
-    let pool = fx.repo.pool().clone();
+    let pool = fx.repo.db().clone();
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     let (started, ready) = oneshot::channel();
@@ -507,7 +557,7 @@ async fn observation_cancelling_active_body_keeps_rollback_owned_by_sqlx() {
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     timeout(LIMIT, async {
-        begin_immediate_tx(fx.repo.pool())
+        begin_immediate_tx(fx.repo.db())
             .await
             .unwrap()
             .commit()
@@ -526,7 +576,7 @@ async fn observation_keeps_first_poll_context_through_finalization_elsewhere() {
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     // Construction is outside the subscriber/span; execution context belongs to first poll.
-    let future = begin_immediate_tx(fx.repo.pool());
+    let future = begin_immediate_tx(fx.repo.db());
     let span =
         tracing::dispatcher::with_default(&dispatch, || tracing::debug_span!("observed_operation"));
     let tx = future

@@ -70,7 +70,7 @@ impl Observed {
 }
 
 /// Content-addressed blobs can be shared across tracks and are swept after a grace window.
-pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
+pub fn spawn_unreferenced_object_sweeper(pool: crate::db::sqlite::SqliteDb) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(OBJECT_SWEEP_INTERVAL);
         tick.tick().await;
@@ -87,7 +87,7 @@ pub fn spawn_unreferenced_object_sweeper(pool: SqlitePool) {
 /// parsing run outside the writer; a small newly reachable delta may be observed inside it.
 /// Concurrent churn can stop this call after safe partial progress; the return value is actual
 /// committed deletions. A later error does not roll back earlier successful batches.
-pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
+pub async fn sweep_unreferenced_objects_once(pool: &crate::db::sqlite::SqliteDb) -> Result<u64> {
     let cutoff = now_ms().saturating_sub(OBJECT_SWEEP_GRACE_MS);
     let mut deleted = 0;
     if let Err(error) = sweep_batches(pool, cutoff, &mut deleted).await {
@@ -101,9 +101,13 @@ pub async fn sweep_unreferenced_objects_once(pool: &SqlitePool) -> Result<u64> {
     Ok(deleted)
 }
 
-async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Result<()> {
+async fn sweep_batches(
+    pool: &crate::db::sqlite::SqliteDb,
+    cutoff: i64,
+    deleted: &mut u64,
+) -> Result<()> {
     let mut observed = Observed::default();
-    prepare_full(pool, &mut observed).await?;
+    prepare_full(pool.read_pool(), &mut observed).await?;
     let mut cursor = String::new();
     // Index pages and deletion batches have different costs. Accumulate actual old orphan
     // candidates across sparse live pages before paying for the full ancestry proof.
@@ -114,7 +118,7 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
         )
         .bind(&cursor)
         .bind(OBJECT_SCAN_PAGE_SIZE)
-        .fetch_all(pool)
+        .fetch_all(pool.read_pool())
         .await?;
         let Some(last) = page.last() else {
             if !pending.is_empty() {
@@ -132,7 +136,7 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
         if unmarked.is_empty() {
             continue;
         }
-        pending.extend(old_candidates(pool, cutoff, &unmarked).await?);
+        pending.extend(old_candidates(pool.read_pool(), cutoff, &unmarked).await?);
         // Before extending, pending held fewer than DELETE_BATCH_SIZE entries; a scan page
         // adds at most OBJECT_SCAN_PAGE_SIZE. Keep the remainder and consume each batch even
         // if fresh live marks or age changes make its committed deletion count zero.
@@ -147,7 +151,7 @@ async fn sweep_batches(pool: &SqlitePool, cutoff: i64, deleted: &mut u64) -> Res
 }
 
 async fn flush_candidates(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     cutoff: i64,
     candidates: Vec<String>,
     observed: &mut Observed,
@@ -309,13 +313,13 @@ async fn observe_batch<'e>(
 }
 
 async fn delete_validated_batch(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     cutoff: i64,
     candidates: Vec<String>,
     observed: &mut Observed,
 ) -> Result<Option<u64>> {
     for attempt in 0..VALIDATION_ATTEMPTS {
-        prepare_validation(pool, observed).await?;
+        prepare_validation(pool.read_pool(), observed).await?;
         #[cfg(test)]
         super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::BeforeDelete).await;
         let mut tx = begin_immediate_tx(pool).await?;
@@ -334,7 +338,7 @@ async fn delete_validated_batch(
                     if attempt + 1 == VALIDATION_ATTEMPTS {
                         return Ok(None);
                     }
-                    prepare_full(pool, observed).await?;
+                    prepare_full(pool.read_pool(), observed).await?;
                     continue;
                 }
             }
@@ -355,7 +359,7 @@ async fn delete_validated_batch(
             if attempt + 1 == VALIDATION_ATTEMPTS {
                 return Ok(None);
             }
-            prepare_full(pool, observed).await?;
+            prepare_full(pool.read_pool(), observed).await?;
             continue;
         }
         // Both count and byte limits are checked before fetching or parsing any inline payload.

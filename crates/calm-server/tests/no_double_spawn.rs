@@ -100,8 +100,8 @@ impl ReverseSpawnClaimRepo {
 
 #[async_trait]
 impl OperationRepo for ReverseSpawnClaimRepo {
-    fn sqlite_pool(&self) -> sqlx::SqlitePool {
-        self.inner.sqlite_pool()
+    fn sqlite_db(&self) -> calm_server::db::sqlite::SqliteDb {
+        self.inner.sqlite_db()
     }
 
     async fn assert_sqlite_version(&self) -> CalmResult<()> {
@@ -236,8 +236,8 @@ impl OperationRepo for ReverseSpawnClaimRepo {
 
 #[async_trait]
 impl OperationRepo for DriveErrorOnceRepo {
-    fn sqlite_pool(&self) -> sqlx::SqlitePool {
-        self.inner.sqlite_pool()
+    fn sqlite_db(&self) -> calm_server::db::sqlite::SqliteDb {
+        self.inner.sqlite_db()
     }
 
     async fn assert_sqlite_version(&self) -> CalmResult<()> {
@@ -399,7 +399,7 @@ async fn boot_with_counted_spawn_and_workspace(worktree_name: Option<&str>) -> B
         .await
         .unwrap();
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         NewTrack {
             template_input: None,
             area_id: area.id,
@@ -465,7 +465,7 @@ async fn boot_with_counted_spawn_and_workspace(worktree_name: Option<&str>) -> B
             })
         },
     );
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),
@@ -597,7 +597,7 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
             })
         },
     );
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let terminal_adapter = Arc::new(TerminalAdapter::new(
         route_repo.clone(),
         state.card_role_cache.clone(),
@@ -728,7 +728,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             })
         },
     );
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let claude_adapter = Arc::new(ClaudeAdapter::new_with_spawn_hook(
         route_repo.clone(),
         codex,
@@ -802,7 +802,7 @@ async fn boot_codex_with_reversed_spawn_claims_and_thread_notifications() -> Boo
         },
     );
     let operation_repo = Arc::new(ReverseSpawnClaimRepo::new(
-        SqlxOperationRepo::new(boot.repo.pool().clone()),
+        SqlxOperationRepo::new(boot.repo.db().clone()),
         2,
     ));
     let codex_adapter = Arc::new(CodexAdapter::new_with_spawn_hook(
@@ -1548,7 +1548,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
     let phase = wait_for_terminal_phase(&boot, &op_id, Duration::from_secs(5)).await;
     assert_eq!(phase, PhaseTag::Succeeded);
     assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
-    let output = SqlxOperationRepo::new(boot.repo.pool().clone())
+    let output = SqlxOperationRepo::new(boot.repo.db().clone())
         .get_operation(&op_id)
         .await
         .unwrap()
@@ -2269,7 +2269,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
             })
         },
     );
-    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         boot.state.card_role_cache.clone(),
@@ -2473,7 +2473,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         boot.state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
-    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -2749,7 +2749,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     .unwrap();
 
     let repo = Arc::new(DriveErrorOnceRepo::new(SqlxOperationRepo::new(
-        boot.repo.pool().clone(),
+        boot.repo.db().clone(),
     )));
     let repo_for_runtime: Arc<dyn OperationRepo> = repo.clone();
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
@@ -3005,7 +3005,7 @@ fn install_terminal_worker_runtime_with_hook(
         boot.state.track_area_cache.clone(),
         hook,
     ));
-    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -3259,7 +3259,7 @@ async fn wait_for_notification_receivers(shared: &SharedCodexAppServer, min: usi
 }
 
 async fn wait_for_terminal_phase(boot: &Boot, op_id: &str, timeout: Duration) -> PhaseTag {
-    let repo = SqlxOperationRepo::new(boot.repo.pool().clone());
+    let repo = SqlxOperationRepo::new(boot.repo.db().clone());
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         boot.state.operation_runtime.drive().await.unwrap();

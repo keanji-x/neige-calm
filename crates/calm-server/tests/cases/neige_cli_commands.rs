@@ -41,10 +41,10 @@ async fn direct_ok(boot: &CardBoot, tool: &str, args: Value) -> Value {
 }
 
 async fn commit_count(boot: &CardBoot) -> i64 {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1")
         .bind(boot.track_id.as_str())
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .expect("count commits")
 }
@@ -56,7 +56,12 @@ fn commit(boot: &CardBoot, index: usize) -> String {
 #[tokio::test]
 async fn cli_output_equals_direct_tool_call() {
     let boot = boot_with_role(CardRole::Planner).await;
-    seed_linear_commits(&boot.repo.sqlite_pool().unwrap(), &boot.track_id, 3).await;
+    seed_linear_commits(
+        boot.repo.sqlite_db().unwrap().read_pool(),
+        &boot.track_id,
+        3,
+    )
+    .await;
     let (c0, c2) = (commit(&boot, 0), commit(&boot, 2));
 
     // (argv without --json, tool, direct args, render)
@@ -155,7 +160,12 @@ async fn cli_output_equals_direct_tool_call() {
 #[tokio::test]
 async fn track_log_pages_by_cursor_without_losing_a_commit() {
     let boot = boot_with_role(CardRole::Planner).await;
-    seed_linear_commits(&boot.repo.sqlite_pool().unwrap(), &boot.track_id, 120).await;
+    seed_linear_commits(
+        boot.repo.sqlite_db().unwrap().read_pool(),
+        &boot.track_id,
+        120,
+    )
+    .await;
     let (mut seen, mut cursor, mut sizes) = (Vec::new(), None::<String>, Vec::new());
     loop {
         let args = cursor
@@ -211,12 +221,12 @@ async fn track_log_pages_by_cursor_without_losing_a_commit() {
 #[tokio::test]
 async fn track_log_page_ends_early_at_the_byte_budget() {
     let boot = boot_with_role(CardRole::Planner).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
-    seed_linear_commits(&pool, &boot.track_id, 50).await;
+    let pool = boot.repo.sqlite_db().unwrap();
+    seed_linear_commits(pool.read_pool(), &boot.track_id, 50).await;
     sqlx::query("UPDATE track_vcs_commits SET message = ?1 WHERE track_id = ?2")
         .bind("m".repeat(1024))
         .bind(boot.track_id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let (mut seen, mut cursor, mut sizes) = (Vec::new(), None::<String>, Vec::new());
@@ -263,7 +273,7 @@ async fn cli_state_text_is_one_fact_per_line() {
     ))
     .bind(boot.track_id.as_str())
     .bind(&boot.other_card_id)
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .unwrap();
 
@@ -317,7 +327,7 @@ async fn cli_state_text_is_one_fact_per_line() {
 
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
         .bind(&boot.other_card_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let (text, _, exit) = cli(&boot, &["track", "status"]).await;
@@ -698,7 +708,12 @@ async fn cli_authorization_equals_direct_call() {
 #[tokio::test]
 async fn force_gate_refuses_before_the_tool() {
     let boot = boot_with_role(CardRole::Planner).await;
-    seed_linear_commits(&boot.repo.sqlite_pool().unwrap(), &boot.track_id, 5).await;
+    seed_linear_commits(
+        boot.repo.sqlite_db().unwrap().read_pool(),
+        &boot.track_id,
+        5,
+    )
+    .await;
     let track = boot.track_id.as_str().to_string();
 
     let (stdout, stderr, exit) =

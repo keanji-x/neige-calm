@@ -10,7 +10,7 @@ async fn object_sweep_new_head_preserves_reactivated_old_tree_and_blob() {
     let old = f.tree("reactivated document", 1).await;
     f.age(&old).await;
     let orphan = f.orphan("unrelated orphan").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     f.publish(&old, Some(&f.commit)).await;
     pause.release();
@@ -42,9 +42,9 @@ async fn object_sweep_restored_ancestor_without_head_change_preserves_objects() 
         .await
         .unwrap();
     let orphan = f.orphan("independent garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let restored = commit_tree_at_tx(
         &mut tx,
         &f.track,
@@ -101,7 +101,7 @@ async fn object_sweep_missing_and_wrong_kind_reachable_trees_fail_closed() {
                 .await
                 .unwrap();
         }
-        let error = track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+        let error = track_vcs::sweep_unreferenced_objects_once(f.repo.db())
             .await
             .unwrap_err();
         assert!(error.to_string().contains(&f.tree.tree_hash));
@@ -113,11 +113,11 @@ async fn object_sweep_missing_and_wrong_kind_reachable_trees_fail_closed() {
 async fn object_sweep_cached_tree_removed_by_other_sweep_still_requires_presence() {
     let f = Fixture::new().await;
     f.age(&f.tree).await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::Parse]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::Parse]);
     pause.entered().await;
     let replacement = f.tree("new root", 1).await;
     f.publish(&replacement, None).await;
-    track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+    track_vcs::sweep_unreferenced_objects_once(f.repo.db())
         .await
         .unwrap();
     let old_tree_removed = !f.exists(&f.tree.tree_hash).await;
@@ -139,7 +139,7 @@ async fn object_sweep_cached_tree_removed_by_other_sweep_still_requires_presence
 async fn object_sweep_rechecks_candidate_grace_before_delete() {
     let f = Fixture::new().await;
     let orphan = f.orphan("refreshed creation stamp").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
         .bind(now_ms())
@@ -155,8 +155,8 @@ async fn object_sweep_rechecks_candidate_grace_before_delete() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn object_sweep_without_candidates_never_waits_for_writer() {
     let f = Fixture::new().await;
-    let tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
-    let pool = f.repo.pool().clone();
+    let tx = begin_immediate_tx(f.repo.db()).await.unwrap();
+    let pool = f.repo.db().clone();
     let mut sweep =
         tokio::spawn(async move { track_vcs::sweep_unreferenced_objects_once(&pool).await });
     let completed = tokio::time::timeout(Duration::from_secs(1), &mut sweep).await;
@@ -178,7 +178,7 @@ async fn object_sweep_drains_multiple_batches_with_continuous_small_new_trees() 
         orphans.push(f.orphan(&format!("old garbage {n}")).await);
     }
     let (pause, sweep) = start(
-        f.repo.pool().clone(),
+        f.repo.db().clone(),
         vec![Phase::BeforeDelete, Phase::BeforeDelete],
     );
     let mut parent = f.commit.clone();
@@ -204,10 +204,7 @@ async fn object_sweep_large_delta_count_and_bytes_are_observed_outside_writer() 
     for many in [false, true] {
         let f = Fixture::new().await;
         let orphan = f.orphan("requires final validation").await;
-        let (pause, sweep) = start(
-            f.repo.pool().clone(),
-            vec![Phase::BeforeDelete, Phase::Parse],
-        );
+        let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete, Phase::Parse]);
         pause.entered().await;
         let mut parent = f.commit.clone();
         for n in 0..if many { 33 } else { 1 } {
@@ -221,7 +218,7 @@ async fn object_sweep_large_delta_count_and_bytes_are_observed_outside_writer() 
         }
         pause.release();
         pause.entered().await;
-        let pool = f.repo.pool().clone();
+        let pool = f.repo.db().clone();
         let mut writer = tokio::spawn(async move {
             let tx = begin_immediate_tx(&pool).await?;
             tx.rollback().await?;
@@ -246,7 +243,7 @@ async fn object_sweep_large_delta_count_and_bytes_are_observed_outside_writer() 
 async fn object_sweep_repeated_oversized_changes_defer_without_hot_loop_or_deletion() {
     let f = Fixture::new().await;
     let orphan = f.orphan("deferred old orphan").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete; 3]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete; 3]);
     let mut parent = f.commit.clone();
     for n in 0..3 {
         pause.entered().await;
@@ -257,7 +254,7 @@ async fn object_sweep_repeated_oversized_changes_defer_without_hot_loop_or_delet
     assert_eq!(finish(sweep).await.unwrap(), 0);
     assert!(f.exists(&orphan).await);
     assert_eq!(
-        track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+        track_vcs::sweep_unreferenced_objects_once(f.repo.db())
             .await
             .unwrap(),
         1
@@ -272,7 +269,7 @@ async fn object_sweep_later_failure_preserves_earlier_committed_batches() {
         f.orphan(&format!("partial progress garbage {n}")).await;
     }
     let (pause, sweep) = start(
-        f.repo.pool().clone(),
+        f.repo.db().clone(),
         vec![Phase::BeforeDelete, Phase::BeforeDelete],
     );
     pause.entered().await;
@@ -339,9 +336,9 @@ async fn object_sweep_restored_cycle_and_duplicate_states_keep_reachable_objects
         f.age(tree).await;
     }
     let orphan = f.orphan("independent cyclic graph garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let restored = commit_tree_at_tx(
         &mut tx,
         &f.track,
@@ -389,7 +386,7 @@ async fn object_sweep_sparse_orphans_share_one_candidate_validation_batch() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let f = Fixture::new().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let mut entries = BTreeMap::new();
     for n in 0..1024 {
         let text = format!("retained sparse-GC document {n}");
@@ -443,7 +440,7 @@ async fn object_sweep_sparse_orphans_share_one_candidate_validation_batch() {
     let deleted = DELETE_VALIDATIONS
         .scope(
             counter.clone(),
-            track_vcs::sweep_unreferenced_objects_once(f.repo.pool()),
+            track_vcs::sweep_unreferenced_objects_once(f.repo.db()),
         )
         .await
         .unwrap();
@@ -491,7 +488,7 @@ async fn object_sweep_stable_graph_reuses_one_complete_metadata_proof_across_bat
             validations.clone(),
             METADATA_QUERIES.scope(
                 queries.clone(),
-                track_vcs::sweep_unreferenced_objects_once(f.repo.pool()),
+                track_vcs::sweep_unreferenced_objects_once(f.repo.db()),
             ),
         )
         .await
@@ -544,7 +541,7 @@ async fn object_sweep_same_tree_head_extensions_reuse_one_complete_proof_across_
         orphans.push(f.orphan(&format!("same-tree prefix old garbage {n}")).await);
     }
     let (pause, sweep) = start(
-        f.repo.pool().clone(),
+        f.repo.db().clone(),
         vec![Phase::BeforeDelete, Phase::BeforeDelete],
     );
     let mut history = Vec::new();
@@ -647,7 +644,7 @@ async fn object_sweep_different_tree_head_extensions_reuse_one_complete_proof_ac
         );
     }
     let (pause, sweep) = start(
-        f.repo.pool().clone(),
+        f.repo.db().clone(),
         vec![Phase::BeforeDelete, Phase::BeforeDelete],
     );
     let mut history = Vec::new();

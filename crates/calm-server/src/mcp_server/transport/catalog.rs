@@ -77,8 +77,8 @@ impl SessionCatalog {
             .partition(|descriptor| descriptor.roles.contains(&identity.role));
         Ok(Self {
             role: identity.role,
-            track_is_admin: match ctx.sqlite_pool.as_ref() {
-                Some(pool) => crate::area_admin::card_is_admin(pool, &identity.card_id)
+            track_is_admin: match ctx.sqlite_db.as_ref() {
+                Some(pool) => crate::area_admin::card_is_admin(pool.read_pool(), &identity.card_id)
                     .await
                     .map_err(|error| RpcError::internal(error.to_string()))?,
                 None => false,

@@ -66,36 +66,36 @@ impl Stack {
 
     /// The area's one Planner card.
     async fn planner_card_in(&self, area_id: &str) -> String {
-        let pool = self.repo().sqlite_pool().expect("pool");
+        let pool = self.repo().sqlite_db().expect("pool");
         sqlx::query_scalar(
             "SELECT c.id FROM cards c JOIN tracks t ON t.id = c.track_id \
               WHERE t.area_id = ?1 AND c.role = 'planner'",
         )
         .bind(area_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .expect("the create minted a Planner card")
     }
 
     /// Every session row of the card as `(state, thread_id)`.
     async fn session_rows(&self, card_id: &str) -> Vec<(String, Option<String>)> {
-        let pool = self.repo().sqlite_pool().expect("pool");
+        let pool = self.repo().sqlite_db().expect("pool");
         sqlx::query_as("SELECT state, thread_id FROM worker_sessions WHERE card_id = ?1")
             .bind(card_id)
-            .fetch_all(&pool)
+            .fetch_all(pool.read_pool())
             .await
             .expect("rows")
     }
 
     async fn start_ops(&self, card_id: &str) -> i64 {
-        let pool = self.repo().sqlite_pool().expect("pool");
+        let pool = self.repo().sqlite_db().expect("pool");
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM operations WHERE kind = 'planner-harness-start' \
                AND json_extract(payload_json, ?2) = ?1",
         )
         .bind(card_id)
         .bind(format!("$.{PLANNER_START_CARD_KEY}"))
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .expect("count")
     }

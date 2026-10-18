@@ -8,7 +8,7 @@ async fn object_sweep_changed_external_bracket_does_not_certify_stale_ancestry()
     let old = f.tree("activated during metadata bracket", 1).await;
     f.age(&old).await;
     let orphan = f.orphan("bracket independent orphan").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::AfterMetadata]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::AfterMetadata]);
     pause.entered().await;
     f.publish(&old, Some(&f.commit)).await;
     pause.release();
@@ -30,7 +30,7 @@ async fn object_sweep_required_revision_error_never_falls_back_to_unversioned_pr
         .await
         .unwrap();
     assert!(
-        track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+        track_vcs::sweep_unreferenced_objects_once(f.repo.db())
             .await
             .is_err()
     );
@@ -41,7 +41,7 @@ async fn object_sweep_required_revision_error_never_falls_back_to_unversioned_pr
 async fn object_sweep_revision_mismatch_after_admission_preparation_rechecks_cached_tree() {
     let f = Fixture::new().await;
     let orphan = f.orphan("retain when cached root is invalidated").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     sqlx::query("UPDATE track_vcs_objects SET kind='blob' WHERE hash=?1")
         .bind(&f.tree.tree_hash)
@@ -60,10 +60,7 @@ async fn object_sweep_fresh_external_proof_avoids_repeating_full_query_under_wri
     let activated = f.tree("fresh externally proved tree", 1).await;
     f.age(&activated).await;
     let orphan = f.orphan("fresh proof garbage").await;
-    let (pause, sweep) = start(
-        f.repo.pool().clone(),
-        vec![Phase::Parse, Phase::BeforeDelete],
-    );
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::Parse, Phase::BeforeDelete]);
     pause.entered().await;
     f.publish(&activated, Some(&f.commit)).await;
     // Fresh direct publications now have a bounded frontier proof. An actual old-row
@@ -92,7 +89,7 @@ async fn object_sweep_unstable_fresh_bracket_uses_complete_writer_fallback() {
     f.age(&second).await;
     let orphan = f.orphan("unstable proof garbage").await;
     let (pause, sweep) = start(
-        f.repo.pool().clone(),
+        f.repo.db().clone(),
         vec![Phase::Parse, Phase::AfterMetadata],
     );
     pause.entered().await;
@@ -118,10 +115,10 @@ async fn object_sweep_unstable_fresh_bracket_uses_complete_writer_fallback() {
 async fn object_sweep_metadata_bracket_observes_committed_head_aba() {
     let f = Fixture::new().await;
     let orphan = f.orphan("ABA garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::AfterMetadata]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::AfterMetadata]);
     pause.entered().await;
     f.publish(&f.tree, Some(&f.commit)).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
         .bind(&f.commit)
         .bind(f.track.as_str())
@@ -146,7 +143,7 @@ async fn object_sweep_missing_revision_row_fails_closed_before_deletion() {
     let orphan = f.orphan("required row garbage").await;
     f.remove_required_revision().await;
     assert!(
-        track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+        track_vcs::sweep_unreferenced_objects_once(f.repo.db())
             .await
             .is_err()
     );

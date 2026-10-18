@@ -61,7 +61,7 @@ async fn seed_stored_retired_block(boot: &Boot) -> String {
         let has_crdt: bool =
             sqlx::query_scalar("SELECT body_crdt IS NOT NULL FROM cards WHERE id = ?1")
                 .bind(boot.report_card_id.to_string())
-                .fetch_one(&boot.repo.sqlite_pool().unwrap())
+                .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
                 .await
                 .unwrap();
         assert!(has_crdt, "the report is CRDT-backed after the write");

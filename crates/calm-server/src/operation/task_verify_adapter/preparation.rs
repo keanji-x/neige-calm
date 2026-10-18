@@ -50,7 +50,7 @@ pub(super) async fn collect(
     op: &Operation,
     ctx: &SpawnCtx,
 ) -> Result<Option<Box<dyn PreparedTx>>> {
-    let pool = ctx.operation_repo.sqlite_pool();
+    let pool = ctx.operation_repo.sqlite_db();
     // Keep the repository's IMMEDIATE-only transaction discipline: a short SQL-only snapshot
     // avoids shared-cache deferred-reader deadlocks, and ends before any Git subprocess.
     let mut tx = begin_immediate_tx(&pool).await?;

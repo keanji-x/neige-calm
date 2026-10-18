@@ -2,7 +2,7 @@ use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::ids::TrackId;
 use serde_json::Value;
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, Transaction};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -97,7 +97,7 @@ pub async fn prune_track_history_tx(
 }
 
 /// Keep-N prune across all tracks, without VACUUM.
-pub fn spawn_track_history_pruner(pool: SqlitePool) {
+pub fn spawn_track_history_pruner(pool: crate::db::sqlite::SqliteDb) {
     let Some((interval, keep)) = track_history_pruner_config_from_env() else {
         tracing::info!("track_vcs: history pruner disabled");
         return;
@@ -135,9 +135,9 @@ pub(super) fn track_history_pruner_config_from_env() -> Option<(Duration, usize)
     Some((interval, keep))
 }
 
-pub async fn prune_all_tracks_once(pool: &SqlitePool, keep: usize) -> Result<u64> {
+pub async fn prune_all_tracks_once(pool: &crate::db::sqlite::SqliteDb, keep: usize) -> Result<u64> {
     let track_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM tracks ORDER BY id")
-        .fetch_all(pool)
+        .fetch_all(pool.read_pool())
         .await?;
     let track_count = track_ids.len();
     let mut total_pruned = 0;

@@ -227,7 +227,7 @@ async fn boot() -> Boot {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: Some(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared(
-            sqlx_repo.pool().clone(),
+            sqlx_repo.db().clone(),
         )),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
@@ -243,7 +243,7 @@ async fn boot() -> Boot {
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: Some(sqlx_repo.pool().clone()),
+        sqlite_db: Some(sqlx_repo.db().clone()),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 
@@ -2259,7 +2259,7 @@ async fn report_md_matches_report_read_body() {
 #[tokio::test]
 async fn hidden_track_history_tools_are_callable_and_patch_report() {
     let boot = boot().await;
-    track_vcs::backfill_existing_tracks(boot.sqlx_repo.pool())
+    track_vcs::backfill_existing_tracks(boot.sqlx_repo.db())
         .await
         .expect("backfill VCS baseline");
     let before = track_vcs::head(boot.sqlx_repo.pool(), &boot.track_id)
@@ -2382,7 +2382,7 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
 #[tokio::test]
 async fn track_history_rejects_ambiguous_commit_prefixes() {
     let boot = boot().await;
-    track_vcs::backfill_existing_tracks(boot.sqlx_repo.pool())
+    track_vcs::backfill_existing_tracks(boot.sqlx_repo.db())
         .await
         .expect("backfill VCS baseline");
     let head = track_vcs::head(boot.sqlx_repo.pool(), &boot.track_id)

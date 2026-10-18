@@ -258,7 +258,7 @@ impl SqlxRepo {
         correlation: Option<&str>,
         event: &Event,
     ) -> Result<i64> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.read_pool().begin().await?;
         let authorized = gated::ungated_fixture_replay(&actor, &scope, event);
         let id = Self::event_append_in_tx(&mut tx, &authorized, correlation).await?;
         tx.commit().await?;
@@ -339,7 +339,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
         let event = match fut.await {
             Ok(ev) => ev,
@@ -407,7 +407,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
         let events = match fut.await {
             Ok(v) => v,
@@ -500,7 +500,7 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithActorEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let fut: BoxFuture<'_, Result<Vec<(ActorId, EventScope, Event)>>> = f(&mut tx);
         let events = match fut.await {
             Ok(v) => v,
@@ -598,7 +598,7 @@ impl RepoEventWrite for SqlxRepo {
         event: Event,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         // Pure events have no entity write to populate the cache from, so the role lookup uses the cache's current contents.
         let authorized = match gated::authorize_with_caches(
             &mut tx,
@@ -651,7 +651,7 @@ impl RepoEventWrite for SqlxRepo {
     /// Event-less tx wrapper: commits on `Ok(())`, rolls back on `Err(_)`; no event row, no broadcast.
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
         match fut.await {
             Ok(()) => {}
@@ -693,7 +693,7 @@ impl RepoEventWrite for SqlxRepo {
         )
         .bind(since_id)
         .bind(cap)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
 
         let mut out = Vec::with_capacity(rows.len());
@@ -744,7 +744,7 @@ impl RepoEventWrite for SqlxRepo {
         )
         .bind(since_id)
         .bind(cap)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read_pool())
         .await?;
         Ok((n, max_id))
     }
@@ -766,7 +766,7 @@ impl RepoEventWrite for SqlxRepo {
         .bind(card_id)
         .bind(serde_json::to_string(actor)?)
         .bind(hook_kind)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read_pool())
         .await?;
         Ok(seen)
     }
@@ -811,7 +811,10 @@ impl RepoEventWrite for SqlxRepo {
         }
         separated.push_unseparated(") ORDER BY id ASC");
 
-        let rows: Vec<ScopeRow> = query.build_query_as().fetch_all(&self.pool).await?;
+        let rows: Vec<ScopeRow> = query
+            .build_query_as()
+            .fetch_all(self.db.read_pool())
+            .await?;
 
         let mut out = Vec::with_capacity(rows.len());
         for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
@@ -867,7 +870,7 @@ impl RepoEventWrite for SqlxRepo {
     async fn events_earliest_id(&self) -> Result<Option<i64>> {
         // `MIN(id)` over an empty table returns a single `NULL` row, read as `None`.
         let row: (Option<i64>,) = sqlx::query_as("SELECT MIN(id) FROM events")
-            .fetch_one(&self.pool)
+            .fetch_one(self.db.read_pool())
             .await?;
         Ok(row.0)
     }
@@ -875,7 +878,7 @@ impl RepoEventWrite for SqlxRepo {
     async fn events_prune_watermark(&self) -> Result<i64> {
         let row: Option<(i64,)> = sqlx::query_as("SELECT value FROM retention_meta WHERE key = ?1")
             .bind(crate::events_prune::EVENTS_PRUNE_WATERMARK_KEY)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read_pool())
             .await?;
         Ok(row.map(|(v,)| v).unwrap_or(0))
     }
@@ -883,7 +886,7 @@ impl RepoEventWrite for SqlxRepo {
     async fn events_latest_id(&self) -> Result<Option<i64>> {
         // `MAX(id)` over an empty table returns a single `NULL` row, read as `None`.
         let row: (Option<i64>,) = sqlx::query_as("SELECT MAX(id) FROM events")
-            .fetch_one(&self.pool)
+            .fetch_one(self.db.read_pool())
             .await?;
         Ok(row.0)
     }

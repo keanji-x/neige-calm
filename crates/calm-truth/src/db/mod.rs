@@ -15,7 +15,7 @@ use crate::track_area_cache::TrackAreaCache;
 use async_trait::async_trait;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use futures::future::BoxFuture;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, Transaction};
 use std::sync::Arc;
 
 pub mod rows;
@@ -722,7 +722,7 @@ impl<T> RouteRepo for T where
 /// hatch reached via `AppState::raw_repo()`.
 pub trait Repo: RouteRepo + RepoSyncDomainRaw + WorkerSessionProjectionRepo + SessionRepo {
     /// Internal sqlite escape hatch for infrastructure that owns tables outside the route-facing traits; kept off `RouteRepo`.
-    fn sqlite_pool(&self) -> Option<SqlitePool> {
+    fn sqlite_db(&self) -> Option<sqlite::SqliteDb> {
         None
     }
 

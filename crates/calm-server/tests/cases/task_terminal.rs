@@ -33,7 +33,7 @@ pub(crate) async fn worker_running(
     let task = format!("{track}:{key}");
     let card = new_id();
     let session = new_id();
-    let op = SqlxOperationRepo::new(h.sql.pool().clone())
+    let op = SqlxOperationRepo::new(h.sql.db().clone())
         .insert_operation(
             "terminal-worker",
             OperationKey {

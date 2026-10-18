@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use sqlx::sqlite::SqlitePoolOptions;
+use crate::db::sqlite::SqliteDb;
 
 use super::*;
 use crate::git_candidate::commit_message::COMMIT_MESSAGE_MAX_BYTES;
@@ -107,7 +107,7 @@ async fn delivery_message_is_the_stored_worker_message() {
     let inserted = fx
         .insert_delivery_with("attempt-1", worker(OWNERSHIP_MESSAGE))
         .await;
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let stored = delivery_by_id_tx(&mut tx, &inserted.delivery_id)
         .await
         .unwrap()
@@ -175,7 +175,7 @@ async fn commit_message_is_completed_only_and_immutable() {
     );
 
     // The row writer itself cannot pair a worker message with another outcome.
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let refused = insert_initial_delivery_tx(
         &mut tx,
         "attempt-failed",
@@ -228,7 +228,7 @@ async fn commit_message_is_completed_only_and_immutable() {
     let failed_row = fx
         .insert_delivery_with("attempt-failed-settle", worker("failed settle"))
         .await;
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let candidate = fx.candidate_for(&candidate_row, &"c".repeat(40));
     assert_eq!(
         settle_candidate_tx(
@@ -288,11 +288,8 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
 /// pre-#2139 builder produced, byte for byte.
 #[tokio::test]
 async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let db = SqliteDb::connect("sqlite::memory:").await.unwrap();
+    let pool = db.read_pool().clone();
     migrator_through(140)
         .run(&pool)
         .await
@@ -322,7 +319,7 @@ async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
         .await
         .expect("upgrade to head");
 
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
+    let mut tx = begin_immediate_tx(&db).await.unwrap();
     let row = delivery_by_id_tx(&mut tx, "dlv-4140")
         .await
         .unwrap()

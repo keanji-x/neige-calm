@@ -24,7 +24,7 @@ pub struct AcpSubmission {
 
 /// Claim only a fresh managed session, or the exact registration that already owns it.
 pub async fn acp_registration_claim(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     worker: &str,
     digest: &str,
     native_bound: bool,
@@ -66,12 +66,12 @@ pub async fn acp_submission_unresolved(pool: &SqlitePool, worker: &str) -> Resul
     Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND state IN ('sending','unknown'))").bind(worker).fetch_one(pool).await? != 0)
 }
 pub async fn acp_submission_prepare(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     at_ms: i64,
 ) -> Result<()> {
     let inserted = sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json",",state,created_at_ms) SELECT ?1,?2,?3,?4,?5,?6,'sending',?7 WHERE EXISTS(SELECT 1 FROM ","worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id WHERE ws.id=?1 ","AND ws.provider='opencode' AND ws.mode='resumable' AND c.track_id=ws.track_id ","AND ((ws.contract='planner' AND c.role='planner' AND json_extract(c.payload,'$.planner_provider')='opencode') ","OR (ws.contract='assistant' AND c.role='assistant' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='assistant' ","AND json_extract(c.payload,'$.assistant_provider')='opencode')) ","AND ws.thread_id=?4 AND ws.agent_session_id=?5 AND ws.state IN ","('starting','running','idle','turn_pending'))"))
-        .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).execute(pool).await?;
+        .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).execute(pool.writer_pool()).await?;
     if inserted.rows_affected() != 1 {
         return Err(CalmError::Conflict(
             "ACP submission owner changed before dispatch",
@@ -80,7 +80,7 @@ pub async fn acp_submission_prepare(
     Ok(())
 }
 pub async fn acp_submission_finish(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     worker: &str,
     client: &str,
     outcome: Option<&str>,

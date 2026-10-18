@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 async fn fixture(duplicate: bool) -> (Boot, String) {
     let boot = boot().await;
     let mut body = "# Overview\n\nA task-free section.\n\n# Tasks\n\n".to_string();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     for n in 0..24 {
         let key = format!("done-{n}");
         body.push_str(&render_fence("task", &json!({"key":key,"kind":"terminal","command":"true","ready":false,"declared_by":PLANNER_DECLARATION_AUTHOR})));
@@ -23,7 +23,7 @@ async fn fixture(duplicate: bool) -> (Boot, String) {
         .bind(boot.track_id.as_str())
         .bind(key)
         .bind(PLANNER_DECLARATION_AUTHOR)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     }
@@ -40,7 +40,7 @@ async fn fixture(duplicate: bool) -> (Boot, String) {
     sqlx::query("UPDATE cards SET body_crdt=NULL,payload=?1 WHERE id=?2")
         .bind(json!({"schemaVersion":4,"summary":"diagnostics","body":body}).to_string())
         .bind(boot.report_card_id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let blocks = calm_server::track_report_read::load_report_doc_snapshot(
@@ -117,7 +117,7 @@ async fn index_skips_diagnostics_evaluation() {
     let (boot, _) = fixture(false).await;
     // Make the production diagnostics query fail while leaving the document readable.
     sqlx::query("DROP TABLE tasks")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     assert_eq!(
@@ -148,7 +148,7 @@ async fn assistant_receives_no_diagnostics() {
 #[tokio::test]
 async fn orphan_withdrawals_belong_only_to_full_reads() {
     let (boot, id) = fixture(false).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "INSERT INTO tasks \
          (id,track_id,key,kind,goal,context_json,depends_on_json,priority, \
@@ -157,7 +157,7 @@ async fn orphan_withdrawals_belong_only_to_full_reads() {
     )
     .bind(boot.track_id.as_str())
     .bind(PLANNER_DECLARATION_AUTHOR)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let out = read(&boot, json!({})).await;
@@ -195,7 +195,7 @@ async fn orphan_withdrawals_belong_only_to_full_reads() {
 #[tokio::test]
 async fn pending_reason_keeps_terminal_dependency_blockers_but_not_waits() {
     let (boot, _) = fixture(false).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut body = String::from("# Overview\nstatus\n# Dependencies\n");
     for (key, dependencies, status) in [
         ("failed", vec![], "failed"),
@@ -220,14 +220,14 @@ async fn pending_reason_keeps_terminal_dependency_blockers_but_not_waits() {
         .bind(json!(dependencies).to_string())
         .bind(status)
         .bind(PLANNER_DECLARATION_AUTHOR)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     }
     sqlx::query("UPDATE cards SET body_crdt=NULL,payload=?1 WHERE id=?2")
         .bind(json!({"schemaVersion":4,"summary":"dependencies","body":body}).to_string())
         .bind(boot.report_card_id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     assert_eq!(

@@ -27,9 +27,9 @@ async fn acp_catalog_before_creation_never_prompts_or_grants_mcp() {
         !std::path::Path::new(&format!("/proc/{}", created[0]["_pid"])).exists(),
         "discovery must stop its process before returning"
     );
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let submissions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM acp_submissions")
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     assert_eq!(submissions, 0);

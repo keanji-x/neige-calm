@@ -15,7 +15,7 @@ async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
     let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
     let path = tmp.path().join("plain-lease");
 
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let (lease, _event) =
         acquire_plain_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &path)
             .await
@@ -132,7 +132,7 @@ async fn worktree_track_fixture(
         &crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(checkout.clone()),
     )
     .await;
-    let path = crate::test_seams::ensure_track_worktree_for_test(repo.pool(), &track_id)
+    let path = crate::test_seams::ensure_track_worktree_for_test(repo.db(), &track_id)
         .await
         .unwrap();
     let target =
@@ -154,7 +154,7 @@ async fn prepare_takes_the_track_worktree_at_its_head() {
         .trim()
         .to_string();
 
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let plan = prepare_worker_lease_as_tx(
         &mut tx,
         &track_id,
@@ -197,7 +197,7 @@ async fn prepare_refuses_an_attached_track_without_a_worktree() {
     init_git_repo(tmp.path());
     let (repo, track_id, _card_id) = lease_fixture(tmp.path()).await;
 
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let err = prepare_worker_lease_as_tx(
         &mut tx,
         &track_id,
@@ -277,7 +277,7 @@ async fn clean_check_of_a_missing_checkout_is_unavailable() {
 async fn prepare_supersedes_a_stuck_owners_lease() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, track_id, card_id, _target) = worktree_track_fixture(tmp.path()).await;
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let plan = prepare_worker_lease_as_tx(
         &mut tx,
         &track_id,
@@ -301,7 +301,7 @@ async fn prepare_supersedes_a_stuck_owners_lease() {
     .unwrap();
 
     let next_card = new_card(&repo, &track_id).await;
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let plan = prepare_worker_lease_as_tx(
         &mut tx,
         &track_id,
@@ -349,7 +349,7 @@ async fn every_lease_reader_returns_base_and_policy() {
         let repo = &repo;
         let track_id = &track_id;
         async move {
-            let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
             let plan = prepare_worker_lease_as_tx(
                 &mut tx,
                 track_id,
@@ -384,7 +384,7 @@ async fn every_lease_reader_returns_base_and_policy() {
     // The card-tx release.
     let card_tx = new_card(&repo, &track_id).await;
     take(card_tx.clone()).await;
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let released = release_workspace_lease_for_card_tx(
         &mut tx,
         &card_tx,
@@ -397,7 +397,7 @@ async fn every_lease_reader_returns_base_and_policy() {
     // By id (the compensation step), and by id in any state (the delivery hand-off's reader).
     let card_by_id = new_card(&repo, &track_id).await;
     let lease_by_id = take(card_by_id).await;
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let any_state = facts::workspace_lease_by_id_tx(&mut tx, &lease_by_id.lease_id)
         .await
         .unwrap()
@@ -406,7 +406,7 @@ async fn every_lease_reader_returns_base_and_policy() {
     assert_eq!(any_state.delivery_policy, Some(DeliveryPolicy::Kernel));
     assert!(
         release::release_workspace_lease_by_id(
-            repo.pool(),
+            repo.db(),
             &events,
             &lease_by_id.lease_id,
             ReleaseDelivery::Commit(AttemptOutcome::SpawnFailed),
@@ -417,7 +417,7 @@ async fn every_lease_reader_returns_base_and_policy() {
     // The facts reader.
     let card_facts = new_card(&repo, &track_id).await;
     take(card_facts.clone()).await;
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let facts = facts::worker_worktree_facts_tx(&mut tx, &card_facts)
         .await
         .unwrap()
@@ -432,7 +432,7 @@ async fn every_lease_reader_returns_base_and_policy() {
     let all_active = active_workspace_leases(repo.pool()).await.unwrap();
     assert_eq!(all_active.len(), 1);
     assert!(all_active.iter().all(|lease| lease.base.is_some()));
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let release = release_workspace_leases_for_track_tx(&mut tx, &track_id)
         .await
         .unwrap();
@@ -650,7 +650,7 @@ async fn lease_fixture_with_plan(
     .await
     .unwrap();
     let track = crate::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         crate::model::NewTrack {
             template_input: None,
             area_id: area.id,

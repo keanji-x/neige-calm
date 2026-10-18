@@ -102,10 +102,10 @@ async fn report_tag(
     let track_id = track.id.as_str().to_string();
     if add.is_empty() && remove.is_empty() {
         let pool = ctx
-            .sqlite_pool
+            .sqlite_db
             .as_ref()
             .ok_or_else(|| RpcError::internal(format!("{tool}: requires a sqlite-backed repo")))?;
-        let tags = store::list(pool, &track_id)
+        let tags = store::list(pool.read_pool(), &track_id)
             .await
             .map_err(|e| map_err(tool, e))?;
         return Ok(json!({ "tags": tags }));

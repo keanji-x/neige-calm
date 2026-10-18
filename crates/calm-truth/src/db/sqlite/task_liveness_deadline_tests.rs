@@ -195,7 +195,7 @@ async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
             last_source_uuid: None,
             last_line_hash: None,
         };
-        super::worker_flow_cursor_set_for_test(repo.pool(), card, kind, &position, at)
+        super::worker_flow_cursor_set_for_test(repo.db(), card, kind, &position, at)
             .await
             .expect("set cursor");
     }

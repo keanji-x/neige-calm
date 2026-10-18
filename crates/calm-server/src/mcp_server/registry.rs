@@ -246,7 +246,7 @@ pub struct AppContext {
     pub preview: Arc<crate::preview::PreviewRegistry>,
     /// The repo's sqlite pool for **read-only** statements; writes never go through this.
     /// `None` only for repos without sqlite (tests).
-    pub sqlite_pool: Option<sqlx::SqlitePool>,
+    pub sqlite_db: Option<crate::db::sqlite::SqliteDb>,
     /// How long one `neige_task_gate` call waits before it answers `running` (#2464 D3), from the
     /// configured worker idle window.
     pub gate_run_wait: crate::operation::task_gate_run::GateRunWait,
@@ -266,11 +266,10 @@ impl AppContext {
         operation_runtime: Arc<tokio::sync::OnceCell<Arc<crate::operation::OperationRuntime>>>,
         gate_logs_dir: std::path::PathBuf,
     ) -> Arc<Self> {
-        let sqlite_pool = repo.sqlite_pool();
-        let track_vcs = sqlite_pool.clone().map(SqlxTrackVcsRepo::shared);
-        let series_resolver = Arc::new(crate::report_series::SeriesResolver::new(
-            sqlite_pool.clone(),
-        ));
+        let sqlite_db = repo.sqlite_db();
+        let track_vcs = sqlite_db.clone().map(SqlxTrackVcsRepo::shared);
+        let series_resolver =
+            Arc::new(crate::report_series::SeriesResolver::new(sqlite_db.clone()));
         let route_repo: Arc<dyn RouteRepo> = repo;
         Arc::new(Self {
             terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
@@ -288,7 +287,7 @@ impl AppContext {
             plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
             read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
             preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
-            sqlite_pool,
+            sqlite_db,
             gate_run_wait: crate::operation::task_gate_run::GateRunWait::DEFAULT,
         })
     }

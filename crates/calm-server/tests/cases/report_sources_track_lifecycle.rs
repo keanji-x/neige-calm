@@ -276,11 +276,11 @@ async fn fork_copies_sources_verbatim_and_the_copies_outlive_the_parent() {
     let (status, body) = request(&boot, "DELETE", &format!("/api/tracks/{parent}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     assert!(boot.repo.track_get(&parent).await.unwrap().is_none());
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let parent_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM report_sources WHERE track_id = ?1")
             .bind(&parent)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(parent_rows, 0, "FK cascade removed the parent's rows");
@@ -324,7 +324,7 @@ async fn deleting_a_track_empties_its_slot_in_the_transient_ring() {
 }
 
 async fn tags_of(boot: &Boot, track_id: &str) -> Vec<String> {
-    calm_server::report_tags::store::list(&boot.repo.sqlite_pool().unwrap(), track_id)
+    calm_server::report_tags::store::list(boot.repo.sqlite_db().unwrap().read_pool(), track_id)
         .await
         .unwrap()
 }

@@ -31,8 +31,9 @@ pub fn spawn(state: RouteState) {
 fn pool(state: &RouteState) -> Result<&sqlx::SqlitePool> {
     state
         .mcp_context
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
+        .map(crate::db::sqlite::SqliteDb::read_pool)
         .ok_or_else(|| CalmError::Internal("daily Planner requires sqlite".into()))
 }
 

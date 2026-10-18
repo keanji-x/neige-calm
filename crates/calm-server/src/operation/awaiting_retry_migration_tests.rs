@@ -1,8 +1,9 @@
 //! Upgrade the released schema with FK enforcement and permanent keyed rows intact.
+use sqlx::SqlitePool;
 use std::borrow::Cow;
 
 use super::*;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use crate::db::sqlite::SqliteDb;
 
 async fn snapshot(pool: &SqlitePool) -> Vec<String> {
     let columns: Vec<String> =
@@ -26,15 +27,13 @@ async fn snapshot(pool: &SqlitePool) -> Vec<String> {
 #[tokio::test]
 async fn awaiting_retry_migration_preserves_rows_session_refs_indices_and_parked_constraints() {
     let temp = tempfile::tempdir().unwrap();
-    let options = SqliteConnectOptions::new()
-        .filename(temp.path().join("before.db"))
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .unwrap();
+    let db = SqliteDb::connect(&format!(
+        "sqlite://{}",
+        temp.path().join("before.db").display()
+    ))
+    .await
+    .unwrap();
+    let pool = db.read_pool().clone();
     let previous = sqlx::migrate::Migrator {
         migrations: Cow::Owned(
             calm_truth::MIGRATOR
@@ -46,7 +45,7 @@ async fn awaiting_retry_migration_preserves_rows_session_refs_indices_and_parked
         ..sqlx::migrate::Migrator::DEFAULT
     };
     previous.run(&pool).await.unwrap();
-    let repo = SqlxOperationRepo::new(pool.clone());
+    let repo = SqlxOperationRepo::new(db.clone());
     for name in ["active", "complete", "parked"] {
         let id = repo
             .insert_operation(

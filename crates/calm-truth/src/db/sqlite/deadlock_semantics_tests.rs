@@ -469,7 +469,7 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
         tx.rollback().await.unwrap();
     });
 
-    let mut tx_a = begin_immediate_tx(&pool).await.unwrap();
+    let mut tx_a = begin_immediate_tx(repo.db()).await.unwrap();
     sqlx::query("INSERT INTO deadlock_x (v) VALUES ('a')")
         .execute(&mut **tx_a)
         .await
@@ -510,7 +510,7 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
     drop(held);
     wait_for_pool_settled(&pool).await;
 
-    let mut tx_retry = timeout(STALL_BOUND, begin_immediate_tx(&pool))
+    let mut tx_retry = timeout(STALL_BOUND, begin_immediate_tx(repo.db()))
         .await
         .expect("begin_immediate_tx must not stall after the deadlock")
         .expect("begin_immediate_tx must succeed on the healed pool");

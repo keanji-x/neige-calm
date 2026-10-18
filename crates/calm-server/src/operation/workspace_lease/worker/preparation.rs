@@ -121,7 +121,7 @@ pub(crate) async fn collect<A: WorkerAdmission>(
     attempt: &str,
     root: &Path,
 ) -> Result<Option<Box<dyn PreparedTx>>> {
-    let pool = ctx.operation_repo.sqlite_pool();
+    let pool = ctx.operation_repo.sqlite_db();
     let mut tx = begin_immediate_tx(&pool).await?;
     if !crate::operation::repo_sqlite::has_live_claim_tx(&mut tx, op).await? {
         tx.rollback().await?;

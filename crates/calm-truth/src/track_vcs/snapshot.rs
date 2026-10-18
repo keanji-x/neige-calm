@@ -13,7 +13,7 @@ use crate::track_report::TrackReportPayload;
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Executor, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Executor, Row, Sqlite, Transaction};
 use std::collections::BTreeMap;
 
 use super::runs::{EventRow, project_runs_tx, track_event_from_row};
@@ -22,7 +22,7 @@ use super::transcripts::HookInputs;
 use super::types::{BlobContent, CardProjection, CardVisibility};
 use super::{MANIFEST_SCHEMA_VERSION, ManifestEntry, TreeSnapshot};
 
-pub async fn backfill_existing_tracks(pool: &SqlitePool) -> Result<usize> {
+pub async fn backfill_existing_tracks(pool: &crate::db::sqlite::SqliteDb) -> Result<usize> {
     let mut tx = begin_immediate_tx_once(pool).await?;
     let res = backfill_existing_tracks_tx(&mut tx).await;
     match res {

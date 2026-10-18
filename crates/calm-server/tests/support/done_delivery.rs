@@ -106,7 +106,7 @@ pub async fn wire(
 ) -> Wiring {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
-    let op_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let op_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let renderer = TerminalRendererRegistry::new_with_repo(repo_dyn.clone());
     let daemon = Arc::new(DaemonClient::new_stub());
@@ -262,7 +262,7 @@ pub fn context(
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: repo.clone(),
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events,
         write,
@@ -278,7 +278,7 @@ pub fn context(
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     })
 }

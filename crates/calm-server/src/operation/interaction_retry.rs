@@ -1,8 +1,6 @@
 //! Read-only receipts and explicit, generation-fenced interaction retry.
 use std::time::Duration;
 
-use sqlx::SqlitePool;
-
 use super::{
     OPERATION_LEASE_MS, Operation, OperationKey, OperationResult, OperationRuntime, Phase,
     TxOutput, operation_result_from, required_output,
@@ -127,7 +125,7 @@ impl OperationRuntime {
 }
 
 pub(super) async fn claim_retry(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     op: &Operation,
     expected_attempt: i32,
 ) -> Result<Option<Operation>> {
@@ -157,7 +155,7 @@ pub(super) async fn claim_retry(
     .bind(key)
     .bind(&op.payload_hash)
     .bind(expected_attempt)
-    .fetch_optional(pool)
+    .fetch_optional(pool.writer_pool())
     .await?;
     row.as_ref()
         .map(super::repo_sqlite::operation_from_row)

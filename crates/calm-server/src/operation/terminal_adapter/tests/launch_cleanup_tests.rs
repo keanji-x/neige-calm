@@ -157,7 +157,7 @@ async fn exercise(fault: Fault) {
             .await,
         )
     };
-    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let renderer = TerminalRendererRegistry::new_with_repo(harness.repo.clone());
     let mut daemon = DaemonClient::new_stub();
     daemon.proc_supervisor_sock = Some(
@@ -456,7 +456,7 @@ async fn exercise(fault: Fault) {
                 .unwrap();
             // Reopen the on-disk database and reconstruct runtime/state, using real boot ordering.
             let reboot_repo = Arc::new(crate::db::sqlite::SqlxRepo::open(&db_url).await.unwrap());
-            let reboot_op_repo = Arc::new(SqlxOperationRepo::new(reboot_repo.pool().clone()));
+            let reboot_op_repo = Arc::new(SqlxOperationRepo::new(reboot_repo.db().clone()));
             let reboot_adapter = Arc::new(TerminalWorkerAdapter::new(
                 reboot_repo.clone(),
                 adapter.card_role_cache.clone(),

@@ -44,7 +44,7 @@ async fn cancelled_replacement_retains_the_discoverable_receipt_writer() {
     let state: String =
         sqlx::query_scalar("SELECT state FROM acp_submissions WHERE worker_session_id=?1")
             .bind(&runtime.id)
-            .fetch_one(&stack.repo().sqlite_pool().unwrap())
+            .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(state, "completed");
@@ -84,11 +84,11 @@ async fn shutdown_waits_for_delayed_receipt_writer_before_returning() {
         !completed_early,
         "recovery must never overlap the previous receipt writer"
     );
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let state: String =
         sqlx::query_scalar("SELECT state FROM acp_submissions WHERE worker_session_id=?1")
             .bind(&runtime.id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "completed");

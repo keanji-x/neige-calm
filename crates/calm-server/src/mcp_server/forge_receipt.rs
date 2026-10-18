@@ -234,7 +234,7 @@ mod tests {
         let truth = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
             .unwrap();
-        let repo = SqlxOperationRepo::new(truth.pool().clone());
+        let repo = SqlxOperationRepo::new(truth.db().clone());
         let op_id = repo
             .insert_operation(
                 crate::operation::forge_action_adapter::FORGE_ACTION_KIND,
@@ -258,7 +258,7 @@ mod tests {
         assert!(show(&op).is_err(), "a pending receipt needs the payload");
         sqlx::query("UPDATE operations SET phase = 'failed', last_error = 'boom' WHERE id = ?1")
             .bind(&op.id)
-            .execute(&repo.sqlite_pool())
+            .execute(repo.sqlite_db().writer_pool())
             .await
             .unwrap();
         let failed = repo.get_operation(&op.id).await.unwrap().unwrap();

@@ -446,7 +446,7 @@ async fn worker_reap_final_output_survives_orphan_grace() {
         // Read-by-attempt checks the production spawn-operation ownership proof,
         // independently of the lifecycle predicate under test.
         use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
-        let op = SqlxOperationRepo::new(h.sql.pool().clone())
+        let op = SqlxOperationRepo::new(h.sql.db().clone())
             .insert_operation(
                 "terminal-worker",
                 OperationKey {

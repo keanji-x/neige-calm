@@ -197,7 +197,7 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
         "restoration did not cold-respawn the daemon or replace the native thread config"
     );
     // Replay the real kernel journal as if the restore committed before its completion marker.
-    let operations = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let failed_op = operations.get_operation(&op).await.unwrap().unwrap();
     let journal: CompensationStateVersioned =
         serde_json::from_value(failed_op.compensation_state.clone().unwrap()).unwrap();

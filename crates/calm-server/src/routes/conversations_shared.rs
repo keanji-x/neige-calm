@@ -71,7 +71,7 @@ pub(crate) async fn user_message_enqueued_on_active_runtime(
 ) -> Result<bool> {
     let pool = w
         .repo
-        .sqlite_pool()
+        .sqlite_db()
         .ok_or_else(|| CalmError::Internal("conversations require a sqlite-backed repo".into()))?;
     // One autocommit statement: as two reads, `/planner/reset` can supersede the
     // runtime between them and the bootstrap is skipped forever. The `json_extract`
@@ -80,7 +80,7 @@ pub(crate) async fn user_message_enqueued_on_active_runtime(
     let found: Option<i64> = sqlx::query_scalar(&user_message_enqueued_on_active_runtime_sql())
         .bind(card_id)
         .bind(track_id)
-        .fetch_optional(&pool)
+        .fetch_optional(pool.read_pool())
         .await?;
     Ok(found.is_some())
 }

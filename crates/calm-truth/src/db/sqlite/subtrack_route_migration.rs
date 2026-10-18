@@ -5,13 +5,12 @@ use calm_report::document::ReportDoc;
 use calm_types::report_blocks::KIND_TASK;
 use calm_types::subtrack_route::{LEGACY_CHILD_ROUTE, migrate_legacy_body};
 use calm_types::track_report::TrackReportPayload;
-use sqlx::SqlitePool;
 
 use crate::error::{CalmError, Result};
 
 const NAME: &str = "subtrack-route-v1";
 
-pub(super) async fn migrate(pool: &SqlitePool) -> Result<()> {
+pub(super) async fn migrate(pool: &crate::db::sqlite::SqliteDb) -> Result<()> {
     let mut tx = super::begin_immediate_tx(pool).await?;
     let applied: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM report_data_migrations WHERE name=?1)")

@@ -50,7 +50,7 @@ pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task
 
 /// Finish the track worktree declared by the fixture's initial creation plan.
 pub(crate) async fn ensure_track_worktree(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     track_id: &str,
 ) -> std::path::PathBuf {
     crate::test_seams::ensure_track_worktree_for_test(pool, track_id)

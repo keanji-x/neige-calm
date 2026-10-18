@@ -603,8 +603,8 @@ impl AppState {
         self.route.mcp_context.preview.clone()
     }
 
-    pub(crate) fn sqlite_pool(&self) -> Option<sqlx::SqlitePool> {
-        self.raw.sqlite_pool()
+    pub(crate) fn sqlite_db(&self) -> Option<crate::db::sqlite::SqliteDb> {
+        self.raw.sqlite_db()
     }
 
     /// Test seam: pin a small replay cap without mutating the process-global env var.
@@ -910,7 +910,7 @@ impl AppState {
                 .expect("allocate a managed-workspace sandbox for AppState::from_parts"),
         );
         let operation_repo = Arc::new(SqlxOperationRepo::new(
-            repo.sqlite_pool()
+            repo.sqlite_db()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
         ));
         let claude_planner = Arc::new(
@@ -1125,7 +1125,7 @@ impl AppState {
     fn rebuild_operation_runtime(&mut self) {
         let route_repo: Arc<dyn RouteRepo> = self.raw.clone();
         let operation_repo =
-            Arc::new(SqlxOperationRepo::new(self.raw.sqlite_pool().expect(
+            Arc::new(SqlxOperationRepo::new(self.raw.sqlite_db().expect(
                 "OperationRuntime rebuild requires a sqlite-backed Repo",
             )));
         let execution = self.operation_runtime.execution().clone();
@@ -1206,7 +1206,7 @@ impl AppState {
         // Reconcile the configured deployment-owner profile before serving. The
         // migration adopted legacy ownership once; startup never repairs membership.
         let pool = repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| anyhow::anyhow!("profile bootstrap requires SQLite"))?;
         crate::auth::initialize_owner_profile(&pool, cfg).await?;
         // First: a pool overlapping calm's own ports refuses boot before anything is started.
@@ -1416,7 +1416,7 @@ impl AppState {
         ));
         let _ = plugin_host_cell.set(plugin.clone());
         let operation_repo = Arc::new(SqlxOperationRepo::new(
-            repo.sqlite_pool()
+            repo.sqlite_db()
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
         ));
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
@@ -1588,10 +1588,10 @@ impl AppState {
 
         // VCS objects are content-addressed and shared by multiple tracks, so deletion only
         // removes refs + commits; unreferenced objects are reclaimed hourly with a grace window.
-        if let Some(pool) = state.raw.sqlite_pool() {
+        if let Some(pool) = state.raw.sqlite_db() {
             crate::track_vcs::spawn_unreferenced_object_sweeper(pool.clone());
             crate::track_vcs::spawn_track_history_pruner(pool.clone());
-            crate::workspace_service::worktree_clean::spawn(pool.clone());
+            crate::workspace_service::worktree_clean::spawn(pool.read_pool().clone());
             crate::events_prune::spawn_events_pruner(pool);
         }
 

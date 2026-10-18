@@ -80,7 +80,7 @@ async fn assert_writer_before_filter_release(kind: &'static str, managed: bool) 
     })
     .await
     .expect("real worker admission reached the clean filter");
-    let pool = fx.pool();
+    let pool = fx.db();
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO worker_writer_probe(value) VALUES (1)")
@@ -359,8 +359,7 @@ async fn obsolete_worker_task_or_allocation_publishes_no_prepared_rows() {
             });
             barrier.wait().await;
             let task = current(&fx.boot, "obsolete-race").await;
-            let pool = fx.pool();
-            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
                 .await
                 .unwrap();
             if change == "context" {

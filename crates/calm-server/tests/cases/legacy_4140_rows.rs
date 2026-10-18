@@ -27,7 +27,7 @@ async fn legacy_boot() -> Boot {
             calm_types::task_recovery::TASK_IN_TRACK_ROUTE,
         );
     sqlx::raw_sql(&fixture)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .expect("the fixture applies after every migration");
     boot.repo
@@ -92,11 +92,11 @@ async fn attempts(boot: &Boot, track: &str, key: &str) -> Value {
 #[tokio::test]
 async fn legacy_4140_rows_load() {
     let boot = legacy_boot().await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
 
     // Events: replay skips the kinds whose code is gone and keeps every live neighbour.
     let all: Vec<(i64, String)> = sqlx::query_as("SELECT id, kind FROM events ORDER BY id")
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await
         .unwrap();
     let retired = [
@@ -141,7 +141,7 @@ async fn legacy_4140_rows_load() {
         .expect("drive over retired kinds is Ok");
     let phases: Vec<(String, String)> =
         sqlx::query_as("SELECT kind, phase FROM operations ORDER BY id")
-            .fetch_all(&pool)
+            .fetch_all(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(phases.len(), 11);
@@ -156,7 +156,7 @@ async fn legacy_4140_rows_load() {
     let bindings: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_master WHERE name LIKE 'planner_recovery_%'",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     assert_eq!(bindings, 0);
@@ -164,7 +164,7 @@ async fn legacy_4140_rows_load() {
     let receipts: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sqlite_master WHERE name = 'planner_dispatch_receipts'",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     assert_eq!(receipts, 0);

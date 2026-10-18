@@ -59,7 +59,7 @@ impl Fixture {
             stopped,
         ));
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-        let store = SqliteExecutionStore::new(repo.pool().clone())
+        let store = SqliteExecutionStore::new(repo.db().clone())
             .with_projection(
                 calm_server::operation::terminal_execution_create::CONSUMER.into(),
                 Arc::new(calm_server::operation::terminal_execution_create::TerminalProjection),
@@ -116,7 +116,7 @@ impl Fixture {
             .await
             .unwrap();
         let track = calm_server::test_seams::create_track_with_workspace_for_test(
-            repo.pool(),
+            repo.db(),
             NewTrack {
                 area_id: area.id.clone(),
                 title: "typed hooks".into(),

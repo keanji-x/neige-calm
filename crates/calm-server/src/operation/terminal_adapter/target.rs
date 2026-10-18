@@ -59,7 +59,7 @@ pub(super) async fn prepare(
     match decode(track_id, &track.workspace, explicit)? {
         LegacyTerminalTarget::WorkspaceDefault { .. } => {
             crate::workspace_service::identity::observe_for_task(
-                &ctx.operation_repo.sqlite_pool(),
+                &ctx.operation_repo.sqlite_db(),
                 track_id,
             )
             .await

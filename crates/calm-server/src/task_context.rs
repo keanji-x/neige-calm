@@ -1277,7 +1277,7 @@ mod tests {
             .await
             .unwrap();
         let task_id = format!("{}:terminal", track.id);
-        let pool = repo.sqlite_pool().unwrap();
+        let pool = repo.sqlite_db().unwrap();
         sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
             .bind(
                 serde_json::to_string(&TrackReportPayload {
@@ -1290,7 +1290,7 @@ mod tests {
                 .unwrap(),
             )
             .bind(report_card.id.as_str())
-            .execute(&pool)
+            .execute(pool.writer_pool())
             .await
             .unwrap();
         sqlx::query(
@@ -1307,7 +1307,7 @@ mod tests {
         .bind(status)
         .bind(serde_json::to_string(&vec![frozen]).unwrap())
         .bind(stale_at_ms)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
         sqlx::query(
@@ -1323,7 +1323,7 @@ mod tests {
             .to_string(),
         )
         .bind(track.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
         (repo, track.id.to_string(), task_id)
@@ -1353,20 +1353,20 @@ mod tests {
         let (summary, body) = doc.project().unwrap();
         let mut payload = TrackReportPayload::new(summary, body);
         payload.blocks = Some(doc.blocks_snapshot().unwrap());
-        let pool = repo.sqlite_pool().unwrap();
+        let pool = repo.sqlite_db().unwrap();
         sqlx::query(
             "UPDATE cards SET payload=?1,body_crdt=?2 WHERE track_id=?3 AND kind='track-report'",
         )
         .bind(serde_json::to_string(&payload).unwrap())
         .bind(doc.to_bytes())
         .bind(&track_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
         sqlx::query("UPDATE tasks SET claim_context_json=?1 WHERE id=?2")
             .bind(serde_json::to_string(&vec![frozen]).unwrap())
             .bind(&task_id)
-            .execute(&pool)
+            .execute(pool.writer_pool())
             .await
             .unwrap();
         // Exercise the production boot/event context sweep over the persisted running task.
@@ -1384,7 +1384,7 @@ mod tests {
         let stale: Option<i64> =
             sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
                 .bind(&task_id)
-                .fetch_one(&pool)
+                .fetch_one(pool.read_pool())
                 .await
                 .unwrap();
         assert_eq!(
@@ -1461,7 +1461,7 @@ mod tests {
     #[tokio::test]
     async fn restore_transaction_rejects_terminal_candidate_even_if_called_directly() {
         let (repo, track_id, task_id) = seed_restore_transaction_fixture("failed", Some(1)).await;
-        let pool = repo.sqlite_pool().unwrap();
+        let pool = repo.sqlite_db().unwrap();
 
         let mut tx = begin_immediate_tx(&pool).await.unwrap();
         let error = restore_context_tx(&mut tx, &task_id, &track_id)
@@ -1477,7 +1477,7 @@ mod tests {
                 "SELECT context_stale_at_ms FROM tasks WHERE id=?1"
             )
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap(),
             Some(1)
@@ -1487,7 +1487,7 @@ mod tests {
     #[tokio::test]
     async fn restore_update_rejects_a_fresh_candidate_even_after_equal_evidence() {
         let (repo, track_id, task_id) = seed_restore_transaction_fixture("running", None).await;
-        let pool = repo.sqlite_pool().unwrap();
+        let pool = repo.sqlite_db().unwrap();
         let mut tx = begin_immediate_tx(&pool).await.unwrap();
         let error = restore_context_tx(&mut tx, &task_id, &track_id)
             .await

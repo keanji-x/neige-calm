@@ -860,10 +860,10 @@ pub(crate) async fn delete_area(
         .map(String::as_str)
         .collect::<Vec<_>>();
     // Defensive TOCTOU guard only: this non-transactional read happens before the teardown tx, so a forge-action can still become in-flight; durable parked recovery is the backstop.
-    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+    let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("delete_area forge-action fence requires sqlite-backed repo".into())
     })?;
-    if any_track_has_active_forge_action(&pool, &track_ids).await? {
+    if any_track_has_active_forge_action(pool.read_pool(), &track_ids).await? {
         return Err(CalmError::Conflict(format!(
             "area {id} has a child track with an in-flight forge-action; retry after it settles"
         )));

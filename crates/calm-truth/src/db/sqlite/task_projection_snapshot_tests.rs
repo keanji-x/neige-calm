@@ -134,7 +134,7 @@ async fn setup() -> Arc<SqlxRepo> {
     .await
     .expect("seed reference card");
     let persisted = declaration(0, "running-key", "persisted goal");
-    let mut tx = begin_immediate_tx(repo.pool()).await.expect("seed task tx");
+    let mut tx = begin_immediate_tx(repo.db()).await.expect("seed task tx");
     project_tasks_tx(&mut tx, "snapshot-track", &[persisted], &[vec![]])
         .await
         .expect("project pending task");

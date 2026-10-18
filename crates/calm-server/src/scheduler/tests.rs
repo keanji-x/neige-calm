@@ -499,7 +499,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
 
     let pool = concrete.pool().clone();
     let now = now_ms();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool)
+    let mut tx = crate::db::sqlite::begin_immediate_tx(concrete.db())
         .await
         .expect("begin seed tx");
     let (card, _term) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
@@ -568,7 +568,9 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         concrete.card_role_cache().clone(),
         concrete.track_area_cache().clone(),
     );
-    let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(pool.clone()));
+    let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(
+        concrete.db().clone(),
+    ));
     let completion = crate::operation::OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -679,7 +681,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     snapshot.running_deadline_ms = Some(now_ms() - 1);
 
     let pool = concrete.pool().clone();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool)
+    let mut tx = crate::db::sqlite::begin_immediate_tx(concrete.db())
         .await
         .expect("begin task tx");
     crate::test_support::insert_task_tx(&mut tx, &stored)

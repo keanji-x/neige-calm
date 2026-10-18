@@ -15,10 +15,10 @@ async fn object_sweep_frontier_same_tree_head_aba_cannot_hide_restored_cycle_tre
         .execute(f.repo.pool())
         .await
         .unwrap();
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let u = unknown(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(&mut tx, &f, "cycle-C", Some(&f.commit), &restored.tree_hash).await;
     raw_head(&mut tx, &f, "cycle-C").await;
     raw_commit(&mut tx, &f, "cycle-D", Some("cycle-C"), &f.tree.tree_hash).await;
@@ -70,10 +70,10 @@ async fn object_sweep_frontier_missing_raw_head_is_not_an_old_covered_cut() {
             .await
             .unwrap();
     }
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let u = unknown(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(
         &mut tx,
         &f,
@@ -101,7 +101,7 @@ async fn object_sweep_frontier_missing_raw_head_is_not_an_old_covered_cut() {
 async fn object_sweep_frontier_detached_pending_is_not_a_root_or_current_parent_contract() {
     let f = Fixture::new().await;
     let orphan = f.orphan("unpublished missing-tree garbage").await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(&mut tx, &f, "other-head", None, &f.tree.tree_hash).await;
     raw_commit(
         &mut tx,
@@ -114,7 +114,7 @@ async fn object_sweep_frontier_detached_pending_is_not_a_root_or_current_parent_
     raw_head(&mut tx, &f, "other-head").await; // Unknown retarget; pending's parent is now old.
     tx.commit().await.unwrap();
     assert_eq!(
-        track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+        track_vcs::sweep_unreferenced_objects_once(f.repo.db())
             .await
             .unwrap(),
         1
@@ -148,7 +148,7 @@ async fn object_sweep_frontier_invalid_fk_disabled_pointer_fails_closed() {
             .await
             .unwrap();
     }
-    let error = track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+    let error = track_vcs::sweep_unreferenced_objects_once(f.repo.db())
         .await
         .unwrap_err();
     assert!(error.to_string().contains("pending GC publication"));
@@ -159,7 +159,7 @@ async fn object_sweep_frontier_invalid_fk_disabled_pointer_fails_closed() {
 async fn object_sweep_frontier_legacy_certificate_rebases_after_conservative_unknown_bump() {
     let f = Fixture::new().await;
     let orphan = f.orphan("legacy-only valid garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let u = unknown(&f).await;
     let r = legacy(&f).await;
@@ -188,9 +188,9 @@ async fn object_sweep_frontier_prefix_round_overflow_rebaselines_outside_and_pro
         .await;
     f.age(&changed).await;
     let orphan = f.orphan("bounded prefix garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let mut parent = f.commit.clone();
     for event in 0..34 {
         parent = track_vcs::commit_tree(
@@ -226,7 +226,7 @@ async fn object_sweep_frontier_unknown_bytes_require_reobserving_cached_payload(
     let changed = f.tree("new reference inside old hash bytes", 1).await;
     f.age(&changed).await;
     let orphan = f.orphan("cached bytes independent garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::Parse]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::Parse]);
     pause.entered().await; // Old bytes have been fetched but not parsed.
     sqlx::query("UPDATE track_vcs_objects SET bytes=?1 WHERE hash=?2")
         .bind(serde_json::to_vec(&changed.manifest).unwrap())

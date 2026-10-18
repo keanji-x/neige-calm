@@ -225,10 +225,10 @@ impl Scheduler {
     }
 
     async fn check_worker_idle(self: &Arc<Self>, task: Task, card_id: String) {
-        let Some(pool) = self.repo.sqlite_pool() else {
+        let Some(pool) = self.repo.sqlite_db() else {
             return;
         };
-        let thread_id = match idle_candidate_thread(&pool, &card_id).await {
+        let thread_id = match idle_candidate_thread(pool.read_pool(), &card_id).await {
             Ok(Some(thread_id)) => thread_id,
             Ok(None) => return,
             Err(error) => {

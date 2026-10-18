@@ -65,10 +65,10 @@ async fn cards(fx: &Fixture) -> usize {
 }
 
 async fn operations_under(fx: &Fixture, key: &str) -> i64 {
-    let pool = fx.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    let pool = fx.state.raw_repo().sqlite_db().expect("sqlite repo");
     sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE idempotency_key = ?1")
         .bind(key)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap()
 }
@@ -216,10 +216,10 @@ async fn a_direct_duplicate_past_the_dedup_check_joins_the_stored_card() {
 }
 
 async fn operation_row(fx: &Fixture, id: &str) -> (String, Option<String>) {
-    let pool = fx.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    let pool = fx.state.raw_repo().sqlite_db().expect("sqlite repo");
     sqlx::query_as("SELECT phase, lease_owner FROM operations WHERE id = ?1")
         .bind(id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap()
 }
@@ -255,7 +255,7 @@ async fn a_keyed_create_does_not_wait_for_the_track_delete_lock() {
 async fn a_create_leaves_another_kinds_pending_operation_unclaimed() {
     use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
     let fx = card_fixture("test.toolcall.keyed-no-drive").await;
-    let pool = fx.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    let pool = fx.state.raw_repo().sqlite_db().expect("sqlite repo");
     let other = SqlxOperationRepo::new(pool)
         .insert_operation(
             "track-recipe-create",
@@ -283,7 +283,7 @@ async fn a_create_leaves_another_kinds_pending_operation_unclaimed() {
 #[tokio::test]
 async fn a_legacy_committed_row_replays_its_card() {
     let fx = card_fixture("test.toolcall.keyed-legacy").await;
-    let pool = fx.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    let pool = fx.state.raw_repo().sqlite_db().expect("sqlite repo");
     for (body, key) in [
         (direct("Notes"), "k-legacy-direct"),
         (via(&fx, json!({})), "k-legacy-tool"),
@@ -295,7 +295,7 @@ async fn a_legacy_committed_row_replays_its_card() {
              FROM operations WHERE idempotency_key=?1",
         )
         .bind(key)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
         assert_eq!(accepted.0, "succeeded");
@@ -311,7 +311,7 @@ async fn a_legacy_committed_row_replays_its_card() {
              WHERE idempotency_key = ?1",
         )
         .bind(key)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
         let legacy: (String, Option<i64>, String, String, String) = sqlx::query_as(
@@ -319,7 +319,7 @@ async fn a_legacy_committed_row_replays_its_card() {
              FROM operations WHERE idempotency_key=?1",
         )
         .bind(key)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
         assert_eq!(
@@ -344,7 +344,7 @@ async fn a_legacy_committed_row_replays_its_card() {
         let phase: String =
             sqlx::query_scalar("SELECT phase FROM operations WHERE idempotency_key = ?1")
                 .bind(key)
-                .fetch_one(&pool)
+                .fetch_one(pool.read_pool())
                 .await
                 .unwrap();
         assert_eq!(

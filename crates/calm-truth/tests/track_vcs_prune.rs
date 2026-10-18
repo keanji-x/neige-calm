@@ -29,6 +29,9 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn db(&self) -> &calm_truth::db::sqlite::SqliteDb {
+        self.repo.db()
+    }
     fn pool(&self) -> &SqlitePool {
         self.repo.pool()
     }
@@ -173,7 +176,11 @@ async fn seed_linear_commits(
     out
 }
 
-async fn prune_once(pool: &SqlitePool, track_id: &TrackId, keep: usize) -> u64 {
+async fn prune_once(
+    pool: &calm_truth::db::sqlite::SqliteDb,
+    track_id: &TrackId,
+    keep: usize,
+) -> u64 {
     let mut tx = begin_immediate_tx(pool).await.expect("begin prune");
     let deleted = track_vcs::prune_track_history_tx(&mut tx, track_id, keep)
         .await
@@ -311,7 +318,7 @@ async fn prune_all_tracks_once_trims_history_to_keep_and_preserves_head() {
         .expect("head")
         .expect("head exists");
 
-    let pruned = track_vcs::prune_all_tracks_once(fixture.pool(), keep)
+    let pruned = track_vcs::prune_all_tracks_once(fixture.db(), keep)
         .await
         .expect("prune all tracks");
 
@@ -358,7 +365,7 @@ async fn prune_all_tracks_once_leaves_track_at_or_below_keep_untouched() {
         .expect("head exists");
     let hashes_before = commit_hashes(fixture.pool(), &fixture.track_id).await;
 
-    let pruned = track_vcs::prune_all_tracks_once(fixture.pool(), keep)
+    let pruned = track_vcs::prune_all_tracks_once(fixture.db(), keep)
         .await
         .expect("prune all tracks");
 
@@ -396,7 +403,7 @@ async fn prune_all_tracks_once_preserves_active_session_last_seen_endpoint() {
         .await
         .expect("diff before prune");
 
-    let pruned = track_vcs::prune_all_tracks_once(fixture.pool(), 1)
+    let pruned = track_vcs::prune_all_tracks_once(fixture.db(), 1)
         .await
         .expect("prune all tracks");
 
@@ -419,7 +426,7 @@ async fn prune_keep_one_preserves_head_and_ref() {
         .expect("head")
         .expect("head exists");
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 
     assert!(deleted > 0);
     assert_eq!(
@@ -448,7 +455,7 @@ async fn default_log_treats_oldest_retained_commit_as_visible_history_root() {
     let fixture = fixture_with_commits(4).await;
     let head = fixture.commits.last().expect("head");
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
     assert_eq!(deleted, 3);
 
     let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, None, 1, false)
@@ -546,7 +553,7 @@ async fn active_session_last_seen_diff_still_works_after_prune() {
         .await
         .expect("diff before prune");
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 
     assert!(deleted > 0);
     assert!(commit_exists(fixture.pool(), &last_seen.hash).await);
@@ -580,8 +587,8 @@ async fn active_session_issued_turn_head_diff_still_works_after_prune_and_sweep(
         .await
         .expect("diff before prune");
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
-    let swept = track_vcs::sweep_unreferenced_objects_once(fixture.pool())
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
+    let swept = track_vcs::sweep_unreferenced_objects_once(fixture.db())
         .await
         .expect("sweep");
 
@@ -617,8 +624,8 @@ async fn active_session_protects_distinct_last_seen_and_issued_turn_heads() {
         .await
         .expect("diff before prune");
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
-    let swept = track_vcs::sweep_unreferenced_objects_once(fixture.pool())
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
+    let swept = track_vcs::sweep_unreferenced_objects_once(fixture.db())
         .await
         .expect("sweep");
 
@@ -646,7 +653,7 @@ async fn prune_keeps_every_commit_at_or_after_oldest_protected_floor() {
     let snapshot = harness_snapshot(Some(&floor_commit.hash));
     insert_active_session(fixture.pool(), &fixture.track_id, "floor", Some(&snapshot)).await;
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 2).await;
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 2).await;
 
     assert!(deleted > 0);
     for commit in &fixture.commits {
@@ -723,8 +730,8 @@ async fn sweep_preserves_live_objects_from_other_tracks() {
     let track_a_commits = seed_linear_commits(repo.pool(), &track_a.id, 5).await;
     let track_b_commits = seed_linear_commits(repo.pool(), &track_b.id, 4).await;
 
-    let deleted = prune_once(repo.pool(), &track_a.id, 1).await;
-    let swept = track_vcs::sweep_unreferenced_objects_once(repo.pool())
+    let deleted = prune_once(repo.db(), &track_a.id, 1).await;
+    let swept = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep");
 
@@ -838,8 +845,8 @@ async fn sweep_preserves_shared_blob_referenced_by_kept_tree() {
     .expect("insert ref");
     tx.commit().await.expect("commit seed shared blob");
 
-    let deleted = prune_once(repo.pool(), &track_id, 1).await;
-    let swept = track_vcs::sweep_unreferenced_objects_once(repo.pool())
+    let deleted = prune_once(repo.db(), &track_id, 1).await;
+    let swept = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep");
 
@@ -862,8 +869,8 @@ async fn sweep_reclaims_only_objects_reachable_from_pruned_commits() {
     insert_active_session(fixture.pool(), &fixture.track_id, "kept", Some(&snapshot)).await;
     let before_objects = object_count(fixture.pool()).await;
 
-    let deleted_commits = prune_once(fixture.pool(), &fixture.track_id, 1).await;
-    let deleted_objects = track_vcs::sweep_unreferenced_objects_once(fixture.pool())
+    let deleted_commits = prune_once(fixture.db(), &fixture.track_id, 1).await;
+    let deleted_objects = track_vcs::sweep_unreferenced_objects_once(fixture.db())
         .await
         .expect("sweep");
 
@@ -889,7 +896,7 @@ async fn unparseable_active_snapshot_keeps_all_commits() {
     )
     .await;
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 
     assert_eq!(deleted, 0);
     assert_eq!(commit_count(fixture.pool(), &fixture.track_id).await, 5);
@@ -945,7 +952,7 @@ async fn parseable_rejected_active_snapshots_keep_all_commits() {
         let before_objects = object_count(fixture.pool()).await;
         insert_active_session(fixture.pool(), &fixture.track_id, suffix, Some(&snapshot)).await;
 
-        let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+        let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 
         assert_eq!(deleted, 0, "{suffix}");
         assert_eq!(
@@ -983,7 +990,7 @@ async fn a_claude_card_runtime_version_document_does_not_block_prune() {
         Some(&version),
     )
     .await;
-    let deleted = prune_once(claude.pool(), &claude.track_id, 1).await;
+    let deleted = prune_once(claude.db(), &claude.track_id, 1).await;
     assert!(deleted > 0, "an active Claude card held the prune back");
     assert!(commit_exists(claude.pool(), &claude.commits[4].hash).await);
     assert!(!commit_exists(claude.pool(), &claude.commits[0].hash).await);
@@ -997,7 +1004,7 @@ async fn a_claude_card_runtime_version_document_does_not_block_prune() {
         Some(&version),
     )
     .await;
-    assert_eq!(prune_once(codex.pool(), &codex.track_id, 1).await, 0);
+    assert_eq!(prune_once(codex.db(), &codex.track_id, 1).await, 0);
     assert_eq!(commit_count(codex.pool(), &codex.track_id).await, 5);
 }
 
@@ -1025,7 +1032,7 @@ async fn null_or_absent_last_seen_head_does_not_block_prune() {
     )
     .await;
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 
     assert!(deleted > 0);
     assert!(commit_exists(fixture.pool(), &fixture.commits[4].hash).await);
@@ -1044,7 +1051,7 @@ async fn active_last_seen_absent_from_commit_table_keeps_all_commits() {
     )
     .await;
 
-    let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
+    let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 
     assert_eq!(deleted, 0);
     assert_eq!(commit_count(fixture.pool(), &fixture.track_id).await, 5);
@@ -1054,14 +1061,14 @@ async fn active_last_seen_absent_from_commit_table_keeps_all_commits() {
 async fn prune_and_sweep_are_idempotent() {
     let fixture = fixture_with_commits(6).await;
 
-    let first_prune = prune_once(fixture.pool(), &fixture.track_id, 2).await;
-    let second_prune = prune_once(fixture.pool(), &fixture.track_id, 2).await;
-    let first_sweep = track_vcs::sweep_unreferenced_objects_once(fixture.pool())
+    let first_prune = prune_once(fixture.db(), &fixture.track_id, 2).await;
+    let second_prune = prune_once(fixture.db(), &fixture.track_id, 2).await;
+    let first_sweep = track_vcs::sweep_unreferenced_objects_once(fixture.db())
         .await
         .expect("first sweep");
     let after_first_hashes = commit_hashes(fixture.pool(), &fixture.track_id).await;
     let after_first_objects = object_count(fixture.pool()).await;
-    let second_sweep = track_vcs::sweep_unreferenced_objects_once(fixture.pool())
+    let second_sweep = track_vcs::sweep_unreferenced_objects_once(fixture.db())
         .await
         .expect("second sweep");
 
@@ -1095,8 +1102,8 @@ async fn sweep_honors_object_created_at_grace_cutoff() {
     .await
     .expect("insert orphan objects");
 
-    assert!(prune_once(fixture.pool(), &fixture.track_id, 1).await > 0);
-    let swept = track_vcs::sweep_unreferenced_objects_once(fixture.pool())
+    assert!(prune_once(fixture.db(), &fixture.track_id, 1).await > 0);
+    let swept = track_vcs::sweep_unreferenced_objects_once(fixture.db())
         .await
         .expect("sweep");
 
@@ -1108,11 +1115,11 @@ async fn sweep_honors_object_created_at_grace_cutoff() {
 #[tokio::test]
 async fn prune_no_op_cases_and_keep_zero_clamp() {
     let (repo, empty_track_id) = fresh_track().await;
-    assert_eq!(prune_once(repo.pool(), &empty_track_id, 1).await, 0);
+    assert_eq!(prune_once(repo.db(), &empty_track_id, 1).await, 0);
 
     let keep_large = fixture_with_commits(3).await;
     assert_eq!(
-        prune_once(keep_large.pool(), &keep_large.track_id, 10).await,
+        prune_once(keep_large.db(), &keep_large.track_id, 10).await,
         0
     );
     assert_eq!(
@@ -1122,7 +1129,7 @@ async fn prune_no_op_cases_and_keep_zero_clamp() {
 
     let keep_zero = fixture_with_commits(3).await;
     let head = keep_zero.commits.last().expect("head").hash.clone();
-    let deleted = prune_once(keep_zero.pool(), &keep_zero.track_id, 0).await;
+    let deleted = prune_once(keep_zero.db(), &keep_zero.track_id, 0).await;
     assert!(deleted > 0);
     assert!(commit_exists(keep_zero.pool(), &head).await);
     assert_eq!(

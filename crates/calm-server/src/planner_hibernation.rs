@@ -38,14 +38,24 @@ pub(crate) async fn eligible(pool: &sqlx::SqlitePool, session_id: &str) -> Resul
 }
 
 pub(crate) async fn sweep(state: &AppState) -> Result<()> {
-    let Some(pool) = state.sqlite_pool() else {
+    let Some(pool) = state.sqlite_db() else {
         return Ok(());
     };
-    for row in sqlx::query(&eligible_sql()).fetch_all(&pool).await? {
+    for row in sqlx::query(&eligible_sql())
+        .fetch_all(pool.read_pool())
+        .await?
+    {
         let id: String = row.get("id");
         let card: String = row.get("card_id");
         let track: String = row.get("track_id");
-        if let Err(error) = hibernate_one(state, &pool, id.clone(), CardId::from(card), track).await
+        if let Err(error) = hibernate_one(
+            state,
+            pool.read_pool(),
+            id.clone(),
+            CardId::from(card),
+            track,
+        )
+        .await
         {
             tracing::warn!(worker_session_id=%id, %error, "Planner hibernation or provider release failed");
         }

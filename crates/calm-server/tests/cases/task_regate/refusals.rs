@@ -222,7 +222,7 @@ async fn regate_refuses_rows_that_cannot_rerun() {
     let dir = outside(&fx, "plain-lease");
     std::fs::create_dir_all(&dir).unwrap();
     calm_server::test_seams::acquire_workspace_lease_for_test(
-        &fx.pool(),
+        &fx.db(),
         &worker.card_id,
         fx.track(),
         "legacy-owner",

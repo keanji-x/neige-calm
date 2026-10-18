@@ -182,10 +182,10 @@ pub(crate) async fn launchpad_opening_briefing(
     if !crate::routes::today::is_launchpad_track(repo, track_id).await? {
         return Ok(None);
     }
-    let pool = repo.sqlite_pool().ok_or_else(|| {
+    let pool = repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("today's activity window requires a sqlite-backed repo".into())
     })?;
-    let activity = todays_workspace_activity(&pool, Some(track_id)).await?;
+    let activity = todays_workspace_activity(pool.read_pool(), Some(track_id)).await?;
     Ok(Some(opening_activity_briefing(&activity)))
 }
 

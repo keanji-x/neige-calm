@@ -113,7 +113,7 @@ async fn track_close_needs_a_message_and_the_planner_role() {
 async fn persisted(boot: &Boot, kind: &str) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = ?1")
         .bind(kind)
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap()
 }
@@ -150,7 +150,7 @@ async fn a_superseded_session_close_is_denied_in_the_transaction() {
     let boot = boot().await;
     sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
         .bind(PLANNER_SESSION_ID)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .expect("supersede the planner session");
     let before = persisted(&boot, "track.updated").await;
@@ -187,7 +187,7 @@ async fn planner_close_of_an_area_chat_track_is_refused() {
     sqlx::query("UPDATE tracks SET purpose = ?1 WHERE id = ?2")
         .bind(calm_server::AREA_CHAT_PURPOSE)
         .bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .expect("mark the track as an area chat");
 

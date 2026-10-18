@@ -262,9 +262,9 @@ pub async fn spawn_recovered_harness(
     if current_track.closed_at.is_some() && !matches!(claim_mode, ClaimMode::Replace) {
         // Automatic recovery must not resurrect a sleeping Planner, but closure
         // alone does not make queued input or active work eligible for sleep.
-        let sleeping = match repo.sqlite_pool() {
+        let sleeping = match repo.sqlite_db() {
             Some(pool) if role == Some(CardRole::Planner) => {
-                crate::planner_hibernation::eligible(&pool, &runtime.id).await?
+                crate::planner_hibernation::eligible(pool.read_pool(), &runtime.id).await?
             }
             _ => false,
         };

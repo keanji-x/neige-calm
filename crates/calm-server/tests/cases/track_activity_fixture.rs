@@ -100,6 +100,9 @@ pub(crate) async fn fx() -> Fx {
 }
 
 impl Fx {
+    pub(crate) fn db(&self) -> &calm_server::db::sqlite::SqliteDb {
+        self.repo.db()
+    }
     pub(crate) async fn track(&self, title: &str) -> String {
         let track = self
             .repo_dyn
@@ -336,7 +339,7 @@ impl Fx {
         at_ms: i64,
     ) {
         let refs = self.closure(track_id, key).await;
-        let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let n = task_claim_pending_tx(&mut tx, attempt_id, at_ms, &refs, false)
             .await
             .unwrap();
@@ -352,7 +355,7 @@ impl Fx {
         worker_card_id: &str,
         at_ms: i64,
     ) {
-        let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let n = task_mark_running_tx(
             &mut tx,
             &Self::task_id(track_id, key),
@@ -374,7 +377,7 @@ impl Fx {
         worker_card_id: &str,
         at_ms: i64,
     ) {
-        let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let n = task_complete_from_worker_tx(
             &mut tx,
             &Self::task_id(track_id, key),
@@ -393,7 +396,7 @@ impl Fx {
 
     /// The worker's `neige_task_fail` flip (`failed` + `finished_at_ms`).
     pub(crate) async fn fail(&self, track_id: &str, key: &str, worker_card_id: &str, at_ms: i64) {
-        let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let n = task_fail_from_worker_tx(
             &mut tx,
             &Self::task_id(track_id, key),
@@ -432,7 +435,7 @@ impl Fx {
                 declared_by: "user".into(),
             },
         };
-        let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         sqlx::query(
             "INSERT INTO task_attempt_allocations \
              (attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES (?1,?2,?3,2,?4,0)",
@@ -524,7 +527,7 @@ impl Fx {
 
     /// A scheduler over this repo, for `reconcile_child_track_task`.
     pub(crate) fn scheduler(&self) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
-        let operation_repo = Arc::new(SqlxOperationRepo::new(self.pool.clone()));
+        let operation_repo = Arc::new(SqlxOperationRepo::new(self.repo.db().clone()));
         let route_repo: Arc<dyn calm_server::db::RouteRepo> = self.repo.clone();
         let completion = OperationCompletionBus::new();
         let spawn_ctx = SpawnCtx::new(

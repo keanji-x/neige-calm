@@ -111,7 +111,7 @@ pub async fn create(
     use super::repo_sqlite::{
         PhaseWrite, insert_pending_row, operation_from_row, write_phase_and_tx_output,
     };
-    let pool = runtime.repo.sqlite_pool();
+    let pool = runtime.repo.sqlite_db();
     let mut validated = false;
     let mut tx = loop {
         let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;

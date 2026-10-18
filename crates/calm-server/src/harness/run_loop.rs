@@ -3298,7 +3298,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let refresh_track_id = inner.track_id.clone();
         transcript_refresh_with_timeout(
             async move {
-                let pool = refresh_repo.sqlite_pool().ok_or_else(|| {
+                let pool = refresh_repo.sqlite_db().ok_or_else(|| {
                     CalmError::Internal("transcript refresh requires a SQLite pool".into())
                 })?;
                 track_vcs::snapshot_transcripts_for_cards_in_track(
@@ -3802,11 +3802,11 @@ async fn current_head_after_diff_timeout(
         return Some(current.clone());
     }
 
-    let pool = inner.repo.sqlite_pool()?;
+    let pool = inner.repo.sqlite_db()?;
 
     match tokio::time::timeout(
         SINCE_LAST_TURN_HEAD_FALLBACK_TIMEOUT,
-        track_vcs::head(&pool, &inner.track_id),
+        track_vcs::head(pool.read_pool(), &inner.track_id),
     )
     .await
     {
@@ -3837,12 +3837,12 @@ async fn since_last_turn_diff_block(
     current_override: Option<&track_vcs::CommitHash>,
     report_patch: track_vcs::ReportPatch,
 ) -> track_vcs::SinceLastTurnBlock {
-    let Some(pool) = inner.repo.sqlite_pool() else {
+    let Some(pool) = inner.repo.sqlite_db() else {
         return track_vcs::SinceLastTurnBlock::empty();
     };
     let last_seen_head = inner.last_seen_head.lock().await.clone();
     match track_vcs::since_last_turn_block(
-        &pool,
+        pool.read_pool(),
         &inner.track_id,
         last_seen_head.as_deref(),
         current_override,
@@ -3855,7 +3855,7 @@ async fn since_last_turn_diff_block(
         Err(e) => {
             let current_head = match current_override {
                 Some(current) => Some(current.clone()),
-                None => match track_vcs::head(&pool, &inner.track_id).await {
+                None => match track_vcs::head(pool.read_pool(), &inner.track_id).await {
                     Ok(head) => head,
                     Err(head_err) => {
                         tracing::warn!(

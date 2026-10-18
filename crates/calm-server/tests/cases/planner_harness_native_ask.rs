@@ -448,7 +448,7 @@ async fn the_entry_asks_once_per_item_inside_its_transaction() {
     assert_eq!(rig.asks().await.len(), 1);
     rig.harness.shutdown().await.unwrap();
 
-    let mut tx = begin_immediate_tx(rig.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(rig.repo.db()).await.unwrap();
     for (item, expect_ask) in [(ITEM_ID, false), ("call-another-item", true)] {
         let asked = calm_server::ask::provider_ask_requested_tx(
             &mut tx,
@@ -468,7 +468,7 @@ async fn the_entry_asks_once_per_item_inside_its_transaction() {
 #[tokio::test]
 async fn a_superseded_session_asks_nothing() {
     let rig = rig(Profile::Planner).await;
-    let mut tx = begin_immediate_tx(rig.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(rig.repo.db()).await.unwrap();
     session_prepare_deferred_planner_tx(
         &mut tx,
         &WorkerSessionInit {

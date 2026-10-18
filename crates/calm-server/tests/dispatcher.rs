@@ -397,7 +397,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
     let (repo, events, cache, wcc, track_id, _area_id) = boot().await;
 
-    let pool = repo.sqlite_pool().expect("dispatcher test uses sqlite");
+    let pool = repo.sqlite_db().expect("dispatcher test uses sqlite");
     let report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
@@ -419,7 +419,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     )
     .bind(track_id.as_str())
     .bind(serde_json::to_string(&report).unwrap())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .expect("seed referenced report block");
 
@@ -506,7 +506,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     let frozen_context: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .expect("production claim context");
     assert_ne!(frozen_context, "[]");
@@ -515,7 +515,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'changed') \
          WHERE id = 'lagged-context-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .expect("change referenced block without emitting its event");
 

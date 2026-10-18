@@ -87,7 +87,7 @@ async fn object_sweep_frontier_fresh_slot_rejects_forgery_and_conflict_bypass() 
                 .is_err()
         );
     }
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(
         &mut tx,
         &f,
@@ -110,7 +110,7 @@ async fn object_sweep_frontier_fresh_slot_rejects_forgery_and_conflict_bypass() 
         );
     }
     let u = unknown(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(
         &mut tx,
         &f,
@@ -131,7 +131,7 @@ async fn object_sweep_frontier_fresh_slot_rejects_forgery_and_conflict_bypass() 
 #[tokio::test]
 async fn object_sweep_frontier_source_delete_reincarnation_and_ignore_invalidate() {
     let f = Fixture::new().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(
         &mut tx,
         &f,
@@ -148,7 +148,7 @@ async fn object_sweep_frontier_source_delete_reincarnation_and_ignore_invalidate
         .unwrap();
     assert!(unknown(&f).await > u);
     no_pending(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(
         &mut tx,
         &f,
@@ -180,7 +180,7 @@ async fn object_sweep_frontier_actual_not_null_admission_preserves_ignored_rows(
         "created_at",
         "hash",
     ] {
-        let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
         sqlx::query(
             "INSERT OR IGNORE INTO track_vcs_commits
              (hash,track_id,parent_hash,tree_hash,manifest_schema_version,created_at)
@@ -210,7 +210,7 @@ async fn object_sweep_frontier_actual_not_null_admission_preserves_ignored_rows(
 #[tokio::test]
 async fn object_sweep_frontier_required_state_and_overflow_abort_actual_source() {
     let f = Fixture::new().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let guard: String =
         sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name='frontier_state_monotonic'")
             .fetch_one(&mut **tx)
@@ -245,7 +245,7 @@ async fn object_sweep_frontier_required_state_and_overflow_abort_actual_source()
     // A true positive is permitted at MAX; it does not increment with zero or reset state.
     f.publish(&f.tree, Some(&f.commit)).await;
     assert_eq!(unknown(&f).await, i64::MAX);
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query("DROP TRIGGER frontier_state_no_delete")
         .execute(&mut **tx)
         .await
@@ -262,7 +262,7 @@ async fn object_sweep_frontier_required_state_and_overflow_abort_actual_source()
             .is_err()
     );
     assert!(
-        crate::track_vcs::sweep_unreferenced_objects_once(f.repo.pool())
+        crate::track_vcs::sweep_unreferenced_objects_once(f.repo.db())
             .await
             .is_err()
     );
@@ -271,7 +271,7 @@ async fn object_sweep_frontier_required_state_and_overflow_abort_actual_source()
 #[tokio::test]
 async fn object_sweep_frontier_slot_loss_and_epoch_changes_rollback_together() {
     let f = Fixture::new().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(
         &mut tx,
         &f,
@@ -282,7 +282,7 @@ async fn object_sweep_frontier_slot_loss_and_epoch_changes_rollback_together() {
     .await;
     tx.commit().await.unwrap();
     let u = unknown(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     raw_commit(
         &mut tx,
         &f,

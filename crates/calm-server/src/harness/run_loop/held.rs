@@ -108,10 +108,12 @@ async fn open(
 pub(super) async fn sweep(inner: &Inner) {
     let keep: HashSet<i64> = inner.held_requests.ask_ids();
     let session = session(inner);
-    let Some(pool) = inner.repo.sqlite_pool() else {
+    let Some(pool) = inner.repo.sqlite_db() else {
         return;
     };
-    match crate::ask::has_hold_asks_to_withdraw(&pool, &inner.track_id, &session, &keep).await {
+    match crate::ask::has_hold_asks_to_withdraw(pool.read_pool(), &inner.track_id, &session, &keep)
+        .await
+    {
         Ok(true) => {}
         Ok(false) => return,
         Err(error) => {

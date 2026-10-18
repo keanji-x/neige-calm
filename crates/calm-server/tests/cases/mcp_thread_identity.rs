@@ -221,7 +221,7 @@ const FIXTURE_ROLES: &[CardRole] = &[
 ];
 
 async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRole) {
-    let mut tx = begin_immediate_tx(boot.sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx_repo.db()).await.unwrap();
     if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()
@@ -773,7 +773,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.planner_card_id);
 
-    let mut tx = begin_immediate_tx(boot.sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx_repo.db()).await.unwrap();
     let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
         .await
         .unwrap()
@@ -820,7 +820,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.planner_card_id);
 
-    let mut tx = begin_immediate_tx(boot.sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx_repo.db()).await.unwrap();
     let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
         .await
         .unwrap()

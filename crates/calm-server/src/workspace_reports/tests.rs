@@ -4,7 +4,7 @@ use crate::daily_planner::tests::{fixture, foreign_track};
 use axum::extract::FromRef;
 
 pub(crate) async fn event(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     track: &crate::model::Track,
     at: i64,
     before: &str,
@@ -14,7 +14,7 @@ pub(crate) async fn event(
     let card_id: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND kind='track-report'")
             .bind(track.id.as_str())
-            .fetch_one(pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     let edit = Event::TrackReportEdited {
@@ -59,10 +59,10 @@ async fn report_day_changes_include_reverts_closed_tracks_and_exact_date_edges()
     let route = crate::state::RouteState::from_ref(&state);
     let track = foreign_track(&route).await;
     let (start, end) = day_window(parse_date("2026-10-03").unwrap(), TIME_ZONE).unwrap();
-    event(repo.pool(), &track, start - 1, "excluded", "also excluded").await;
-    let first = event(repo.pool(), &track, start, "original", "changed").await;
-    let last = event(repo.pool(), &track, end - 1, "changed", "original").await;
-    event(repo.pool(), &track, end, "excluded", "also excluded").await;
+    event(repo.db(), &track, start - 1, "excluded", "also excluded").await;
+    let first = event(repo.db(), &track, start, "original", "changed").await;
+    let last = event(repo.db(), &track, end - 1, "changed", "original").await;
+    event(repo.db(), &track, end, "excluded", "also excluded").await;
     let close_id = track.id.clone();
     crate::db::write_with_event_typed(
         route.repo.as_ref(),
@@ -97,7 +97,7 @@ async fn report_day_changes_include_reverts_closed_tracks_and_exact_date_edges()
     .await
     .unwrap();
     let page = changes(
-        repo.pool(),
+        repo.db(),
         &ReportChangesQuery {
             date: "2026-10-03".into(),
             cursor: None,
@@ -139,10 +139,10 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
     let track = foreign_track(&route).await;
     let (start, _) = day_window(parse_date("2026-10-03").unwrap(), TIME_ZONE).unwrap();
     for offset in 0..25 {
-        event(repo.pool(), &track, start + offset, "old", "new").await;
+        event(repo.db(), &track, start + offset, "old", "new").await;
     }
     let page = changes(
-        repo.pool(),
+        repo.db(),
         &ReportChangesQuery {
             date: "2026-10-03".into(),
             cursor: None,
@@ -152,7 +152,7 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
     )
     .await
     .unwrap();
-    event(repo.pool(), &track, start + 26, "new", "late").await;
+    event(repo.db(), &track, start + 26, "new", "late").await;
     let query = ReportEditsQuery {
         date: page.date,
         track_id: track.id.to_string(),
@@ -180,7 +180,7 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
         .unwrap();
     assert!(
         changes(
-            repo.pool(),
+            repo.db(),
             &ReportChangesQuery {
                 date: "2026-10-03".into(),
                 cursor: None,
@@ -204,12 +204,12 @@ async fn report_group_pages_cover_every_track_and_exclude_later_edits() {
     let mut last = None;
     for offset in 0..21 {
         let track = foreign_track(&route).await;
-        event(repo.pool(), &track, start + offset, "before", "after").await;
+        event(repo.db(), &track, start + offset, "before", "after").await;
         expected.insert(track.id.to_string());
         last = Some(track);
     }
     let first = changes(
-        repo.pool(),
+        repo.db(),
         &ReportChangesQuery {
             date: "2026-10-03".into(),
             cursor: None,
@@ -221,9 +221,9 @@ async fn report_group_pages_cover_every_track_and_exclude_later_edits() {
     .unwrap();
     assert_eq!(first.changes.len(), 20);
     assert!(first.next_cursor.is_some());
-    event(repo.pool(), &last.unwrap(), start + 22, "after", "late").await;
+    event(repo.db(), &last.unwrap(), start + 22, "after", "late").await;
     let second = changes(
-        repo.pool(),
+        repo.db(),
         &ReportChangesQuery {
             date: first.date.clone(),
             cursor: first.next_cursor,

@@ -51,9 +51,9 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String
     let mut running = 0usize;
     let mut marked_stale = Vec::new();
     for term in rows {
-        if let Some(pool) = state.sqlite_pool() {
+        if let Some(pool) = state.sqlite_db() {
             match calm_truth::db::sqlite::workspace_execution::alias_has_execution(
-                &pool,
+                pool.read_pool(),
                 &calm_truth::db::sqlite::workspace_execution::terminal_alias(&term.id),
             )
             .await
@@ -196,12 +196,12 @@ impl SqliteBusyClass for crate::session_projection_repo::WorkerSessionProjection
 pub async fn assert_worker_sessions_card_id_complete_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
-    let pool = state.sqlite_pool().ok_or_else(|| {
+    let pool = state.sqlite_db().ok_or_else(|| {
         crate::error::CalmError::Internal(
             "worker_sessions.card_id boot assertion requires sqlite-backed Repo".into(),
         )
     })?;
-    calm_truth::db::sqlite::assert_worker_sessions_card_id_complete(&pool)
+    calm_truth::db::sqlite::assert_worker_sessions_card_id_complete(pool.read_pool())
         .await
         .map_err(Into::into)
 }
@@ -212,12 +212,12 @@ pub async fn assert_worker_sessions_card_id_complete_on_boot(
 pub async fn assert_area_folders_disjoint_on_boot(
     state: &state::AppState,
 ) -> crate::error::Result<()> {
-    let pool = state.sqlite_pool().ok_or_else(|| {
+    let pool = state.sqlite_db().ok_or_else(|| {
         crate::error::CalmError::Internal(
             "area_folders boot fence requires sqlite-backed Repo".into(),
         )
     })?;
-    calm_truth::db::sqlite::assert_area_folders_disjoint(&pool)
+    calm_truth::db::sqlite::assert_area_folders_disjoint(pool.read_pool())
         .await
         .map_err(Into::into)
 }

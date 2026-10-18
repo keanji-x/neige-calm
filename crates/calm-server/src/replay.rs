@@ -184,7 +184,7 @@ pub async fn reset_from_fixture(
     fixture: &Fixture,
 ) -> anyhow::Result<Vec<i64>> {
     // Delete order respects FK chains, children before parents: `PRAGMA foreign_keys = ON` and some FKs are RESTRICT, so this explicit ordering is what enforces correctness.
-    let pool = repo.pool();
+    let pool = repo.db();
     // Writing transactions always BEGIN IMMEDIATE.
     let mut tx = begin_immediate_tx(pool).await?;
     for stmt in [

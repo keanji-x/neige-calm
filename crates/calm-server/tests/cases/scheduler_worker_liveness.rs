@@ -30,7 +30,7 @@ async fn seed_worker_started_at(boot: &Boot, label: &str, started_ms: i64) -> Li
     task.worker_card_id = Some(card_id.clone());
     let task_id = task.id.clone();
     seed_task(boot, task).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();
@@ -67,7 +67,7 @@ async fn record_progress(boot: &Boot, card_id: &str, at_ms: i64) {
         last_line_hash: None,
     };
     calm_server::db::sqlite::worker_flow_cursor_set_for_test(
-        &boot.repo.sqlite_pool().unwrap(),
+        &boot.repo.sqlite_db().unwrap(),
         card_id,
         CODEX_ROLLOUT_SOURCE_KIND,
         &position,
@@ -88,7 +88,7 @@ fn scheduler_booted_long_ago(boot: &Boot) -> (Arc<OperationRuntime>, Arc<Schedul
 async fn running_started_at(boot: &Boot, task_id: &str) -> Option<i64> {
     sqlx::query_scalar("SELECT running_started_at_ms FROM tasks WHERE id = ?1")
         .bind(task_id)
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap()
 }

@@ -116,7 +116,7 @@ pub async fn clean_idle_closed_track_worktrees_for_test(
 /// Track worktrees follow the route's post-commit ensure and kernel registration paths.
 #[cfg(any(test, feature = "fixtures"))]
 pub async fn create_track_with_workspace_for_test(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     params: crate::model::NewTrack,
     plan: &crate::db::sqlite::TrackWorkspacePlan,
     cache: &crate::track_area_cache::TrackAreaCache,
@@ -134,7 +134,7 @@ pub async fn create_track_with_workspace_for_test(
 /// Finish an already-declared track worktree without changing its stored selection.
 #[cfg(any(test, feature = "fixtures"))]
 pub async fn ensure_track_worktree_for_test(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     track_id: &str,
 ) -> crate::error::Result<std::path::PathBuf> {
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
@@ -153,7 +153,7 @@ pub async fn ensure_track_worktree_for_test(
 /// Reach the production workspace-lease acquisition from an integration test.
 #[cfg(feature = "fixtures")]
 pub async fn acquire_workspace_lease_for_test(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     card_id: &str,
     track_id: &str,
     lease_owner: &str,
@@ -181,7 +181,7 @@ pub async fn acquire_workspace_lease_for_test(
 /// `fixtures`-only.
 #[cfg(feature = "fixtures")]
 pub async fn acquire_based_workspace_lease_for_test(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     card_id: &str,
     track_id: &str,
     lease_owner: &str,
@@ -256,7 +256,7 @@ pub struct KernelWorkspaceLease {
 /// Codex/Claude worker would.
 #[cfg(feature = "fixtures")]
 pub async fn take_kernel_workspace_lease_for_test(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     track_id: &str,
     card_id: &str,
     workspace_root: &std::path::Path,
@@ -289,7 +289,7 @@ pub async fn take_kernel_workspace_lease_for_test(
 /// the run's key.
 #[cfg(feature = "fixtures")]
 pub async fn admit_gate_run_for_test(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     attempt_id: &str,
     card_id: &str,
     track_id: &str,

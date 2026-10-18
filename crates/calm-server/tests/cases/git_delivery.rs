@@ -275,7 +275,7 @@ pub(super) async fn fixture_on_with_runtime(
         track_root,
         workspace_root,
     } = workspace;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let track = boot
         .repo
         .track_get(boot.track_id.as_str())
@@ -382,8 +382,11 @@ pub(super) fn spawn_dispatcher(
 }
 
 impl Fx {
+    pub(super) fn db(&self) -> calm_server::db::sqlite::SqliteDb {
+        self.boot.repo.sqlite_db().unwrap()
+    }
     pub(super) fn pool(&self) -> sqlx::SqlitePool {
-        self.boot.repo.sqlite_pool().unwrap()
+        self.boot.repo.sqlite_db().unwrap().read_pool().clone()
     }
 
     pub(super) fn track(&self) -> &str {
@@ -522,7 +525,7 @@ impl Fx {
     /// The production lease sequence for `card` (#1830 S2): prepare the track worktree (refused
     /// when dirty), its HEAD as the base, the kernel-policy row. One held lease per checkout.
     pub(super) async fn kernel_lease(&self, card: &str) -> KernelWorkspaceLease {
-        take_kernel_workspace_lease_for_test(&self.pool(), self.track(), card, &self.workspace_root)
+        take_kernel_workspace_lease_for_test(&self.db(), self.track(), card, &self.workspace_root)
             .await
             .unwrap()
     }

@@ -141,7 +141,7 @@ async fn a_create_leaves_another_kinds_pending_operation_unclaimed() {
     use calm_server::operation::card_create_adapter::CardCreateOperationPayload;
     use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
     let boot = boot().await;
-    let pool = boot.state.raw_repo().sqlite_pool().expect("sqlite repo");
+    let pool = boot.state.raw_repo().sqlite_db().expect("sqlite repo");
     let other = SqlxOperationRepo::new(pool.clone())
         .insert_operation(
             "card-create",
@@ -169,7 +169,7 @@ async fn a_create_leaves_another_kinds_pending_operation_unclaimed() {
     let row: (String, Option<String>) =
         sqlx::query_as("SELECT phase, lease_owner FROM operations WHERE id = ?1")
             .bind(&other)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(

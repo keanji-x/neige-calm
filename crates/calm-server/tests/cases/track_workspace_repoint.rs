@@ -810,7 +810,7 @@ async fn an_unfrozen_attached_workspace_is_still_refused() {
     let area = create_area(&b, "c").await;
     let repo_dir = user_repo(&b.tmp.path().join("user-project"));
     let (track, _) = managed_track(&b, &area, "w").await;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
         .await
         .unwrap();
     calm_server::db::sqlite::track_workspace_write_tx(
@@ -1276,7 +1276,7 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
 
     // Through the dispatcher's in-transaction entry point; the codex-cards route would need a live codex app-server.
     calm_server::test_seams::acquire_workspace_lease_for_test(
-        b.repo.pool(),
+        b.repo.db(),
         &card,
         &track,
         "test-owner",
@@ -1301,7 +1301,7 @@ async fn a_child_track_is_frozen_at_creation_and_cannot_be_repointed() {
     let area = create_area(&b, "c").await;
     let (parent, _) = managed_track(&b, &area, "parent").await;
     let child = calm_server::test_seams::create_track_with_workspace_for_test(
-        b.repo.pool(),
+        b.repo.db(),
         calm_server::model::NewTrack {
             template_input: None,
             area_id: area.clone().into(),
@@ -1356,7 +1356,7 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
             .unwrap();
     tx.commit().await.unwrap();
     calm_server::test_seams::acquire_workspace_lease_for_test(
-        b.repo.pool(),
+        b.repo.db(),
         &planner_card,
         &track,
         "test-owner",

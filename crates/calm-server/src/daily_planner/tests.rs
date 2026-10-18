@@ -201,7 +201,7 @@ async fn daily_midnight_and_restart_close_prior_days_without_empty_backfill() {
         crate::model::AreaKind::System
     );
     assert!(
-        crate::managed_track::refuse_track_delete(Some(repo.pool().clone()), old.id.as_str())
+        crate::managed_track::refuse_track_delete(Some(repo.db().clone()), old.id.as_str())
             .await
             .is_err()
     );

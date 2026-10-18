@@ -682,7 +682,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         provider: AgentProvider,
         thread_id: &str,
     ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_active_by_thread_from_pool(&self.pool, provider, thread_id).await
+        runtime_get_active_by_thread_from_pool(self.db.read_pool(), provider, thread_id).await
     }
 
     async fn session_projection_active_by_session(
@@ -690,28 +690,28 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         provider: AgentProvider,
         session_id: &str,
     ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_active_by_session_from_pool(&self.pool, provider, session_id).await
+        runtime_get_active_by_session_from_pool(self.db.read_pool(), provider, session_id).await
     }
 
     async fn session_projection_active_for_card(
         &self,
         card_id: &crate::session_projection_repo::CardId,
     ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_active_for_card_from_pool(&self.pool, card_id).await
+        runtime_get_active_for_card_from_pool(self.db.read_pool(), card_id).await
     }
 
     async fn session_projection_projectable_for_card(
         &self,
         card_id: &crate::session_projection_repo::CardId,
     ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_projectable_for_card_from_pool(&self.pool, card_id).await
+        runtime_get_projectable_for_card_from_pool(self.db.read_pool(), card_id).await
     }
 
     async fn session_projection_conversation_for_card(
         &self,
         card_id: &crate::session_projection_repo::CardId,
     ) -> WorkerSessionProjectionResult<CardConversation> {
-        super::session_conversation::card_conversation(&self.pool, card_id).await
+        super::session_conversation::card_conversation(self.db.read_pool(), card_id).await
     }
 
     async fn session_projection_system_error_recovery_matches(
@@ -723,7 +723,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
             return Ok(false);
         };
         Ok(super::session_system_error_recovery_matches(
-            &self.pool,
+            self.db.read_pool(),
             &runtime.card_id,
             &runtime.id,
             thread_id,
@@ -738,20 +738,20 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
     ) -> WorkerSessionProjectionResult<
         HashMap<crate::session_projection_repo::CardId, WorkerSessionProjection>,
     > {
-        runtime_get_projectable_for_cards_from_pool(&self.pool, card_ids).await
+        runtime_get_projectable_for_cards_from_pool(self.db.read_pool(), card_ids).await
     }
 
     async fn session_projection_active_shared_thread_attribution(
         &self,
     ) -> WorkerSessionProjectionResult<Vec<(String, String)>> {
-        runtime_active_shared_thread_attribution_from_pool(&self.pool).await
+        runtime_active_shared_thread_attribution_from_pool(self.db.read_pool()).await
     }
 
     async fn session_projection_active_for_kind(
         &self,
         kind: WorkerSessionKind,
     ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
-        runtimes_active_for_kind_from_pool(&self.pool, kind).await
+        runtimes_active_for_kind_from_pool(self.db.read_pool(), kind).await
     }
 
     async fn session_projection_state_by_id(
@@ -785,7 +785,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         &self,
         id: &str,
     ) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-        runtime_get_by_id_from_pool(&self.pool, id).await
+        runtime_get_by_id_from_pool(self.db.read_pool(), id).await
     }
 
     async fn session_projection_set_status_for_card(
@@ -793,7 +793,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         session_set_status_for_card_tx(&mut tx, card_id, status).await?;
         tx.commit().await?;
         Ok(())
@@ -804,7 +804,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())
@@ -815,7 +815,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         terminal_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())
@@ -858,7 +858,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         let rows = sqlx::query(&sql)
             .bind(provider.as_db_str())
             .bind(contract.as_db_str())
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read_pool())
             .await?;
         rows.iter()
             .map(card_runtime_from_ws_join_row)

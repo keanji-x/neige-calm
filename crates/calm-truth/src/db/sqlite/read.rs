@@ -56,7 +56,7 @@ impl SqlxRepo {
             .bind(card_id)
             .bind(cursor)
             .bind(limit)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read_pool())
             .await?;
         if descending {
             rows.reverse();
@@ -77,16 +77,16 @@ impl RepoRead for SqlxRepo {
         track_id: &str,
         user_id: &str,
     ) -> Result<Option<crate::db::TrackAreaMembership>> {
-        super::area_membership::track_area_membership(&self.pool, track_id, user_id).await
+        super::area_membership::track_area_membership(self.db.read_pool(), track_id, user_id).await
     }
 
     async fn application_user_require_registered(&self, user_id: &str) -> Result<()> {
-        let mut connection = self.pool.acquire().await?;
+        let mut connection = self.db.read_pool().acquire().await?;
         super::area_membership::application_user_require_registered(&mut connection, user_id).await
     }
 
     async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>> {
-        let mut tx = super::begin_immediate_tx(&self.pool).await?;
+        let mut tx = super::begin_immediate_tx(&self.db).await?;
         let areas = super::area_membership::areas_list_for_member(&mut tx, user_id).await?;
         tx.commit().await?;
         Ok(areas)
@@ -98,7 +98,7 @@ impl RepoRead for SqlxRepo {
         user_id: &str,
         access: calm_types::organization::AreaAccess,
     ) -> Result<Area> {
-        let mut tx = super::begin_immediate_tx(&self.pool).await?;
+        let mut tx = super::begin_immediate_tx(&self.db).await?;
         let area =
             super::area_membership::area_require_access(&mut tx, area_id, user_id, access).await?;
         tx.commit().await?;
@@ -110,14 +110,14 @@ impl RepoRead for SqlxRepo {
         card: &str,
         track: &str,
     ) -> Result<Option<crate::db::terminal_outcome::HarnessTerminalOutcome>> {
-        super::terminal_outcome::latest(&self.pool, card, track).await
+        super::terminal_outcome::latest(self.db.read_pool(), card, track).await
     }
     async fn harness_pending_timeouts(
         &self,
         card: &str,
         track: &str,
     ) -> Result<Vec<crate::db::terminal_outcome::HarnessTerminalOutcome>> {
-        super::terminal_outcome::pending_timeouts(&self.pool, card, track).await
+        super::terminal_outcome::pending_timeouts(self.db.read_pool(), card, track).await
     }
 
     async fn areas_list(&self) -> Result<Vec<Area>> {
@@ -126,7 +126,7 @@ impl RepoRead for SqlxRepo {
                       created_at, updated_at
                FROM areas ORDER BY sort ASC"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(Area::from).collect())
     }
@@ -137,7 +137,7 @@ impl RepoRead for SqlxRepo {
                       created_at, updated_at
                FROM areas WHERE kind = 'user' ORDER BY sort ASC"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(Area::from).collect())
     }
@@ -149,7 +149,7 @@ impl RepoRead for SqlxRepo {
                FROM areas WHERE id = ?1"#,
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(Area::from))
     }
@@ -161,7 +161,7 @@ impl RepoRead for SqlxRepo {
                       created_at, updated_at
                FROM areas WHERE kind = 'system' LIMIT 1"#,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(Area::from))
     }
@@ -172,7 +172,7 @@ impl RepoRead for SqlxRepo {
                FROM area_folders WHERE area_id = ?1 ORDER BY path ASC"#,
         )
         .bind(area_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(AreaFolder::from).collect())
     }
@@ -182,7 +182,7 @@ impl RepoRead for SqlxRepo {
             r#"SELECT id, area_id, path, created_at
                FROM area_folders ORDER BY path ASC"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(AreaFolder::from).collect())
     }
@@ -193,7 +193,7 @@ impl RepoRead for SqlxRepo {
                FROM area_folders WHERE id = ?1"#,
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(AreaFolder::from))
     }
@@ -203,7 +203,7 @@ impl RepoRead for SqlxRepo {
             "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE area_id = ?1 ORDER BY sort ASC"
         ))
         .bind(area_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(Track::from).collect())
     }
@@ -214,7 +214,7 @@ impl RepoRead for SqlxRepo {
         let row = sqlx::query_as::<_, crate::db::rows::TrackRow>(&format!(
             "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE purpose = 'launchpad' ORDER BY id LIMIT 1"
         ))
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(Track::from))
     }
@@ -224,7 +224,7 @@ impl RepoRead for SqlxRepo {
             "SELECT {TRACK_SELECT_COLUMNS} FROM tracks WHERE id = ?1"
         ))
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(Track::from))
     }
@@ -263,7 +263,7 @@ impl RepoRead for SqlxRepo {
         if let Some(s) = since {
             q = q.bind(s);
         }
-        Ok(q.fetch_all(&self.pool)
+        Ok(q.fetch_all(self.db.read_pool())
             .await?
             .into_iter()
             .map(Track::from)
@@ -300,7 +300,7 @@ impl RepoRead for SqlxRepo {
                FROM tracks w WHERE w.id = ?1"#
         ))
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         let Some(row) = row else {
             return Ok(None);
@@ -339,14 +339,15 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn tasks_by_track(&self, track_id: &str) -> Result<Vec<Task>> {
-        super::task::tasks_in_scheduler_order(&mut *self.pool.acquire().await?, track_id).await
+        super::task::tasks_in_scheduler_order(&mut *self.db.read_pool().acquire().await?, track_id)
+            .await
     }
 
     async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>> {
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE worker_card_id=?1 LIMIT 2");
         let mut tasks = sqlx::query_as::<_, Task>(&sql)
             .bind(card_id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read_pool())
             .await?;
         if tasks.len() > 1 {
             return Err(CalmError::Conflict(
@@ -357,11 +358,11 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>> {
-        super::task_attempt::task_current_get_pool(&self.pool, track_id, key).await
+        super::task_attempt::task_current_get_pool(self.db.read_pool(), track_id, key).await
     }
 
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>> {
-        super::task_attempt::task_history_by_key_pool(&self.pool, track_id, key).await
+        super::task_attempt::task_history_by_key_pool(self.db.read_pool(), track_id, key).await
     }
 
     async fn planner_messages_for_attempt(
@@ -369,13 +370,13 @@ impl RepoRead for SqlxRepo {
         track_id: &str,
         attempt_id: &str,
     ) -> Result<Vec<calm_types::track_fs_dto::TaskPlannerMessage>> {
-        super::planner_messages_for_attempt(&self.pool, track_id, attempt_id).await
+        super::planner_messages_for_attempt(self.db.read_pool(), track_id, attempt_id).await
     }
     async fn canceled_task_attempts_by_track(
         &self,
         track_id: &str,
     ) -> Result<Vec<super::CanceledTaskAttempt>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.db.read_pool().acquire().await?;
         super::canceled_task_attempts_by_track(&mut conn, track_id).await
     }
 
@@ -383,7 +384,7 @@ impl RepoRead for SqlxRepo {
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
         let row = sqlx::query_as::<_, Task>(&sql)
             .bind(id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read_pool())
             .await?;
         Ok(row)
     }
@@ -395,7 +396,7 @@ impl RepoRead for SqlxRepo {
              ORDER BY track_id ASC, priority DESC, created_at_ms ASC, key ASC"
         );
         let rows = sqlx::query_as::<_, Task>(&sql)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read_pool())
             .await?;
         Ok(rows)
     }
@@ -414,7 +415,7 @@ impl RepoRead for SqlxRepo {
                ORDER BY t.id"#,
         )
         .bind(dst_track_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows
             .into_iter()
@@ -445,7 +446,7 @@ impl RepoRead for SqlxRepo {
                ORDER BY t.id"#,
         )
         .bind(dst_track_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows
             .into_iter()
@@ -470,7 +471,7 @@ impl RepoRead for SqlxRepo {
                  AND context_stale_at_ms IS NULL
                ORDER BY id"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows
             .into_iter()
@@ -495,7 +496,7 @@ impl RepoRead for SqlxRepo {
                  AND context_stale_at_ms IS NOT NULL
                ORDER BY id"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows
             .into_iter()
@@ -516,7 +517,7 @@ impl RepoRead for SqlxRepo {
         let row: Option<Option<String>> =
             sqlx::query_scalar("SELECT idempotency_key FROM operations WHERE id = ?1")
                 .bind(op_id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(self.db.read_pool())
                 .await?;
         Ok(row.flatten())
     }
@@ -528,7 +529,7 @@ impl RepoRead for SqlxRepo {
                FROM cards WHERE track_id = ?1 ORDER BY sort ASC, id ASC"#,
         )
         .bind(track_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(Card::from).collect())
     }
@@ -542,7 +543,7 @@ impl RepoRead for SqlxRepo {
                ORDER BY track_id ASC, id ASC"#,
         )
         .bind(area_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(Card::from).collect())
     }
@@ -552,7 +553,7 @@ impl RepoRead for SqlxRepo {
             "SELECT archived_at_ms FROM assistant_conversation_archives WHERE card_id=?1",
         )
         .bind(card_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?)
     }
 
@@ -562,7 +563,7 @@ impl RepoRead for SqlxRepo {
                FROM cards WHERE id = ?1"#,
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(Card::from))
     }
@@ -582,7 +583,7 @@ impl RepoRead for SqlxRepo {
                FROM cards WHERE id = ?1"#,
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(|row| (Card::from(row.card), row.body_crdt)))
     }
@@ -596,7 +597,7 @@ impl RepoRead for SqlxRepo {
         // predicate the write path runs inside its IMMEDIATE transaction. The pending reasons'
         // track-idle read is a second statement: a claim landing between the two can show a
         // just-claimed task as waiting until the next read.
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.db.read_pool().acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
         let diagnostics = super::task_projection::evaluate_schedulability_with_pending_reasons(
@@ -612,7 +613,7 @@ impl RepoRead for SqlxRepo {
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>> {
         let row: Option<(String,)> = sqlx::query_as("SELECT role FROM cards WHERE id = ?1")
             .bind(id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read_pool())
             .await?;
         row.map(|(role,)| {
             CardRole::try_from(role)
@@ -683,7 +684,7 @@ impl RepoRead for SqlxRepo {
             .bind(card_id)
             .bind(cursor)
             .bind(limit)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read_pool())
             .await?;
         if descending {
             rows.reverse();
@@ -696,10 +697,12 @@ impl RepoRead for SqlxRepo {
         card_id: &str,
         source_kind: &str,
     ) -> Result<Option<crate::db::rows::WorkerFlowCursor>> {
-        Ok(
-            super::worker_flow_capture::worker_flow_cursor_select(&self.pool, card_id, source_kind)
-                .await?,
+        Ok(super::worker_flow_capture::worker_flow_cursor_select(
+            self.db.read_pool(),
+            card_id,
+            source_kind,
         )
+        .await?)
     }
 
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {
@@ -726,7 +729,7 @@ impl RepoRead for SqlxRepo {
                FROM shared_codex_daemon
                WHERE id = 1"#,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read_pool())
         .await?;
         Ok(SharedCodexDaemonRecord {
             state: row.0,
@@ -751,7 +754,7 @@ impl RepoRead for SqlxRepo {
         )
         .bind(entity_kind)
         .bind(entity_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(Overlay::from).collect())
     }
@@ -762,7 +765,7 @@ impl RepoRead for SqlxRepo {
                FROM overlays WHERE entity_kind = ?1"#,
         )
         .bind(entity_kind)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows.into_iter().map(Overlay::from).collect())
     }
@@ -775,7 +778,7 @@ impl RepoRead for SqlxRepo {
                FROM terminals WHERE id = ?1"#,
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row)
     }
@@ -788,7 +791,7 @@ impl RepoRead for SqlxRepo {
                FROM terminals WHERE card_id = ?1"#,
         )
         .bind(card_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row)
     }
@@ -828,7 +831,7 @@ impl RepoRead for SqlxRepo {
                )"#,
         )
         .bind(cutoff)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows)
     }
@@ -844,7 +847,7 @@ impl RepoRead for SqlxRepo {
                FROM terminals
                WHERE exit_code IS NULL AND signal_killed = 0"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows)
     }
@@ -890,7 +893,7 @@ impl RepoRead for SqlxRepo {
         .bind(contract.as_db_str())
         .bind(provider.as_db_str())
         .bind(contract.as_db_str())
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows)
     }
@@ -906,7 +909,7 @@ impl RepoRead for SqlxRepo {
                FROM plugins
                ORDER BY id ASC"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows)
     }
@@ -918,7 +921,7 @@ impl RepoRead for SqlxRepo {
                FROM plugins WHERE id = ?1"#,
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row)
     }
@@ -928,7 +931,7 @@ impl RepoRead for SqlxRepo {
             r#"SELECT hashed_token, expires_at FROM plugin_tokens WHERE plugin_id = ?1"#,
         )
         .bind(plugin_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row)
     }
@@ -938,7 +941,7 @@ impl RepoRead for SqlxRepo {
             sqlx::query_as(r#"SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2"#)
                 .bind(plugin_id)
                 .bind(key)
-                .fetch_optional(&self.pool)
+                .fetch_optional(self.db.read_pool())
                 .await?;
         match row {
             Some((text,)) => Ok(Some(serde_json::from_str(&text)?)),
@@ -966,7 +969,7 @@ impl RepoRead for SqlxRepo {
         )
         .bind(plugin_id)
         .bind(&escaped)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         let mut out = Vec::with_capacity(rows.len());
         for (k, v) in rows {
@@ -978,17 +981,17 @@ impl RepoRead for SqlxRepo {
     async fn settings_get_all(&self) -> Result<Vec<(String, String)>> {
         let rows: Vec<(String, String)> =
             sqlx::query_as(r#"SELECT key, value FROM settings ORDER BY key ASC"#)
-                .fetch_all(&self.pool)
+                .fetch_all(self.db.read_pool())
                 .await?;
         Ok(rows)
     }
 
     async fn seed_card_role_cache(&self, cache: &CardRoleCache) -> Result<()> {
-        cache.seed_from_db(&self.pool).await
+        cache.seed_from_db(self.db.read_pool()).await
     }
 
     async fn seed_track_area_cache(&self, cache: &TrackAreaCache) -> Result<()> {
-        cache.seed_from_db(&self.pool).await
+        cache.seed_from_db(self.db.read_pool()).await
     }
 
     async fn card_mcp_token_lookup_by_hash(
@@ -1001,7 +1004,7 @@ impl RepoRead for SqlxRepo {
             r#"SELECT card_id, hashed_token FROM card_mcp_tokens WHERE hashed_token = ?1"#,
         )
         .bind(hashed_token)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row)
     }
@@ -1019,7 +1022,7 @@ impl RepoRead for SqlxRepo {
               LIMIT 2"#,
         )
         .bind(session_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         match rows.as_slice() {
             [] => Ok(None),
@@ -1049,7 +1052,7 @@ impl RepoRead for SqlxRepo {
                LIMIT 1"#,
         )
         .bind(card_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         row.map(|row| {
             Ok(WorkspaceLease {
@@ -1067,10 +1070,10 @@ impl RepoRead for SqlxRepo {
         &self,
         hashed_token: &str,
     ) -> Result<Option<WorkerSession>> {
-        session_get_by_active_token_hash(&self.pool, hashed_token).await
+        session_get_by_active_token_hash(self.db.read_pool(), hashed_token).await
     }
 
     async fn session_get_by_id(&self, id: &WorkerSessionId) -> Result<Option<WorkerSession>> {
-        session_get_by_id(&self.pool, id).await
+        session_get_by_id(self.db.read_pool(), id).await
     }
 }

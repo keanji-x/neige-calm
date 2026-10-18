@@ -295,7 +295,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     );
     let structural_before = count_where(pool, &structural_predicate).await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune pass");
 

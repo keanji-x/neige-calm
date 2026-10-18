@@ -34,7 +34,7 @@ async fn gc_revision_rejects_reset_replace_delete_and_outer_ignore() {
 async fn gc_revision_source_rollback_is_atomic_and_ignore_is_a_noop() {
     let f = Fixture::new().await;
     let before = revision(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query("UPDATE track_vcs_objects SET created_at=created_at WHERE hash=?1")
         .bind(&f.tree.tree_hash)
         .execute(&mut **tx)
@@ -247,7 +247,7 @@ async fn gc_revision_bulk_history_prune_advances_for_every_removed_row() {
         .await
         .unwrap();
     let before = revision(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let deleted = crate::track_vcs::prune_track_history_tx(&mut tx, &f.track, 1)
         .await
         .unwrap();

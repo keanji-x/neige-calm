@@ -13,7 +13,7 @@ pub async fn prepare(
     adapter: &dyn ProviderAdapter,
     original: &Operation,
 ) -> (TxOutput, Operation) {
-    let operations = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let claimed = operations
         .claim_drive_batch(32)
         .await

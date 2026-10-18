@@ -85,7 +85,7 @@ async fn legacy_compensation_harness(
 
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     let events = EventBus::new();
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
     let spawn_ctx = SpawnCtx::new(
         route_repo.clone(),
@@ -281,7 +281,7 @@ async fn set_parked_requires_lease_and_artifacts_record_rejects_stale_lease() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let op = claimed_spawn_started_operation(&repo).await;
     let deadline = now_ms() + 10_000;
 
@@ -325,10 +325,10 @@ async fn complete_parked_tx_splices_result_and_double_complete_is_resolved() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let op = parked_operation(&repo, now_ms() + 10_000).await;
 
-    let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
     let completion = complete_parked_tx(
         &mut tx,
         &op.id,
@@ -348,7 +348,7 @@ async fn complete_parked_tx_splices_result_and_double_complete_is_resolved() {
             if result == &json!({ "parked": "done" })
     ));
 
-    let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
     let second = complete_parked_tx(
         &mut tx,
         &op.id,
@@ -372,7 +372,7 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let op = parked_operation(&repo, now_ms() + 10_000).await;
     let claimed = repo.claim_parked(&op.id).await.unwrap().unwrap();
     required_output(&claimed).unwrap();
@@ -387,7 +387,7 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
         .unwrap()
         .expect("claim flips to compensating");
 
-    let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
     let completion = complete_parked_tx(
         &mut tx,
         &op.id,
@@ -407,7 +407,7 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
     ));
 
     let op = parked_operation(&repo, now_ms() + 10_000).await;
-    let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
     assert!(matches!(
         complete_parked_tx(
             &mut tx,
@@ -448,7 +448,7 @@ async fn same_idempotency_key_different_hash_conflicts() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let key = OperationKey {
         operation_key: "op-a".into(),
         idempotency_key: Some("same-key".into()),
@@ -519,7 +519,7 @@ async fn operation_event_append_creates_track_vcs_commit() {
         .unwrap();
     let roles = CardRoleCache::new();
     let card_id = new_id();
-    let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
     let report = card_create_with_id_tx(
         &mut tx,
         card_id.clone(),
@@ -580,7 +580,7 @@ async fn set_phase_clears_lease_and_rejects_stale_owner() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let op_id = repo
         .insert_operation(
             "terminal-create",
@@ -624,7 +624,7 @@ async fn a_committed_prepare_leaves_no_lease_to_mark_the_row_stuck_from_pending(
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let op_id = repo
         .insert_operation(
             "park-test",
@@ -677,7 +677,7 @@ async fn boot_recovery_marks_a_row_stuck_from_the_phase_it_claimed_not_the_plann
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let op_id = repo
         .insert_operation(
             "park-test",
@@ -736,7 +736,7 @@ async fn stale_driver_cannot_win_final_transition_after_reclaim() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let op_id = repo
         .insert_operation(
             "terminal-create",
@@ -794,7 +794,7 @@ async fn claim_drive_batch_excludes_parked_and_claim_parked_is_exact_phase() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let parked = parked_operation(&repo, now_ms() + 10_000).await;
 
     assert!(
@@ -828,7 +828,7 @@ async fn claim_parked_fetch_misses_when_completion_wins_after_update() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let parked = parked_operation(&repo, now_ms() + 10_000).await;
     let now = now_ms();
     let lease_owner = new_id();
@@ -850,7 +850,7 @@ async fn claim_parked_fetch_misses_when_completion_wins_after_update() {
     .unwrap();
     assert_eq!(result.rows_affected(), 1);
 
-    let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
     assert!(matches!(
         complete_parked_tx(
             &mut tx,
@@ -866,7 +866,7 @@ async fn claim_parked_fetch_misses_when_completion_wins_after_update() {
     tx.commit().await.unwrap();
 
     assert!(
-        fetch_claimed_parked(sqlx_repo.pool(), &parked.id, &lease_owner)
+        fetch_claimed_parked(sqlx_repo.db(), &parked.id, &lease_owner)
             .await
             .unwrap()
             .is_none(),
@@ -879,12 +879,12 @@ async fn completion_clears_lease_so_claimed_deadline_write_loses_ordering_b() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(sqlx_repo.pool().clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let parked = parked_operation(&repo, now_ms() + 10_000).await;
     let claimed = repo.claim_parked(&parked.id).await.unwrap().unwrap();
     assert!(claimed.lease_owner.is_some());
 
-    let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
     assert!(matches!(
         complete_parked_tx(
             &mut tx,
@@ -924,8 +924,7 @@ async fn recover_on_boot_plan_contains_verify_parked_items() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let parked = parked_operation(repo.as_ref(), now_ms() + 10_000).await;
     let observer_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let adapter = Arc::new(TestParkingAdapter {
@@ -987,8 +986,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     .await
     .unwrap();
 
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let op_id = repo
         .insert_operation(
             "codex-worker",
@@ -1009,7 +1007,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     )
     .bind(now_ms())
     .bind(&op_id)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1033,7 +1031,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     .bind(now + 60_000)
     .bind(&stale_boot)
     .bind(now)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1044,7 +1042,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "released");
@@ -1054,7 +1052,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     );
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(released_events, 1);
@@ -1106,8 +1104,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     .await
     .unwrap();
 
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let op_id = repo
         .insert_operation(
             "codex-worker",
@@ -1128,7 +1125,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     )
     .bind(now_ms())
     .bind(&op_id)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1154,7 +1151,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     .bind(now + 60_000)
     .bind(&stale_boot)
     .bind(now)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1168,7 +1165,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "released");
@@ -1191,7 +1188,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     .bind(&path)
     .bind(now + 120_000)
     .bind(now + 1)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .expect("released lease row frees the active path index");
 }
@@ -1242,8 +1239,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     .await
     .unwrap();
 
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let op_id = repo
         .insert_operation(
             "codex-worker",
@@ -1264,7 +1260,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     )
     .bind(now_ms())
     .bind(&op_id)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1288,7 +1284,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     .bind(now + 60_000)
     .bind(&boot_id)
     .bind(now)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1299,7 +1295,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "held");
@@ -1309,7 +1305,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     );
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(released_events, 0);
@@ -1362,8 +1358,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     .await
     .unwrap();
 
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let op_id = repo
         .insert_operation(
             "park-test",
@@ -1403,7 +1398,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
         .unwrap(),
     )
     .bind(&op_id)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1427,7 +1422,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     .bind(now + 60_000)
     .bind(&stale_boot)
     .bind(now)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 
@@ -1453,7 +1448,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "held");
@@ -1463,7 +1458,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     );
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(released_events, 0);
@@ -1474,7 +1469,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "held");
@@ -1550,8 +1545,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     .await
     .unwrap();
 
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
     let plan = runtime.recover_on_boot().await.unwrap();
     assert!(plan.items.is_empty());
@@ -1559,7 +1553,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "released");
@@ -1569,7 +1563,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     );
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool.read_pool())
             .await
             .unwrap();
     assert_eq!(released_events, 1);
@@ -1588,7 +1582,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     .bind(&path)
     .bind(now + 120_000)
     .bind(now + 1)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
 }
@@ -1599,8 +1593,7 @@ async fn boot_leave_parked_clears_abandoned_future_lease() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let parked = parked_operation(repo.as_ref(), now_ms() + 10_000).await;
     let (_child, artifacts) = live_child_spawn_artifacts();
     let artifacts_json = serde_json::to_string(&artifacts).unwrap();
@@ -1654,8 +1647,7 @@ async fn parked_return_without_artifacts_fails_and_drops_observer() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let observer_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let adapter = Arc::new(TestParkingAdapter {
         observer_runs: observer_runs.clone(),
@@ -1696,8 +1688,7 @@ async fn set_parked_lost_lease_after_artifacts_drops_observer() {
     let sqlx_repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let pool = sqlx_repo.pool().clone();
-    let repo = Arc::new(SqlxOperationRepo::new(pool));
+    let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let observer_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let adapter = Arc::new(TestParkingAdapter {
         observer_runs: observer_runs.clone(),
@@ -1757,7 +1748,7 @@ async fn claimed_spawn_started_operation(repo: &SqlxOperationRepo) -> Operation 
     .bind(now + OPERATION_LEASE_MS)
     .bind(now)
     .bind(&op_id)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
     let output = TxOutput::new("unknown", None, json!({ "initial": true }));
@@ -1781,7 +1772,7 @@ async fn claimed_spawn_started_operation(repo: &SqlxOperationRepo) -> Operation 
         .unwrap(),
     )
     .bind(&op_id)
-    .execute(&repo.pool)
+    .execute(repo.pool.writer_pool())
     .await
     .unwrap();
     repo.get_operation(&op_id).await.unwrap().unwrap()
@@ -1932,7 +1923,7 @@ impl ProviderAdapter for TestParkingAdapter {
             ctx.record_spawn_artifacts(op, &sample_spawn_artifacts())
                 .await?;
             if self.steal_lease_after_artifacts {
-                let pool = ctx.operation_repo.sqlite_pool();
+                let pool = ctx.operation_repo.sqlite_db();
                 let now = now_ms();
                 let result = sqlx::query(
                     r#"UPDATE operations
@@ -1947,7 +1938,7 @@ impl ProviderAdapter for TestParkingAdapter {
                 .bind(now)
                 .bind(&op.id)
                 .bind(required_lease_owner(op)?)
-                .execute(&pool)
+                .execute(pool.writer_pool())
                 .await?;
                 if result.rows_affected() == 0 {
                     return Err(CalmError::Internal(
@@ -2007,7 +1998,7 @@ pub(super) async fn collect_claimed_preparation(
     adapter: &dyn ProviderAdapter,
     op: &Operation,
 ) -> Result<Option<Box<dyn PreparedTx>>> {
-    let operations = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let ctx = SpawnCtx::new(
         repo.clone(),
         operations,
@@ -2027,7 +2018,7 @@ pub(super) async fn prepare_claimed_adapter(
     let prepared = collect_claimed_preparation(repo.clone(), adapter, op)
         .await?
         .expect("worker returns one-shot preparation");
-    let mut tx = begin_immediate_tx(repo.pool()).await?;
+    let mut tx = begin_immediate_tx(repo.db()).await?;
     super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
     let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, op).await? else {
         panic!("stable fixture facts became stale");

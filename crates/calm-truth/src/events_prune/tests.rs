@@ -1,6 +1,7 @@
 use super::*;
 use crate::db::RepoEventWrite;
 use crate::db::sqlite::SqlxRepo;
+use sqlx::SqlitePool;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -81,7 +82,7 @@ async fn keeps_exactly_max_id_per_overlay_quad() {
     let a3 = insert_event(pool, "overlay.set", &quad_a, old(60)).await;
     let b2 = insert_event(pool, "overlay.set", &quad_b, old(50)).await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune");
 
@@ -99,7 +100,7 @@ async fn keeps_rows_newer_than_horizon_even_when_superseded() {
     let new_latest = insert_event(pool, "overlay.set", &quad, now_ms()).await;
     let new_hook = insert_event(pool, "claude.hook", "{}", old(2)).await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune");
 
@@ -121,7 +122,7 @@ async fn deletes_old_transient_kinds_past_horizon() {
     let recent_claude = insert_event(pool, "claude.hook", "{}", now_ms()).await;
     let recent_codex = insert_event(pool, "codex.hook", "{}", now_ms()).await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune");
 
@@ -143,7 +144,7 @@ async fn never_touches_non_allowlist_kinds_or_overlay_deleted() {
     )
     .await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune");
 
@@ -163,7 +164,7 @@ async fn prunes_across_multiple_batches() {
         ..EventsRetentionPolicy::default()
     };
 
-    let pruned = prune_events_once(pool, &policy).await.expect("prune");
+    let pruned = prune_events_once(repo.db(), &policy).await.expect("prune");
 
     assert_eq!(pruned, 7);
     assert_eq!(remaining_ids(pool).await, Vec::<i64>::new());
@@ -180,7 +181,7 @@ async fn zero_batch_still_makes_progress() {
         ..EventsRetentionPolicy::default()
     };
 
-    let pruned = prune_events_once(pool, &policy).await.expect("prune");
+    let pruned = prune_events_once(repo.db(), &policy).await.expect("prune");
 
     assert_eq!(pruned, 2);
 }
@@ -195,7 +196,7 @@ async fn advances_durable_watermark_to_max_pruned_id() {
     let hook2 = insert_event(pool, "claude.hook", "{}", old(31)).await;
     let structural = insert_event(pool, "area.updated", "{}", old(31)).await;
 
-    prune_events_once(pool, &EventsRetentionPolicy::default())
+    prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune");
     assert_eq!(
@@ -204,7 +205,7 @@ async fn advances_durable_watermark_to_max_pruned_id() {
         "watermark is the highest id ever pruned"
     );
 
-    prune_events_once(pool, &EventsRetentionPolicy::default())
+    prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("second prune");
     assert_eq!(
@@ -248,7 +249,7 @@ async fn freezes_quad_whose_latest_row_is_version_unsupported() {
     let _b1 = insert_event(pool, "overlay.set", &quad_b, old(80)).await;
     let b2 = insert_event(pool, "overlay.set", &quad_b, old(50)).await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune");
 
@@ -274,7 +275,7 @@ async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
     )
     .await;
     assert_eq!(
-        prune_events_once(pool, &EventsRetentionPolicy::default())
+        prune_events_once(repo.db(), &EventsRetentionPolicy::default())
             .await
             .expect("prune"),
         0
@@ -296,7 +297,7 @@ async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
     )
     .await;
     assert_eq!(
-        prune_events_once(pool, &EventsRetentionPolicy::default())
+        prune_events_once(repo.db(), &EventsRetentionPolicy::default())
             .await
             .expect("prune"),
         0
@@ -317,7 +318,7 @@ async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
     )
     .await;
     assert_eq!(
-        prune_events_once(pool, &EventsRetentionPolicy::default())
+        prune_events_once(repo.db(), &EventsRetentionPolicy::default())
             .await
             .expect("prune"),
         2
@@ -336,7 +337,7 @@ async fn malformed_overlay_payload_never_poisons_the_batch() {
     let latest = insert_event(pool, "overlay.set", &quad, old(50)).await;
     let _hook = insert_event(pool, "claude.hook", "{}", old(40)).await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune must not error on a malformed overlay payload");
 
@@ -356,7 +357,7 @@ async fn malformed_overlay_payload_never_poisons_the_batch() {
         old(30),
     )
     .await;
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("second prune with frozen quads must not error either");
     assert_eq!(pruned, 0);
@@ -468,7 +469,7 @@ async fn first_message_dedup_kind_is_never_prunable() {
     // A sibling allowlisted kind, so the pass provably did work rather than no-opped.
     insert_event(pool, "harness.item.added", "{}", old(400)).await;
 
-    let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+    let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
         .expect("prune");
 

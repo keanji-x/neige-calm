@@ -156,10 +156,12 @@ async fn candidate_facts(
     track_id: &str,
 ) -> Result<Vec<TrackCandidate>, RpcError> {
     let pool = ctx
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| internal("requires a sqlite-backed repo"))?;
-    track_candidates(pool, track_id).await.map_err(internal)
+    track_candidates(pool.read_pool(), track_id)
+        .await
+        .map_err(internal)
 }
 
 /// D7 and D2, and the tip of D3. Local git only, on a blocking thread.

@@ -7,7 +7,7 @@ pub type ExecutionEngine = Engine<SqliteExecutionStore, SessionExecutor>;
 
 pub async fn recover(
     cfg: &Config,
-    pool: sqlx::SqlitePool,
+    pool: crate::db::sqlite::SqliteDb,
 ) -> anyhow::Result<Option<Arc<ExecutionEngine>>> {
     let Some(key_file) = &cfg.kernel_client_key_file else {
         return Ok(None);
@@ -64,13 +64,13 @@ mod port_contract {
         ])
         .unwrap();
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let pool = repo.sqlite_pool().unwrap();
+        let pool = repo.sqlite_db().unwrap();
         let store = SqliteExecutionStore::new(pool.clone()).with_projection(
             test_support::TEST_CONSUMER.into(),
             Arc::new(crate::execution_store::tests::NoopProjection),
         );
         let intent = test_support::intent(temp.path().to_owned());
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = pool.writer_pool().begin().await.unwrap();
         store.insert(&mut tx, &intent).await.unwrap();
         tx.commit().await.unwrap();
         let engine = recover(&cfg, pool).await.unwrap().unwrap();

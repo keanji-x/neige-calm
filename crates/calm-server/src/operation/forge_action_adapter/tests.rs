@@ -181,7 +181,7 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
             )),
         },
     );
-    let operation_repo = SqlxOperationRepo::new(fx.repo.pool().clone());
+    let operation_repo = SqlxOperationRepo::new(fx.repo.db().clone());
     let op_id = operation_repo
         .insert_operation(
             FORGE_ACTION_KIND,
@@ -248,7 +248,7 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
     .expect("install trigger");
 
     let result = resolve_post_release_via_probe(
-        fx.repo.pool(),
+        fx.repo.db(),
         &OperationCompletionBus::new(),
         &EventBus::new(),
         fx.repo.as_ref(),
@@ -261,7 +261,7 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
         result.is_err(),
         "landed probe completion tx failure should propagate"
     );
-    let recover_repo = Arc::new(SqlxOperationRepo::new(fx.repo.pool().clone()));
+    let recover_repo = Arc::new(SqlxOperationRepo::new(fx.repo.db().clone()));
     let route_repo: Arc<dyn RouteRepo> = fx.repo.clone();
     let recover_events = EventBus::new();
     let recover_completion = OperationCompletionBus::new();
@@ -701,7 +701,7 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
         .await
         .expect("create track");
     let events = EventBus::new();
-    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let route_repo: Arc<dyn RouteRepo> = sqlx_repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());

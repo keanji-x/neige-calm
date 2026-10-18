@@ -156,7 +156,7 @@ fn fail_starts_after_delivering(
 ) -> calm_server::state::AppState {
     let original = boot.state.clone();
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(DeliverThenFailSpawn {
         inner: PlannerHarnessStartAdapter::new(
             boot.repo.clone(),
@@ -573,7 +573,7 @@ async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
 
     let original = boot.state.clone();
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(DropThenFailRedriven {
         inner: PlannerHarnessStartAdapter::new(
             boot.repo.clone(),

@@ -49,9 +49,14 @@ async fn pool_and_track(state: &RouteState, id: &str) -> Result<sqlx::SqlitePool
         .track_get(id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
-    state.mcp_context.sqlite_pool.clone().ok_or_else(|| {
-        CalmError::Internal("report_sources: route requires a sqlite-backed repo".into())
-    })
+    state
+        .mcp_context
+        .sqlite_db
+        .as_ref()
+        .map(|db| db.read_pool().clone())
+        .ok_or_else(|| {
+            CalmError::Internal("report_sources: route requires a sqlite-backed repo".into())
+        })
 }
 
 #[utoipa::path(

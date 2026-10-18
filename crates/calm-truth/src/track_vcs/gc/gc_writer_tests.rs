@@ -62,7 +62,7 @@ impl Pause {
     }
 }
 pub(super) fn start(
-    pool: sqlx::SqlitePool,
+    pool: crate::db::sqlite::SqliteDb,
     steps: Vec<Phase>,
 ) -> (
     Arc<Pause>,
@@ -128,7 +128,7 @@ impl Fixture {
             })
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
         let blob = put_blob(&mut tx, "blob", b"retained document")
             .await
             .unwrap();
@@ -162,7 +162,7 @@ impl Fixture {
     pub(super) async fn exhaust_revision(&self) {
         // Seed the otherwise valid representable final integer state without 2^63 writes;
         // restore the exact real migration-created guard SQL before exercising mutation.
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let guard: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='track_vcs_gc_state_monotonic'")
         .fetch_one(&mut **tx).await.unwrap();
         sqlx::query("DROP TRIGGER track_vcs_gc_state_monotonic")
@@ -180,7 +180,7 @@ impl Fixture {
     pub(super) async fn remove_required_revision(&self) {
         // Isolated corruption fixture: supported DML cannot remove this required state.
         // Schema-sensitive steps share one physical connection and commit atomically.
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         sqlx::query("DROP TRIGGER track_vcs_gc_state_no_delete")
             .execute(&mut **tx)
             .await
@@ -193,7 +193,7 @@ impl Fixture {
     }
 
     pub(super) async fn tree(&self, label: &str, count: usize) -> TreeSnapshot {
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
         let entries = (0..count)
             .map(|i| {
@@ -214,7 +214,7 @@ impl Fixture {
         tree
     }
     pub(super) async fn publish(&self, tree: &TreeSnapshot, parent: Option<&str>) -> String {
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let commit = commit_tree(&mut tx, &self.track, parent, tree, None, "published", 1)
             .await
             .unwrap();
@@ -222,7 +222,7 @@ impl Fixture {
         commit
     }
     pub(super) async fn orphan(&self, label: &str) -> String {
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
         sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
             .bind(now_ms() - 7_200_000)
@@ -234,7 +234,7 @@ impl Fixture {
         blob
     }
     pub(super) async fn age(&self, tree: &TreeSnapshot) {
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         for hash in std::iter::once(&tree.tree_hash)
             .chain(tree.manifest.entries.values().map(|entry| &entry.blob_hash))
         {
@@ -259,9 +259,9 @@ impl Fixture {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn object_sweep_manifest_parsing_does_not_hold_database_writer() {
     let f = Fixture::new().await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::Parse]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::Parse]);
     pause.entered().await;
-    let pool = f.repo.pool().clone();
+    let pool = f.repo.db().clone();
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_gc_writer_probe(value) VALUES (1)")

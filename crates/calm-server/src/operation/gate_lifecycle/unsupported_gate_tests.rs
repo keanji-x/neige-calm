@@ -33,7 +33,7 @@ async fn context() -> SpawnCtx {
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     SpawnCtx::new(
         route_repo.clone(),
-        Arc::new(SqlxOperationRepo::new(repo.pool().clone())),
+        Arc::new(SqlxOperationRepo::new(repo.db().clone())),
         Arc::new(DaemonClient::new_stub()),
         TerminalRendererRegistry::new_with_repo(route_repo),
         EventBus::new(),
@@ -202,7 +202,7 @@ async fn verify_unbound(reason: Option<FrozenUnbound>) {
         .unwrap();
     let (status, verdict): (String, String) =
         sqlx::query_as("SELECT status, gate_result_json FROM tasks WHERE id='track:gate'")
-            .fetch_one(&ctx.operation_repo.sqlite_pool())
+            .fetch_one(ctx.operation_repo.sqlite_db().read_pool())
             .await
             .unwrap();
     let verdict: Value = serde_json::from_str(&verdict).unwrap();

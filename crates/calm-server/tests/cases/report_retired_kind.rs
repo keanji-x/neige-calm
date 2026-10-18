@@ -118,7 +118,7 @@ async fn track_with_stored_retired_block(boot: &Boot, title: &str) -> String {
             "SELECT body_crdt IS NOT NULL FROM cards WHERE track_id = ?1 AND kind = 'track-report'",
         )
         .bind(&track_id)
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
         assert!(has_crdt, "the report is CRDT-backed after the write");

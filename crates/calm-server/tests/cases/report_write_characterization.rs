@@ -79,7 +79,11 @@ fn assert_attribution(payload: &Value, author: &str) {
 }
 
 fn mcp_pool(boot: &Boot) -> SqlitePool {
-    boot.repo.sqlite_pool().expect("fixture repo is sqlite")
+    boot.repo
+        .sqlite_db()
+        .expect("fixture repo is sqlite")
+        .read_pool()
+        .clone()
 }
 
 async fn mcp_doc_rev(boot: &Boot) -> u64 {

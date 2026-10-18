@@ -217,7 +217,7 @@ async fn reopen_ask_same_timestamp_reclosure_cannot_grant() {
     sqlx::query("UPDATE tracks SET closed_at = ?1 WHERE id = ?2")
         .bind(stamp)
         .bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     assert_eq!(
@@ -286,16 +286,16 @@ async fn reopen_ask_rechecks_child_restriction_before_grant_without_settling() {
         })
         .await
         .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
         .bind(parent.id.as_str())
         .bind(boot.track_id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,child_track_id,created_at_ms,updated_at_ms) \
         VALUES('parent:child',?1,'child','codex','g','{}','running',?2,1,1)")
-        .bind(parent.id.as_str()).bind(boot.track_id.as_str()).execute(&pool).await.unwrap();
+        .bind(parent.id.as_str()).bind(boot.track_id.as_str()).execute(pool.writer_pool()).await.unwrap();
     assert_eq!(
         answer(&boot, id, json!([{ "option": 0 }])).await.0,
         StatusCode::BAD_REQUEST

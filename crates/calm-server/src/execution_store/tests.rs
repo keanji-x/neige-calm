@@ -2,9 +2,9 @@ use super::*;
 use calm_truth::db::{Repo, sqlite::SqlxRepo};
 use workspace_runtime::execution::test_support::{self, StoreHarness};
 
-async fn fixture() -> (SqliteExecutionStore, SqlitePool) {
+async fn fixture() -> (SqliteExecutionStore, SqliteDb) {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let pool = repo.sqlite_pool().unwrap();
+    let pool = repo.sqlite_db().unwrap();
     (
         SqliteExecutionStore::new(pool.clone())
             .with_projection(test_support::TEST_CONSUMER.into(), Arc::new(NoopProjection)),
@@ -14,7 +14,7 @@ async fn fixture() -> (SqliteExecutionStore, SqlitePool) {
 #[async_trait]
 impl StoreHarness for SqliteExecutionStore {
     async fn begin(&self) -> Transaction<'_, Sqlite> {
-        self.pool.begin().await.unwrap()
+        self.pool.writer_pool().begin().await.unwrap()
     }
     async fn commit(&self, tx: Transaction<'_, Sqlite>) {
         tx.commit().await.unwrap();
@@ -30,9 +30,9 @@ mod port_contract {
         workspace_runtime::execution::test_support::port_contract::store(&store).await;
     }
 }
-async fn inserted(store: &SqliteExecutionStore, pool: &SqlitePool) -> ExecutionIntent {
+async fn inserted(store: &SqliteExecutionStore, pool: &SqliteDb) -> ExecutionIntent {
     let intent = test_support::intent("/".into());
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     store.insert(&mut tx, &intent).await.unwrap();
     tx.commit().await.unwrap();
     intent
@@ -46,7 +46,7 @@ async fn store_admit_rolls_back_with_domain_write() {
     );
     let intent = test_support::intent("/".into());
     let id = intent.metadata.id.clone();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     // A real domain-table write shares the caller's transaction with Engine::admit.
     sqlx::query(
         "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
@@ -60,7 +60,7 @@ async fn store_admit_rolls_back_with_domain_write() {
     assert!(store.load(&id).await.unwrap().is_none());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM areas WHERE id = 'execution-domain'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap(),
         0
@@ -71,7 +71,7 @@ async fn store_stop_settlement_keeps_secrets_check() {
     let (store, pool) = fixture().await;
     let intent = inserted(&store, &pool).await;
     let id = &intent.metadata.id;
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     store.request(&mut tx, id, Desired::Stop).await.unwrap();
     tx.commit().await.unwrap();
     store
@@ -106,7 +106,7 @@ async fn store_pending_includes_settled_retire() {
         .await
         .unwrap();
     assert!(store.pending().await.unwrap().is_empty());
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     store.request(&mut tx, id, Desired::Retire).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(store.pending().await.unwrap(), vec![id.clone()]);
@@ -136,7 +136,7 @@ async fn store_triggers_reject_rewrites() {
         assert!(
             sqlx::query(&query)
                 .bind(id.as_str())
-                .execute(&pool)
+                .execute(pool.writer_pool())
                 .await
                 .is_err(),
             "accepted {assignment}"
@@ -147,29 +147,29 @@ async fn store_triggers_reject_rewrites() {
         "UPDATE workspace_executions SET execution_id=execution_id, track_id=track_id,
          alias=alias, intent_json=intent_json, secrets_json=secrets_json, desired=desired",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let mut same_alias = test_support::intent("/".into());
     same_alias.metadata.alias = intent.metadata.alias.clone();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     assert!(store.insert(&mut tx, &same_alias).await.is_err());
     tx.rollback().await.unwrap();
     for (desired, rejected) in [(Desired::Stop, "run"), (Desired::Retire, "stop")] {
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = pool.writer_pool().begin().await.unwrap();
         store.request(&mut tx, id, desired).await.unwrap();
         tx.commit().await.unwrap();
         assert!(
             sqlx::query("UPDATE workspace_executions SET desired=? WHERE execution_id=?")
                 .bind(rejected)
                 .bind(id.as_str())
-                .execute(&pool)
+                .execute(pool.writer_pool())
                 .await
                 .is_err()
         );
     }
     // Retiring frees the current-alias uniqueness index; the old row is retained.
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     store.insert(&mut tx, &same_alias).await.unwrap();
     tx.commit().await.unwrap();
     store
@@ -185,20 +185,20 @@ async fn store_triggers_reject_rewrites() {
         assert!(
             sqlx::query(&query)
                 .bind(id.as_str())
-                .execute(&pool)
+                .execute(pool.writer_pool())
                 .await
                 .is_err(),
             "accepted {assignment}"
         );
     }
-    sqlx::query("UPDATE workspace_executions SET settled_at_ms=settled_at_ms, settlement_json=settlement_json WHERE execution_id=?").bind(id.as_str()).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE workspace_executions SET settled_at_ms=settled_at_ms, settlement_json=settlement_json WHERE execution_id=?").bind(id.as_str()).execute(pool.writer_pool()).await.unwrap();
     store.finish(id).await.unwrap();
     let secrets = serde_json::to_string(&intent.secrets).unwrap();
     assert!(
         sqlx::query("UPDATE workspace_executions SET secrets_json=? WHERE execution_id=?")
             .bind(secrets)
             .bind(id.as_str())
-            .execute(&pool)
+            .execute(pool.writer_pool())
             .await
             .is_err()
     );
@@ -272,7 +272,7 @@ impl ExecutionProjection for NoopProjection {
 async fn projection_registered_per_kind() {
     let (store, pool) = fixture().await;
     sqlx::query("CREATE TABLE projection_calls (owner TEXT, alias TEXT, phase TEXT)")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let store = store
@@ -283,7 +283,7 @@ async fn projection_registered_per_kind() {
         let mut intent = test_support::intent("/".into());
         intent.metadata.alias = ProcessAlias(kind.into());
         intent.metadata.consumer = kind.into();
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = pool.writer_pool().begin().await.unwrap();
         store.insert(&mut tx, &intent).await.unwrap();
         tx.commit().await.unwrap();
         store.spawned(&intent.metadata.id).await.unwrap();
@@ -305,7 +305,7 @@ async fn projection_registered_per_kind() {
     }
     let calls: Vec<(String, String, String)> =
         sqlx::query_as("SELECT owner, alias, phase FROM projection_calls ORDER BY owner, phase")
-            .fetch_all(&pool)
+            .fetch_all(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -323,7 +323,7 @@ async fn projection_registered_per_kind() {
 async fn unregistered_projection_fails_and_rolls_back() {
     let (store, pool) = fixture().await;
     let intent = test_support::intent("/".into());
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     store.insert(&mut tx, &intent).await.unwrap();
     tx.commit().await.unwrap();
     let store = SqliteExecutionStore::new(pool.clone());
@@ -342,7 +342,7 @@ async fn unregistered_projection_fails_and_rolls_back() {
         "SELECT settled_at_ms, settlement_json FROM workspace_executions WHERE execution_id = ?",
     )
     .bind(id.as_str())
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     assert_eq!(durable, (None, None));
@@ -360,7 +360,7 @@ async fn unregistered_consumer_refused_at_admit() {
     );
     let intent = test_support::intent("/".into());
     let id = intent.metadata.id.clone();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     assert_eq!(
         store.insert(&mut tx, &intent).await.unwrap_err().0,
         "missing execution projection for consumer: port-contract"

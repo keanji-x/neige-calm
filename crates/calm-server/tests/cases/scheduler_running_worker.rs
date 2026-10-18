@@ -123,7 +123,7 @@ async fn seed_idle_codex_worker(boot: &Boot, label: &str, gated: bool) -> IdleWo
     .bind(&thread_id)
     .bind(R4_COMPLETED_AT_MS)
     .bind(&session_row_id)
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .expect("persist idle thread status");
     let mut task = plan_task(&boot.track_id, label, TaskKind::Codex, &[]);
@@ -292,7 +292,7 @@ async fn run_turn_end_wording(
     sqlx::query("UPDATE worker_sessions SET last_thread_status = ?1 WHERE id = ?2")
         .bind(persisted)
         .bind(&worker.session_row_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let facts = thread_facts(live, last_turn(Some(R4_COMPLETED_AT_S), turn_status));
@@ -372,7 +372,7 @@ async fn idle_turn_that_ended_before_the_running_stamp_is_detected() {
     sqlx::query("UPDATE tasks SET running_deadline_ms = ?1 WHERE key = ?2")
         .bind(now - 100_000 + 7_200_000)
         .bind(&worker.task_key)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let completed_s = (now - 400_000) / 1000;
@@ -489,7 +489,7 @@ async fn idle_arm_leaves_claude_workers_alone() {
     let boot = boot().await;
     let claude = seed_idle_codex_worker(&boot, "claude-idle", false).await;
     sqlx::query("UPDATE tasks SET kind = 'claude' WHERE key = 'claude-idle'")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let probe = ScriptedProbe::new(Answer::Facts(r4_facts()), None);
@@ -512,7 +512,7 @@ async fn seed_running_codex_worker(boot: &Boot, label: &str) -> IdleWorker {
     let worker = seed_idle_codex_worker(boot, label, false).await;
     sqlx::query("UPDATE worker_sessions SET last_thread_status = 'active' WHERE id = ?1")
         .bind(&worker.session_row_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     seed_active_codex_turn(boot, &worker.session_row_id, &worker.thread_id, "turn-live").await;
@@ -578,8 +578,8 @@ async fn cancel_running_claude_task_cancels_and_reaps_worker() {
     let boot = boot().await;
     let card_id = format!("card-claude-cancel-{}", new_id());
     let session_row_id = format!("runtime-claude-cancel-{}", new_id());
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let mut tx = pool.begin().await.unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     calm_server::db::sqlite::card_with_claude_worker_create_tx(
         &mut tx,
         card_id.clone(),
@@ -688,7 +688,7 @@ async fn cancel_first_then_late_worker_report_is_rejected_without_delivery() {
         "SELECT COUNT(*) FROM task_git_deliveries WHERE producer_attempt_id = ?1",
     )
     .bind(&task_id)
-    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap();
     assert_eq!(deliveries, 0, "a rejected report delivers nothing");

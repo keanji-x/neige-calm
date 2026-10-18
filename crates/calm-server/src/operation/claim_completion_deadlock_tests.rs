@@ -27,7 +27,7 @@ async fn claim_drive_batch_vs_parked_completion_no_deadlock() {
         .await
         .unwrap();
 
-    let repo = SqlxOperationRepo::new(pool.clone());
+    let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let parked = parked_operation(&repo, now_ms() + 60_000).await;
     let claimable_id = repo
         .insert_operation(
@@ -46,7 +46,7 @@ async fn claim_drive_batch_vs_parked_completion_no_deadlock() {
     let (go_a_tx, go_a_rx) = oneshot::channel::<()>();
 
     // Task A — BEGIN IMMEDIATE (writer slot), non-operations write, then the parked-completion UPDATE on `operations`.
-    let pool_a = pool.clone();
+    let pool_a = sqlx_repo.db().clone();
     let parked_id = parked.id.clone();
     let a = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool_a).await?;

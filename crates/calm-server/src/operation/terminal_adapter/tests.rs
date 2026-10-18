@@ -53,7 +53,7 @@ async fn terminal_worker_harness_with_plan(
     .await
     .unwrap();
     let track = crate::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
@@ -111,7 +111,7 @@ async fn prepare_terminal_worker_with_cwd(
     .execute(harness.repo.pool())
     .await
     .unwrap();
-    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
     let op_id = op_repo
         .insert_operation(
             "terminal-worker",
@@ -131,7 +131,7 @@ async fn prepare_terminal_worker_with_cwd(
         .into_iter()
         .find(|op| op.id == op_id)
         .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let output = harness
         .adapter
         .prepare_tx(&mut tx, &payload, &op)
@@ -244,7 +244,7 @@ async fn worktree_harness(tmp: &std::path::Path) -> (TerminalWorkerHarness, Stri
     )
     .await;
     let worktree =
-        crate::test_support::ensure_track_worktree(harness.repo.pool(), &harness.track_id).await;
+        crate::test_support::ensure_track_worktree(harness.repo.db(), &harness.track_id).await;
     (harness, worktree.to_str().unwrap().to_string())
 }
 
@@ -295,7 +295,7 @@ async fn terminal_open_without_cwd_lands_in_the_track_worktree() {
         }),
     })
     .unwrap();
-    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
     let op_id = op_repo
         .insert_operation(
             "terminal-create",
@@ -315,7 +315,7 @@ async fn terminal_open_without_cwd_lands_in_the_track_worktree() {
         .into_iter()
         .find(|op| op.id == op_id)
         .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
     tx.commit().await.unwrap();
 
@@ -351,7 +351,7 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
     .execute(harness.repo.pool())
     .await
     .unwrap();
-    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
     let op_id = op_repo
         .insert_operation(
             "terminal-worker",
@@ -371,7 +371,7 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
         .into_iter()
         .find(|op| op.id == op_id)
         .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let err = harness
         .adapter
         .prepare_tx(&mut tx, &payload, &op)

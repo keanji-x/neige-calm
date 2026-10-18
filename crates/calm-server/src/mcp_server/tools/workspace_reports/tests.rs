@@ -534,7 +534,7 @@ async fn workspace_lists_page_with_a_string_cursor_through_the_tools() {
     for offset in 0..25 {
         ids.push(
             crate::workspace_reports::tests::event(
-                repo.pool(),
+                repo.db(),
                 &edited,
                 start + offset,
                 "old",
@@ -545,7 +545,7 @@ async fn workspace_lists_page_with_a_string_cursor_through_the_tools() {
     }
     for offset in 25..46 {
         let track = foreign_track(&route).await;
-        crate::workspace_reports::tests::event(repo.pool(), &track, start + offset, "a", "b").await;
+        crate::workspace_reports::tests::event(repo.db(), &track, start + offset, "a", "b").await;
     }
     let planner = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
         .await

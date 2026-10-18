@@ -374,7 +374,7 @@ mod tests {
     async fn track_report_create_refuses_non_canonical_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
         let mut arbitrary_report = new_card(track.id.as_str(), "track-report");
         arbitrary_report.payload = serde_json::json!({"arbitrary": "fixture payload"});
         let error = card_create_with_id_tx(
@@ -398,7 +398,7 @@ mod tests {
     async fn track_report_create_accepts_canonical_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
         let canonical_report = new_card(track.id.as_str(), "track-report");
         let accepted = card_create_with_id_tx(
             &mut tx,
@@ -417,7 +417,7 @@ mod tests {
     async fn track_report_create_accepts_canonical_payload_with_null_blocks() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
         let mut canonical_report = new_card(track.id.as_str(), "track-report");
         canonical_report.payload["blocks"] = serde_json::Value::Null;
         card_create_with_id_tx(
@@ -436,7 +436,7 @@ mod tests {
     async fn track_report_create_refuses_non_reportcard_role() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
         let error = card_create_with_id_tx(
             &mut tx,
             "bad_role".into(),
@@ -505,7 +505,7 @@ mod tests {
             .card_create(new_card(track.id.as_str(), "track-report"))
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
         let non_report =
             card_update_with_crdt_tx(&mut tx, worker.id.as_str(), CardPatch::default(), vec![1])
                 .await

@@ -1,23 +1,23 @@
 //! Settlement CAS against the released receipt schema, without unrelated owner fixtures.
+use super::SqliteDb;
 use super::acp_submission_finish;
 use crate::error::TruthError;
 use calm_types::error::CoreError;
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
-async fn receipt() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().foreign_keys(false))
-        .await
-        .unwrap();
+async fn receipt() -> SqliteDb {
+    let pool = SqliteDb::connect("sqlite::memory:").await.unwrap();
+    // The released receipt migration refers only to this parent key. Keep the
+    // CAS fixture small while exercising the production factory's FK contract.
+    sqlx::raw_sql("CREATE TABLE worker_sessions(id TEXT PRIMARY KEY); INSERT INTO worker_sessions VALUES('worker');")
+        .execute(pool.writer_pool()).await.unwrap();
     sqlx::raw_sql(include_str!(
         "../../../migrations/0157_acp_submission_journal.sql"
     ))
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     sqlx::query("INSERT INTO acp_submissions VALUES ('worker','client','turn','thread','native','{}','sending',NULL,0)")
-        .execute(&pool).await.unwrap();
+        .execute(pool.writer_pool()).await.unwrap();
     pool
 }
 fn conflict(result: Result<(), TruthError>) {
@@ -47,7 +47,7 @@ async fn acp_submission_settle_exact_idempotency_and_conflicts() {
     conflict(acp_submission_finish(&pool, "other-worker", "client", Some(outcome)).await);
     conflict(acp_submission_finish(&pool, "worker", "other-client", Some(outcome)).await);
     let stored: String = sqlx::query_scalar("SELECT outcome_json FROM acp_submissions")
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     assert_eq!(stored, outcome);
@@ -66,7 +66,7 @@ async fn acp_submission_settle_unknown_can_complete() {
     acp_submission_finish(&pool, "worker", "client", Some("{}"))
         .await
         .unwrap();
-    let row = super::acp_submission_get(&pool, "worker", "client")
+    let row = super::acp_submission_get(pool.read_pool(), "worker", "client")
         .await
         .unwrap()
         .unwrap();

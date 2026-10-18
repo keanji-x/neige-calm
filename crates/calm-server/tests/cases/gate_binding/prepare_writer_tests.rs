@@ -48,7 +48,7 @@ async fn gate_prepare_allows_unrelated_writer_before_git_filter_release() {
     .await
     .expect("real scheduler sampling reached the Git filter barrier");
 
-    let pool = fx.pool();
+    let pool = fx.db();
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_writer_probe(value) VALUES (1)")

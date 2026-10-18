@@ -598,14 +598,14 @@ impl Scheduler {
     }
 
     async fn reconcile_all_child_track_tasks(&self) {
-        let Some(pool) = self.repo.sqlite_pool() else {
+        let Some(pool) = self.repo.sqlite_db() else {
             return;
         };
         let child_ids: Vec<String> = match sqlx::query_scalar(
             "SELECT child_track_id FROM tasks WHERE child_track_id IS NOT NULL \
              AND status IN ('dispatched','running') ORDER BY created_at_ms",
         )
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await
         {
             Ok(ids) => ids,
@@ -832,10 +832,10 @@ impl Scheduler {
         }
         let pool = self
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let occupancy = crate::db::sqlite::checkout_occupancy(
-            &mut *pool.acquire().await?,
+            &mut *pool.read_pool().acquire().await?,
             track_id.as_str(),
             "",
         )
@@ -1281,7 +1281,7 @@ impl Scheduler {
     async fn mark_sub_track_running(&self, task_id: &str) -> Result<()> {
         let pool = self
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
         task_mark_sub_track_running_tx(&mut tx, task_id, now_ms()).await?;
@@ -1434,7 +1434,7 @@ impl Scheduler {
     async fn mark_running(&self, task_id: &str, worker_card_id: Option<&str>) -> Result<()> {
         let pool = self
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
         let rows = mark_acknowledged_running_tx(
@@ -1633,7 +1633,7 @@ impl Scheduler {
     ) -> Result<Option<RunningLivenessFacts>> {
         let pool = self
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
         let now = now_ms();
@@ -1650,7 +1650,7 @@ impl Scheduler {
     }
 
     async fn sweep_timeout_worker_cleanups(self: &Arc<Self>) {
-        let Some(pool) = self.repo.sqlite_pool() else {
+        let Some(pool) = self.repo.sqlite_db() else {
             return;
         };
         let worker_rows = match sqlx::query_as::<_, (String, String)>(
@@ -1662,7 +1662,7 @@ impl Scheduler {
                      IS NOT NULL
                ORDER BY updated_at_ms ASC, id ASC"#,
         )
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await
         {
             Ok(rows) => rows,
@@ -1733,7 +1733,7 @@ impl Scheduler {
     async fn clear_timeout_worker_cleanup_marker(&self, session_id: &str) -> Result<()> {
         let pool = self
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         sqlx::query(
             r#"UPDATE worker_sessions
@@ -1746,7 +1746,7 @@ impl Scheduler {
         )
         .bind(now_ms())
         .bind(session_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await?;
         Ok(())
     }
@@ -1972,7 +1972,7 @@ impl Scheduler {
         );
         let pool = self
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let Some(track) = self.repo.track_get(&task.track_id).await? else {
             tracing::debug!(task_id = %task.id, "scheduler: gate task's track row is gone");

@@ -81,7 +81,7 @@ async fn strip_report_cache_and_crdt(
          WHERE track_id = ?1 AND kind = 'track-report'",
     )
     .bind(track.id.as_str())
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .unwrap();
 }

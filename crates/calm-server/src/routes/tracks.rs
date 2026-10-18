@@ -639,11 +639,11 @@ pub(crate) async fn get_track_detail(
     crate::track_access::require_same_area(&area_id, &detail.track.area_id)?;
     let pool = s
         .mcp_context
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| CalmError::Internal("SQLite required for admin eligibility".into()))?;
     detail.can_admin = detail.track.admin_granted_at.is_some()
-        || crate::area_admin::eligible_tx(pool, &detail.track).await?;
+        || crate::area_admin::eligible_tx(pool.read_pool(), &detail.track).await?;
     if crate::managed_track::kernel_controls_lifecycle(&s.mcp_context, &id).await? {
         detail.can_close = false;
         detail.can_reopen = false;
@@ -2729,7 +2729,7 @@ async fn surviving_root_before_leaf_removal(
 }
 
 async fn preflight_track_deletion_reprojection(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     track_id: &TrackId,
 ) -> Result<()> {
     // BEGIN IMMEDIATE even though read-only: it prevents a writer from changing the tree
@@ -3112,7 +3112,7 @@ pub(crate) async fn delete_track(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    crate::managed_track::refuse_track_delete(s.mcp_context.sqlite_pool.clone(), &id).await?;
+    crate::managed_track::refuse_track_delete(s.mcp_context.sqlite_db.clone(), &id).await?;
     // One process owns this track's move + transaction + compensation at a time.
     // Lock order: operation drive → track delete.
     let operation_guard = s.operation_runtime.lock_for_track_delete().await;
@@ -3140,10 +3140,10 @@ pub(crate) async fn delete_track(
 
     // Defensive TOCTOU guard only: this non-transactional read happens before the teardown
     // tx, so a forge-action can still become in-flight before the sweep.
-    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+    let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("delete_track forge-action fence requires sqlite-backed repo".into())
     })?;
-    if track_has_active_forge_action(&pool, track_id.as_str()).await? {
+    if track_has_active_forge_action(pool.read_pool(), track_id.as_str()).await? {
         return Err(CalmError::Conflict(format!(
             "track {id} has an in-flight forge-action; retry after it settles"
         )));
@@ -3155,7 +3155,7 @@ pub(crate) async fn delete_track(
     if let Some(child_id) =
         sqlx::query_scalar::<_, String>("SELECT id FROM tracks WHERE parent_track_id=?1 LIMIT 1")
             .bind(track_id.as_str())
-            .fetch_optional(&pool)
+            .fetch_optional(pool.read_pool())
             .await?
     {
         return Err(CalmError::Conflict(format!(
@@ -3672,8 +3672,8 @@ mod tests {
         let (declarations, diagnostics) =
             calm_types::report_blocks::tasks::project_task_declarations(&blocks);
 
-        let pool = repo.sqlite_pool().unwrap();
-        let mut tx = pool.begin().await.unwrap();
+        let pool = repo.sqlite_db().unwrap();
+        let mut tx = pool.writer_pool().begin().await.unwrap();
         let (updated, projection) = structural_init_report_tx(
             &mut tx,
             InitialReportTarget {

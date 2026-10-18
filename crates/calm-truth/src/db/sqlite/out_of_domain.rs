@@ -121,7 +121,7 @@ pub async fn worker_flow_items_delete_by_card_tx(
 #[async_trait]
 impl RepoOutOfDomain for SqlxRepo {
     async fn read_receipts_load(&self) -> Result<calm_types::read_receipts::ReadReceipts> {
-        super::read_receipt::read_receipts_load(&self.pool).await
+        super::read_receipt::read_receipts_load(self.db.read_pool()).await
     }
 
     async fn read_receipt_mark_read(
@@ -130,7 +130,7 @@ impl RepoOutOfDomain for SqlxRepo {
         target_id: &str,
         read_through_ms: i64,
     ) -> Result<calm_types::read_receipts::ReadReceipt> {
-        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
+        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
         let out = super::read_receipt::read_receipt_mark_read_tx(
             &mut tx,
             kind,
@@ -147,7 +147,7 @@ impl RepoOutOfDomain for SqlxRepo {
         kind: calm_types::read_receipts::ReadReceiptKind,
         target_id: &str,
     ) -> Result<calm_types::read_receipts::ReadReceipt> {
-        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
+        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
         let out =
             super::read_receipt::read_receipt_mark_unread_tx(&mut tx, kind, target_id).await?;
         tx.commit().await?;
@@ -157,7 +157,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn track_recipe_create(&self, p: NewTrackRecipe) -> Result<TrackRecipe> {
         // A deferred tx that reads then writes can lose the lock upgrade and surface
         // as SQLITE_BUSY with nothing safe to retry, so writers BEGIN IMMEDIATE.
-        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
+        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
         let out = super::track_recipe::track_recipe_create_tx(&mut tx, &p.title, &p.body).await?;
         tx.commit().await?;
         Ok(out)
@@ -169,7 +169,7 @@ impl RepoOutOfDomain for SqlxRepo {
         p: NewTrackRecipe,
         if_revision: i64,
     ) -> Result<TrackRecipe> {
-        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
+        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
         let out = super::track_recipe::track_recipe_update_tx(
             &mut tx,
             id,
@@ -188,7 +188,7 @@ impl RepoOutOfDomain for SqlxRepo {
              FROM track_recipes WHERE id = ?1",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(
             |(id, title, body, revision, created_at, updated_at)| TrackRecipe {
@@ -207,11 +207,16 @@ impl RepoOutOfDomain for SqlxRepo {
         area_id: &str,
         idempotency_key: &str,
     ) -> Result<Option<super::TrackCreateBinding>> {
-        super::track::track_create_idempotency_get_pool(&self.pool, area_id, idempotency_key).await
+        super::track::track_create_idempotency_get_pool(
+            self.db.read_pool(),
+            area_id,
+            idempotency_key,
+        )
+        .await
     }
 
     async fn track_recipe_delete(&self, id: &str) -> Result<()> {
-        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
+        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
         super::track_recipe::track_recipe_delete_tx(&mut tx, id).await?;
         tx.commit().await?;
         Ok(())
@@ -222,7 +227,7 @@ impl RepoOutOfDomain for SqlxRepo {
             "SELECT id, title, body, revision, created_at, updated_at \
              FROM track_recipes ORDER BY created_at DESC, id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?;
         Ok(rows
             .into_iter()
@@ -242,14 +247,14 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
             .bind(p.card_id.as_str())
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read_pool())
             .await?;
         if owner.is_none() {
             return Err(CalmError::NotFound(format!("card {}", p.card_id)));
         }
         let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
             .bind(p.card_id.as_str())
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read_pool())
             .await?;
         if dup.is_some() {
             return Err(CalmError::Conflict(format!(
@@ -276,7 +281,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(&theme_fg)
         .bind(&theme_bg)
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.db.writer_pool())
         .await?;
         Ok(Terminal {
             id,
@@ -300,7 +305,7 @@ impl RepoOutOfDomain for SqlxRepo {
         let res = sqlx::query("UPDATE terminals SET pid = ?1 WHERE id = ?2")
             .bind(pid_i64)
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
@@ -333,7 +338,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .bind(pty_output)
             .bind(if pty_output_truncated { 1_i64 } else { 0_i64 })
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
@@ -347,7 +352,7 @@ impl RepoOutOfDomain for SqlxRepo {
              pty_output_truncated=0 WHERE id=?1",
         )
         .bind(id)
-        .execute(&self.pool)
+        .execute(self.db.writer_pool())
         .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
@@ -356,7 +361,7 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn terminal_delete(&self, id: &str) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let _deleted = super::terminal_delete_tx(&mut tx, id).await?;
         tx.commit().await?;
         Ok(())
@@ -402,7 +407,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(update.increment_restart_count)
         .bind(&update.last_error)
         .bind(&update.daemon_env_signature)
-        .execute(&self.pool)
+        .execute(self.db.writer_pool())
         .await?;
         Ok(())
     }
@@ -418,7 +423,7 @@ impl RepoOutOfDomain for SqlxRepo {
         )
         .bind(now)
         .bind(last_error)
-        .execute(&self.pool)
+        .execute(self.db.writer_pool())
         .await?;
         Ok(())
     }
@@ -433,7 +438,7 @@ impl RepoOutOfDomain for SqlxRepo {
         turn: &str,
         items: &[TranscriptReceiptItem],
     ) -> Result<()> {
-        super::transcript_projection::restore(&self.pool, worker, card, track, thread, turn, items)
+        super::transcript_projection::restore(&self.db, worker, card, track, thread, turn, items)
             .await
     }
 
@@ -451,7 +456,7 @@ impl RepoOutOfDomain for SqlxRepo {
         input_segments: Option<&str>,
     ) -> Result<i64> {
         insert_transcript_row(
-            &self.pool,
+            self.db.writer_pool(),
             worker_session_id,
             card_id,
             track_id,
@@ -477,7 +482,7 @@ impl RepoOutOfDomain for SqlxRepo {
         )
         .bind(card_id)
         .bind(thread_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read_pool())
         .await?)
     }
 
@@ -490,7 +495,7 @@ impl RepoOutOfDomain for SqlxRepo {
         turn_id: &str,
         params: &str,
     ) -> Result<i64> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let existing:Option<i64>=sqlx::query_scalar(
             "SELECT id FROM harness_items WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND \
                 turn_id=?4 AND method='turn/completed' ORDER BY id DESC LIMIT 1"
@@ -520,7 +525,7 @@ impl RepoOutOfDomain for SqlxRepo {
         )
         .bind(card_id)
         .bind(client_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read_pool())
         .await?;
         Ok(row.map(|row| row.get::<i64, _>("id")))
     }
@@ -533,7 +538,7 @@ impl RepoOutOfDomain for SqlxRepo {
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         // `LIMIT 1` is not available on UPDATE in the bundled sqlite build, so the
         // subquery chooses the row: the newest projection with this key.
         let row = sqlx::query(
@@ -559,7 +564,7 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let done = sqlx::query(
             r#"DELETE FROM harness_items
                WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
@@ -609,7 +614,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(p.enabled)
         .bind(&user_config_text)
         .bind(now)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.writer_pool())
         .await?;
         Ok(row)
     }
@@ -620,7 +625,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .bind(enabled)
             .bind(now)
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
@@ -642,7 +647,7 @@ impl RepoOutOfDomain for SqlxRepo {
                 .bind(&user_config_text)
                 .bind(now)
                 .bind(id)
-                .execute(&self.pool)
+                .execute(self.db.writer_pool())
                 .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
@@ -663,7 +668,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .bind(&manifest_text)
             .bind(now)
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
@@ -676,7 +681,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn plugin_delete(&self, id: &str) -> Result<()> {
         let res = sqlx::query("DELETE FROM plugins WHERE id = ?1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
@@ -687,7 +692,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn overlays_clear_by_plugin(&self, plugin_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM overlays WHERE plugin_id = ?1")
             .bind(plugin_id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         Ok(())
     }
@@ -695,7 +700,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn plugin_kv_clear(&self, plugin_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1")
             .bind(plugin_id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         Ok(())
     }
@@ -716,7 +721,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(plugin_id)
         .bind(hashed_token)
         .bind(expires_at)
-        .execute(&self.pool)
+        .execute(self.db.writer_pool())
         .await?;
         Ok(())
     }
@@ -724,7 +729,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn plugin_token_delete(&self, plugin_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM plugin_tokens WHERE plugin_id = ?1")
             .bind(plugin_id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         Ok(())
     }
@@ -748,7 +753,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(key)
         .bind(&text)
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.db.writer_pool())
         .await?;
         Ok(())
     }
@@ -757,7 +762,7 @@ impl RepoOutOfDomain for SqlxRepo {
         sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2")
             .bind(plugin_id)
             .bind(key)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         Ok(())
     }
@@ -774,7 +779,7 @@ impl RepoOutOfDomain for SqlxRepo {
         .bind(key)
         .bind(value)
         .bind(now)
-        .execute(&self.pool)
+        .execute(self.db.writer_pool())
         .await?;
         Ok(())
     }
@@ -782,7 +787,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn settings_delete(&self, key: &str) -> Result<()> {
         sqlx::query("DELETE FROM settings WHERE key = ?1")
             .bind(key)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         Ok(())
     }
@@ -790,7 +795,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn area_folder_create(&self, area_id: &str, path: &str) -> Result<AreaFolder> {
         let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM areas WHERE id = ?1")
             .bind(area_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read_pool())
             .await?;
         if exists.is_none() {
             return Err(CalmError::NotFound(format!("area {area_id}")));
@@ -803,7 +808,7 @@ impl RepoOutOfDomain for SqlxRepo {
                 .bind(area_id)
                 .bind(path)
                 .bind(now)
-                .execute(&self.pool)
+                .execute(self.db.writer_pool())
                 .await;
         match res {
             Ok(out) => Ok(AreaFolder {
@@ -834,7 +839,7 @@ impl RepoOutOfDomain for SqlxRepo {
         // BEGIN IMMEDIATE takes the writer lock before the scan so SELECT and INSERT
         // are one atomic step (UNIQUE(path) only rejects *equal* paths). Nothing but
         // these three statements belongs inside the lock.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let mut tx = begin_immediate_tx(&self.db).await?;
         let existing = super::area_folders_list_all_tx(&mut tx).await?;
         if let Some(conflict) = crate::area_folder_claim::classify_conflict(&existing, path) {
             let _ = tx.rollback().await;
@@ -848,7 +853,7 @@ impl RepoOutOfDomain for SqlxRepo {
     async fn area_folder_delete(&self, id: i64) -> Result<()> {
         let res = sqlx::query("DELETE FROM area_folders WHERE id = ?1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(self.db.writer_pool())
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("area_folder {id}")));

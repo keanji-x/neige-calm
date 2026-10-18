@@ -201,7 +201,7 @@ async fn done_inherits_latest_admitted_input_across_restart() {
         let commit = passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap()).to_string();
         // Persist the real admission shape, but do not drive prepare/release before done.
         calm_server::test_seams::admit_gate_run_for_test(
-            &fx.pool(),
+            &fx.db(),
             &a.task.id,
             &a.worker.card_id,
             fx.track(),

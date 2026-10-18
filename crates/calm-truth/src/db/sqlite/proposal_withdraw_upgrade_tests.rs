@@ -134,7 +134,7 @@ async fn proposal_projection_upgrade_and_unsupported_rollback_are_explicit() {
     let proposals_table: Option<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'proposals'",
     )
-    .fetch_optional(&repo.pool)
+    .fetch_optional(repo.pool())
     .await
     .expect("inspect upgraded schema");
     assert!(
@@ -142,14 +142,14 @@ async fn proposal_projection_upgrade_and_unsupported_rollback_are_explicit() {
         "migration 0066 must drop the proposals projection"
     );
 
-    repo.pool.close().await;
+    repo.pool().close().await;
 
     let repo = SqlxRepo::open(&url)
         .await
         .expect("new binary still starts after migration 0066");
     assert_historical_proposal_replay(&repo).await;
 
-    let rollback_error = check_no_unknown_future_migrations(&repo.pool, &old_migrator)
+    let rollback_error = check_no_unknown_future_migrations(repo.pool(), &old_migrator)
         .await
         .expect_err("old binary must refuse a database upgraded through 0066")
         .to_string();

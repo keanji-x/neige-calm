@@ -23,7 +23,7 @@ impl OperationRuntime {
     {
         let adapter = self.adapter(kind)?;
         adapter.validate(payload).await?;
-        let pool = self.repo.sqlite_pool();
+        let pool = self.repo.sqlite_db();
         let mut tx = begin_immediate_tx(&pool).await?;
         let verdict = match setup(&mut tx).await {
             Ok(()) => adapter

@@ -993,7 +993,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         super::worker_cleanup::require_cleanup_safe(ctx, op, output, business_may_be_live).await?;
         if step.op == "release_workspace_lease" {
             let lease_id = step.arg_string("lease_id", "codex")?;
-            let pool = ctx.operation_repo.sqlite_pool();
+            let pool = ctx.operation_repo.sqlite_db();
             release_workspace_lease_by_id(
                 &pool,
                 &ctx.events,

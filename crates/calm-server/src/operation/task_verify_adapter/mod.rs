@@ -164,7 +164,7 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
 
 /// On `AlreadyResolved` nothing is written (rollback); the scheduler's reconcile copies the enforcement outcome to the row instead.
 pub(crate) async fn complete_gate_op_with_result(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     completion: &OperationCompletionBus,
     events: &EventBus,
     op_id: &str,
@@ -368,7 +368,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             // The verdict was written in the prepare transaction: nothing to kill, admit or spawn.
             return Ok(SpawnOutcome::Ready(super::SpawnHandle::NoOp));
         }
-        let pool = ctx.operation_repo.sqlite_pool();
+        let pool = ctx.operation_repo.sqlite_db();
 
         // Kill prior: this op's own artifacts (same-op re-drive), the previous attempt's, and the tasks-row pid triple.
         // After a re-run (`regate`) `attempt - 1` is the reserved number with no op, so this finds
@@ -400,7 +400,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             "SELECT gate_pid, gate_pid_starttime, gate_pid_boot_id FROM tasks WHERE id = ?1",
         )
         .bind(&frozen.task_id)
-        .fetch_optional(&pool)
+        .fetch_optional(pool.read_pool())
         .await?;
         if let Some((Some(pid), Some(start_time), Some(boot_id))) = triple {
             kill_recorded_group(pid, start_time, &boot_id, pid);
@@ -433,7 +433,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .bind(now_ms())
             .bind(&frozen.task_id)
             .bind(frozen.attempt)
-            .execute(&pool)
+            .execute(pool.writer_pool())
             .await?
             .rows_affected();
             if rows == 0 {
@@ -589,7 +589,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         match mode {
             RecoveryMode::Boot => {
                 // Re-attach: a non-child cannot be waitpid'ed — poll the identity triple until it dies, then read the exit file.
-                let pool = ctx.operation_repo.sqlite_pool();
+                let pool = ctx.operation_repo.sqlite_db();
                 let completion = ctx.completion.clone();
                 let events = ctx.events.clone();
                 let op_id = op.id.clone();
@@ -714,14 +714,14 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 }
                 // The tasks-row triple (recorded before release) covers the window where the op-row artifacts never committed.
                 if let Some(task_id) = step.args.get("task_id").and_then(Value::as_str) {
-                    let pool = ctx.operation_repo.sqlite_pool();
+                    let pool = ctx.operation_repo.sqlite_db();
                     let triple: Option<(Option<i64>, Option<i64>, Option<String>)> =
                         sqlx::query_as(
                             "SELECT gate_pid, gate_pid_starttime, gate_pid_boot_id \
                              FROM tasks WHERE id = ?1",
                         )
                         .bind(task_id)
-                        .fetch_optional(&pool)
+                        .fetch_optional(pool.read_pool())
                         .await?;
                     if let Some((Some(pid), Some(start_time), Some(boot_id))) = triple {
                         kill_recorded_group(pid, start_time, &boot_id, pid);
@@ -784,7 +784,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     cwd: None,
                     target,
                 };
-                let pool = ctx.operation_repo.sqlite_pool();
+                let pool = ctx.operation_repo.sqlite_db();
                 let mut tx = begin_immediate_tx(&pool).await?;
                 let envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
                 tx.commit().await?;

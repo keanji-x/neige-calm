@@ -1207,7 +1207,7 @@ async fn compensation_remove_uses_runtime_id_for_same_card_spawns() {
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
     let spawn_ctx = SpawnCtx::new(
         route_repo,
-        Arc::new(SqlxOperationRepo::new(repo.pool().clone())),
+        Arc::new(SqlxOperationRepo::new(repo.db().clone())),
         Arc::new(DaemonClient::new_stub()),
         terminal_renderer,
         events,

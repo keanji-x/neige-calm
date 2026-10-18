@@ -192,7 +192,7 @@ async fn handshake(
 fn spawn_ctx(harness: &ClaudeWorkerHarness) -> SpawnCtx {
     SpawnCtx::new(
         harness.repo.clone(),
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone())),
+        Arc::new(SqlxOperationRepo::new(harness.repo.db().clone())),
         Arc::new(DaemonClient::new_stub()),
         TerminalRendererRegistry::new(),
         harness.events.clone(),
@@ -372,7 +372,7 @@ async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
             )
             .await
             .unwrap();
-            let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+            let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
             crate::db::sqlite::session_complete_for_card_tx(
                 &mut tx,
                 &card_id,
@@ -424,7 +424,7 @@ async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
     })
     .unwrap();
     let restart_op = claude_worker_op("op-restart", payload.clone());
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let restart_output = restart
         .prepare_tx(&mut tx, &payload, &restart_op)
         .await

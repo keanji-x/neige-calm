@@ -744,7 +744,7 @@ async fn capture_field_matrix_refusals() {
 #[tokio::test]
 async fn capture_over_the_per_track_quota_is_forbidden() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().expect("pool");
+    let pool = boot.repo.sqlite_db().expect("pool");
     for i in 0..MAX_SOURCES_PER_TRACK {
         sqlx::query(concat!(
             "INSERT INTO report_sources ",
@@ -754,7 +754,7 @@ async fn capture_over_the_per_track_quota_is_forbidden() {
         ))
         .bind(boot.track_id.as_str())
         .bind(format!("src_{i:08x}"))
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .expect("seed row");
     }

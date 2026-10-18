@@ -203,7 +203,7 @@ pub(crate) async fn complete_run_op(
     let outcome = ParkedOutcome::Succeeded {
         result: serde_json::to_value(result)?,
     };
-    let pool = ctx.operation_repo.sqlite_pool();
+    let pool = ctx.operation_repo.sqlite_db();
     let mut tx = begin_immediate_tx(&pool).await?;
     match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
         ParkedCompletion::Completed(completed) => {

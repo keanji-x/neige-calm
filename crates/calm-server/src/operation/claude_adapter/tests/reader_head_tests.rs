@@ -70,7 +70,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     .await
     .unwrap();
     let output = prepare_claude_worker_as_scheduled(&harness, "resume").await;
-    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let card_id = output.output_string("card_id", "test").unwrap();
     let terminal_id = output.output_string("terminal_id", "test").unwrap();
     crate::db::RepoOutOfDomain::terminal_set_exit(
@@ -81,7 +81,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     )
     .await
     .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     crate::db::sqlite::session_complete_for_card_tx(&mut tx, &card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
@@ -116,7 +116,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     })
     .unwrap();
     let restart_op = claude_worker_op("op-restart", payload.clone());
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let restart_output = restart
         .prepare_tx(&mut tx, &payload, &restart_op)
         .await
@@ -178,7 +178,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
         (sessions, events)
     };
     let before = rows().await;
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let error = restart
         .prepare_tx(&mut tx, &payload, &restart_op)
         .await

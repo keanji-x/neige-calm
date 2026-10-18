@@ -295,7 +295,7 @@ async fn the_bare_stem_and_an_unknown_site_id_are_400_on_create() {
     let boot = boot().await;
     for id in ["x", "site/none", "site/", "SITE/X"] {
         let tracks_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
-            .fetch_one(&boot.repo.sqlite_pool().expect("pool"))
+            .fetch_one(boot.repo.sqlite_db().expect("pool").read_pool())
             .await
             .unwrap();
         let (status, body) = request(
@@ -312,7 +312,7 @@ async fn the_bare_stem_and_an_unknown_site_id_are_400_on_create() {
             "{id}: the 400 must name the field and the id: {error}"
         );
         let tracks_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
-            .fetch_one(&boot.repo.sqlite_pool().expect("pool"))
+            .fetch_one(boot.repo.sqlite_db().expect("pool").read_pool())
             .await
             .unwrap();
         assert_eq!(tracks_before, tracks_after, "{id}: a 400 mints nothing");

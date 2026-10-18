@@ -105,7 +105,7 @@ pub(crate) const WORKSPACE_REPORT_ROLES: &[CardRole] = &[CardRole::Planner, Card
 /// Shared by authorization and capability teaching. Neither a title nor a template grants access.
 async fn workspace_report_zone(
     repo: &dyn RouteRepo,
-    pool: Option<sqlx::SqlitePool>,
+    pool: Option<crate::db::sqlite::SqliteDb>,
     card_id: &str,
     track_id: &str,
 ) -> Result<Option<Tz>> {
@@ -125,7 +125,7 @@ async fn workspace_report_zone(
     };
     let zone: Option<String> = sqlx::query_scalar(
         "SELECT report_time_zone FROM managed_track_identities WHERE track_id=?1 AND report_read_scope='workspace'"
-    ).bind(track_id).fetch_optional(&pool).await?;
+    ).bind(track_id).fetch_optional(pool.read_pool()).await?;
     zone.map(|zone| {
         zone.parse()
             .map_err(|e| CalmError::Internal(format!("report time zone: {e}")))
@@ -140,7 +140,7 @@ pub(crate) async fn workspace_report_instructions(
     track_id: &str,
 ) -> Result<Option<&'static str>> {
     Ok(
-        workspace_report_zone(repo, repo.sqlite_pool(), card_id, track_id)
+        workspace_report_zone(repo, repo.sqlite_db(), card_id, track_id)
             .await?
             .map(|_| include_str!("../prompts/workspace-reports.md")),
     )
@@ -180,7 +180,7 @@ pub(crate) async fn require_workspace_reports(
     }
     workspace_report_zone(
         ctx.repo.as_ref(),
-        ctx.sqlite_pool.clone(),
+        ctx.sqlite_db.clone(),
         &identity.card_id,
         card.track_id.as_str(),
     )
@@ -200,11 +200,11 @@ async fn has_creation_identity(pool: &sqlx::SqlitePool, track_id: &str) -> Resul
 }
 
 pub(crate) async fn refuse_track_delete(
-    pool: Option<sqlx::SqlitePool>,
+    pool: Option<crate::db::sqlite::SqliteDb>,
     track_id: &str,
 ) -> Result<()> {
     if let Some(pool) = pool
-        && has_creation_identity(&pool, track_id).await?
+        && has_creation_identity(pool.read_pool(), track_id).await?
     {
         return Err(CalmError::Conflict(
             "This Track has a kernel-owned creation identity; its history must be retained.".into(),
@@ -256,7 +256,7 @@ pub(crate) async fn reports_only_card(
     ctx: &AppContext,
     card_id: &str,
 ) -> std::result::Result<bool, RpcError> {
-    let Some(pool) = ctx.sqlite_pool.as_ref() else {
+    let Some(pool) = ctx.sqlite_db.as_ref() else {
         return Ok(false);
     };
     let internal = |e: CalmError| RpcError::internal(e.to_string());
@@ -264,11 +264,13 @@ pub(crate) async fn reports_only_card(
         sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1 AND role=?2")
             .bind(card_id)
             .bind(CardRole::Planner.as_db_str())
-            .fetch_optional(pool)
+            .fetch_optional(pool.read_pool())
             .await
             .map_err(|e| internal(e.into()))?;
     match track {
-        Some(track) => reports_only_track(pool, &track).await.map_err(internal),
+        Some(track) => reports_only_track(pool.read_pool(), &track)
+            .await
+            .map_err(internal),
         None => Ok(false),
     }
 }
@@ -291,32 +293,32 @@ pub(crate) async fn require_tool_allowed(
 /// Track's cards can be pending: a person's send may run the card's first start (#2184). Any other
 /// Track's creator owns its cards' first start, and a send must not pre-empt it.
 pub(crate) async fn planner_starts_on_first_send(ctx: &AppContext, track_id: &str) -> Result<bool> {
-    let Some(pool) = ctx.sqlite_pool.as_ref() else {
+    let Some(pool) = ctx.sqlite_db.as_ref() else {
         return Ok(false);
     };
-    has_creation_identity(pool, track_id).await
+    has_creation_identity(pool.read_pool(), track_id).await
 }
 
 pub(crate) async fn kernel_controls_lifecycle(ctx: &AppContext, track_id: &str) -> Result<bool> {
-    let Some(pool) = ctx.sqlite_pool.as_ref() else {
+    let Some(pool) = ctx.sqlite_db.as_ref() else {
         return Ok(false);
     };
     Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1 AND kernel_controls_lifecycle=1)")
-        .bind(track_id).fetch_one(pool).await?)
+        .bind(track_id).fetch_one(pool.read_pool()).await?)
 }
 
 pub(crate) async fn creation_identity(
     ctx: &AppContext,
     track_id: &str,
 ) -> Result<Option<serde_json::Value>> {
-    let Some(pool) = ctx.sqlite_pool.as_ref() else {
+    let Some(pool) = ctx.sqlite_db.as_ref() else {
         return Ok(None);
     };
     let row: Option<(String, String, String)> = sqlx::query_as(
         "SELECT owner,identity,report_time_zone FROM managed_track_identities WHERE track_id=?1",
     )
     .bind(track_id)
-    .fetch_optional(pool)
+    .fetch_optional(pool.read_pool())
     .await?;
     // The stored column stays `report_time_zone`; the tool output names it `timezone` (§4).
     Ok(row.map(|(owner,identity,timezone)|serde_json::json!({"owner":owner,"identity":identity,"timezone":timezone})))

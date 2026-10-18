@@ -1,7 +1,8 @@
 //! SQLite execution store and registered consumer projections, committed atomically.
+use crate::db::sqlite::SqliteDb;
 use async_trait::async_trait;
 use calm_truth::db::sqlite::workspace_execution as sql;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, Transaction};
 use std::{collections::HashMap, sync::Arc};
 use workspace_runtime::execution::*;
 
@@ -26,11 +27,11 @@ pub trait ExecutionProjection: Send + Sync {
 
 #[derive(Clone)]
 pub struct SqliteExecutionStore {
-    pool: SqlitePool,
+    pool: SqliteDb,
     projections: HashMap<ExecutionConsumer, Arc<dyn ExecutionProjection>>,
 }
 impl SqliteExecutionStore {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: SqliteDb) -> Self {
         Self {
             pool,
             projections: HashMap::new(),
@@ -100,7 +101,10 @@ impl Store for SqliteExecutionStore {
         sql::request(tx, id.as_str(), desired).await.map_err(error)
     }
     async fn load(&self, id: &ExecutionId) -> Result<Option<Stored>, StoreError> {
-        let Some(row) = sql::load(&self.pool, id.as_str()).await.map_err(error)? else {
+        let Some(row) = sql::load(self.pool.read_pool(), id.as_str())
+            .await
+            .map_err(error)?
+        else {
             return Ok(None);
         };
         let intent = serde_json::from_str(&row.intent_json).map_err(error)?;
@@ -172,7 +176,7 @@ impl Store for SqliteExecutionStore {
         sql::finish(&self.pool, id.as_str()).await.map_err(error)
     }
     async fn pending(&self) -> Result<Vec<ExecutionId>, StoreError> {
-        sql::pending(&self.pool)
+        sql::pending(self.pool.read_pool())
             .await
             .map_err(error)?
             .into_iter()

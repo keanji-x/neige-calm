@@ -5,7 +5,7 @@ async fn claimed_operation() -> (crate::db::sqlite::SqlxRepo, SqlxOperationRepo,
     let db = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(db.pool().clone());
+    let repo = SqlxOperationRepo::new(db.db().clone());
     let id = repo
         .insert_operation(
             "claim-test",
@@ -125,7 +125,7 @@ async fn expired_claim_rejects_compensation_and_failure_writers() {
 async fn expired_claim_rejects_provider_checkpoint() {
     let (db, repo, op) = claimed_operation().await;
     expire(&db, &op).await;
-    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.db()).await.unwrap();
     assert!(
         checkpoint_app_server_interact_tx(
             &mut tx,
@@ -212,7 +212,7 @@ async fn original_identity_phase_owner_and_completion_are_claim_fences() {
                 .is_none(),
             "{changed}"
         );
-        let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(db.db()).await.unwrap();
         assert!(
             checkpoint_app_server_interact_tx(
                 &mut tx,
@@ -236,7 +236,7 @@ async fn sequential_provider_checkpoints_use_explicit_previous_output() {
     let first = TxOutput::new("unknown", None, json!({"checkpoint": 1}));
     let second = TxOutput::new("unknown", None, json!({"checkpoint": 2}));
     for (expected, output, thread) in [(original, &first, "first"), (&first, &second, "second")] {
-        let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(db.db()).await.unwrap();
         checkpoint_app_server_interact_tx(&mut tx, &op, interaction(thread), expected, output)
             .await
             .unwrap();
@@ -267,12 +267,12 @@ async fn stale_same_claim_output_cannot_overwrite_a_committed_checkpoint() {
     let original = op.tx_output.as_ref().unwrap();
     let first = TxOutput::new("unknown", None, json!({"checkpoint": 1}));
     let stale = TxOutput::new("unknown", None, json!({"checkpoint": "stale"}));
-    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.db()).await.unwrap();
     checkpoint_app_server_interact_tx(&mut tx, &op, interaction("first"), original, &first)
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.db()).await.unwrap();
     assert!(
         checkpoint_app_server_interact_tx(&mut tx, &op, interaction("stale"), original, &stale)
             .await
@@ -300,7 +300,7 @@ async fn stale_same_claim_output_cannot_overwrite_a_committed_checkpoint() {
 async fn phase_only_settlement_preserves_a_provider_checkpoint() {
     let (db, repo, op) = claimed_operation().await;
     let output = TxOutput::new("unknown", None, json!({"checkpoint": "owned"}));
-    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.db()).await.unwrap();
     checkpoint_app_server_interact_tx(
         &mut tx,
         &op,
@@ -323,7 +323,7 @@ async fn phase_only_settlement_preserves_a_provider_checkpoint() {
 async fn failed_later_checkpoint_can_compensate_without_replacing_committed_output() {
     let (db, repo, op) = claimed_operation().await;
     let first = TxOutput::new("unknown", None, json!({"checkpoint": 1}));
-    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.db()).await.unwrap();
     checkpoint_app_server_interact_tx(
         &mut tx,
         &op,
@@ -350,7 +350,7 @@ async fn failed_later_checkpoint_can_compensate_without_replacing_committed_outp
     .execute(db.pool())
     .await
     .unwrap();
-    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.db()).await.unwrap();
     let error =
         checkpoint_app_server_interact_tx(&mut tx, &op, interaction("later"), &first, &later)
             .await
@@ -435,7 +435,7 @@ async fn keyed_commit_settles_its_own_unleased_insert_and_replays_once() {
         payload_hash: "same".into(),
     };
     let first = commit_tx_only(
-        db.pool(),
+        db.db(),
         &TxOnlyClaimAdapter,
         key.clone(),
         json!({"input":"accepted"}),
@@ -446,7 +446,7 @@ async fn keyed_commit_settles_its_own_unleased_insert_and_replays_once() {
         panic!("first request must commit")
     };
     let second = commit_tx_only(
-        db.pool(),
+        db.db(),
         &TxOnlyClaimAdapter,
         key,
         json!({"input":"accepted"}),
@@ -454,7 +454,7 @@ async fn keyed_commit_settles_its_own_unleased_insert_and_replays_once() {
     .await
     .unwrap();
     assert!(matches!(second, KeyedCommit::Replay(id) if id == result.op_id));
-    let stored = SqlxOperationRepo::new(db.pool().clone())
+    let stored = SqlxOperationRepo::new(db.db().clone())
         .get_operation(&result.op_id)
         .await
         .unwrap()
@@ -474,7 +474,7 @@ async fn keyed_commit_settles_its_own_unleased_insert_and_replays_once() {
 async fn expired_claim_cannot_use_the_inserted_transaction_branch() {
     let (db, repo, op) = claimed_operation().await;
     expire(&db, &op).await;
-    let mut tx = begin_immediate_tx(db.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(db.db()).await.unwrap();
     assert!(
         write_phase_and_tx_output(
             &mut tx,

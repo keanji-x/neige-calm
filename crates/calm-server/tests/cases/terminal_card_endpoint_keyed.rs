@@ -17,10 +17,10 @@ fn body(program: &str) -> Value {
 }
 
 async fn operations_under(boot: &super::Boot, key: &str) -> i64 {
-    let pool = boot.repo.sqlite_pool().expect("sqlite repo");
+    let pool = boot.repo.sqlite_db().expect("sqlite repo");
     sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE idempotency_key = ?1")
         .bind(key)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap()
 }
@@ -161,7 +161,7 @@ async fn a_create_that_failed_after_its_commit_is_final_under_its_key() {
 /// Writes `stuck` onto the one operation a keyed create left under `key`, as the driver's stuck
 /// sink does, recording `from_phase` as the phase it stopped at.
 async fn stamp_stuck(boot: &super::Boot, key: &str, from_phase: &str) {
-    let pool = boot.repo.sqlite_pool().expect("sqlite repo");
+    let pool = boot.repo.sqlite_db().expect("sqlite repo");
     let updated = sqlx::query(
         "UPDATE operations \
          SET phase = 'stuck', \
@@ -180,7 +180,7 @@ async fn stamp_stuck(boot: &super::Boot, key: &str, from_phase: &str) {
         .to_string(),
     )
     .bind(key)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap()
     .rows_affected();

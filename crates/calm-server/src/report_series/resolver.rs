@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use sqlx::SqlitePool;
+use crate::db::sqlite::SqliteDb;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -115,7 +115,7 @@ pub enum ResolveOutcome {
 }
 
 pub struct SeriesResolver {
-    pool: Option<SqlitePool>,
+    pool: Option<SqliteDb>,
     inflight: InflightSet,
     lanes: StdMutex<HashMap<String, Lane>>,
     resolve_timeout: Duration,
@@ -128,7 +128,7 @@ pub struct SeriesResolver {
 
 impl SeriesResolver {
     /// Production resolver: lanes are spawned on first use. `None` pool makes every job drop with a warning and every read answer `pending`.
-    pub fn new(pool: Option<SqlitePool>) -> Self {
+    pub fn new(pool: Option<SqliteDb>) -> Self {
         Self {
             pool,
             inflight: Arc::new(StdMutex::new(HashSet::new())),
@@ -144,7 +144,7 @@ impl SeriesResolver {
 
     /// Test seam: same in-flight insert and pre-check, but records the job instead of spawning a lane.
     #[cfg(any(test, feature = "fixtures"))]
-    pub fn new_unstarted(pool: Option<SqlitePool>) -> Self {
+    pub fn new_unstarted(pool: Option<SqliteDb>) -> Self {
         Self {
             recorder: Some(Recorder::default()),
             ..Self::new(pool)
@@ -165,8 +165,8 @@ impl SeriesResolver {
         (self.now)()
     }
 
-    pub fn pool(&self) -> Option<&SqlitePool> {
-        self.pool.as_ref()
+    pub fn pool(&self) -> Option<&sqlx::SqlitePool> {
+        self.pool.as_ref().map(SqliteDb::read_pool)
     }
 
     pub fn resolve_timeout(&self) -> Duration {
@@ -472,19 +472,20 @@ impl SeriesResolver {
             );
             return ResolveOutcome::Dropped("no sqlite pool".to_string());
         };
-        let (request, window) = match admit(pool, &track_id, &block_id, &lane_plugin, now).await {
-            Ok(Ok(admitted)) => admitted,
-            Ok(Err(reason)) => return ResolveOutcome::Dropped(reason),
-            Err(error) => {
-                tracing::warn!(
-                    track_id,
-                    block_id,
-                    error = %error,
-                    "report_series: admission read failed; dropping job"
-                );
-                return ResolveOutcome::Dropped(format!("admission read failed: {error}"));
-            }
-        };
+        let (request, window) =
+            match admit(pool.read_pool(), &track_id, &block_id, &lane_plugin, now).await {
+                Ok(Ok(admitted)) => admitted,
+                Ok(Err(reason)) => return ResolveOutcome::Dropped(reason),
+                Err(error) => {
+                    tracing::warn!(
+                        track_id,
+                        block_id,
+                        error = %error,
+                        "report_series: admission read failed; dropping job"
+                    );
+                    return ResolveOutcome::Dropped(format!("admission read failed: {error}"));
+                }
+            };
         let as_of = window.as_of_text();
 
         // 2. Route (again — the plugin may have stopped while queued).

@@ -11,7 +11,7 @@ use serde_json::json;
 async fn transcript_refresh_unchanged_blobs_are_not_rebound_but_commit_still_advances() {
     let fx = Fixture::new().await;
     let first = fx.refresh().await;
-    let (counts, task) = start(fx.repo.pool().clone(), fx.track.id.clone(), vec![]);
+    let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
     let second = finish(task).await.unwrap();
     let first_record = commit_record(fx.repo.pool(), &first)
         .await
@@ -45,7 +45,7 @@ async fn transcript_refresh_repairs_missing_blob_even_when_parent_entry_hash_mat
         .execute(fx.repo.pool())
         .await
         .unwrap();
-    let (counts, task) = start(fx.repo.pool().clone(), fx.track.id.clone(), vec![]);
+    let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
     let repaired = finish(task).await.unwrap();
     let current = tree_at(fx.repo.pool(), &repaired).await.unwrap().unwrap();
     assert_eq!(current.entries[&path].blob_hash, *hash);
@@ -67,7 +67,7 @@ async fn transcript_refresh_no_head_full_snapshot_uses_only_prepared_hooks() {
         .execute(fx.repo.pool())
         .await
         .unwrap();
-    let (counts, task) = start(fx.repo.pool().clone(), fx.track.id.clone(), vec![]);
+    let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
     let commit = finish(task).await.unwrap();
     let record = commit_record(fx.repo.pool(), &commit)
         .await
@@ -101,7 +101,7 @@ async fn transcript_refresh_legacy_full_snapshot_uses_only_prepared_hooks() {
     manifest
         .entries
         .insert(format!("cards/{}/meta.json", fx.card.id), meta);
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let tree = store_tree(&mut tx, MANIFEST_SCHEMA_VERSION, manifest.entries, now_ms())
         .await
         .unwrap();
@@ -121,7 +121,7 @@ async fn transcript_refresh_legacy_full_snapshot_uses_only_prepared_hooks() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    let (counts, task) = start(fx.repo.pool().clone(), fx.track.id.clone(), vec![]);
+    let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
     let commit = finish(task).await.unwrap();
     let manifest = tree_at(fx.repo.pool(), &commit).await.unwrap().unwrap();
     assert!(!super::super::types::has_legacy_card_lens_paths(&manifest));
@@ -157,7 +157,7 @@ async fn transcript_refresh_keeps_unannounced_raw_card_hidden() {
         })
         .await
         .unwrap();
-    let (counts, task) = start(fx.repo.pool().clone(), fx.track.id.clone(), vec![]);
+    let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
     let commit = finish(task).await.unwrap();
     let manifest = tree_at(fx.repo.pool(), &commit).await.unwrap().unwrap();
     assert!(
@@ -180,7 +180,7 @@ async fn transcript_refresh_both_providers_keep_order_and_existing_projection_by
     let codex = fx.hook("codex projection probe").await;
     let commit = fx.refresh().await;
     // Compare the existing authoritative live owner rather than hand-copying either renderer.
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let events = hook_events_for_card_tx(&mut tx, &fx.track.id, &fx.card.id)
         .await
         .unwrap();
@@ -212,7 +212,7 @@ async fn transcript_refresh_publication_failure_rolls_back_objects_commit_and_re
         .execute(fx.repo.pool())
         .await
         .unwrap();
-    let (counts, task) = start(fx.repo.pool().clone(), fx.track.id.clone(), vec![]);
+    let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
     let error = finish(task).await.unwrap_err();
     assert!(error.to_string().contains("reject transcript refresh"));
     assert_eq!(
@@ -234,7 +234,7 @@ async fn transcript_refresh_missing_prepared_input_fails_instead_of_rendering_li
     let fx = Fixture::new().await;
     let prepared = PreparedHooks::new();
     let mut entries = BTreeMap::new();
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let error = HookInputs::Prepared(&prepared)
         .put_card(&mut tx, &mut entries, &fx.track.id, &fx.card.id, now_ms())
         .await

@@ -344,7 +344,7 @@ async fn load_track_conversation_summaries(
     track_id: &str,
     card_id: Option<&str>,
 ) -> Result<Vec<TrackConversationSummary>> {
-    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+    let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("track conversations require a sqlite-backed repo".into())
     })?;
     // `last_turn_completed_at` is the same correlated subquery the card-runtime projection
@@ -382,7 +382,7 @@ async fn load_track_conversation_summaries(
         .bind(CardRole::Assistant.as_db_str())
         .bind(ASSISTANT_HARNESS_PROFILE_MARKER)
         .bind(card_id)
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await?;
     rows.into_iter()
         .map(TrackConversationSummary::try_from)

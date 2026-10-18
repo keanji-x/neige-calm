@@ -231,7 +231,7 @@ impl SeriesFixture {
 
         let clock = Arc::new(AtomicI64::new(T0_MS));
         let now_clock = clock.clone();
-        let pool = boot.repo.sqlite_pool();
+        let pool = boot.repo.sqlite_db();
         let resolver = if options.unstarted {
             SeriesResolver::new_unstarted(pool)
         } else {
@@ -498,14 +498,14 @@ pub(crate) async fn wait_until(what: &str, within: Duration, mut done: impl FnMu
 }
 
 pub(crate) async fn rows_for(repo: &dyn Repo, track_id: &str) -> Vec<Row> {
-    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let pool = repo.sqlite_db().expect("sqlite pool");
     sqlx::query_as::<_, Row>(concat!(
         "SELECT block_id, request_hash, status, reason, as_of, resolved_at, pinned, ",
         "summary, data FROM report_series WHERE track_id = ?1 ",
         "ORDER BY block_id, request_hash"
     ))
     .bind(track_id)
-    .fetch_all(&pool)
+    .fetch_all(pool.read_pool())
     .await
     .expect("select report_series")
 }

@@ -232,12 +232,12 @@ async fn committed_write_refreshes_anchors_before_warning_lookup_failure() {
     seed(&b, SECTIONS).await;
     read_sections(&b, planner_identity(&b), &["概要"]).await;
     // The receipt pool is a production seam separate from the authoritative repository.
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .connect_lazy("sqlite::memory:")
+    let pool = calm_server::db::sqlite::SqliteDb::connect("sqlite::memory:")
+        .await
         .unwrap();
     pool.close().await;
     let ctx = std::sync::Arc::get_mut(&mut b.ctx).expect("exclusive context");
-    let original = ctx.sqlite_pool.replace(pool);
+    let original = ctx.sqlite_db.replace(pool);
     assert!(
         commit(
             &b,
@@ -248,7 +248,7 @@ async fn committed_write_refreshes_anchors_before_warning_lookup_failure() {
         .is_err()
     );
     assert!(payload(&b).await.body.contains("committed"));
-    std::sync::Arc::get_mut(&mut b.ctx).unwrap().sqlite_pool = original;
+    std::sync::Arc::get_mut(&mut b.ctx).unwrap().sqlite_db = original;
     commit(
         &b,
         planner_identity(&b),

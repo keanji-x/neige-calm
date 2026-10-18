@@ -1166,7 +1166,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         match step.op.as_str() {
             "release_workspace_lease" => {
                 let lease_id = step_arg_string(step, "lease_id")?;
-                let pool = ctx.operation_repo.sqlite_pool();
+                let pool = ctx.operation_repo.sqlite_db();
                 release_workspace_lease_by_id(
                     &pool,
                     &ctx.events,

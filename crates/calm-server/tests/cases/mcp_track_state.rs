@@ -172,7 +172,7 @@ async fn boot() -> Boot {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
@@ -188,7 +188,7 @@ async fn boot() -> Boot {
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 
@@ -312,7 +312,7 @@ async fn insert_task(boot: &Boot, id: &str, key: &str, status: &str, worker: Opt
     .bind(key)
     .bind(status)
     .bind(worker)
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .expect("insert task");
 }
@@ -348,7 +348,7 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     // `fix-login` failed once and was recovered: generation 2 supersedes generation 1.
     insert_task(&boot, "fix-login-1", "fix-login", "failed", Some(worker)).await;
     sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id = 'fix-login-1'")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     sqlx::query(concat!(
@@ -357,12 +357,12 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     ))
     .bind(boot.track_id.as_str())
     .bind(serde_json::to_string(&recovery_origin(&boot, "fix-login-1")).unwrap())
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .expect("allocate recovery execution");
     insert_task(&boot, "fix-login-2", "fix-login", "running", Some(worker)).await;
     sqlx::query("UPDATE tasks SET start = 'upstream' WHERE id = 'fix-login-2'")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     insert_task(&boot, "docs-1", "docs", "pending", None).await;
@@ -708,7 +708,7 @@ async fn task_verdict_refuses_an_attempt_outside_the_callers_track() {
         "created_at_ms,updated_at_ms) VALUES('foreign-1',?1,'foreign','codex','goal','{}','done',1,1)"
     ))
     .bind(other_track.id.as_str())
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .expect("insert foreign task");
     let mut rx = boot.ctx.events.subscribe();

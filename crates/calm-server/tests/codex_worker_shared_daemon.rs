@@ -134,7 +134,7 @@ async fn boot(start_shared: bool) -> Boot {
         .await
         .unwrap();
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        sqlx_repo.pool(),
+        sqlx_repo.db(),
         NewTrack {
             template_input: None,
             area_id: area.id.clone(),
@@ -152,7 +152,7 @@ async fn boot(start_shared: bool) -> Boot {
     .await
     .unwrap();
     // The worker runs in the track worktree (#1830 S2).
-    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.pool(), track.id.as_str())
+    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.db(), track.id.as_str())
         .await
         .unwrap();
     let planner_card = repo
@@ -246,7 +246,7 @@ async fn boot(start_shared: bool) -> Boot {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: WriteContext::new(cache.clone(), wcc.clone()),
@@ -262,7 +262,7 @@ async fn boot(start_shared: bool) -> Boot {
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let mut registry = ToolRegistry::new();
@@ -574,7 +574,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, TrackI
         .await
         .unwrap();
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         NewTrack {
             template_input: None,
             area_id: area.id,
@@ -592,7 +592,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, TrackI
     .await
     .unwrap();
     // The worker runs in the track worktree (#1830 S2).
-    calm_server::test_seams::ensure_track_worktree_for_test(repo.pool(), track.id.as_str())
+    calm_server::test_seams::ensure_track_worktree_for_test(repo.db(), track.id.as_str())
         .await
         .unwrap();
     let events = EventBus::new();
@@ -1056,7 +1056,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         state.track_area_cache.clone(),
         std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let spawn_ctx = SpawnCtx::new(
         route_repo,
@@ -1412,10 +1412,10 @@ async fn worker_turn_start_failure_retains_execution_for_reconciliation() {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
     assert!(!failed.expect("task.failed").is_empty());
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let record = wait_for(Duration::from_secs(3), || async {
         sqlx::query_as::<_, (String, String, String)>("SELECT tx_output_json,last_error,compensation_state FROM operations WHERE kind='codex-worker' AND idempotency_key=?1 AND phase='stuck'")
-            .bind(&attempt_id).fetch_optional(&pool).await.unwrap()
+            .bind(&attempt_id).fetch_optional(pool.read_pool()).await.unwrap()
     }).await.expect("uncertain provider outcome must retain its prepared operation");
     assert!(record.1.contains("unverified"), "{record:?}");
     let compensation: Value = serde_json::from_str(&record.2).unwrap();
@@ -1446,7 +1446,7 @@ async fn worker_turn_start_failure_retains_execution_for_reconciliation() {
         "SELECT id FROM worker_sessions WHERE card_id=?1 AND thread_id='fake-thread-0001'",
     )
     .bind(&card_id)
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     let session = boot
@@ -1530,10 +1530,10 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
     let key = "pty-fail-1";
     let attempt_id = task_id(&boot, key);
     write_codex_task_block(&boot, key, "turn starts but viewer fails").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let record = wait_for(Duration::from_secs(3), || async {
         sqlx::query_scalar::<_, String>("SELECT tx_output_json FROM operations WHERE kind='codex-worker' AND idempotency_key=?1 AND phase='succeeded'")
-            .bind(&attempt_id).fetch_optional(&pool).await.unwrap()
+            .bind(&attempt_id).fetch_optional(pool.read_pool()).await.unwrap()
     }).await.expect("optional viewer failure must not fail business startup");
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
@@ -1600,7 +1600,7 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
         );
         let rows: Vec<SessionProjectionDebugRow> =
             sqlx::query_as("SELECT c.session_id,ws.id,ws.state,ws.thread_id,ws.active_turn_id FROM cards c JOIN worker_sessions ws ON ws.card_id=c.id WHERE c.id=?1")
-                .bind(&card_id).fetch_all(&pool).await.unwrap();
+                .bind(&card_id).fetch_all(pool.read_pool()).await.unwrap();
         panic!(
             "owned worker projection did not become active after successful business startup: {rows:?}"
         );

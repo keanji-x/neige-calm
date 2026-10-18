@@ -7,7 +7,7 @@
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::model::now_ms;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, Transaction};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -70,7 +70,7 @@ impl Default for EventsRetentionPolicy {
 
 /// Spawn the events retention pruner. On by default (hourly interval,
 /// 30-day horizon); `NEIGE_EVENTS_PRUNE_INTERVAL_SECS=0` disables it.
-pub fn spawn_events_pruner(pool: SqlitePool) {
+pub fn spawn_events_pruner(pool: crate::db::sqlite::SqliteDb) {
     let Some((interval, policy)) = events_pruner_config_from_env() else {
         tracing::info!("events_prune: retention pruner disabled");
         return;
@@ -161,7 +161,10 @@ fn events_pruner_config_from_env() -> Option<(Duration, EventsRetentionPolicy)> 
 /// One retention pass. Overlay history discovery/interpretation runs outside the writer;
 /// each delete revalidates its append frontier and relied-on latest witnesses. Plain kinds
 /// keep their bounded DELETE path. Every committed batch advances the same replay watermark.
-pub async fn prune_events_once(pool: &SqlitePool, policy: &EventsRetentionPolicy) -> Result<u64> {
+pub async fn prune_events_once(
+    pool: &crate::db::sqlite::SqliteDb,
+    policy: &EventsRetentionPolicy,
+) -> Result<u64> {
     let started = std::time::Instant::now();
     let horizon_ms =
         now_ms().saturating_sub(policy.horizon.as_millis().min(i64::MAX as u128) as i64);
@@ -212,7 +215,7 @@ pub async fn prune_events_once(pool: &SqlitePool, policy: &EventsRetentionPolicy
     }
 
     let events_earliest_id: Option<i64> = sqlx::query_scalar("SELECT MIN(id) FROM events")
-        .fetch_one(pool)
+        .fetch_one(pool.read_pool())
         .await?;
     tracing::info!(
         pruned_total,
@@ -226,7 +229,12 @@ pub async fn prune_events_once(pool: &SqlitePool, policy: &EventsRetentionPolicy
     Ok(pruned_total)
 }
 
-async fn prune_batch(pool: &SqlitePool, kind: &str, horizon_ms: i64, batch: i64) -> Result<u64> {
+async fn prune_batch(
+    pool: &crate::db::sqlite::SqliteDb,
+    kind: &str,
+    horizon_ms: i64,
+    batch: i64,
+) -> Result<u64> {
     let mut tx = begin_immediate_tx(pool).await?;
     let query = sqlx::query_scalar::<_, i64>(
         "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE kind=?1 AND at<?2 LIMIT ?3) RETURNING id"

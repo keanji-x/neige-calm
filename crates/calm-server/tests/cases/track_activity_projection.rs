@@ -145,7 +145,7 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
         .execute(&f.pool)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(&f.pool).await.unwrap();
+    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
     let n = task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
         .await
         .unwrap();
@@ -179,7 +179,7 @@ async fn sub_track_child_deleted_marks_parent_failed() {
         .execute(&f.pool)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(&f.pool).await.unwrap();
+    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
     task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
         .await
         .unwrap();
@@ -223,7 +223,7 @@ async fn parent_gate_verifying_is_working() {
         .execute(&f.pool)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(&f.pool).await.unwrap();
+    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
     task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
         .await
         .unwrap();
@@ -471,7 +471,7 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
     )
     .await;
     f.claim_attempt(&t, "build", &attempt_b, 6_000).await;
-    let mut tx = begin_immediate_tx(&f.pool).await.unwrap();
+    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
     assert_eq!(
         task_mark_running_tx(&mut tx, &attempt_b, Some(&card_b), 7_000, i64::MAX)
             .await

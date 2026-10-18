@@ -11,13 +11,13 @@ async fn the_run_releases_its_wrapper_only_after_parked() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let record = seen.clone();
     let fx = world_with(LONG_IDLE, move |boot| {
-        let pool = boot.repo.sqlite_pool().unwrap();
+        let pool = boot.repo.sqlite_db().unwrap();
         let hook: Hook = Arc::new(move || {
             let (pool, record) = (pool.clone(), record.clone());
             Box::pin(async move {
                 let phase: String =
                     sqlx::query_scalar("SELECT phase FROM operations WHERE kind = 'task-gate-run'")
-                        .fetch_one(&pool)
+                        .fetch_one(pool.read_pool())
                         .await
                         .unwrap();
                 record.lock().unwrap().push(phase);

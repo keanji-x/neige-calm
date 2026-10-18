@@ -163,13 +163,13 @@ impl Scheduler {
     /// delivery row, whatever its tasks' status or its lifecycle — an ungated completion that
     /// crashed before submission leaves only a `done` row, which no non-terminal scan visits.
     pub(super) async fn unsettled_git_delivery_tracks(&self) -> Vec<String> {
-        let Some(pool) = self.repo.sqlite_pool() else {
+        let Some(pool) = self.repo.sqlite_db() else {
             return Vec::new();
         };
         match sqlx::query_scalar::<_, String>(
             "SELECT DISTINCT track_id FROM task_git_deliveries WHERE settlement IS NULL",
         )
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await
         {
             Ok(tracks) => tracks,

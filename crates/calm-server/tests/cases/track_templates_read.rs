@@ -432,7 +432,7 @@ async fn put_is_not_routed_and_writes_nothing() {
 
 /// Whole-database content digest: every table, every row, in a stable order.
 async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
-    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let pool = repo.sqlite_db().expect("sqlite pool");
     // `sqlite_sequence` is deliberately included: a rolled-back insert still advances the AUTOINCREMENT high-water mark.
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master \
@@ -440,7 +440,7 @@ async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
          AND name NOT LIKE 'sqlite_stat%' \
          ORDER BY name",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool.read_pool())
     .await
     .expect("table list");
     assert!(!tables.is_empty(), "digest found no tables to compare");
@@ -448,7 +448,7 @@ async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
     for table in tables {
         let columns: Vec<String> =
             sqlx::query_scalar(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
+                .fetch_all(pool.read_pool())
                 .await
                 .unwrap_or_else(|error| panic!("columns of {table}: {error}"));
         let row_text = columns
@@ -460,7 +460,7 @@ async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
             "SELECT coalesce(group_concat(row_text, char(10)), '') FROM \
              (SELECT {row_text} AS row_text FROM \"{table}\" ORDER BY 1)"
         ))
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap_or_else(|error| panic!("digest of {table}: {error}"));
         digest.push((table, rows));

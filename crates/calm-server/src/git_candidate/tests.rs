@@ -1245,7 +1245,7 @@ async fn kernel_lease(
         reader: None,
         catch_up: None,
     };
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     let (lease, _event) = acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
         .await
         .unwrap();
@@ -1271,7 +1271,7 @@ impl DbFixture {
 
     /// A completed attempt's first row, committing with `message`.
     async fn insert_delivery_with(&self, attempt: &str, message: DeliveryMessage) -> DeliveryRow {
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         let row = insert_initial_delivery_tx(
             &mut tx,
             attempt,
@@ -1527,7 +1527,7 @@ async fn settlement_written_once() {
         "{refused:?}"
     );
 
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     assert_eq!(
         settle_failed_tx(
             &mut tx,
@@ -1574,7 +1574,7 @@ async fn settlement_written_once() {
     }
 
     // The second settlement of either kind is a guarded no-op, not an error.
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     assert_eq!(
         settle_failed_tx(
             &mut tx,
@@ -1652,7 +1652,7 @@ async fn settlement_written_once() {
 async fn candidate_row_is_immutable() {
     let fx = db_fixture().await;
     let delivery = fx.insert_delivery("attempt-1").await;
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     settle_candidate_tx(
         &mut tx,
         &delivery.delivery_id,
@@ -1689,7 +1689,7 @@ impl DbFixture {
     /// A delivery settled `failed`.
     async fn insert_failed_delivery(&self, attempt: &str) -> DeliveryRow {
         let row = self.insert_delivery(attempt).await;
-        let mut tx = begin_immediate_tx(self.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
         settle_failed_tx(
             &mut tx,
             &row.delivery_id,
@@ -1702,7 +1702,7 @@ impl DbFixture {
         .unwrap();
         tx.commit().await.unwrap();
         delivery_by_id_tx(
-            &mut begin_immediate_tx(self.repo.pool()).await.unwrap(),
+            &mut begin_immediate_tx(self.repo.db()).await.unwrap(),
             &row.delivery_id,
         )
         .await
@@ -1721,7 +1721,7 @@ async fn delivery_tables_cascade_on_track_delete() {
         let settled = fx.insert_delivery("attempt-settled").await;
         let _pending = fx.insert_delivery("attempt-pending").await;
         let _failed = fx.insert_failed_delivery("attempt-failed").await;
-        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
         settle_candidate_tx(
             &mut tx,
             &settled.delivery_id,
@@ -1743,7 +1743,7 @@ async fn delivery_tables_cascade_on_track_delete() {
         let events_before = count(&fx.repo, "SELECT COUNT(*) FROM events").await;
         assert!(events_before > 0, "the lease acquisition left an event");
 
-        let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
         if delete_area {
             crate::db::sqlite::area_delete_tx(&mut tx, &fx.area_id)
                 .await
@@ -1849,7 +1849,7 @@ async fn initial_delivery_row_and_readers() {
     assert_ne!(row.operation_key, row.delivery_id);
     assert_eq!(row.settlement, None);
 
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     assert_eq!(
         delivery_latest_for_attempt_tx(&mut tx, "attempt-1")
             .await
@@ -1878,7 +1878,7 @@ async fn initial_delivery_row_and_readers() {
     tx.commit().await.unwrap();
 
     // A forge Operation under the row's key is found; the released lease still reads.
-    let op_repo = crate::operation::SqlxOperationRepo::new(fx.repo.pool().clone());
+    let op_repo = crate::operation::SqlxOperationRepo::new(fx.repo.db().clone());
     let op_id = crate::operation::OperationRepo::insert_operation(
         &op_repo,
         crate::operation::forge_action_adapter::FORGE_ACTION_KIND,
@@ -1896,7 +1896,7 @@ async fn initial_delivery_row_and_readers() {
         .execute(fx.repo.pool())
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let unsettled = unsettled_deliveries_for_track_tx(&mut tx, &fx.track_id)
         .await
         .unwrap();
@@ -1907,7 +1907,7 @@ async fn initial_delivery_row_and_readers() {
 
     // A legacy (plain) lease never gets a delivery row.
     let plain_card = new_card(&fx.repo, &fx.track_id).await;
-    let mut tx = begin_immediate_tx(fx.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
     let (plain, _event) = crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
         &mut tx,
         &plain_card,

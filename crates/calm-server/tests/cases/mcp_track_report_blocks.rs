@@ -1500,10 +1500,10 @@ async fn seed_planner_task(boot: &Boot, key: &str) -> (String, u64) {
 }
 
 pub(crate) async fn task_keys(boot: &Boot) -> Vec<String> {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     sqlx::query_scalar::<_, String>("SELECT key FROM tasks WHERE track_id = ?1 ORDER BY key")
         .bind(boot.track_id.as_str())
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await
         .expect("read task keys")
 }
@@ -2219,7 +2219,12 @@ fn first_line(body: &str) -> &str {
 /// Persisted `track.report_edited` rows — the audit-log view of "did a write land".
 async fn report_edited_rows(boot: &Boot) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'track.report_edited'")
-        .fetch_one(&boot.repo.sqlite_pool().expect("fixture repo is sqlite"))
+        .fetch_one(
+            boot.repo
+                .sqlite_db()
+                .expect("fixture repo is sqlite")
+                .read_pool(),
+        )
         .await
         .expect("count persisted report edits")
 }

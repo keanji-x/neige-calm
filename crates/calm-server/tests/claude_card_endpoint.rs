@@ -173,7 +173,7 @@ where
 
     let (spawn_count, hook) = factory(repo.clone(), state.terminal_renderer.clone());
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
         route_repo.clone(),
         state.card_role_cache.clone(),

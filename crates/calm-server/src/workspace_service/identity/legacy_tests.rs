@@ -81,7 +81,7 @@ async fn workspace_identity_managed_preflight_does_not_create_or_repair() {
         let exists_before = directory.exists();
         let ctx = context(
             repo.clone(),
-            Arc::new(SqlxOperationRepo::new(repo.pool().clone())),
+            Arc::new(SqlxOperationRepo::new(repo.db().clone())),
         );
         super::prepare_task(&ctx, current.id.as_str())
             .await
@@ -128,7 +128,7 @@ async fn workspace_identity_legacy_non_git_terminal_owner_prepares_without_git_a
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let plain = track(&repo, tmp.path(), TrackWorkspacePlan::AttachedFromCwd).await;
     task(&repo, &plain).await;
-    let operations = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let ctx = context(repo.clone(), operations);
     let adapter = TerminalWorkerAdapter::new(
         repo.clone(),
@@ -212,7 +212,7 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
             Box::pin(async { Ok(SpawnHandle::NoOp) })
         }),
     ));
-    let operations = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let ctx = context(repo.clone(), operations.clone());
     let payload = serde_json::to_value(TerminalWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,

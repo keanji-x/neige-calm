@@ -111,7 +111,7 @@ impl TestBoot {
             .await
             .expect("create track");
 
-        let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+        let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
         let events = EventBus::new();
         let completion = OperationCompletionBus::new();
         let route_repo: Arc<dyn RouteRepo> = repo.clone();

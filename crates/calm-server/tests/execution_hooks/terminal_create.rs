@@ -157,7 +157,7 @@ async fn prepare_refused_leaves_exited_deletable_card() {
 
 // Install actual domain rows without driving an executor, to exercise the Store port's projection.
 async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
-    let op_repo = SqlxOperationRepo::new(f.repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(f.repo.db().clone());
     let op = op_repo
         .insert_operation(
             KIND,
@@ -367,7 +367,7 @@ async fn typed_keyed_replay_drives_without_second_admit() {
         .unwrap();
     assert!(!marker.exists());
     assert_eq!(counts(&f).await, (1, 1, 1));
-    let op = SqlxOperationRepo::new(f.repo.pool().clone())
+    let op = SqlxOperationRepo::new(f.repo.db().clone())
         .get_operation(&result.op_id)
         .await
         .unwrap()
@@ -486,7 +486,7 @@ async fn keyed_create_across_config_toggle_returns_same_card() {
 async fn unregistered_projection_fails_and_rolls_back() {
     let f = Fixture::new().await;
     let (term, id) = projection(&f).await;
-    let store = SqliteExecutionStore::new(f.repo.pool().clone());
+    let store = SqliteExecutionStore::new(f.repo.db().clone());
     let before = session(&f, &term).await;
     let spawned = store.spawned(&id).await;
     let settled = store

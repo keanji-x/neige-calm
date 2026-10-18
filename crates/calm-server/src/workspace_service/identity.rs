@@ -1,7 +1,5 @@
 //! Kernel observation of worktree resources. Filesystem evidence is collected outside SQL.
 
-use sqlx::SqlitePool;
-
 use crate::{
     db::sqlite::{
         DirectoryObservation, begin_immediate_tx, workspace_observation_snapshot,
@@ -11,20 +9,24 @@ use crate::{
 };
 
 pub(crate) async fn prepare_task(ctx: &crate::operation::SpawnCtx, track_id: &str) -> Result<()> {
-    let pool = ctx.operation_repo.sqlite_pool();
+    let pool = ctx.operation_repo.sqlite_db();
     observe_for_task(&pool, track_id).await
 }
 
 /// Observe this request's current track selection. Observation does not decode or rebind
 /// historical executions: their original cwd, lease and operation bytes stay with their owner.
 /// Checkout admission keeps its existing track scope until legacy source conversion is complete.
-pub(crate) async fn observe_for_task(pool: &SqlitePool, track_id: &str) -> Result<()> {
+pub(crate) async fn observe_for_task(
+    pool: &crate::db::sqlite::SqliteDb,
+    track_id: &str,
+) -> Result<()> {
     observe(pool, track_id).await
 }
 
 /// Recheck the current selection; persisted inode facts do not identify an object incarnation.
-async fn observe(pool: &SqlitePool, track_id: &str) -> Result<()> {
-    let snapshot = workspace_observation_snapshot(&mut *pool.acquire().await?, track_id).await?;
+async fn observe(pool: &crate::db::sqlite::SqliteDb, track_id: &str) -> Result<()> {
+    let snapshot =
+        workspace_observation_snapshot(&mut *pool.read_pool().acquire().await?, track_id).await?;
     let selected = snapshot.selected_path.clone();
     let ownership = snapshot.ownership;
     let owner_track = snapshot.track_id.clone();

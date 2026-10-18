@@ -380,12 +380,12 @@ async fn track_close(
             return Err(close_refusal(-32404, "unknown_track", json!({})));
         }
         let pool = ctx
-            .sqlite_pool
+            .sqlite_db
             .as_ref()
             .ok_or_else(|| RpcError::internal("close needs sqlite"))?;
         // Defensive preflight only; the forge operation's parked recovery remains the backstop.
         if crate::operation::workspace_lease::track_has_active_forge_action(
-            pool,
+            pool.read_pool(),
             target_id.as_str(),
         )
         .await

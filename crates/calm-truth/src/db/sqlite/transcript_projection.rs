@@ -41,7 +41,7 @@ pub(super) async fn insert_transcript_row<'e, E: sqlx::Executor<'e, Database = S
 }
 
 pub(super) async fn restore(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     worker: &str,
     card: &str,
     track: &str,

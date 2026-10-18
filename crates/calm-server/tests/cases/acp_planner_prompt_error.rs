@@ -13,9 +13,9 @@ async fn acp_prompt_error_fails_the_turn_with_its_text_and_the_next_input_runs()
     assert_eq!(outcome["status"], "failed", "{outcome}");
     assert_eq!(outcome["error"]["message"], AGENT_ERROR, "{outcome}");
     let runtime = stack.runtime(&card).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     assert!(
-        !calm_server::db::sqlite::acp_submission_unresolved(&pool, &runtime.id)
+        !calm_server::db::sqlite::acp_submission_unresolved(pool.read_pool(), &runtime.id)
             .await
             .unwrap(),
         "an answered prompt settles its receipt"

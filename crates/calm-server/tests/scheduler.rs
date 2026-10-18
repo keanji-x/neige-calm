@@ -204,7 +204,7 @@ async fn boot_at_workspace(cwd: &str) -> Boot {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: write.clone(),
@@ -220,7 +220,7 @@ async fn boot_at_workspace(cwd: &str) -> Boot {
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let mut registry = ToolRegistry::new();
@@ -397,7 +397,7 @@ fn build_scheduler_unbooted_with(
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         boot.repo
-            .sqlite_pool()
+            .sqlite_db()
             .expect("scheduler test uses sqlite repo"),
     ));
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
@@ -476,7 +476,7 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
 }
 
 async fn seed_task(boot: &Boot, task: Task) {
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         r#"INSERT INTO tasks
            (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
@@ -511,7 +511,7 @@ async fn seed_task(boot: &Boot, task: Task) {
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
     .bind(task.access.as_str())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .expect("seed task row");
 }
@@ -526,11 +526,11 @@ async fn seed_projected_task_for(
     identity: ToolCallIdentity,
     task: Task,
 ) {
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let report_exists: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE track_id=?1 AND kind='track-report'")
             .bind(track_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .expect("check report fixture");
     if report_exists == 0 {
@@ -541,7 +541,7 @@ async fn seed_projected_task_for(
         .bind(new_id())
         .bind(track_id)
         .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .expect("seed report fixture");
     }
@@ -613,7 +613,7 @@ async fn seed_projected_task_for(
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
     .bind(task.id)
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .expect("restore projected task runtime state");
 }
@@ -640,11 +640,11 @@ async fn task_row(boot: &Boot, key: &str) -> Task {
 }
 
 async fn mark_context_stale(boot: &Boot, task_id: &str) {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     sqlx::query("UPDATE tasks SET context_stale_at_ms = ?1 WHERE id = ?2")
         .bind(now_ms())
         .bind(task_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .expect("mark task context stale");
 }
@@ -700,7 +700,7 @@ async fn seed_held_workspace_lease(
     card_id: &str,
     label: &str,
 ) -> (String, tempfile::TempDir) {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let lease_id = format!("lease-timeout-{label}-{}", new_id());
     let lease_dir = tempfile::Builder::new()
         .prefix(&format!("neige-timeout-lease-{label}-"))
@@ -721,7 +721,7 @@ async fn seed_held_workspace_lease(
     .bind(path.display().to_string())
     .bind(now + 60_000)
     .bind(now)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .expect("insert held workspace lease");
     (lease_id, lease_dir)
@@ -737,7 +737,7 @@ async fn seed_active_codex_turn(boot: &Boot, runtime_id: &str, thread_id: &str, 
     .bind(turn_id)
     .bind(now_ms())
     .bind(runtime_id)
-    .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .execute(boot.repo.sqlite_db().expect("sqlite pool").writer_pool())
     .await
     .expect("seed active codex turn");
     boot.shared_codex_appserver
@@ -747,7 +747,7 @@ async fn seed_active_codex_turn(boot: &Boot, runtime_id: &str, thread_id: &str, 
 async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
     sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
         .bind(lease_id)
-        .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .fetch_one(boot.repo.sqlite_db().expect("sqlite pool").read_pool())
         .await
         .expect("workspace lease state")
 }
@@ -755,7 +755,7 @@ async fn workspace_lease_state(boot: &Boot, lease_id: &str) -> String {
 async fn workspace_lease_path(boot: &Boot, lease_id: &str) -> String {
     sqlx::query_scalar("SELECT path FROM workspace_leases WHERE lease_id = ?1")
         .bind(lease_id)
-        .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .fetch_one(boot.repo.sqlite_db().expect("sqlite pool").read_pool())
         .await
         .expect("workspace lease path")
 }
@@ -769,7 +769,7 @@ async fn timeout_cleanup_marker_exists(boot: &Boot, card_id: &str) -> bool {
                  IS NOT NULL"#,
     )
     .bind(card_id)
-    .fetch_one(&boot.repo.sqlite_pool().expect("sqlite pool"))
+    .fetch_one(boot.repo.sqlite_db().expect("sqlite pool").read_pool())
     .await
     .expect("timeout cleanup marker query");
     count > 0
@@ -793,11 +793,11 @@ async fn call_tool(
 /// Stamp the boot worker card's payload `idempotency_key` to `task_id`. This binding is mutable (`PATCH /api/cards/{id}`)
 /// and therefore NOT the ownership proof; tests exercising unstamped-row reports also seed [`seed_worker_op_target`].
 async fn bind_worker_card_payload(boot: &Boot, task_id: &str) {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
         .bind(json!({ "idempotency_key": task_id }).to_string())
         .bind(boot.worker_card_id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .expect("bind worker card payload");
 }
@@ -826,7 +826,7 @@ async fn seed_worker_op_target_with_payload(
     card_id: &str,
     payload: Value,
 ) {
-    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"));
+    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_db().expect("sqlite pool"));
     op_repo
         .insert_operation(
             kind,
@@ -839,7 +839,7 @@ async fn seed_worker_op_target_with_payload(
         )
         .await
         .expect("seed worker op row");
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     sqlx::query(
         "UPDATE operations SET target_type = 'card', target_id = ?1, target_json = ?2 \
          WHERE kind = ?3 AND idempotency_key = ?4",
@@ -848,7 +848,7 @@ async fn seed_worker_op_target_with_payload(
     .bind(json!({ "type": "card", "id": card_id }).to_string())
     .bind(kind)
     .bind(task_id)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .expect("stamp op target card");
 }
@@ -879,11 +879,11 @@ fn planner_identity(boot: &Boot) -> ToolCallIdentity {
 
 /// `(kind, actor_json, payload_json)` rows from the events table — assertions read the persisted column, not the broadcast.
 async fn event_rows(boot: &Boot, kind: &str) -> Vec<(String, Value)> {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let rows: Vec<(String, String)> =
         sqlx::query_as("SELECT actor, payload FROM events WHERE kind = ?1 ORDER BY id ASC")
             .bind(kind)
-            .fetch_all(&pool)
+            .fetch_all(pool.read_pool())
             .await
             .expect("events query");
     rows.into_iter()
@@ -892,10 +892,10 @@ async fn event_rows(boot: &Boot, kind: &str) -> Vec<(String, Value)> {
 }
 
 async fn operation_count(boot: &Boot, kind: &str) -> i64 {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM operations WHERE kind = ?1")
         .bind(kind)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .expect("operations count");
     count
@@ -1117,7 +1117,7 @@ impl ProviderAdapter for BootstrapAdapter {
             let wait_entered = block.wait_entered.clone();
             let release = block.release.clone();
             let completed = block.completed.clone();
-            let pool = ctx.operation_repo.sqlite_pool();
+            let pool = ctx.operation_repo.sqlite_db();
             let op_id = op.id.clone();
             let result = output.data.clone();
             return Ok(SpawnOutcome::Parked {
@@ -2399,12 +2399,12 @@ async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material()
     task.status = TaskStatus::Running;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "UPDATE tasks SET claim_context_json='[]',decl_ready=1,decl_released_by_user=0,context_verify_failures=0 WHERE id=?1",
     )
     .bind(&task_id)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
 
@@ -2415,7 +2415,7 @@ async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material()
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -2725,7 +2725,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         registered, classified,
         "every production adapter must be classified as task-bound or explicitly non-task-bound"
     );
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     for (adapter, op) in cases {
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
@@ -2799,7 +2799,7 @@ async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
         &boot,
         vec![context_checked_terminal_adapter(&boot, spawned.clone())],
     );
-    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_db().unwrap());
     repo.insert_operation(
         "terminal-worker",
         OperationKey {
@@ -2850,7 +2850,7 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
     let spawned = Arc::new(AtomicUsize::new(0));
     let adapter = context_checked_terminal_adapter(&boot, spawned.clone());
     let (runtime, scheduler) = build_scheduler(&boot, vec![adapter.clone()]);
-    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_db().unwrap());
     let op_id = repo
         .insert_operation(
             "terminal-worker",
@@ -2863,7 +2863,7 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
         )
         .await
         .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let pending_op = runtime
         .find_by_kind_and_idempotency("terminal-worker", &task_id)
         .await
@@ -2884,7 +2884,7 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
     .bind(serde_json::to_string(&output).unwrap())
     .bind(json!({"type": "card", "id": boot.worker_card_id.as_str()}).to_string())
     .bind(&op_id)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     mark_context_stale(&boot, &task_id).await;
@@ -2922,7 +2922,7 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     seed_task(&boot, missing).await;
     sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id=?1")
         .bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let spawned = Arc::new(AtomicUsize::new(0));
@@ -2944,9 +2944,9 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
         8,
     );
     let scheduler = dispatcher.scheduler();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("ALTER TABLE task_ref_index RENAME TO task_ref_index_boot_failure")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     assert!(
@@ -2965,7 +2965,7 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     assert_eq!(operation_count(&boot, "terminal-worker").await, 0);
 
     sqlx::query("ALTER TABLE task_ref_index_boot_failure RENAME TO task_ref_index")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     dispatcher.reconcile_tick_for_test().await;
@@ -3078,11 +3078,11 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
 
     // Revise the still-pending row mid-window (pending rows are
     // mutable; post-claim they are frozen).
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let revised =
         sqlx::query("UPDATE tasks SET goal = 'echo new' WHERE id = ?1 AND status = 'pending'")
             .bind(&task_id)
-            .execute(&pool)
+            .execute(pool.writer_pool())
             .await
             .expect("revise pending row");
     assert_eq!(
@@ -3114,7 +3114,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let mut report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 7,
@@ -3145,7 +3145,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     .bind(format!("report-{key}"))
     .bind(boot.track_id.as_str())
     .bind(serde_json::to_string(&report).unwrap())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let (_runtime, scheduler) = build_scheduler(
@@ -3162,7 +3162,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
         "SELECT id,kind FROM events \
          WHERE kind IN ('task.dispatched','task.context_frozen') ORDER BY id",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool.read_pool())
     .await
     .expect("read dispatch batch events");
     assert_eq!(rows.len(), 2, "one dispatch must have exactly one freeze");
@@ -3172,7 +3172,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
 
     let context: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
         .bind(&task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     let refs: Vec<TaskContextRef> = serde_json::from_str(&context).unwrap();
@@ -3193,7 +3193,7 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
             "SELECT COUNT(*) FROM task_ref_index WHERE task_id = ?1 AND block_id = 'b_task_root'",
         )
         .bind(&task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap(),
         1
@@ -3235,7 +3235,7 @@ async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
     .bind(id)
     .bind(boot.track_id.as_str())
     .bind(payload.to_string())
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .unwrap();
 }
@@ -3363,9 +3363,9 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
         Err(ResolveError::RootAbsent)
     ));
 
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("DELETE FROM cards WHERE id = 'empty-report'")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     insert_report_payload(
@@ -3393,7 +3393,7 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
         "UPDATE cards SET payload = json_set(payload, '$.blocks[1].rev', 'bad') \
          WHERE id = 'mixed-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     assert!(matches!(
@@ -3448,7 +3448,7 @@ async fn assert_claim_fence_race_lost(cross_track: bool) {
         )
         .bind(child.id.as_str())
         .bind(serde_json::to_string(&child_report).unwrap())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     }
@@ -3476,7 +3476,7 @@ async fn assert_claim_fence_race_lost(cross_track: bool) {
     let task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let resolved_closure =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
             .resolve_task_closure(boot.track_id.as_str(), key)
@@ -3516,7 +3516,7 @@ async fn assert_claim_fence_race_lost(cross_track: bool) {
     ))
     .bind(card_id)
     .bind(replacement)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     resume.notify_one();
@@ -3530,7 +3530,7 @@ async fn assert_claim_fence_race_lost(cross_track: bool) {
     let index_rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(index_rows, 0);
@@ -3619,7 +3619,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             )],
             _ => unreachable!(),
         };
-        let pool = boot.repo.sqlite_pool().unwrap();
+        let pool = boot.repo.sqlite_db().unwrap();
         if case == "invalid-root-ref" {
             // The public writer rejects malformed refs, so model an older/corrupt stored report and run the production rebuild projection.
             let malformed = TrackReportPayload {
@@ -3634,7 +3634,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                     payload: broken[0].2.clone(),
                 }]),
             };
-            let mut tx = pool.begin().await.unwrap();
+            let mut tx = pool.writer_pool().begin().await.unwrap();
             sqlx::query(
                 "UPDATE cards SET payload = ?1, body_crdt = NULL \
                  WHERE track_id = ?2 AND kind = 'track-report'",
@@ -3669,14 +3669,14 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         let indexed: i64 =
             sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
                 .bind(&task_id)
-                .fetch_one(&pool)
+                .fetch_one(pool.read_pool())
                 .await
                 .unwrap();
         assert_eq!(indexed, 0, "case {case}");
         let stale: Option<Option<i64>> =
             sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
                 .bind(&task_id)
-                .fetch_optional(&pool)
+                .fetch_optional(pool.read_pool())
                 .await
                 .unwrap();
         assert!(
@@ -3763,8 +3763,8 @@ async fn a_codex_task_stuck_at_claim_does_not_block_the_next_codex_task() {
     let healthy = plan_task(&boot.track_id, "healthy-tail", TaskKind::Codex, &[]);
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
-    delete_depth_two_target(&pool, boot.track_id.as_str()).await;
+    let pool = boot.repo.sqlite_db().unwrap();
+    delete_depth_two_target(pool.read_pool(), boot.track_id.as_str()).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3842,8 +3842,8 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
     let healthy = plan_task(&boot.track_id, "healthy-tail", TaskKind::Terminal, &[]);
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
-    delete_depth_two_target(&pool, boot.track_id.as_str()).await;
+    let pool = boot.repo.sqlite_db().unwrap();
+    delete_depth_two_target(pool.read_pool(), boot.track_id.as_str()).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3878,7 +3878,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
 
     sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
         .bind(&healthy_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let restored = json!({
@@ -3890,7 +3890,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
     )
     .bind(restored.to_string())
     .bind(boot.track_id.as_str())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
@@ -3952,7 +3952,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     .await;
     let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     seed_task(&boot, task).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3971,7 +3971,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.priority', 9) \
          WHERE id = 'hash-shapes-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     monitor
@@ -3983,7 +3983,7 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
         "UPDATE cards SET payload = json_set(payload, '$.blocks[1].payload.markdown', 'changed') \
          WHERE id = 'hash-shapes-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     monitor
@@ -4056,7 +4056,7 @@ async fn seed_frozen_context_fixture_of(
             payload: fixture.declaration(key, "original contract"),
         }]),
     };
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
@@ -4064,7 +4064,7 @@ async fn seed_frozen_context_fixture_of(
     )
     .bind(boot.track_id.as_str())
     .bind(serde_json::to_string(&report).unwrap())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let task = fixture.row(boot, key);
@@ -4080,7 +4080,7 @@ async fn seed_frozen_context_fixture_of(
     );
     let context: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
         .bind(&task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     assert_ne!(context, "[]");
@@ -4133,7 +4133,7 @@ async fn seed_production_report_context_fixture(
     seed_task(boot, task).await;
     sqlx::query("UPDATE tasks SET decl_ready=1 WHERE id=?1")
         .bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let (_runtime, scheduler) = build_scheduler(
@@ -4150,7 +4150,7 @@ async fn seed_production_report_context_fixture(
     ));
     let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
         .bind(&task_id)
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_ne!(frozen, "[]", "fixture must use production context freeze");
@@ -4239,10 +4239,10 @@ async fn seed_fresh_context_copies(
     count: usize,
     index_destination: bool,
 ) {
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
         .bind(source_task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     let refs: Vec<TaskContextRef> = serde_json::from_str(&frozen).unwrap();
@@ -4314,15 +4314,15 @@ async fn seed_stale_context_copies(
     index_destination: bool,
 ) -> Vec<String> {
     assert!(refs_per_row > 0);
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
         .bind(source_task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     let source_key: String = sqlx::query_scalar("SELECT key FROM tasks WHERE id=?1")
         .bind(source_task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     let source_track = boot
@@ -4406,12 +4406,12 @@ async fn materialize_then_restore_root_bytes(
     monitor: &TaskContextMonitor,
     task_id: &str,
 ) {
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.command','temporary') \
          WHERE id='context-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     monitor
@@ -4421,7 +4421,7 @@ async fn materialize_then_restore_root_bytes(
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(
@@ -4432,7 +4432,7 @@ async fn materialize_then_restore_root_bytes(
         "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.command','original contract') \
          WHERE id='context-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
 }
@@ -4460,7 +4460,7 @@ async fn fresh_and_stale_event_fanout_budgets_are_independent() {
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -4488,7 +4488,7 @@ async fn consecutive_sweeps_restore_after_a_full_fresh_budget_without_starvation
     let after_first: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -4499,7 +4499,7 @@ async fn consecutive_sweeps_restore_after_a_full_fresh_budget_without_starvation
     let after_second: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(after_second, None, "the next sweep must preserve recovery");
@@ -4542,11 +4542,11 @@ async fn event_budget_material_verdict_recovers_when_frozen_content_is_equal() {
         "the first over-budget event pass must fail closed"
     );
     sqlx::query("DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE key LIKE 'fresh-budget-%')")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     sqlx::query("DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     monitor
@@ -4615,7 +4615,7 @@ async fn sweep_budget_material_verdict_recovers_and_metrics_stay_split() {
         "the first over-budget sweep must fail closed"
     );
     sqlx::query("DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -4728,7 +4728,7 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
     let boot = boot().await;
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, "restore-production-order").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let temporary_body =
         original_body.replacen("referenced original", "referenced original temporary", 1);
 
@@ -4740,7 +4740,7 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
     let stale_after_first_detection: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(
@@ -4764,7 +4764,7 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
     let stale_after_revert: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -4793,11 +4793,11 @@ async fn terminal_transition_during_stale_episode_never_clears_or_emits_restored
         .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let stale_at: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(stale_at.is_some());
@@ -4809,7 +4809,7 @@ async fn terminal_transition_during_stale_episode_never_clears_or_emits_restored
 
     sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1")
         .bind(&task_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     persist_context_report_body(&boot, original_body).await;
@@ -4842,8 +4842,8 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
         original_body.replacen("referenced original", "referenced original temporary", 1);
     persist_context_report_body(&boot, temporary_body).await;
 
-    let pool = boot.repo.sqlite_pool().unwrap();
-    let mut locked_revert = pool.acquire().await.unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
+    let mut locked_revert = pool.read_pool().acquire().await.unwrap();
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut *locked_revert)
         .await
@@ -4890,7 +4890,7 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(stale, None);
@@ -4910,7 +4910,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     let (_, report_card, _) = resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
         .await
         .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let first_material =
         original_body.replacen("referenced original", "referenced first material", 1);
     persist_context_report_body(&boot, first_material).await;
@@ -4921,7 +4921,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     let mut restored_report: TrackReportPayload = serde_json::from_str(
         &sqlx::query_scalar::<_, String>("SELECT payload FROM cards WHERE id=?1")
             .bind(report_card.id.as_str())
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap(),
     )
@@ -4930,14 +4930,14 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
     replace_context_report_snapshot(
-        &mut pool.acquire().await.unwrap(),
+        &mut pool.read_pool().acquire().await.unwrap(),
         report_card.id.as_str(),
         &restored_report,
     )
     .await;
 
     // W3 owns the real SQLite writer slot while R reads the last committed Equal evidence; R must park at BEGIN IMMEDIATE.
-    let mut w3 = pool.acquire().await.unwrap();
+    let mut w3 = pool.read_pool().acquire().await.unwrap();
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut *w3)
         .await
@@ -4988,7 +4988,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     let stale_after_w3: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(
@@ -5010,7 +5010,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced original\n\n");
     replace_context_report_snapshot(
-        &mut pool.acquire().await.unwrap(),
+        &mut pool.read_pool().acquire().await.unwrap(),
         report_card.id.as_str(),
         &restored_report,
     )
@@ -5022,7 +5022,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     let stale_after_r: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(stale_after_r, None, "R-first serialization must commit R");
@@ -5031,7 +5031,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
         json!("referenced material after R\n\n");
     replace_context_report_snapshot(
-        &mut pool.acquire().await.unwrap(),
+        &mut pool.read_pool().acquire().await.unwrap(),
         report_card.id.as_str(),
         &restored_report,
     )
@@ -5043,7 +5043,7 @@ async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open
     assert!(
         sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap()
             .is_some(),
@@ -5140,7 +5140,14 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
     blocks[0].payload["markdown"] = json!("referenced original\n\n");
     blocks[1].payload["ready"] = json!(false);
     replace_context_report_snapshot(
-        &mut boot.repo.sqlite_pool().unwrap().acquire().await.unwrap(),
+        &mut boot
+            .repo
+            .sqlite_db()
+            .unwrap()
+            .read_pool()
+            .acquire()
+            .await
+            .unwrap(),
         report_card.id.as_str(),
         &current,
     )
@@ -5154,7 +5161,7 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
     let row: (Option<i64>, i64) =
         sqlx::query_as("SELECT context_stale_at_ms,context_verify_failures FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert!(
@@ -5205,7 +5212,7 @@ async fn assert_excluded_root_field_vetoes_restore(
     let boot = boot().await;
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, key).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let (_, report_card, current) =
         resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
@@ -5215,7 +5222,7 @@ async fn assert_excluded_root_field_vetoes_restore(
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&prepared).unwrap())
         .bind(report_card.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
 
@@ -5240,7 +5247,7 @@ async fn assert_excluded_root_field_vetoes_restore(
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&restored).unwrap())
         .bind(report_card.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     if align_frozen_root {
@@ -5262,7 +5269,7 @@ async fn assert_excluded_root_field_vetoes_restore(
         let frozen_json: String =
             sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
                 .bind(&task_id)
-                .fetch_one(&pool)
+                .fetch_one(pool.read_pool())
                 .await
                 .unwrap();
         let mut frozen: Vec<TaskContextRef> = serde_json::from_str(&frozen_json).unwrap();
@@ -5274,7 +5281,7 @@ async fn assert_excluded_root_field_vetoes_restore(
         sqlx::query("UPDATE tasks SET claim_context_json=?1,decl_ready=0 WHERE id=?2")
             .bind(serde_json::to_string(&frozen).unwrap())
             .bind(&task_id)
-            .execute(&pool)
+            .execute(pool.writer_pool())
             .await
             .unwrap();
     }
@@ -5286,7 +5293,7 @@ async fn assert_excluded_root_field_vetoes_restore(
     assert!(
         sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap()
             .is_some(),
@@ -5334,10 +5341,10 @@ async fn released_by_user_withdrawal_vetoes_restore() {
     let key = "withdraw-release";
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, key).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("UPDATE tasks SET decl_released_by_user=1 WHERE id=?1")
         .bind(&task_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let (_, report_card, mut report) =
@@ -5348,7 +5355,7 @@ async fn released_by_user_withdrawal_vetoes_restore() {
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&report).unwrap())
         .bind(report_card.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     persist_context_report_body(
@@ -5371,7 +5378,7 @@ async fn released_by_user_withdrawal_vetoes_restore() {
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&restored).unwrap())
         .bind(report_card.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     monitor
@@ -5382,7 +5389,7 @@ async fn released_by_user_withdrawal_vetoes_restore() {
     assert!(
         sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap()
             .is_some(),
@@ -5406,17 +5413,17 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
         .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(stale.is_some());
     sqlx::query("UPDATE tasks SET context_verify_failures=2 WHERE id=?1")
         .bind(&task_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
 
@@ -5431,7 +5438,7 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
     let row: (Option<i64>, i64) =
         sqlx::query_as("SELECT context_stale_at_ms,context_verify_failures FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -5466,13 +5473,13 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
 async fn edit_then_byte_identical_revert_and_unrelated_doc_rev_do_not_mark_material() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "reverted").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.docRev', 4, \
          '$.blocks[0].rev', 4, '$.blocks[0].payload.command', 'temporary edit') \
          WHERE id = 'context-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     sqlx::query(
@@ -5480,7 +5487,7 @@ async fn edit_then_byte_identical_revert_and_unrelated_doc_rev_do_not_mark_mater
          '$.blocks[0].rev', 5, '$.blocks[0].payload.command', 'original contract') \
          WHERE id = 'context-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
 
@@ -5502,18 +5509,18 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
     monitor.sweep().await.unwrap();
     assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
 
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let card_id: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND kind = 'track-report'")
             .bind(boot.track_id.as_str())
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'replacement') WHERE id = ?1",
     )
     .bind(card_id)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
 
@@ -5528,7 +5535,7 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
             .bind(format!("{}:stale-once", boot.track_id))
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(stale.is_some());
@@ -5538,10 +5545,10 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
 async fn context_sweep_marks_material_when_closure_was_truncated() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "truncated-still-matches").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("UPDATE tasks SET context_closure_truncated = 1 WHERE id = ?1")
         .bind(format!("{}:truncated-still-matches", boot.track_id))
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
 
@@ -5577,19 +5584,19 @@ async fn context_sweep_marks_material_when_closure_was_truncated() {
 async fn malformed_stored_report_is_deterministic_and_marks_material_immediately() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "retryable-verify").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let task_id = format!("{}:retryable-verify", boot.track_id);
     sqlx::query(
         "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='context-report'",
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     monitor.sweep().await.unwrap();
     let row: (i64, Option<i64>) =
         sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(row.0, 0);
@@ -5601,11 +5608,11 @@ async fn malformed_stored_report_is_deterministic_and_marks_material_immediately
 async fn storage_unavailable_during_system_area_lookup_is_retryable() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "storage-retry").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let task_id = format!("{}:storage-retry", boot.track_id);
 
     sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     for expected in [(1, None), (2, None)] {
@@ -5614,7 +5621,7 @@ async fn storage_unavailable_during_system_area_lookup_is_retryable() {
             "SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1",
         )
         .bind(&task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
         assert_eq!(row, expected);
@@ -5624,14 +5631,14 @@ async fn storage_unavailable_during_system_area_lookup_is_retryable() {
     let row: (i64, Option<i64>) =
         sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(row.0, 0, "material winner clears the retry streak");
     assert!(row.1.is_some(), "third consecutive failure is material");
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
     sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
 }
@@ -5640,22 +5647,22 @@ async fn storage_unavailable_during_system_area_lookup_is_retryable() {
 async fn successful_context_verification_resets_retry_streak() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "storage-reset").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let task_id = format!("{}:storage-reset", boot.track_id);
     sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
     sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
     let row: (i64, Option<i64>) =
         sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(row, (0, None));
@@ -5691,7 +5698,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id
             payload: json!({"markdown": "will disappear"}),
         }]),
     };
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
@@ -5700,7 +5707,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id
     .bind(format!("deleted-report-{key}"))
     .bind(referenced.id.as_str())
     .bind(serde_json::to_string(&child_report).unwrap())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let root_report = TrackReportPayload {
@@ -5740,7 +5747,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id
     scheduler.schedule_track(boot.track_id.clone()).await;
     let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
         .bind(&task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     assert_ne!(frozen, "[]");
@@ -5756,7 +5763,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id
     ));
     sqlx::query("DELETE FROM tracks WHERE id = ?1")
         .bind(referenced.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let state = app_state_for_context_events(&boot);
@@ -5815,13 +5822,13 @@ async fn area_deleted_event_runs_context_sweep_end_to_end() {
 async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "recycled").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'new incarnation') \
          WHERE track_id = ?1 AND kind = 'track-report'",
     )
     .bind(boot.track_id.as_str())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     monitor
@@ -5835,13 +5842,13 @@ async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
 async fn referenced_block_deletion_is_material_even_without_changed_ids() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "deleted-ref").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks', json('[]')) \
          WHERE track_id = ?1 AND kind = 'track-report'",
     )
     .bind(boot.track_id.as_str())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     monitor
@@ -5856,7 +5863,7 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
     let boot = boot().await;
     let (monitor, task_id, _) =
         seed_production_report_context_fixture(&boot, "absent-same-id-restores").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let (_, report_card, original_report) =
         resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
             .await
@@ -5864,7 +5871,7 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
     let frozen_json: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     let frozen: Vec<TaskContextRef> = serde_json::from_str(&frozen_json).unwrap();
@@ -5883,7 +5890,7 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&deleted).unwrap())
         .bind(report_card.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     monitor
@@ -5898,7 +5905,7 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&original_report).unwrap())
         .bind(report_card.id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     monitor
@@ -5933,7 +5940,7 @@ async fn deleted_then_rebuilt_reference_keeps_known_identity_gap_stale() {
     let frozen_json: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
             .bind(&task_id)
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     let frozen: Vec<TaskContextRef> = serde_json::from_str(&frozen_json).unwrap();
@@ -5978,7 +5985,7 @@ async fn deleted_then_rebuilt_reference_keeps_known_identity_gap_stale() {
     assert!(
         sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
             .bind(&task_id)
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap()
             .is_some(),
@@ -6021,16 +6028,16 @@ async fn missing_frozen_context_is_material_and_terminal_index_is_cleaned() {
         )]
     );
 
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?1")
         .bind(&task_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
         .bind(task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     assert_eq!(count, 0, "terminal task cannot retain reverse-index rows");
@@ -6039,7 +6046,7 @@ async fn missing_frozen_context_is_material_and_terminal_index_is_cleaned() {
 #[tokio::test]
 async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let blocks: Vec<Value> = (0..5)
         .map(|index| {
             let markdown = if index == 4 {
@@ -6062,7 +6069,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
     )
     .bind(boot.track_id.as_str())
     .bind(json!({"docRev": 1, "blocks": blocks}).to_string())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let monitor =
@@ -6113,7 +6120,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
         }]})
         .to_string(),
     )
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     sqlx::query(
@@ -6123,7 +6130,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
         "id":"b_0000","kind":"prose","rev":1,
         "payload":{"markdown": format!("[foreign](neige://wave/{}#b_f000)", foreign_track.id)}
     }]}).to_string())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let error = monitor
@@ -6139,16 +6146,16 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     // Read-only codex tasks: 65 in flight at once is a state only readers reach (#2139 R2).
     let reader = FixtureTaskKind::Reader;
     let monitor = seed_frozen_context_fixture_of(&boot, "fanout-00", reader).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let frozen_json: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
             .bind(format!("{}:fanout-00", boot.track_id))
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     let payload: String =
         sqlx::query_scalar("SELECT payload FROM cards WHERE id = 'context-report'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     let mut report: TrackReportPayload = serde_json::from_str(&payload).unwrap();
@@ -6169,7 +6176,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     report.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
         .bind(serde_json::to_string(&report).unwrap())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let (_runtime, scheduler) = build_scheduler(&boot, vec![reader.adapter(&boot)]);
@@ -6178,7 +6185,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         "SELECT count(*) FROM tasks WHERE track_id = ?1 AND status != 'pending' ",
     )
     .bind(boot.track_id.as_str())
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     assert_eq!(
@@ -6204,7 +6211,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     report.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
         .bind(serde_json::to_string(&report).unwrap())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let cap_task = reader.row(&boot, "sweep-cap");
@@ -6217,7 +6224,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
         .bind(serde_json::to_string(&oversized).unwrap())
         .bind(cap_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -6269,9 +6276,9 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         .expect("sibling worker card");
     boot.card_role_cache
         .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     seed_runtime_session_in_pool(
-        &pool,
+        pool.read_pool(),
         sibling.id.as_str(),
         "sibling-session",
         "sibling-thread",
@@ -6520,7 +6527,7 @@ async fn dependent_task_is_claimed_by_its_own_worker() {
         boot.track_id.clone(),
     );
     seed_runtime_session_in_pool(
-        &boot.repo.sqlite_pool().unwrap(),
+        boot.repo.sqlite_db().unwrap().read_pool(),
         second_card.id.as_str(),
         "second-worker-session",
         "second-worker-thread",
@@ -6698,7 +6705,7 @@ async fn sweep_redrives_half_driven_operation() {
     );
 
     // Insert WITHOUT driving (bypasses `submit`'s inline drive).
-    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"));
+    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_db().expect("sqlite pool"));
     let (op_kind, payload) = build_worker_payload(&task).expect("payload");
     let payload_hash = stable_payload_hash(&payload).expect("hash");
     op_repo
@@ -6819,12 +6826,12 @@ async fn claim_aborts_when_dep_added_pre_claim() {
         plan_task(&boot.track_id, "prereq", TaskKind::Codex, &[]),
     )
     .await;
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let revised =
         sqlx::query("UPDATE tasks SET depends_on_json = ?1 WHERE id = ?2 AND status = 'pending'")
             .bind(json!(["prereq"]).to_string())
             .bind(&task_id)
-            .execute(&pool)
+            .execute(pool.writer_pool())
             .await
             .expect("revise pending row deps");
     assert_eq!(revised.rows_affected(), 1, "dep added while parked");
@@ -6971,9 +6978,9 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         .expect("sibling worker card");
     boot.card_role_cache
         .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     seed_runtime_session_in_pool(
-        &pool,
+        pool.read_pool(),
         sibling.id.as_str(),
         "sibling-session",
         "sibling-thread",
@@ -7074,9 +7081,9 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         .expect("forged sibling card");
     boot.card_role_cache
         .insert(sibling.id.clone(), CardRole::Worker, boot.track_id.clone());
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     seed_runtime_session_in_pool(
-        &pool,
+        pool.read_pool(),
         sibling.id.as_str(),
         "forged-session",
         "forged-thread",
@@ -7300,7 +7307,7 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_the_track() {
     .await;
 
     // A foreign operation already holds (codex-worker, task id) with a payload the scheduler can never hash-match.
-    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().expect("sqlite pool"));
+    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_db().expect("sqlite pool"));
     op_repo
         .insert_operation(
             "codex-worker",
@@ -7532,7 +7539,7 @@ async fn seed_child_parent(
         .bind(boot.track_id.as_str())
         .bind(closed.then(now_ms))
         .bind(child.id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
@@ -7544,7 +7551,7 @@ async fn seed_child_parent(
     sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
         .bind(child.id.as_str())
         .bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     (task_id, child.id.to_string())
@@ -7556,7 +7563,7 @@ async fn seed_child_task(boot: &Boot, child_id: &str, key: &str, status: TaskSta
          VALUES(?1,?2,?3,'codex','child work','{}',?4,'spec','in-wave',?5,?5)",
     )
     .bind(format!("{child_id}:{key}")).bind(child_id).bind(key).bind(status)
-    .bind(now_ms()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+    .bind(now_ms()).execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
 }
 
 #[tokio::test]
@@ -7590,10 +7597,10 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
     seed_task(&boot, task).await;
     sqlx::query("UPDATE tasks SET child_track_id='child-stamp' WHERE id=?1")
         .bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();
@@ -7638,11 +7645,11 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
             sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
                 .bind(child_track_id)
                 .bind(&id)
-                .execute(&boot.repo.sqlite_pool().unwrap())
+                .execute(boot.repo.sqlite_db().unwrap().writer_pool())
                 .await
                 .unwrap();
         }
-        let pool = boot.repo.sqlite_pool().unwrap();
+        let pool = boot.repo.sqlite_db().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
@@ -7706,7 +7713,7 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
     sqlx::query("UPDATE tasks SET gate_json=?1 WHERE track_id=?2")
         .bind(&gate_without_cwd)
         .bind(&child)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     scheduler
@@ -7719,7 +7726,7 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
     assert_eq!(operation_count(&boot, "task-verify").await, 0);
     sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1")
         .bind(&child)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     scheduler
@@ -7760,7 +7767,7 @@ async fn acceptance_14_deleted_child_fails_its_parent() {
     let (task_id, child) = seed_child_parent(&boot, "deleted", false, None).await;
     sqlx::query("DELETE FROM tracks WHERE id=?1")
         .bind(&child)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     scheduler
@@ -7836,7 +7843,7 @@ async fn acceptance_18_success_flip_rechecks_closed_after_its_snapshot() {
     for mutation in ["delete", "reopen"] {
         let boot = boot().await;
         let (task_id, child) = seed_child_parent(&boot, mutation, true, None).await;
-        let pool = boot.repo.sqlite_pool().unwrap();
+        let pool = boot.repo.sqlite_db().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
@@ -7900,7 +7907,7 @@ async fn acceptance_18_incomplete_flip_rechecks_closed_after_its_snapshot() {
         let boot = boot().await;
         let (task_id, child) = seed_child_parent(&boot, mutation, true, None).await;
         seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
-        let pool = boot.repo.sqlite_pool().unwrap();
+        let pool = boot.repo.sqlite_db().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
@@ -7945,10 +7952,10 @@ async fn acceptance_18_incomplete_flip_rechecks_closed_after_its_snapshot() {
 async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
     let boot = boot().await;
     let (task_id, child) = seed_child_parent(&boot, "deleted", false, None).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("DELETE FROM tracks WHERE id=?1")
         .bind(&child)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
 
@@ -8032,10 +8039,10 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         TaskStatus::Running
     );
     assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let child_id: String = sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
         .bind(&task_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     let before_track = boot.repo.track_get(&child_id).await.unwrap().unwrap();
@@ -8051,10 +8058,10 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         .await
         .unwrap()
     };
-    let before_binding = binding(pool.clone(), child_id.clone()).await;
+    let before_binding = binding(pool.read_pool().clone(), child_id.clone()).await;
     let before_output: String =
         sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind='child-track'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     let mut proposed = before_track.workspace.clone();
@@ -8088,12 +8095,12 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         before_track.workspace
     );
     assert_eq!(
-        binding(pool.clone(), child_id.clone()).await,
+        binding(pool.read_pool().clone(), child_id.clone()).await,
         before_binding
     );
     let after_output: String =
         sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind='child-track'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -8103,7 +8110,7 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
 
     sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
         .bind(&task_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     scheduler.sweep_all().await;
@@ -8117,7 +8124,10 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
     assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
     assert_eq!(minted.load(Ordering::SeqCst), 1);
-    assert_eq!(binding(pool.clone(), child_id).await, before_binding);
+    assert_eq!(
+        binding(pool.read_pool().clone(), child_id).await,
+        before_binding
+    );
 }
 
 #[tokio::test]
@@ -8194,12 +8204,12 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     assert_eq!(row.running_deadline_ms, None);
     let child_id: String = sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
         .bind(&task_id)
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     let child_open: bool = sqlx::query_scalar("SELECT closed_at IS NULL FROM tracks WHERE id=?1")
         .bind(&child_id)
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert!(child_open, "a bootstrapped child stays open");
@@ -8208,7 +8218,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     // Crash point 2: bootstrap committed and running was stamped, but the caller did not observe completion.
     sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
         .bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     scheduler.sweep_all().await;
@@ -8218,13 +8228,13 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let idem: String = sqlx::query_scalar(
         "SELECT idempotency_key FROM operations WHERE kind='planner-harness-start'",
     )
-    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap();
     // The key carries a digest of the cwd the bootstrap was submitted with: stable for an unchanged path, moves when the path does.
     let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
         .bind(&child_id)
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     let bootstrap_key = |cwd: &str| {
@@ -8393,7 +8403,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             );
             sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
                 .bind(&task_id)
-                .execute(&boot.repo.sqlite_pool().unwrap())
+                .execute(boot.repo.sqlite_db().unwrap().writer_pool())
                 .await
                 .unwrap();
             let (detail, last_error) = if phase == "stuck" {
@@ -8412,14 +8422,14 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             .bind(detail)
             .bind(last_error)
             .bind(&task_id)
-            .execute(&boot.repo.sqlite_pool().unwrap())
+            .execute(boot.repo.sqlite_db().unwrap().writer_pool())
             .await
             .unwrap();
         } else {
             scheduler.schedule_track(boot.track_id.clone()).await;
             sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
                 .bind(&task_id)
-                .execute(&boot.repo.sqlite_pool().unwrap())
+                .execute(boot.repo.sqlite_db().unwrap().writer_pool())
                 .await
                 .unwrap();
             let (detail, last_error) = if phase == "stuck" {
@@ -8432,7 +8442,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             };
             sqlx::query("UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 WHERE kind='planner-harness-start'")
                 .bind(phase).bind(detail).bind(last_error)
-                .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+                .execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
         }
         scheduler.sweep_all().await;
         let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
@@ -8446,13 +8456,13 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             let child_id: String =
                 sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
                     .bind(&task_id)
-                    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+                    .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
                     .await
                     .unwrap();
             let child_closed: bool =
                 sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
                     .bind(&child_id)
-                    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+                    .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
                     .await
                     .unwrap();
             assert!(
@@ -8515,15 +8525,15 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
     sqlx::query("UPDATE cards SET payload=?1 WHERE track_id=?2 AND kind='track-report'")
         .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
         .bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json(?1)) WHERE track_id=?2 AND kind='track-report'")
         .bind(json!([{"id":"b_route","kind":"task","rev":2,"payload":{"key":"frozen-route","kind":"codex","goal":"changed","ready":true,"declared_by":"spec","spawn":"in-wave"}}]).to_string())
-        .bind(boot.track_id.as_str()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        .bind(boot.track_id.as_str()).execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
     sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
         .bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     scheduler.sweep_all().await;
@@ -8593,7 +8603,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
         "UPDATE cards SET payload=json_set(payload,'$.docRev',2, \
          '$.blocks[0].rev',2,'$.blocks[0].payload.spawn','in-wave') WHERE id='live-route-report'",
     )
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .unwrap();
     resume.notify_one();
@@ -8627,7 +8637,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     sqlx::query("UPDATE tasks SET spawn='sub-track' WHERE id=?1 AND status='pending'")
         .bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     drop(permit);
@@ -8692,12 +8702,12 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     scheduler.sweep_all().await;
     let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(before, after);
@@ -8708,7 +8718,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let operation_phase: String = sqlx::query_scalar(
         "SELECT phase FROM operations WHERE kind='child-track' ORDER BY created_at_ms DESC LIMIT 1",
     )
-    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap();
     assert_eq!(
@@ -8736,7 +8746,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let index_rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id=?1")
             .bind(&task_id)
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(
@@ -8759,7 +8769,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
     let task_id = task.id.clone();
     let payload = build_child_track_payload(&task).unwrap();
     seed_task(&boot, task).await;
-    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_db().unwrap());
     let op_id = op_repo
         .insert_operation(
             "child-track",
@@ -8773,7 +8783,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
         .await
         .unwrap();
     sqlx::query("UPDATE operations SET phase='failed',last_error='sub-track-depth-exceeded',phase_detail_json='{}' WHERE id=?1")
-        .bind(op_id).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        .bind(op_id).execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
     let child_adapter = Arc::new(ChildTrackAdapter::new(
         boot.card_role_cache.clone(),
         boot.track_area_cache.clone(),
@@ -9236,7 +9246,7 @@ async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
 
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
     let op_id = operation_repo
         .insert_operation(
@@ -9272,7 +9282,7 @@ async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
     )
     .bind(serde_json::to_string(&output).unwrap())
     .bind(&op_id)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();
@@ -9340,7 +9350,7 @@ async fn seed_parked_gate_op(
     dir: &std::path::Path,
     artifacts: &calm_server::operation::SpawnArtifacts,
 ) -> String {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
     let op_id = operation_repo
         .insert_operation(
@@ -9376,7 +9386,7 @@ async fn seed_parked_gate_op(
     )
     .bind(serde_json::to_string(&output).unwrap())
     .bind(&op_id)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();
@@ -9640,7 +9650,7 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
 
     // Drive the REAL adapter's spawn by hand so the test owns the observer future the runtime would otherwise
     // detach, then ABORT it mid-`wait()`.
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
     let op_id = operation_repo
         .insert_operation(
@@ -9676,7 +9686,7 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     )
     .bind(serde_json::to_string(&output).unwrap())
     .bind(&op_id)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     let op = operation_repo.get_operation(&op_id).await.unwrap().unwrap();

@@ -166,7 +166,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
             resume.notified().await;
         })
     }));
-    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let mut daemon = DaemonClient::new_stub();
     daemon.proc_supervisor_sock = Some(sock);
     let daemon = Arc::new(daemon);
@@ -272,7 +272,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
             .await
             .unwrap(),
         );
-        let reboot_ops = Arc::new(SqlxOperationRepo::new(reboot_repo.pool().clone()));
+        let reboot_ops = Arc::new(SqlxOperationRepo::new(reboot_repo.db().clone()));
         let events = crate::event::EventBus::new();
         let state = crate::state::AppState::from_parts(
             reboot_repo.clone(),
@@ -500,7 +500,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
         plugin_results: Arc::new(crate::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
-        sqlite_pool: crate::db::Repo::sqlite_pool(harness.repo.as_ref()),
+        sqlite_db: crate::db::Repo::sqlite_db(harness.repo.as_ref()),
         gate_run_wait: crate::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let report = if expected == crate::model::TaskStatus::Failed {

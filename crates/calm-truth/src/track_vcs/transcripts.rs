@@ -186,14 +186,14 @@ async fn inputs_are_current(
 /// Production event bodies are immutable; replay's destructive reset runs without background tasks.
 /// Sustained hook/visibility churn exhausts a finite retry budget and leaves HEAD unchanged.
 pub async fn snapshot_transcripts_for_cards_in_track(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     track_id: &TrackId,
     event_id: Option<i64>,
     manifest_schema_version: i64,
 ) -> Result<CommitHash> {
     let mut prepared = HashMap::new();
     for _ in 0..PREPARATION_ATTEMPTS {
-        prepare(pool, track_id, &mut prepared).await?;
+        prepare(pool.read_pool(), track_id, &mut prepared).await?;
         #[cfg(test)]
         super::transcript_writer_tests::at_phase(
             super::transcript_writer_tests::Phase::BeforeWrite,

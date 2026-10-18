@@ -24,7 +24,7 @@ impl SqlxRepo {
         .await;
         // The shared source writer owns retry/cancellation, not begin_immediate_tx's
         // bounded retry loop. A failed BEGIN owns no transaction and is safe to retry.
-        let mut tx = match begin_immediate_tx_once(&self.pool).await {
+        let mut tx = match begin_immediate_tx_once(&self.db).await {
             Ok(tx) => tx,
             Err(e) => {
                 #[cfg(feature = "fixtures")]
@@ -150,7 +150,7 @@ where
 /// cannot produce (liveness tests stand a cursor in the past). Writes no items; not on `Repo`.
 #[cfg(any(test, feature = "fixtures"))]
 pub async fn worker_flow_cursor_set_for_test(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     card_id: &str,
     source_kind: &str,
     position: &calm_exec::flow::CapturePosition,

@@ -178,7 +178,7 @@ async fn insert_spawn_started_forge_action(boot: &Boot, track_id: &str, idem: &s
         result_path: boot.tmp.path().join(format!("{idem}.result.json")),
         deadline_ms: now_ms() + 60_000,
     };
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let operation_repo = SqlxOperationRepo::new(pool.clone());
     let op_id = operation_repo
         .insert_operation(
@@ -194,18 +194,18 @@ async fn insert_spawn_started_forge_action(boot: &Boot, track_id: &str, idem: &s
         .expect("insert forge action");
     sqlx::query("UPDATE operations SET phase = 'spawn_started' WHERE id = ?1")
         .bind(&op_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .expect("mark forge action active");
     op_id
 }
 
 async fn set_operation_phase(boot: &Boot, op_id: &str, phase: &str) {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     sqlx::query("UPDATE operations SET phase = ?1 WHERE id = ?2")
         .bind(phase)
         .bind(op_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .expect("set operation phase");
 }

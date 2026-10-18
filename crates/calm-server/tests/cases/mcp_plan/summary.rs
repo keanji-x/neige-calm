@@ -13,7 +13,7 @@ async fn plan_list_projects_stored_start_in_summary_and_full() {
     // A live attempt must retain the same stored start as a pending one.
     sqlx::query("UPDATE tasks SET status = 'running' WHERE key = 'upstream' AND track_id = ?1")
         .bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     for args in [
@@ -168,10 +168,10 @@ async fn plan_list_summary_same_track_only() {
         json!({"key":"same", "kind":"codex", "goal":"local"}),
     )
     .await;
-    let pool = local.repo.sqlite_pool().unwrap();
+    let pool = local.repo.sqlite_db().unwrap();
     for key in ["same", "foreign-only"] {
         sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex','foreign','{}','pending',1,1)")
-            .bind(format!("{}:{key}",foreign.id)).bind(foreign.id.as_str()).bind(key).execute(&pool).await.unwrap();
+            .bind(format!("{}:{key}",foreign.id)).bind(foreign.id.as_str()).bind(key).execute(pool.writer_pool()).await.unwrap();
     }
     let missing = call_tool(
         &local,

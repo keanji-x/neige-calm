@@ -583,7 +583,7 @@ mod tests {
             })
             .await
             .expect("create track");
-        let mut tx = begin_immediate_tx(repo.pool())
+        let mut tx = begin_immediate_tx(repo.db())
             .await
             .expect("begin transaction");
         sqlx::query(

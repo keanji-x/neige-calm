@@ -4,7 +4,7 @@ async fn admin_boot() -> Boot {
     let boot = boot().await;
     sqlx::query("UPDATE tracks SET plugin_scope = NULL WHERE id = ?1")
         .bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     boot
@@ -95,7 +95,7 @@ async fn grant_admin_answer_rechecks_eligibility() {
         let id = request_admin(&boot).await;
         sqlx::query(&format!("UPDATE tracks SET {change} WHERE id = ?1"))
             .bind(boot.track_id.as_str())
-            .execute(&boot.repo.sqlite_pool().unwrap())
+            .execute(boot.repo.sqlite_db().unwrap().writer_pool())
             .await
             .unwrap();
         assert_eq!(

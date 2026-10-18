@@ -240,7 +240,7 @@ async fn boot_with_scope(
         .await
         .unwrap();
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        &repo.sqlite_pool().unwrap(),
+        &repo.sqlite_db().unwrap(),
         NewTrack {
             template_input: None,
             area_id: area.id.clone(),
@@ -373,7 +373,7 @@ async fn boot_with_scope(
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
@@ -385,12 +385,12 @@ async fn boot_with_scope(
         scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
         // Unstarted: reads record their `enqueue` outcomes and the series tests run the recorded jobs by hand.
         series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
-            repo.sqlite_pool(),
+            repo.sqlite_db(),
         )),
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 
@@ -1110,7 +1110,7 @@ async fn historical_task_context_advanced_payload_survives_events_since() {
     .bind(json!({"task_id":"historical-task","verdict":"material"}).to_string())
     .bind(serde_json::to_string(&calm_server::ids::ActorId::Kernel).unwrap())
     .bind(boot.track_id.as_str())
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .unwrap();
     let rows = boot.repo.events_since(0, i64::MAX).await.unwrap();

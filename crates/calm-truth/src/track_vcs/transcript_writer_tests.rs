@@ -73,7 +73,7 @@ impl Pause {
 }
 pub(super) type Refresh = tokio::task::JoinHandle<crate::error::Result<CommitHash>>;
 pub(super) fn start(
-    pool: sqlx::SqlitePool,
+    pool: crate::db::sqlite::SqliteDb,
     track: crate::ids::TrackId,
     steps: Vec<Phase>,
 ) -> (Arc<Pause>, Refresh) {
@@ -213,7 +213,7 @@ impl Fixture {
     }
     pub(super) async fn refresh(&self) -> CommitHash {
         snapshot_transcripts_for_cards_in_track(
-            self.repo.pool(),
+            self.repo.db(),
             &self.track.id,
             None,
             MANIFEST_SCHEMA_VERSION,
@@ -244,13 +244,9 @@ async fn transcript_refresh_allows_unrelated_writer_during_hook_interpretation()
         .await
         .unwrap();
     let parent = head(repo.pool(), &track.id).await.unwrap().unwrap();
-    let (pause, refresh) = start(
-        repo.pool().clone(),
-        track.id.clone(),
-        vec![Phase::Interpret],
-    );
+    let (pause, refresh) = start(repo.db().clone(), track.id.clone(), vec![Phase::Interpret]);
     let entered = tokio::time::timeout(Duration::from_secs(10), pause.entered.notified()).await;
-    let pool = repo.pool().clone();
+    let pool = repo.db().clone();
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_transcript_writer_probe (value) VALUES (1)")

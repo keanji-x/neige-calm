@@ -59,10 +59,10 @@ pub(crate) async fn list_mentions(
         .area_get(&area_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("area {area_id}")))?;
-    let pool = s.mcp_context.sqlite_pool.as_ref().ok_or_else(|| {
+    let pool = s.mcp_context.sqlite_db.as_ref().ok_or_else(|| {
         CalmError::Internal("mentions: route requires a sqlite-backed repo".into())
     })?;
-    let reports = area_reports::outlines(pool, &area_id).await?;
+    let reports = area_reports::outlines(pool.read_pool(), &area_id).await?;
     Ok(Json(rank::candidates(
         &reports,
         &query.q,

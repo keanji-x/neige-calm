@@ -555,7 +555,7 @@ async fn head_manifest(repo: &SqlxRepo, track_id: &TrackId) -> track_vcs::TreeMa
 
 async fn refresh_transcripts(repo: &SqlxRepo, track_id: &TrackId) -> track_vcs::CommitHash {
     track_vcs::snapshot_transcripts_for_cards_in_track(
-        repo.pool(),
+        repo.db(),
         track_id,
         None,
         MANIFEST_SCHEMA_VERSION,
@@ -961,7 +961,7 @@ async fn next_commit_after_legacy_eventless_card_lens_manifest_rewrites_dotfile_
         json!({"schemaVersion": 1, "idempotency_key": "eventless-legacy-paths"}),
     )
     .await;
-    let backfilled = track_vcs::backfill_existing_tracks(repo.pool())
+    let backfilled = track_vcs::backfill_existing_tracks(repo.db())
         .await
         .expect("backfill");
     assert_eq!(backfilled, 1);
@@ -1231,7 +1231,7 @@ async fn track_delete_cascades_refs_and_commits_but_leaves_objects() {
     let (roles, _areas, _write) = write_context();
     insert_raw_report_card(&repo, &roles, &track.id).await;
 
-    let backfilled = track_vcs::backfill_existing_tracks(repo.pool())
+    let backfilled = track_vcs::backfill_existing_tracks(repo.db())
         .await
         .expect("backfill");
     assert_eq!(backfilled, 1);
@@ -1265,7 +1265,7 @@ async fn object_sweep_deletes_old_orphans_but_keeps_fresh_ones() {
     set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
     set_vcs_object_created_at(repo.pool(), &fresh_hash, now_ms()).await;
 
-    let deleted = track_vcs::sweep_unreferenced_objects_once(repo.pool())
+    let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep objects");
 
@@ -1286,7 +1286,7 @@ async fn object_sweep_keeps_objects_referenced_by_live_commits() {
     assert!(before > 0);
 
     set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
-    let deleted = track_vcs::sweep_unreferenced_objects_once(repo.pool())
+    let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep objects");
 
@@ -1322,7 +1322,7 @@ async fn object_sweep_reports_corrupt_tree_object_hash() {
         .await
         .expect("corrupt tree object");
 
-    let err = track_vcs::sweep_unreferenced_objects_once(repo.pool())
+    let err = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect_err("corrupt tree manifest fails closed");
 
@@ -1365,7 +1365,7 @@ async fn object_sweep_keeps_blob_shared_by_deleted_and_live_tracks() {
         .await
         .expect("delete track");
     set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
-    let deleted = track_vcs::sweep_unreferenced_objects_once(repo.pool())
+    let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep objects");
 
@@ -1409,7 +1409,7 @@ async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
     let update_track_id = live_track.id.clone();
 
     let sweep = tokio::spawn(async move {
-        track_vcs::sweep_unreferenced_objects_once(sweep_repo.pool())
+        track_vcs::sweep_unreferenced_objects_once(sweep_repo.db())
             .await
             .expect("sweep objects")
     });
@@ -1517,13 +1517,13 @@ async fn backfill_is_idempotent_and_uses_null_event_id_for_eventless_track() {
     insert_raw_report_card(&repo, &roles, &track.id).await;
 
     assert_eq!(
-        track_vcs::backfill_existing_tracks(repo.pool())
+        track_vcs::backfill_existing_tracks(repo.db())
             .await
             .unwrap(),
         1
     );
     assert_eq!(
-        track_vcs::backfill_existing_tracks(repo.pool())
+        track_vcs::backfill_existing_tracks(repo.db())
             .await
             .unwrap(),
         0
@@ -1559,7 +1559,7 @@ async fn backfilled_eventless_cards_survive_incremental_index_rerenders() {
     .await;
 
     assert_eq!(
-        track_vcs::backfill_existing_tracks(repo.pool())
+        track_vcs::backfill_existing_tracks(repo.db())
             .await
             .unwrap(),
         1
@@ -2186,7 +2186,7 @@ async fn transcript_refresh_includes_backfilled_inherited_cards() {
     )
     .await;
     assert_eq!(
-        track_vcs::backfill_existing_tracks(repo.pool())
+        track_vcs::backfill_existing_tracks(repo.db())
             .await
             .expect("backfill"),
         1
@@ -2436,7 +2436,7 @@ async fn snapshot_transcripts_helper_produces_live_identical_blobs() {
     }
 
     let commit = track_vcs::snapshot_transcripts_for_cards_in_track(
-        repo.pool(),
+        repo.db(),
         &track.id,
         None,
         MANIFEST_SCHEMA_VERSION,
@@ -2519,7 +2519,7 @@ async fn snapshot_transcripts_helper_is_deterministic_noop_on_unchanged() {
     }
 
     let first = track_vcs::snapshot_transcripts_for_cards_in_track(
-        repo.pool(),
+        repo.db(),
         &track.id,
         None,
         MANIFEST_SCHEMA_VERSION,
@@ -2532,7 +2532,7 @@ async fn snapshot_transcripts_helper_is_deterministic_noop_on_unchanged() {
         .expect("first commit");
 
     let second = track_vcs::snapshot_transcripts_for_cards_in_track(
-        repo.pool(),
+        repo.db(),
         &track.id,
         None,
         MANIFEST_SCHEMA_VERSION,

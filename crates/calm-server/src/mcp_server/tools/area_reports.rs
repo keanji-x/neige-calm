@@ -73,8 +73,9 @@ fn require_planner(identity: &ToolCallIdentity) -> Result<(), RpcError> {
 }
 
 fn pool(ctx: &AppContext) -> Result<&sqlx::SqlitePool, RpcError> {
-    ctx.sqlite_pool
+    ctx.sqlite_db
         .as_ref()
+        .map(crate::db::sqlite::SqliteDb::read_pool)
         .ok_or_else(|| RpcError::internal("area reports: requires a sqlite-backed repo"))
 }
 

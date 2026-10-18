@@ -40,7 +40,7 @@ pub(super) async fn finish(boot: &Boot, task: &Task, success: bool) {
         .resolve_task_closure(task.track_id.as_str(), &task.key)
         .await
         .unwrap();
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     assert_eq!(
         task_claim_pending_tx(
@@ -110,7 +110,7 @@ pub(super) async fn time_out_claimed_worker_holding_lease(
     lease_id: &str,
 ) -> Task {
     let task = current(boot, key).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let card_id = boot.worker_card_id.as_str().to_string();
     let track_id = boot.track_id.as_str().to_string();
     let now = calm_server::model::now_ms();

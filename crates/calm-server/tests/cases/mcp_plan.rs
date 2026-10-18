@@ -152,7 +152,7 @@ async fn boot() -> Boot {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
@@ -168,7 +168,7 @@ async fn boot() -> Boot {
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 
@@ -252,8 +252,11 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
 
 /// Direct SQL escape hatch for states the tool surface cannot produce.
 async fn exec_sql(boot: &Boot, sql: &str) {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    sqlx::query(sql).execute(&pool).await.expect("exec sql");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
+    sqlx::query(sql)
+        .execute(pool.writer_pool())
+        .await
+        .expect("exec sql");
 }
 
 async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
@@ -276,10 +279,10 @@ async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
 /// Count surviving `tasks` rows directly: after a track/area delete the repo read path would
 /// trivially return empty.
 async fn task_row_count(boot: &Boot) -> i64 {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE track_id = ?1")
         .bind(boot.track_id.as_str())
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .expect("count tasks");
     count
@@ -300,10 +303,10 @@ async fn drain_events(
 
 /// Snapshot every SQLite table with `quote()`d values in deterministic order for exact before/after comparison.
 async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let tables: Vec<String> =
         sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            .fetch_all(&pool)
+            .fetch_all(pool.read_pool())
             .await
             .expect("list persistent tables");
     let mut snapshot = BTreeMap::new();
@@ -311,7 +314,7 @@ async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
         let columns: Vec<String> =
             sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
                 .bind(&table)
-                .fetch_all(&pool)
+                .fetch_all(pool.read_pool())
                 .await
                 .unwrap_or_else(|error| panic!("inspect table {table}: {error}"));
         let quoted_columns = columns
@@ -322,7 +325,7 @@ async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
         let quoted_table = table.replace('"', "\"\"");
         let sql = format!("SELECT json_array({quoted_columns}) FROM \"{quoted_table}\" ORDER BY 1");
         let rows = sqlx::query_scalar(&sql)
-            .fetch_all(&pool)
+            .fetch_all(pool.read_pool())
             .await
             .unwrap_or_else(|error| panic!("snapshot table {table}: {error}"));
         snapshot.insert(table, rows);
@@ -349,11 +352,11 @@ async fn migration_0041_new_track_defaults_gates_on() {
         })
         .await
         .expect("fresh track");
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let require_gates: i64 =
         sqlx::query_scalar("SELECT require_task_gates FROM tracks WHERE id = ?1")
             .bind(fresh.id.as_str())
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .expect("read track policy column");
     assert_eq!(
@@ -376,11 +379,11 @@ async fn track_patch_persists_require_task_gates() {
         .await
         .expect("patch persists");
 
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let require_gates: i64 =
         sqlx::query_scalar("SELECT require_task_gates FROM tracks WHERE id = ?1")
             .bind(boot.track_id.as_str())
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(require_gates, 0);
@@ -654,7 +657,7 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
     )
     .await;
     let task_id = format!("{}:race", boot.track_id);
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let task_id_for_hook = task_id.clone();
     let mut rx = boot.ctx.events.subscribe();
 
@@ -665,7 +668,7 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
         move || async move {
             sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
                 .bind(task_id_for_hook)
-                .execute(&pool)
+                .execute(pool.writer_pool())
                 .await
                 .expect("advance task after cancel pre-read");
         },
@@ -821,7 +824,7 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
         .await
         .unwrap()
         .expect("task a projected");
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     assert_eq!(
         task_claim_pending_tx(&mut tx, &task.id, 10, &[], false)

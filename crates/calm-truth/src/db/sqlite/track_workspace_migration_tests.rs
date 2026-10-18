@@ -149,11 +149,11 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
          VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
-    .execute(&repo.pool)
+    .execute(repo.pool())
     .await
     .expect("seed area");
 
-    let mut tx = repo.pool.begin().await.expect("begin");
+    let mut tx = repo.pool().begin().await.expect("begin");
     let track = super::track_create_tx(
         &mut tx,
         crate::model::NewTrack {
@@ -189,7 +189,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id = ?1",
     )
     .bind(track.id.as_str())
-    .fetch_one(&repo.pool)
+    .fetch_one(repo.pool())
     .await
     .expect("read back");
     assert_eq!(row.0, "attached");
@@ -197,7 +197,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     assert_eq!(row.2, Some(track.created_at));
 
     // The latch lives at the bottom write, not at the route.
-    let mut tx = repo.pool.begin().await.expect("begin");
+    let mut tx = repo.pool().begin().await.expect("begin");
     let refused = super::track_workspace::track_workspace_write_tx(
         &mut tx,
         track.id.as_str(),
@@ -220,11 +220,11 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     // Registered in `tests/track_write_point_registry.rs`.
     sqlx::query("UPDATE tracks SET workspace_frozen_at = NULL WHERE id = ?1")
         .bind(track.id.as_str())
-        .execute(&repo.pool)
+        .execute(repo.pool())
         .await
         .expect("clear the freeze stamp");
 
-    let mut tx = repo.pool.begin().await.expect("begin");
+    let mut tx = repo.pool().begin().await.expect("begin");
     super::track_workspace::track_workspace_write_tx(
         &mut tx,
         track.id.as_str(),
@@ -243,7 +243,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id = ?1",
     )
     .bind(track.id.as_str())
-    .fetch_one(&repo.pool)
+    .fetch_one(repo.pool())
     .await
     .expect("read back");
     assert_eq!(row.0, "managed");
@@ -272,11 +272,11 @@ async fn track_update_tx_leaves_the_workspace_alone() {
         "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
          VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
-    .execute(&repo.pool)
+    .execute(repo.pool())
     .await
     .expect("seed area");
 
-    let mut tx = repo.pool.begin().await.expect("begin");
+    let mut tx = repo.pool().begin().await.expect("begin");
     let track = super::track_create_tx(
         &mut tx,
         crate::model::NewTrack {
@@ -326,12 +326,12 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
         "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
          VALUES ('area-1', 'c', '#000', 0, 1, 1)",
     )
-    .execute(&repo.pool)
+    .execute(repo.pool())
     .await
     .expect("seed area");
 
     const PATH: &str = "/home/kenji/neige-calm";
-    let mut tx = repo.pool.begin().await.expect("begin");
+    let mut tx = repo.pool().begin().await.expect("begin");
     let created = super::track_create_tx(
         &mut tx,
         crate::model::NewTrack {
@@ -356,14 +356,14 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
 
     let stored: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id = ?1")
         .bind(created.id.as_str())
-        .fetch_one(&repo.pool)
+        .fetch_one(repo.pool())
         .await
         .expect("read stored column");
     assert_eq!(stored, PATH);
 
     // `tracks.cwd` is gone — not shadowed, not defaulted, gone.
     let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('tracks')")
-        .fetch_all(&repo.pool)
+        .fetch_all(repo.pool())
         .await
         .expect("read table info");
     assert!(

@@ -41,7 +41,7 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         })
         .await
         .unwrap();
-    let pool = raw.sqlite_pool().unwrap();
+    let pool = raw.sqlite_db().unwrap();
     for (key, status, card_id) in [
         ("running", "running", card.id.as_str()),
         ("dispatched", "dispatched", card.id.as_str()),
@@ -56,7 +56,7 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
             (id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms)
             VALUES (?1,?2,?3,'codex','test','[]',?4,?5,'user',1,1)")
             .bind(format!("{}:{key}", track.id)).bind(track.id.as_str()).bind(key)
-            .bind(status).bind(card_id).execute(&pool).await.unwrap();
+            .bind(status).bind(card_id).execute(pool.writer_pool()).await.unwrap();
     }
     // A released recovery allocation preserves its failed predecessor.
     use calm_types::task_recovery::{TaskAttemptOrigin, TaskRecoveryConstraint};
@@ -87,13 +87,13 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
     .bind(&next_id)
     .bind(track.id.as_str())
     .bind(serde_json::to_string(&origin).unwrap())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     sqlx::query("INSERT INTO tasks
         (id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms)
         VALUES (?1,?2,'failed','codex','test','[]','running','another-card','user',2,2)")
-        .bind(&next_id).bind(track.id.as_str()).execute(&pool).await.unwrap();
+        .bind(&next_id).bind(track.id.as_str()).execute(pool.writer_pool()).await.unwrap();
     let current = raw
         .task_current_get(track.id.as_str(), "failed")
         .await
@@ -110,7 +110,7 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         .bind(format!("{}:{key}", track.id))
         .bind(track.id.as_str())
         .bind(key)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     }
@@ -130,13 +130,13 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
     sqlx::query("UPDATE operations SET target_type='card',target_id=?1 WHERE id=?2")
         .bind(card.id.as_str())
         .bind(op.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let app = build_app(state.clone());
     // A failed deletion must roll back task status and its events as well.
     sqlx::query("CREATE TRIGGER refuse_card_delete BEFORE DELETE ON cards BEGIN SELECT RAISE(ABORT, 'test delete failure'); END")
-        .execute(&pool).await.unwrap();
+        .execute(pool.writer_pool()).await.unwrap();
     let refused = app
         .clone()
         .oneshot(
@@ -153,19 +153,19 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         "SELECT COUNT(*) FROM tasks WHERE worker_card_id=?1 AND status IN ('running','dispatched')",
     )
     .bind(card.id.as_str())
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     assert_eq!(active, 2);
     let events: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM events WHERE kind IN ('task.failed','card.deleted')",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     assert_eq!(events, 0);
     sqlx::query("DROP TRIGGER refuse_card_delete")
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let resp = app
@@ -196,7 +196,7 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         let row: (String, Option<String>, Option<i64>) =
             sqlx::query_as("SELECT status,status_detail,finished_at_ms FROM tasks WHERE id=?1")
                 .bind(format!("{}:{key}", track.id))
-                .fetch_one(&pool)
+                .fetch_one(pool.read_pool())
                 .await
                 .unwrap();
         assert_eq!(row.0, expected, "task {key}");
@@ -209,7 +209,7 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         }
     }
     let failures: Vec<(String, String, String)> = sqlx::query_as("SELECT json_extract(payload,'$.idempotency_key'),actor,scope_track FROM events WHERE kind='task.failed' ORDER BY id")
-        .fetch_all(&pool).await.unwrap();
+        .fetch_all(pool.read_pool()).await.unwrap();
     assert_eq!(failures.len(), 3);
     for (task_id, actor, scope) in failures {
         assert!(
@@ -224,12 +224,12 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         assert_eq!(scope, track.id.as_str());
     }
     let delete_event: i64 = sqlx::query_scalar("SELECT id FROM events WHERE kind='card.deleted'")
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     let last_failure: i64 =
         sqlx::query_scalar("SELECT MAX(id) FROM events WHERE kind='task.failed'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(last_failure < delete_event);
@@ -245,7 +245,7 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         .unwrap();
     assert_eq!(repeat.status(), StatusCode::NOT_FOUND);
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='task.failed'")
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     assert_eq!(count, 3);

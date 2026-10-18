@@ -207,8 +207,13 @@ pub(crate) async fn is_deferred_self_report(repo: &dyn crate::db::Repo, event: &
         } => (idempotency_key, true),
         _ => return false,
     };
-    if !is_failure && let Some(pool) = repo.sqlite_pool() {
-        match crate::git_candidate::delivery::attempt_has_delivery(&pool, idempotency_key).await {
+    if !is_failure && let Some(pool) = repo.sqlite_db() {
+        match crate::git_candidate::delivery::attempt_has_delivery(
+            pool.read_pool(),
+            idempotency_key,
+        )
+        .await
+        {
             Ok(true) => return true,
             Ok(false) => {}
             Err(e) => {
@@ -329,7 +334,7 @@ fn dispatcher_operation_runtime(
 ) -> Arc<OperationRuntime> {
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(
-        repo.sqlite_pool()
+        repo.sqlite_db()
             .expect("Dispatcher operation runtime requires a sqlite-backed Repo"),
     ));
     let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(

@@ -370,7 +370,7 @@ async fn boot_fixture() -> Fixture {
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
     wait_for_running(&plugin_host).await;
 
-    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
@@ -551,7 +551,7 @@ async fn insert_workspace_lease(
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    let mut tx = begin_immediate_tx(repo.pool())
+    let mut tx = begin_immediate_tx(repo.db())
         .await
         .expect("begin runtime tx");
     let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)

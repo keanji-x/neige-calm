@@ -1836,7 +1836,7 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
             peak_in_flight.fetch_max(now, Ordering::SeqCst);
 
             let outcome = async {
-                let mut tx = calm_server::db::sqlite::begin_immediate_tx(repo.pool())
+                let mut tx = calm_server::db::sqlite::begin_immediate_tx(repo.db())
                     .await
                     .expect("BEGIN IMMEDIATE must not fail");
                 let started = session_start_runtime_tx(

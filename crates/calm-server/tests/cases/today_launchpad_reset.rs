@@ -185,7 +185,7 @@ async fn launchpad_with_data_blocks(b: &Boot) -> (String, Vec<String>) {
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
         .await
         .unwrap();
     let claimed_rows =

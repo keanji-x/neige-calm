@@ -111,13 +111,13 @@ async fn frontier<'e>(executor: impl Executor<'e, Database = Sqlite>) -> Result<
     )
 }
 pub(super) async fn prune(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     horizon: i64,
     batch: i64,
     deleted: &mut u64,
     batches: &mut u64,
 ) -> Result<()> {
-    let mut observed = Observation::initial(pool).await?;
+    let mut observed = Observation::initial(pool.read_pool()).await?;
     let pass_frontier = observed.frontier;
     let batch_size = usize::try_from(batch)
         .map_err(|_| CalmError::Internal("overlay retention batch is out of range".into()))?;
@@ -129,7 +129,7 @@ pub(super) async fn prune(
             .bind(pass_frontier)
             .bind(horizon)
             .bind(SCAN_PAGE_SIZE)
-            .fetch_all(pool)
+            .fetch_all(pool.read_pool())
             .await?;
         let Some(last) = rows.last() else {
             if !pending.is_empty() {
@@ -159,7 +159,7 @@ pub(super) async fn prune(
     }
 }
 async fn flush(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     horizon: i64,
     candidates: Vec<Candidate>,
     observed: &mut Observation,
@@ -167,7 +167,7 @@ async fn flush(
     batches: &mut u64,
 ) -> Result<bool> {
     for _ in 0..VALIDATION_ATTEMPTS {
-        observed.refresh_tail(pool).await?;
+        observed.refresh_tail(pool.read_pool()).await?;
         let mut witnesses = BTreeMap::new();
         let ids: Vec<_> = candidates
             .iter()

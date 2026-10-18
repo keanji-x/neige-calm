@@ -18,7 +18,7 @@ async fn long_task_gate_uses_released_worker_checkout() {
     sqlx::query("INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, lease_until_ms, created_at_ms, updated_at_ms) VALUES ('checkout', ?1, ?2, ?3, 'released', 'test', 1, 1, 1)")
         .bind(checkout.path().to_str().unwrap())
         .bind(boot.worker_card_id.as_str()).bind(boot.track_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(TaskVerifyAdapter::new(
@@ -116,7 +116,7 @@ async fn long_task_missing_worker_checkout_never_falls_back() {
             sqlx::query("INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, created_at_ms, updated_at_ms) VALUES ('missing', ?1, ?2, ?3, 'released', 'test', 1, 1)")
                 .bind(shared.path().join("missing-checkout").to_str().unwrap())
                 .bind(boot.worker_card_id.as_str()).bind(boot.track_id.as_str())
-                .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+                .execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
         }
         let (_runtime, scheduler) = build_scheduler(
             &boot,
@@ -156,7 +156,7 @@ async fn long_task_terminal_gate_uses_frozen_spawn_cwd() {
     output.data = json!({"cwd": checkout.path()});
     sqlx::query("UPDATE operations SET phase = 'succeeded', tx_output_json = ?1 WHERE kind = 'terminal-worker' AND idempotency_key = ?2")
         .bind(serde_json::to_string(&output).unwrap()).bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(TaskVerifyAdapter::new(

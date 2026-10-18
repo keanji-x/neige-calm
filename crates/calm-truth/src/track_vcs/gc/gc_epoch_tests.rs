@@ -21,7 +21,7 @@ pub(super) async fn replace_commit(
     parent: Option<&str>,
     tree: &str,
 ) -> Result<()> {
-    let mut tx = begin_immediate_tx(f.repo.pool()).await?;
+    let mut tx = begin_immediate_tx(f.repo.db()).await?;
     let result = sqlx::query(concat!(
         "INSERT OR REPLACE INTO track_vcs_commits ",
         "(hash,track_id,parent_hash,tree_hash,manifest_schema_version,message,created_at) ",
@@ -66,7 +66,7 @@ async fn gc_epoch_public_same_tree_checkpoint_keeps_history_and_epoch() {
 async fn gc_epoch_same_head_metadata_update_changes_metadata_without_invalidation() {
     let f = Fixture::new().await;
     let before = epoch(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query("UPDATE track_vcs_refs SET updated_event_id=42 WHERE track_id=?1")
         .bind(f.track.as_str())
         .execute(&mut **tx)
@@ -106,7 +106,7 @@ async fn gc_epoch_nonqualifying_commit_insertions_invalidate() {
         .await
         .unwrap();
         if case == "parent-track" {
-            let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+            let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
             sqlx::query("UPDATE track_vcs_commits SET track_id='other-track' WHERE hash=?1")
                 .bind(&f.commit)
                 .execute(&mut **tx)
@@ -151,7 +151,7 @@ async fn gc_epoch_nonqualifying_commit_insertions_invalidate() {
 async fn gc_epoch_new_ref_root_and_ref_track_move_invalidate() {
     let f = Fixture::new().await;
     let before = epoch(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query("INSERT INTO track_vcs_refs(track_id,head_hash) VALUES('new-root',?1)")
         .bind(&f.commit)
         .execute(&mut **tx)
@@ -160,7 +160,7 @@ async fn gc_epoch_new_ref_root_and_ref_track_move_invalidate() {
     tx.commit().await.unwrap();
     assert!(epoch(&f).await > before);
     let before = epoch(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query("UPDATE OR REPLACE track_vcs_refs SET track_id='new-root' WHERE track_id=?1")
         .bind(f.track.as_str())
         .execute(&mut **tx)
@@ -184,7 +184,7 @@ async fn gc_epoch_new_ref_root_and_ref_track_move_invalidate() {
 async fn gc_epoch_safe_prefix_rollback_preserves_data_and_epoch() {
     let f = Fixture::new().await;
     let before = epoch(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let child = track_vcs::commit_tree(
         &mut tx,
         &f.track,
@@ -246,7 +246,7 @@ async fn gc_epoch_safe_insert_and_ref_update_require_state_even_under_ignore() {
         .fetch_one(f.repo.pool())
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let error = track_vcs::commit_tree(
         &mut tx,
         &f.track,
@@ -282,7 +282,7 @@ async fn gc_epoch_safe_insert_and_ref_update_require_state_even_under_ignore() {
         "UPDATE OR IGNORE track_vcs_refs SET updated_event_id=42 WHERE track_id=?1",
         "UPDATE OR IGNORE track_vcs_refs SET head_hash='ready-prefix' WHERE track_id=?1",
     ] {
-        let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
         let error = sqlx::query(sql)
             .bind(f.track.as_str())
             .execute(&mut **tx)
@@ -326,7 +326,7 @@ async fn gc_epoch_unsafe_changes_at_max_abort_without_partial_source_mutation() 
         .await
         .unwrap();
     f.exhaust_revision().await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let error = track_vcs::commit_tree(
         &mut tx,
         &f.track,
@@ -358,7 +358,7 @@ async fn gc_epoch_unsafe_changes_at_max_abort_without_partial_source_mutation() 
             .to_string()
             .contains("GC revision must advance exactly once")
     );
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     let error = sqlx::query(
         "UPDATE OR IGNORE track_vcs_refs SET head_hash='unsafe-ready' WHERE track_id=?1",
     )

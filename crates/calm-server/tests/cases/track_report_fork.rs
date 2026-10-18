@@ -1500,7 +1500,7 @@ async fn planner_tool_channel(
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: boot.repo.sqlite_pool(),
+        sqlite_db: boot.repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let mut registry = ToolRegistry::new();
@@ -2215,7 +2215,7 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
         kind: "codex".into(),
         agent_message: None,
     };
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(side_repo.pool())
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(side_repo.db())
         .await
         .expect("begin probe-liveness tx");
     calm_server::db::sqlite::append_decision_event_in_tx(

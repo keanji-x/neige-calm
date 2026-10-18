@@ -45,8 +45,8 @@ fn worker_identity(boot: &support::track_file::Boot) -> ToolCallIdentity {
 #[tokio::test]
 async fn track_gc_dry_run_reports_without_deleting() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().expect("track vcs pool");
-    seed_linear_commits(&pool, &boot.track_id, 5).await;
+    let pool = boot.repo.sqlite_db().expect("track vcs pool");
+    seed_linear_commits(pool.read_pool(), &boot.track_id, 5).await;
 
     let result = call_tool(
         &boot,
@@ -62,15 +62,15 @@ async fn track_gc_dry_run_reports_without_deleting() {
     assert_eq!(result["dry_run"], json!(true));
     assert_eq!(result["pruned_commits"], json!(3));
     assert_eq!(result["swept_objects"], json!(0));
-    assert_eq!(commit_count(&pool, &boot.track_id).await, 5);
-    assert_eq!(object_count(&pool).await, 10);
+    assert_eq!(commit_count(pool.read_pool(), &boot.track_id).await, 5);
+    assert_eq!(object_count(pool.read_pool()).await, 10);
 }
 
 #[tokio::test]
 async fn track_gc_real_run_prunes_sweeps_and_is_idempotent() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().expect("track vcs pool");
-    seed_linear_commits(&pool, &boot.track_id, 5).await;
+    let pool = boot.repo.sqlite_db().expect("track vcs pool");
+    seed_linear_commits(pool.read_pool(), &boot.track_id, 5).await;
 
     let result = call_tool(
         &boot,
@@ -84,8 +84,8 @@ async fn track_gc_real_run_prunes_sweeps_and_is_idempotent() {
     assert_eq!(result["dry_run"], json!(false));
     assert_eq!(result["pruned_commits"], json!(3));
     assert_eq!(result["swept_objects"], json!(6));
-    assert_eq!(commit_count(&pool, &boot.track_id).await, 2);
-    assert_eq!(object_count(&pool).await, 4);
+    assert_eq!(commit_count(pool.read_pool(), &boot.track_id).await, 2);
+    assert_eq!(object_count(pool.read_pool()).await, 4);
 
     let second = call_tool(
         &boot,
@@ -98,15 +98,15 @@ async fn track_gc_real_run_prunes_sweeps_and_is_idempotent() {
 
     assert_eq!(second["pruned_commits"], json!(0));
     assert_eq!(second["swept_objects"], json!(0));
-    assert_eq!(commit_count(&pool, &boot.track_id).await, 2);
-    assert_eq!(object_count(&pool).await, 4);
+    assert_eq!(commit_count(pool.read_pool(), &boot.track_id).await, 2);
+    assert_eq!(object_count(pool.read_pool()).await, 4);
 }
 
 #[tokio::test]
 async fn track_gc_rejects_wrong_track_without_deleting() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().expect("track vcs pool");
-    seed_linear_commits(&pool, &boot.track_id, 5).await;
+    let pool = boot.repo.sqlite_db().expect("track vcs pool");
+    seed_linear_commits(pool.read_pool(), &boot.track_id, 5).await;
 
     let err = call_tool(
         &boot,
@@ -122,15 +122,15 @@ async fn track_gc_rejects_wrong_track_without_deleting() {
         err.message.contains("does not match"),
         "unexpected error: {err:?}"
     );
-    assert_eq!(commit_count(&pool, &boot.track_id).await, 5);
-    assert_eq!(object_count(&pool).await, 10);
+    assert_eq!(commit_count(pool.read_pool(), &boot.track_id).await, 5);
+    assert_eq!(object_count(pool.read_pool()).await, 10);
 }
 
 #[tokio::test]
 async fn track_gc_rejects_worker_identity() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().expect("track vcs pool");
-    seed_linear_commits(&pool, &boot.track_id, 5).await;
+    let pool = boot.repo.sqlite_db().expect("track vcs pool");
+    seed_linear_commits(pool.read_pool(), &boot.track_id, 5).await;
 
     let err = call_tool(
         &boot,
@@ -143,15 +143,15 @@ async fn track_gc_rejects_worker_identity() {
 
     assert_eq!(err.code, RpcError::FORBIDDEN);
     assert!(err.message.contains("Planner"), "unexpected error: {err:?}");
-    assert_eq!(commit_count(&pool, &boot.track_id).await, 5);
-    assert_eq!(object_count(&pool).await, 10);
+    assert_eq!(commit_count(pool.read_pool(), &boot.track_id).await, 5);
+    assert_eq!(object_count(pool.read_pool()).await, 10);
 }
 
 #[tokio::test]
 async fn vacuum_runs_on_populated_db() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().expect("track vcs pool");
-    seed_linear_commits(&pool, &boot.track_id, 2).await;
+    let pool = boot.repo.sqlite_db().expect("track vcs pool");
+    seed_linear_commits(pool.read_pool(), &boot.track_id, 2).await;
 
     let result = call_tool(&boot, TOOL_ADMIN_VACUUM, planner_identity(&boot), json!({}))
         .await

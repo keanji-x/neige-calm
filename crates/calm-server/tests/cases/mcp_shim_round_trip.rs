@@ -168,7 +168,7 @@ async fn boot() -> Boot {
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
         .await
         .unwrap()

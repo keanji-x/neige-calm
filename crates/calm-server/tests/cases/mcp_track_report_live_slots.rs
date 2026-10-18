@@ -347,7 +347,7 @@ async fn live_slot_pending_is_not_storage_unavailable() {
 
     // Corrupt only this test's in-memory repository, after the report exists.
     sqlx::query("DROP TABLE overlays")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let broken = read(&boot, json!({})).await;
@@ -378,7 +378,7 @@ async fn live_slot_none_resolution_reads_no_overlay() {
     let before = read(&boot, json!({})).await;
     assert_eq!(resolved(&before, id)["status"], "ok");
     sqlx::query("DROP TABLE overlays")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let none = read(&boot, json!({"resolve": {id.as_str().unwrap(): "none"}})).await;

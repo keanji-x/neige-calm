@@ -128,7 +128,7 @@ pub async fn boot_forge_e2e_fixture(
         .await
         .expect("create area");
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        sqlx_repo.pool(),
+        sqlx_repo.db(),
         NewTrack {
             template_input: fixture.bound_issue.map(dev_input),
             area_id: area.id.clone(),
@@ -146,7 +146,7 @@ pub async fn boot_forge_e2e_fixture(
     .await
     .expect("create track");
     // A codex worker runs in the track worktree (#1830 S2), as a track created by the route has.
-    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.pool(), track.id.as_str())
+    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.db(), track.id.as_str())
         .await
         .expect("make the track worktree");
     if !fixture.require_task_gates {
@@ -309,7 +309,7 @@ pub async fn boot_forge_e2e_fixture(
     });
     let route_repo: Arc<dyn RouteRepo> = repo_dyn.clone();
     let renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let harness = HarnessRegistry::new();
     let runtime = Arc::new(
@@ -360,7 +360,7 @@ pub async fn boot_forge_e2e_fixture(
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: sqlx_repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: write.clone(),
@@ -376,7 +376,7 @@ pub async fn boot_forge_e2e_fixture(
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: sqlx_repo.sqlite_pool(),
+        sqlite_db: sqlx_repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let mut registry = ToolRegistry::new();

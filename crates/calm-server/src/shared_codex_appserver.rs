@@ -3390,8 +3390,8 @@ impl SharedCodexAppServer {
             }
             // Only cold rebuild infers sleep from retained carriers. Mid-life
             // replacement replays the live owners already in the cache.
-            if let Some(pool) = self.repo.sqlite_pool()
-                && crate::planner_hibernation::sleeping_thread(&pool, &thread_id).await?
+            if let Some(pool) = self.repo.sqlite_db()
+                && crate::planner_hibernation::sleeping_thread(pool.read_pool(), &thread_id).await?
             {
                 continue;
             }

@@ -533,7 +533,7 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
         .await
         .expect("create area");
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         NewTrack {
             template_input: None,
             area_id: area.id.clone(),
@@ -555,7 +555,7 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
     let lease_abs = workspace::worktree::track_worktree_path_for(track_cwd, track.id.as_str());
-    calm_server::test_seams::ensure_track_worktree_for_test(repo.pool(), track.id.as_str())
+    calm_server::test_seams::ensure_track_worktree_for_test(repo.db(), track.id.as_str())
         .await
         .unwrap();
 
@@ -631,7 +631,7 @@ async fn seed_caller_lease(repo: &SqlxRepo, seeded: &Seeded) {
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
-    let mut tx = begin_immediate_tx(repo.pool())
+    let mut tx = begin_immediate_tx(repo.db())
         .await
         .expect("begin runtime tx");
     if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)

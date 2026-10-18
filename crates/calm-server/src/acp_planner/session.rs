@@ -166,7 +166,7 @@ impl AcpPlannerSession {
         }
         let pool = params
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| refused("ACP requires durable submission storage"))?;
         let row = params
             .repo
@@ -196,9 +196,10 @@ impl AcpPlannerSession {
             return Err(refused("ACP live owner identity changed"));
         }
         let input = serde_json::to_value(&items).map_err(CalmError::from)?;
-        if let Some(receipt) = acp_submission_get(&pool, &params.worker_session_id, client)
-            .await
-            .map_err(CalmError::from)?
+        if let Some(receipt) =
+            acp_submission_get(pool.read_pool(), &params.worker_session_id, client)
+                .await
+                .map_err(CalmError::from)?
         {
             let issued: Value =
                 serde_json::from_str(&receipt.input_json).map_err(CalmError::from)?;
@@ -230,7 +231,7 @@ impl AcpPlannerSession {
             return Ok(turn);
         }
         if shared.state.lock().expect("ACP state").active.is_some()
-            || acp_submission_unresolved(&pool, &params.worker_session_id)
+            || acp_submission_unresolved(pool.read_pool(), &params.worker_session_id)
                 .await
                 .map_err(CalmError::from)?
         {
@@ -244,7 +245,7 @@ impl AcpPlannerSession {
             "SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1)",
         )
         .bind(&params.worker_session_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .map_err(CalmError::from)?;
         if !has_receipts {
@@ -680,7 +681,7 @@ async fn drive(
     let settle = async {
         let pool = params
             .repo
-            .sqlite_pool()
+            .sqlite_db()
             .ok_or_else(|| CalmError::Internal("ACP journal pool missing".into()))?;
         // Serialize once: every persistence attempt must commit these exact bytes and items.
         let outcome_json = known.then(|| serde_json::to_string(&durable)).transpose()?;
@@ -694,7 +695,7 @@ async fn drive(
         // Best effort checkpoint of the unknown fence. Spend at most one extra second:
         // if the writer is still unavailable, `sending` itself remains unresolved and
         // restart recovery marks it unknown. Never overwrite a completed CAS winner.
-        if let Some(pool) = params.repo.sqlite_pool() {
+        if let Some(pool) = params.repo.sqlite_db() {
             let _ = tokio::time::timeout(
                 Duration::from_secs(1),
                 acp_submission_finish(&pool, &receipt.worker_session_id, &receipt.client_id, None),
@@ -745,13 +746,13 @@ fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
 
 /// Persistence pending is not execution unknown. This function has no provider access.
 async fn settle_receipt(
-    pool: &sqlx::SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     outcome_json: Option<&str>,
 ) -> Result<()> {
-    // 45s covers a full shared admission cycle (7 x 5s busy_timeout + backoff)
-    // and another attempt, without holding the active session indefinitely. Bound the
-    // whole future too: pool acquisition and each SQLite attempt consume this budget.
+    // Bound receipt-only persistence to 45s without holding the active session
+    // indefinitely. Writer-pool admission, SQLite busy handling and backoff all
+    // consume this same whole-future budget.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
     // The active turn remains owned by drive until this returns. A crash loses the
     // in-memory known result; restart recovery fences the sending receipt as unknown.

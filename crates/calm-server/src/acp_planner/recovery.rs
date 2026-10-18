@@ -103,9 +103,9 @@ pub(crate) async fn recover(
     snapshot: &mut HarnessSnapshot,
 ) -> Result<()> {
     let pool = repo
-        .sqlite_pool()
+        .sqlite_db()
         .ok_or_else(|| CalmError::Internal("ACP recovery requires durable storage".into()))?;
-    let Some(receipt) = checkpoint_receipt(&pool, worker, snapshot).await? else {
+    let Some(receipt) = checkpoint_receipt(pool.read_pool(), worker, snapshot).await? else {
         return Ok(());
     };
     retire(snapshot, &receipt)?;
@@ -174,7 +174,7 @@ pub(crate) async fn submission_unresolved(
         return Ok(false);
     }
     let pool = repo
-        .sqlite_pool()
+        .sqlite_db()
         .ok_or_else(|| CalmError::Internal("ACP recovery requires durable storage".into()))?;
-    Ok(crate::db::sqlite::acp_submission_unresolved(&pool, worker).await?)
+    Ok(crate::db::sqlite::acp_submission_unresolved(pool.read_pool(), worker).await?)
 }

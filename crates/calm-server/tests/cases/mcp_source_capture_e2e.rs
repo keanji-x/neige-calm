@@ -152,7 +152,7 @@ async fn mint_card_with_thread(
     };
     tx.commit().await.expect("commit card tx");
     let thread_id = format!("thread-{card_id}");
-    let mut tx = begin_immediate_tx(sqlx_repo.pool())
+    let mut tx = begin_immediate_tx(sqlx_repo.db())
         .await
         .expect("begin runtime tx");
     if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, &card_id)

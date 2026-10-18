@@ -613,8 +613,8 @@ async fn dead_worker_never_reporting_reaper_converges() {
         updated_at_ms: now,
         finished_at_ms: None,
     };
-    let pool = repo.sqlite_pool().expect("sqlite-backed repo");
-    crate::support::task::project_task(&pool, &task)
+    let pool = repo.sqlite_db().expect("sqlite-backed repo");
+    crate::support::task::project_task(pool.read_pool(), &task)
         .await
         .unwrap();
 
@@ -633,7 +633,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
 
     let spawned = Arc::new(tokio::sync::Notify::new());
     let operation_repo = Arc::new(SqlxOperationRepo::new(
-        repo.sqlite_pool().expect("sqlite-backed repo"),
+        repo.sqlite_db().expect("sqlite-backed repo"),
     ));
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
@@ -696,13 +696,13 @@ async fn dead_worker_never_reporting_reaper_converges() {
          ORDER BY created_at_ms DESC, id DESC LIMIT 1",
     )
     .bind(&task_id)
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .expect("worker operation row");
 
     let session_id = WorkerSessionId::from(new_id());
     let session_now = now_ms();
-    let mut tx = pool.begin().await.unwrap();
+    let mut tx = pool.writer_pool().begin().await.unwrap();
     session_insert_tx(
         &mut tx,
         WorkerSession {
@@ -773,7 +773,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
                 let actor_text: String =
                     sqlx::query_scalar("SELECT actor FROM events WHERE id = ?1")
                         .bind(id)
-                        .fetch_one(&pool)
+                        .fetch_one(pool.read_pool())
                         .await
                         .unwrap();
                 let actor: ActorId = serde_json::from_str(&actor_text).unwrap();

@@ -26,7 +26,7 @@ async fn boot() -> (AppState, String) {
     (state, track_id)
 }
 
-/// [`boot`] variant that also hands back the full-capability repo: `AppState.repo` is the narrower `RouteRepo` with no `sqlite_pool` escape hatch.
+/// [`boot`] variant that also hands back the full-capability repo: `AppState.repo` is the narrower `RouteRepo` with no `sqlite_db` escape hatch.
 async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -1022,7 +1022,11 @@ async fn track_detail_exposes_reopen_only_for_a_reopenable_closed_track() {
     sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
         .bind(parent.id.as_str())
         .bind(&track_id)
-        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+        .execute(
+            repo.sqlite_db()
+                .expect("sqlite-backed fixture")
+                .writer_pool(),
+        )
         .await
         .expect("attach child to parent");
     sqlx::query(
@@ -1036,7 +1040,11 @@ async fn track_detail_exposes_reopen_only_for_a_reopenable_closed_track() {
     )
     .bind(parent.id.as_str())
     .bind(&track_id)
-    .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+    .execute(
+        repo.sqlite_db()
+            .expect("sqlite-backed fixture")
+            .writer_pool(),
+    )
     .await
     .expect("bind child to parent task");
 
@@ -1054,7 +1062,11 @@ async fn track_detail_withholds_close_from_area_chat_tracks() {
     let (state, track_id, repo) = boot_with_repo().await;
     sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
         .bind(&track_id)
-        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+        .execute(
+            repo.sqlite_db()
+                .expect("sqlite-backed fixture")
+                .writer_pool(),
+        )
         .await
         .expect("mark retired area-chat track");
 
@@ -1076,7 +1088,11 @@ async fn track_detail_withholds_reopen_from_area_chat_tracks() {
     close_track(&repo, &track_id).await;
     sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
         .bind(&track_id)
-        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture"))
+        .execute(
+            repo.sqlite_db()
+                .expect("sqlite-backed fixture")
+                .writer_pool(),
+        )
         .await
         .expect("mark retired area-chat track");
 
@@ -1203,10 +1219,10 @@ async fn track_patch_same_closed_state_with_title_still_writes_title() {
 }
 
 async fn track_require_task_gates(repo: &Arc<dyn Repo>, track_id: &str) -> i64 {
-    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let pool = repo.sqlite_db().expect("sqlite pool");
     sqlx::query_scalar("SELECT require_task_gates FROM tracks WHERE id = ?1")
         .bind(track_id)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .expect("read track policy column")
 }

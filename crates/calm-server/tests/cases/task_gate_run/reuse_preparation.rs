@@ -81,7 +81,7 @@ async fn reuse_refs_sampling_releases_writer_and_revalidates_run() {
             scheduler.drive_gate_for_test(task).await.unwrap();
         });
         barrier.wait_entered().await;
-        let pool = fx.pool();
+        let pool = fx.db();
         let task_id = a.task.id.clone();
         let mut writer = tokio::spawn(async move {
             let mut tx = begin_immediate_tx(&pool).await?;

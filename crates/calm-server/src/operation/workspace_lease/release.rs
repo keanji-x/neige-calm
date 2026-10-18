@@ -102,7 +102,7 @@ pub(crate) async fn release_workspace_lease_for_card_repo(
 /// The compensation step (both worker adapters): the lease its prepare took, in a transaction of
 /// its own; `true` when it was released.
 pub(crate) async fn release_workspace_lease_by_id(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     events: &EventBus,
     lease_id: &str,
     delivery: ReleaseDelivery,
@@ -221,13 +221,15 @@ async fn ended_outcome_tx(tx: &mut Tx<'_>, attempt_id: &str) -> Result<AttemptOu
 /// Planner, and releases the lease with `outcome = 'interrupted'`. It is the one releaser for a
 /// stuck owner and for a rebooted `exited` session.
 pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     events: &EventBus,
 ) -> Result<usize> {
     let current_boot_id = read_boot_id();
     let mut reclaimed = 0;
-    for lease in active_workspace_leases(pool).await? {
-        if !lease_should_reclaim_on_boot(pool, &lease, current_boot_id.as_deref()).await? {
+    for lease in active_workspace_leases(pool.read_pool()).await? {
+        if !lease_should_reclaim_on_boot(pool.read_pool(), &lease, current_boot_id.as_deref())
+            .await?
+        {
             continue;
         }
         let mut tx = begin_immediate_tx(pool).await?;

@@ -442,7 +442,7 @@ async fn queued_message_refused_when_prompt_submit_is_pruned() {
                 .await
                 .unwrap();
             let pruned = calm_server::events_prune::prune_events_once(
-                h.sql.pool(),
+                h.sql.db(),
                 &calm_server::events_prune::EventsRetentionPolicy::default(),
             )
             .await

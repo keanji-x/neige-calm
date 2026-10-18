@@ -325,7 +325,7 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
         .unwrap();
     let area_id = area.id.to_string();
 
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     sqlx::query("INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)")
         .bind(&area_id)
         .bind("/a/b")

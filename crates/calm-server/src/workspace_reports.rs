@@ -88,7 +88,7 @@ struct ChangeRow {
 
 /// Snapshot-bound pagination includes closed Tracks and edits that net to a revert.
 pub async fn changes(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     query: &ReportChangesQuery,
     zone: Tz,
 ) -> Result<ReportChangesPage> {

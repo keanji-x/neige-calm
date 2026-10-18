@@ -29,11 +29,11 @@ async fn workspace_identity_new_binding_registers_its_own_subdir() {
     std::fs::create_dir(&selected).unwrap();
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let first = track(&repo, &selected, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::observe_for_task(repo.pool(), first.id.as_str())
+    super::observe_for_task(repo.db(), first.id.as_str())
         .await
         .unwrap();
     let second = track(&repo, &selected, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::observe_for_task(repo.pool(), second.id.as_str())
+    super::observe_for_task(repo.db(), second.id.as_str())
         .await
         .unwrap();
     let a = binding(&repo, &first).await;
@@ -58,13 +58,13 @@ async fn workspace_identity_registered_alias_retarget_requires_recovery() {
     symlink(source.join("a"), &alias).unwrap();
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let current = track(&repo, &alias, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::observe_for_task(repo.pool(), current.id.as_str())
+    super::observe_for_task(repo.db(), current.id.as_str())
         .await
         .unwrap();
     let before = binding(&repo, &current).await;
     std::fs::remove_file(&alias).unwrap();
     symlink(source.join("b"), &alias).unwrap();
-    let result = super::observe_for_task(repo.pool(), current.id.as_str()).await;
+    let result = super::observe_for_task(repo.db(), current.id.as_str()).await;
     assert!(
         result.is_err(),
         "same root with another cwd is a changed registered binding"
@@ -80,7 +80,7 @@ async fn workspace_identity_repeated_selection_writer_preserves_registered_alias
     std::fs::create_dir(source.join("subdir")).unwrap();
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let first = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::observe_for_task(repo.pool(), first.id.as_str())
+    super::observe_for_task(repo.db(), first.id.as_str())
         .await
         .unwrap();
     let current = track(
@@ -100,7 +100,7 @@ async fn workspace_identity_repeated_selection_writer_preserves_registered_alias
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    super::observe_for_task(repo.pool(), current.id.as_str())
+    super::observe_for_task(repo.db(), current.id.as_str())
         .await
         .unwrap();
     let before = binding(&repo, &current).await;
@@ -140,7 +140,7 @@ async fn workspace_identity_observation_cas_rejects_older_probe() {
     let probe = workspace::directory::DirectoryIdentity::open(&selected, false).unwrap();
     std::fs::remove_file(&selected).unwrap();
     symlink(source.join("b"), &selected).unwrap();
-    super::observe_for_task(repo.pool(), current.id.as_str())
+    super::observe_for_task(repo.db(), current.id.as_str())
         .await
         .unwrap();
     let observed = workspace_observation_snapshot(
@@ -175,7 +175,7 @@ async fn workspace_identity_deleted_selection_is_not_revived_by_same_path_recrea
     init(&source);
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let old = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::observe_for_task(repo.pool(), old.id.as_str())
+    super::observe_for_task(repo.db(), old.id.as_str())
         .await
         .unwrap();
     let before =
@@ -210,7 +210,7 @@ async fn workspace_identity_deleted_selection_is_not_revived_by_same_path_recrea
         DirectoryObservation::Pending,
         "no historical cwd or observation is inherited"
     );
-    super::observe_for_task(repo.pool(), fresh.id.as_str())
+    super::observe_for_task(repo.db(), fresh.id.as_str())
         .await
         .unwrap();
     let retained: (i64, i64) = sqlx::query_as(
@@ -263,7 +263,7 @@ async fn workspace_identity_owned_create_delete_create_keeps_history_without_res
     super::super::track_worktree::ensure_track_worktree(&old)
         .await
         .unwrap();
-    super::observe_for_task(repo.pool(), old.id.as_str())
+    super::observe_for_task(repo.db(), old.id.as_str())
         .await
         .unwrap();
     let before = binding(&repo, &old).await;
@@ -278,7 +278,7 @@ async fn workspace_identity_owned_create_delete_create_keeps_history_without_res
     super::super::track_worktree::ensure_track_worktree(&fresh)
         .await
         .unwrap();
-    super::observe_for_task(repo.pool(), fresh.id.as_str())
+    super::observe_for_task(repo.db(), fresh.id.as_str())
         .await
         .unwrap();
     assert_ne!(before.0, binding(&repo, &fresh).await.0);
@@ -305,7 +305,7 @@ async fn workspace_identity_identical_facts_stale_probe_is_idempotent() {
     .await
     .unwrap();
     let probe = workspace::directory::DirectoryIdentity::open(&source, false).unwrap();
-    super::observe_for_task(repo.pool(), current.id.as_str())
+    super::observe_for_task(repo.db(), current.id.as_str())
         .await
         .unwrap();
     let observed = workspace_observation_snapshot(
@@ -358,7 +358,7 @@ async fn workspace_identity_concurrent_terminal_hooks_converge_identical_facts()
     .unwrap();
     let ctx = super::legacy_tests::context(
         repo.clone(),
-        Arc::new(SqlxOperationRepo::new(repo.pool().clone())),
+        Arc::new(SqlxOperationRepo::new(repo.db().clone())),
     );
     let adapter = TerminalWorkerAdapter::new(
         repo.clone(),

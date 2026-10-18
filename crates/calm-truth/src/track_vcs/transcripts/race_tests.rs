@@ -9,7 +9,7 @@ use serde_json::json;
 async fn transcript_refresh_preserves_intervening_head_and_metadata_without_reprepare() {
     let fx = Fixture::new().await;
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -51,7 +51,7 @@ async fn transcript_refresh_preserves_intervening_head_and_metadata_without_repr
 async fn transcript_refresh_reprepares_after_hook_append_without_stale_publication() {
     let fx = Fixture::new().await;
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -116,7 +116,7 @@ async fn transcript_refresh_reuses_unchanged_card_after_hook_append() {
             .unwrap();
     }
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -163,7 +163,7 @@ async fn transcript_refresh_reprepares_after_selected_hook_delete_with_same_max_
         .await
         .unwrap();
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -204,7 +204,7 @@ async fn transcript_refresh_reprepares_after_card_announcement() {
         .await
         .unwrap();
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -223,7 +223,7 @@ async fn transcript_refresh_reprepares_after_card_announcement() {
 async fn transcript_refresh_does_not_restore_deleted_card_transcripts() {
     let fx = Fixture::new().await;
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -267,7 +267,7 @@ async fn transcript_refresh_does_not_publish_prepared_hooks_for_moved_card() {
         .await
         .unwrap();
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -296,7 +296,7 @@ async fn transcript_refresh_fails_on_current_corrupt_card_before_any_publication
     let fx = Fixture::new().await;
     let parent = head(fx.repo.pool(), &fx.track.id).await.unwrap();
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite],
     );
@@ -317,7 +317,7 @@ async fn transcript_refresh_fails_on_current_corrupt_card_before_any_publication
 async fn transcript_refresh_defers_after_bounded_selected_hook_churn() {
     let fx = Fixture::new().await;
     let (pause, task) = start(
-        fx.repo.pool().clone(),
+        fx.repo.db().clone(),
         fx.track.id.clone(),
         vec![Phase::BeforeWrite; PREPARATION_ATTEMPTS],
     );

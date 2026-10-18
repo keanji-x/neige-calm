@@ -114,10 +114,10 @@ async fn workspace_identity_observes_aliases_without_claiming_shared_object_iden
     .await;
     task(&repo, &first).await;
     // Each selection owns its observation; shared physical authority is not enabled.
-    super::observe_for_task(repo.pool(), first.id.as_str())
+    super::observe_for_task(repo.db(), first.id.as_str())
         .await
         .unwrap();
-    super::observe_for_task(repo.pool(), second.id.as_str())
+    super::observe_for_task(repo.db(), second.id.as_str())
         .await
         .unwrap();
     let refs: Vec<(String, String, String)> = sqlx::query_as(
@@ -166,10 +166,10 @@ async fn workspace_identity_distinct_owned_worktrees_share_git_metadata_only() {
     super::super::track_worktree::ensure_track_worktree(&second)
         .await
         .unwrap();
-    super::observe_for_task(repo.pool(), first.id.as_str())
+    super::observe_for_task(repo.db(), first.id.as_str())
         .await
         .unwrap();
-    super::observe_for_task(repo.pool(), second.id.as_str())
+    super::observe_for_task(repo.db(), second.id.as_str())
         .await
         .unwrap();
     let roots: Vec<(String, String)> = sqlx::query_as(
@@ -247,7 +247,7 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
             .is_err()
     );
     tx.rollback().await.unwrap();
-    super::observe_for_task(repo.pool(), track.id.as_str())
+    super::observe_for_task(repo.db(), track.id.as_str())
         .await
         .unwrap();
     let root: String = sqlx::query_scalar(
@@ -266,7 +266,7 @@ async fn workspace_identity_observation_refresh_is_not_cross_lifetime_replacemen
     init(&source);
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let current = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::observe_for_task(repo.pool(), current.id.as_str())
+    super::observe_for_task(repo.db(), current.id.as_str())
         .await
         .unwrap();
     let before = workspace_observation_snapshot(
@@ -277,7 +277,7 @@ async fn workspace_identity_observation_refresh_is_not_cross_lifetime_replacemen
     .unwrap();
     std::fs::rename(&source, tmp.path().join("previous")).unwrap();
     init(&source);
-    super::observe_for_task(repo.pool(), current.id.as_str())
+    super::observe_for_task(repo.db(), current.id.as_str())
         .await
         .unwrap();
     let after = workspace_observation_snapshot(
@@ -332,7 +332,7 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
          VALUES ('legacy','card',?1,?2,'held','legacy-owner',1,1,?3,'commit',?4,?5,'kernel','read_write')",
     ).bind(old.id.as_str()).bind(alias.to_str().unwrap()).bind(&sha)
         .bind(source.to_str().unwrap()).bind(common.to_str().unwrap()).execute(repo.pool()).await.unwrap();
-    super::observe_for_task(repo.pool(), new.id.as_str())
+    super::observe_for_task(repo.db(), new.id.as_str())
         .await
         .unwrap();
     assert_eq!(
@@ -419,7 +419,7 @@ async fn workspace_identity_borrowed_observation_grants_no_physical_owner() {
         TrackWorkspacePlan::AttachedFromCwd,
     )
     .await;
-    super::observe_for_task(repo.pool(), borrowed.id.as_str())
+    super::observe_for_task(repo.db(), borrowed.id.as_str())
         .await
         .unwrap();
     let before: Option<String> = sqlx::query_scalar(
@@ -433,7 +433,7 @@ async fn workspace_identity_borrowed_observation_grants_no_physical_owner() {
         before, None,
         "borrowed observation supplies no destruction ownership"
     );
-    super::observe_for_task(repo.pool(), owner.id.as_str())
+    super::observe_for_task(repo.db(), owner.id.as_str())
         .await
         .unwrap();
     let rows: Vec<(String, String)> =
@@ -483,7 +483,7 @@ async fn workspace_identity_unrelated_legacy_terminal_directory_does_not_block_c
     let old = track(&repo, &external, TrackWorkspacePlan::AttachedFromCwd).await;
     task(&repo, &old).await;
     let incoming = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
-    super::observe_for_task(repo.pool(), incoming.id.as_str())
+    super::observe_for_task(repo.db(), incoming.id.as_str())
         .await
         .expect("a legitimate non-Git terminal in another track is not checkout occupancy");
     assert_eq!(

@@ -82,7 +82,7 @@ async fn assistant_provider_claude_first_turn_model_prompt_and_restart() {
     let root_after: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
             .bind(&track)
-            .fetch_one(&stack.repo().sqlite_pool().unwrap())
+            .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(root_after.as_deref(), Some(root_before.as_str()));
@@ -208,7 +208,7 @@ async fn assistant_provider_opencode_first_turn_model_prompt_and_restart() {
     let root_after: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
             .bind(&track)
-            .fetch_one(&stack.repo().sqlite_pool().unwrap())
+            .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(root_after.as_deref(), Some(root_before.as_str()));
@@ -247,7 +247,7 @@ async fn run_recovery_assistant_provider_opencode_unknown_receipt_is_not_resent_
     let worker = stack.runtime(card).await.id;
     assert!(
         calm_server::db::sqlite::acp_submission_unresolved(
-            &stack.repo().sqlite_pool().unwrap(),
+            stack.repo().sqlite_db().unwrap().read_pool(),
             &worker
         )
         .await
@@ -550,10 +550,10 @@ async fn images_false_refuses(check_upload: bool) {
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap();
     stack.wait_outcomes(card, 1).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let workspace: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?")
         .bind(&track)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     let attachment_root = std::path::Path::new(&workspace).join(".neige/attachments");

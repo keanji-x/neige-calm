@@ -155,7 +155,7 @@ async fn github_preview_area_owner_cannot_use_operator_credentials() {
     let cli = github_cli();
     let state = fresh_state().await;
     let repo = state.raw_repo();
-    let pool = repo.sqlite_pool().unwrap();
+    let pool = repo.sqlite_db().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     area_membership::application_user_register(&mut tx, "alice", "Owner")
         .await

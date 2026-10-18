@@ -1,6 +1,6 @@
 //! Claim validation and writes owned by the operations repository.
 use serde_json::{Value, json};
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Sqlite};
 
 use super::{SqlxOperationRepo, operation_from_row, optional_json_text};
 use crate::{
@@ -80,7 +80,7 @@ pub(crate) async fn require_live_claim_tx(tx: &mut Tx<'_>, original: &Operation)
 }
 
 pub(in crate::operation) async fn record_spawn_artifacts(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     op: &Operation,
     artifacts: &SpawnArtifacts,
 ) -> Result<()> {
@@ -102,7 +102,7 @@ pub(in crate::operation) async fn record_spawn_artifacts(
 }
 
 pub(in crate::operation) async fn set_parked(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     op: &Operation,
     deadline_ms: TimestampMs,
 ) -> Result<Option<Operation>> {

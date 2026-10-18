@@ -177,12 +177,12 @@ pub struct SettledWorkerSession {
 }
 
 async fn settled_worker_sessions(state: &AppState) -> Result<Vec<SettledWorkerSession>> {
-    let Some(pool) = state.sqlite_pool() else {
+    let Some(pool) = state.sqlite_db() else {
         return Ok(Vec::new());
     };
     let rows = sqlx::query(SETTLED_WORKER_SESSIONS_SQL)
         .bind(SETTLED_WORKER_GRACE_MS)
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await?;
     Ok(rows
         .iter()

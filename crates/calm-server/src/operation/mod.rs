@@ -55,7 +55,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, Transaction};
 #[cfg(test)]
 use tokio::sync::Mutex;
 
@@ -862,7 +862,7 @@ pub trait ProviderAdapter: Send + Sync {
 
 #[async_trait]
 pub trait OperationRepo: Send + Sync {
-    fn sqlite_pool(&self) -> SqlitePool;
+    fn sqlite_db(&self) -> crate::db::sqlite::SqliteDb;
     async fn assert_sqlite_version(&self) -> Result<()>;
     async fn insert_operation(
         &self,
@@ -891,7 +891,7 @@ pub trait OperationRepo: Send + Sync {
         op: &Operation,
         expected_attempt: i32,
     ) -> Result<Option<Operation>> {
-        interaction_retry::claim_retry(&self.sqlite_pool(), op, expected_attempt).await
+        interaction_retry::claim_retry(&self.sqlite_db(), op, expected_attempt).await
     }
     async fn abandoned_running_operations_on_boot(&self) -> Result<Vec<Operation>>;
     async fn abandoned_running_operations_steady_state(&self) -> Result<Vec<Operation>>;
@@ -901,7 +901,7 @@ pub trait OperationRepo: Send + Sync {
         op: &Operation,
         artifacts: &SpawnArtifacts,
     ) -> Result<()> {
-        repo_sqlite::record_spawn_artifacts(&self.sqlite_pool(), op, artifacts).await
+        repo_sqlite::record_spawn_artifacts(&self.sqlite_db(), op, artifacts).await
     }
 
     async fn set_parked(
@@ -909,14 +909,14 @@ pub trait OperationRepo: Send + Sync {
         op: &Operation,
         deadline_ms: TimestampMs,
     ) -> Result<Option<Operation>> {
-        repo_sqlite::set_parked(&self.sqlite_pool(), op, deadline_ms).await
+        repo_sqlite::set_parked(&self.sqlite_db(), op, deadline_ms).await
     }
 
     async fn claim_parked(&self, op_id: &str) -> Result<Option<Operation>> {
         let now = now_ms();
         let lease_owner = new_id();
         let lease_until = now + OPERATION_LEASE_MS;
-        let pool = self.sqlite_pool();
+        let pool = self.sqlite_db();
         let result = sqlx::query(
             r#"UPDATE operations
                SET lease_owner = ?1,
@@ -930,7 +930,7 @@ pub trait OperationRepo: Send + Sync {
         .bind(lease_until)
         .bind(now)
         .bind(op_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -942,7 +942,7 @@ pub trait OperationRepo: Send + Sync {
         let now = now_ms();
         let lease_owner = new_id();
         let lease_until = now + OPERATION_LEASE_MS;
-        let pool = self.sqlite_pool();
+        let pool = self.sqlite_db();
         let result = sqlx::query(
             r#"UPDATE operations
                SET lease_owner = ?1,
@@ -955,7 +955,7 @@ pub trait OperationRepo: Send + Sync {
         .bind(lease_until)
         .bind(now)
         .bind(op_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -964,7 +964,7 @@ pub trait OperationRepo: Send + Sync {
     }
 
     async fn clear_parked_lease_for_boot(&self, op_id: &str) -> Result<()> {
-        let pool = self.sqlite_pool();
+        let pool = self.sqlite_db();
         sqlx::query(
             r#"UPDATE operations
                SET lease_owner = NULL,
@@ -975,20 +975,20 @@ pub trait OperationRepo: Send + Sync {
         )
         .bind(now_ms())
         .bind(op_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await?;
         Ok(())
     }
 
     async fn parked_operations(&self) -> Result<Vec<Operation>> {
-        let pool = self.sqlite_pool();
+        let pool = self.sqlite_db();
         let rows = sqlx::query(
             r#"SELECT *
                FROM operations
                WHERE phase = 'parked'
                ORDER BY created_at_ms ASC"#,
         )
-        .fetch_all(&pool)
+        .fetch_all(pool.read_pool())
         .await?;
         rows.iter().map(operation_from_row).collect()
     }

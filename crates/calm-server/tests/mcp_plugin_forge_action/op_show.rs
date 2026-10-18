@@ -156,7 +156,7 @@ async fn op_show_refuses_unknown_foreign_and_non_forge_ids_identically() {
         "the other Track reads its own operation: {foreign_own_view:#?}"
     );
 
-    let non_forge = SqlxOperationRepo::new(fx.repo.pool().clone())
+    let non_forge = SqlxOperationRepo::new(fx.repo.db().clone())
         .insert_operation(
             "terminal-create",
             OperationKey {
@@ -198,7 +198,7 @@ async fn op_show_refuses_unknown_foreign_and_non_forge_ids_identically() {
 }
 
 async fn insert_operation(fx: &Fixture, kind: &str, track_id: &str) -> String {
-    SqlxOperationRepo::new(fx.repo.pool().clone())
+    SqlxOperationRepo::new(fx.repo.db().clone())
         .insert_operation(
             kind,
             OperationKey {

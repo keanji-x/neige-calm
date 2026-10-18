@@ -31,7 +31,7 @@ async fn native_cli_uses_the_current_card_context_and_rotates_it_on_load() {
         let hash: Option<String> =
             sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
                 .bind(&worker)
-                .fetch_one(&stack.repo().sqlite_pool().unwrap())
+                .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
                 .await
                 .unwrap();
         assert!(hash.is_none(), "a settled turn cannot keep CLI authority");
@@ -63,7 +63,7 @@ async fn failed_native_identity_revokes_the_operational_cli_context() {
             let hash: Option<String> =
                 sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
                     .bind(&worker)
-                    .fetch_one(&stack.repo().sqlite_pool().unwrap())
+                    .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
                     .await
                     .unwrap();
             if hash.is_none() {

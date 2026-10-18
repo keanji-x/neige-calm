@@ -181,7 +181,7 @@ async fn owner_profile_startup_preserves_stable_identity_and_does_not_repair_mem
         "Renamed profile",
     ])
     .unwrap();
-    initialize_owner_profile(repo.pool(), &cfg).await.unwrap();
+    initialize_owner_profile(repo.db(), &cfg).await.unwrap();
     let profile: (String, String, i64) =
         sqlx::query_as("SELECT id,display_name,created_at FROM application_users")
             .fetch_one(repo.pool())

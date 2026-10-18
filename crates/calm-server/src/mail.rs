@@ -373,7 +373,7 @@ pub async fn ls(
         })
         .transpose()?;
     let pool = ctx
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| RpcError::internal(format!("{TOOL}: requires a sqlite-backed repo")))?;
     let (after_at, after_id) = after.unzip();
@@ -387,7 +387,7 @@ pub async fn ls(
     .bind(after_at)
     .bind(after_id)
     .bind(PAGE + 1)
-    .fetch_all(pool)
+    .fetch_all(pool.read_pool())
     .await
     .map_err(|e| RpcError::internal(format!("{TOOL}: {e}")))?;
     let more = rows.len() > PAGE as usize;

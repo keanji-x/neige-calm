@@ -91,12 +91,12 @@ fn gated_task_payload(key: &str, ready: bool) -> Value {
 
 /// `(key, status)` of every row in the track's task projection — what "a schedulable task" means.
 async fn task_rows(boot: &Boot) -> Vec<(String, String)> {
-    let pool = boot.repo.sqlite_pool().expect("sqlite-backed fixture repo");
+    let pool = boot.repo.sqlite_db().expect("sqlite-backed fixture repo");
     sqlx::query_as::<_, (String, String)>(
         "SELECT key, status FROM tasks WHERE track_id = ?1 ORDER BY key",
     )
     .bind(boot.track_id.as_str())
-    .fetch_all(&pool)
+    .fetch_all(pool.read_pool())
     .await
     .expect("read the task projection")
 }

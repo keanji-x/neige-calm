@@ -91,10 +91,10 @@ async fn task_done(
     // Read the admitted delivery input, including on idempotent repeats. Never infer text
     // from a candidate SHA: no-op checkpoints may pin a foreign base commit.
     let pool = ctx
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| RpcError::internal("read delivery message: SQLite pool not configured"))?;
-    let delivery = delivery_latest_for_attempt(pool, &attempt_id)
+    let delivery = delivery_latest_for_attempt(pool.read_pool(), &attempt_id)
         .await
         .map_err(|error| RpcError::internal(format!("read delivery message: {error}")))?;
     let message = match delivery.map(|delivery| delivery.commit_message) {

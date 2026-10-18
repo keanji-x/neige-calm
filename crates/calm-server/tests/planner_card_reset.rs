@@ -330,7 +330,7 @@ async fn boot_shared() -> Boot {
 
 fn install_failing_planner_start_runtime(boot: &mut Boot) {
     let route_repo: Arc<dyn RouteRepo> = boot.repo.clone();
-    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let start_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(FailingSpawnPlannerHarnessStartAdapter {
             inner: PlannerHarnessStartAdapter::new(

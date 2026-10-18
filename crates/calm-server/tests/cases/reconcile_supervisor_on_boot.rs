@@ -323,7 +323,7 @@ impl TestFixture {
         };
         let id = calm_server::model::new_id();
         let resumable = kind == WorkerSessionKind::CodexCard;
-        let pool = self.repo.sqlite_pool().unwrap();
+        let pool = self.repo.sqlite_db().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();

@@ -119,14 +119,14 @@ async fn delete(state: AppState, track_id: &str) -> axum::http::Response<Body> {
 async fn columns(repo: &Arc<dyn Repo>, track_id: &str) -> (Option<i64>, Option<String>) {
     sqlx::query_as("SELECT planner_task_ceiling, automation_policy FROM tracks WHERE id = ?1")
         .bind(track_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap()
 }
 
 async fn event_count(repo: &Arc<dyn Repo>) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM events")
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap()
 }
@@ -222,7 +222,7 @@ async fn persistent_row_snapshot(
     let actual_columns: Vec<String> = sqlx::query_scalar(&format!(
         "SELECT name FROM pragma_table_info('{table}') ORDER BY cid"
     ))
-    .fetch_all(&repo.sqlite_pool().unwrap())
+    .fetch_all(repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap();
     assert_eq!(
@@ -235,7 +235,7 @@ async fn persistent_row_snapshot(
         expected_columns.join(",")
     ))
     .bind(id)
-    .fetch_one(&repo.sqlite_pool().unwrap())
+    .fetch_one(repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap()
 }
@@ -271,7 +271,7 @@ fn assert_track_columns_unchanged_except(before: &str, after: &str, except: &[&s
 
 async fn event_cursor(repo: &Arc<dyn Repo>) -> i64 {
     sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events")
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap()
 }
@@ -297,7 +297,7 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, track_id: &str, key: &st
     let existing: Option<(String, String)> =
         sqlx::query_as("SELECT id,payload FROM cards WHERE track_id=?1 AND kind='track-report'")
             .bind(track_id)
-            .fetch_optional(&repo.sqlite_pool().unwrap())
+            .fetch_optional(repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     let (report_id, mut payload) = if let Some((report_id, payload)) = existing {
@@ -328,7 +328,7 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, track_id: &str, key: &st
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&payload).unwrap())
         .bind(&report_id)
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
 
@@ -338,7 +338,7 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, track_id: &str, key: &st
         .bind(track_id)
         .bind(key)
         .bind(format!("{key} goal"))
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     task_id
@@ -483,7 +483,7 @@ async fn invalid_policy_values_are_rejected() {
 async fn tree_budget(repo: &Arc<dyn Repo>, track_id: &str) -> Option<i64> {
     sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id = ?1")
         .bind(track_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap()
 }
@@ -582,7 +582,7 @@ async fn tree_task_budget_patch_matches_the_planner_task_ceiling_surface() {
     sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(&track_id)
         .bind(&child_id)
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let response = patch(state, &child_id, None, json!({"tree_task_budget": 4})).await;
@@ -619,11 +619,11 @@ async fn tightening_policy_immediately_deletes_pending_projection_and_emits_plan
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&payload).unwrap())
         .bind(report.id.as_str())
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
-        .bind(format!("{track_id}:queued")).bind(&track_id).execute(&repo.sqlite_pool().unwrap()).await.unwrap();
+        .bind(format!("{track_id}:queued")).bind(&track_id).execute(repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
 
     let response = patch(
         state,
@@ -635,13 +635,13 @@ async fn tightening_policy_immediately_deletes_pending_projection_and_emits_plan
     assert_eq!(response.status(), StatusCode::OK);
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1")
         .bind(&track_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(count, 0);
     let plan_events: i64 =
         sqlx::query_scalar("SELECT count(*) FROM events WHERE kind='plan.updated'")
-            .fetch_one(&repo.sqlite_pool().unwrap())
+            .fetch_one(repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(plan_events, 1);
@@ -676,23 +676,23 @@ async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&payload).unwrap())
         .bind(report.id.as_str())
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
-        .bind(format!("{track_id}:queued")).bind(&track_id).execute(&repo.sqlite_pool().unwrap()).await.unwrap();
+        .bind(format!("{track_id}:queued")).bind(&track_id).execute(repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
 
     let response = patch(state, &track_id, None, json!({"tree_task_budget": 0})).await;
     assert_eq!(response.status(), StatusCode::OK);
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1")
         .bind(&track_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(count, 0);
     let plan_events: i64 =
         sqlx::query_scalar("SELECT count(*) FROM events WHERE kind='plan.updated'")
-            .fetch_one(&repo.sqlite_pool().unwrap())
+            .fetch_one(repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     assert_eq!(plan_events, 1);
@@ -725,7 +725,7 @@ async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeu
     let task_id = write_report_block(&state, &repo, &track_id, block).await;
     let before_status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
         .bind(&task_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(before_status, "pending");
@@ -735,7 +735,7 @@ async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeu
     assert_eq!(response.status(), StatusCode::OK);
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
         .bind(&task_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(
@@ -748,7 +748,7 @@ async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeu
     )
     .bind(before_events)
     .bind(&track_id)
-    .fetch_one(&repo.sqlite_pool().unwrap())
+    .fetch_one(repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap();
     assert_eq!(plan_events, 1);
@@ -756,7 +756,7 @@ async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeu
     let report_id: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND kind='track-report'")
             .bind(&track_id)
-            .fetch_one(&repo.sqlite_pool().unwrap())
+            .fetch_one(repo.sqlite_db().unwrap().read_pool())
             .await
             .unwrap();
     let snapshot =
@@ -796,7 +796,7 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
     sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(&root_id)
         .bind(child.id.as_str())
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let task_id = seed_pending_report_task(&repo, child.id.as_str(), "child-queued").await;
@@ -805,12 +805,18 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
     assert_eq!(response.status(), StatusCode::OK);
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
         .bind(&task_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(pending, 0, "the descendant's stale projection survived");
 
-    let mut tx = repo.sqlite_pool().unwrap().begin().await.unwrap();
+    let mut tx = repo
+        .sqlite_db()
+        .unwrap()
+        .writer_pool()
+        .begin()
+        .await
+        .unwrap();
     assert_eq!(
         task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
             .await
@@ -862,26 +868,26 @@ async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
         .unwrap();
     sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=2 WHERE id=?1")
         .bind(&root_id)
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
         .bind(&root_id)
         .bind(victim.id.as_str())
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
         .bind(&root_id)
         .bind(survivor.id.as_str())
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
 
     let task_id = write_report_task(&state, &repo, survivor.id.as_str(), "newly-admitted").await;
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
         .bind(&task_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(before, 0, "premise: the third member has zero share at B=2");
@@ -890,7 +896,7 @@ async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
         .bind(&task_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(status, "pending");
@@ -899,7 +905,7 @@ async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
          AND json_extract(payload,'$.track_id')=?1",
     )
     .bind(survivor.id.as_str())
-    .fetch_one(&repo.sqlite_pool().unwrap())
+    .fetch_one(repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap();
     assert_eq!(
@@ -929,11 +935,17 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(&root_id)
         .bind(child.id.as_str())
-        .execute(&repo.sqlite_pool().unwrap())
+        .execute(repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let task_id = seed_pending_report_task(&repo, child.id.as_str(), "inflight").await;
-    let mut tx = repo.sqlite_pool().unwrap().begin().await.unwrap();
+    let mut tx = repo
+        .sqlite_db()
+        .unwrap()
+        .writer_pool()
+        .begin()
+        .await
+        .unwrap();
     assert_eq!(
         task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
             .await
@@ -968,7 +980,13 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
 async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_state() {
     let (state, track_id, repo) = boot().await;
     let task_id = seed_pending_report_task(&repo, &track_id, "inflight").await;
-    let mut tx = repo.sqlite_pool().unwrap().begin().await.unwrap();
+    let mut tx = repo
+        .sqlite_db()
+        .unwrap()
+        .writer_pool()
+        .begin()
+        .await
+        .unwrap();
     assert_eq!(
         task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
             .await
@@ -1012,7 +1030,7 @@ async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_st
              FROM events WHERE id>?1 ORDER BY id",
     )
     .bind(before_events)
-    .fetch_all(&repo.sqlite_pool().unwrap())
+    .fetch_all(repo.sqlite_db().unwrap().read_pool())
     .await
     .unwrap();
     assert_eq!(
@@ -1040,14 +1058,20 @@ async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_st
     let blocked_task = write_report_task(&state, &repo, &track_id, "blocked-after-tighten").await;
     let blocked_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
         .bind(&blocked_task)
-        .fetch_one(&repo.sqlite_pool().unwrap())
+        .fetch_one(repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(
         blocked_rows, 0,
         "ceiling degradation must freeze admission of a newly declared task"
     );
-    let mut tx = repo.sqlite_pool().unwrap().begin().await.unwrap();
+    let mut tx = repo
+        .sqlite_db()
+        .unwrap()
+        .writer_pool()
+        .begin()
+        .await
+        .unwrap();
     assert_eq!(
         task_claim_pending_tx(&mut tx, &blocked_task, 2, &[], false)
             .await

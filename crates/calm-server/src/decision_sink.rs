@@ -37,7 +37,7 @@ pub struct CardDecisionSink {
     events: EventBus,
     write: WriteContext,
     /// Read-only, for the post-commit `report_sources` lookup behind the receipt warnings; `None` means no warnings are computed.
-    sqlite_pool: Option<sqlx::SqlitePool>,
+    sqlite_db: Option<crate::db::sqlite::SqliteDb>,
     read_ledger: Arc<crate::report_read_ledger::ReadLedger>,
 }
 
@@ -55,7 +55,7 @@ impl CardDecisionSink {
             repo: Arc::clone(&ctx.repo),
             events: ctx.events.clone(),
             write: ctx.write.clone(),
-            sqlite_pool: ctx.sqlite_pool.clone(),
+            sqlite_db: ctx.sqlite_db.clone(),
             read_ledger: Arc::clone(&ctx.read_ledger),
         }
     }
@@ -339,7 +339,7 @@ impl CardDecisionSink {
                 .publish(&identity.session_id, &report_id, generation, read);
         }
         // After the transaction committed, before the receipt is assembled. Never blocks the write; a lookup failure here is the receipt's problem, not the row's.
-        let warnings = match self.sqlite_pool.as_ref() {
+        let warnings = match self.sqlite_db.as_ref() {
             Some(pool) if !trace.written_prose_block_ids.is_empty() => {
                 let blocks = card
                     .payload
@@ -352,7 +352,7 @@ impl CardDecisionSink {
                     })?
                     .unwrap_or_default();
                 report_sources::warnings::for_write(
-                    pool,
+                    pool.read_pool(),
                     track_id.as_str(),
                     &blocks,
                     &trace.written_prose_block_ids,
@@ -642,7 +642,7 @@ mod tests {
             .await
             .expect("create area");
         let track = crate::test_seams::create_track_with_workspace_for_test(
-            repo.pool(),
+            repo.db(),
             NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
@@ -689,8 +689,8 @@ mod tests {
         .expect("seed worker session");
 
         let worktree =
-            crate::test_support::ensure_track_worktree(repo.pool(), track.id.as_str()).await;
-        let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+            crate::test_support::ensure_track_worktree(repo.db(), track.id.as_str()).await;
+        let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
         let plan = prepare_worker_lease_as_tx(
             &mut tx,
             track.id.as_str(),
@@ -726,7 +726,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
-            sqlite_pool: repo.sqlite_pool(),
+            sqlite_db: repo.sqlite_db(),
             read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
@@ -854,7 +854,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
-            sqlite_pool: repo.sqlite_pool(),
+            sqlite_db: repo.sqlite_db(),
             read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
@@ -999,7 +999,7 @@ mod tests {
             repo: route_repo,
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
-            sqlite_pool: repo.sqlite_pool(),
+            sqlite_db: repo.sqlite_db(),
             read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {

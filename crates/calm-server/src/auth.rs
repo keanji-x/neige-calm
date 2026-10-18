@@ -66,7 +66,10 @@ pub(crate) fn configured_owner_display_name(cfg: &Config) -> String {
 
 /// Startup profile reconciliation, before the application starts tasks/listeners.
 /// Credential issuance never registers a user or assigns an Area membership.
-pub(crate) async fn initialize_owner_profile(pool: &sqlx::SqlitePool, cfg: &Config) -> Result<()> {
+pub(crate) async fn initialize_owner_profile(
+    pool: &crate::db::sqlite::SqliteDb,
+    cfg: &Config,
+) -> Result<()> {
     let display_name = configured_owner_display_name(cfg);
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
     crate::db::sqlite::area_membership::application_user_register(

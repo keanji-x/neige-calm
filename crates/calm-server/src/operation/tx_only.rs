@@ -7,7 +7,6 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use sqlx::SqlitePool;
 
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
@@ -131,7 +130,7 @@ pub(super) enum KeyedCommit {
 
 /// The transaction of `commit_keyed`. Any error rolls it back whole.
 pub(super) async fn commit_tx_only(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     adapter: &dyn TxOnlyAdapter,
     key: OperationKey,
     payload: Value,

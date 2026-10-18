@@ -28,7 +28,7 @@ impl Fixture {
     async fn new() -> Self {
         let state = fresh_state().await;
         let repo = state.raw_repo();
-        let pool = repo.sqlite_pool().unwrap();
+        let pool = repo.sqlite_db().unwrap();
         let mut tx = begin_immediate_tx(&pool).await.unwrap();
         area_membership::application_user_register(&mut tx, "alice", "Owner")
             .await
@@ -107,7 +107,7 @@ impl Fixture {
             app: app(state.clone(), auth.clone()),
             state,
             auth,
-            pool,
+            pool: pool.read_pool().clone(),
             area_id: area.id.to_string(),
             alice_area_id: alice_area.id.to_string(),
             track_id: track.id.to_string(),

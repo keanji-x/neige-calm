@@ -39,7 +39,7 @@ async fn admitted(world: &FileWorld, key: &str, steps: Value) -> (Attempt, Strin
     .await;
     let task = claim_with_closure(fx, key, &worker.card_id).await;
     let run = calm_server::test_seams::admit_gate_run_for_test(
-        &fx.pool(),
+        &fx.db(),
         &task.id,
         &worker.card_id,
         fx.track(),
@@ -218,7 +218,7 @@ async fn a_restart_after_the_park_ends_the_run_as_infra() {
         "HEAD unmoved, nothing staged"
     );
     let next = calm_server::test_seams::admit_gate_run_for_test(
-        &fx.pool(),
+        &fx.db(),
         &a.task.id,
         &a.worker.card_id,
         fx.track(),

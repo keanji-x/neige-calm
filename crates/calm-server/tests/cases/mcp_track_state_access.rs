@@ -10,7 +10,7 @@ async fn track_state_projects_stored_access_into_tool_and_text() {
     insert_task(&boot, "reader-1", "reader", "pending", None).await;
     insert_task(&boot, "writer-1", "writer", "pending", None).await;
     sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id = 'reader-1'")
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
     let out = call_tool(&boot, TOOL_TRACK_STATUS, planner_identity(&boot), json!({}))

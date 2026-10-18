@@ -121,7 +121,7 @@ async fn json_request(
 async fn stored_plugin_scope(repo: &Arc<dyn Repo>, track_id: &str) -> Option<String> {
     sqlx::query_scalar("SELECT plugin_scope FROM tracks WHERE id = ?1")
         .bind(track_id)
-        .fetch_one(&repo.sqlite_pool().expect("sqlite pool"))
+        .fetch_one(repo.sqlite_db().expect("sqlite pool").read_pool())
         .await
         .expect("select plugin_scope")
 }

@@ -308,11 +308,11 @@ async fn replay(
     card_id: &CardId,
     key: &SendKey,
 ) -> Result<Option<SendPlannerInputResponse>> {
-    let pool = w.repo.sqlite_pool().ok_or_else(|| {
+    let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("planner input keys require a sqlite-backed repo".into())
     })?;
     let Some(binding) =
-        planner_input_binding_get(&pool, card_id.as_str(), &key.idempotency_key).await?
+        planner_input_binding_get(pool.read_pool(), card_id.as_str(), &key.idempotency_key).await?
     else {
         return Ok(None);
     };

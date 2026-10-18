@@ -107,7 +107,7 @@ async fn frozen_row_is_pinned_by_first_complete_resolution_and_never_overwritten
     ]});
     // Two independent resolvers so two jobs for ONE key exist at once (the in-flight set would
     // otherwise coalesce them). Job 1 is parked at `hold_before_write`; job 2 runs to completion; job 1 is released last.
-    let second = SeriesResolver::new_unstarted(fx.boot.repo.sqlite_pool())
+    let second = SeriesResolver::new_unstarted(fx.boot.repo.sqlite_db())
         .with_now(std::sync::Arc::new(|| T0_MS));
     fx.program(json!({ "mode": "sequence", "replies": [
         { "mode": "structured", "structured": reply_a },
@@ -529,7 +529,7 @@ async fn late_resolution_after_track_delete_leaves_no_orphan() {
         "the FK refuses the late write: {outcome:?}"
     );
     let orphans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_series")
-        .fetch_one(&fx.boot.repo.sqlite_pool().unwrap())
+        .fetch_one(fx.boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(orphans, 0, "no orphan row");

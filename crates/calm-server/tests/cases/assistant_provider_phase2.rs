@@ -230,7 +230,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
     let release = Arc::new(tokio::sync::Notify::new());
     let observed = Arc::new(tokio::sync::Mutex::new(None));
     let checkpoint = Arc::new(tokio::sync::Notify::new());
-    let operations = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+    let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operations.clone(),

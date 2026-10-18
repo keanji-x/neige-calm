@@ -380,7 +380,7 @@ async fn launchpad_track_carries_an_unfrozen_managed_workspace_on_both_branches(
     assert!(track["workspace"]["frozen_at"].is_null(), "dto={dto}");
 
     // Branch 2 — adoption re-declares an unfrozen selection through the same writer as creation.
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
         .await
         .unwrap();
     calm_server::db::sqlite::track_workspace_write_tx(

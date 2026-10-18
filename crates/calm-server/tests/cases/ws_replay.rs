@@ -1075,7 +1075,7 @@ async fn client_below_prune_watermark_gets_snapshot_required() {
         horizon: Duration::from_millis(1),
         ..EventsRetentionPolicy::default()
     };
-    let pruned = prune_events_once(repo.pool(), &policy)
+    let pruned = prune_events_once(repo.db(), &policy)
         .await
         .expect("prune pass");
     assert_eq!(pruned, 1, "exactly the interior hook row is pruned");
@@ -1157,7 +1157,7 @@ async fn tail_prune_does_not_strand_client_in_snapshot_loop() {
         horizon: Duration::from_millis(1),
         ..EventsRetentionPolicy::default()
     };
-    let pruned = prune_events_once(repo.pool(), &policy)
+    let pruned = prune_events_once(repo.db(), &policy)
         .await
         .expect("prune pass");
     assert_eq!(pruned, 1, "exactly the tail hook row is pruned");

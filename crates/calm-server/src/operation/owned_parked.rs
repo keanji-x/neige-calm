@@ -19,7 +19,7 @@ pub(crate) async fn reconcile(
         .as_deref()
         .ok_or_else(|| CalmError::Conflict("owned parked recovery has no lease".into()))?;
     let outcome = adapter.recover_owned_parked(op, mode, ctx).await;
-    let pool = ctx.operation_repo.sqlite_pool();
+    let pool = ctx.operation_repo.sqlite_db();
     let result = async {
         match outcome? {
             ParkedRecovery::Complete(outcome) => {
@@ -49,6 +49,6 @@ pub(crate) async fn reconcile(
     .await;
     // A stale observer can neither complete nor release a replacement's claim.
     sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner=?2 AND phase='parked'")
-        .bind(&op.id).bind(owner).execute(&pool).await?;
+        .bind(&op.id).bind(owner).execute(pool.writer_pool()).await?;
     result
 }

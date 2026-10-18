@@ -190,7 +190,7 @@ async fn request_json(
 }
 
 async fn insert_row(repo: &dyn Repo, track_id: &str, block_id: &str, hash: &str, pinned: bool) {
-    let pool = repo.sqlite_pool().unwrap();
+    let pool = repo.sqlite_db().unwrap();
     sqlx::query(concat!(
         "INSERT INTO report_series ",
         "(track_id, block_id, request_hash, status, reason, as_of, ",
@@ -203,7 +203,7 @@ async fn insert_row(repo: &dyn Repo, track_id: &str, block_id: &str, hash: &str,
     .bind(pinned)
     .bind(json!({ "series": [{ "asset": "US:NVDA", "status": "ok", "n": 2 }] }).to_string())
     .bind(json!({ "series": [{ "asset": "US:NVDA", "status": "ok", "points": [[0, 1.0], [86400000, 2.0]] }] }).to_string())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .expect("insert report_series row");
 }

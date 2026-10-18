@@ -31,7 +31,7 @@ async fn start(boot: &Boot, scheduler: &Arc<Scheduler>, task: &Task, worker_card
     }
     let frozen = current(boot, &task.key).await;
     assert_eq!(frozen.status, TaskStatus::Dispatched);
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     assert_eq!(
         task_mark_running_tx(&mut tx, &task.id, Some(worker_card), 11, 100000)
@@ -48,7 +48,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     let boot = boot().await;
     let dir = tempfile::tempdir().unwrap();
     let events = boot.ctx.events.clone();
-    let operations = Arc::new(SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap()));
+    let operations = Arc::new(SqlxOperationRepo::new(boot.repo.sqlite_db().unwrap()));
     let completion = OperationCompletionBus::new();
     let spawn = SpawnCtx::new(
         boot.repo.clone(),
@@ -106,7 +106,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     .bind(dir.path().to_str().unwrap())
     .bind(boot.worker_card_id.as_str())
     .bind(boot.track_id.as_str())
-    .execute(&boot.repo.sqlite_pool().unwrap())
+    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
     .await
     .unwrap();
     start(&boot, &scheduler, &a, boot.worker_card_id.as_str()).await;
@@ -231,7 +231,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     .await
     .unwrap();
     let b = current(&boot, "recommendation").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     let card = card_create_with_id_tx(
         &mut tx,

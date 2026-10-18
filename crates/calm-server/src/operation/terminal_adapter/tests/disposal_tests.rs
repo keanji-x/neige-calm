@@ -260,7 +260,7 @@ async fn exercise(history: History, disposal: Disposal) {
         .resolve_task_closure(&track_id, "launch")
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     assert_eq!(
         crate::db::sqlite::task_claim_pending_tx(
             &mut tx,
@@ -286,7 +286,7 @@ async fn exercise(history: History, disposal: Disposal) {
         idempotency_key: Some(task.id),
         payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
     };
-    let operations = SqlxOperationRepo::new(repo.pool().clone());
+    let operations = SqlxOperationRepo::new(repo.db().clone());
     if matches!(history, History::PidWriteFailure) {
         sqlx::query("CREATE TRIGGER reject_terminal_pid BEFORE UPDATE OF pid ON terminals WHEN NEW.pid IS NOT NULL BEGIN SELECT RAISE(FAIL,'fixture pid write failure'); END").execute(repo.pool()).await.unwrap();
     }

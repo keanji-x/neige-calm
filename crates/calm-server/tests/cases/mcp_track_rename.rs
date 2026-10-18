@@ -129,7 +129,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
     };
     let track = {
         let cache = track_area_cache.clone();
-        let mut tx = begin_immediate_tx(sqlx_repo.pool()).await.unwrap();
+        let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
         let track = track_create_tx(
             &mut tx,
             new_track,
@@ -186,7 +186,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events,
         write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
@@ -202,7 +202,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 

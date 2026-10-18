@@ -47,7 +47,7 @@ async fn queued_task_change(replace_session: bool) {
     let session = new_id();
     let key = new_id();
     let task = format!("{}:{key}", track.id);
-    let op = SqlxOperationRepo::new(sql.pool().clone())
+    let op = SqlxOperationRepo::new(sql.db().clone())
         .insert_operation(
             "terminal-worker",
             OperationKey {

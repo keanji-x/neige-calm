@@ -282,11 +282,11 @@ async fn track_add(
     let args = parse_args(args)?;
     let (card, creator) = resolve_creator(&ctx, &identity).await?;
     let pool = ctx
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| internal("track add needs sqlite"))?;
     let planner_provider =
-        crate::harness::profile::track_planner_provider(pool, creator.id.as_str())
+        crate::harness::profile::track_planner_provider(pool.read_pool(), creator.id.as_str())
             .await
             .map_err(internal)?;
     let request = TrackAddRequest {

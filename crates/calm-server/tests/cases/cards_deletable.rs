@@ -173,7 +173,7 @@ async fn insert_held_workspace_lease(
         .join(card_id);
     std::fs::create_dir_all(&lease_path).unwrap();
     let lease_path = lease_path.to_str().unwrap().to_string();
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
@@ -188,7 +188,7 @@ async fn insert_held_workspace_lease(
     .bind("owner-delete-test")
     .bind(60_000_i64)
     .bind(1_i64)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     lease_path
@@ -436,17 +436,17 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
         std::path::Path::new(&lease_path).is_dir(),
         "card delete releases the row without removing lease artifacts"
     );
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(state, "released");
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(released_events, 1);
@@ -524,7 +524,7 @@ async fn acceptance_20_track_delete_route_refuses_descendant_and_names_child() {
     sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(parent.id.as_str())
         .bind(child.id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
+        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
         .await
         .unwrap();
 
@@ -560,7 +560,7 @@ async fn rest_track_create_cannot_set_parent_track_id() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
-        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
         .unwrap();
     assert_eq!(count, 0);
@@ -581,7 +581,7 @@ async fn track_delete_releases_active_workspace_lease_rows_before_cascade() {
     let card_id = cards[0].id.as_str().to_string();
     let lease_id = format!("lease-{card_id}");
     let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     assert!(std::path::Path::new(&lease_path).is_dir());
 
     let status = delete(boot.app.clone(), &format!("/api/tracks/{track_id}")).await;
@@ -594,13 +594,13 @@ async fn track_delete_releases_active_workspace_lease_rows_before_cascade() {
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE track_id = ?1")
             .bind(&track_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(remaining, 0, "track cascade removes released lease rows");
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(released_events, 1);
@@ -621,7 +621,7 @@ async fn area_delete_releases_track_workspace_lease_rows_before_cascade() {
     let card_id = cards[0].id.as_str().to_string();
     let lease_id = format!("lease-{card_id}");
     let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     assert!(std::path::Path::new(&lease_path).is_dir());
 
     let (status, body) =
@@ -635,13 +635,13 @@ async fn area_delete_releases_track_workspace_lease_rows_before_cascade() {
     let remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(remaining, 0, "area cascade removes released lease row");
     let released_events: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'workspace.released'")
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert_eq!(released_events, 1);

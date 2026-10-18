@@ -1146,7 +1146,7 @@ async fn boot_plugin_host(
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    let mut tx = begin_immediate_tx(repo.pool())
+    let mut tx = begin_immediate_tx(repo.db())
         .await
         .expect("begin runtime tx");
     let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)

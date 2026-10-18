@@ -245,9 +245,9 @@ async fn acp_lost_prompt_response_stays_fenced_after_restart_without_resend() {
         "unknown admission cannot be retried"
     );
     let runtime = stack.runtime(&card).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     assert!(
-        calm_server::db::sqlite::acp_submission_unresolved(&pool, &runtime.id)
+        calm_server::db::sqlite::acp_submission_unresolved(pool.read_pool(), &runtime.id)
             .await
             .unwrap()
     );
@@ -334,7 +334,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
     let (_, card) = create(&stack).await;
     let outcome = turn(&stack, &card, "dispatched checkpoint", 1).await;
     let runtime = stack.runtime(&card).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let mut snapshot = stack.harness(&runtime.id).snapshot().await;
     stack.shutdown().await;
     // Restore the durable state at the real post-dispatch/pre-settlement crash checkpoint.
@@ -375,7 +375,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
         "recovery cannot resend"
     );
     assert!(
-        calm_server::db::sqlite::acp_submission_unresolved(&pool, &runtime.id)
+        calm_server::db::sqlite::acp_submission_unresolved(pool.read_pool(), &runtime.id)
             .await
             .unwrap()
     );
@@ -402,7 +402,7 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
     assert!(!checkpoint.pending_entries().is_empty());
     std::fs::write(root.path().join("release-setup"), "").unwrap();
     stack.wait_outcomes(&card, 1).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     stack.shutdown().await;
     let mut entries = checkpoint.pending_entries();
     entries.push(calm_server::harness::QueueEntry::user_message(
@@ -414,7 +414,7 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
     sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
         .bind(&runtime.id)
         .bind(serde_json::to_string(&checkpoint).unwrap())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
@@ -464,11 +464,11 @@ async fn acp_failed_cleanup_revokes_the_live_mcp_credential() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let runtime = stack.runtime(&card).await;
     stack.wait_phase(&runtime.id, "turn_running").await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let before: Option<String> =
         sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
             .bind(&runtime.id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(
@@ -490,7 +490,7 @@ async fn acp_failed_cleanup_revokes_the_live_mcp_credential() {
     let after: Option<String> =
         sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
             .bind(&runtime.id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(
@@ -520,7 +520,7 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
     let (_, card) = create(&stack).await;
     let outcome = turn(&stack, &card, "retain this reply", 1).await;
     let runtime = stack.runtime(&card).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let mut checkpoint = stack.harness(&runtime.id).snapshot().await;
     stack.shutdown().await;
     checkpoint.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
@@ -581,9 +581,9 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
     let (_, card) = create(&stack).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let operation: String = sqlx::query_scalar("SELECT id FROM operations WHERE target_id=?1 AND phase='succeeded' ORDER BY created_at_ms DESC LIMIT 1")
-        .bind(&card).fetch_one(&pool).await.unwrap();
+        .bind(&card).fetch_one(pool.read_pool()).await.unwrap();
     std::fs::write(root.path().join("scenario"), "hold").unwrap();
     let (status, body) = stack.post_input(&card, "already dispatched").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -598,7 +598,7 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
     // Crash replay uses the operation's original Idle snapshot while boot has
     // independently recovered and dispatched this runtime's current input.
     sqlx::query("UPDATE operations SET phase='spawn_started',phase_detail_json=NULL,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
-        .bind(&operation).execute(&pool).await.unwrap();
+        .bind(&operation).execute(pool.writer_pool()).await.unwrap();
     calm_server::recover_operations_on_boot(&stack.state)
         .await
         .unwrap();
@@ -646,7 +646,7 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
     ));
     std::fs::write(root.path().join("release-setup"), "").unwrap();
     stack.wait_outcomes(&card, 1).await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     stack.shutdown().await;
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
@@ -712,11 +712,11 @@ async fn acp_reset_does_not_mirror_the_predecessors_revoked_hash() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let runtime = stack.runtime(&card).await;
     stack.wait_phase(&runtime.id, "turn_running").await;
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let old: Option<String> =
         sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
             .bind(&runtime.id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(old.is_some());
@@ -742,14 +742,14 @@ async fn acp_reset_does_not_mirror_the_predecessors_revoked_hash() {
     let mirrored: Option<String> =
         sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
             .bind(&current.id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     assert!(
         mirrored.is_none(),
         "idle successor cannot inherit an old credential"
     );
-    let active:i64=sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE mcp_token_hash=?1 AND state IN ('starting','running','idle','turn_pending')").bind(old).fetch_one(&pool).await.unwrap();
+    let active:i64=sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE mcp_token_hash=?1 AND state IN ('starting','running','idle','turn_pending')").bind(old).fetch_one(pool.read_pool()).await.unwrap();
     assert_eq!(active, 0);
     stack.shutdown().await;
 }

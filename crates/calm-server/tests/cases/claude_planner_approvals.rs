@@ -196,12 +196,12 @@ async fn an_unreadable_permission_mode_refuses_the_turn() {
     let stack = Stack::boot(&root).await;
     let (_track, card) = stack.create_claude_track().await;
     let runtime = stack.runtime(&card).await;
-    let pool = stack.repo().sqlite_pool().expect("sqlite");
+    let pool = stack.repo().sqlite_db().expect("sqlite");
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.permission_mode', 'yolo') WHERE id = ?1",
     )
     .bind(&card)
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .expect("corrupt the mode");
     let spawned = root.read_fake("spawns");

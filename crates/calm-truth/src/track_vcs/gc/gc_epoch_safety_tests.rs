@@ -10,7 +10,7 @@ async fn gc_epoch_self_alias_head_replacement_protects_newly_rooted_tree() {
     let new = f.tree("self-alias target tree", 1).await;
     f.age(&new).await;
     let orphan = f.orphan("self-alias unrelated garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let before = epoch(&f).await;
     replace_commit(
@@ -62,10 +62,10 @@ async fn gc_epoch_nondirect_same_tree_ref_target_protects_unseen_ancestor() {
     .await
     .unwrap();
     let orphan = f.orphan("nondirect unrelated garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let before = epoch(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query("UPDATE track_vcs_refs SET head_hash='nondirect-child' WHERE track_id=?1")
         .bind(f.track.as_str())
         .execute(&mut **tx)
@@ -97,7 +97,7 @@ async fn gc_epoch_same_tree_ancestor_replacement_cycle_preserves_cached_tree_cov
     let ancestor = f.publish(&old, None).await;
     let head = f.publish(&f.tree, Some(&ancestor)).await;
     let orphan = f.orphan("cycle unrelated garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let before = epoch(&f).await;
     replace_commit(
@@ -141,7 +141,7 @@ async fn gc_epoch_replacing_another_root_uses_global_tree_coverage() {
     replace_commit(&f, "second-root-head", "second-root", None, &old.tree_hash)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(f.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlx::query(
         "INSERT INTO track_vcs_refs(track_id,head_hash) VALUES('second-root','second-root-head')",
     )
@@ -150,7 +150,7 @@ async fn gc_epoch_replacing_another_root_uses_global_tree_coverage() {
     .unwrap();
     tx.commit().await.unwrap();
     let orphan = f.orphan("global roots unrelated garbage").await;
-    let (pause, sweep) = start(f.repo.pool().clone(), vec![Phase::BeforeDelete]);
+    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let before = epoch(&f).await;
     replace_commit(

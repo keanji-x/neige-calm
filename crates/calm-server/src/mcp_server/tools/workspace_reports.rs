@@ -78,7 +78,7 @@ async fn dispatch(
 ) -> Result<Value, RpcError> {
     let zone = require_workspace_reports(&ctx, &identity).await?;
     let pool = ctx
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| RpcError::internal("workspace reports require sqlite"))?;
     let invalid = |e: serde_json::Error| RpcError::invalid_params(e.to_string());
@@ -89,7 +89,7 @@ async fn dispatch(
 "SELECT t.id,t.title,a.id,a.name,t.closed_at FROM tracks t JOIN areas a ON a.id=t.area_id ",
 "WHERE a.kind='user' AND (?1 IS NULL OR t.id>?1) ORDER BY t.id LIMIT ?2",
 ))
-                .bind(args.cursor).bind((workspace_reports::PAGE_SIZE+1) as i64).fetch_all(pool).await.map_err(|e|RpcError::internal(e.to_string()))?;
+                .bind(args.cursor).bind((workspace_reports::PAGE_SIZE+1) as i64).fetch_all(pool.read_pool()).await.map_err(|e|RpcError::internal(e.to_string()))?;
             let next_cursor = (rows.len() > workspace_reports::PAGE_SIZE)
                 .then(|| rows[workspace_reports::PAGE_SIZE - 1].0.clone());
             rows.truncate(workspace_reports::PAGE_SIZE);
@@ -136,7 +136,7 @@ async fn dispatch(
         }
         TOOL_WORKSPACE_LOG => {
             let query: ReportEditsQuery = serde_json::from_value(args).map_err(invalid)?;
-            let page = workspace_reports::edits(pool, &query, zone)
+            let page = workspace_reports::edits(pool.read_pool(), &query, zone)
                 .await
                 .map_err(error)?;
             // The REST page keeps `at` in unix ms; the tool names the time `edited_at` (§4).

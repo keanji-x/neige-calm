@@ -100,7 +100,7 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        sqlx_repo.pool(),
+        sqlx_repo.db(),
         NewTrack {
             template_input: None,
             area_id: area.id.clone(),
@@ -119,7 +119,7 @@ async fn boot() -> Boot {
     .unwrap();
     // The worker runs in the track worktree (#1830 S2).
     calm_server::test_seams::ensure_track_worktree_for_test(
-        &repo.sqlite_pool().unwrap(),
+        &repo.sqlite_db().unwrap(),
         track.id.as_str(),
     )
     .await
@@ -198,7 +198,7 @@ async fn boot() -> Boot {
         terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
         repo: route_repo,
         track_vcs: repo
-            .sqlite_pool()
+            .sqlite_db()
             .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
         events: events.clone(),
         write: WriteContext::new(cache.clone(), wcc.clone()),
@@ -214,7 +214,7 @@ async fn boot() -> Boot {
         plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_pool: repo.sqlite_pool(),
+        sqlite_db: repo.sqlite_db(),
         gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let mut registry = ToolRegistry::new();

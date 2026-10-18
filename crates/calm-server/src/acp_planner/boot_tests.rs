@@ -262,7 +262,7 @@ async fn historical(repo: &SqlxRepo, root: &Path, provider: AgentProvider, owned
         .await
         .unwrap();
     if owned {
-        crate::db::sqlite::acp_registration_claim(repo.pool(), &row.worker, "historical", false)
+        crate::db::sqlite::acp_registration_claim(repo.db(), &row.worker, "historical", false)
             .await
             .unwrap();
     }

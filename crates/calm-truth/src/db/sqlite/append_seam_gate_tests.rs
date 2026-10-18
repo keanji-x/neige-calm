@@ -162,7 +162,7 @@ async fn append_seam_refuses_every_triple_the_role_gate_refuses() {
 
     for (label, actor, scope, event, expected) in cases {
         let before = events_row_count(&repo).await;
-        let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+        let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
         let err = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
             .await
             .expect_err(&format!("{label}: seam must refuse"));
@@ -195,7 +195,7 @@ async fn batch_append_seam_gates_each_event_and_writes_none_on_refusal() {
         codex_hook(&worker.card, "s3-seam-batch-ok"),
         task_context_frozen(),
     ];
-    let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
     let err = append_decision_events_in_tx(&mut tx, &ActorId::User, &worker.scope(), None, &events)
         .await
         .expect_err("batch must refuse the kernel-only event");
@@ -233,7 +233,7 @@ async fn append_seam_admits_the_actor_shapes_production_call_sites_use() {
     let worker = seed(&repo, "admit", CardRole::Worker).await;
 
     for actor in [ActorId::KernelDispatcher, ActorId::Kernel, ActorId::User] {
-        let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
+        let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
         let event = codex_hook(&worker.card, &format!("s3-seam-admit-{actor:?}"));
         let id = append_decision_event_in_tx(&mut tx, &actor, &worker.scope(), None, &event)
             .await

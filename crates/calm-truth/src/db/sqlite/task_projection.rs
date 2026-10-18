@@ -1791,10 +1791,10 @@ mod tests {
             .unwrap();
         let track = "track-projection".to_string();
         sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area-projection','c','#000',0,'user',0,0)")
-            .execute(&repo.pool).await.unwrap();
+            .execute(repo.pool()).await.unwrap();
         sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,planner_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,0,0,1,0)")
-            .bind(&track).execute(&repo.pool).await.unwrap();
-        let mut tx = repo.pool.begin().await.unwrap();
+            .bind(&track).execute(repo.pool()).await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         crate::db::sqlite::track_workspace::track_workspace_write_tx(
             &mut tx,
             &track,
@@ -1819,7 +1819,7 @@ mod tests {
     ) {
         sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,claim_context_json,context_closure_truncated,decl_ready,decl_released_by_user,context_verify_failures,spawn,child_track_id,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec',NULL,0,0,0,0,'in-wave',NULL,0,0)")
             .bind(format!("{track}:{key}")).bind(track).bind(key).bind(format!("goal {key}")).bind(status)
-            .execute(&repo.pool).await.unwrap();
+            .execute(repo.pool()).await.unwrap();
     }
 
     #[tokio::test]
@@ -1834,11 +1834,11 @@ mod tests {
             .bind(claim_context.to_string())
             .bind(json!({"passed":false,"failing_step":"test","log_path":"/private/gate.log","log_tail":"raw output","attempt":7}).to_string())
             .bind(&track)
-            .execute(&repo.pool)
+            .execute(repo.pool())
             .await
             .unwrap();
 
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
             &track,
@@ -1876,11 +1876,11 @@ mod tests {
         sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='root-only'")
             .bind(claim_context.to_string())
             .bind(&track)
-            .execute(&repo.pool)
+            .execute(repo.pool())
             .await
             .unwrap();
 
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
             &track,
@@ -1909,11 +1909,11 @@ mod tests {
         let (repo, track) = setup().await;
         sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
             .bind(&track)
-            .execute(&repo.pool)
+            .execute(repo.pool())
             .await
             .unwrap();
 
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
             &track,
@@ -1945,11 +1945,11 @@ mod tests {
         sqlx::query("UPDATE tasks SET context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='cross-track'")
             .bind(claim_context.to_string())
             .bind(&track)
-            .execute(&repo.pool)
+            .execute(repo.pool())
             .await
             .unwrap();
 
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
             &track,
@@ -1984,11 +1984,11 @@ mod tests {
              WHERE track_id=?1 AND key='terminal-stale'",
         )
         .bind(&track)
-        .execute(&repo.pool)
+        .execute(repo.pool())
         .await
         .unwrap();
 
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
             &track,
@@ -2017,10 +2017,10 @@ mod tests {
         let (repo, track) = setup().await;
         sqlx::query("UPDATE tracks SET planner_task_ceiling=0 WHERE id=?1")
             .bind(&track)
-            .execute(&repo.pool)
+            .execute(repo.pool())
             .await
             .unwrap();
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut tx,
             &track,
@@ -2043,14 +2043,14 @@ mod tests {
     async fn acceptance_1_spawn_only_projection_change_updates_row_and_changed_keys() {
         let (repo, track) = setup().await;
         let mut declaration = declaration(0, "route");
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let first = project_tasks_tx(&mut tx, &track, &[declaration.clone()], &[vec![]])
             .await
             .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(first.changed_keys, ["route"]);
         declaration.spawn = calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE.into();
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let second = project_tasks_tx(&mut tx, &track, &[declaration], &[vec![]])
             .await
             .unwrap();
@@ -2059,7 +2059,7 @@ mod tests {
         let spawn: String =
             sqlx::query_scalar("SELECT spawn FROM tasks WHERE track_id=?1 AND key='route'")
                 .bind(&track)
-                .fetch_one(&repo.pool)
+                .fetch_one(repo.pool())
                 .await
                 .unwrap();
         assert_eq!(spawn, calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE);
@@ -2070,8 +2070,8 @@ mod tests {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "child-link", "running").await;
         sqlx::query("UPDATE tasks SET spawn='sub-track',child_track_id='gone-child' WHERE track_id=?1 AND key='child-link'")
-            .bind(&track).execute(&repo.pool).await.unwrap();
-        let mut conn = repo.pool.acquire().await.unwrap();
+            .bind(&track).execute(repo.pool()).await.unwrap();
+        let mut conn = repo.pool().acquire().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut conn,
             &track,
@@ -2092,12 +2092,12 @@ mod tests {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "k1", "dispatched").await;
         let declarations = vec![declaration(0, "k2"), declaration(1, "k1")];
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let outcome = project_tasks_tx(&mut tx, &track, &declarations, &[vec![], vec![]])
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let mut conn = repo.pool.acquire().await.unwrap();
+        let mut conn = repo.pool().acquire().await.unwrap();
         let diagnostics =
             evaluate_schedulability(&mut conn, &track, &declarations, &[vec![], vec![]], true)
                 .await
@@ -2112,7 +2112,7 @@ mod tests {
         assert!(outcome.diagnostics[1].schedulable);
         assert_eq!(diagnostics[1].status.as_deref(), Some("dispatched"));
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1 AND status IN ('pending','dispatched','running','verifying')")
-            .bind(&track).fetch_one(&repo.pool).await.unwrap();
+            .bind(&track).fetch_one(repo.pool()).await.unwrap();
         assert_eq!(
             count, 1,
             "invariant 7b: no pending row may exceed occupied capacity"
@@ -2126,7 +2126,7 @@ mod tests {
         let declarations = vec![declaration(0, "k1"), declaration(1, "k2")];
         let local = vec![vec![Diagnostic::new("payload", "broken")], vec![]];
         for _ in 0..2 {
-            let mut tx = repo.pool.begin().await.unwrap();
+            let mut tx = repo.pool().begin().await.unwrap();
             let outcome = project_tasks_tx(&mut tx, &track, &declarations, &local)
                 .await
                 .unwrap();
@@ -2136,7 +2136,7 @@ mod tests {
             let keys: Vec<(String,)> =
                 sqlx::query_as("SELECT key FROM tasks WHERE track_id=?1 ORDER BY key")
                     .bind(&track)
-                    .fetch_all(&repo.pool)
+                    .fetch_all(repo.pool())
                     .await
                     .unwrap();
             assert_eq!(keys, vec![("k2".into(),)]);
@@ -2147,7 +2147,7 @@ mod tests {
     async fn rolled_back_material_verdict_leaves_no_row_change_or_event() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "rollback", "running").await;
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let events = mark_context_material_tx(
             &mut tx,
             &format!("{track}:rollback"),
@@ -2163,11 +2163,11 @@ mod tests {
         let stale: Option<i64> =
             sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
                 .bind(format!("{track}:rollback"))
-                .fetch_one(&repo.pool)
+                .fetch_one(repo.pool())
                 .await
                 .unwrap();
         let persisted_events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool())
             .await
             .unwrap();
         assert_eq!(stale, None);
@@ -2182,7 +2182,7 @@ mod tests {
             "UPDATE tasks SET worker_card_id='card-contested' WHERE track_id=?1 AND key='contested'",
         )
         .bind(&track)
-        .execute(&repo.pool)
+        .execute(repo.pool())
         .await
         .unwrap();
 
@@ -2199,7 +2199,7 @@ mod tests {
             "fixture must carry the diagnostic this document shape produces"
         );
 
-        let mut conn = repo.pool.acquire().await.unwrap();
+        let mut conn = repo.pool().acquire().await.unwrap();
         let verdicts = evaluate_schedulability_with_pending_reasons(
             &mut conn,
             &track,
@@ -2232,11 +2232,11 @@ mod tests {
             "UPDATE tasks SET worker_card_id='card-redeclared' WHERE track_id=?1 AND key='redeclared'",
         )
         .bind(&track)
-        .execute(&repo.pool)
+        .execute(repo.pool())
         .await
         .unwrap();
 
-        let mut conn = repo.pool.acquire().await.unwrap();
+        let mut conn = repo.pool().acquire().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut conn,
             &track,
@@ -2280,11 +2280,11 @@ mod tests {
                    {"track_id": &track, "block_id": "b_ref", "rev": 1, "hash": "h", "is_root": false}])
             .to_string(),
         )
-        .execute(&repo.pool)
+        .execute(repo.pool())
         .await
         .unwrap();
 
-        let mut conn = repo.pool.acquire().await.unwrap();
+        let mut conn = repo.pool().acquire().await.unwrap();
         // `delete_block` leaves no tombstone behind.
         let verdicts = evaluate_schedulability(&mut conn, &track, &[], &[], true)
             .await
@@ -2326,11 +2326,11 @@ mod tests {
             "UPDATE tasks SET worker_card_id='card-only-tombstone' WHERE track_id=?1 AND key='only-tombstone'",
         )
         .bind(&track)
-        .execute(&repo.pool)
+        .execute(repo.pool())
         .await
         .unwrap();
 
-        let mut conn = repo.pool.acquire().await.unwrap();
+        let mut conn = repo.pool().acquire().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut conn,
             &track,
@@ -2400,7 +2400,7 @@ mod tests {
     ) -> TaskProjectionOutcome {
         let (declarations, block_local_diags) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
-        let mut tx = repo.pool.begin().await.unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
         let outcome = project_tasks_tx(&mut tx, track, &declarations, &block_local_diags)
             .await
             .unwrap();
@@ -2424,7 +2424,7 @@ mod tests {
                 "SELECT status, head, base FROM tasks WHERE track_id = ?1 AND key = 'review'",
             )
             .bind(&track)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool())
             .await
             .unwrap();
             assert_eq!(row, ("pending".into(), Some(commit.clone()), Some(commit)));
@@ -2447,7 +2447,7 @@ mod tests {
                 "SELECT status, start FROM tasks WHERE track_id = ?1 AND key = 'catch-up'",
             )
             .bind(&track)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool())
             .await
             .unwrap();
             assert_eq!(
@@ -2478,12 +2478,12 @@ mod tests {
                 "SELECT status, result_contract FROM tasks WHERE track_id = ?1 AND key = 'review'",
             )
             .bind(&track)
-            .fetch_one(&repo.pool)
+            .fetch_one(repo.pool())
             .await
             .unwrap();
             assert_eq!(row, ("pending".into(), contract.map(str::to_string)));
             let task = crate::db::sqlite::task_get_tx(
-                &mut repo.pool.begin().await.unwrap(),
+                &mut repo.pool().begin().await.unwrap(),
                 &format!("{track}:review"),
             )
             .await
@@ -2550,7 +2550,7 @@ mod tests {
         let stale: Option<i64> =
             sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
                 .bind(format!("{track}:reordered"))
-                .fetch_one(&repo.pool)
+                .fetch_one(repo.pool())
                 .await
                 .unwrap();
         assert!(stale.is_some(), "the row itself carries the verdict");
@@ -2573,13 +2573,13 @@ mod tests {
             "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE track_id=?1 AND key='contended'",
         )
         .bind(&track)
-        .execute(&repo.pool)
+        .execute(repo.pool())
         .await
         .unwrap();
         // The release edge only exists under this policy.
         sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
             .bind(&track)
-            .execute(&repo.pool)
+            .execute(repo.pool())
             .await
             .unwrap();
         let outcome = project_blocks(&repo, &track, &blocks).await;

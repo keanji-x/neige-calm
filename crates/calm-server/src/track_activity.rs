@@ -345,11 +345,11 @@ impl TrackActivityProjector {
         harness: HarnessRegistry,
         renderer: Arc<TerminalRendererRegistry>,
     ) -> Option<Self> {
-        let pool = repo.sqlite_pool()?;
+        let pool = repo.sqlite_db()?;
         let (wake_tx, wake_rx) = mpsc::unbounded_channel();
         Some(Self {
             repo,
-            pool,
+            pool: pool.read_pool().clone(),
             bus,
             write,
             harness,

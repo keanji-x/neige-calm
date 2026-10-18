@@ -203,7 +203,7 @@ async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery
             .any(|t| t["name"] == PUBLISH)
     );
 
-    let mut tx = begin_immediate_tx(boot.sqlx.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(boot.sqlx.db()).await.unwrap();
     let foreign = session_projection_active_for_card_tx(&mut tx, &boot.other_card_id)
         .await
         .unwrap()

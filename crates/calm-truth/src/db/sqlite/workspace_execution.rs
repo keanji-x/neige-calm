@@ -84,12 +84,12 @@ pub async fn settle_tx(
     Ok(())
 }
 
-pub async fn finish(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+pub async fn finish(pool: &crate::db::sqlite::SqliteDb, id: &str) -> Result<(), sqlx::Error> {
     // The CHECK rejects finishing before settlement; exact replays remain harmless.
     let result =
         sqlx::query("UPDATE workspace_executions SET secrets_json = NULL WHERE execution_id = ?")
             .bind(id)
-            .execute(pool)
+            .execute(pool.writer_pool())
             .await?;
     if result.rows_affected() == 0 {
         return Err(sqlx::Error::RowNotFound);
@@ -238,10 +238,10 @@ mod tests {
         tx.commit().await.unwrap();
         assert!(alias_has_execution(pool, &alias).await.unwrap());
 
-        let mut tx = super::super::begin_immediate_tx(pool).await.unwrap();
+        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
         settle_tx(&mut tx, "history-id", "{}", 1).await.unwrap();
         tx.commit().await.unwrap();
-        finish(pool, "history-id").await.unwrap();
+        finish(repo.db(), "history-id").await.unwrap();
         assert!(alias_has_execution(pool, &alias).await.unwrap());
     }
 }

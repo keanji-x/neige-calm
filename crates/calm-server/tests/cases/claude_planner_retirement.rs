@@ -358,7 +358,7 @@ async fn a_stale_harness_tick_after_shutdown_never_mints_over_the_replacer() {
 async fn card_token_hash(stack: &Stack, card_id: &str) -> Option<String> {
     sqlx::query_scalar("SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1")
         .bind(card_id)
-        .fetch_optional(&stack.repo().sqlite_pool().expect("pool"))
+        .fetch_optional(stack.repo().sqlite_db().expect("pool").read_pool())
         .await
         .expect("card token read")
 }

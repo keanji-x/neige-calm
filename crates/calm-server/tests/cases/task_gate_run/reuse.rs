@@ -307,7 +307,7 @@ async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
     })
     .unwrap();
     let pool = fx.pool();
-    let repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
+    let repo = Arc::new(SqlxOperationRepo::new(fx.db().clone()));
     let op_id = repo
         .insert_operation(
             TASK_VERIFY_KIND,
@@ -341,7 +341,7 @@ async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
         .await
         .unwrap()
         .unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
+    let mut tx = begin_immediate_tx(&fx.db()).await.unwrap();
     let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, &op).await.unwrap() else {
         panic!("stable preparation became stale");
     };

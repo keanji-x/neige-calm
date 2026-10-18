@@ -107,7 +107,7 @@ async fn assistant_edits(boot: &Boot, heading: &str, markdown: &str) {
 
 /// Supersede the planner card's session with a fresh one, as a planner restart does; the successor's identity.
 async fn supersede_planner(boot: &Boot, current: &str, successor: &str) -> ToolCallIdentity {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();

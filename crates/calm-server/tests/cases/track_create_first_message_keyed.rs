@@ -51,10 +51,10 @@ async fn create_admin_refuses_ai_actor_headers() {
     }
     assert_eq!(b.track_count().await, 0);
     assert_eq!(b.card_count().await, 0);
-    let pool = b.repo.sqlite_pool().unwrap();
+    let pool = b.repo.sqlite_db().unwrap();
     for table in ["events", "track_create_idempotency"] {
         let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
         assert_eq!(count, 0, "{table}");

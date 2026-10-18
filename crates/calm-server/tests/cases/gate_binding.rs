@@ -1337,7 +1337,7 @@ async fn gate_prepare_times_out_as_stuck_not_hang() {
 
     // Another writer, started while the prepare transaction holds the write slot: it completes
     // once the sample bound fires and the transaction rolls back — never `database is locked`.
-    let pool = fx.pool();
+    let pool = fx.db();
     let task_id = task.id.clone();
     let writer_started = std::time::Instant::now();
     let writer = tokio::spawn(async move {
@@ -1694,7 +1694,7 @@ async fn legacy_lease_gate_runs_without_target_check() {
     let dir = fx.track_root.parent().unwrap().join("plain-lease");
     std::fs::create_dir_all(&dir).unwrap();
     calm_server::test_seams::acquire_workspace_lease_for_test(
-        &fx.pool(),
+        &fx.db(),
         &worker.card_id,
         fx.track(),
         "legacy-owner",
@@ -2171,8 +2171,8 @@ pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task
     .resolve_task_closure(fx.track(), key)
     .await
     .unwrap();
-    let pool = fx.pool();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let pool = fx.db();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
         .await
         .unwrap();
     assert_eq!(
@@ -2194,7 +2194,7 @@ pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task
     .bind(worker)
     .bind(&task.id)
     .bind(now_ms())
-    .execute(&pool)
+    .execute(pool.writer_pool())
     .await
     .unwrap();
     current(&fx.boot, key).await
@@ -2319,7 +2319,7 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
     assert_ne!(moved, candidate.commit_sha);
     let task_id = task.id.clone();
     let key = format!("{task_id}#g1");
-    let pool = fx.pool();
+    let pool = fx.db();
 
     // boot#1: the boot sweep drives the gate; prepare refuses and commits; the seam aborts
     // before the spawn. The abort can land before or after the listener binds, so boot#1 is
@@ -2356,7 +2356,7 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
              WHERE kind = 'task-verify' AND idempotency_key = ?1",
         )
         .bind(&key)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
     // The driver persists `SpawnStarted` before it calls `spawn_side_effect`, whose first
@@ -2392,7 +2392,7 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
             "SELECT phase FROM operations WHERE kind = 'task-verify' AND idempotency_key = ?1",
         )
         .bind(&key)
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .unwrap();
         if phase == "succeeded" || phase == "failed" || phase == "stuck" {

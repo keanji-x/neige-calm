@@ -442,7 +442,7 @@ async fn a_failed_reset_compensates_even_when_the_binding_became_unreadable() {
         "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'unknown') WHERE id = ?1",
     )
     .bind(&card_id)
-    .execute(&stack.repo().sqlite_pool().expect("pool"))
+    .execute(stack.repo().sqlite_db().expect("pool").writer_pool())
     .await
     .expect("corrupt the binding");
     failure.release.notify_one();

@@ -196,7 +196,7 @@ impl OperationRuntime {
             ))
         })?;
         tx_only.validate(&payload).await?;
-        match commit_tx_only(&self.repo.sqlite_pool(), tx_only, key, payload).await? {
+        match commit_tx_only(&self.repo.sqlite_db(), tx_only, key, payload).await? {
             KeyedCommit::Replay(op_id) => self.wait(&op_id).await,
             KeyedCommit::Committed { result, events } => {
                 for envelope in events {
@@ -431,7 +431,7 @@ impl OperationRuntime {
     }
 
     pub async fn recover_on_boot(&self) -> Result<RecoveryPlan> {
-        reclaim_dead_workspace_leases_on_boot(&self.repo.sqlite_pool(), &self.events).await?;
+        reclaim_dead_workspace_leases_on_boot(&self.repo.sqlite_db(), &self.events).await?;
         let rows = self.repo.abandoned_running_operations_on_boot().await?;
         let mut items = Vec::new();
         for op in rows {
@@ -1091,7 +1091,7 @@ impl OperationRuntime {
         op_id: &OperationId,
         outcome: &ParkedOutcome,
     ) -> Result<Option<OperationResult>> {
-        let pool = self.repo.sqlite_pool();
+        let pool = self.repo.sqlite_db();
         let mut tx = begin_immediate_tx(&pool).await?;
         match complete_parked_tx(&mut tx, op_id, outcome).await? {
             ParkedCompletion::Completed(result) => {

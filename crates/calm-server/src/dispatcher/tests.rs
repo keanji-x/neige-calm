@@ -2241,7 +2241,7 @@ async fn planner_push_delivery_fixture() -> (crate::db::sqlite::SqlxRepo, Event)
     .unwrap();
     let lease_dir = tempfile::tempdir().unwrap();
     let lease_path = lease_dir.path().join("w").join("worker");
-    let mut tx = crate::db::sqlite::begin_immediate_tx(repo.pool())
+    let mut tx = crate::db::sqlite::begin_immediate_tx(repo.db())
         .await
         .unwrap();
     crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(

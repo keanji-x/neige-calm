@@ -126,7 +126,7 @@ impl HostFiles {
 async fn area_owner_cannot_read_host_files_or_git() {
     let files = HostFiles::new();
     let (_temp, repo, state) = crate::daily_planner::tests::fixture().await;
-    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
     area_membership::application_user_register(&mut tx, "alice", "Owner")
         .await
         .unwrap();

@@ -15,7 +15,7 @@ async fn awaiting_retry_schema_accepts_a_durable_receipt_without_spawn_artifacts
     let truth = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = SqlxOperationRepo::new(truth.pool().clone());
+    let repo = SqlxOperationRepo::new(truth.db().clone());
     let id = repo
         .insert_operation(
             "confirmation-test",
@@ -156,7 +156,7 @@ async fn runtime() -> (
     let truth = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = Arc::new(SqlxOperationRepo::new(truth.pool().clone()));
+    let repo = Arc::new(SqlxOperationRepo::new(truth.db().clone()));
     let adapter = Arc::new(ConfirmationAdapter {
         confirmed: AtomicBool::new(false),
         interactions: AtomicUsize::new(0),
@@ -303,7 +303,7 @@ async fn awaiting_retry_expired_or_replaced_lease_cannot_checkpoint_a_receipt() 
     sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
         .bind(now_ms() - 1)
         .bind(&id)
-        .execute(&repo.pool)
+        .execute(repo.pool.writer_pool())
         .await
         .unwrap();
     let deferred = Phase::AwaitingRetry {
@@ -389,7 +389,7 @@ async fn awaiting_retry_unkeyed_submission_is_refused_before_admission_and_effec
         ));
     }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM operations")
-        .fetch_one(&repo.pool)
+        .fetch_one(repo.pool.read_pool())
         .await
         .unwrap();
     assert_eq!(count, 0);
@@ -407,7 +407,7 @@ async fn awaiting_retry_unregistered_adapter_cannot_claim_a_saved_intent() {
     let output = TxOutput::new("unknown", None, json!({"unconfirmed":true}));
     sqlx::query("UPDATE operations SET phase='awaiting_retry', phase_detail_json=?1, tx_output_json=?2 WHERE id=?3")
         .bind(json!({"kind":"mint_and_await","thread_id":null}).to_string())
-        .bind(serde_json::to_string(&output).unwrap()).bind(&id).execute(&repo.pool).await.unwrap();
+        .bind(serde_json::to_string(&output).unwrap()).bind(&id).execute(repo.pool.writer_pool()).await.unwrap();
     assert!(matches!(
         runtime
             .retry_interaction("removed-adapter", &key("hash"), 0)

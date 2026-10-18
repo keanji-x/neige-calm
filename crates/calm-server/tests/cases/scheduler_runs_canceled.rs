@@ -63,12 +63,12 @@ async fn live_json(boot: &Boot, path: &str) -> Value {
 }
 
 async fn vcs_head_json(boot: &Boot, path: &str) -> Value {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let head = track_vcs::head(&pool, &boot.track_id)
+    let pool = boot.repo.sqlite_db().expect("sqlite pool");
+    let head = track_vcs::head(pool.read_pool(), &boot.track_id)
         .await
         .expect("read vcs head")
         .expect("track has a vcs head");
-    let blob = track_vcs::cat_at(&pool, &head, path)
+    let blob = track_vcs::cat_at(pool.read_pool(), &head, path)
         .await
         .unwrap_or_else(|e| panic!("vcs head has {path}: {e:?}"));
     serde_json::from_str(&blob.content).expect("json body")

@@ -608,7 +608,7 @@ async fn launchpad_started_at_path(
     digest: &str,
 ) -> Result<bool> {
     let pool = app
-        .sqlite_pool()
+        .sqlite_db()
         .ok_or_else(|| CalmError::Internal("the launchpad requires a sqlite-backed repo".into()))?;
     let key = format!("today-launchpad:{planner_card_id}:%:{digest}");
     let started: bool = sqlx::query_scalar(
@@ -618,7 +618,7 @@ async fn launchpad_started_at_path(
     )
     .bind(PLANNER_HARNESS_START)
     .bind(key)
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await?;
     Ok(started)
 }

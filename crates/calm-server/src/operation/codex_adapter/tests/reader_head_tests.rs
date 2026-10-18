@@ -90,7 +90,7 @@ async fn codex_reader_spawn_redrive_refuses_a_checkout_that_left_the_head() {
     );
     let actual = git_head(&harness.worktree);
 
-    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
     let ctx = SpawnCtx::new(
         route_repo,

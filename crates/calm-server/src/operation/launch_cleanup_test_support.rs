@@ -184,7 +184,7 @@ pub(crate) async fn claimed_task(
     let pending = repo.task_current_get(track_id, key).await.unwrap().unwrap();
     let monitor = crate::task_context::TaskContextMonitor::new(repo.clone(), events, write);
     let closure = monitor.resolve_task_closure(track_id, key).await.unwrap();
-    let pool = repo.sqlite_pool().unwrap();
+    let pool = repo.sqlite_db().unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     task_claim_pending_tx(&mut tx, &pending.id, 1, &closure.refs, false)
         .await

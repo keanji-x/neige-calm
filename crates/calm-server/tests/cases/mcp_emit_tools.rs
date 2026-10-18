@@ -108,10 +108,10 @@ async fn consumer_summary_authenticated_completion_preserves_entire_result() {
 #[tokio::test]
 async fn task_completed_from_claude_worker_persists_claude_session_actor() {
     let b = boot_with_role(CardRole::Worker).await;
-    let pool = b.repo.sqlite_pool().expect("sqlite pool");
+    let pool = b.repo.sqlite_db().expect("sqlite pool");
     sqlx::query("UPDATE worker_sessions SET provider = 'claude' WHERE id = ?1")
         .bind(&b.session_id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .expect("flip test session provider to claude");
     let mut rx = b.events.subscribe_filtered();
@@ -143,7 +143,7 @@ async fn task_completed_from_claude_worker_persists_claude_session_actor() {
             ORDER BY id DESC
             LIMIT 1"#,
     )
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .expect("persisted task.completed actor");
     let actor: ActorId = serde_json::from_str(&actor_text).expect("events.actor is ActorId JSON");
@@ -191,9 +191,9 @@ async fn task_failed_emits_task_failed_with_worker_actor() {
 }
 
 async fn task_failed_event_count(b: &CardBoot) -> i64 {
-    let pool = b.repo.sqlite_pool().expect("sqlite pool");
+    let pool = b.repo.sqlite_db().expect("sqlite pool");
     sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'task.failed'")
-        .fetch_one(&pool)
+        .fetch_one(pool.read_pool())
         .await
         .expect("count task.failed events")
 }

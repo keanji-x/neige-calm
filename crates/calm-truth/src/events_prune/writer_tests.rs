@@ -2,6 +2,7 @@
 use super::tests::{insert_event, old, overlay_payload};
 use super::*;
 use crate::db::{RepoEventWrite, sqlite::SqlxRepo};
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Notify;
@@ -72,7 +73,7 @@ fn policy(batch: i64) -> EventsRetentionPolicy {
     }
 }
 fn start(
-    pool: SqlitePool,
+    pool: crate::db::sqlite::SqliteDb,
     policy: EventsRetentionPolicy,
     steps: Vec<Phase>,
 ) -> (Arc<Pause>, tokio::task::JoinHandle<Result<u64>>) {
@@ -136,9 +137,9 @@ async fn overlay_history_discovery_does_not_hold_database_writer_without_candida
         .execute(repo.pool())
         .await
         .unwrap();
-    let (pause, pruning) = start(repo.pool().clone(), policy(16), vec![Phase::Interpret]);
+    let (pause, pruning) = start(repo.db().clone(), policy(16), vec![Phase::Interpret]);
     pause.entered().await;
-    let pool = repo.pool().clone();
+    let pool = repo.db().clone();
     let mut writer = tokio::spawn(async move {
         let mut tx = begin_immediate_tx(&pool).await?;
         sqlx::query("INSERT INTO unrelated_event_writer_probe(value) VALUES (1)")
@@ -175,7 +176,7 @@ async fn overlay_history_discovery_does_not_hold_database_writer_without_candida
 async fn overlay_append_after_frontier_capture_is_not_skipped_by_discovery() {
     let (_directory, repo) = file_repo().await;
     let (older, latest) = pair(repo.pool(), "capture-race").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::Frontier]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::Frontier]);
     pause.entered().await;
     let future = insert_event(repo.pool(), "overlay.set", &future("capture-race"), old(40)).await;
     pause.release();
@@ -189,7 +190,7 @@ async fn overlay_future_tail_freezes_quad_without_stopping_other_candidate_progr
     let (_directory, repo) = file_repo().await;
     let (a1, a2) = pair(repo.pool(), "freeze-a").await;
     let (b1, b2) = pair(repo.pool(), "control-b").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
     pause.entered().await;
     let a3 = insert_event(repo.pool(), "overlay.set", &future("freeze-a"), old(40)).await;
     pause.release();
@@ -207,7 +208,7 @@ async fn overlay_missing_latest_witness_defers_after_sibling_public_retention() 
     let (_directory, repo) = file_repo().await;
     let older = insert_event(repo.pool(), "overlay.set", &payload("witness"), old(50)).await;
     let latest = insert_event(repo.pool(), "overlay.set", &payload("witness"), old(60)).await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
     pause.entered().await;
     let sibling = EventsRetentionPolicy {
         horizon: Duration::from_secs(55 * 24 * 60 * 60),
@@ -217,7 +218,7 @@ async fn overlay_missing_latest_witness_defers_after_sibling_public_retention() 
             keep_latest_per_overlay_key: false,
         }],
     };
-    assert_eq!(prune_events_once(repo.pool(), &sibling).await.unwrap(), 1);
+    assert_eq!(prune_events_once(repo.db(), &sibling).await.unwrap(), 1);
     pause.release();
     assert_eq!(finish(pruning).await, 0);
     assert_eq!(ids(repo.pool()).await, vec![older]);
@@ -228,7 +229,7 @@ async fn overlay_missing_latest_witness_defers_after_sibling_public_retention() 
 async fn overlay_unrelated_append_does_not_invalidate_overlay_frontier() {
     let (_directory, repo) = file_repo().await;
     let (_, latest) = pair(repo.pool(), "unrelated").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
     pause.entered().await;
     let structural = insert_event(repo.pool(), "track.updated", "{}", old(40)).await;
     pause.release();
@@ -241,7 +242,7 @@ async fn overlay_candidate_age_and_kind_are_rechecked_in_delete_transaction() {
     for change in ["age", "kind"] {
         let (_directory, repo) = file_repo().await;
         let (older, latest) = pair(repo.pool(), change).await;
-        let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite]);
+        let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
         pause.entered().await;
         if change == "age" {
             sqlx::query("UPDATE events SET at=?1 WHERE id=?2")
@@ -268,7 +269,7 @@ async fn overlay_candidate_age_and_kind_are_rechecked_in_delete_transaction() {
 async fn overlay_repeated_tail_churn_defers_without_spinning_or_deleting() {
     let (_directory, repo) = file_repo().await;
     pair(repo.pool(), "churn").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite; 3]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite; 3]);
     let mut final_latest = 0;
     for _ in 0..3 {
         pause.entered().await;
@@ -277,10 +278,7 @@ async fn overlay_repeated_tail_churn_defers_without_spinning_or_deleting() {
     }
     assert_eq!(finish(pruning).await, 0);
     assert_eq!(ids(repo.pool()).await.len(), 5);
-    assert_eq!(
-        prune_events_once(repo.pool(), &policy(16)).await.unwrap(),
-        4
-    );
+    assert_eq!(prune_events_once(repo.db(), &policy(16)).await.unwrap(), 4);
     assert_eq!(ids(repo.pool()).await, vec![final_latest]);
 }
 
@@ -309,7 +307,7 @@ async fn overlay_sparse_candidate_pages_share_one_history_discovery_and_actual_b
     );
     let counts = Arc::new(Counts::default());
     let deleted = COUNTS
-        .scope(counts.clone(), prune_events_once(repo.pool(), &policy(16)))
+        .scope(counts.clone(), prune_events_once(repo.db(), &policy(16)))
         .await
         .unwrap();
     assert_eq!(deleted, 16);
@@ -335,10 +333,7 @@ async fn overlay_sql_text_quad_aliases_array_and_literal_string() {
     let older = insert_event(repo.pool(), "overlay.set", &unusual.to_string(), old(60)).await;
     unusual["plugin_id"] = serde_json::json!("[]");
     let latest = insert_event(repo.pool(), "overlay.set", &unusual.to_string(), old(50)).await;
-    assert_eq!(
-        prune_events_once(repo.pool(), &policy(16)).await.unwrap(),
-        1
-    );
+    assert_eq!(prune_events_once(repo.db(), &policy(16)).await.unwrap(), 1);
     assert_eq!(ids(repo.pool()).await, vec![latest]);
     assert_eq!(repo.events_prune_watermark().await.unwrap(), older);
 }
@@ -350,10 +345,7 @@ async fn overlay_incompatible_numeric_quad_key_remains_fail_closed() {
     numeric["plugin_id"] = serde_json::json!(1);
     let numeric = insert_event(repo.pool(), "overlay.set", &numeric.to_string(), old(60)).await;
     let (older, latest) = pair(repo.pool(), "control").await;
-    assert_eq!(
-        prune_events_once(repo.pool(), &policy(16)).await.unwrap(),
-        0
-    );
+    assert_eq!(prune_events_once(repo.db(), &policy(16)).await.unwrap(), 0);
     assert_eq!(ids(repo.pool()).await, vec![numeric, older, latest]);
 }
 
@@ -378,7 +370,7 @@ async fn retention_delete_and_watermark_remain_atomic_when_watermark_write_fails
             }],
             ..policy(16)
         };
-        assert_eq!(prune_events_once(repo.pool(), &policy).await.unwrap(), 0);
+        assert_eq!(prune_events_once(repo.db(), &policy).await.unwrap(), 0);
         assert_eq!(ids(repo.pool()).await, retained);
         assert_eq!(repo.events_prune_watermark().await.unwrap(), 0);
     }
@@ -404,10 +396,7 @@ async fn overlay_null_missing_non_overlay_and_duplicate_fields_freeze_sql_quads(
         let a1 = insert_event(repo.pool(), "overlay.set", &older.to_string(), old(60)).await;
         let a2 = insert_event(repo.pool(), "overlay.set", &latest, old(50)).await;
         let (_, control) = pair(repo.pool(), "shape-control").await;
-        assert_eq!(
-            prune_events_once(repo.pool(), &policy(16)).await.unwrap(),
-            1
-        );
+        assert_eq!(prune_events_once(repo.db(), &policy(16)).await.unwrap(), 1);
         assert_eq!(
             ids(repo.pool()).await,
             vec![a1, a2, control],
@@ -420,7 +409,7 @@ async fn overlay_null_missing_non_overlay_and_duplicate_fields_freeze_sql_quads(
 async fn overlay_malformed_tail_advances_frontier_without_poisoning_current_state() {
     let (_directory, repo) = file_repo().await;
     let (_, latest) = pair(repo.pool(), "malformed-tail").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
     pause.entered().await;
     let malformed = insert_event(repo.pool(), "overlay.set", "{not json", old(40)).await;
     pause.release();
@@ -434,7 +423,7 @@ async fn overlay_healed_tail_preserves_replay_and_next_pass_reclaims_skipped_his
     let old_a = insert_event(repo.pool(), "overlay.set", &payload("healed"), old(60)).await;
     let unsupported = insert_event(repo.pool(), "overlay.set", &future("healed"), old(50)).await;
     let (_, control) = pair(repo.pool(), "heal-control").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
     pause.entered().await;
     let healed = insert_event(repo.pool(), "overlay.set", &payload("healed"), old(40)).await;
     pause.release();
@@ -444,10 +433,7 @@ async fn overlay_healed_tail_preserves_replay_and_next_pass_reclaims_skipped_his
         ids(repo.pool()).await,
         vec![old_a, unsupported, control, healed]
     );
-    assert_eq!(
-        prune_events_once(repo.pool(), &policy(16)).await.unwrap(),
-        2
-    );
+    assert_eq!(prune_events_once(repo.db(), &policy(16)).await.unwrap(), 2);
     assert_eq!(ids(repo.pool()).await, vec![control, healed]);
 }
 
@@ -455,12 +441,9 @@ async fn overlay_healed_tail_preserves_replay_and_next_pass_reclaims_skipped_his
 async fn overlay_concurrent_default_pruner_removing_candidate_is_harmless() {
     let (_directory, repo) = file_repo().await;
     let (older, latest) = pair(repo.pool(), "two-pruners").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
     pause.entered().await;
-    assert_eq!(
-        prune_events_once(repo.pool(), &policy(16)).await.unwrap(),
-        1
-    );
+    assert_eq!(prune_events_once(repo.db(), &policy(16)).await.unwrap(), 1);
     pause.release();
     assert_eq!(
         finish(pruning).await,
@@ -476,7 +459,7 @@ async fn overlay_later_tail_decode_failure_preserves_prior_committed_count_and_w
     let (_directory, repo) = file_repo().await;
     let (a1, a2) = pair(repo.pool(), "partial-a").await;
     let (b1, b2) = pair(repo.pool(), "partial-b").await;
-    let (pause, pruning) = start(repo.pool().clone(), policy(1), vec![Phase::BeforeWrite; 2]);
+    let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite; 2]);
     pause.entered().await;
     pause.release();
     pause.entered().await;

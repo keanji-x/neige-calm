@@ -44,10 +44,10 @@ pub(crate) async fn resolve_daily_track(
     })))
 }
 
-fn pool(state: &RouteState) -> Result<&sqlx::SqlitePool> {
+fn pool(state: &RouteState) -> Result<&crate::db::sqlite::SqliteDb> {
     state
         .mcp_context
-        .sqlite_pool
+        .sqlite_db
         .as_ref()
         .ok_or_else(|| CalmError::Internal("report changes require sqlite".into()))
 }
@@ -72,6 +72,6 @@ pub(crate) async fn report_edits(
     Query(query): Query<ReportEditsQuery>,
 ) -> Result<Json<ReportEditsPage>> {
     Ok(Json(
-        workspace_reports::edits(pool(&state)?, &query, TIME_ZONE).await?,
+        workspace_reports::edits(pool(&state)?.read_pool(), &query, TIME_ZONE).await?,
     ))
 }

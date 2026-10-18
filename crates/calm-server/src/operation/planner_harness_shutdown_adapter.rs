@@ -265,7 +265,7 @@ mod tests {
             ),
         );
         let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
-        let op_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
+        let op_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
         let ctx = SpawnCtx::new(
             route_repo.clone(),
             op_repo,

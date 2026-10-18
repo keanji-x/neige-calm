@@ -13,13 +13,13 @@ async fn partial_receipt_recovery_restores_native_item_order() {
         .transcript_rows_of_thread(&card, runtime.thread_id.as_deref().unwrap())
         .await
         .unwrap();
-    let pool = stack.repo().sqlite_pool().unwrap();
+    let pool = stack.repo().sqlite_db().unwrap();
     let mut snapshot = stack.harness(&runtime.id).snapshot().await;
     stack.shutdown().await;
     let receipt: String =
         sqlx::query_scalar("SELECT outcome_json FROM acp_submissions WHERE worker_session_id=?1")
             .bind(&runtime.id)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
     let receipt: Value = serde_json::from_str(&receipt).unwrap();

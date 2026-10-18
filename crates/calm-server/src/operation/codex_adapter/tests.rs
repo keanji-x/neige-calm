@@ -49,7 +49,7 @@ async fn worker_lease_harness_with_disk(disk: bool) -> WorkerLeaseHarness {
     .await
     .unwrap();
     let track = crate::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
@@ -66,7 +66,7 @@ async fn worker_lease_harness_with_disk(disk: bool) -> WorkerLeaseHarness {
     )
     .await
     .unwrap();
-    let worktree = crate::test_support::ensure_track_worktree(repo.pool(), track.id.as_str()).await;
+    let worktree = crate::test_support::ensure_track_worktree(repo.db(), track.id.as_str()).await;
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     let full_repo: Arc<dyn crate::db::Repo> = repo.clone();
     WorkerLeaseHarness {
@@ -265,7 +265,7 @@ async fn claim_worker_operation(
     .execute(harness.repo.pool())
     .await
     .unwrap();
-    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
     let op_id = op_repo
         .insert_operation(
             "codex-worker",
@@ -450,7 +450,7 @@ async fn codex_worker_prepare_leaves_title_none_for_blank_task_key() {
 #[tokio::test]
 async fn task_key_for_card_title_is_fail_soft() {
     let harness = worker_lease_harness().await;
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     assert_eq!(
         crate::operation::task_key_for_card_title(&mut tx, "no-such-task").await,
         None
@@ -466,7 +466,7 @@ async fn task_key_for_card_title_is_fail_soft() {
 #[tokio::test]
 async fn task_key_for_card_title_swallows_a_failing_select() {
     let harness = worker_lease_harness().await;
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     sqlx::query("DROP TABLE tasks")
         .execute(&mut **tx)
         .await
@@ -492,7 +492,7 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
 #[tokio::test]
 async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
     let harness = worker_lease_harness().await;
-    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+    let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let pending = claim_worker_operation(&harness, "pinned", "pinned").await;
     let evidence = crate::operation::tests::collect_claimed_preparation(
         harness.repo.clone(),
@@ -660,7 +660,7 @@ async fn worker_lease_is_kernel_policy() {
             .await
             .unwrap();
     assert_eq!(policy.as_deref(), Some("kernel"));
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let lease = crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(
         &mut tx,
         &sqlx::query_scalar::<_, String>(
@@ -714,7 +714,7 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
     .await
     .unwrap()
     .unwrap();
-    let operations = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let operations = SqlxOperationRepo::new(harness.repo.db().clone());
     sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
         .bind(now_ms() - 1)
         .bind(&original.id)
@@ -732,7 +732,7 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
     let before: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"
     ).fetch_one(harness.repo.pool()).await.unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     assert!(prepared.apply(&mut tx, &replacement).await.is_err());
     let after: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"

@@ -428,7 +428,7 @@ struct TestBoot {
 impl TestBoot {
     async fn new(adapters: Vec<Arc<dyn ProviderAdapter>>) -> Self {
         let route_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-        let operation_repo = Arc::new(SqlxOperationRepo::new(route_repo.pool().clone()));
+        let operation_repo = Arc::new(SqlxOperationRepo::new(route_repo.db().clone()));
         let events = EventBus::new();
         let completion = OperationCompletionBus::new();
         let route_dyn: Arc<dyn RouteRepo> = route_repo.clone();
@@ -616,7 +616,7 @@ impl ProviderAdapter for ObserverParkingAdapter {
         let (child, artifacts) = spawn_short_child();
         ctx.record_spawn_artifacts(op, &artifacts).await?;
 
-        let pool = ctx.operation_repo.sqlite_pool();
+        let pool = ctx.operation_repo.sqlite_db();
         let completion = ctx.completion.clone();
         let op_id = op.id.clone();
         let verdict = self.verdict.clone();
@@ -627,7 +627,7 @@ impl ProviderAdapter for ObserverParkingAdapter {
                 let phase: String =
                     sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
                         .bind(&op_id)
-                        .fetch_one(&pool)
+                        .fetch_one(pool.read_pool())
                         .await
                         .expect("observer reads phase");
                 *pre_complete_phase.lock().await = Some(phase);

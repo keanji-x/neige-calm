@@ -1,8 +1,9 @@
+use crate::db::sqlite::SqliteDb;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use sqlx::query::Query;
 use sqlx::sqlite::{SqliteArguments, SqliteRow};
-use sqlx::{Row, Sqlite, SqlitePool};
+use sqlx::{Row, Sqlite};
 
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
@@ -34,11 +35,11 @@ mod claim_tests;
 
 #[derive(Clone)]
 pub struct SqlxOperationRepo {
-    pub(super) pool: SqlitePool,
+    pub(super) pool: SqliteDb,
 }
 
 impl SqlxOperationRepo {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: SqliteDb) -> Self {
         Self { pool }
     }
 
@@ -65,7 +66,7 @@ impl SqlxOperationRepo {
         .bind(lease_until)
         .bind(now)
         .bind(op_id)
-        .execute(&self.pool)
+        .execute(self.pool.writer_pool())
         .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
@@ -76,13 +77,13 @@ impl SqlxOperationRepo {
 
 #[async_trait]
 impl OperationRepo for SqlxOperationRepo {
-    fn sqlite_pool(&self) -> SqlitePool {
+    fn sqlite_db(&self) -> SqliteDb {
         self.pool.clone()
     }
 
     async fn assert_sqlite_version(&self) -> Result<()> {
         let row = sqlx::query("SELECT sqlite_version() AS version")
-            .fetch_one(&self.pool)
+            .fetch_one(self.pool.read_pool())
             .await?;
         let version: String = row.try_get("version")?;
         if sqlite_version_at_least(&version, 3, 30) {
@@ -118,7 +119,7 @@ impl OperationRepo for SqlxOperationRepo {
 
         let id = new_id();
         let inserted = insert_pending_row(&id, kind, &key, &payload)?
-            .execute(&self.pool)
+            .execute(self.pool.writer_pool())
             .await;
 
         match inserted {
@@ -170,7 +171,7 @@ impl OperationRepo for SqlxOperationRepo {
         .bind(op_id)
         .bind(kind)
         .bind(track_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.read_pool())
         .await?;
         row.as_ref().map(operation_from_row).transpose()
     }
@@ -261,7 +262,7 @@ impl OperationRepo for SqlxOperationRepo {
                )
                ORDER BY created_at_ms ASC"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.read_pool())
         .await?;
         rows.iter().map(operation_from_row).collect()
     }
@@ -283,7 +284,7 @@ impl OperationRepo for SqlxOperationRepo {
                ORDER BY created_at_ms ASC"#,
         )
         .bind(now)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.read_pool())
         .await?;
         rows.iter().map(operation_from_row).collect()
     }
@@ -583,7 +584,7 @@ impl SqlxOperationRepo {
     async fn find_by_id(&self, op_id: &str) -> Result<Option<Operation>> {
         let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
             .bind(op_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.pool.read_pool())
             .await?;
         row.as_ref().map(operation_from_row).transpose()
     }
@@ -598,7 +599,7 @@ impl SqlxOperationRepo {
         )
         .bind(kind)
         .bind(idempotency_key)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.read_pool())
         .await?;
         row.as_ref().map(operation_from_row).transpose()
     }
@@ -607,7 +608,7 @@ impl SqlxOperationRepo {
 #[cfg(any(test, feature = "fixtures"))]
 #[doc(hidden)]
 pub async fn complete_parked_for_test(
-    pool: &SqlitePool,
+    pool: &crate::db::sqlite::SqliteDb,
     op_id: &OperationId,
     outcome: &ParkedOutcome,
 ) -> Result<ParkedCompletion> {
@@ -618,7 +619,7 @@ pub async fn complete_parked_for_test(
 }
 
 pub(super) async fn fetch_claimed_parked(
-    pool: &SqlitePool,
+    pool: &SqliteDb,
     op_id: &str,
     lease_owner: &str,
 ) -> Result<Option<Operation>> {
@@ -631,7 +632,7 @@ pub(super) async fn fetch_claimed_parked(
     )
     .bind(op_id)
     .bind(lease_owner)
-    .fetch_optional(pool)
+    .fetch_optional(pool.read_pool())
     .await?;
     row.as_ref().map(operation_from_row).transpose()
 }

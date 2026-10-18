@@ -22,7 +22,7 @@ async fn operation_on_track_matches_only_its_kind_and_track() {
     let truth = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let repo = Arc::new(SqlxOperationRepo::new(truth.pool().clone()));
+    let repo = Arc::new(SqlxOperationRepo::new(truth.db().clone()));
     let forge = insert(&repo, FORGE_ACTION_KIND, json!({"track_id": "track-a"})).await;
     let other_kind = insert(&repo, "terminal-create", json!({"track_id": "track-a"})).await;
     let other_target = insert(&repo, FORGE_ACTION_KIND, json!({"track_id": "track-a"})).await;

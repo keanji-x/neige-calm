@@ -53,10 +53,10 @@ async fn task_recovery_history_is_empty_before_initial_allocation() {
     let mut payload = declaration("waiting", &[]);
     payload["ready"] = json!(false);
     let (block, _) = declare(&boot, payload).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     assert!(
         calm_server::db::sqlite::task_attempt_current_pool(
-            &pool,
+            pool.read_pool(),
             boot.track_id.as_str(),
             "waiting"
         )
@@ -270,7 +270,7 @@ async fn task_recovery_history_survives_a_deleted_frozen_reference() {
 #[tokio::test]
 async fn task_recovery_plan_inventory_pages_all_current_allocations() {
     let boot = boot().await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
         .await
         .unwrap();
@@ -338,10 +338,10 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
     declare(&boot, ordinary_codex_declaration("a")).await;
     declare(&boot, ordinary_codex_declaration("b")).await;
     declare(&boot, declaration("c", &[])).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='a'")
         .bind(boot.track_id.as_str())
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let view = task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "b")
@@ -392,11 +392,11 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
     let boot = boot().await;
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE id=?2")
         .bind(boot.worker_card_id.as_str())
         .bind(&b.id)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let track = boot.track_id.as_str().to_string();
@@ -498,13 +498,13 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
 async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
     let boot = boot().await;
     declare(&boot, ordinary_codex_declaration("b")).await;
-    let pool = boot.repo.sqlite_pool().unwrap();
+    let pool = boot.repo.sqlite_db().unwrap();
     let track = boot.track_id.as_str().to_string();
     let card = boot.worker_card_id.as_str().to_string();
     sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE track_id=?2 AND key='b'")
         .bind(&card)
         .bind(&track)
-        .execute(&pool)
+        .execute(pool.writer_pool())
         .await
         .unwrap();
     let base_sha = "89abcdef0123456789abcdef0123456789abcdef";
@@ -523,7 +523,7 @@ async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
     let lease_id: String =
         sqlx::query_scalar("SELECT lease_id FROM workspace_leases WHERE card_id = ?1")
             .bind(&card)
-            .fetch_one(&pool)
+            .fetch_one(pool.read_pool())
             .await
             .unwrap();
 

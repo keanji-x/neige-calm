@@ -76,7 +76,7 @@ pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
             .success()
     );
     let track = crate::test_seams::create_track_with_workspace_for_test(
-        repo.pool(),
+        repo.db(),
         crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
@@ -93,7 +93,7 @@ pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
     )
     .await
     .unwrap();
-    let worktree = crate::test_support::ensure_track_worktree(repo.pool(), track.id.as_str()).await;
+    let worktree = crate::test_support::ensure_track_worktree(repo.db(), track.id.as_str()).await;
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     ClaudeWorkerHarness {
         adapter: ClaudeWorkerAdapter::new(
@@ -178,7 +178,7 @@ pub(super) async fn try_prepare_claude_worker(
     .execute(harness.repo.pool())
     .await
     .unwrap();
-    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
     let op_id = op_repo
         .insert_operation(
             "claude-worker",
@@ -215,7 +215,7 @@ pub(super) async fn prepare_claude_worker_as_scheduled(
     harness: &ClaudeWorkerHarness,
     key: &str,
 ) -> TxOutput {
-    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
     let op_id = op_repo
         .insert_operation(
             "claude-worker",

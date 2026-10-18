@@ -3,17 +3,8 @@
 
 mod subtrack_route_migration;
 
-use sqlx::ConnectOptions;
-use sqlx::Connection;
-use sqlx::Executor;
 use sqlx::SqlitePool;
-use sqlx::TransactionManager as _;
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteTransactionManager,
-};
-use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::Repo;
 use crate::card_role_cache::CardRoleCache;
@@ -112,7 +103,9 @@ pub use card_composite::{
 #[cfg(any(test, feature = "test-helpers"))]
 pub use events::append_probe;
 pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
-pub use infra::{ObservedTransaction, begin_immediate_tx, begin_immediate_tx_once, is_sqlite_busy};
+pub use infra::{
+    ObservedTransaction, SqliteDb, begin_immediate_tx, begin_immediate_tx_once, is_sqlite_busy,
+};
 #[cfg(test)]
 pub(crate) use out_of_domain::worker_flow_item_insert_tx;
 pub use out_of_domain::{
@@ -210,15 +203,12 @@ pub use track_workspace::{
 use infra::check_no_unknown_future_migrations;
 
 pub struct SqlxRepo {
-    pool: SqlitePool,
+    db: SqliteDb,
     /// Write-through role cache kept in sync by the `_tx` helpers; `AppState`
     /// holds its own instance seeded from the same pool.
     card_role_cache: CardRoleCache,
     /// Write-through `TrackId -> AreaId` cache, same shape as `card_role_cache`.
     track_area_cache: TrackAreaCache,
-    /// Keepalive for in-memory databases: sqlx's shared-cache DB is destroyed with
-    /// its last connection, so one pool-external connection pins it. `None` on-disk.
-    _memory_cache_anchor: Option<SqliteConnection>,
     /// Stable database identity, read once from the one-row `database_identity` table.
     database_id: Arc<String>,
 }
@@ -227,112 +217,49 @@ impl SqlxRepo {
     /// Open / create the SQLite DB at `url`, run pending migrations, and
     /// enable foreign-key enforcement per-connection.
     pub async fn open(url: &str) -> Result<Self> {
-        let mut opts = SqliteConnectOptions::from_str(url)
-            .map_err(|e| CalmError::Internal(format!("invalid sqlite url {url:?}: {e}")))?
-            .create_if_missing(true)
-            .foreign_keys(true);
-        opts = opts.log_statements(tracing::log::LevelFilter::Debug);
-
-        let pool = SqlitePoolOptions::new()
-            .acquire_timeout(Duration::from_millis(SQLITE_ACQUIRE_TIMEOUT_MS))
-            // Re-issue the pragmas per connection: connect options are dropped for some URL forms (e.g. memory).
-            .after_connect(|conn, _meta| {
-                Box::pin(async move {
-                    conn.execute("PRAGMA foreign_keys = ON;").await?;
-                    let busy_timeout_pragma =
-                        format!("PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};");
-                    conn.execute(busy_timeout_pragma.as_str()).await?;
-                    conn.execute("PRAGMA journal_mode = WAL;").await?;
-                    Ok(())
-                })
-            })
-            // Self-heal connections released while still inside a transaction (a cancelled
-            // `begin_with` leaks one). Roll back rather than discard: dropping an in-memory
-            // DB's connection can drop the database.
-            .after_release(|conn, _meta| {
-                Box::pin(async move {
-                    if !Connection::is_in_transaction(conn) {
-                        return Ok(true);
-                    }
-                    // A dropped `Transaction` has only queued its rollback; ping round-trips the
-                    // worker queue so it completes before we judge the connection leaked.
-                    Connection::ping(&mut *conn).await?;
-                    if !Connection::is_in_transaction(conn) {
-                        return Ok(true);
-                    }
-                    tracing::warn!(
-                        "sqlite: connection released to pool inside an open transaction \
-                         (cancelled begin?); rolling it back"
-                    );
-                    // Bounded unwind: one rollback per depth level covers
-                    // nested savepoints without risking an infinite loop.
-                    for _ in 0..8 {
-                        SqliteTransactionManager::rollback(conn).await?;
-                        if !Connection::is_in_transaction(conn) {
-                            return Ok(true);
-                        }
-                    }
-                    // Fail closed: the Err makes the pool close_hard the connection. Safe for
-                    // in-memory repos because `_memory_cache_anchor` keeps the cache alive.
-                    Err(sqlx::Error::Protocol(
-                        "connection still inside a transaction after bounded rollback".into(),
-                    ))
-                })
-            })
-            .connect_with(opts)
-            .await?;
-
-        // Anchor in-memory shared caches BEFORE anything else touches the pool.
-        // `pragma_database_list.file` is empty for in-memory (and temp-file) DBs.
-        let mut candidate = pool.acquire().await?;
-        let main_db_file: String =
-            sqlx::query_scalar("SELECT file FROM pragma_database_list WHERE name = 'main'")
-                .fetch_one(&mut *candidate)
-                .await?;
-        let memory_cache_anchor = if main_db_file.is_empty() {
-            Some(candidate.detach())
-        } else {
-            drop(candidate);
-            None
-        };
+        let db = SqliteDb::connect(url).await?;
+        let pool = db.read_pool();
 
         // Refuse to boot when the DB carries a migration row this binary doesn't know
         // about, before sqlx can apply any pending known migration.
-        check_no_unknown_future_migrations(&pool, &crate::MIGRATOR).await?;
+        check_no_unknown_future_migrations(pool, &crate::MIGRATOR).await?;
 
         crate::MIGRATOR
-            .run(&pool)
+            .run(pool)
             .await
             .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
 
-        subtrack_route_migration::migrate(&pool).await?;
-        track_vcs::backfill_existing_tracks(&pool).await?;
+        subtrack_route_migration::migrate(&db).await?;
+        track_vcs::backfill_existing_tracks(&db).await?;
 
         let card_role_cache = CardRoleCache::new();
-        card_role_cache.seed_from_db(&pool).await?;
+        card_role_cache.seed_from_db(pool).await?;
         let track_area_cache = TrackAreaCache::new();
-        track_area_cache.seed_from_db(&pool).await?;
+        track_area_cache.seed_from_db(pool).await?;
 
-        let database_id = Arc::new(database_identity::ensure_database_identity(&pool).await?);
+        let database_id = Arc::new(database_identity::ensure_database_identity(pool).await?);
 
         Ok(Self {
-            pool,
+            db,
             card_role_cache,
             track_area_cache,
-            _memory_cache_anchor: memory_cache_anchor,
             database_id,
         })
     }
 
     #[cfg(test)]
     pub(crate) fn has_memory_cache_anchor(&self) -> bool {
-        self._memory_cache_anchor.is_some()
+        self.db.has_memory_cache_anchor()
     }
 
     /// Pool access for tests / fixtures; production code must go through the trait.
     #[doc(hidden)]
     pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+        self.db.read_pool()
+    }
+
+    pub fn db(&self) -> &SqliteDb {
+        &self.db
     }
 
     pub fn card_role_cache(&self) -> &CardRoleCache {
@@ -406,8 +333,8 @@ pub async fn assert_area_folders_disjoint(pool: &SqlitePool) -> Result<()> {
 }
 
 impl Repo for SqlxRepo {
-    fn sqlite_pool(&self) -> Option<SqlitePool> {
-        Some(self.pool.clone())
+    fn sqlite_db(&self) -> Option<SqliteDb> {
+        Some(self.db.clone())
     }
 
     fn database_id(&self) -> Arc<String> {

@@ -31,7 +31,7 @@ async fn spawn_ctx() -> SpawnCtx {
     let completion = OperationCompletionBus::new();
     SpawnCtx::new(
         route_repo.clone(),
-        Arc::new(SqlxOperationRepo::new(repo.pool().clone())),
+        Arc::new(SqlxOperationRepo::new(repo.db().clone())),
         Arc::new(DaemonClient::new_stub()),
         TerminalRendererRegistry::new_with_repo(route_repo),
         EventBus::new(),

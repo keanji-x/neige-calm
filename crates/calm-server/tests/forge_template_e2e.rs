@@ -1369,7 +1369,7 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
         .await
         .expect("create area");
     let track = calm_server::test_seams::create_track_with_workspace_for_test(
-        sqlx_repo.pool(),
+        sqlx_repo.db(),
         NewTrack {
             template_input: None,
             area_id: area.id.clone(),
@@ -1420,7 +1420,7 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     .expect("create delivery report");
 
     // The worker's checkout is the track worktree (#1830 S2), made as the create route makes it.
-    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.pool(), track.id.as_str())
+    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.db(), track.id.as_str())
         .await
         .expect("make the track worktree");
 
@@ -1799,7 +1799,7 @@ async fn insert_workspace_lease(
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    let mut tx = begin_immediate_tx(repo.pool())
+    let mut tx = begin_immediate_tx(repo.db())
         .await
         .expect("begin runtime tx");
     let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
@@ -2244,7 +2244,7 @@ async fn wait_for_recovered_pending(
 }
 
 async fn boot_recovery_runtime(fx: &Fixture) -> Arc<OperationRuntime> {
-    let operation_repo = Arc::new(SqlxOperationRepo::new(fx.repo.pool().clone()));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(fx.repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let route_repo: Arc<dyn RouteRepo> = fx.repo.clone();
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());

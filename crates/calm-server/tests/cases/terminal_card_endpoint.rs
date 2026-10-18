@@ -180,7 +180,7 @@ fn install_spawn_runtime_with_hook(
 ) -> AppState {
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(
-        repo.sqlite_pool()
+        repo.sqlite_db()
             .expect("terminal endpoint tests require sqlite repo"),
     ));
     let terminal_adapter = Arc::new(TerminalAdapter::new_with_spawn_hook(
@@ -457,14 +457,14 @@ async fn post_terminal_card_idempotency_key_reused_by_codex_operation_uses_fresh
 
     let pool = boot
         .repo
-        .sqlite_pool()
+        .sqlite_db()
         .expect("terminal endpoint tests require sqlite repo");
     let rows = sqlx::query(
         "SELECT kind, operation_key, idempotency_key FROM operations WHERE idempotency_key IN (?1, ?2) ORDER BY kind",
     )
     .bind(codex_key)
     .bind(terminal_key)
-    .fetch_all(&pool)
+    .fetch_all(pool.read_pool())
     .await
     .unwrap();
     let observed: Vec<(String, String, String)> = rows
@@ -565,12 +565,12 @@ async fn post_terminal_card_prepare_forbidden_returns_403_and_marks_failed() {
 
     let pool = boot
         .repo
-        .sqlite_pool()
+        .sqlite_db()
         .expect("terminal endpoint tests require sqlite repo");
     let row = sqlx::query(
         "SELECT phase, phase_detail_json FROM operations ORDER BY created_at_ms DESC LIMIT 1",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool.read_pool())
     .await
     .unwrap();
     let phase: String = row.try_get("phase").unwrap();

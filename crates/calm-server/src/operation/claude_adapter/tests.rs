@@ -216,7 +216,7 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+        Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let ctx = SpawnCtx::new(
         harness.repo.clone(),
         op_repo,
@@ -289,7 +289,7 @@ async fn claude_worker_compensation_cleans_rows_lease_and_settings_dir() {
 
     let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
     let op_repo: Arc<dyn OperationRepo> =
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+        Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let ctx = SpawnCtx::new(
         route_repo,
         op_repo,
@@ -478,7 +478,7 @@ async fn claude_worker_recovery_already_exited_returns_noop_without_respawn() {
     .unwrap();
     let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
     let op_repo: Arc<dyn OperationRepo> =
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+        Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let ctx = SpawnCtx::new(
         route_repo,
         op_repo,
@@ -545,7 +545,7 @@ async fn claude_worker_recovery_already_live_returns_noop_without_respawn_or_tok
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+        Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let ctx = SpawnCtx::new(
         harness.repo.clone(),
         op_repo,
@@ -661,7 +661,7 @@ async fn claude_worker_fast_exit_preservation_returns_noop_and_marks_runtime_run
         hook,
     );
     let op_repo: Arc<dyn OperationRepo> =
-        Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
+        Arc::new(SqlxOperationRepo::new(harness.repo.db().clone()));
     let ctx = SpawnCtx::new(
         harness.repo.clone(),
         op_repo,
@@ -750,7 +750,7 @@ async fn worker_lease_is_kernel_policy() {
             .await
             .unwrap();
     assert_eq!(policy.as_deref(), Some("kernel"));
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
     let lease =
         crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(&mut tx, &lease_id)
             .await
