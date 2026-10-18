@@ -226,3 +226,29 @@ claims for valid pause candidates. These costs enforce original-owner settlement
 rather than adding another executor or approval journal. Generations still write
 only on their existing pointer/role/root/lifecycle transitions. Adding an ordinary
 provider or test does not extend an application-identity list in runtime.
+
+## Legacy evidence and settlement correction (L2)
+
+The legacy decoder must consume the business result, required transport fields,
+immutable activation proof and original scope together. Adoption runs under
+IMMEDIATE; query uses the same evidence interpretation without writes. Operation
+parking revokes journal writes, not commands already sent or past an intent seam.
+
+| Legacy business evidence | Transport | Immutable proof / binding | Allowed result |
+| --- | --- | --- | --- |
+| No activation and no preparation | No activation output | No activation claim; original committed pending successor | Unprepared |
+| Preparing / Blocked(false) | Required IDs/cwd/snapshot, explicit null thread | Exact preparation claim, null thread/token; pending successor | Prepared / blocked prepared |
+| ResourceRequestRecorded / Unknown | Required IDs/cwd/snapshot, explicit null thread | Exact preparation claim, null thread/token; pending successor | Unknown, never absence or Prepared |
+| ResourcesCheckpointed / Blocked(true) | Required nonempty thread, matching state thread when present | Exact immutable thread/token and full successor binding | Proven / blocked proven |
+| NeedsRecovery | Required transport | Exact preparation or proven binding determines the only admissible resource state | Preserve evidence; reject contradictions |
+| Activated | Exact historical successor and nonempty transport thread | Original immutable proof agrees; current authority may have moved | Historical fact, never reinstall |
+| Any missing/null proven thread, mismatched IDs/thread/token, or contradictory state/proof | Invalid | No fallback | Reject before adoption commits; zero native calls |
+| Precommit, including legacy Finished | Exact original requests and receipt/release evidence | Current original claim must be resolved serially on explicit recovery | Recovery-only compensation, never fresh pause/cutover |
+| Terminal business result with active reservation or unverified original claims | Historical receipt alone is insufficient | Original generation selects adoption and same settlement owner | Query returns NeedsRecovery; explicit retry reconciles and atomically settles |
+
+The settlement owner must reconcile commands that landed before upgrade and fence
+late exact original commands after terminalization. It must retain typed faulted
+and unconfirmed releases and Unknown. A new different claim is independent. Original
+immutable journals/audit/proof are retained, including original-key reads. No new
+executor, approval bit, or progress journal is allowed. New normal requests retain
+the existing single workflow and never enter this boundary.

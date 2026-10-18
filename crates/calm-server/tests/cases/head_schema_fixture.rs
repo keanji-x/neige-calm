@@ -110,6 +110,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0170_planner_handoff_activation.sql",
     "0171_planner_handoff_coordinator.sql",
     "0172_planner_handoff_owner.sql",
+    "0173_planner_handoff_legacy_settlement.sql",
 ];
 
 #[test]

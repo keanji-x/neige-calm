@@ -33,6 +33,20 @@ pub(crate) async fn query_handoff_pause_pool(
     pool: &sqlx::SqlitePool,
     request: PauseRequest,
 ) -> Result<PauseQuery> {
+    query_handoff_pause_executor(pool, request).await
+}
+
+pub(crate) async fn query_handoff_pause_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    request: PauseRequest,
+) -> Result<PauseQuery> {
+    query_handoff_pause_executor(&mut **tx, request).await
+}
+
+async fn query_handoff_pause_executor<'c>(
+    executor: impl sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    request: PauseRequest,
+) -> Result<PauseQuery> {
     request.validate().map_err(|_| conflict())?;
     let (card, id, track) = request.identity();
     // One statement observes the complete storage relationship and snapshot atomically.
@@ -44,7 +58,7 @@ pub(crate) async fn query_handoff_pause_pool(
          JOIN tracks t ON t.id=c.track_id WHERE ws.id=?1",
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?
     .ok_or_else(conflict)?;
     if session.card_id != card.as_str()

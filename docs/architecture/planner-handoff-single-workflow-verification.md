@@ -196,3 +196,165 @@ if that gate discovers actual generated input drift; no such drift is hidden her
 - `crates/calm-server/src/operation/interaction_retry.rs`: `ae4ec8052f0873e08be0f889098b6f60f55fcdec93c219769bd80ef94b4ab45f`.
 - `crates/calm-truth/migrations/0172_planner_handoff_owner.sql`: `eb5a33f995b76f35f858c04f58e093c72eedfac96737be2f1b92a3ebd41118f3`.
 - `crates/calm-server/src/harness/run_loop/handoff_coordinator_regression_tests.rs`: `ba200e5bd298ce0ac5cc182ad94068be02bad7c1aab26d12eed3448f7aba68c0`.
+
+## Legacy evidence / settlement correction
+
+This slice remains L2 (persistence and exact-claim isolation). Its baseline is
+629257bb41d016c87f03634219d6cb2949970df9; it does not replace the converged normal
+single-owner workflow or synchronize main. The two source reviews are Track runs
+`handoff-single-owner-review-a` (completed event 428099) and
+`handoff-single-owner-review-b` (completed event 428025).
+
+The allowed matrix is in [the design](planner-handoff-single-workflow.md#legacy-evidence-and-settlement-correction-l2).
+`handoff_legacy_evidence` is the sole V1 interpretation boundary for coordinator
+query/adoption and activation query/adoption. Required nullable V1 wire members
+must be present; null is not the same as an omitted transport field. Its typed
+conversion checks business stage, original scope, exact receipts/releases, recorded
+cutover result/hash, preparation or immutable native proof, transport and current
+binding. Historical Activated validates its immutable evidence before ignoring
+later mutable ownership. Sending/Unknown cannot become absence or Prepared; proven
+resources cannot become Prepared when a transport field is damaged.
+
+A legacy Finished receipt is not a settlement certificate. Query is read-only and
+returns NeedsRecovery until explicit original-generation adoption. The adopter
+checks the old lease/generation and original SQL claim evidence under IMMEDIATE,
+then the existing workflow serial Resolve/typed release owner reconciles both
+original requests. Its existing terminal transaction owns reservation release,
+including ignored-write detection. Neither a cleared attempted flag nor a frozen
+operation revokes a pause already beyond its intent seam.
+
+0173 therefore rejects exact old Finished claims and exact adopted coordinator
+claims. Adoption fencing starts before Resolve: a command cannot land between
+serial absence and terminal persistence. Already-landed identical paused claims
+remain writable for health/release reconciliation. A different new claim is not
+fenced. Two partial expression indexes cover only legacy coordinator source/target
+identities; each eligible pause snapshot write uses at most two indexed exact-claim
+lookups plus indexed adoption lookup, rather than introducing a workflow-history
+scan. The existing 0172 fences and their previously documented costs are unchanged.
+0172 and every earlier migration remain byte-frozen.
+
+Actual first red: `/tmp/handoff-legacy-first-red.log`, complete specified focused
+selection, 265 tests = 263 passed + these two failures:
+
+- `handoff_coordinator_legacy_proven_transport_damage_rejects_before_adoption_or_mint`:
+  actual ResourcesCheckpointed with missing transport thread was accepted for adoption.
+- `handoff_coordinator_legacy_finished_requires_explicit_original_claim_settlement`:
+  the old reader returned terminal instead of NeedsRecovery.
+
+Fixture provenance and limits are explicit. No old executable was run. Native
+proof fixtures invoke the real start adapter against the daemon stub and a small
+frozen bind/finalization seam from f1f9e5b7a's production activation SQL/interact
+path. Only its removed facts wrapper, surrounding test transaction and runner
+setup are adapted. The frozen 0170 pending transition trigger is read from its
+unchanged source and installed/bound/restored in one transaction. The real generic
+leased checkpoint, token binding, snapshot writers, transport owner and harness
+installation run; no successful native proof is authored by a test. Corrupt
+transport/state members are injected only after that real proof exists.
+
+The Finished no-effect wire fixture represents the old checkpoint after a real
+serial absence barrier; it is not claimed as execution of an old compensator.
+The separate post-intent interleaving uses the public production begin/pause seam,
+changes only its persisted representation to V1, expires its lease, and delivers
+that still-live original command while the adopted owner is stopped after Resolve
+and before terminal commit. This exercises actual commands, storage and fences,
+not a handwritten pause or compensation algorithm. The pre-upgrade already-landed
+case executes the real pause with 0173 temporarily absent, reinstalls it, and then
+uses explicit original-generation recovery. Historical activation with active=1
+comes from real install/finalization and the old unchecked UPDATE under a real
+RAISE(IGNORE) trigger; recovery includes SQLite file reopen and production Track
+delete. Faulted and recovered/unconfirmed typed releases are exercised through
+real serial owners before legacy adoption. No real provider, Tier 2, UI/browser,
+remote CI, full historical binary upgrade or broad workspace suite is claimed.
+
+Intermediate focused runs `green-1` through `green-7` were not green. They exposed
+an adopted-reader replay lookup error and fixture issues (direct Track SQL delete,
+nontransactional trigger replacement, and a test task that asserted a particular
+old-driver return instead of the durable fence). They are not delivery evidence. The implementation fixes
+the replay lookup; fixtures use production deletion, atomic schema restoration and
+byte-for-byte equality of the parked old journal after the late command. The post-intent fixture also applies the
+actual 0172 parking shape, so the generic runner does not try to claim its frozen
+old journal after the adopted owner completes. The original command remains live
+across that parking; it still reaches the actual pause owner.
+
+Deleted mechanisms: optional-string resource-stage guessing, the legacy Finished
+query/retry success shortcut, and the separate cutover read-back transaction wrapper. Raw V1 fields now live only inside the decoder; its result carries
+required typed progress. No adapter registration, executor, journal, repeated
+persistent field, normal operation or domain checkpoint is added. A fixture-only
+pause point observes the existing settlement boundary. Original journals, audit,
+proof, key mapping, reservation, generations and full-row recovery remain because
+they own historical identity, exclusion, ABA, native intent and queue/floor/ACK
+integrity. New responsibility files remain below 800 lines.
+
+Permanent maintenance: ordinary new tests change their module only; ordinary new
+providers continue through the existing profile/start/recovery owner. A new V1
+supported shape changes this decoder and its boundary tests. 0173 adds its one
+filename to the existing schema inventory; future migrations retain that existing
+two-file contract. No new CI pass, test-name pin or provider list is introduced.
+The task's six-step kernel gate owns text, quick, contracts, focused replay, truth
+authorization and frontend consumer checks; the worker runs only the complete
+specified focused selection and necessary formatting/lint fixes.
+
+Final worker focused run: `/tmp/handoff-legacy-green-9.log`, 268/268 passed.
+Two explicit single-factor production mutations each ran the entire same selection:
+
+| Mutation | Complete predicted and actual red set | Restore |
+| --- | --- | --- |
+| State/proof thread equality changed to nonempty | Only `handoff_coordinator_legacy_proven_transport_damage_rejects_before_adoption_or_mint` (267 passed, 1 failed, exit 100) | 268/268, exit 0 |
+| Only 0173 late-claim guard disabled with `WHEN 0 AND` | Only `handoff_coordinator_legacy_finished_requires_explicit_original_claim_settlement` and `handoff_coordinator_legacy_source_intent_expired_driver_cannot_relock_after_adoption` (266 passed, 2 failed, exit 100) | 268/268, exit 0 |
+
+The complete pre-write predictions, proposed diffs, original/mutated file hashes,
+all tracked/untracked source hashes, before/applied/restored diffs and exact red-set
+comparison are `/tmp/handoff-legacy-mutation-{proof,claim}.json`, `.proposal.diff`,
+`.before.diff`, `.applied.diff`, `.restored.diff`, `-red.log` and `-restored.log`.
+Both restores (including after restored green) exactly matched tree SHA256
+`13f1fb69de6acde6e15928275fce4f88a2aa6472ca34b652ebacfca1c12a3a5a`
+and full diff SHA256
+`3ffd37a7b6d08f5541ff1b62d7e27ed2c4a205a675c1bc0391c61bffdb1e4b58`.
+The prior normal live/absorbing/forward mutation target files remain byte-identical
+to their admitted records (`/tmp/handoff-legacy-prior-invariant-bytes.json`);
+those records are retained only for those unchanged invariants. The 172 existing
+migration byte comparisons are `/tmp/handoff-legacy-frozen-migrations.json`.
+
+After these restores, only this verification text and a mechanical test-only
+producer module rename were added before the gate: the frozen producer now lives
+in `handoff_legacy_fixtures_tests.rs`, declared under `cfg(test)`. Its bytes are
+identical to the tested producer. Call sites and the test module declaration only
+change that module identifier. This follows the existing production-writer scan's
+`*_tests.rs` convention; no production writer inventory entry or exemption is added.
+Both production mutation target files remain byte-identical to the restored hashes.
+The kernel focused replay verifies that final registration and frozen target. Kernel
+results belong in the task report/log, not an edit after the passed gate.
+
+Gate run 1 stopped at text gates. Its mechanical correction names the private
+transport member `session_id` with the unchanged V1 wire key in one serde rename.
+That necessary frozen-wire reference raises the existing terminology counter by
+one (1237 to 1238), with an enumerated rationale in the gate header and the actual
+baseline generator run. No pattern, excluded path, test roster or extra CI pass
+changes. Seven SQL literals now use compile-time concatenation; their resulting
+SQL bytes are identical (`/tmp/handoff-legacy-text-fix-equivalence.json`). The
+strict thread comparison and 0173 guard are unchanged. These later source-format
+and private-name changes are distinct from the exact restore hashes recorded
+above; the final kernel replay verifies them. The existing ratchet still runs once
+in each declared text-gate invocation, and ordinary new tests require no entry.
+
+The subsequent quick gate diagnosed only `unnecessary_mut_passed` in the frozen
+producer's finalization seam. Removing that local variable/reference mutability
+changes no production code, SQL bytes or checkpoint arguments. Runs 2 and 3 both
+record that same lint failure on the same tree; the gate join request started the
+third run after the preceding run had ended. The final gate verifies this mechanical
+fixture correction. No historical failed gate is reported as green.
+
+Gate run 4 passed text/quick/OpenAPI and stopped at the deferred-transaction source
+contract (plugin contracts 195/195 and integration contracts 13/13 passed; server
+contracts were 177/178). Its empty read-only allowlist explicitly requires that a
+transaction cannot park holding read locks, so these multi-statement async evidence
+reads do not qualify. Both legacy query snapshots now reuse `begin_immediate_tx`,
+the repository's existing deadlock-safe transaction owner. They execute SELECTs
+only, roll back, and release before querying a mapped owner on another connection;
+they acquire no operation lease, write no row, adopt nothing and call no provider.
+This briefly serializes legacy evidence reads with writers, preserving a consistent
+state/proof/binding/reservation snapshot without a shared-cache read-lock cycle.
+Normal workflow queries retain their existing entry point. No deferred-read
+allowlist entries or new permanent pins are added. The removed mechanism is the
+separate cutover read-back wrapper, not the existing transaction primitive. The
+final kernel focused replay rechecks pure reads and every integrated recovery path.

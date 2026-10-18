@@ -64,6 +64,41 @@ pub(crate) enum CutoverResult {
     },
 }
 
+impl CutoverResult {
+    pub(super) fn validate_plan(&self, plan: &ValidatedCutoverPlan, id: &str) -> Result<()> {
+        plan.scope.validate()?;
+        let Self::CutoverCommittedPendingActivation {
+            operation_id,
+            plan_id,
+            track_id,
+            history_card_id,
+            retired_source_session_id,
+            retired_target_session_id,
+            planner_card_id,
+            planner_session_id,
+            configuration,
+            snapshot_session_id,
+            push_watermark,
+        } = self;
+        let s = &plan.scope;
+        if operation_id != id
+            || plan_id != &s.plan_id
+            || track_id != &s.track_id
+            || history_card_id != &s.source_card_id
+            || retired_source_session_id != &s.source_session_id
+            || retired_target_session_id != &s.target_session_id
+            || planner_card_id != &s.target_card_id
+            || planner_session_id != &s.new_session_id
+            || snapshot_session_id != &s.new_session_id
+            || configuration != &plan.configuration
+            || *push_watermark < 0
+        {
+            return Err(conflict());
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn conflict() -> CalmError {
     CalmError::Conflict("handoff cutover facts or exact ownership changed".into())
 }
@@ -180,18 +215,6 @@ pub(super) async fn publish_cache(
     Ok(())
 }
 
-/// IMMEDIATE serializes with an in-flight SQLite commit, including a missing commit answer.
-/// The exact original payload is checked before consuming a succeeded operation.
-pub(super) async fn query_recorded(
-    pool: &sqlx::SqlitePool,
-    plan: &ValidatedCutoverPlan,
-) -> Result<Option<CutoverResult>> {
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let result = query_recorded_tx(&mut tx, plan).await?;
-    tx.rollback().await?;
-    Ok(result)
-}
-
 pub(super) async fn query_recorded_tx(
     tx: &mut Tx<'_>,
     plan: &ValidatedCutoverPlan,
@@ -213,6 +236,7 @@ pub(super) async fn query_recorded_tx(
     if *operation_id != id {
         return Err(conflict());
     }
+    result.validate_plan(plan, &id)?;
     Ok(Some(result))
 }
 

@@ -19,22 +19,7 @@ pub(super) fn runtime_with_repo(
     repo: Arc<dyn crate::db::Repo>,
     registry: HarnessRegistry,
 ) -> OperationRuntime {
-    let wiring =
-        crate::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(repo.clone());
-    let start = Arc::new(
-        crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter::new(
-            repo.clone(),
-            a.daemon.clone(),
-            a.daemon.thread_seals().clone(),
-            registry.clone(),
-            wiring.plugin,
-            a.harness.inner.card_role_cache.clone(),
-            a.harness.inner.track_area_cache.clone(),
-            Some("/tmp/activation-stub.sock".into()),
-            wiring.claude,
-            wiring.acp,
-        ),
-    );
+    let start = start_adapter(a, repo.clone(), registry.clone());
     let operations: Arc<dyn crate::operation::OperationRepo> = Arc::new(
         crate::operation::SqlxOperationRepo::new(repo.sqlite_pool().unwrap()),
     );
@@ -134,4 +119,27 @@ pub(super) async fn coordinator_request(
         actor: ActorId::User,
         key: crate::model::new_id(),
     }
+}
+
+pub(super) fn start_adapter(
+    a: &Fixture,
+    repo: Arc<dyn crate::db::Repo>,
+    registry: HarnessRegistry,
+) -> Arc<crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter> {
+    let wiring =
+        crate::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(repo.clone());
+    Arc::new(
+        crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter::new(
+            repo.clone(),
+            a.daemon.clone(),
+            a.daemon.thread_seals().clone(),
+            registry.clone(),
+            wiring.plugin,
+            a.harness.inner.card_role_cache.clone(),
+            a.harness.inner.track_area_cache.clone(),
+            Some("/tmp/activation-stub.sock".into()),
+            wiring.claude,
+            wiring.acp,
+        ),
+    )
 }

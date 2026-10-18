@@ -21,6 +21,9 @@ mod handoff_coordinator_sql;
 pub(crate) mod handoff_cutover;
 mod handoff_cutover_sql;
 mod handoff_legacy;
+mod handoff_legacy_evidence;
+#[cfg(test)]
+pub(crate) mod handoff_legacy_fixtures_tests;
 mod handoff_resources;
 mod handoff_state;
 #[cfg(test)]

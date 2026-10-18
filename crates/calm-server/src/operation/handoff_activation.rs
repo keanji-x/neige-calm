@@ -34,20 +34,22 @@ pub(crate) async fn activate(
     runtime: &OperationRuntime,
     cutover: String,
 ) -> Result<OperationReceipt> {
-    if let Some(old) = runtime
-        .find_by_kind_and_idempotency("handoff-activation", &cutover)
-        .await?
-        && let Some(output) = old.tx_output
+    if let Some(state @ ActivationResult::Activated { .. }) =
+        super::handoff_legacy::query_activation(runtime, &cutover).await?
     {
-        let state: ActivationResult = serde_json::from_value(output.result.clone())?;
-        if matches!(state, ActivationResult::Activated { .. }) {
-            return Ok(OperationReceipt::Settled(super::OperationResult {
-                op_id: old.id,
-                outcome: super::OperationOutcome::Succeeded {
-                    result: output.result,
-                },
-            }));
+        if let Some(id) = super::handoff_legacy::mapped(runtime, &cutover).await? {
+            return receipt(runtime, &id).await;
         }
+        let old = runtime
+            .find_by_kind_and_idempotency("handoff-activation", &cutover)
+            .await?
+            .ok_or_else(super::handoff_cutover::conflict)?;
+        return Ok(OperationReceipt::Settled(super::OperationResult {
+            op_id: old.id,
+            outcome: super::OperationOutcome::Succeeded {
+                result: serde_json::to_value(state)?,
+            },
+        }));
     }
     if let Some(id) = super::handoff_legacy::mapped(runtime, &cutover).await? {
         return receipt(runtime, &id).await;

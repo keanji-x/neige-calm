@@ -369,6 +369,12 @@ impl HandoffCoordinatorAdapter {
                 .await?;
             }
         }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point(
+            "handoff-coordinator-before-settlement",
+            &input.request.source_session_id,
+        )
+        .await;
         if let Ok(settled) = super::handoff_coordinator::SettledClaims::try_from(claims.clone()) {
             self.checkpoint(ctx, op, output, &Progress::Finished { claims: settled })
                 .await?;

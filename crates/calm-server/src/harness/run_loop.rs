@@ -4896,6 +4896,8 @@ mod handoff_coordinator_fault_tests;
 mod handoff_coordinator_regression_tests;
 #[cfg(test)]
 mod handoff_coordinator_tests;
+#[cfg(test)]
+mod handoff_legacy_evidence_tests;
 
 #[cfg(test)]
 mod handoff_coordinator_recovery_tests;
