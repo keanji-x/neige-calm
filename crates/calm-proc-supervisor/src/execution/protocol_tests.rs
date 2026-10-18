@@ -653,3 +653,62 @@ async fn private_registration_released_at_drained_not_retire() {
         "retirement lost the durable typed alias fence"
     );
 }
+
+#[tokio::test]
+async fn private_prepare_inspect_refuses_pending_settlement() {
+    let temp = tempfile::tempdir().unwrap();
+    let secret = CapabilityToken::fresh().unwrap();
+    let executor = executor(&temp, &secret);
+    let path = temp.path().join("source");
+    std::fs::create_dir(&path).unwrap();
+    let (request, held) = private(&executor, &path);
+    prepare(&executor, &request, &held).await;
+    drop(held);
+    std::fs::rename(&path, temp.path().join("old-source")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    executor
+        .store
+        .fail_execution_write
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(
+        executor
+            .dispatch(&secret, ExecutionRequest::Launch(consume(&request)))
+            .await,
+        ExecutionReply::Refused { .. }
+    ));
+    let pending = executor.record(&request.identity.execution_id).unwrap();
+    assert!(matches!(pending.phase, Phase::NoChild { .. }));
+    assert!(!pending.durably_settled());
+    assert_eq!(executor.live_objects.lock().unwrap().len(), 1);
+    assert!(
+        matches!(
+            inspect(&executor, &secret, &request).await,
+            ExecutionReply::Refused { .. }
+        ),
+        "Inspect must not report an undurable terminal fact"
+    );
+    assert!(
+        !executor
+            .record(&request.identity.execution_id)
+            .unwrap()
+            .durably_settled(),
+        "Inspect must remain read-only"
+    );
+    assert!(matches!(
+        executor
+            .dispatch(&secret, ExecutionRequest::Revoke(consume(&request)))
+            .await,
+        ExecutionReply::RevocationAcknowledged {
+            state: ExecutionState::NoChild { .. },
+            ..
+        }
+    ));
+    assert!(matches!(
+        inspect(&executor, &secret, &request).await,
+        ExecutionReply::Inspected {
+            state: ExecutionState::NoChild { .. },
+            ..
+        }
+    ));
+    assert_released(&executor);
+}

@@ -50,6 +50,11 @@ impl Executor {
             return Ok(ExecutionReply::Retired(tombstone.clone()));
         }
         Ok(match self.records.lock().map_err(poison)?.get(id) {
+            // Latched IO failures can contain a terminal phase that is not yet a durable fact.
+            // Inspect never repairs the journal or acknowledges that pending settlement.
+            Some(record) if record.pending_persistence => {
+                anyhow::bail!("execution state awaits durable persistence")
+            }
             Some(record) => ExecutionReply::Inspected {
                 receipt: record.phase.receipt().cloned(),
                 state: record.phase.state(),
