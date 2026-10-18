@@ -135,7 +135,7 @@ impl Fixture {
         .await
         .unwrap();
         let root = std::path::PathBuf::from(&track.workspace.path);
-        calm_server::workspace_service::workspace_materialize::materialize_workspace(
+        workspace_runtime::selection::materialize_workspace(
             &track.workspace,
             &temp.path().join("workspaces"),
             track.id.as_str(),

@@ -350,7 +350,7 @@ async fn workspace_identity_concurrent_terminal_hooks_converge_identical_facts()
         TrackWorkspacePlan::ManagedUnder(tmp.path().into()),
     )
     .await;
-    super::super::workspace_materialize::materialize_workspace(
+    workspace_runtime::selection::materialize_workspace(
         &current.workspace,
         tmp.path(),
         current.id.as_str(),

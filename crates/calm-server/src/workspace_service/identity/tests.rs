@@ -215,7 +215,7 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
     )
     .await
     .unwrap();
-    super::super::workspace_materialize::materialize_workspace(
+    workspace_runtime::selection::materialize_workspace(
         &track.workspace,
         tmp.path(),
         track.id.as_str(),
@@ -407,7 +407,7 @@ async fn workspace_identity_borrowed_observation_grants_no_physical_owner() {
         TrackWorkspacePlan::ManagedUnder(tmp.path().into()),
     )
     .await;
-    super::super::workspace_materialize::materialize_workspace(
+    workspace_runtime::selection::materialize_workspace(
         &owner.workspace,
         tmp.path(),
         owner.id.as_str(),

@@ -64,7 +64,7 @@ async fn workspace_identity_managed_preflight_does_not_create_or_repair() {
         .await;
         let directory = std::path::Path::new(&current.workspace.path);
         if unborn {
-            crate::workspace_service::workspace_materialize::materialize_workspace(
+            workspace_runtime::selection::materialize_workspace(
                 &current.workspace,
                 tmp.path(),
                 current.id.as_str(),

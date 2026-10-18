@@ -1,17 +1,8 @@
 //! Workspace selection and attached admission policy.
-use crate::error::{CalmError, Result};
-use crate::model::{TrackWorkspace, TrackWorkspaceKind};
-use std::path::Path;
+use crate::error::{Result, WorkspaceError};
+use calm_types::model::{TrackWorkspace, TrackWorkspaceKind};
+use std::path::{Path, PathBuf};
 use workspace::command::neige_git_command;
-
-/// Short digest of a workspace path for an idempotency key: a key that does not name the path turns any
-/// re-point into a permanent 409, since operation rows are never deleted.
-pub(crate) fn workspace_key_digest(path: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hex::encode(hasher.finalize())[..16].to_string()
-}
 
 /// Materialize `workspace` if — and only if — it is `Managed`; attached directories are the user's and are
 /// never created or written to. Attached validation lives at the user-facing entry points instead.
@@ -32,7 +23,7 @@ pub fn materialize_workspace(
 /// the root itself), and the slice-branch namespace is free. Every failure is `BadRequest`.
 pub fn validate_attached_workspace(path: &Path) -> Result<()> {
     if !path.is_absolute() {
-        return Err(CalmError::BadRequest(format!(
+        return Err(WorkspaceError::BadRequest(format!(
             "attached workspace: path must be absolute (start with `/`); got `{}`",
             path.display()
         )));
@@ -40,20 +31,20 @@ pub fn validate_attached_workspace(path: &Path) -> Result<()> {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_dir() => {}
         Ok(_) => {
-            return Err(CalmError::BadRequest(format!(
+            return Err(WorkspaceError::BadRequest(format!(
                 "attached workspace: `{}` is not a directory",
                 path.display()
             )));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CalmError::BadRequest(format!(
+            return Err(WorkspaceError::BadRequest(format!(
                 "attached workspace: `{}` does not exist. Neige never creates an \
                  attached directory — it is yours, so it has to be there already.",
                 path.display()
             )));
         }
         Err(error) => {
-            return Err(CalmError::BadRequest(format!(
+            return Err(WorkspaceError::BadRequest(format!(
                 "attached workspace: cannot read `{}`: {error}",
                 path.display()
             )));
@@ -65,13 +56,13 @@ pub fn validate_attached_workspace(path: &Path) -> Result<()> {
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .map_err(|error| {
-            CalmError::BadRequest(format!(
+            WorkspaceError::BadRequest(format!(
                 "attached workspace: cannot run git in `{}`: {error}",
                 path.display()
             ))
         })?;
     if !output.status.success() {
-        return Err(CalmError::BadRequest(format!(
+        return Err(WorkspaceError::BadRequest(format!(
             "attached workspace: `{}` is not inside a Git work tree, so no worker \
              could ever get a workspace lease there. git said: {}",
             path.display(),
@@ -100,14 +91,14 @@ fn ensure_slice_branch_namespace_is_free(path: &Path) -> Result<()> {
         ])
         .output()
         .map_err(|error| {
-            CalmError::BadRequest(format!(
+            WorkspaceError::BadRequest(format!(
                 "attached workspace: cannot run git in `{}`: {error}",
                 path.display()
             ))
         })?;
     match output.status.code() {
         Some(1) => Ok(()),
-        Some(0) => Err(CalmError::BadRequest(format!(
+        Some(0) => Err(WorkspaceError::BadRequest(format!(
             "attached workspace: `{}` has a branch named `neige`, and \
              `{SLICE_BRANCH_NAMESPACE_REF}` collides with the branch namespace \
              every track gets its own branch under (`neige/track-<id>`). Git \
@@ -117,7 +108,7 @@ fn ensure_slice_branch_namespace_is_free(path: &Path) -> Result<()> {
             path.display()
         ))),
         // Fail closed: the question was not answered.
-        other => Err(CalmError::BadRequest(format!(
+        other => Err(WorkspaceError::BadRequest(format!(
             "attached workspace: cannot tell whether `{}` already holds \
              `{SLICE_BRANCH_NAMESPACE_REF}` (git show-ref exited with {}); \
              refusing rather than letting the track worktree find out. git said: \
@@ -132,12 +123,52 @@ fn ensure_slice_branch_namespace_is_free(path: &Path) -> Result<()> {
 }
 
 /// Materialize the stored managed directory at the existing worker admission point.
-pub(crate) fn materialize_managed_workspace(
-    root: &Path,
-    path: &Path,
-    track_id: &str,
-) -> Result<()> {
+pub fn materialize_managed_workspace(root: &Path, path: &Path, track_id: &str) -> Result<()> {
     workspace::materialize::materialize_managed_workspace(root, path, track_id).map_err(Into::into)
+}
+
+pub fn git_repo_root_for_track_cwd(track_id: &str, cwd: &str) -> Result<PathBuf> {
+    let cwd_path = Path::new(cwd);
+    if cwd.trim().is_empty() || !cwd_path.is_absolute() {
+        return Err(WorkspaceError::BadRequest(format!(
+            "track {track_id} cwd must be an absolute git repository path for workspace leasing"
+        )));
+    }
+    let output = neige_git_command()
+        .arg("-C")
+        .arg(cwd_path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| {
+            WorkspaceError::Internal(format!(
+                "spawn git rev-parse --show-toplevel for track {track_id} cwd {}: {e}",
+                cwd_path.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(WorkspaceError::BadRequest(format!(
+            "track {track_id} cwd {} is not a git repository: {}",
+            cwd_path.display(),
+            workspace::git::output_summary(&output)
+        )));
+    }
+    let repo_root = workspace::base::printed_path(&output.stdout);
+    if repo_root.as_os_str().is_empty() {
+        return Err(WorkspaceError::BadRequest(format!(
+            "track {track_id} cwd {} did not resolve to a git repository root",
+            cwd_path.display()
+        )));
+    }
+    if !repo_root.is_absolute() {
+        return Err(WorkspaceError::BadRequest(format!(
+            "track {track_id} git repository root must be absolute: {}",
+            repo_root.display()
+        )));
+    }
+    // Refused where it is read: `repo_root` is stored and frozen
+    // through `json!` by both adapters, so it is UTF-8 by construction.
+    workspace::base::utf8_path(&repo_root, "track git repository root")?;
+    Ok(repo_root)
 }
 
 #[cfg(test)]

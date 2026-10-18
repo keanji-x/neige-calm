@@ -17,8 +17,9 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::error::CalmError;
 use crate::operation::workspace_lease::upstream::{commits_behind, last_known_upstream};
-use crate::workspace_service::git_repo_root_for_track_cwd;
+use workspace_runtime::selection::git_repo_root_for_track_cwd;
 
 /// `candidate.upstream`: the upstream commit now, and how many commits it has
 /// that the candidate's base does not (`git rev-list --count <base>..<sha>`).
@@ -56,9 +57,11 @@ pub(crate) fn upstream_staleness(
     if bases.iter().all(Option::is_none) {
         return vec![None; bases.len()];
     }
-    let upstream = git_repo_root_for_track_cwd(track_id, track_cwd).and_then(|repo_root| {
-        Ok(last_known_upstream(&repo_root)?.map(|known| (repo_root, known.sha)))
-    });
+    let upstream = git_repo_root_for_track_cwd(track_id, track_cwd)
+        .map_err(CalmError::from)
+        .and_then(|repo_root| {
+            Ok(last_known_upstream(&repo_root)?.map(|known| (repo_root, known.sha)))
+        });
     let (repo_root, upstream_sha) = match upstream {
         Ok(Some(found)) => found,
         Ok(None) => return vec![None; bases.len()],

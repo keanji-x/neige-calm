@@ -167,7 +167,7 @@ async fn boot_inner(
     .unwrap();
     tx.commit().await.unwrap();
     let workspace = PathBuf::from(&track.workspace.path);
-    calm_server::workspace_service::workspace_materialize::materialize_workspace(
+    workspace_runtime::selection::materialize_workspace(
         &track.workspace,
         &workspace_root,
         track.id.as_str(),

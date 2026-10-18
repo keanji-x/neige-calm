@@ -233,7 +233,7 @@ impl ProviderAdapter for ChildTrackAdapter {
         .await?;
         // Managed branch: real work, and the ownership marker names the CHILD, so a child that ended up on the parent's managed path is refused here.
         // Attached branch: a no-op by contract — `materialize_workspace` never creates, `git init`s or writes to a directory the user owns.
-        crate::workspace_service::workspace_materialize::materialize_workspace(
+        workspace_runtime::selection::materialize_workspace(
             &child.workspace,
             &self.workspace_root,
             child.id.as_str(),
@@ -719,7 +719,7 @@ mod tests {
         tx.commit().await.unwrap();
         assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Managed);
         // The parent was minted through the DB writer directly, so materialize it here the way the route would.
-        crate::workspace_service::workspace_materialize::materialize_workspace(
+        workspace_runtime::selection::materialize_workspace(
             &parent.workspace,
             &workspace_root,
             parent.id.as_str(),
@@ -836,7 +836,7 @@ mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        crate::workspace_service::workspace_materialize::materialize_workspace(
+        workspace_runtime::selection::materialize_workspace(
             &parent.workspace,
             &workspace_root,
             parent.id.as_str(),

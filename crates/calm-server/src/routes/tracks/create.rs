@@ -632,7 +632,7 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
     })?;
     // `Resume` re-materializes: a 201 for a track whose workspace does not exist would
     // replay the create failure one layer down. `materialize_workspace` is designed to be re-run.
-    crate::workspace_service::workspace_materialize::materialize_workspace(
+    workspace_runtime::selection::materialize_workspace(
         &track.workspace,
         &s.workspace_root,
         track.id.as_str(),

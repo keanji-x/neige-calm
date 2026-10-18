@@ -156,9 +156,9 @@ pub(super) async fn prepare(
     // Validated before the transaction, deliberately: `materialize_workspace` runs after
     // the commit, and a failure there leaves an orphan track row.
     if !cwd_omitted {
-        crate::workspace_service::workspace_materialize::validate_attached_workspace(
-            std::path::Path::new(&normalized_cwd),
-        )?;
+        workspace_runtime::selection::validate_attached_workspace(std::path::Path::new(
+            &normalized_cwd,
+        ))?;
     }
     // Stamp the normalized cwd back before the row is minted; `area_folder.path` is the
     // normalized form too.
@@ -206,7 +206,7 @@ pub(super) async fn prepare(
         TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone())
     } else {
         TrackWorkspacePlan::AttachedWithTrackWorktree(
-            crate::workspace_service::git_repo_root_for_track_cwd("(new)", &normalized_cwd)?,
+            workspace_runtime::selection::git_repo_root_for_track_cwd("(new)", &normalized_cwd)?,
         )
     };
     Ok(PreparedCreate {

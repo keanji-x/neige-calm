@@ -23,7 +23,7 @@ use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::{AppState, RouteState};
 use crate::track_report::TrackReportPayload;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
-use crate::workspace_service::workspace_materialize::workspace_key_digest;
+use crate::workspace_service::workspace_key_digest;
 use axum::{
     Router,
     extract::{FromRef, State},
@@ -497,7 +497,7 @@ pub(crate) async fn ensure_today_launchpad(
     // The launchpad does not go through `create_track_structure` (raw `INSERT INTO tracks`),
     // so it carries its own materialize call; skipping it leaves every codex task on the
     // Today panel dying with `spawn-failed`.
-    crate::workspace_service::workspace_materialize::materialize_workspace(
+    workspace_runtime::selection::materialize_workspace(
         &out.track.workspace,
         &workspace_root,
         out.track.id.as_str(),

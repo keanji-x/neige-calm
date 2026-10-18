@@ -250,7 +250,7 @@ async fn prepare_worker_lease_with_tx(
     if kind == TrackWorkspaceKind::Managed {
         // Last-chance materialize: track create materializes after its transaction commits, so a
         // failure there leaves a committed row pointing at a missing directory.
-        crate::workspace_service::workspace_materialize::materialize_managed_workspace(
+        workspace_runtime::selection::materialize_managed_workspace(
             workspace_root,
             &path,
             track_id,

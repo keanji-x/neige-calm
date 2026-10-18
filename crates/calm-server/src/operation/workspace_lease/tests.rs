@@ -6,8 +6,8 @@ use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
 use crate::git_candidate::delivery::AttemptOutcome;
-use crate::workspace_service::git_repo_root_for_track_cwd;
 use workspace::git::WorkspaceLeaseTarget;
+use workspace_runtime::selection::git_repo_root_for_track_cwd;
 
 #[tokio::test]
 async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {

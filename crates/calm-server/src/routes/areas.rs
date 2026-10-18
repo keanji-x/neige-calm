@@ -23,7 +23,6 @@ use crate::organization_access::{
 use crate::routes::planner_cards::quiesce_shared_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
-use crate::workspace_service::workspace_materialize::validate_attached_workspace;
 use axum::{
     Router,
     extract::State,
@@ -36,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
 use workspace_runtime::recycle as workspace_recycle;
+use workspace_runtime::selection::validate_attached_workspace;
 
 use super::area_folders::normalize_path;
 use super::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};

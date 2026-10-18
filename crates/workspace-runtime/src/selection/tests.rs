@@ -123,7 +123,7 @@ fn attaching_a_repo_holding_refs_heads_neige_is_refused_by_name() {
     let err = super::validate_attached_workspace(&repo)
         .expect_err("a repository holding `refs/heads/neige` must be refused");
     assert!(
-        matches!(err, crate::error::CalmError::BadRequest(_)),
+        matches!(err, crate::error::WorkspaceError::BadRequest(_)),
         "naming a directory that cannot host slice branches is the caller's \
          mistake, not a server failure: {err:?}"
     );

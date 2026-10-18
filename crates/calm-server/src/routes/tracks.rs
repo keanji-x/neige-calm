@@ -1499,7 +1499,7 @@ async fn create_track_structure(
     // Materialize outside the transaction and before the planner harness starts. A failure
     // here MUST surface as a non-2xx; a 201 would leave a track whose first worker dies
     // with `spawn-failed`.
-    crate::workspace_service::workspace_materialize::materialize_workspace(
+    workspace_runtime::selection::materialize_workspace(
         &track.workspace,
         &workspace_root_for_materialize,
         track.id.as_str(),
@@ -1999,9 +1999,7 @@ async fn repoint_track_workspace(
     // Validate the target BEFORE any write, so a bad path fails here with git's own words
     // rather than as a worker's `spawn-failed`.
     let new_path = normalize_path(&requested.path);
-    crate::workspace_service::workspace_materialize::validate_attached_workspace(
-        std::path::Path::new(&new_path),
-    )?;
+    workspace_runtime::selection::validate_attached_workspace(std::path::Path::new(&new_path))?;
 
     let workspace_root = s.workspace_root.clone();
     let track_id = track.id.to_string();
