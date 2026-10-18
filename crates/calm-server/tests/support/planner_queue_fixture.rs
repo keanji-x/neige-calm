@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
@@ -20,7 +19,6 @@ use calm_server::harness::{
 };
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
@@ -29,19 +27,6 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 pub const SEED_THREAD_ID: &str = "thread-pending-queue";
-
-async fn insert_owner_principal(
-    mut request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    request.extensions_mut().insert(Principal {
-        user_id: LEGACY_OWNER_USER_ID.into(),
-        display_name: "owner".into(),
-        role: "owner".into(),
-        session_id: "planner-queue-fixture".into(),
-    });
-    next.run(request).await
-}
 
 pub struct Boot {
     pub app: axum::Router,
@@ -296,14 +281,7 @@ async fn boot_inner(
         .insert(worker_session_id.clone(), harness.clone());
     let registry = state.harness.clone();
 
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        // Stand-in for `auth::require_session`, which is what puts a `Principal` in the extensions;
-        // a handler that takes the `Principal` extractor answers 401 without it.
-        .layer(axum::middleware::from_fn(insert_owner_principal))
-        .with_state(state);
+    let app = super::authenticated_router::application(state).await;
 
     Boot {
         app,

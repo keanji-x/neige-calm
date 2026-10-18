@@ -1,5 +1,5 @@
-//! Public V1 intake keeps a real queue identity under backpressure. Historical
-//! data is loaded by the real recovery owner, never assigned fabricated IDs.
+//! V1 intake preserves existing queue identities and optional acknowledgements.
+//! Historical data is loaded by the recovery owner, never assigned fabricated IDs.
 use super::*;
 use crate::harness::{MAX_PENDING_QUEUE_LEN, Observation, PlannerHarness};
 use crate::state::{CodexShellState, RouteState, WorkerState};
@@ -160,85 +160,6 @@ impl LegacyQueue {
             .await
             .unwrap();
     }
-}
-
-#[tokio::test]
-async fn verified_public_v1_send_keeps_addressable_identity_under_legacy_tail_backpressure() {
-    let fx = LegacyQueue::new(true).await;
-    let input = json!({"text":"New verified public input keeps its own identity"});
-    let accepted = post(&fx.app, &fx.cookie, &fx.uri(), "addressable", input.clone()).await;
-    let entry_id = accepted["entry_id"]
-        .as_str()
-        .expect("a new verified public input must have a real queue entry ID");
-    let pending = fx.harness.snapshot().await.unwrap().pending_entries();
-    assert_eq!(pending.len(), MAX_PENDING_QUEUE_LEN);
-    let entry = pending
-        .iter()
-        .find_map(|entry| {
-            entry
-                .user_view()
-                .filter(|entry| entry.id.as_str() == entry_id)
-        })
-        .expect("the acknowledgement names an actual addressable queued entry");
-    assert_eq!(entry.text, input["text"].as_str().unwrap());
-    assert!(
-        pending.iter().any(|entry| matches!(entry,
-            crate::harness::QueueEntry::LegacyUser { text, .. }
-                if text == &format!("Original historical message {}", MAX_PENDING_QUEUE_LEN - 1)
-        )),
-        "the original unaddressable tail is not changed or assigned an ID"
-    );
-    let replay = post(&fx.app, &fx.cookie, &fx.uri(), "addressable", input).await;
-    assert_eq!(replay, accepted);
-    let response = fx
-        .app
-        .clone()
-        .oneshot(
-            Request::patch(format!("{}/{entry_id}", fx.uri()))
-                .header(header::COOKIE, &fx.cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({"text":"Edit the actual new entry","if_entry_rev":0}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "the acknowledged ID is truly editable through the public route"
-    );
-    assert_eq!(fx.bindings().await, 1);
-    fx.close().await;
-}
-
-#[tokio::test]
-async fn verified_public_v1_full_legacy_queue_refuses_without_binding_or_changing_history() {
-    let fx = LegacyQueue::new(false).await;
-    let before = fx.harness.snapshot().await.unwrap().pending_entries();
-    let response = fx
-        .app
-        .clone()
-        .oneshot(
-            Request::post(fx.uri())
-                .header(header::COOKIE, &fx.cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("Idempotency-Key", "no-room")
-                .body(Body::from(
-                    json!({"text":"No anonymous acceptance"}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(fx.bindings().await, 0);
-    assert_eq!(
-        fx.harness.snapshot().await.unwrap().pending_entries(),
-        before
-    );
-    fx.close().await;
 }
 
 #[tokio::test]

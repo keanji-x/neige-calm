@@ -644,11 +644,11 @@ fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
             } else {
                 TurnStartFailure::Refused {
                     error: CalmError::CodexRefused(message),
-                    reader:
-                        "codex returned an error for this conversation. If you changed the model \
+                    reader: "codex refused to start a turn for this conversation, so \
+                             your message has not been sent. If you changed the model \
                              recently, it may not be one this account can run — try \
                              another."
-                            .into(),
+                        .into(),
                 }
             }
         }

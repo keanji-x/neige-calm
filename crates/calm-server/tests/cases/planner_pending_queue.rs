@@ -15,7 +15,6 @@ use calm_server::harness::{
 };
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::track_area_cache::TrackAreaCache;
 use serde_json::{Value, json};
@@ -215,11 +214,7 @@ async fn a_card_with_no_runtime_reports_an_empty_pending_page() {
         Some(role_cache.clone()),
         Some(track_area_cache),
     );
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state);
+    let app = crate::support::authenticated_router::application(state).await;
 
     let (status, run) = get(app, format!("/api/cards/{}/planner/run", card.id.as_str())).await;
     assert_eq!(status, StatusCode::OK, "body={run}");
