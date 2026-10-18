@@ -20,7 +20,7 @@ use crate::routes::idempotency_key::{
 };
 use crate::routes::planner_cards::{
     card_runs_headless_harness, get_planner_run, interrupt_planner_card,
-    interrupt_shared_card_active_turn, reset_planner_card, restart_planner_card,
+    interrupt_shared_codex_card_active_turn, reset_planner_card, restart_planner_card,
 };
 use crate::session_projection_lookup::{
     project_runtime_into_card_payload, project_runtime_into_cards_payload,
@@ -545,7 +545,7 @@ pub(crate) async fn delete_card(
     let track_id = card.track_id.clone();
     let scope = card_scope(s.repo.as_ref(), card_id.clone(), track_id.clone()).await?;
 
-    interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, &card).await;
+    interrupt_shared_codex_card_active_turn(s.repo.as_ref(), &cs, &card).await;
 
     // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal row must be removed, and its daemon + socket reaped, before the card row delete. Cleanup runs outside the write txn; if it fails the row stays and the sweeper retries next tick. The txn then deletes both rows in one commit under `Event::CardDeleted`.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;

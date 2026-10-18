@@ -1,6 +1,6 @@
 //! `/api/cards/{id}/planner/*` — the headless planner-harness card surface: interrupt, run
 //! snapshot, reset, restart and the harness start they share, plus the input-length rule and the
-//! shared-planner turn teardown used by card, track and area deletion.
+//! shared-Codex turn teardown used by card, track and area deletion.
 
 use crate::actor::Actor;
 use crate::db::RouteRepo;
@@ -19,7 +19,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::routes::planner_session::dormant;
-use crate::session_projection_lookup::card_is_shared_planner;
+use crate::session_projection_lookup::card_uses_shared_codex;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState};
 
@@ -34,7 +34,7 @@ pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     crate::harness::profile::PlannerBinding::from_card(card, role).is_some()
 }
 
-pub(crate) async fn interrupt_shared_card_active_turn(
+pub(crate) async fn interrupt_shared_codex_card_active_turn(
     repo: &dyn RouteRepo,
     cs: &CodexShellState,
     card: &Card,
@@ -49,12 +49,12 @@ pub(crate) async fn interrupt_shared_card_active_turn(
                 target: "session_projection_lookup::fallback",
                 card_id = %card.id,
                 error = %e,
-                "runtime shared-card discriminator query failed; falling back to card payload"
+                "runtime shared-Codex discriminator query failed; falling back to card payload"
             );
             None
         }
     };
-    if !card_is_shared_planner(card, active_runtime.as_ref()) {
+    if !card_uses_shared_codex(card, active_runtime.as_ref()) {
         return;
     }
     if let Err(e) = cs
@@ -72,8 +72,9 @@ pub(crate) async fn interrupt_shared_card_active_turn(
     }
 }
 
-/// Deletion-grade form of [`interrupt_shared_card_active_turn`]: every failure is propagated, since a destructive workspace move may only follow a confirmed quiesce.
-pub(crate) async fn quiesce_shared_card_active_turn(
+/// Deletion-grade Codex leg: every failure is propagated. Other backend owners
+/// must still quiesce their sessions before a destructive workspace move.
+pub(crate) async fn quiesce_shared_codex_card_active_turn(
     s: &RouteState,
     cs: &CodexShellState,
     card: &Card,
@@ -82,7 +83,7 @@ pub(crate) async fn quiesce_shared_card_active_turn(
         .repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
-    if card_is_shared_planner(card, active_runtime.as_ref()) {
+    if card_uses_shared_codex(card, active_runtime.as_ref()) {
         let thread_id = active_runtime
             .as_ref()
             .and_then(crate::harness::effective_runtime_thread_id);

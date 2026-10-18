@@ -32,7 +32,7 @@ use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::codex_cards::default_cwd;
 use crate::routes::idempotency_key::stable_payload_hash;
-use crate::routes::planner_cards::quiesce_shared_card_active_turn;
+use crate::routes::planner_cards::quiesce_shared_codex_card_active_turn;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -2488,7 +2488,7 @@ async fn teardown_track_deletion(
     .await?;
     let mut seals = crate::thread_seals::DeletionThreadSeals::new(s.thread_seals.clone());
     for card in &plan.cards {
-        if let Some(thread_id) = quiesce_shared_card_active_turn(s, cs, card).await? {
+        if let Some(thread_id) = quiesce_shared_codex_card_active_turn(s, cs, card).await? {
             seals.seal(thread_id);
         }
     }
