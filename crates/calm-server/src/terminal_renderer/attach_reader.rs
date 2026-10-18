@@ -7,18 +7,18 @@ use tokio::task::JoinHandle;
 
 use super::{
     OutputWake, SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo,
-    wake_projector,
+    record_output, wake_projector,
 };
 use crate::db::RouteRepo;
 use crate::session_projection_repo::WorkerSessionState;
 use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
 use crate::terminal_renderer::output_capture::SharedTerminalOutputCapture;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::AtomicI64;
 
-struct ObservationSource {
-    plane: SharedRenderPlane,
-    exited: bool,
+pub(super) struct ObservationSource {
+    pub(super) plane: SharedRenderPlane,
+    pub(super) exited: bool,
 }
 impl Drop for ObservationSource {
     fn drop(&mut self) {
@@ -52,7 +52,6 @@ pub fn spawn_supervisor_attach_reader(
     last_output_ms: Arc<AtomicI64>,
     output_wake: OutputWake,
 ) -> JoinHandle<()> {
-    let quiet_window_ms = crate::track_activity::INTERACTIVE_OUTPUT_WINDOW.as_millis() as i64;
     tokio::spawn(async move {
         let mut source = ObservationSource {
             plane: render_plane.clone(),
@@ -65,11 +64,7 @@ pub fn spawn_supervisor_attach_reader(
                     // One atomic swap: the previous stamp decides whether
                     // this frame is a leading edge (quiet → output); there
                     // is no trailing edge — output → quiet is the tick's.
-                    let now = crate::model::now_ms();
-                    let previous = last_output_ms.swap(now, Ordering::Relaxed);
-                    if now - previous >= quiet_window_ms {
-                        wake_projector(&output_wake, &terminal_id);
-                    }
+                    record_output(&last_output_ms, &output_wake, &terminal_id);
                     if let Ok(mut capture) = output_capture.lock() {
                         capture.push(&bytes);
                     }
@@ -82,6 +77,17 @@ pub fn spawn_supervisor_attach_reader(
                 Ok(ControlReply::Exited {
                     status, signalled, ..
                 }) => {
+                    // Only the typed Store projection may write a typed terminal's exit.
+                    if let Some(repo) = repo.as_ref() {
+                        match repo.terminal_get(&terminal_id).await {
+                            Ok(Some(term)) => match term.is_typed(repo.as_ref()).await {
+                                Ok(false) => {}
+                                Ok(true) | Err(_) => break,
+                            },
+                            Err(_) => break,
+                            Ok(None) => {}
+                        }
+                    }
                     source.exited = true;
                     let effects = match render_plane.lock() {
                         Ok(mut rp) => {

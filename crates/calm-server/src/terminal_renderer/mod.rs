@@ -22,6 +22,7 @@ mod attach_reader;
 mod child_ready;
 mod client_pump;
 mod control_writer;
+mod typed;
 pub use control_writer::{INPUT_REVOKED_BEFORE_WRITE, SUBMIT_CR_GAP, WriteShape};
 mod input_authority;
 mod model_view;
@@ -32,6 +33,8 @@ pub mod attach_hold_for_test;
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
+#[cfg(feature = "fixtures")]
+pub mod refusal_test_hook;
 pub mod signals;
 mod snapshot;
 pub use signals::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS, Signal, SignalRing, SignalsSince};
@@ -56,6 +59,15 @@ fn wake_projector(slot: &OutputWake, terminal_id: &str) {
         && let Some(tx) = guard.as_ref()
     {
         let _ = tx.send(terminal_id.to_owned());
+    }
+}
+
+/// Share the activity projector's leading-edge policy across both output transports.
+fn record_output(stamp: &AtomicI64, wake: &OutputWake, terminal_id: &str) {
+    let now = crate::model::now_ms();
+    let previous = stamp.swap(now, Ordering::Relaxed);
+    if now - previous >= crate::track_activity::INTERACTIVE_OUTPUT_WINDOW.as_millis() as i64 {
+        wake_projector(wake, terminal_id);
     }
 }
 
@@ -146,6 +158,7 @@ pub struct RendererEntry {
     pub supervisor_sock: PathBuf,
     pub handle: RendererHandle,
     config: RendererConfig,
+    control_via_engine: bool,
     /// Set exactly once when the attach stream delivers `Exited`. Late client pumps replay this
     /// after `ServerHello` because broadcast receivers do not retain history.
     pub exit: SharedExitState,
@@ -197,6 +210,21 @@ impl RendererEntry {
             task.abort();
         }
     }
+    #[doc(hidden)]
+    pub fn tasks_finished_for_test(&self) -> bool {
+        self.attach_task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
+            && self
+                .tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .all(JoinHandle::is_finished)
+    }
+
     pub fn config(&self) -> &RendererConfig {
         &self.config
     }
@@ -237,6 +265,13 @@ impl RendererEntry {
     }
 
     pub async fn shutdown_signal(&self, sig: ProcSignal) {
+        if self.control_via_engine {
+            let _ = self
+                .handle
+                .supervisor_tx
+                .send(SupervisorControl::Signal(sig));
+            return;
+        }
         signal_child_direct(&self.supervisor_sock, &self.proc_id, sig).await;
     }
 
@@ -287,7 +322,8 @@ impl RendererEntry {
 pub struct RendererSpawnError(#[from] anyhow::Error);
 
 pub struct TerminalRendererRegistry {
-    entries: StdMutex<HashMap<String, Arc<RendererEntry>>>,
+    entries: Arc<StdMutex<HashMap<String, Arc<RendererEntry>>>>,
+    execution: StdMutex<crate::execution_quiesce::ExecutionLifecycle>,
     repo: Option<Arc<dyn RouteRepo>>,
     /// Terminal-exit completion bundle, installed by the dispatcher construction site. `None` until
     /// installed; entries spawned before installation skip the task hook.
@@ -301,9 +337,14 @@ pub struct TerminalRendererRegistry {
 }
 
 impl TerminalRendererRegistry {
+    pub(crate) fn set_execution(&self, execution: crate::execution_quiesce::ExecutionLifecycle) {
+        *self.execution.lock().unwrap() = execution;
+    }
+
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            entries: StdMutex::new(HashMap::new()),
+            entries: Arc::new(StdMutex::new(HashMap::new())),
+            execution: StdMutex::new(crate::execution_quiesce::ExecutionLifecycle::default()),
             repo: None,
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
@@ -313,7 +354,8 @@ impl TerminalRendererRegistry {
 
     pub fn new_with_repo(repo: Arc<dyn RouteRepo>) -> Arc<Self> {
         Arc::new(Self {
-            entries: StdMutex::new(HashMap::new()),
+            entries: Arc::new(StdMutex::new(HashMap::new())),
+            execution: StdMutex::new(crate::execution_quiesce::ExecutionLifecycle::default()),
             repo: Some(repo),
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
@@ -414,6 +456,18 @@ impl TerminalRendererRegistry {
         launch: Option<crate::operation::task_launch::TaskLaunch>,
         establish: Establish,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        if let Some(repo) = self.repo.as_ref()
+            && let Some(term) = repo
+                .terminal_get(&cfg.terminal_id)
+                .await
+                .map_err(anyhow::Error::from)?
+            && term
+                .is_typed(repo.as_ref())
+                .await
+                .map_err(anyhow::Error::from)?
+        {
+            return Err(anyhow::anyhow!("typed terminal requires execution renderer").into());
+        }
         if let Some(existing) = self.get(&cfg.terminal_id) {
             return Ok(existing);
         }
@@ -481,12 +535,32 @@ impl TerminalRendererRegistry {
         Ok(entry)
     }
 
+    pub(crate) async fn is_typed(
+        &self,
+        term: &crate::model::Terminal,
+    ) -> crate::error::Result<bool> {
+        match self.repo.as_ref() {
+            Some(repo) => Ok(term.is_typed(repo.as_ref()).await?),
+            None => Ok(false),
+        }
+    }
     /// Look up an existing entry by terminal id, no spawn.
     pub fn get(&self, terminal_id: &str) -> Option<Arc<RendererEntry>> {
-        self.entries
-            .lock()
-            .ok()
-            .and_then(|entries| entries.get(terminal_id).cloned())
+        let mut entries = self.entries.lock().ok()?;
+        let entry = entries.get(terminal_id)?;
+        if entry.control_via_engine
+            && entry
+                .attach_task
+                .lock()
+                .ok()?
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished)
+        {
+            let entry = entries.remove(terminal_id)?;
+            entry.abort_tasks();
+            return None;
+        }
+        Some(entry.clone())
     }
 
     /// Forget `terminal_id`'s renderer without touching its child, as a server restart does: the
@@ -543,6 +617,7 @@ impl TerminalRendererRegistry {
                 supervisor_tx,
             },
             config: cfg,
+            control_via_engine: false,
             exit,
             signals: SignalRing::new(),
             last_output_ms: Arc::new(AtomicI64::new(0)),
@@ -567,9 +642,9 @@ impl TerminalRendererRegistry {
             .unwrap_or(false)
     }
 
-    /// Tear down a renderer: drop the broadcast, signal Term/Kill to the supervisor, remove from
-    /// the map. Returns as soon as the exit is persisted (single-digit ms typically); worst case
-    /// `TERM_TO_KILL_GRACE + EXIT_PERSIST_GRACE`. Batch callers run this serially on purpose.
+    /// Stop a typed execution while retaining its renderer until Retired. Legacy teardown drops
+    /// the broadcast, signals Term/Kill and removes the entry; it returns after exit persistence
+    /// or `TERM_TO_KILL_GRACE + EXIT_PERSIST_GRACE`. Batch callers run this serially on purpose.
     pub async fn drop_entry(&self, terminal_id: &str) {
         let _ = self.drop_entry_with_outcome(terminal_id).await;
     }
@@ -594,22 +669,40 @@ impl TerminalRendererRegistry {
     }
 
     async fn drop_entry_with_outcome(&self, terminal_id: &str) -> RendererDropOutcome {
-        let entry = self
-            .entries
-            .lock()
-            .ok()
-            .and_then(|mut entries| entries.remove(terminal_id));
+        let entry = self.entries.lock().ok().and_then(|mut entries| {
+            let entry = entries.get(terminal_id)?;
+            if entry.control_via_engine {
+                // Classify under the removal lock: a concurrent typed attach cannot be detached.
+                Some(entry.clone())
+            } else {
+                entries.remove(terminal_id)
+            }
+        });
         let Some(entry) = entry else {
             return RendererDropOutcome::Missing;
         };
 
-        tracing::info!(terminal_id, "terminal renderer registry dropping entry");
+        tracing::info!(terminal_id, "terminal renderer stopping child");
         self.stop_child(&entry).await
     }
 
     /// Stop the child and wait for its recorded exit, retaining the final screen just as a
     /// natural exit does. The retained entry also makes ensure reuse this ended generation.
     pub(crate) async fn stop_child(&self, entry: &RendererEntry) -> RendererDropOutcome {
+        if entry.control_via_engine {
+            // The executor owns escalation and the renderer owns its subscription lifetime.
+            // Stop is not deletion: keep the final screen and continue watching for Retired.
+            entry.shutdown_signal(ProcSignal::Term).await;
+            return match entry
+                .await_exit_persisted(workspace_runtime::execution::QUIESCE_DEADLINE)
+                .await
+            {
+                ExitPersistWait::Persisted => RendererDropOutcome::ExitPersisted,
+                ExitPersistWait::ReaderGone | ExitPersistWait::Timeout => {
+                    RendererDropOutcome::Unverified
+                }
+            };
+        }
         let terminal_id = entry.terminal_id.as_str();
         let term_at = tokio::time::Instant::now();
         entry.shutdown_signal(ProcSignal::Term).await;
@@ -949,6 +1042,7 @@ async fn ensure_entry(
                 supervisor_tx,
             },
             config: cfg,
+            control_via_engine: false,
             exit,
             signals: SignalRing::new(),
             last_output_ms,

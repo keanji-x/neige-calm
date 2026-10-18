@@ -22,7 +22,7 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
 use crate::state::WriteContext;
 use crate::terminal_hooks::TerminalHookSettings;
-use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 
 use super::{
@@ -547,8 +547,8 @@ impl ProviderAdapter for TerminalAdapter {
         let track = TrackId::from(track_id);
         let scope = card_scope(ctx.repo.as_ref(), card.clone(), track.clone()).await?;
         if let Some(term) = ctx.repo.terminal_get(&terminal_id).await? {
-            reap_terminal_artifacts_with_renderer(Some(ctx.terminal_renderer.as_ref()), &term)
-                .await;
+            try_reap_terminal_artifacts_with_renderer(Some(ctx.terminal_renderer.as_ref()), &term)
+                .await?;
         }
         let cache = self.card_role_cache.clone();
         let write = crate::state::WriteContext::new(

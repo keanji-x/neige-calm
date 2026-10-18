@@ -8,7 +8,10 @@ pub fn terminal_alias(id: &str) -> String {
 pub const TERMINAL_ALIAS_SQL: &str = "'term:' || terminals.id";
 
 /// Whether an alias has any execution history, including retired and finished rows.
-pub async fn alias_has_execution(pool: &SqlitePool, alias: &str) -> Result<bool, sqlx::Error> {
+pub async fn alias_has_execution<'a>(
+    pool: impl sqlx::Executor<'a, Database = Sqlite>,
+    alias: &str,
+) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_executions WHERE alias = ?)")
         .bind(alias)
         .fetch_one(pool)
@@ -143,11 +146,19 @@ pub async fn current(
     tx: &mut Transaction<'_, Sqlite>,
     alias: &str,
 ) -> crate::error::Result<Option<workspace::execution::ExecutionId>> {
+    current_read(&mut **tx, alias).await
+}
+
+/// The same current-slot predicate for transactional and read-only callers.
+pub async fn current_read<'a>(
+    executor: impl sqlx::Executor<'a, Database = Sqlite>,
+    alias: &str,
+) -> crate::error::Result<Option<workspace::execution::ExecutionId>> {
     let id: Option<String> = sqlx::query_scalar(
         "SELECT execution_id FROM workspace_executions WHERE alias = ? AND desired <> 'retire'",
     )
     .bind(alias)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(executor)
     .await?;
     id.map(|id| id.try_into().map_err(crate::error::CalmError::Internal))
         .transpose()
@@ -221,7 +232,7 @@ mod tests {
         let alias = terminal_alias("history");
         assert!(!alias_has_execution(pool, &alias).await.unwrap());
 
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
         insert(&mut tx, "history-id", "track", &alias, "{}", "{}")
             .await
             .unwrap();
@@ -233,7 +244,7 @@ mod tests {
                 .unwrap()
         );
 
-        let mut tx = pool.begin().await.unwrap();
+        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
         request(&mut tx, "history-id", "retire").await.unwrap();
         tx.commit().await.unwrap();
         assert!(alias_has_execution(pool, &alias).await.unwrap());

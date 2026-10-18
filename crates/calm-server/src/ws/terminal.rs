@@ -144,6 +144,26 @@ pub(crate) async fn resolve_live_renderer_under_track_fence(
         )));
     }
 
+    if term.is_typed(s.repo.as_ref()).await? {
+        let engine = s.execution.clone().ok_or_else(|| {
+            crate::error::CalmError::Conflict("execution engine unavailable".into())
+        })?;
+        let entry = crate::routes::terminal::attach_typed_terminal(
+            s.repo.clone(),
+            &s.terminal_renderer,
+            engine,
+            &term,
+            false,
+            s.daemon.proc_supervisor_sock.clone().ok_or_else(|| {
+                crate::error::CalmError::Internal(
+                    "typed supervisor socket is not configured".into(),
+                )
+            })?,
+        )
+        .await?;
+        return Ok(LiveRenderer::Alive(entry));
+    }
+
     if term.exit_code.is_some() {
         tracing::info!(
             terminal_id = %term.id,

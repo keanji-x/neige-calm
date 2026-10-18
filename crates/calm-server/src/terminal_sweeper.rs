@@ -348,8 +348,8 @@ async fn reap_resolved(
             Ok(outcome == RendererDropOutcome::ExitPersisted)
         }
         crate::ws::terminal::LiveRenderer::Alive(_) => {
-            reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term)
-                .await;
+            try_reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term)
+                .await?;
             Ok(true)
         }
         crate::ws::terminal::LiveRenderer::ChildExited { exit_code } => {
@@ -395,7 +395,7 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
     )
     .await?;
-    reap_terminal_artifacts(state, term).await;
+    try_reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term).await?;
 
     // Audit-log + row delete in one transaction. If the card has already been deleted (the common
     // case), fall back to `EventScope::System`; a missing ancestor never refuses the reap.
@@ -463,14 +463,33 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
 /// Daemon + socket housekeeping for a single terminal row, shared between the sweeper and the
 /// eager-teardown route handlers. Idempotent; the caller owns the row-delete step. Worst-case
 /// latency is `GRACEFUL_KILL_TIMEOUT` when the daemon is hung.
+#[cfg(feature = "fixtures")]
 pub async fn reap_terminal_artifacts(state: &AppState, term: &Terminal) {
     reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term).await;
 }
 
+/// Best-effort fixture teardown; production deletion paths propagate cleanup errors.
+#[cfg(feature = "fixtures")]
 pub async fn reap_terminal_artifacts_with_renderer(
     renderer: Option<&TerminalRendererRegistry>,
     term: &Terminal,
 ) {
+    if let Err(error) = try_reap_terminal_artifacts_with_renderer(renderer, term).await {
+        tracing::warn!(terminal_id = %term.id, %error, "fixture terminal cleanup failed");
+    }
+}
+
+/// Classify the terminal before cleanup; a lookup failure must retain the domain rows.
+pub async fn try_reap_terminal_artifacts_with_renderer(
+    renderer: Option<&TerminalRendererRegistry>,
+    term: &Terminal,
+) -> Result<()> {
+    if let Some(renderer) = renderer
+        && renderer.is_typed(term).await?
+    {
+        // Quiescence is pre-commit: rollback must retain the renderer and its output reader.
+        return Ok(());
+    }
     // 1. Graceful shutdown through the in-process renderer, on a fresh supervisor UDS connection
     // so it bypasses any queued PTY writes stuck behind backpressure.
     if let Some((renderer, entry)) = renderer.and_then(|r| r.get(&term.id).map(|e| (r, e))) {
@@ -515,6 +534,7 @@ pub async fn reap_terminal_artifacts_with_renderer(
             "SIGTERM failed (likely already exited)"
         );
     }
+    Ok(())
 }
 
 /// Preserve unresolved task launch ownership before the existing terminal
@@ -525,6 +545,12 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
     supervisor_sock: Option<&std::path::Path>,
     term: &Terminal,
 ) -> crate::error::Result<()> {
+    if let Some(renderer) = renderer
+        && renderer.is_typed(term).await?
+    {
+        // Quiescence is pre-commit: rollback must retain the renderer and its output reader.
+        return Ok(());
+    }
     // A renderer entry gives a supervisor-owned `proc_id` to TERM/KILL. Without the entry, the
     // legacy row has no `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
     // and fail closed instead of signaling a possibly recycled pid.

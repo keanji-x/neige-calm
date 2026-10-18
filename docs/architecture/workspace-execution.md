@@ -151,7 +151,7 @@ quiesce 或 `terminal_delete_tx` 返回的新 ticket（§7.2–7.3）补上。
 | `prepare` | `Prepare(PrepareExecution)`，`source: PreparedSource::Private(AttachRegistration)`，root FD 经 SCM_RIGHTS 随同一请求 | main 的 Prepare 只引用已 Attach 的 receipt（保留为 `PreparedSource::Registered`）；新增 `Private`，顺序见 §7.1：先暂存校验、再持久化执行记录、最后发布。main 的 `handoff: Option<AliasHandoff>` 与交接代码不变，S2a 总是传 `None`（§7.3） |
 | `launch` / `revoke` | `Launch` / `Revoke(ConsumeExecution{execution_id, ticket_id, ticket})` | 三个请求都先取 ExecutionId gate，记录已知时再取 main 的资源 gate（revoke 仍与 launch 共用资源 gate）；未知 id 的 Revoke 在 id gate 下写 Revoked tombstone 并调用私有释放例程（§7.1），之后同 id 的 Prepare 被拒 |
 | `inspect` | **新** `Inspect(ExecutionId)` → 记录、tombstone 或 Absent | 新增（无 capability 的只读查询，经 client secret 认证） |
-| `generation` | **新** `Watch`：每个 executor 一个流，先回 `Watching{boot}`，之后每个持久化的生命周期转移推送 `Changed` | 新增；无 id、无 seq（§6.3） |
+| `generation` | **新** `Watch`：每个 executor 一个流，先回 `Watching{boot}`，之后每个持久化的生命周期转移及输出可用提示推送 `Changed` | 新增；无 id、无 seq（§6.3） |
 | `control` | `Control(ExecutionControl)` | 删除 `Cleanup`；**新** `ProcessAction::Stop`（lifecycle）；`Observe` 读 `OutputLog` |
 | `retire` | **新** `Retire{execution_id, lifecycle}` | 取代 `Cleanup`；只删 `OutputLog`、写 tombstone（私有 registration 已在结算时释放） |
 | （不变） | `Attach`、`Export/ExportAck`、`ObserveDirectories`、`ObserveTransferredDirectories`、`RetireRegistration` | S2a 无调用者；去留属 resource cutover |
@@ -213,14 +213,15 @@ registration 的资源键是本执行独有的 `ExternalDirectoryId`，因此这
 
 每个 ExecutionId 至多一个驱动任务（任务表 `Mutex<HashMap<id, Slot{dirty, notify}>>`）：`drive` 在锁内对已有任务置
 `dirty` 并 `notify_one`（Notify 保存许可），否则插入并 spawn。适配器维护**一个 executor 级变更代次**
-`tokio::sync::watch<u64>`：每收到一个 `Changed`（任何执行、tombstone 或 OutputEnd）、每次重连后的 `Watching`、每次 boot
+`tokio::sync::watch<u64>`：每收到一个 `Changed`（任何执行、tombstone、OutputEnd 或输出可用提示）、每次重连后的 `Watching`、每次 boot
 改变或断流，都加一；`generation()` 只在流已回 `Watching` 后返回当前值。任务每轮先锁内清 `dirty`，并预读 `load`：
 不存在或 `Finished` 立即退出，不接触 executor；`Active` 则取代次快照 `g` →
 `load` → `inspect` → `next_step` → 执行一步（Busy 的重试也在快照之后发出）；`Wait` 时 `select`“代次 > g” 与 `notify`；
 退出前在同一把锁内复查 `dirty`，已置则继续，否则移除自身。
 
-正确性只依赖一个顺序：executor 先持久化转移再发 `Changed`。快照之后的转移必使代次越过 `g`，之前的已被随后的 `inspect`
-看到；不需要按主体路由，断流由重连加一覆盖。代价是等待中的任务在每个生命周期转移上各重读一次。`recover()` 只是对
+生命周期正确性只依赖一个顺序：executor 先持久化转移再发 `Changed`。输出 append 也发送 `Changed` 作为可用性提示；
+它不是持久化确认，不要求每个 chunk fsync。快照之后的转移必使代次越过 `g`，之前的已被随后的 `inspect`
+看到；不需要按主体路由，断流由重连加一覆盖。代价是等待中的任务在每个生命周期转移及输出可用提示上各重读一次。`recover()` 只是对
 `pending()` 调 `drive`。适配器唯一的定时器是重连退避，它只重建流，从不推导事实；server 不轮询执行。
 
 ### 6.4 executor 侧规则
@@ -233,6 +234,24 @@ TERM 的 `stop_known`（`shutdown.rs:5-56`，及 `execution_unsupported.rs:55` �
 记为 `Incomplete(executor_restarted)`。neige-app 把自己的 `stop_grace`（默认 5000ms，`config.rs:591`）作为 typed CLI 参数
 传给 supervisor；executor 拥有这些常量。参数不大于该时限时 supervisor 照常启动但不启用 executor（记错误日志），
 Legacy 不受影响，typed 创建得到 typed 错误；从不因此拒绝启动。
+
+**输出通知。** `Changed` 同时携带输出可用性提示；reader 在读取前取代次快照，append 后通知。
+输出 chunk 不逐块 fsync；完成时的 fsync 与 `OutputEnd::Complete` 顺序如下。
+
+**终端交互。** typed renderer 任务是 reader、writer 与就绪任务的唯一生命周期 owner。与 Legacy 等待 `EnsureProc`
+一样，只有观察到带 receipt 的 `Spawned` 后才建立 writer、开放输入权限并发送 `OwnerChanged`。之前的连接仅保留几何及
+控制偏好，`ServerHello` 不暴露 input owner；input/claim 返回浏览器可恢复的 `NotOwner`，不发 `InputAck`、不排队重放，
+绝不调用 `Engine::interact`。每条连接在实际发送 pre-ready `NotOwner` 后重新检查 readiness；若已就绪，立即沿
+同一有序出口补发当前权威 owner 的 `OwnerChanged`，否则由随后 Spawned 的通知恢复。不能依赖 broadcast 与
+per-client 两个通道的 select 顺序：即使 readiness 在拒绝判断与入队之间发布、或先于已入队拒绝送达，拒绝后仍有
+owner 确认；不改变其他 `NotOwner` 或不确定写入的 fatal 语义。resize 仍更新本地屏幕与 `ResizeApplied`，
+renderer 合并保存最后的尺寸；writer 开始时先应用
+该尺寸，再处理后续输入，即使没有新的 resize 也保持子进程几何一致。真实协议错误、传输不确定或部分输入后的错误仍关闭
+writer，避免重复写入；删除提前拒绝的 `BadSequence` 特例。
+
+**只读恢复。** reader 在 Inspect/Observe 的 Transport 错误后等待新的 generation，从已确认 cursor 继续，不推进 cursor、
+不关闭 writer，也不把传输断开当成输出缺口。实际 cursor 缺口或不完整 OutputEnd 仍 invalidate。意外结束的 reader 不得由
+registry 或 `ensure_typed` 再次返回；重连使用新 reader，缺失几何历史时继续失败关闭。
 
 **Drained 的顺序。** helper 报告 scope Drained → 在资源 gate 下立即持久化 `Drained{status, proof, output: Open}`（同
 main `mod.rs:601-621`）并调用私有释放例程 → reap helper（它持有 slave/pipe，`scope_helper.rs:113-120`）→ reader 读到
@@ -303,10 +322,10 @@ S2a 不给资源新增保证，只让 typed 执行在**既有**路径中得到 L
 
 | 调用者（main） | typed 终端的行为 |
 |---|---|
-| 卡片删除 `cards.rs:592` / `:616` | `require_safe` 预检 → `quiesce(Card)`；typed 分支的 `reap_terminal_artifacts_with_renderer` 只退订 renderer；写事务 `require_safe_tx` 复查后 `terminal_delete_tx` 写 Retire，提交后 drive，返回 204 |
-| Track 删除 `tracks.rs:2844` / `:2947` | teardown 预检不变；在 Legacy 停止终端处（`:2871-2877`）`quiesce(Track)`，`quiesce_terminal_artifacts_for_deletion` 的 typed 分支只退订 renderer；最终写者复查后对每个终端 `terminal_delete_tx`；之后的 recycle 面对的是已结算执行 |
+| 卡片删除 `cards.rs:592` / `:616` | `require_safe` 预检 → `quiesce(Card)`；typed 分支的 `reap_terminal_artifacts_with_renderer` 保留 renderer；写事务 `require_safe_tx` 复查后 `terminal_delete_tx` 写 Retire，提交后 drive，返回 204 |
+| Track 删除 `tracks.rs:2844` / `:2947` | teardown 预检不变；在 Legacy 停止终端处（`:2871-2877`）`quiesce(Track)`，`quiesce_terminal_artifacts_for_deletion` 的 typed 分支保留 renderer；最终写者复查后对每个终端 `terminal_delete_tx`；之后的 recycle 面对的是已结算执行 |
 | Area 删除 `areas.rs:434` / `:590` | 同 Track，scope 为 Area |
-| orphan 回收 `terminal_sweeper.rs:375` / `:407` | 预检后 `quiesce(Terminal)`；`reap_terminal_artifacts` 对 typed 只退订（`terminals.pid` 为 NULL，`:483-495` 的裸 SIGTERM 不会命中）；写事务复查后 `terminal_delete_tx` |
+| orphan 回收 `terminal_sweeper.rs:375` / `:407` | 预检后 `quiesce(Terminal)`；`reap_terminal_artifacts` 对 typed 保留 renderer（`terminals.pid` 为 NULL，`:483-495` 的裸 SIGTERM 不会命中）；写事务复查后 `terminal_delete_tx` |
 | settled-worker 回收 `terminal_sweeper.rs:234` | 非删除路径，预检照旧（不含 typed）；IMMEDIATE 认领事务复查 `in_settled_worker_set` 后写 session Exited 并 `request(Stop)`，提交后 drive。行、OutputLog 与屏幕保留，同 Legacy `reap_live_terminal`（`retain_screen=true`）；认领期间 reopen → 认领失败，不 Stop |
 | repoint `tracks.rs:2214`、`:2389`（只 `require_safe_tx`） | 遇未结算 typed 执行拒绝，不停止；已停止（已结算）的 typed 终端不阻塞，也不会再运行 |
 | `worktree_clean.rs:21-26` | 谓词非空时跳过该 Track，不请求 Stop/Retire：**Track close 不是 stop**；settled-worker 回收停止并结算后照常清理 |
@@ -345,7 +364,9 @@ Legacy launch，删除中仍在 worktree 内运行的 Planner/worker 等）对 t
    renderer 订阅不变。仅测试使用的 `RepoOutOfDomain::terminal_delete`（`out_of_domain.rs:358`）改为同一语句。插件路径
    没有 quiesce：它的 Retire 自带 stop→Wait，丢失的 ticket 由 `recover` 与后续 Track 范围的谓词失败关闭兜底。
 2. 提交后：`drive` → stop → Wait → Settle → retire（删除 OutputLog、写 tombstone `{alias, slot_version, outcome}`、移出热
-   记录；每步可重放）→ Finish；renderer 在 Retired 后退订；崩溃后由 `recover` 继续。没有调用者等待 retire。
+   记录；每步可重放）→ Finish。renderer 在 Drained/OutputEnd 后只发布一次退出，保留最终屏幕并继续观察；直到观察到
+   Retired 才幂等移除自己的 registry entry、结束 writer 与就绪任务。删除调用者不 detach，也不等待 retire；提交后丢失
+   ticket 时由 `recover` 驱动到 Retired，仍由 renderer 自行回收。回滚没有 Retire，原订阅与最终屏幕保留。
 
 **alias slot。** S2a 没有交接：每个 `term:<id>` 只有一个执行，main 的 launch 裁决原样适用（`launch.rs:40-76`）：slot
 空闲 → 版本 1；属于本执行 → 重放；属于另一执行或 Legacy → `Refused`（S2a 总是 `handoff: None`，按模式冻结只能是缺陷）。

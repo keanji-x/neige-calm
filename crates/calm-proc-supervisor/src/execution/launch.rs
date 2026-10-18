@@ -120,6 +120,13 @@ impl Executor {
             &self.store.output_path(&request.execution_id),
             record.request.specification.replay_bytes,
         )?;
+        let executor = Arc::downgrade(self);
+        let output_id = request.execution_id.clone();
+        output_log.set_wake(move || {
+            if let Some(executor) = executor.upgrade() {
+                let _ = executor.changed(output_id.clone());
+            }
+        });
         self.outputs
             .lock()
             .map_err(poison)?

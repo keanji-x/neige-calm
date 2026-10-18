@@ -40,6 +40,9 @@ pub enum ClaimOutcome {
     Refused { reason: String },
 }
 
+// Both pre-ready producers use this reason to request ordered readiness recovery.
+pub(super) const PRE_READY_REFUSAL: &str = "terminal execution is not interactive yet";
+
 /// Reason carried by the `NotOwner` protocol error a refused claim-if-unowned produces.
 pub const CONTROL_HELD_BY_ANOTHER_CLIENT: &str = "terminal is controlled by another client";
 
@@ -180,7 +183,19 @@ pub async fn run_client_pump_with_commands(
                 }
             }
             Effect::SendToClient(msg) => {
-                let msg = rebuild_server_hello_snapshot(msg, &render_plane, scrollback_request);
+                let mut msg = rebuild_server_hello_snapshot(msg, &render_plane, scrollback_request);
+                // A pre-Spawned lease reserves geometry/control preference only. Input authority
+                // is exposed by the lifecycle task's OwnerChanged after it starts the writer.
+                if !input_barrier.interactive()
+                    && let DaemonMsg::ServerHello {
+                        client_role,
+                        owner_client_id,
+                        ..
+                    } = &mut msg
+                {
+                    *client_role = calm_session::Role::Observer;
+                    *owner_client_id = None;
+                }
                 let sent_server_hello = matches!(msg, DaemonMsg::ServerHello { .. });
                 if outgoing_tx.send(msg).await.is_err() {
                     return Ok(());
@@ -235,8 +250,11 @@ pub async fn run_client_pump_with_commands(
 
     let down_input_barrier = input_barrier.clone();
     let down_render_plane = render_plane.clone();
+    let down_owner_registry = owner_registry.clone();
     let mut down_event_rx = event_rx;
     let down_outgoing_tx = outgoing_tx.clone();
+    #[cfg(feature = "fixtures")]
+    let down_client_id = connection.state.client_id();
     let down_task = tokio::spawn(async move {
         loop {
             let msg = tokio::select! {
@@ -270,11 +288,25 @@ pub async fn run_client_pump_with_commands(
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
-                direct = per_client_rx.recv() => match direct {
+                direct = async {
+                    // This fixture gate is cancellation-safe: broadcast selection may cancel
+                    // this future without consuming a direct frame or releasing the hold.
+                    #[cfg(feature = "fixtures")]
+                    super::refusal_test_hook::pause(down_client_id, super::refusal_test_hook::Stage::Delivery).await;
+                    per_client_rx.recv().await
+                } => match direct {
                     Some(msg) => msg,
                     None => break,
                 }
             };
+            let pre_ready_refusal = matches!(
+                &msg,
+                DaemonMsg::ProtocolError {
+                    code: calm_session::ProtocolErrorCode::NotOwner,
+                    message,
+                    ..
+                } if message == PRE_READY_REFUSAL
+            );
             let is_exit = matches!(msg, DaemonMsg::TerminalExited { .. });
             if is_exit {
                 // Exit can beat WriteAck on the supervisor's independent sockets. The writer
@@ -290,6 +322,20 @@ pub async fn run_client_pump_with_commands(
             }
             if down_outgoing_tx.send(msg).await.is_err() || is_exit {
                 break;
+            }
+            // The readiness broadcast may already have overtaken this refusal, including
+            // across the producer's readiness-check/enqueue gap. Repair at the connection's
+            // ordered delivery point, after the refusal has actually been sent. If readiness
+            // is still closed, its later broadcast will follow this refusal instead.
+            if pre_ready_refusal && down_input_barrier.interactive() {
+                let owner_client_id = down_owner_registry.lock().unwrap().current_owner();
+                if down_outgoing_tx
+                    .send(DaemonMsg::OwnerChanged { owner_client_id })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
     });
@@ -314,6 +360,34 @@ pub async fn run_client_pump_with_commands(
                 } => (ClientMsg::Input { data, input_seq }, None, shape),
             },
         };
+        if matches!(msg, ClientMsg::Input { .. } | ClientMsg::OwnerClaim)
+            && !input_barrier.interactive()
+        {
+            #[cfg(feature = "fixtures")]
+            super::refusal_test_hook::pause(
+                connection.state.client_id(),
+                super::refusal_test_hook::Stage::Enqueue,
+            )
+            .await;
+            let message = PRE_READY_REFUSAL;
+            if let Some(reply) = claim_reply.take() {
+                let _ = reply.send(ClaimOutcome::Refused {
+                    reason: message.into(),
+                });
+            }
+            let _ = per_client_tx.send(DaemonMsg::ProtocolError {
+                code: calm_session::ProtocolErrorCode::NotOwner,
+                message: message.into(),
+                expected_version: None,
+            });
+            #[cfg(feature = "fixtures")]
+            super::refusal_test_hook::pause(
+                connection.state.client_id(),
+                super::refusal_test_hook::Stage::Enqueued,
+            )
+            .await;
+            continue;
+        }
         let only_if_unowned = claim_reply.is_some();
         let grant = if matches!(msg, ClientMsg::OwnerClaim) {
             match input_barrier.grant().await {

@@ -23,7 +23,7 @@ use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
-use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 #[cfg(test)]
 use crate::track_area_cache::TrackAreaCache;
 use crate::validation::{
@@ -510,7 +510,9 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         .await
         .map_err(internal_repo_err)?;
     if let Some(t) = term.as_ref() {
-        reap_terminal_artifacts_with_renderer(None, t).await;
+        try_reap_terminal_artifacts_with_renderer(None, t)
+            .await
+            .map_err(internal_repo_err)?;
     }
     let terminal_id = term.map(|t| t.id);
 

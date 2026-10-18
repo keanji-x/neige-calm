@@ -2,7 +2,7 @@
 //! the operation runtime; non-idempotent unless the caller supplies `Idempotency-Key`.
 
 use crate::actor::Actor;
-use crate::error::{ErrorBody, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, JsonBody, Path};
 use crate::model::{Card, new_id};
 use crate::operation::OperationKey;
@@ -109,7 +109,7 @@ pub(crate) async fn create_terminal_card(
         idempotency_key,
         payload_hash,
     };
-    let result = crate::operation::terminal_execution_create::create(
+    let created = crate::operation::terminal_execution_create::create(
         &s.operation_runtime,
         &s.events,
         s.terminal_execution,
@@ -117,9 +117,34 @@ pub(crate) async fn create_terminal_card(
         payload,
     )
     .await?;
+    let answer = keyed_card_answer(s.repo.as_ref(), created.result.outcome.clone()).await?;
+    if created.newly_admitted {
+        let term = s
+            .repo
+            .terminal_get_by_card(answer.1.0.id.as_str())
+            .await?
+            .ok_or_else(|| CalmError::NotFound("new terminal".into()))?;
+        let engine = s
+            .operation_runtime
+            .execution()
+            .engine()
+            .ok_or_else(|| CalmError::Conflict("execution engine unavailable".into()))?;
+        // Install before driving: this renderer owns every geometry change from birth.
+        crate::routes::terminal::attach_typed_terminal(
+            s.repo.clone(),
+            &s.terminal_renderer,
+            std::sync::Arc::new(engine.clone()),
+            &term,
+            true,
+            s.daemon.proc_supervisor_sock.clone().ok_or_else(|| {
+                CalmError::Internal("typed supervisor socket is not configured".into())
+            })?,
+        )
+        .await?;
+    }
     crate::operation::terminal_execution_create::drive_result(
         s.operation_runtime.execution(),
-        &result,
+        &created.result,
     )?;
-    keyed_card_answer(s.repo.as_ref(), result.outcome).await
+    Ok(answer)
 }

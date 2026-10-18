@@ -51,19 +51,12 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String
     let mut running = 0usize;
     let mut marked_stale = Vec::new();
     for term in rows {
-        if let Some(pool) = state.sqlite_db() {
-            match calm_truth::db::sqlite::workspace_execution::alias_has_execution(
-                pool.read_pool(),
-                &calm_truth::db::sqlite::workspace_execution::terminal_alias(&term.id),
-            )
-            .await
-            {
-                Ok(true) => continue,
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "typed execution lookup failed; retaining terminal");
-                    continue;
-                }
+        match term.is_typed(state.repo.as_ref()).await {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, "typed execution lookup failed; retaining terminal");
+                continue;
             }
         }
         match probe_supervisor_for_terminal(state, &term.id).await {

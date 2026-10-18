@@ -29,6 +29,10 @@ impl TerminalInteraction {
             offset == 0,
             "persisted exit output has no live viewport; scroll_offset must be 0"
         );
+        let (output, truncated) = self
+            .renderer
+            .persisted_output(self.repo.as_ref(), &term)
+            .await?;
         let current =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         ensure!(
@@ -46,8 +50,8 @@ impl TerminalInteraction {
             "exited": true,
             "exit_code": term.exit_code,
             "signal_killed": term.signal_killed,
-            "pty_output": term.pty_output,
-            "pty_output_truncated": term.pty_output_truncated,
+            "pty_output": output,
+            "pty_output_truncated": truncated,
             "wait": {"mode": mode.name(), "outcome": "exited", "waited_ms": 0}
         })))
     }

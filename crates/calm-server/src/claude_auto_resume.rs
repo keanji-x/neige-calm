@@ -107,6 +107,9 @@ async fn owner_claude_card_of(state: &AppState, terminal_id: &str) -> Result<Opt
     let Some(term) = state.repo.terminal_get(terminal_id).await? else {
         return Ok(None);
     };
+    if term.is_typed(state.repo.as_ref()).await? {
+        return Ok(None);
+    }
     let card_id = term.card_id.to_string();
     let Some(card) = state.repo.card_get(&card_id).await? else {
         return Ok(None);

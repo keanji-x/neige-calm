@@ -12,7 +12,7 @@ use crate::model::now_ms;
 use crate::proc_identity::signal_process_group;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
 use crate::terminal_sweeper::{
-    WaitForPidExit, reap_terminal_artifacts_with_renderer, wait_for_pid_exit,
+    WaitForPidExit, try_reap_terminal_artifacts_with_renderer, wait_for_pid_exit,
 };
 
 use super::tx_only::{KeyedCommit, commit_tx_only};
@@ -237,11 +237,11 @@ impl OperationRuntime {
     pub async fn fail_running_worker_card(&self, card_id: &str) -> Result<()> {
         self.interrupt_running_codex_turn_for_card(card_id).await?;
         if let Some(term) = self.spawn_ctx.repo.terminal_get_by_card(card_id).await? {
-            reap_terminal_artifacts_with_renderer(
+            try_reap_terminal_artifacts_with_renderer(
                 Some(self.spawn_ctx.terminal_renderer.as_ref()),
                 &term,
             )
-            .await;
+            .await?;
             if let Some(pid) = term.pid {
                 let verdict = wait_for_pid_exit(pid, Duration::from_secs(2)).await;
                 match verdict {

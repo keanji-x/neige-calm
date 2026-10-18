@@ -304,6 +304,12 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Every overlay attached to entities of the given `entity_kind`, regardless of `entity_id`.
     async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>>;
 
+    /// Execution history includes retired/finished aliases; current excludes retired rows.
+    async fn execution_alias_exists(&self, alias: &str) -> Result<bool>;
+    async fn execution_alias_current(
+        &self,
+        alias: &str,
+    ) -> Result<Option<workspace::execution::ExecutionId>>;
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
     async fn terminal_get_by_card(&self, card_id: &str) -> Result<Option<Terminal>>;
     /// Every terminal row whose card has no active worker session and is older than `grace_seconds`, excluding exited

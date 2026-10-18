@@ -10,6 +10,7 @@ use std::{
 
 pub(super) struct OutputLog {
     data: Mutex<Data>,
+    wake: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     reader_end: tokio::sync::watch::Sender<Option<Result<(), String>>>,
 }
 struct Data {
@@ -31,6 +32,7 @@ impl OutputLog {
         let cursor = file.metadata()?.len();
         let (reader_end, _) = tokio::sync::watch::channel(None);
         Ok(Arc::new(Self {
+            wake: Mutex::new(None),
             data: Mutex::new(Data {
                 file,
                 cursor,
@@ -38,6 +40,9 @@ impl OutputLog {
             }),
             reader_end,
         }))
+    }
+    pub fn set_wake(&self, wake: impl Fn() + Send + Sync + 'static) {
+        *self.wake.lock().expect("output wake") = Some(Box::new(wake));
     }
     pub fn snapshot(&self, from: Option<u64>) -> anyhow::Result<(u64, Vec<u8>)> {
         let mut data = self.data.lock().map_err(super::poison)?;
@@ -54,6 +59,10 @@ impl OutputLog {
         data.file.seek(SeekFrom::End(0))?;
         data.file.write_all(bytes)?;
         data.cursor += bytes.len() as u64;
+        drop(data);
+        if let Some(wake) = self.wake.lock().map_err(super::poison)?.as_ref() {
+            wake();
+        }
         Ok(())
     }
     pub fn read(self: &Arc<Self>, mut reader: File, pty: bool) {

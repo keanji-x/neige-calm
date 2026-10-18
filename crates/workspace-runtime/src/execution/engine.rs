@@ -253,6 +253,10 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
             .await
             .map_err(|_| DriveError::Timeout)?
     }
+    /// Subscribe before reading output, so concurrent appends cannot be missed.
+    pub async fn output_generation(&self) -> Result<Generation, DriveError> {
+        Ok(self.0.executor.generation().await?)
+    }
     pub async fn output(
         &self,
         id: &ExecutionId,
@@ -281,12 +285,36 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         id: &ExecutionId,
         action: ProcessAction,
     ) -> Result<ExecutionReply, DriveError> {
-        let Stored::Active { secrets, .. } =
-            self.0.store.load(id).await?.ok_or(DriveError::Missing)?
-        else {
+        let row = self.0.store.load(id).await?.ok_or(DriveError::Missing)?;
+        if !matches!(action, ProcessAction::Observe { .. })
+            && matches!(row, Stored::Finished { .. })
+        {
+            return Err(ExecError::Refused("execution has no active capabilities".into()).into());
+        }
+        let fact = self.0.executor.inspect(id).await?;
+        if matches!(action, ProcessAction::Observe { .. }) {
+            match &fact {
+                Fact::Retired(tombstone) => return Ok(ExecutionReply::Retired(tombstone.clone())),
+                Fact::Journal {
+                    state,
+                    receipt: None,
+                    output: OutputEnd::Complete { final_cursor: 0 },
+                } => {
+                    // Never-forked executions have no output capability or bytes to read.
+                    return Ok(ExecutionReply::Observation {
+                        receipt: None,
+                        state: state.clone(),
+                        cursor: 0,
+                        output: Vec::new(),
+                        output_end: OutputEnd::Complete { final_cursor: 0 },
+                    });
+                }
+                _ => {}
+            }
+        }
+        let Stored::Active { secrets, .. } = row else {
             return Err(ExecError::Refused("execution has no active capabilities".into()).into());
         };
-        let fact = self.0.executor.inspect(id).await?;
         let (token, purpose) = if matches!(action, ProcessAction::Observe { .. }) {
             (&secrets.tokens.observe, ExecutionControlPurpose::Observe)
         } else if matches!(action, ProcessAction::Signal(_)) {

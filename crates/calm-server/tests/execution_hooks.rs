@@ -26,6 +26,7 @@ struct Fixture {
     state: AppState,
     store: SqliteExecutionStore,
     engine: Arc<calm_server::execution_boot::ExecutionEngine>,
+    secret: CapabilityToken,
     area: String,
     track: String,
     root: std::path::PathBuf,
@@ -70,7 +71,7 @@ impl Fixture {
             );
         let engine = Arc::new(Engine::new(
             store.clone(),
-            session_executor::SessionExecutor::new(socket.clone(), secret),
+            session_executor::SessionExecutor::new(socket.clone(), secret.clone()),
         ));
         let events = EventBus::new();
         let roles = calm_server::card_role_cache::CardRoleCache::new();
@@ -145,6 +146,7 @@ impl Fixture {
             state,
             store,
             engine,
+            secret,
             area: area.id.to_string(),
             track: track.id.to_string(),
             root,
@@ -186,7 +188,7 @@ impl Fixture {
         intent.metadata.program.program = "/bin/sh".into();
         intent.metadata.program.args = vec!["-c".into(), "printf ready; exec sleep 120".into()];
         let id = intent.metadata.id.clone();
-        let mut tx = self.repo.pool().begin().await.unwrap();
+        let mut tx = sqlite::begin_immediate_tx(self.repo.db()).await.unwrap();
         let ticket = self.engine.admit(&mut tx, intent).await.unwrap();
         tx.commit().await.unwrap();
         if live {
@@ -263,7 +265,7 @@ impl Fixture {
         assert_eq!(self.desired(id).await, "retire");
     }
     async fn stop(&self, id: &ExecutionId) {
-        let mut tx = self.repo.pool().begin().await.unwrap();
+        let mut tx = sqlite::begin_immediate_tx(self.repo.db()).await.unwrap();
         let ticket = self
             .engine
             .request(&mut tx, id, Desired::Retire)
@@ -335,7 +337,7 @@ async fn unsettled_executions_scopes() {
         .unwrap()
         .is_empty()
     );
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     let _ticket = f
         .engine
         .request(&mut tx, &id, Desired::Retire)
@@ -369,7 +371,7 @@ async fn terminal_delete_tx_returns_retire_and_rolls_back() {
     let f = Fixture::new().await;
     let (_, terminal) = f.terminal().await;
     let id = f.admit(&terminal, true).await;
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     let deleted = sqlite::terminal_delete_tx(&mut tx, &terminal.id)
         .await
         .unwrap();
@@ -417,7 +419,7 @@ async fn track_delete_preflight_refused_keeps_typed_running() {
     let (_, terminal) = f.terminal().await;
     let id = f.admit(&terminal, true).await;
     // A descendant is rejected before the Legacy stop point.
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     let child = sqlite::track_create_tx(
         &mut tx,
         NewTrack {
@@ -441,7 +443,7 @@ async fn track_delete_preflight_refused_keeps_typed_running() {
     sqlx::query("UPDATE tracks SET parent_track_id = ? WHERE id = ?")
         .bind(&f.track)
         .bind(child.id.as_str())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -483,7 +485,7 @@ async fn repoint_rejects_unsettled_typed_without_stop() {
     let mut intent = exec::test_support::intent(f.root.clone());
     intent.metadata.track = exec::TrackId(f.track.clone());
     let id = intent.metadata.id.clone();
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
     tx.commit().await.unwrap();
     let target = f._temp.path().join("attached");
@@ -548,12 +550,12 @@ async fn worker(
     let (card, terminal) = f.terminal().await;
     sqlx::query("UPDATE cards SET role = 'worker' WHERE id = ?")
         .bind(card.id.as_str())
-        .execute(f.repo.pool())
+        .execute(f.repo.db().writer_pool())
         .await
         .unwrap();
     let id = f.admit(&terminal, true).await;
     let session = new_id();
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     sqlite::session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
@@ -576,7 +578,7 @@ async fn worker(
     sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
         .bind(now_ms())
         .bind(&f.track)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -634,7 +636,7 @@ async fn settled_worker_reopen_during_claim_does_not_stop() {
         || async {
             sqlx::query("UPDATE tracks SET closed_at = NULL WHERE id = ?")
                 .bind(&f.track)
-                .execute(f.repo.pool())
+                .execute(f.repo.db().writer_pool())
                 .await
                 .unwrap();
         },
@@ -686,7 +688,7 @@ async fn worktree_clean_skips_until_settled() {
     let mut intent = exec::test_support::intent(f.root.clone());
     intent.metadata.track = exec::TrackId(f.track.clone());
     let id = intent.metadata.id.clone();
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
     let mut workspace = sqlite::track_workspace_read_tx(&mut tx, &f.track)
         .await
@@ -698,7 +700,7 @@ async fn worktree_clean_skips_until_settled() {
     sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
         .bind(now_ms())
         .bind(&f.track)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -756,7 +758,7 @@ async fn orphan_sweep_quiesces_typed_then_retires() {
     sqlx::query("UPDATE terminals SET created_at = ? WHERE id = ?")
         .bind(now_ms() - 180_000)
         .bind(&terminal.id)
-        .execute(f.repo.pool())
+        .execute(f.repo.db().writer_pool())
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&f.state)
@@ -791,3 +793,12 @@ impl calm_server::execution_store::ExecutionProjection for NoopProjection {
         Ok(())
     }
 }
+
+#[path = "execution_hooks/terminal_io.rs"]
+mod terminal_io;
+
+#[path = "execution_hooks/terminal_recovery.rs"]
+mod terminal_recovery;
+
+#[path = "execution_hooks/refusal_order.rs"]
+mod refusal_order;

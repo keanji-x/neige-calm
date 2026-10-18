@@ -222,6 +222,25 @@ pub struct Terminal {
     pub created_at: i64,
 }
 
+impl Terminal {
+    /// Creation-time mode, retained even after settlement and retirement.
+    pub async fn is_typed(&self, repo: &dyn crate::db::RepoRead) -> crate::error::Result<bool> {
+        repo.execution_alias_exists(&crate::db::sqlite::workspace_execution::terminal_alias(
+            &self.id,
+        ))
+        .await
+    }
+    pub async fn execution_id(
+        &self,
+        repo: &dyn crate::db::RepoRead,
+    ) -> crate::error::Result<Option<workspace::execution::ExecutionId>> {
+        repo.execution_alias_current(&crate::db::sqlite::workspace_execution::terminal_alias(
+            &self.id,
+        ))
+        .await
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, ToSchema)]
 pub struct NewTerminal {
     #[schema(value_type = String)]

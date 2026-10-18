@@ -90,6 +90,7 @@ pub use calm_truth::state::WriteContext;
 #[derive(Clone)]
 pub struct RouteState {
     pub terminal_execution: bool,
+    pub daemon: Arc<DaemonClient>,
     pub repo: Arc<dyn RouteRepo>,
     /// Root for server-managed track workspaces (`<root>/<area_id>/<track_id>`).
     /// Resolved once at boot; never read from env at request time.
@@ -238,6 +239,7 @@ impl BootState {
         )));
         let route = RouteState {
             terminal_execution: false,
+            daemon: self.daemon.clone(),
             terminal_renderer: self.terminal_renderer.clone(),
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
@@ -918,6 +920,7 @@ impl AppState {
                 .expect("a scratch Claude Planner host for AppState::from_parts"),
         );
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
+        terminal_renderer.set_execution(execution.clone());
         let adapters = build_operation_adapters(OperationAdapterInputs {
             execution: execution.clone(),
             route_repo: route_repo.clone(),
@@ -1420,6 +1423,7 @@ impl AppState {
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
         ));
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
+        terminal_renderer.set_execution(execution.clone());
         let adapters = build_operation_adapters(OperationAdapterInputs {
             execution: execution.clone(),
             route_repo: route_repo.clone(),

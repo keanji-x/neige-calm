@@ -101,13 +101,18 @@ impl TxOnlyAdapter for TerminalExecutionCreate {
 
 /// Endpoint identity spans both Terminal implementations. Typed lookup and admission share the
 /// SQLite write lock; Legacy creation retains the ordinary submit and UNIQUE-index backstop.
+pub struct CreatedTerminal {
+    pub result: super::OperationResult,
+    /// This invocation committed the initial typed admission, rather than replaying it.
+    pub newly_admitted: bool,
+}
 pub async fn create(
     runtime: &super::OperationRuntime,
     events: &crate::event::EventBus,
     typed: bool,
     key: super::OperationKey,
     payload: Value,
-) -> Result<super::OperationResult> {
+) -> Result<CreatedTerminal> {
     use super::repo_sqlite::{
         PhaseWrite, insert_pending_row, operation_from_row, write_phase_and_tx_output,
     };
@@ -128,7 +133,10 @@ pub async fn create(
                     return Err(super::idempotency_payload_conflict(Some(idempotency_key)));
                 }
                 tx.rollback().await?;
-                return runtime.wait(&id).await;
+                return Ok(CreatedTerminal {
+                    result: runtime.wait(&id).await?,
+                    newly_admitted: false,
+                });
             }
         }
         if !typed {
@@ -136,7 +144,10 @@ pub async fn create(
             // The endpoint lookup above also permits replay of a typed row after config-off.
             tx.rollback().await?;
             let id = runtime.submit("terminal-create", key, payload).await?;
-            return runtime.wait(&id).await;
+            return Ok(CreatedTerminal {
+                result: runtime.wait(&id).await?,
+                newly_admitted: false,
+            });
         }
         if validated {
             break tx;
@@ -174,7 +185,10 @@ pub async fn create(
     for envelope in envelopes {
         events.emit_envelope(envelope);
     }
-    runtime.wait(&id).await
+    Ok(CreatedTerminal {
+        result: runtime.wait(&id).await?,
+        newly_admitted: true,
+    })
 }
 
 /// Both fresh commits and replays carry the durable execution identity in their result.

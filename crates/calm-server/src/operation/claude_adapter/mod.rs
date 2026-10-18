@@ -36,7 +36,7 @@ use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use crate::state::{CodexClient, WriteContext};
-use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 
 use super::{
@@ -751,11 +751,11 @@ impl ProviderAdapter for ClaudeAdapter {
             "reap_terminal_pty" => {
                 let terminal_id = step_arg_string(step, "terminal_id")?;
                 if let Some(term) = ctx.repo.terminal_get(&terminal_id).await? {
-                    reap_terminal_artifacts_with_renderer(
+                    try_reap_terminal_artifacts_with_renderer(
                         Some(ctx.terminal_renderer.as_ref()),
                         &term,
                     )
-                    .await;
+                    .await?;
                 }
                 Ok(())
             }

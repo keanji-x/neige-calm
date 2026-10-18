@@ -183,6 +183,42 @@ fn parse_rgb(s: &str) -> std::result::Result<(u8, u8, u8), String> {
     Ok((parse(0)?, parse(1)?, parse(2)?))
 }
 
+/// Attach the typed renderer without a Legacy connection, probe, or spawn.
+pub(crate) async fn attach_typed_terminal(
+    repo: Arc<dyn RouteRepo>,
+    renderer: &TerminalRendererRegistry,
+    engine: Arc<crate::execution_boot::ExecutionEngine>,
+    term: &Terminal,
+    geometry_proven: bool,
+    supervisor_sock: std::path::PathBuf,
+) -> Result<Arc<RendererEntry>> {
+    let id = term
+        .execution_id(repo.as_ref())
+        .await?
+        .ok_or_else(|| CalmError::Conflict("typed execution retired".into()))?;
+    let launch = launch_specification(&term.program, &term.env, "");
+    let calm_session::control::IoMode::Pty { cols, rows } = launch.io_mode else {
+        unreachable!()
+    };
+    let cfg = RendererConfig {
+        terminal_id: term.id.clone(),
+        cols,
+        rows,
+        buffer_bytes: launch.replay_bytes,
+        terminal_fg: parse_rgb(&term.theme_fg).map_err(CalmError::Internal)?,
+        terminal_bg: parse_rgb(&term.theme_bg).map_err(CalmError::Internal)?,
+        program: launch.program.to_string_lossy().into_owned(),
+        args: launch.args,
+        envs: launch.environment,
+        cwd: term.cwd.clone(),
+        supervisor_sock,
+    };
+    renderer
+        .ensure_typed(cfg, engine, id, repo, geometry_proven)
+        .await
+        .map_err(|e| CalmError::Internal(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::terminal_child_envs;

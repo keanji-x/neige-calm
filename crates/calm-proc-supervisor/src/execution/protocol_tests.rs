@@ -607,14 +607,14 @@ async fn private_registration_released_at_drained_not_retire() {
             .unwrap()
             .contains_key(&request.identity.execution_id)
     );
-    // Prepared, Reserved, Forking, Spawned, Exited, Drained, OutputEnd.
-    for expected in 1..=7 {
-        assert_eq!(
-            changes.try_recv().unwrap(),
-            (expected, request.identity.execution_id.clone())
-        );
+    // Prepared, Reserved, Forking, Spawned, Exited, Drained, OutputEnd, plus any
+    // output appends from the helper shim. Chunk boundaries are not a protocol fact.
+    let mut sequence = 0;
+    while let Ok(change) = changes.try_recv() {
+        sequence += 1;
+        assert_eq!(change, (sequence, request.identity.execution_id.clone()));
     }
-    assert!(changes.try_recv().is_err());
+    assert!(sequence >= 7);
     let tombstone = executor
         .retire_execution(
             request.identity.execution_id.clone(),
@@ -632,7 +632,7 @@ async fn private_registration_released_at_drained_not_retire() {
     ));
     assert_eq!(
         changes.try_recv().unwrap(),
-        (8, request.identity.execution_id.clone())
+        (sequence + 1, request.identity.execution_id.clone())
     );
     assert!(
         !executor

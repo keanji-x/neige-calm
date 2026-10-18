@@ -2,7 +2,7 @@ use super::*;
 use calm_server::operation::terminal_execution_create::{CONSUMER, KIND};
 use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 
-async fn create(f: &Fixture, cwd: &str, program: &str) -> (StatusCode, String) {
+pub(super) async fn create(f: &Fixture, cwd: &str, program: &str) -> (StatusCode, String) {
     f.request(
         "POST",
         &format!("/api/tracks/{}/terminal-cards", f.track),
@@ -12,7 +12,7 @@ async fn create(f: &Fixture, cwd: &str, program: &str) -> (StatusCode, String) {
     )
     .await
 }
-async fn terminal(f: &Fixture, body: &str) -> Terminal {
+pub(super) async fn terminal(f: &Fixture, body: &str) -> Terminal {
     let card: Card = serde_json::from_str(body).unwrap();
     f.repo
         .terminal_get_by_card(card.id.as_str())
@@ -20,7 +20,7 @@ async fn terminal(f: &Fixture, body: &str) -> Terminal {
         .unwrap()
         .unwrap()
 }
-async fn execution_id(f: &Fixture, term: &Terminal) -> ExecutionId {
+pub(super) async fn execution_id(f: &Fixture, term: &Terminal) -> ExecutionId {
     let id: String =
         sqlx::query_scalar("SELECT execution_id FROM workspace_executions WHERE alias = ?")
             .bind(sql::terminal_alias(&term.id))
@@ -148,6 +148,15 @@ async fn prepare_refused_leaves_exited_deletable_card() {
             .await
             .unwrap();
     assert_eq!(state, "exited");
+    // Refused Prepare is revoked without creating a child: the executor already exposes
+    // Retired(Revoked). The lifecycle owner publishes exit and removes its own entry.
+    assert!(matches!(
+        f.engine.output(&id, None).await.unwrap(),
+        ExecutionReply::Retired(tombstone)
+            if tombstone.outcome == workspace_runtime::execution::TombstoneOutcome::Revoked
+    ));
+    wait(|| async { f.state.terminal_renderer.get(&term.id).is_none() }).await;
+
     let (status, body) = f
         .request("DELETE", &format!("/api/cards/{}", term.card_id), None)
         .await;
@@ -156,7 +165,7 @@ async fn prepare_refused_leaves_exited_deletable_card() {
 }
 
 // Install actual domain rows without driving an executor, to exercise the Store port's projection.
-async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
+pub(super) async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
     let op_repo = SqlxOperationRepo::new(f.repo.db().clone());
     let op = op_repo
         .insert_operation(
@@ -170,7 +179,7 @@ async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
         )
         .await
         .unwrap();
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     let (_, term) = sqlite::card_with_terminal_create_tx(
         &mut tx,
         new_id(),
@@ -211,7 +220,7 @@ async fn projection_spawned_sets_running_once() {
     assert_eq!(session(&f, &term).await.0, "running");
     sqlx::query("UPDATE worker_sessions SET updated_at_ms = 1 WHERE terminal_run_id = ?")
         .bind(&term.id)
-        .execute(f.repo.pool())
+        .execute(f.repo.db().writer_pool())
         .await
         .unwrap();
     f.store.spawned(&id).await.unwrap();
@@ -240,7 +249,7 @@ async fn projection_settle_writes_exit_or_signal_killed() {
             sqlx::query("UPDATE worker_sessions SET state = ? WHERE terminal_run_id = ?")
                 .bind(active)
                 .bind(&term.id)
-                .execute(f.repo.pool())
+                .execute(f.repo.db().writer_pool())
                 .await
                 .unwrap();
             f.store
@@ -261,7 +270,7 @@ async fn settled_worker_exited_not_overwritten_by_settle() {
     let f = Fixture::new().await;
     let (term, id) = projection(&f).await;
     sqlx::query("UPDATE worker_sessions SET state = 'exited', updated_at_ms = 1, completed_at_ms = 1 WHERE terminal_run_id = ?")
-        .bind(&term.id).execute(f.repo.pool()).await.unwrap();
+        .bind(&term.id).execute(f.repo.db().writer_pool()).await.unwrap();
     f.store.spawned(&id).await.unwrap();
     f.store
         .settle(&id, &Settlement::Journal(ExecutionState::Revoked))
@@ -286,7 +295,7 @@ async fn projection_failure_rolls_back_execution_settlement() {
         "CREATE TRIGGER reject_terminal_projection BEFORE UPDATE ON terminals \
         BEGIN SELECT RAISE(ABORT, 'projection refused'); END",
     )
-    .execute(f.repo.pool())
+    .execute(f.repo.db().writer_pool())
     .await
     .unwrap();
     assert!(
@@ -407,7 +416,7 @@ async fn typed_replay_while_unavailable_returns_card() {
         )
     })
     .await;
-    let mut tx = f.repo.pool().begin().await.unwrap();
+    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
     let ticket = f.engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
     tx.commit().await.unwrap();
     f.engine.drive(ticket.committed());
@@ -514,7 +523,7 @@ async fn projection_survives_owner_operation_reclaim() {
     ).bind(id.as_str()).fetch_one(f.repo.pool()).await.unwrap();
     let deleted = sqlx::query("DELETE FROM operations WHERE id = ? AND idempotency_key IS NULL")
         .bind(&owner)
-        .execute(f.repo.pool())
+        .execute(f.repo.db().writer_pool())
         .await
         .unwrap();
     assert_eq!(deleted.rows_affected(), 1);

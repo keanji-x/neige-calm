@@ -43,8 +43,22 @@ pub struct InputBarrier {
     serial: Arc<Mutex<()>>,
     write_completion: Arc<Mutex<()>>,
     uncertain: AtomicBool,
+    awaiting_spawn: AtomicBool,
 }
 impl InputBarrier {
+    pub(super) fn awaiting_spawn() -> Self {
+        Self {
+            awaiting_spawn: AtomicBool::new(true),
+            ..Self::default()
+        }
+    }
+    pub(super) fn interactive(&self) -> bool {
+        !self.awaiting_spawn.load(Ordering::Acquire)
+    }
+    pub(super) fn spawned(&self) {
+        self.awaiting_spawn.store(false, Ordering::Release);
+    }
+
     /// Wait for an admitted connection write's outcome to be enqueued before forwarding exit.
     /// Pending ownership claims do not hold this fence; waiting grants no input authority.
     pub async fn wait_for_write_completion(&self) {
@@ -96,6 +110,9 @@ impl WriteAuthority {
                 scope,
             } => {
                 let serial = barrier.grant().await?;
+                if !barrier.interactive() {
+                    return None;
+                }
                 if !scope.control_allowed().await {
                     return None;
                 }

@@ -770,6 +770,15 @@ impl RepoRead for SqlxRepo {
         Ok(rows.into_iter().map(Overlay::from).collect())
     }
 
+    async fn execution_alias_exists(&self, alias: &str) -> Result<bool> {
+        Ok(super::workspace_execution::alias_has_execution(self.db.read_pool(), alias).await?)
+    }
+    async fn execution_alias_current(
+        &self,
+        alias: &str,
+    ) -> Result<Option<workspace::execution::ExecutionId>> {
+        super::workspace_execution::current_read(self.db.read_pool(), alias).await
+    }
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>> {
         let row = sqlx::query_as::<_, Terminal>(
             r#"SELECT id, card_id, program, cwd, env, pid,
