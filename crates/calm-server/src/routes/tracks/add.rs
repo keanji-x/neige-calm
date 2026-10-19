@@ -126,19 +126,12 @@ impl TrackCreator for RouteTrackCreator {
         } else {
             None
         };
-        let readiness = if crate::harness::backend::PlannerBackend::metadata(&planner_provider)
-            .capabilities
-            .requires_ready_availability
-        {
-            Some(match &claude_availability {
-                // Reuse the catalog probe; readiness must not trigger another native check.
-                Some(checked) => checked.checked(),
-                None => {
-                    s.provider_availability
-                        .acp(crate::agent_providers::Freshness::Cached, &s.acp_planner)
-                        .await
-                }
-            })
+        let acp_availability = if planner_provider == AgentProvider::OpenCode {
+            Some(
+                s.provider_availability
+                    .acp(crate::agent_providers::Freshness::Cached, &s.acp_planner)
+                    .await,
+            )
         } else {
             None
         };
@@ -171,17 +164,17 @@ impl TrackCreator for RouteTrackCreator {
         };
         // A dependency unavailable now, not a bad argument: the same call succeeds once the
         // provider is ready.
+        if let Some(checked) = &acp_availability {
+            checked
+                .require_ready()
+                .map_err(TrackAddRefusal::ProviderUnavailable)?;
+        }
         if let Some(checked) = &claude_availability
             && let Err(refusal) = checked.catalog()
         {
             return Err(TrackAddRefusal::ProviderUnavailable(format!(
                 "the creator's Planner provider {refusal}"
             )));
-        }
-        if let Some(checked) = &readiness {
-            checked
-                .require_ready()
-                .map_err(TrackAddRefusal::ProviderUnavailable)?;
         }
         let cwd_omitted = args.cwd.is_none();
         let cwd = args.cwd.clone().unwrap_or_else(default_cwd);

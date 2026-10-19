@@ -760,19 +760,18 @@ pub(crate) async fn create_track(
     } else {
         None
     };
-    let readiness = if crate::harness::backend::PlannerBackend::metadata(&request.planner_provider)
-        .capabilities
-        .requires_ready_availability
-    {
-        Some(match &claude_availability {
-            // Reuse the catalog probe; readiness must not trigger another native check.
-            Some(checked) => checked.checked(),
-            None => {
-                s.provider_availability
-                    .acp(crate::agent_providers::Freshness::Cached, &s.acp_planner)
-                    .await
-            }
-        })
+    let acp_availability = if request.planner_provider == AgentProvider::OpenCode {
+        Some(
+            s.provider_availability
+                .get(
+                    &request.planner_provider,
+                    crate::agent_providers::Freshness::Cached,
+                    &s.claude_planner,
+                    &s.acp_planner,
+                    &codex.shared_codex_appserver,
+                )
+                .await,
+        )
     } else {
         None
     };
@@ -839,7 +838,7 @@ pub(crate) async fn create_track(
         })?),
         None => None,
     };
-    if let Some(checked) = &readiness {
+    if let Some(checked) = &acp_availability {
         checked
             .require_ready()
             .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}")))?;
