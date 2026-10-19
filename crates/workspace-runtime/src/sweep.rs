@@ -1,5 +1,6 @@
 //! Postcommit teardown policy.
 use crate::track_worktree::{self, ObservePoint};
+use calm_types::model::{TrackWorkspace, WorkspaceIsolation};
 use std::path::PathBuf;
 
 pub trait CandidateRefs: Clone + Send + Sync + 'static {
@@ -11,8 +12,8 @@ pub trait CandidateRefs: Clone + Send + Sync + 'static {
 #[derive(Clone, Debug)]
 pub struct WorkspaceTrackSweep {
     pub track_id: String,
-    /// `tracks.workspace_worktree_path`: removed with the track, whatever its leases.
-    pub track_worktree: Option<String>,
+    /// Workspace decoded from the track row inside the deletion transaction.
+    pub workspace: TrackWorkspace,
     pub git_common_dirs: Vec<PathBuf>,
 }
 
@@ -39,8 +40,13 @@ fn sweep_workspace_worktrees_blocking<P: CandidateRefs>(
     observe: ObservePoint,
 ) {
     for sweep in sweeps {
-        if let Some(track_worktree) = &sweep.track_worktree {
-            track_worktree::remove_track_worktree(&sweep.track_id, track_worktree, observe);
+        match sweep.workspace.isolation() {
+            WorkspaceIsolation::Managed => {}
+            WorkspaceIsolation::Worktree => {
+                track_worktree::remove_track_worktree(&sweep.track_id, &sweep.workspace, observe)
+            }
+            // Guarantee G: only historical Neige-owned refs below may be removed.
+            WorkspaceIsolation::None => {}
         }
         ports.delete_for_track(&sweep.track_id, &sweep.git_common_dirs);
     }

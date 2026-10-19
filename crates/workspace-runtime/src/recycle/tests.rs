@@ -195,3 +195,17 @@ fn a_late_area_recycle_error_restores_every_earlier_workspace() {
     );
     assert!(second.join(".git").is_dir(), "the failing target was moved");
 }
+
+#[test]
+fn isolation_none_recycle_refuses_even_an_owned_location() {
+    let f = Fixture::new();
+    let path = f.managed("area-1", "track-1");
+    std::fs::write(path.join("untracked"), b"keep").unwrap();
+    let workspace = Fixture::workspace(&path, TrackWorkspaceKind::Attached);
+    assert_eq!(workspace.isolation(), WorkspaceIsolation::None);
+    assert_eq!(
+        f.recycle("track-1", &workspace).refusal(),
+        Some(&RecycleRefusal::NotManaged)
+    );
+    assert_eq!(std::fs::read(path.join("untracked")).unwrap(), b"keep");
+}

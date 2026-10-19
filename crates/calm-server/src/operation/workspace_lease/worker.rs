@@ -544,8 +544,8 @@ pub(crate) fn verify_worker_checkout(output: &TxOutput, ctx: &str) -> Result<()>
 
 fn track_without_worktree() -> CalmError {
     CalmError::Conflict(format!(
-        "refused: {TRACK_WITHOUT_WORKTREE}: this track predates per-track worktrees; create a new \
-         track to run codex or claude tasks"
+        "refused: {TRACK_WITHOUT_WORKTREE}: this track predates per-track worktrees; its isolation is none; \
+         task workers require a worktree"
     ))
 }
 

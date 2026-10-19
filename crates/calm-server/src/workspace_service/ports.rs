@@ -7,7 +7,7 @@ use crate::operation::workspace_lease::upstream::{
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
-use workspace_runtime::worktree_clean::ClosedWorktreeFacts;
+use workspace_runtime::worktree_clean::{ClosedWorktree, ClosedWorktreeFacts};
 use workspace_runtime::{sweep::CandidateRefs, track_worktree::TrackBranch};
 
 #[derive(Clone, Copy)]
@@ -64,7 +64,7 @@ pub(crate) fn observe(point: &str, repo_root: &Path) {
 /// Closed tracks with a worktree and no agent session that may be working in it: the Planner and
 /// conversation agents run there too, and a closed track's idle Planner must not block the clean.
 /// Tasks, leases and deliveries are [`checkout_occupancy`]'s to judge.
-pub(crate) const CLOSED_TRACK_WORKTREES_SQL: &str = "SELECT t.id, t.workspace_worktree_path, t.closed_at \
+pub(crate) const CLOSED_TRACK_WORKTREES_SQL: &str = "SELECT t.* \
        FROM tracks t \
       WHERE t.closed_at IS NOT NULL AND t.workspace_worktree_path IS NOT NULL \
         AND NOT EXISTS (SELECT 1 FROM worker_sessions ws WHERE ws.track_id = t.id \
@@ -79,10 +79,22 @@ pub(crate) struct ServerClosedWorktreeFacts {
 impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
     type Error = CalmError;
 
-    async fn closed_idle_worktrees(&self) -> Result<Vec<(String, String, i64)>> {
-        Ok(sqlx::query_as(CLOSED_TRACK_WORKTREES_SQL)
-            .fetch_all(&self.pool)
-            .await?)
+    async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>> {
+        Ok(
+            sqlx::query_as::<_, calm_truth::db::rows::TrackRow>(CLOSED_TRACK_WORKTREES_SQL)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|row| {
+                    let track = crate::model::Track::from(row);
+                    ClosedWorktree {
+                        track_id: track.id.to_string(),
+                        workspace: track.workspace,
+                        closed_at: track.closed_at.expect("closed candidate"),
+                    }
+                })
+                .collect(),
+        )
     }
 
     async fn checkout_free(&self, track: &str) -> Result<bool> {

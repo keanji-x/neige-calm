@@ -186,6 +186,14 @@ impl TryFrom<String> for TrackWorkspaceKind {
     }
 }
 
+/// The decoded isolation of a track. This is derived, never stored separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceIsolation {
+    Managed,
+    Worktree,
+    None,
+}
+
 /// A track's typed workspace. `path` is its single stored path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -205,6 +213,14 @@ pub struct TrackWorkspace {
 }
 
 impl TrackWorkspace {
+    pub fn isolation(&self) -> WorkspaceIsolation {
+        match (self.kind, &self.worktree) {
+            (TrackWorkspaceKind::Managed, _) => WorkspaceIsolation::Managed,
+            (TrackWorkspaceKind::Attached, Some(_)) => WorkspaceIsolation::Worktree,
+            (TrackWorkspaceKind::Attached, None) => WorkspaceIsolation::None,
+        }
+    }
+
     /// The cwd of every conversation agent on the track (Planner, assistant, plain chat):
     /// the track worktree when there is one, else `path`.
     pub fn agent_cwd(&self) -> &str {

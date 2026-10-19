@@ -447,7 +447,7 @@ async fn every_lease_reader_returns_base_and_policy() {
         sweep.git_common_dirs,
         vec![target.repo_root.join(".git").canonicalize().unwrap()]
     );
-    assert_eq!(sweep.track_worktree.as_deref(), target.path.to_str());
+    assert_eq!(sweep.workspace.worktree.as_deref(), target.path.to_str());
 }
 
 /// The base is read with the allowlisted git environment: a hostile `GIT_DIR` in the kernel's
@@ -744,4 +744,23 @@ async fn new_card(repo: &crate::db::sqlite::SqlxRepo, track_id: &str) -> String 
     .unwrap()
     .id
     .to_string()
+}
+
+#[tokio::test]
+async fn isolation_none_worker_refusal_explains_isolation() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_git_repo(tmp.path());
+    let (repo, track_id, _) = lease_fixture(tmp.path()).await;
+    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    let err = prepare_worker_lease_as_tx(
+        &mut tx,
+        &track_id,
+        crate::model::TaskAccess::ReadWrite,
+        &unused_workspace_root(),
+    )
+    .await
+    .unwrap_err();
+    tx.rollback().await.unwrap();
+    assert!(err.to_string().contains("track-without-worktree"));
+    assert!(err.to_string().contains("isolation is none"), "{err}");
 }

@@ -693,6 +693,7 @@ async fn worktree_clean_skips_until_settled() {
     let mut workspace = sqlite::track_workspace_read_tx(&mut tx, &f.track)
         .await
         .unwrap();
+    workspace.kind = calm_types::model::TrackWorkspaceKind::Attached;
     workspace.worktree = Some(worktree.to_str().unwrap().to_owned());
     sqlite::track_workspace_write_tx(&mut tx, &f.track, &workspace)
         .await

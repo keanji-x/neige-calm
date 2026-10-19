@@ -9,15 +9,23 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use calm_types::model::{TrackWorkspace, WorkspaceIsolation};
 
 use crate::error::WorkspaceError;
 use crate::track_worktree::ObservePoint;
+
+/// A closed track row, retaining workspace ownership for the runtime's clean policy.
+pub struct ClosedWorktree {
+    pub track_id: String,
+    pub workspace: TrackWorkspace,
+    pub closed_at: i64,
+}
 
 #[async_trait]
 pub trait ClosedWorktreeFacts: Send + Sync + 'static {
     type Error: std::fmt::Display + Send + 'static;
 
-    async fn closed_idle_worktrees(&self) -> Result<Vec<(String, String, i64)>, Self::Error>;
+    async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>, Self::Error>;
     async fn checkout_free(&self, track: &str) -> Result<bool, Self::Error>;
     async fn executions_settled(&self, track: &str) -> Result<bool, Self::Error>;
 }
@@ -59,8 +67,14 @@ where
 {
     let rows = facts.closed_idle_worktrees().await?;
     let mut count = 0;
-    for (track_id, worktree, closed_at) in rows {
-        let key = (track_id, closed_at);
+    for row in rows {
+        let worktree = match row.workspace.isolation() {
+            WorkspaceIsolation::Managed => continue,
+            // Guarantee G: never git-clean a borrowed source directory.
+            WorkspaceIsolation::None => continue,
+            WorkspaceIsolation::Worktree => row.workspace.worktree.expect("decoded worktree"),
+        };
+        let key = (row.track_id, row.closed_at);
         if cleaned.contains(&key) || !facts.checkout_free(&key.0).await? {
             continue;
         }

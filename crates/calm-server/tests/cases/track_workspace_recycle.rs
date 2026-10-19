@@ -1633,3 +1633,6 @@ async fn deleting_a_track_takes_its_live_harness_out_of_the_registry() {
     );
     assert!(!path.exists(), "the workspace should have been recycled");
 }
+
+#[path = "isolation_none.rs"]
+mod isolation_none;

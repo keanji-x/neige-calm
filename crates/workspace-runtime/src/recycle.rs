@@ -5,15 +5,19 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Result, WorkspaceError};
-use calm_types::model::{AreaKind, Track, TrackWorkspace, TrackWorkspaceKind};
+use calm_types::model::{AreaKind, Track, TrackWorkspace, WorkspaceIsolation};
 
 /// Boot/lazy recovery fence: a managed workspace is recoverable only while its original path still carries
 /// this track's marker, which persists deletion quarantine across restarts.
 pub fn workspace_allows_runtime_recovery(track: &Track) -> bool {
-    if track.workspace.kind != TrackWorkspaceKind::Managed {
-        return true;
+    match track.workspace.isolation() {
+        WorkspaceIsolation::Managed => {
+            workspace::materialize::owned_by(Path::new(&track.workspace.path), track.id.as_str())
+        }
+        WorkspaceIsolation::Worktree => true,
+        // Guarantee G: no lifecycle effects on a borrowed directory.
+        WorkspaceIsolation::None => true,
     }
-    workspace::materialize::owned_by(Path::new(&track.workspace.path), track.id.as_str())
 }
 
 /// Retention is time-based because "I deleted the wrong track" is noticed on a human clock, not after N more deletions.
@@ -133,8 +137,15 @@ fn decide_and_move(
     now_ms: i64,
 ) -> Result<RecycleDecision> {
     // Guard 1 — typed kind, from the stored column, never inferred from the path.
-    if workspace.kind != TrackWorkspaceKind::Managed {
-        return Ok(RecycleDecision::Refused(RecycleRefusal::NotManaged));
+    match workspace.isolation() {
+        WorkspaceIsolation::Managed => {}
+        WorkspaceIsolation::Worktree => {
+            return Ok(RecycleDecision::Refused(RecycleRefusal::NotManaged));
+        }
+        // Guarantee G: leave the source directory untouched.
+        WorkspaceIsolation::None => {
+            return Ok(RecycleDecision::Refused(RecycleRefusal::NotManaged));
+        }
     }
 
     // Guard 4 — system area; `None` means the area row could not be read, which is a refusal.

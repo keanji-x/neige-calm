@@ -2,9 +2,10 @@
 
 use crate::{
     error::{CalmError, Result},
-    model::{TrackWorkspace, TrackWorkspaceKind},
+    model::TrackWorkspace,
     operation::SpawnCtx,
 };
+use calm_types::model::WorkspaceIsolation;
 
 pub(super) enum LegacyTerminalTarget {
     WorkspaceDefault { cwd: String },
@@ -39,10 +40,11 @@ pub(super) fn decode(
         )));
     }
     let cwd = cwd.to_owned();
-    if workspace.kind == TrackWorkspaceKind::Attached && workspace.worktree.is_none() {
-        Ok(LegacyTerminalTarget::ExternalDir { cwd })
-    } else {
-        Ok(LegacyTerminalTarget::WorkspaceDefault { cwd })
+    match workspace.isolation() {
+        WorkspaceIsolation::Managed | WorkspaceIsolation::Worktree => {
+            Ok(LegacyTerminalTarget::WorkspaceDefault { cwd })
+        }
+        WorkspaceIsolation::None => Ok(LegacyTerminalTarget::ExternalDir { cwd }),
     }
 }
 
