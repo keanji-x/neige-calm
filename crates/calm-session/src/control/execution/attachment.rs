@@ -16,15 +16,3 @@ pub struct ObjectRegistrationReceipt {
     pub id: ObjectRegistrationId,
     pub transfer: AttachRegistration,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ExportRegistration {
-    pub executor_boot: ExecutorBootId,
-    pub registration: ObjectRegistrationId,
-    pub nonce: TransferNonce,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ExportAcknowledgement {
-    pub executor_boot: ExecutorBootId,
-    pub registration: ObjectRegistrationId,
-    pub nonce: TransferNonce,
-}

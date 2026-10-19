@@ -67,7 +67,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 #[tokio::test]
-async fn execution_attachment_export_retains_live_objects_after_kernel_connection_loss() {
+async fn execution_attachment_retains_live_objects_after_kernel_connection_loss() {
     let harness = Harness::start().await;
     let mut client = harness.connect().await;
     let root = harness.root("worktree", true);
@@ -85,31 +85,16 @@ async fn execution_attachment_export_retains_live_objects_after_kernel_connectio
     )
     .unwrap();
     assert_eq!(persisted, original);
-    drop(client); // No sender lease remains. The receiver's original open descriptions keep continuity.
-    let mut recovered = harness.connect().await;
-    let (receipt, held) = recovered
-        .export(ExportRegistration {
-            executor_boot: recovered.executor_boot().clone(),
-            registration: original.id.clone(),
-            nonce: TransferNonce::fresh().unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(receipt, original);
-    assert_eq!(held.shape(), &original.transfer.shape);
-    let duplicate = held.try_clone().unwrap();
-    let left = held.live_identity().unwrap();
-    let right = duplicate.live_identity().unwrap();
-    assert_eq!(left.root_key(), right.root_key());
-    assert_eq!(left.compare(&right), HeldObjectComparison::SameObject);
     let request = prepare(
-        &recovered,
+        &client,
         scope,
         grant,
         "after-kernel-restart",
         IoMode::Pipe,
         "pwd",
     );
+    drop(client); // No sender lease remains; the receiver keeps native continuity.
+    let mut recovered = harness.connect().await;
     let native = launch(&mut recovered, &request).await;
     wait_for(&mut recovered, &request, &native, |state, output| {
         matches!(state, ExecutionState::Drained { .. }) && output.contains("worktree")
@@ -172,17 +157,10 @@ async fn execution_attachment_executor_restart_is_unwitnessed_until_actual_fd_re
             ..
         }
     ));
-    let mut exporter = harness.connect().await;
-    assert!(
-        exporter
-            .export(ExportRegistration {
-                executor_boot: exporter.executor_boot().clone(),
-                registration: original.id,
-                nonce: TransferNonce::fresh().unwrap()
-            })
-            .await
-            .is_err()
-    );
+    let ExecutionRegistration::ExternalDir { root, .. } = &original.transfer.registration else {
+        unreachable!()
+    };
+    assert_root_released(&harness, root);
     let mut next = original_transfer;
     next.registration_id = ObjectRegistrationId::fresh().unwrap();
     next.executor_boot = recovered.executor_boot().clone();
@@ -472,28 +450,33 @@ async fn execution_attachment_lost_ack_recovers_by_frozen_registration_id() {
     .unwrap();
     // Simulate sender loss after effect submission and before it consumes any acknowledgement.
     drop(socket);
-    drop(held);
     drop(client);
+    let path = harness
+        .journal()
+        .join(format!("{}.registration", frozen.registration_id.as_str()));
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let mut recovered = harness.connect().await;
-        let result = recovered
-            .export(ExportRegistration {
-                executor_boot: recovered.executor_boot().clone(),
-                registration: frozen.registration_id.clone(),
-                nonce: TransferNonce::fresh().unwrap(),
-            })
-            .await;
-        if let Ok((receipt, held)) = result {
-            assert_eq!(receipt.id, frozen.registration_id);
-            assert_eq!(receipt.transfer, frozen);
-            assert_eq!(held.shape(), &receipt.transfer.shape);
-            break;
-        }
+    while !path.exists() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "submitted registration was lost with its ACK"
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+    let original: ObjectRegistrationReceipt =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut recovered = harness.connect().await;
+    let receipt = recovered.attach(frozen.clone(), &held).await.unwrap();
+    assert_eq!(receipt, original);
+    assert_eq!(receipt.id, frozen.registration_id);
+    assert_eq!(receipt.transfer, frozen);
+    let persisted: ObjectRegistrationReceipt = serde_json::from_slice(
+        &std::fs::read(
+            harness
+                .journal()
+                .join(format!("{}.registration", receipt.id.as_str())),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(persisted, receipt);
 }

@@ -206,47 +206,6 @@ impl Executor {
             descriptors.is_empty(),
             "descriptors on a non-attachment request"
         );
-        if let ExecutionRequest::Export(export) = request {
-            anyhow::ensure!(
-                export.executor_boot == self.boot,
-                "export from a different executor boot"
-            );
-            let root = self
-                .live_objects
-                .lock()
-                .map_err(poison)?
-                .get(&export.registration)
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("registration is Unwitnessed; no held objects to export")
-                })?;
-            root.validate()?;
-            rights::send(
-                stream,
-                &ControlReply::Execution(Box::new(ExecutionReply::Exported {
-                    receipt: root.receipt.clone(),
-                    nonce: export.nonce.clone(),
-                })),
-                &root.objects.descriptors(),
-            )
-            .await?;
-            // This Arc retains every old descriptor even if another registration changes its binding.
-            let (ack, received) = rights::receive::<ControlMsg>(stream).await?;
-            anyhow::ensure!(received.is_empty(), "unexpected rights on export ACK");
-            anyhow::ensure!(
-                matches!(ack,ControlMsg::Execution(request) if matches!(request.as_ref(), ExecutionRequest::ExportAck(ack)
-                    if ack.executor_boot == self.boot && ack.registration == root.receipt.id && ack.nonce == export.nonce)),
-                "export ACK provenance mismatch"
-            );
-            drop(root);
-            rights::send(
-                stream,
-                &ControlReply::Execution(Box::new(ExecutionReply::ExportAcknowledged)),
-                &[],
-            )
-            .await?;
-            return Ok(());
-        }
         let answer = self.dispatch(secret, request).await;
         rights::send(stream, &ControlReply::Execution(Box::new(answer)), &[]).await?;
         Ok(())

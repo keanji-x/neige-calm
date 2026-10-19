@@ -22,7 +22,7 @@ pub use watch::ExecutionWatcher;
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 6;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 7;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
@@ -143,8 +143,6 @@ pub struct ConsumeExecution {
 pub enum ExecutionRequest {
     Handshake(ExecutionHandshake),
     Attach(AttachRegistration),
-    Export(ExportRegistration),
-    ExportAck(ExportAcknowledgement),
     Prepare(PrepareExecution),
     Launch(ConsumeExecution),
     Revoke(ConsumeExecution),
@@ -230,11 +228,6 @@ pub enum ExecutionReply {
         mode: ExecutionProtocolMode,
     },
     Registered(ObjectRegistrationReceipt),
-    Exported {
-        receipt: ObjectRegistrationReceipt,
-        nonce: TransferNonce,
-    },
-    ExportAcknowledged,
     RegistrationRetired {
         registration: ObjectRegistrationId,
     },

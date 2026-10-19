@@ -38,7 +38,7 @@ impl Executor {
                 ),
             "registration still owns a pending or live execution"
         );
-        // Hold the live lookup lock through retirement: no new export/observation can acquire a lease.
+        // Hold the live lookup lock through retirement: no new borrower can acquire a lease.
         let mut live = self.live_objects.lock().map_err(poison)?;
         let root = live
             .get(&receipt.id)
@@ -46,11 +46,11 @@ impl Executor {
         anyhow::ensure!(root.receipt == receipt, "retirement live receipt mismatch");
         // The map is the only persistent Arc owner: the lifecycle projection holds only facts.
         // While this lock is held no new borrower can start. Every extra Arc is an actual
-        // retained source lease (export through exact ACK, observer through actual child wait).
+        // retained source lease (for example, a prepared execution).
         // Concurrent borrower drops can only turn Busy into a safe later retry.
         anyhow::ensure!(
             Arc::strong_count(root) == 1,
-            "registration has an in-flight export or observation"
+            "registration has an in-flight source lease"
         );
         // Preserve immutable receipts and request/ACK history; only native storage ownership ends.
         self.store

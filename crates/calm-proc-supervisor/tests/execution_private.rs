@@ -143,18 +143,13 @@ async fn private_prepare_wire_watch_reconnect_and_retire() {
             ..
         }
     ));
-    // Export uses the authoritative native lease lookup, so it proves release before Retire.
-    assert!(
-        client
-            .export(ExportRegistration {
-                executor_boot: client.executor_boot().clone(),
-                registration: request.identity.source_registration.clone(),
-                nonce: TransferNonce::fresh().unwrap()
-            })
-            .await
-            .is_err()
-    );
-    let mut client = harness.connect().await;
+    let PreparedSource::Private(transfer) = &request.source else {
+        unreachable!()
+    };
+    let ExecutionRegistration::ExternalDir { root, .. } = &transfer.registration else {
+        unreachable!()
+    };
+    assert_root_released(&harness, root);
     let reply = client
         .request(ExecutionRequest::Retire {
             execution_id: request.identity.execution_id.clone(),

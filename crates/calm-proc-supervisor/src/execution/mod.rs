@@ -355,9 +355,7 @@ impl Executor {
                 executor_boot: self.boot.clone(),
                 mode: hello.mode,
             }),
-            ExecutionRequest::Attach(_)
-            | ExecutionRequest::Export(_)
-            | ExecutionRequest::ExportAck(_) => {
+            ExecutionRequest::Attach(_) => {
                 anyhow::bail!("object attachment requires the controlled ancillary transport")
             }
             ExecutionRequest::RetireRegistration(receipt) => {

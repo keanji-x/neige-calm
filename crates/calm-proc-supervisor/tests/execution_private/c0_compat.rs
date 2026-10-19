@@ -167,17 +167,10 @@ async fn recover(changed_boot: bool, settled: bool) {
         );
         assert_eq!(journal(&h, &r)["phase"], old["phase"]);
     }
-    // The native lease lookup must fail after positive durable settlement.
-    assert!(
-        c.export(ExportRegistration {
-            executor_boot: c.executor_boot().clone(),
-            registration: transfer.registration_id.clone(),
-            nonce: TransferNonce::fresh().unwrap(),
-        })
-        .await
-        .is_err()
-    );
-    let mut c = h.connect().await;
+    let ExecutionRegistration::ExternalDir { root, .. } = &transfer.registration else {
+        unreachable!()
+    };
+    assert_root_released(&h, root);
     let tombstone = match c
         .request(ExecutionRequest::Retire {
             execution_id: r.identity.execution_id.clone(),

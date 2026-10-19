@@ -366,3 +366,18 @@ pub(super) async fn wait_for(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+/// Observe the supervisor's actual native root ownership, independently of wire replies.
+pub(super) fn assert_root_released(harness: &Harness, root: &DirectoryRegistration) {
+    use std::os::unix::fs::MetadataExt;
+    let count = std::fs::read_dir(format!("/proc/{}/fd", harness.child.id()))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .filter(|metadata| metadata.dev() == root.device && metadata.ino() == root.inode)
+        .count();
+    assert_eq!(
+        count, 0,
+        "settlement left supervisor root descriptions pinned"
+    );
+}

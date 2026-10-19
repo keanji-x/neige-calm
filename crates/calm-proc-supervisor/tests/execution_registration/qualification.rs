@@ -2,8 +2,7 @@ use super::support::*;
 use calm_session::control::{IoMode, execution::*};
 use std::{os::unix::fs::MetadataExt, path::Path, process::Command};
 use workspace::execution::objects::{
-    HeldObjectComparison, HeldSourceObjects, ObjectQualificationFailure,
-    ObjectQualificationUnsupported, ObjectRole,
+    HeldSourceObjects, ObjectQualificationFailure, ObjectQualificationUnsupported, ObjectRole,
 };
 
 fn directory(path: &Path) -> DirectoryRegistration {
@@ -64,20 +63,6 @@ async fn execution_qualification_received_ext4_objects_reach_prepare_and_real_cw
         original,
         "exact Attach replay retains the immutable receipt"
     );
-    let (_, received) = client
-        .export(ExportRegistration {
-            executor_boot: client.executor_boot().clone(),
-            registration: original.id,
-            nonce: TransferNonce::fresh().unwrap(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        held.live_identity()
-            .unwrap()
-            .compare(&received.live_identity().unwrap()),
-        HeldObjectComparison::SameObject
-    );
     if let ExecutionScope::Worktree { cwd, .. } = &mut scope {
         *cwd = workspace::identity::WorkspaceCwd::try_from("nested".to_owned()).unwrap();
     }
@@ -108,22 +93,27 @@ async fn execution_qualification_attach_replay_retains_original_open_description
     let receipt = client.attach(attachment.clone(), &original).await.unwrap();
     let fresh = HeldSourceObjects::open(&root.path, true).unwrap();
     assert_eq!(client.attach(attachment, &fresh).await.unwrap(), receipt);
-    let (_, exported) = client
-        .export(ExportRegistration {
-            executor_boot: client.executor_boot().clone(),
-            registration: receipt.id,
-            nonce: TransferNonce::fresh().unwrap(),
-        })
-        .await
-        .unwrap();
+    drop(original);
     assert_eq!(
-        unsafe { libc::flock(exported.root().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0,
+        unsafe { libc::flock(fresh.root().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        -1,
         "exact Attach replay replaced the original held open description"
     );
     assert_eq!(
-        unsafe { libc::flock(original.root().as_raw_fd(), libc::LOCK_UN) },
-        0
+        std::io::Error::last_os_error().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(matches!(
+        client
+            .request(ExecutionRequest::RetireRegistration(receipt))
+            .await
+            .unwrap(),
+        ExecutionReply::RegistrationRetired { .. }
+    ));
+    assert_eq!(
+        unsafe { libc::flock(fresh.root().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0,
+        "retirement must release the last original open description"
     );
 }
 
