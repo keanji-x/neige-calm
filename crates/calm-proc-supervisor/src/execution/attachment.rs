@@ -81,7 +81,7 @@ impl Executor {
                     "registration ID already belongs to another immutable transfer"
                 );
                 let receipt = ObjectRegistrationReceipt {
-                    contract: EXECUTION_ENVELOPE_VERSION,
+                    contract: PERSISTED_RECEIPT_CONTRACT_VERSION,
                     id: transfer.registration_id.clone(),
                     transfer,
                 };
@@ -198,17 +198,6 @@ impl Executor {
             let reply = match self.attach_objects(transfer, descriptors).await {
                 Ok(reply) => reply,
                 Err(error) => refused(&error.to_string()),
-            };
-            rights::send(stream, &ControlReply::Execution(Box::new(reply)), &[]).await?;
-            return Ok(());
-        }
-        if let ExecutionRequest::ObserveTransferredDirectories(request) = request {
-            let reply = match self
-                .observe_transferred_directories(*request, descriptors)
-                .await
-            {
-                Ok(reply) => reply,
-                Err(error) => qualification_or_refusal(&error),
             };
             rights::send(stream, &ControlReply::Execution(Box::new(reply)), &[]).await?;
             return Ok(());

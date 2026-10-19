@@ -17,7 +17,7 @@ impl RegisteredRoot {
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             receipt.id == receipt.transfer.registration_id
-                && receipt.contract == EXECUTION_ENVELOPE_VERSION,
+                && receipt.contract == PERSISTED_RECEIPT_CONTRACT_VERSION,
             "attachment receipt provenance mismatch"
         );
         let registration = receipt.transfer.registration.clone();

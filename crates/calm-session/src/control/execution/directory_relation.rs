@@ -45,7 +45,7 @@ impl RegisteredExecutorConnection {
         if request.executor_boot != self.executor_boot
             || [&request.ancestor, &request.subject].iter().any(|root| {
                 root.role != ObjectRole::Root
-                    || root.receipt.contract != EXECUTION_ENVELOPE_VERSION
+                    || root.receipt.contract != PERSISTED_RECEIPT_CONTRACT_VERSION
                     || root.receipt.transfer.executor_boot != self.executor_boot
             })
         {

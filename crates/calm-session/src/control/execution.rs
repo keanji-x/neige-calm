@@ -16,17 +16,18 @@ pub mod rights;
 #[cfg(not(target_os = "linux"))]
 #[path = "execution/rights_unsupported.rs"]
 pub mod rights;
-mod transferred_directory;
 mod watch;
 pub use attachment::*;
 pub use directory_relation::*;
-pub use transferred_directory::*;
 pub use watch::ExecutionWatcher;
 
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 4;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 5;
+
+/// Persisted registration receipt contract; independent of bincode wire ordinals.
+pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionHandshake {
@@ -153,7 +154,6 @@ pub enum ExecutionRequest {
     ObserveDirectories(Box<DirectoryRelationRequest>),
     /// Release this exact immutable lease after its executor references settle.
     RetireRegistration(ObjectRegistrationReceipt),
-    ObserveTransferredDirectories(Box<TransferredDirectoryRelationRequest>),
     Inspect(ExecutionId),
     Watch,
     Retire {
@@ -269,7 +269,6 @@ pub enum ExecutionReply {
         reason: String,
     },
     DirectoryRelation(Box<DirectoryRelationReport>),
-    TransferredDirectoryRelation(Box<TransferredDirectoryRelationReport>),
     ObjectQualificationFailed {
         failure: workspace::execution::objects::ObjectQualificationFailure,
     },

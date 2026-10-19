@@ -17,19 +17,10 @@ pub(super) const OBSERVATION_DEADLINE: Duration = Duration::from_secs(4);
 const FRAME_LIMIT: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum TransferredDirectoryRole {
-    Ancestor,
-    Subject,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum ProbeOrigin {
     Registered {
         registration: ObjectRegistrationId,
         incarnation: SourceObjectIncarnation,
-    },
-    Transferred {
-        role: TransferredDirectoryRole,
     },
 }
 
@@ -47,25 +38,6 @@ pub(super) struct ProbeContext {
     pub facts: DirectoryPairFacts,
     pub mechanism: ScopeMechanismIdentity,
 }
-impl ProbeContext {
-    fn origins_valid(&self) -> bool {
-        matches!(
-            (&self.ancestor.origin, &self.subject.origin),
-            (
-                ProbeOrigin::Registered { .. },
-                ProbeOrigin::Registered { .. }
-            ) | (
-                ProbeOrigin::Transferred {
-                    role: TransferredDirectoryRole::Ancestor
-                },
-                ProbeOrigin::Transferred {
-                    role: TransferredDirectoryRole::Subject
-                }
-            )
-        )
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 pub(super) struct ProbePlan {
     pub context: ProbeContext,
@@ -229,8 +201,7 @@ pub(super) fn run(plan: ProbePlan, mut report: File, reserved: [RawFd; 2]) -> an
         Ok(facts)
             if facts == plan.context.facts
                 && plan.context.ancestor.role == ObjectRole::Root
-                && plan.context.subject.role == ObjectRole::Root
-                && plan.context.origins_valid() =>
+                && plan.context.subject.role == ObjectRole::Root =>
         {
             raw_observation(&directories, &facts)
         }

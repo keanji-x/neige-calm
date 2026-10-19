@@ -11,8 +11,6 @@ mod recovery;
 
 #[path = "execution_registration/repair.rs"]
 mod repair;
-#[path = "execution_registration/transferred_directory.rs"]
-mod transferred_directory;
 
 struct Pair {
     harness: Harness,

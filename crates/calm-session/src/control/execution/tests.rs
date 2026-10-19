@@ -192,21 +192,21 @@ fn retired_cleanup_does_not_move_stop_wire_ordinal() {
 }
 
 #[tokio::test]
-async fn registered_v4_rejects_v3_typed_peer() {
+async fn c0_compat_registered_current_rejects_v4_typed_peer() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("typed-v3.sock");
+    let path = temp.path().join("typed-v4.sock");
     let listener = UnixListener::bind(&path).unwrap();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         assert!(
             matches!(read_frame::<ControlMsg, _>(&mut stream).await.unwrap(),
             ControlMsg::Execution(request) if matches!(*request, ExecutionRequest::Handshake(
-                ExecutionHandshake { required_contract: 4, mode: ExecutionProtocolMode::RegisteredV3, .. })))
+                ExecutionHandshake { required_contract: EXECUTION_ENVELOPE_VERSION, mode: ExecutionProtocolMode::RegisteredV3, .. })))
         );
         write_frame(
             &mut stream,
             &ControlReply::Execution(Box::new(ExecutionReply::Handshake {
-                envelope_version: 3,
+                envelope_version: 4,
                 executor_boot: ExecutorBootId::fresh().unwrap(),
                 mode: ExecutionProtocolMode::RegisteredV3,
             })),

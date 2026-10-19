@@ -252,7 +252,7 @@ impl Executor {
         // Serialized receipts retain audit/version facts only. No descriptor survives this boot.
         for receipt in store.registrations()? {
             anyhow::ensure!(
-                receipt.contract == EXECUTION_ENVELOPE_VERSION
+                receipt.contract == PERSISTED_RECEIPT_CONTRACT_VERSION
                     && receipt.id == receipt.transfer.registration_id,
                 "unsupported persisted attachment contract or provenance"
             );
@@ -341,11 +341,7 @@ impl Executor {
         if !self.authenticates(secret) {
             return refused("unregistered kernel client");
         }
-        let qualification_report = matches!(
-            &request,
-            ExecutionRequest::ObserveDirectories(_)
-                | ExecutionRequest::ObserveTransferredDirectories(_)
-        );
+        let qualification_report = matches!(&request, ExecutionRequest::ObserveDirectories(_));
         match self.dispatch_authorized(request).await {
             Ok(reply) => reply,
             Err(error) if qualification_report => qualification_or_refusal(&error),
@@ -364,7 +360,6 @@ impl Executor {
                 mode: hello.mode,
             }),
             ExecutionRequest::Attach(_)
-            | ExecutionRequest::ObserveTransferredDirectories(_)
             | ExecutionRequest::Export(_)
             | ExecutionRequest::ExportAck(_) => {
                 anyhow::bail!("object attachment requires the controlled ancillary transport")

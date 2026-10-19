@@ -1,5 +1,5 @@
 use super::{directory_probe::*, *};
-use std::{fs::File, os::fd::OwnedFd};
+use std::fs::File;
 use workspace::execution::objects::*;
 
 async fn observation_result(
@@ -58,63 +58,6 @@ impl Executor {
         )))
     }
 
-    pub(super) async fn observe_transferred_directories(
-        self: &Arc<Self>,
-        request: TransferredDirectoryRelationRequest,
-        descriptors: Vec<OwnedFd>,
-    ) -> anyhow::Result<ExecutionReply> {
-        anyhow::ensure!(
-            request.executor_boot == self.boot,
-            "transferred observer boot mismatch"
-        );
-        anyhow::ensure!(
-            descriptors.len() == 2,
-            "transferred observer requires exactly ancestor and subject descriptors"
-        );
-        let directories: [File; 2] = descriptors
-            .into_iter()
-            .map(File::from)
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("transferred observer descriptor count changed"))?;
-        let owner = self.clone();
-        let query = request.clone();
-        let worker = tokio::task::spawn_blocking(move || {
-            owner.observe_transferred_pair(directories, &query)
-        });
-        let outcome = observation_result(worker).await?;
-        Ok(ExecutionReply::TransferredDirectoryRelation(Box::new(
-            TransferredDirectoryRelationReport { request, outcome },
-        )))
-    }
-
-    fn observe_transferred_pair(
-        &self,
-        directories: [File; 2],
-        request: &TransferredDirectoryRelationRequest,
-    ) -> anyhow::Result<DirectoryRelationOutcome> {
-        let qualified = qualify_directory_pair(&directories[0], &directories[1])?;
-        anyhow::ensure!(
-            qualified.facts() == &request.facts,
-            "transferred observer actual descriptor facts/roles mismatch"
-        );
-        let outcome = self.observe_pair(
-            [directories[0].try_clone()?, directories[1].try_clone()?],
-            [
-                ProbeOrigin::Transferred {
-                    role: TransferredDirectoryRole::Ancestor,
-                },
-                ProbeOrigin::Transferred {
-                    role: TransferredDirectoryRole::Subject,
-                },
-            ],
-            request.facts.clone(),
-            request.nonce.clone(),
-        );
-        qualified.revalidate()?;
-        Ok(outcome)
-    }
-
     fn observe_held_pair(
         &self,
         roots: [Arc<RegisteredRoot>; 2],
@@ -156,7 +99,7 @@ impl Executor {
         outcome
     }
 
-    // The one helper mechanism for both retained registrations and one-shot qualified FD pairs.
+    // Registered directory observations share one helper mechanism.
     fn observe_pair(
         &self,
         directories: [File; 2],

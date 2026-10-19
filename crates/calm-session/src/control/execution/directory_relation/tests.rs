@@ -13,7 +13,7 @@ fn request(boot: ExecutorBootId, root: &std::path::Path) -> DirectoryRelationReq
     let id = ObjectRegistrationId::fresh().unwrap();
     // This is a wire-peer fixture, not an executor registration/admission proof.
     let receipt = ObjectRegistrationReceipt {
-        contract: EXECUTION_ENVELOPE_VERSION,
+        contract: PERSISTED_RECEIPT_CONTRACT_VERSION,
         id: id.clone(),
         transfer: AttachRegistration {
             registration_id: id,

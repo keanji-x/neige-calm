@@ -33,7 +33,7 @@ impl RegisteredExecutorConnection {
         };
         match *reply {
             ExecutionReply::Registered(receipt)
-                if receipt.contract == EXECUTION_ENVELOPE_VERSION
+                if receipt.contract == PERSISTED_RECEIPT_CONTRACT_VERSION
                     && receipt.id == transfer.registration_id
                     && receipt.transfer == transfer =>
             {
@@ -71,7 +71,7 @@ impl RegisteredExecutorConnection {
         };
         let receipt = match *reply {
             ExecutionReply::Exported { receipt, nonce }
-                if receipt.contract == EXECUTION_ENVELOPE_VERSION
+                if receipt.contract == PERSISTED_RECEIPT_CONTRACT_VERSION
                     && nonce == request.nonce
                     && receipt.id == request.registration
                     && receipt.id == receipt.transfer.registration_id

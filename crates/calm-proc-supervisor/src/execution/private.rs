@@ -121,7 +121,7 @@ impl Executor {
         let objects = HeldSourceObjects::receive(transfer.shape.clone(), descriptors)?;
         let root = Arc::new(RegisteredRoot::receive(
             ObjectRegistrationReceipt {
-                contract: EXECUTION_ENVELOPE_VERSION,
+                contract: PERSISTED_RECEIPT_CONTRACT_VERSION,
                 id: transfer.registration_id.clone(),
                 transfer: transfer.clone(),
             },
