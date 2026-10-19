@@ -118,7 +118,9 @@ D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新�
 | C0d | 删除作 Worktree registration 的共享 `Attach`、`RetireRegistration`（`execution/attachment.rs` 的 `attach_objects`、`retirement.rs`、session `attachment_client.rs` 与 `tests/execution_attachment.rs` 的对应部分），以及只服务共享 registration 的 `execution_registration*` 测试 | 净删除；覆盖保留不变量的测试断言改挂到 Private 路径而不是删除 | C0c |
 | C1 | 关闭后清理的围栏，复用既有两把锁、不加第二套 lifecycle 锁（持有区间见下） | 进程内围栏，不加表。验收：clean 在 SQL 采样后暂停 → reopen 并启动 → clean 拒绝且不写 cleaned；clean 先赢时，worker 准备、终端创建、typed admit、Planner 启动/恢复、boot 恢复项各自得到 Busy（可重试，不 Stuck）或等待且 clean 结束后正常启动（每个入口一个测试，不只测 reopen）。既有 idle Planner 双向：① issuance 先赢——clean 采样后、取 track 前暂停，向 idle Planner 投入排队消息使其持久化 Issuing，恢复 clean → 复查看到 `turn_pending`，拒绝且不写 cleaned；② clean 先赢——clean 持 track 停在 `git clean` 之前，分别投入排队消息、自动观察与 pending rewind → 不持久化 Issuing、不发送 turn/start，clean 结束后各自照常发出；③ 删除持 track 时有 issuance 在等待 → 删除完成且该 turn 不发出、无死锁。约 350 行 | 无 |
 | C2a | typed Pipe `CloseStdin` 前置能力：Interactive 精确 capability，关闭 writer、保留输出与生命周期 | 真实 client→wire→executor→child EOF 与 Engine 入口；幂等 close、关闭后 write 拒绝；PTY/未授权/Unknown 拒绝；envelope 9，持久合同与 journal 仍为 4 | E2b（已合入） |
-| C2b | gate shell（`server/operation/gate_process.rs:263` 的 `spawn_held`）改为 Engine 消费者；保留其持久恢复、stdin 释放与 leader reaping 合同 | 一个构造点或一个恢复机制；writer 移入 executor 后 kernel 死亡不再自动关闭 gate stdin，须定义 released/not-released 的持久归属与 boot reconciliation，不能仅靠 CloseStdin | C2a |
+| C2b.1 | worker gate run（`task-gate-run`）改为 Engine 消费者；同片引入两种 gate 共用的唯一构造点 `server/operation/gate_execution.rs`、必需记录 `gate_execution` v1 与 typed parked 关联（设计见下） | 范围：Pipe intent 工厂（沿用现有环境白名单；consumer `gate` 注册显式 no-op projection）、记录 CAS（SQL 在 calm-truth）、通用写者的 owner-state 保留、owned 适配器 park 不再要求 `spawn_artifacts_json`、释放顺序、Stop 型 timeout/cancel/补偿、boot 矩阵的 gate run 列、`ExecutionUnavailable` 拒绝、pre-C2b op 不推进。测试世界接真实 executor：`execution_hooks.rs:42-71` 的 supervisor 装配移入 `tests/support`（移动，不复制），`launch_kernel` 重启测试的 supervisor 留在测试进程、活过 kernel kill。删除：`task_gate_run/mod.rs:300-395,449-521` 的 `spawn_held_identified`/`record_spawn_artifacts`/`stop_group`/stdin 写入/`observe_verdict`/`reap` 及原生 recover/补偿分支。新测试 `c2b_gate_run_has_one_engine_construction`、`c2b_gate_run_refuses_unavailable_executor`、`c2b_release_authorizes_before_first_byte`、`c2b_refused_release_writes_no_byte`、`c2b_phase_writes_preserve_gate_record`、`c2b_typed_park_needs_no_spawn_artifacts`、`c2b_redrive_stops_held_before_fresh_execution`、`c2b_boot_held_stops_without_token`、`c2b_lost_close_ack_does_not_repeat_steps`、`c2b_leader_exit_drains_descendants_before_verdict`、`c2b_unknown_execution_never_completes_op`、`c2b_pre_c2b_native_op_is_never_advanced`。replay：mcp_integration_suite `task_gate_run::{a_gate_run_commits_new_files_before_its_steps_run, a_red_step_returns_its_name_and_tail, an_edit_during_the_run_discards_its_result, done_during_a_run_delivers_after_the_run, a_cancel_during_a_run_keeps_the_checkout_busy_until_it_ends, more::the_run_releases_its_wrapper_only_after_parked, restart::*, commit_message::done_before_checkpoint_release_accepts_the_admitted_input, reuse::an_unchanged_candidate_reuses_the_passing_run}`；kernel_process_suite `parked_operations::{recovery_mode_plumbing_distinguishes_boot_probe_and_past_deadline, boot_recovery_past_deadline_ignores_abandoned_parked_lease}`；lib `task_gate_run::tests::run_recovery_never_reads_the_exit_file`、`execution_boot::port_contract::*`、`repo_sqlite::claim_tests` 与 `terminal_adapter::tests::launch_cleanup_tests`（pin `terminal_launch` 保留）。估算 +560/−220 ≈ 780 | C2a |
+| C2b.2 | task verification（`task-verify`）改为同一构造点的 Engine 消费者：释放移到 park 之后，Released 的 boot 只重试 CloseStdin 并重新挂 observer，after-sample 只认 Drained | 范围：observer 释放、`Exited` 后 Stop 收尾子孙、durable decision 的 timeout/probe 围栏、boot 矩阵的 task verify 列、新 attempt 前要求前一 attempt 的 gate execution 已结算（替代 kill prior）、恢复判决取 executor status 而非 exit file；scheduler 测试世界接 C2b.1 的 executor support。删除：`task_verify_adapter/mod.rs:383-495` 的 kill-prior、`spawn_held_identified`、`tasks.gate_pid*` 写入与 stdin 释放，`:520-660` 的原生 observer/reap、PID 存活 recover 与 exit-file 恢复，`kill_gate_group` 补偿（列保留，读者改为 execution 事实）。新测试 `c2b_verify_releases_only_after_park`、`c2b_boot_released_retries_only_close_then_reattaches`、`c2b_crash_before_token_is_infra_not_relaunch`、`c2b_timeout_probe_preserves_durable_decision`、`c2b_after_sample_requires_drained`、`c2b_new_attempt_requires_prior_execution_settled`、`c2b_recovered_verdict_uses_executor_status`。replay：runtime_suite `scheduler::` 中 `green_gate_flips_verifying_to_done`、`red_gate_fails_with_failing_step_and_log_tail`、`gate_timeout_*`、`gate_spawn_kills_prior_recorded_group`、`forged_exit_file_and_group_kill_cannot_flip_gate_green`、`step_exit_ends_step_and_still_writes_exit_file`、`gate_step_env_is_minimal_and_evidence_paths_scrubbed`、`closed_track_still_drives_verifying_gate`、`stale_gate_before_first_attempt_fails_without_running_shell`、`parked_gate_dead_*`、`boot_reattach_live_gate_lands_verdict_after_exit`、`aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict`；mcp_integration_suite `gate_binding::{gate_result_discarded_when_tree_changed_during_steps, reattached_gate_result_discarded_when_tree_changed, recovered_gate_stops_the_group_before_sampling, live_reattached_gate_result_discarded_when_tree_changed, gated_candidate_happy_path_wakes_planner_once, legacy_lease_gate_runs_without_target_check, pre_upgrade_frozen_gate_boots_as_unbound}`、`task_regate::regate_reruns_gate_on_same_candidate`；lib `task_verify_adapter::verdict_tests::*`；加 C2b.1 的 `c2b_` 过滤器。改写 PID/exit-file 证据的用例保留名字与断言意图，`parked_gate_dead_with_exit_file_recovers_real_verdict` 与 `pre_upgrade_frozen_gate_boots_as_unbound` 改以 settlement status 为恢复证据。估算 +440/−330 ≈ 770 | C2b.1 |
+| C2b.3 | 删除已无调用者的共享原生 gate 机器（纯删除片） | `gate_process.rs:263-321` 的 `spawn_held`、`:323-415` 的 `GateWait`/`GateObservation`/WNOWAIT `observe_verdict`、`:417-` 的 group/marker 存活与 sweep，`gate_lifecycle.rs:137` 的 `spawn_held_identified`，以及 caller sweep 证明只服务它们的 `target.rs` stop/kill 与 `proc_identity` marker helper；Forge/provider/terminal 仍在用的 helper、`verdict_from_exit_code`、wrapper 与 step/exit 文件保留。无新测试；replay `verdict_tests::*` 与 C2b.1/C2b.2 全部 `c2b_` 过滤器，caller sweep 证据写入 PR。估算约 −420，兼容改动不超过 60 行 | C2b.2 |
 | C3a / C3b | forge action / probe 改为 Engine 消费者，各对应一个现有 spawn 点（`server/operation/forge_action_adapter/mod.rs:1009`、`:1296`） | 同上；`cwd_lease` 冻结语义不变；不按工具名单注册 | C2a |
 | C4 | Planner 本地 provider 进程（Claude session/rewind/readiness、ACP）与 worker 启动改为 Engine 消费者，每个 provider 的一个启动或恢复入口一片，沿最新 main 的 provider Factory 归属 | 同上；provider 外部协议仍由 provider 层拥有 | C2a |
 | C5 | 破坏性 effect 的正向静默：recycle、`remove_track_worktree`、sweep、area 补偿在 fence 下要求 `unsettled_executions(scope)` 为空，否则 Busy 并保留目录；已迁移类型的 Legacy 代理判断同片删除，未迁移类型的 Legacy 检查保留 | 删除路径保持“先 quiesce、后写者复查”的现有时序；scope 只在非重叠合同（含 O1）成立后才等于 owning track。验收：未结算执行时 Track/Area 删除返回 Conflict 且目录与 branch 保留 | C2a–C4、O1 |
@@ -132,6 +134,81 @@ kernel 死亡后这些 deadline/析构与进程内 fence 不再生效；遗留�
 迁移还需 Engine 当前没有的 stdout/stderr 分离与
 每次 sample 的归属，成本不值得；不为名义消费者而扩大本片。C2a 仅补齐后续迁移的 Pipe half-close。
 升级到 envelope 9 必须重启 supervisor；严格拒绝 envelope 8，不回退 Legacy；持久 receipt 合同和 journal 版本保持 4。
+
+**C2b 设计决定。** 路径前缀：`server/`、`supervisor/`、`runtime/`、`truth/` 分别指 calm-server、calm-proc-supervisor、
+workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。三片串行，每种 gate 只有一条路线，不保留可选的原生回退。
+
+- **构造。** `gate_execution.rs` 是唯一构造点：由冻结 cwd、GateFiles 和现有环境白名单（`server/operation/gate_process.rs:285-309`
+  的 env_clear、五个继承键、`terminal_worker_env`、证据路径与 `NEIGE_GATE_OP`）构造 Pipe `ExecutionIntent`，owner 为 op，
+  alias 每个 gate op 一个（`workspace_executions_current_alias` 唯一索引，`truth/migrations/0170_workspace_executions.sql:14-15`）。
+  Pipe 把 stdout/stderr 并入 executor 自己的输出流（`supervisor/execution/process.rs:177-184`），而判决证据是 gate log，
+  所以 wrapper 在握手之后执行 `exec >>"$log" 2>&1`，log 路径经环境传入后 unset（与 exit/step 路径一样）。脚本、log、step
+  与 exit 路径在准入事务之前写好，不启动一个之后才写脚本的 intent。缺 Engine 或 `!available()` 时，gate run 准入和
+  spawn 前都返回 `CalmError::ExecutionUnavailable`（同终端，`server/operation/terminal_execution_create.rs:27-32`），
+  不建 execution 行，不 fork；envelope 8 已由 C2a 拒绝。
+- **记录。** 必需的 `operations.tx_output_json.data.gate_execution`，version 1：`{execution_id, release: Held |
+  Released{authorized_at_ms}, decision: Observing | Stopping{reason: Timeout | KernelRestarted | Canceled | ReleaseRefused}}`。
+  `intent_json` 不可变（`0170:19-27` 的 trigger），不能放可变位；本片不加迁移。记录有三种写入：① 准入，在 SpawnStarted
+  的原 claim 下，与 `require_live_claim_tx`、`Engine::admit` 同一写事务，仅当记录缺失时写 Held；提交后才 `drive`
+  （`runtime/execution/engine.rs:43-60`，ticket 类型见 `mod.rs:166-182`）。② Held→Released。③ Observing→Stopping
+  与 `Engine::request(Stop)` 同一事务（Store 的 Tx 就是 operation 的 SQLite 事务，同终端的 `admit(tx, …)`）。
+  CAS 条件固定 op id、`execution_id`、当前 `release` 与 `decision`；条件 SQL 放 calm-truth（`server/execution_store.rs:9`）。
+  通用写者今天只特判 `terminal_launch`（`server/operation/repo_sqlite/writes.rs:155-158`、`:250-253`、`output_value` `:306-315`），
+  否则补偿写会因为 `settlement_output_matches_tx` 不匹配而被拒绝。这里把特判改为该层一个 owner-state 键常量
+  `[terminal_launch, gate_execution]`，两个 UPDATE 和比较都从它生成。`complete_parked_tx` 在事务内重读行，本身保留记录
+  （`writes.rs:318-372`）。永久成本：再加一个 owner-state 只改这一个常量；由 `c2b_phase_writes_preserve_gate_record` pin 住。
+- **释放顺序（两种 gate 相同，只在 park 提交后由 observer 执行）。** ① durable authorize：Held→Released 与
+  `require_attempt_startable_tx` 在同一写事务，扩展 `TaskLaunch`。它今天先检查、再在事务外运行 effect
+  （`server/operation/task_launch.rs:71-91`）。② `Engine::interact(WriteStdin "go\n")`，同一调用内按 `StdinProgress.accepted_bytes`
+  只重试剩余后缀。③ `Engine::close_stdin`。① 输了，或 ②③ 失败、超过 60s，就走 ③ 型 Stopping{ReleaseRefused}；
+  永不用关闭未授权的 stdin 来取消。崩溃后看到 Released 不再写字节，只重试 CloseStdin。token 未完整送达时，
+  `read -r _go || exit 75`（`gate_process.rs:19`）让 shell 不执行任何 step，没有已开始的 step 就判 infra（`:201-207`）。
+  task verify 今天在 park 前释放（`task_verify_adapter/mod.rs:433-495`），SpawnStarted 重驱又先 kill 再重启（`:383-416`），
+  所以释放后、park 前崩溃会让 step 跑第二遍；改为 park 后释放，SpawnStarted 就只可能是 Held。这是有意的行为变化。
+- **Timeout、cancel、补偿。** 都走 decision ③ 加 `Desired::Stop`。Desired 只增（`runtime/execution/mod.rs:79-84`，
+  `0170:29-35` trigger），executor 先 TERM、再 KILL（`supervisor/execution/shutdown.rs:7-38`）。完成事务里同时请求
+  `Desired::Retire`，由 executor 收尾输出与回收（`retire_waits_output_open`）。
+- **回收与 timeout/probe 围栏。** gate 不再持有 Child，删除 WNOWAIT 僵尸锁（`gate_process.rs:346-398`、`task_gate_run/mod.rs:489-496`）。
+  observer 经 `Engine::output` 观察状态：`Exited{status}` 时请求 Stop 收尾子孙（对应今天的无条件 `kill`，`gate_process.rs:398`），
+  再在有界的 `wait_settled` 内等到 `Drained{status}`。status 是 helper 报告的 leader 退出码（`supervisor/execution/scope_helper.rs:168-178`），
+  drain 证据是 subreaper 的 ECHILD（`:84`、`:176`），不读 /proc 环境，不可读的子孙不再削弱 drain。observer 和 probe 都经
+  `owned_parked::reconcile` 的 claim 围栏完成（`server/operation/owned_parked.rs:11-53`），并按同一规则判决：decision 为
+  Stopping{r} 时取 r；否则已结算为 `Drained{status}` 时取 status；否则 LeaveParked。timeout 先持久化再 Stop，所以 probe
+  不会把 timeout 读成“死而无判决”。after-sample 只在 Drained 之后；没有结算证据时 op 保持 parked、不完成，检出保持 busy。
+- **Typed parked 关联。** gate 适配器 `owns_parked_resource()`。driver 的 owned 路径已完整（`server/operation/driver.rs:1031-1060`、
+  `:1117-1125`、`:1368-1380`），目前没有实现者（只有 trait 默认值，`server/operation/mod.rs:810`），只缺两处：`set_parked` 的
+  `spawn_artifacts_json IS NOT NULL` 条件（`writes.rs:113-117`）和 `driver.rs:796-812` 的缺 artifact 检查，对 owned 适配器改为
+  由适配器解码必需记录；不伪造 PID 三元组。
+- **Boot 矩阵。** 在 `Engine::recover` 只排队 drive（`server/state.rs:1584`、`engine.rs:81-101`）之后，由既有 operation 恢复
+  （`server/main.rs:73`）逐 op 处理。boot 本身只写 DB（decision 加 Desired）和 drive，不等 executor：
+  - SpawnStarted（必为 Held）：两种 gate 相同。Stop，要求旧 execution 已结算，再准入一个新 execution；
+    未结算则不继续，进补偿（R8a 的 step 只跑一次）。
+  - Parked 且 Held：两种 gate 相同。Stopping{KernelRestarted} 加 Stop，永不发 token，结算后判 infra。
+  - Parked 且 Released：worker gate run 走 Stopping{KernelRestarted}，判 infra，保持今天的重启合同
+    （`task_gate_run/mod.rs:365-395`），不顺带改成恢复判决。task verify 只重试 CloseStdin，再按
+    `authorized_at_ms + timeout` 重挂 observer。
+  - 已记 Stopping{r}：用同一 execution 完成 r，永不重启。
+  - 已结算但无 decision：task verify 取 settlement status（NoChild 判 infra，不做 after-sample）；
+    worker gate run 判 infra。
+  - executor 不可用：保留 Desired 与占用，op 留在 parked；drive 等待可用（`runtime/execution/session_executor.rs:198-210`），
+    新 gate 被拒。
+  - supervisor 在同一 OS boot 内重启：活动行变为 Unknown，Prepared 变为 Revoked（`supervisor/execution/mod.rs:186-188`）。
+    Unknown 拒绝 CloseStdin 与交互（`supervisor/execution/controls.rs:133-141`），`next_step` 只会 Wait。gate 不 close、不重启、
+    不采样、不完成，留给 executor reconciliation；supervisor 退出已关闭 writer，所以 Held 的 shell 读到 EOF 后以 75 退出，
+    什么也没执行。
+  - OS 重启：活动行变为 NoChild `host_rebooted`（`mod.rs:183-184`），结算后判 infra。
+  - pre-C2b 原生 op（有 `spawn_artifacts_json`、无记录）：不发信号、不重启、不完成。parked 的 op 由 reconcile 报 unresolved，
+    检出保持 busy；其余 op 与旧的 `stop_run_group`/`kill_gate_group` 补偿步骤拒绝后进入 Stuck（既有补偿失败路径，
+    `driver.rs:916-923`），原因写明“在旧 kernel 下排空或手工停止 pgid N”。升级前须排空 gate。
+- **Planner 质询。** (a) 接受，删去 prelude。writer 是 supervisor 的 `Process.input`（`process.rs:177-184`、`:257`）：
+  kernel 死亡时 writer 不关闭，held shell 停在 `read`，什么也不执行，boot 会 Stop 它；supervisor 死亡时 writer 关闭，
+  shell 读到 EOF 以 75 退出；半个 token 加 EOF 同样以 75 退出。prelude 只多给“无 kernel 时持有自行过期”，那只是占用，
+  不是执行。备忘录要求“EOF 才是最终释放”，这里不采纳：token 只在 durable 授权之后才写，读到 token 就等于已授权。
+  未找到具体风险。(b) 接受，不加 pre-drive hook。`next_step` 中 Absent/Prepared 加 Stop 得 Revoke，Spawned 加 Stop 得 Stop
+  （`runtime/execution/mod.rs:106-127`）。Engine 抢先 Launch 的 Held intent 只是一个持有中的 shell，而 boot 从不做 Held→Released，
+  所以先后顺序只决定是否 fork，不影响安全。(c) 接受，合并：记录与 typed park 的唯一消费者就是 cutover，typed park 只是上述两处改动。
+  (d) 接受，共 3 片。gate run 先行，因为它从不恢复判决，能先验证构造、释放、Stop 与 park；task verify 再加 Released 的重挂
+  与 after-sample；最后一片是纯删除。mutation 验证只针对“授权先于首字节”、“boot Held 必 Stop”和 timeout 围栏三条不变量。
 
 **C0 保留清单。** 删除边界按私有路径的依赖划定，不按类型整块删：`stage_private`（`execution/preparation.rs:198-201`）、
 唯一的 `release_private`（`execution/private.rs:8-37`）与 transfer 身份/nonce/root 资格检查（同文件 65-132）、
