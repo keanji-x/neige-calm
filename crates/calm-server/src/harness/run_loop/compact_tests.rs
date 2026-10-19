@@ -72,7 +72,7 @@ async fn compact_start_timeout_wedges_instead_of_silently_resuming() {
 
 #[tokio::test]
 async fn compact_accepts_only_new_turn_and_releases_issuance_on_its_completion() {
-    use crate::harness::planner_event::PlannerEventKind;
+    use provider::events::PlannerEventKind;
     use serde_json::json;
     let f = ready().await;
     let live = f.harness.inner.live_claim.writer();

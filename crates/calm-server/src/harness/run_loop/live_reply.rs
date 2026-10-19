@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use super::{Inner, emit_item_added, insert_item_row, item_turn_id};
 use crate::harness::live_replies::{LiveReplyWriter, OpenReply};
-use crate::harness::planner_event::ItemPhase;
 use crate::harness::state::{HarnessState, IssuingKind};
+use provider::events::ItemPhase;
 
 /// The stored item type of a reply, the one item type that streams.
 const REPLY_ITEM_TYPE: &str = "agentMessage";

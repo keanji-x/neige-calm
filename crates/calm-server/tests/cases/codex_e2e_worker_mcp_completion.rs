@@ -12,14 +12,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use calm_server::card_role_cache::CardRoleCache;
-use calm_server::codex_appserver::InputItem;
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::mcp_server::{McpServer, auth, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
-use calm_server::planner_model::TurnModelSelection;
 use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -31,6 +29,8 @@ use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
 use calm_server::track_area_cache::TrackAreaCache;
 use clap::Parser;
+use provider::InputItem;
+use provider::TurnModelSelection;
 use serde_json::json;
 // Env `NEIGE_CODEX_BIN` only; tests must never fall back to a PATH/home codex.
 use support::codex_fixture::resolve_codex_bin;

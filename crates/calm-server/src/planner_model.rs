@@ -5,7 +5,7 @@ pub mod catalog;
 
 use serde_json::Value;
 
-pub use provider::TurnModelSelection;
+use provider::TurnModelSelection;
 
 /// `cards.payload_json` key: the chosen model **slug** (never a preset id), or JSON `null` for "follow the installation default".
 pub const PAYLOAD_MODEL: &str = "model";

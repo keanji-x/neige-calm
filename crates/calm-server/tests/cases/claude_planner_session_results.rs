@@ -1,6 +1,6 @@
 //! Drive result optionality through the real session, using only fake CLI output.
 
-use calm_server::planner_model::TurnModelSelection;
+use provider::TurnModelSelection;
 
 use super::claude_planner_session_fixture::{
     Rig, client_id, completed_turn, request, until_completed,

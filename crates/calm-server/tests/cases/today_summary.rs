@@ -400,7 +400,7 @@ impl Boot {
         for (_thread, items) in self.state.shared_codex_appserver.started_turns_for_test() {
             for item in items {
                 // An image item is not a turn text and is skipped.
-                if let calm_server::codex_appserver::InputItem::Text { text } = item {
+                if let provider::InputItem::Text { text } = item {
                     texts.push(text);
                 }
             }

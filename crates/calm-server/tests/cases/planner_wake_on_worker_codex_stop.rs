@@ -8,7 +8,6 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::actor::actor_middleware;
 use calm_server::card_role_cache::CardRoleCache;
-use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
@@ -30,6 +29,7 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
+use provider::InputItem;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

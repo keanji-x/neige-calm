@@ -9,8 +9,8 @@ use serde_json::Value;
 use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::codex_appserver::Notification;
-use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::shared_codex_appserver::{SharedCodexAppServer, other_turn_id};
+use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 /// A subscription to the Codex daemon's notifications, received as [`PlannerEvent`]s.
 pub struct CodexEvents {

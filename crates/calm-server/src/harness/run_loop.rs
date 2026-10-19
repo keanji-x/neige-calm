@@ -29,7 +29,6 @@ use crate::harness::held_requests::{self, HeldRequestReceiver, HeldRequestSender
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::live_replies::{LiveReplies, LiveReplyClaim, LiveReplyWriter};
 use crate::harness::observation::Observation;
-use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::harness::queue::{
     FoldOutcome, MutationApplied, MutationRefused, MutationResult, QueueEntry, QueueEntryId,
     QueueMutation, apply_mutation, input_segments_for_entries, locate_entry,
@@ -43,13 +42,14 @@ use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::planner_attachments::bind::BoundAttachment;
 use crate::planner_model::FailureKind;
 #[cfg(test)]
-use crate::planner_model::TurnModelSelection;
-#[cfg(test)]
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::{DeletionThreadSeals, ThreadSeals};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 use provider::InputItem;
+#[cfg(test)]
+use provider::TurnModelSelection;
+use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 /// Fixtures-only: park a runtime immediately before it turns its pending queue into a turn.
 /// Parked one statement before `inner.issuance` is taken, because `shutdown_inner` takes that

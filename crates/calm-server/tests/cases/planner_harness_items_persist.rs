@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
-use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
@@ -19,6 +19,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use provider::InputItem;
 use serde_json::{Value, json};
 
 /// The thread id every harness in this file is seeded with. `on_notification` silently drops any frame whose

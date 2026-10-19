@@ -8,8 +8,8 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use calm_server::event::{AskDelivery, AskQuestion, Event};
 use calm_server::harness::held_requests::{ConnectionId, HeldRequestMessage, RequestKey};
-use calm_server::planner_model::TurnModelSelection;
 use calm_server::planner_permission_mode::PlannerPermissionMode;
+use provider::TurnModelSelection;
 use serde_json::{Value, json};
 
 use super::claude_planner_session_fixture::{Rig, client_id, request, until_completed};

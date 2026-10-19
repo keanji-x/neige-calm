@@ -15,8 +15,8 @@ use calm_server::harness::run_loop::{
     install_planner_harness_cwd_race_hook_for_test,
     install_planner_harness_drain_race_hook_for_test,
 };
-use calm_server::planner_model::TurnModelSelection;
 use calm_server::track_area_cache::TrackAreaCache;
+use provider::TurnModelSelection;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 

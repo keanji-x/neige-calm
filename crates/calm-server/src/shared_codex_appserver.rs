@@ -32,8 +32,8 @@ use tokio::task::JoinHandle;
 pub use provider::codex::{other_thread_id, thread_id_from_started};
 
 use crate::codex_appserver::{
-    AccountRead, ApprovalRoutes, ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem,
-    Notification, ThreadStartParams, TurnApprovals, redact_thread_start_config,
+    AccountRead, ApprovalRoutes, ClientInfo, CodexAppServer, CodexConfig, CodexModel, Notification,
+    ThreadStartParams, TurnApprovals, redact_thread_start_config,
 };
 use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
@@ -43,7 +43,6 @@ use crate::mcp_server::transport;
 use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_card_token};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
-use crate::planner_model::TurnModelSelection;
 use crate::proc_identity::{
     read_boot_id, read_proc_start_time, sigkill_verified_group_members, signal_process_group,
     verify_owned_pid,
@@ -55,6 +54,8 @@ use crate::session_projection_lookup::{
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 use crate::thread_seals::ThreadSeals;
+use provider::InputItem;
+use provider::TurnModelSelection;
 pub use provider::codex::shared::{
     BackoffState, DaemonReadiness, FailureClass, HEAL_SLOW_RETRY_CEILING, LaunchedSharedDaemon,
     ReplaceOutcome, ReplacePrecondition, SharedDaemonRuntime, SharedDaemonState,

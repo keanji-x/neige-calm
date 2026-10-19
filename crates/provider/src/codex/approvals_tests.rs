@@ -1,8 +1,9 @@
 //! #2348 A2: Planner approvals over a real WS-over-UDS connection: the production reader and
 //! dispatch on one end, the test as codex on the other.
 use super::*;
+use crate::InputItem;
 use crate::TurnModelSelection;
-use crate::codex::{CodexAppServer, InputItem, NotificationStream};
+use crate::codex::{CodexAppServer, NotificationStream};
 use crate::held_requests::{self, HeldRequestReceiver};
 use calm_types::event::ASK_MAX_TEXT_CHARS;
 use futures_util::{SinkExt, StreamExt};

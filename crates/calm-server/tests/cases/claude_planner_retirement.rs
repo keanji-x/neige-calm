@@ -9,13 +9,13 @@ use axum::http::StatusCode;
 use calm_server::claude_planner::stop::{
     clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
 };
-use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, PlannerBackend, PlannerHarness,
     PlannerHarnessParams, QueueEntry,
 };
-use calm_server::planner_model::TurnModelSelection;
+use provider::InputItem;
+use provider::TurnModelSelection;
 use serde_json::json;
 
 use super::claude_planner_session_fixture::request;

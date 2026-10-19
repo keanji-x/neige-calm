@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use calm_server::codex_appserver::{
-    ClientInfo, CodexAppServer, InputItem, Notification, ThreadStatus,
-};
-use calm_server::planner_model::TurnModelSelection;
+use calm_server::codex_appserver::{ClientInfo, CodexAppServer, Notification, ThreadStatus};
+
 use futures_util::{SinkExt, StreamExt};
+use provider::InputItem;
+use provider::TurnModelSelection;
 use serde_json::{Value, json};
 // Env `NEIGE_CODEX_BIN` only; tests must never fall back to a PATH/home codex.
 use support::codex_fixture::resolve_codex_bin;

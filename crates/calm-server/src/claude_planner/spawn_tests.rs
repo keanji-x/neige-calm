@@ -5,8 +5,8 @@ use std::path::Path;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
+use provider::TurnModelSelection;
 
 use super::spawn::{
     EnvInputs, SessionStart, SpawnPurpose, argv, base_env, passthrough_keys, settings_json,

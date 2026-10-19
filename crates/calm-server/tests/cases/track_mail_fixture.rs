@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
-use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, session_mcp_token_set_tx, session_start_runtime_tx,
@@ -32,6 +32,7 @@ use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::TrackReportPayload;
+use provider::InputItem;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 

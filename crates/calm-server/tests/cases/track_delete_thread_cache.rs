@@ -707,8 +707,8 @@ async fn a_committed_track_delete_converges_the_sealed_and_active_turn_maps() {
         .shared_codex
         .turn_start(
             &unsealed_thread,
-            vec![calm_server::codex_appserver::InputItem::text("seed")],
-            &calm_server::planner_model::TurnModelSelection::inherit(),
+            vec![provider::InputItem::text("seed")],
+            &provider::TurnModelSelection::inherit(),
             calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
@@ -781,8 +781,8 @@ async fn a_committed_area_delete_converges_the_sealed_and_active_turn_maps() {
         .shared_codex
         .turn_start(
             &unsealed_thread,
-            vec![calm_server::codex_appserver::InputItem::text("seed")],
-            &calm_server::planner_model::TurnModelSelection::inherit(),
+            vec![provider::InputItem::text("seed")],
+            &provider::TurnModelSelection::inherit(),
             calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )

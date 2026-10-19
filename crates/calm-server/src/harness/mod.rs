@@ -15,7 +15,6 @@ pub mod live_replies;
 mod live_replies_tests;
 pub mod lock;
 pub mod observation;
-pub mod planner_event;
 pub mod profile;
 pub mod queue;
 pub mod registry;
@@ -1186,7 +1185,7 @@ mod tests {
         .expect("the replayed stop hook + gate result backlog should issue a turn");
         assert_eq!(daemon.turn_start_count_for_test(), 1);
         let turns = daemon.started_turns_for_test();
-        let crate::codex_appserver::InputItem::Text { text } = &turns[0].1[0] else {
+        let provider::InputItem::Text { text } = &turns[0].1[0] else {
             panic!("expected text input, got {:?}", turns[0].1)
         };
         assert!(text.contains("gate passed"), "{text}");

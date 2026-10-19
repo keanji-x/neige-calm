@@ -17,7 +17,6 @@ use super::spawn::{InstructionsFile, SpawnPurpose};
 use super::stop::{STOP_BOUND, stop_by};
 use super::turn_slot::{TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached};
 use crate::error::CalmError;
-use crate::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
@@ -26,6 +25,7 @@ use provider::claude::protocol::{
     ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode,
 };
 use provider::claude::translate::{TurnOutcome, TurnTranslator};
+use provider::events::{PlannerEvent, PlannerEventKind};
 
 /// When a stop fires, stdout lines already written are still read for at most this long.
 const DRAIN_WINDOW: Duration = Duration::from_secs(1);

@@ -169,10 +169,8 @@ async fn a_sign_in_turn_error_overrides_cached_account_presence() {
         .shared_codex_appserver
         .turn_start(
             "auth-regression-thread",
-            vec![calm_server::codex_appserver::InputItem::text(
-                "auth regression",
-            )],
-            &calm_server::planner_model::TurnModelSelection::inherit(),
+            vec![provider::InputItem::text("auth regression")],
+            &provider::TurnModelSelection::inherit(),
             calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
@@ -293,7 +291,7 @@ async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model()
         .turn_start(
             "auth-reader-thread",
             vec![provider::InputItem::text("auth regression")],
-            &calm_server::planner_model::TurnModelSelection::inherit(),
+            &provider::TurnModelSelection::inherit(),
             calm_server::codex_appserver::TurnApprovals::Unchanged,
             Some("fixture-client-id"),
         )
@@ -386,8 +384,8 @@ async fn confirmed_authentication_failure_survives_server_reconstruction() {
         .shared_codex_appserver
         .turn_start(
             "fixture-thread",
-            vec![calm_server::codex_appserver::InputItem::text("queued")],
-            &calm_server::planner_model::TurnModelSelection::inherit(),
+            vec![provider::InputItem::text("queued")],
+            &provider::TurnModelSelection::inherit(),
             calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
@@ -420,12 +418,10 @@ async fn a_hold_arriving_during_connection_acquisition_prevents_native_dispatch(
         boot_with_account(json!({"account":{"type":"apiKey"},"requiresOpenaiAuth":true})).await;
     let daemon = &boot.state.shared_codex_appserver;
     let guard = daemon.hold_connection_read_for_test().await;
-    let selection = calm_server::planner_model::TurnModelSelection::inherit();
+    let selection = provider::TurnModelSelection::inherit();
     let mut call = std::pin::pin!(daemon.turn_start(
         "held-thread",
-        vec![calm_server::codex_appserver::InputItem::text(
-            "must stay queued"
-        )],
+        vec![provider::InputItem::text("must stay queued")],
         &selection,
         calm_server::codex_appserver::TurnApprovals::Unchanged,
         None

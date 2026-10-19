@@ -4,10 +4,10 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use axum::http::StatusCode;
-use calm_server::codex_appserver::InputItem;
 use calm_server::harness::HarnessSnapshot;
 use calm_server::planner_attachments::{bound_file_path, dir, gc};
 use calm_types::planner_attachment::AttachmentId;
+use provider::InputItem;
 use serde_json::{Value, json};
 
 use crate::support::planner_queue_fixture::{

@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::harness::{HarnessSnapshot, HarnessState};
 use calm_server::shared_codex_appserver::TurnStartReturnHook;
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
+use provider::InputItem;
 use serde_json::json;
 use tokio::sync::Notify;
 

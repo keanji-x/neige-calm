@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use calm_types::event::AskQuestion;
 
 use super::codex_events::planner_event;
-use super::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::codex_appserver::Notification;
+use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 fn wire(method: &str, params: Value) -> PlannerEvent {
     planner_event(Notification::parse(method.into(), params))

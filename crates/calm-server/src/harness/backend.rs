@@ -31,12 +31,12 @@ use crate::harness::codex_events::CodexEvents;
 use crate::harness::codex_selection;
 use crate::harness::held_requests::HeldRequestSender;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
-use crate::harness::planner_event::PlannerEvent;
 use crate::harness::run_recovery::{RunRecovery, RunRecoveryAction, RunRecoveryCause};
 use crate::harness::{HarnessPhaseTag, HarnessSnapshot};
-use crate::planner_model::TurnModelSelection;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionProjection};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
+use provider::TurnModelSelection;
+use provider::events::PlannerEvent;
 
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
 /// run loop paces its retry and tells the reader from this, never from the error's shape.

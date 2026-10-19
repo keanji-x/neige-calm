@@ -8,10 +8,11 @@ use serde_json::Value;
 use crate::error::CalmError;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::planner_model::{
-    CardModelSelection, InstallationDefaults, TurnModelSelection,
-    effective_model_for_catalog_lookup, resolve_turn_selection,
+    CardModelSelection, InstallationDefaults, effective_model_for_catalog_lookup,
+    resolve_turn_selection,
 };
 use crate::shared_codex_appserver::SharedCodexAppServer;
+use provider::TurnModelSelection;
 
 /// Budget for the two codex reads a model resolution may need, together. Generous because
 /// elapsing costs a refused turn the person then has to retry.

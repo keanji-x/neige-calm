@@ -7,17 +7,17 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use calm_server::codex_appserver::InputItem;
 use calm_server::config::Config;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::db::{Repo, RepoSyncDomainRaw};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack};
-use calm_server::planner_model::TurnModelSelection;
 use calm_server::routes::theme::RequestTheme;
 use calm_server::shared_codex_appserver::{
     SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
 };
 use clap::Parser;
+use provider::InputItem;
+use provider::TurnModelSelection;
 use serde_json::json;
 // No-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒ self-skip via `skip!`.
 // Tests must never probe/spawn a PATH codex.

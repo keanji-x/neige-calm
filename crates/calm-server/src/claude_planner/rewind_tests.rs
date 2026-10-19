@@ -9,10 +9,10 @@ use uuid::Uuid;
 use super::rewind::{anchor, native_edit_target};
 use super::spawn::{ResumeTruncation, SessionStart, SpawnPurpose, argv, truncation_check_argv};
 use crate::db::TranscriptRow;
-use crate::harness::planner_event::PlannerEventKind;
-use crate::planner_model::TurnModelSelection;
+use provider::TurnModelSelection;
 use provider::claude::protocol::decode;
 use provider::claude::translate::{ToolNames, TurnContext, TurnOutcome, TurnTranslator};
+use provider::events::PlannerEventKind;
 
 const CLIENT: &str = "0123456789abcdef0123456789abcdef";
 const THREAD: &str = "5d0b2694-9ccc-4543-ab84-611aa4287dbe";

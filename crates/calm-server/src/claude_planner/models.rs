@@ -6,8 +6,8 @@
 
 use serde_json::Value;
 
-use crate::planner_model::{CardModelSelection, TurnModelSelection};
-
+use crate::planner_model::CardModelSelection;
+use provider::TurnModelSelection;
 use provider::claude::discovery::ClaudeModel;
 
 /// The validated CLI list together with host-owned fetch time.

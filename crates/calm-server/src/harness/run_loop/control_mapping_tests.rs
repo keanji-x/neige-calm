@@ -241,7 +241,7 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
         .seal_for_deletion("thread-commit-wake");
     assert!(
         matches!(IssueTurnHandle::from_reconciliation(&f.harness.inner).await.compact_start(CompactRequest {
-        selection: crate::planner_model::TurnModelSelection::inherit(),
+        selection: provider::TurnModelSelection::inherit(),
     }).await.unwrap(), CompactSubmission::Unconfirmed { error: CalmError::Conflict(message), evidence: SubmissionEvidence::Unobserved } if message == "the conversation is being deleted")
     );
 }

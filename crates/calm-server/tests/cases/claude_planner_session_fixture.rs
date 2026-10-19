@@ -16,14 +16,12 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
 use calm_server::claude_planner::stop::{MARKER_KEY, sigkill_verified_for_test};
-use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, session_set_harness_observation_runtime_tx,
     session_start_runtime_tx,
 };
 use calm_server::harness::held_requests::{HeldRequestMessage, HeldRequestSender};
-use calm_server::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
 use calm_server::proc_identity::read_proc_start_time;
 use calm_server::session_projection_repo::{
@@ -31,7 +29,9 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_types::worker::WorkerSessionId;
+use provider::InputItem;
 use provider::claude::translate::ToolNames;
+use provider::events::{PlannerEvent, PlannerEventKind};
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 
@@ -432,7 +432,7 @@ pub async fn wait_for_file(path: &Path) {
 /// Build an ordinary neutral turn for session fixtures.
 pub fn request(
     items: Vec<InputItem>,
-    selection: &calm_server::planner_model::TurnModelSelection,
+    selection: &provider::TurnModelSelection,
     permission: calm_server::planner_permission_mode::PlannerPermissionMode,
     client: &str,
 ) -> provider::control::TurnRequest {

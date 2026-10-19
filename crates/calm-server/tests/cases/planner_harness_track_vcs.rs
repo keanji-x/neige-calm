@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
-use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, session_set_status_tx, session_start_runtime_tx,
@@ -25,6 +25,7 @@ use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_fs_view::TrackFsView;
 use calm_server::track_report::TrackReportPayload;
 use calm_server::track_vcs;
+use provider::InputItem;
 use serde_json::{Value, json};
 
 struct Boot {

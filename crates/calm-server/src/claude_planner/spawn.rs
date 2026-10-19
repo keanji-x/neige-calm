@@ -12,9 +12,9 @@ use uuid::Uuid;
 use super::stop::MARKER_KEY;
 use crate::error::{CalmError, Result};
 use crate::mcp_server::wiring::{MCP_SERVER_KEY, claude_mcp_config_json};
-use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
+use provider::TurnModelSelection;
 
 /// The CLI's own tools a Planner may use; everything else (Task, Skill, …) stays off.
 const TOOLS: &str = "Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch";

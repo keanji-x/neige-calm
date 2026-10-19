@@ -37,7 +37,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use self::error::{Error, Result};
-pub use crate::InputItem;
+use crate::InputItem;
 use crate::TurnModelSelection;
 
 /// The host is irrelevant over a unix socket, but tungstenite requires a `Host` header.

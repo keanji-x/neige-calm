@@ -30,7 +30,6 @@ use crate::operation::workspace_lease::{
     worker::{record_catch_up, record_declared_head, verify_recorded_head, verify_worker_checkout},
 };
 use crate::pending_codex_threads::{PendingEntry, PendingThreadStartRegistry};
-use crate::planner_model::TurnModelSelection;
 use crate::routes::cards::card_scope;
 use crate::routes::codex_cards::{
     INITIAL_TURN_LIFECYCLE_TIMEOUT, await_shared_initial_turn_lifecycle, default_cwd,
@@ -48,6 +47,7 @@ use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 use provider::InputItem;
+use provider::TurnModelSelection;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,

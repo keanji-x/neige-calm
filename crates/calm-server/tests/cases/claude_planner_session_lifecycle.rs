@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant};
 
 use calm_server::claude_planner::session::{SETTLE_AFTER_STOP, STOP_TIMER};
-use calm_server::planner_model::TurnModelSelection;
+use provider::TurnModelSelection;
 
 use super::claude_planner_session_fixture::{
     Rig, client_id, completed_turn, request, until_completed, wait_for_file,

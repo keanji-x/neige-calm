@@ -32,14 +32,14 @@ use super::turn_slot::{TerminalCause, TurnSlot};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
 use crate::harness::held_requests::HeldRequestSender;
-use crate::harness::planner_event::PlannerEvent;
-use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
 use provider::InputItem;
+use provider::TurnModelSelection;
 use provider::claude::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
 use provider::claude::translate::{ToolNames, TurnContext, TurnTranslator};
+use provider::events::PlannerEvent;
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 pub const STOP_TIMER: Duration = Duration::from_secs(10);

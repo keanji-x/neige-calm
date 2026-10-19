@@ -143,7 +143,7 @@ async fn await_delivered(h: &Harness, card: &str, needle: &str) {
             .into_iter()
             .flat_map(|(_, items)| items)
             .filter_map(|item| match item {
-                calm_server::codex_appserver::InputItem::Text { text } => Some(text),
+                provider::InputItem::Text { text } => Some(text),
                 _ => None,
             })
             .collect();

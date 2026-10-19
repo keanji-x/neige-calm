@@ -18,8 +18,8 @@ use super::driver::TerminalEvent;
 use super::session::{ClaudePlannerSession, SpawnFailure, SpawnInput};
 use crate::error::CalmError;
 use crate::harness::backend::TurnStartFailure;
-use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
+use provider::TurnModelSelection;
 use provider::claude::protocol::{COMPACT_COMMAND, SystemInit};
 use provider::control::{
     CompactNotSubmitted, CompactSubmission, SubmissionBasis, SubmissionEvidence,

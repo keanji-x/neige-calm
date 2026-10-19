@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
-use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::harness::{HarnessSnapshot, HarnessState, IssuingKind, Observation};
 use calm_server::shared_codex_appserver::TurnStartReturnHook;
+use provider::InputItem;
 use serde_json::{Value, json};
 
 use crate::support::planner_queue_fixture::{
