@@ -10,42 +10,10 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
-    let (client_io, server_io) = UnixStream::pair().expect("unix socket pair");
-
-    // Drive both handshakes concurrently.
-    let req = WS_URI.into_client_request().unwrap();
-    let client_fut = tokio_tungstenite::client_async(req, client_io);
-    let server_fut = tokio_tungstenite::accept_async(server_io);
-    let (client_res, server_res) = tokio::join!(client_fut, server_fut);
-    let (client_ws, _resp) = client_res.expect("client handshake");
-    let server = server_res.expect("server handshake");
-
-    let transport =
-        Arc::new(TransportAbort::new(client_ws.get_ref()).expect("retain owned socket"));
-    let (write, read) = client_ws.split();
-    let sink: WsSink = Arc::new(Mutex::new(write));
-    let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
-    let (notif_tx, notif_rx) = mpsc::unbounded_channel();
-    let reader = tokio::spawn(reader_loop(
-        read,
-        pending.clone(),
-        notif_tx,
-        sink.clone(),
-        transport.clone(),
-        Arc::new(ApprovalRoutes::default()),
-    ));
-
-    let client = CodexAppServer {
-        sink,
-        transport,
-        pending,
-        next_id: AtomicU64::new(1),
-        request_timeout: DEFAULT_REQUEST_TIMEOUT,
-        reader,
-    };
+    let (client, notifications, server) = CodexAppServer::connect_pair_for_test().await;
     Harness {
         client,
-        _notifs: NotificationStream { rx: notif_rx },
+        _notifs: notifications,
         server,
     }
 }
@@ -69,3 +37,4 @@ async fn server_send_json(server: &mut WebSocketStream<UnixStream>, v: Value) {
 }
 mod group_1;
 mod group_2;
+mod request_attempt;

@@ -129,6 +129,29 @@ pub struct TurnSteerResult {
     pub turn_id: String,
 }
 
+/// Pinned `thread/revert` response projection: the reported thread is required.
+/// Cursors and the full thread body are not needed to qualify this RPC's scope.
+#[derive(Debug, Deserialize)]
+pub(super) struct ThreadRevertResult {
+    thread: RevertedThread,
+}
+
+#[derive(Debug, Deserialize)]
+struct RevertedThread {
+    id: String,
+}
+
+impl ThreadRevertResult {
+    pub(super) fn confirm_thread(self, expected: &str) -> Result<()> {
+        if self.thread.id.is_empty() || self.thread.id != expected {
+            return Err(Error::Transport(
+                "thread/revert returned an unexpected thread.id".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 // `thread/read` + `thread/loaded/list` responses: narrowed mirrors of upstream `app-server-protocol` v2, defining only the fields the death arbiter and the rollout capture read.
 
 /// Upstream `ThreadStatus`: internally tagged on `type`, camelCase variants. The arbiter keys on `Active`; the other arms mean "no turn running".
