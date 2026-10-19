@@ -100,7 +100,7 @@ const N = [
   ["wk", 760, 38, 170, 52, "ext", "worker", "按任务改代码", "已有：codex / claude worker，按任务块改代码，kernel 交付提交。"],
   ["ev", 990, 38, 170, 52, "ext", "evaluator", "只读 · 成对比较", "只拿到：细则、约束、基线..候选 diff、检查输出。拿不到 Planner 推理和 worker 自述。"],
 
-  ["guard", 40, 170, 190, 60, "exist", "Report 守卫 + 投影", "objective 块 = task 块同路", "已有写入守卫；新增 objective 块类型，校验委托 objective::spec，投影到 objectives 表。"],
+  ["guard", 40, 170, 190, 60, "exist", "Report 守卫 + 投影", "objective 块 = task 块同路", "已有写入守卫；新增 objective 块类型，校验委托 objective::definition，投影到 objectives 表。"],
   ["mcp", 250, 170, 190, 60, "host", "MCP 工具", "evaluate · settle · close", "新：mcp_server/tools/objective.rs。Planner 专用、限本 track；只把调用变成事件。"],
   ["harness", 40, 318, 190, 80, "exist", "harness", "issuance 注入 · compact_command", "已有：issuance.rs 每轮开头注入系统段（用量 / 目标快照 / 评估结果）；compact_command.rs 增加「说明」参数并接受内核登记的压缩。"],
   ["host", 470, 250, 230, 84, "host", "宿主 dispatcher", "事件 → react → 意图 → 分发", "新：calm-server/objective_host。唯一调用 react 的地方：先写事件日志，再执行意图；执行结果再变成事件。"],
@@ -110,7 +110,7 @@ const N = [
   ["ro", 990, 318, 170, 60, "exist", "只读任务", "evaluation-v1 结果契约", "已有只读任务（head 固定）；新增 evaluation-v1 结果契约，仿 review-v1。"],
 
   ["react", 470, 462, 230, 64, "core", "engine::react", "(状态, 事件) → (状态', 意图)", "objective::engine::react。纯函数、确定：同样的事件日志一定得到同样的状态。"],
-  ["spec", 30, 570, 150, 60, "core", "spec", "规格 · 角色 · 预算", "ObjectiveSpec · CheckSpec · Role(invariant/ratchet/goal) · Budget · StopRule · CompactPolicy"],
+  ["definition", 30, 570, 150, 60, "core", "definition", "规格 · 角色 · 预算", "ObjectiveSpec · CheckSpec · Role(invariant/ratchet/goal) · Budget · StopRule · CompactPolicy"],
   ["standard", 190, 570, 150, 60, "core", "standard", "指纹 · 批准", "standard_hash()：checks + constraints + stop + 细则文件内容。Approval 绑定指纹。"],
   ["check", 350, 570, 150, 60, "core", "check", "trait CheckKind", "扩展口：command · metric · evaluator · fact；以后：基准、视觉、安全。"],
   ["verdict", 510, 570, 150, 60, "core", "verdict", "keepable()", "可保留 = 不变量全过 + 无棘轮退步 +（循环型）至少一项改进。退步不能保留。"],
@@ -130,7 +130,7 @@ const E = [
   ["pl","guard","写 objective 块",{S:1},0],
   ["guard","host","SpecChanged",{S:2},-30],
   ["host","react","Event",{S:3,E:3,C:3},-24],
-  ["react","spec","校验",{S:4},20],
+  ["react","definition","校验",{S:4},20],
   ["react","standard","指纹 h1",{S:5},10],
   ["host","t_obj","待批准 → 进行中",{S:6},40,{lt:.88}],
   ["you","host","ApprovalGranted(h1)",{S:7},60,{lt:.25}],
