@@ -21,7 +21,7 @@ afterEach(cleanup);
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, title = 'Responsive mobile UI', options: Readonly<{ trackAreaId?: string; failTracks?: boolean; failAreas?: boolean; longLists?: boolean; longReport?: boolean; viewportRoot?: boolean }> = {}) {
-  const track = { id: 'w1', area_id: options.trackAreaId ?? 'c1', title, sort: 1, cwd: '/tmp',
+  const track = { workspace: { isolation: 'worktree', kind: 'attached', path: '/tmp', frozen_at: null, worktree: '/tmp/.worktrees/w1' }, id: 'w1', area_id: options.trackAreaId ?? 'c1', title, sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const report = { id: 'report', track_id: 'w1', title: 'Report', kind: 'track-report', sort: 0,
     deletable: false, created_at: 1, updated_at: 1, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '',

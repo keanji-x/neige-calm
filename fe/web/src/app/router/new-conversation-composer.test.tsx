@@ -25,6 +25,7 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const track = (id: string, title: string, sort: number) => ({
+  workspace: { isolation: 'worktree', kind: 'attached', path: '/tmp', frozen_at: null, worktree: `/tmp/.worktrees/${id}` },
   id, area_id: 'c1', title, sort, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 });
 const TRACKS = [track('w1', 'Track one', 1), track('w2', 'Track two', 2)];
