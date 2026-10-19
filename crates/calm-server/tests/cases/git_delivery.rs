@@ -951,6 +951,7 @@ impl Fx {
         .unwrap();
         tx.commit().await.unwrap();
         let handle = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: worker_session_id.clone(),
             track_id: self.boot.track_id.clone(),
             card_id: self.boot.planner_card_id.clone(),

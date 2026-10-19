@@ -71,6 +71,7 @@ pub(super) async fn confirm_projection(
 fn unstarted(fx: &Fixture, id: String, snapshot: HarnessSnapshot) -> PlannerHarness {
     let (harness, _ingress) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: id,
             track_id: fx.harness.inner.track_id.clone(),
             card_id: fx.harness.inner.card_id.clone(),

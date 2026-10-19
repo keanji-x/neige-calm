@@ -217,6 +217,7 @@ impl World {
             .add_planner_without_harness(area, title, AgentProvider::Codex)
             .await;
         let harness = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: planner.session_id.clone(),
             track_id: planner.track_id.clone(),
             card_id: planner.card_id.clone(),

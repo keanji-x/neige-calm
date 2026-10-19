@@ -116,6 +116,7 @@ async fn mail_trace_reaches_a_claude_planner() {
     .unwrap();
     // The registry's install below hands the session this harness's held-request channel.
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: r.session_id.clone(),
         track_id: r.track_id.clone(),
         card_id: r.card_id.clone(),

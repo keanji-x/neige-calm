@@ -179,6 +179,7 @@ async fn boot() -> Boot {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id.clone(),
         track_id: planner_card.track_id.clone(),
         card_id: planner_card.id.clone(),
@@ -414,6 +415,7 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
 
     let snapshot = HarnessSnapshot::from_value_strict(stored);
     let rehydrated = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: boot.runtime_id.clone(),
         track_id: boot.planner_card.track_id.clone(),
         card_id: boot.planner_card.id.clone(),

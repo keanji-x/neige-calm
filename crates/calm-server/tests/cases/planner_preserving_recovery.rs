@@ -147,6 +147,7 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
     snapshot.last_turn_id = Some("failed-turn".into());
     snapshot.last_thread_id = Some(thread.clone());
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -292,6 +293,7 @@ async fn a_live_failed_loop_is_replaced_without_interrupting_or_resetting_its_th
         .await
         .unwrap();
     let old = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -694,6 +696,7 @@ async fn recovery_backfills_the_matching_error_when_quiescence_precedes_completi
         .await
         .unwrap();
     let old = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),

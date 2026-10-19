@@ -280,6 +280,7 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
         Vec::new(),
     )]);
     let loser = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime.id.clone(),
         track_id: track_id.clone().into(),
         card_id: card_id.clone().into(),

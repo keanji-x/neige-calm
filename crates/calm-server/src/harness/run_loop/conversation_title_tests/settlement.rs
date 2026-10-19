@@ -242,6 +242,7 @@ async fn conversation_title_owner_release_cancelled_wait_finishes_observation_be
     failed_owner(&f).await;
     let inner = &f.harness.inner;
     let owner = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: inner.worker_session_id.clone(),
         card_id: inner.card_id.clone(),
         track_id: inner.track_id.clone(),

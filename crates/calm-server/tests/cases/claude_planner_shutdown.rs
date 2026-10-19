@@ -201,6 +201,7 @@ async fn live_extra_stop_uses_harness_id_even_with_unreadable_row_and_swallows_f
             .unwrap(),
         );
         let handle = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: harness_id.clone(),
             track_id: track_id.clone().into(),
             card_id: card.clone().into(),

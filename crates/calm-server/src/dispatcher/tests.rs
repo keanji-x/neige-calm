@@ -3799,6 +3799,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
     let events = EventBus::new();
     let registry = HarnessRegistry::new();
     let handle = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: worker_session_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),

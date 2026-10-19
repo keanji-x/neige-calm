@@ -143,6 +143,7 @@ async fn duplicate_failed_completions_have_one_persisted_outcome() {
         .await
         .unwrap();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime,
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),

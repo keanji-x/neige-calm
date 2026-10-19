@@ -254,6 +254,7 @@ async fn boot_inner(
     let state = state.with_shared_codex_appserver(daemon.clone());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: state.operation_runtime.track_locks_for_test().clone(),
         worker_session_id: worker_session_id.clone(),
         track_id: planner_card.track_id.clone(),
         card_id: planner_card.id.clone(),

@@ -1319,6 +1319,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
 
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: old_runtime_id.clone(),
         track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),
@@ -1423,6 +1424,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
     tx.commit().await.unwrap();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: old_runtime_id.clone(),
         track_id: TrackId::from(track.id.to_string()),
         card_id: CardId::from(card_id.clone()),

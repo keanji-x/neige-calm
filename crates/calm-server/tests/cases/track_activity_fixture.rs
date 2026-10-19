@@ -507,6 +507,7 @@ impl Fx {
         let daemon = SharedCodexAppServer::new_stub(self.repo_dyn.clone());
         let (handle, _obs) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
+                track_delete_locks: Default::default(),
                 worker_session_id: session_id.to_string(),
                 track_id: TrackId::from(track_id.to_string()),
                 card_id: CardId::from(card_id.to_string()),

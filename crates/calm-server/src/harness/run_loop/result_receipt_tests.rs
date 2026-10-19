@@ -435,6 +435,7 @@ async fn receipt_recovery_keeps_original_attempt_and_replay_deduplicates() {
     assert_eq!(snapshot.pending_entries().len(), 1);
     let (recovered, _receiver) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: inner.worker_session_id.clone(),
             track_id: inner.track_id.clone(),
             card_id: inner.card_id.clone(),

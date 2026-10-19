@@ -33,6 +33,7 @@ pub(super) async fn planner(fx: &Fixture) -> Planner {
     snapshot.last_thread_id = Some(identity.thread_id.clone());
     let repo: Arc<dyn crate::db::Repo> = fx.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: identity.session_id.clone(),
         track_id: identity.track_id.as_deref().unwrap().into(),
         card_id: identity.card_id.as_str().into(),

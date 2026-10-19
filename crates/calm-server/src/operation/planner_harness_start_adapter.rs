@@ -1602,6 +1602,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             )
             .await?;
         let handle = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: ctx.track_delete_locks.clone(),
             worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from(track_id),
             card_id: CardId::from(card_id),

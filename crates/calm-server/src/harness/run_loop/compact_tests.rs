@@ -299,6 +299,7 @@ async fn compact_boundary_invalidates_even_when_maintenance_fails_or_is_interrup
         let old = &f.harness.inner;
         let (reloaded, _ingress) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
+                track_delete_locks: Default::default(),
                 worker_session_id: old.worker_session_id.clone(),
                 track_id: old.track_id.clone(),
                 card_id: old.card_id.clone(),

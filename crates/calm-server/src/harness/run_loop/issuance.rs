@@ -217,6 +217,9 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     // Deterministic drain-vs-supersede window. No-op in production.
     wait_at_planner_harness_drain_race_hook(inner).await;
+    let Some(track_guard) = lock_track_for_issuance(inner).await else {
+        return Ok(());
+    };
     let _issuance_guard = inner.issuance.lock().await;
     // A lifecycle write holds this fence through its commit. Observations that
     // arrive later remain queued until the person explicitly restores the card.
@@ -336,7 +339,13 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         },
         None => budget::FrozenBudget::NotApplicable,
     };
-    persist_snapshot(inner).await?;
+    if !persist_snapshot_inner(inner, None, None).await? {
+        *inner.state.lock().await = prior_turn
+            .map(|last_turn_id| HarnessState::TurnCompleted { last_turn_id })
+            .unwrap_or(HarnessState::Idle);
+        return Ok(());
+    }
+    drop(track_guard);
 
     let drained = {
         let mut queue = inner.pending_queue.lock().await;
@@ -614,4 +623,20 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// No card, drive or issuance lock may be held while waiting here. Idle remains
+/// cleanable; only the transition to durable turn_pending excludes clean.
+pub(super) async fn lock_track_for_issuance(
+    inner: &Arc<Inner>,
+) -> Option<crate::per_card_lock::KeyedLockGuard> {
+    let mut shutdown = inner.shutdown.subscribe();
+    if inner.shutting_down.load(Ordering::SeqCst) {
+        return None;
+    }
+    tokio::select! {
+        biased;
+        _ = shutdown.recv() => None,
+        guard = crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()) => Some(guard),
+    }
 }

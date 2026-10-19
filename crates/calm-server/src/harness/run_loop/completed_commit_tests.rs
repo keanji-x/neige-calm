@@ -128,6 +128,7 @@ impl Fixture {
         let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
         let (harness, ingress) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
+                track_delete_locks: Default::default(),
                 worker_session_id,
                 track_id: track.id,
                 card_id: card.id,
@@ -317,6 +318,7 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
     let inner = &fx.harness.inner;
     let (recovered, _receiver) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: inner.worker_session_id.clone(),
             track_id: inner.track_id.clone(),
             card_id: inner.card_id.clone(),

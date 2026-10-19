@@ -107,6 +107,7 @@ async fn idle_harness(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id,
         track_id: track.id.clone(),
         card_id: card.id,

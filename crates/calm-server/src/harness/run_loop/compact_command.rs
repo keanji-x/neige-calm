@@ -3,6 +3,9 @@ use super::*;
 use provider::control::CompactSubmission;
 
 pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
+    let track_guard = super::issuance::lock_track_for_issuance(inner)
+        .await
+        .ok_or_else(|| CalmError::Conflict("the conversation is shutting down".into()))?;
     let _issuance = inner.issuance.lock().await;
     crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
         .await?;
@@ -66,6 +69,7 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
             });
         }
     }
+    drop(track_guard);
     let submission = match inner.backend.compact_request(inner.as_ref()).await {
         Ok(request) => {
             IssueTurnHandle::from_reconciliation(inner)

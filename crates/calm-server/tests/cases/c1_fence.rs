@@ -261,3 +261,6 @@ async fn c1_fence_codex_worker_busy_retries() {
 async fn c1_fence_claude_worker_busy_retries() {
     preparation("claude-worker", false).await;
 }
+
+#[path = "c1_planner_fence.rs"]
+mod planner;

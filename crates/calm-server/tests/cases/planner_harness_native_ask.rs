@@ -212,6 +212,7 @@ async fn run_harness(
     let listening = daemon.notification_receiver_count_for_test();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: session_id.to_string(),
         track_id: track.clone(),
         card_id: card.clone(),

@@ -618,6 +618,7 @@ async fn a_harness_that_loses_its_start_leaves_the_installed_harness_streaming()
     let stale = boot.registry.try_reserve(runtime.clone()).unwrap();
     let (_winner, _) = boot.registry.reserve_replacing(runtime.clone());
     let loser = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime,
         track_id: boot.planner_card.track_id.clone(),
         card_id: boot.planner_card.id.clone(),

@@ -166,6 +166,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     // Unstarted: no debounce / turn issuance racing the assertions.
     let (harness, obs_rx) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: runtime_id.clone(),
             track_id: track.id.clone(),
             card_id: planner_card.id.clone(),

@@ -215,6 +215,7 @@ async fn boot_with(plan: BootPlan) -> Boot {
     let events_rx = events.subscribe();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),

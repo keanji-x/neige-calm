@@ -17,6 +17,7 @@ async fn harness_from_snapshot(snapshot: HarnessSnapshot) -> PlannerHarness {
     let daemon = SharedCodexAppServer::new_stub(repo_dyn.clone());
     let (harness, _rx) = PlannerHarness::run_unstarted_for_test(
         PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: new_id(),
             track_id: TrackId::from("track-backpressure"),
             card_id: CardId::from("card-backpressure"),

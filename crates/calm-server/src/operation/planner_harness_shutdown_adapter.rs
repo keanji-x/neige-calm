@@ -189,6 +189,7 @@ mod tests {
         let registry = HarnessRegistry::new();
         let id = "rt-shutdown-read-fails".to_string();
         let handle = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
             worker_session_id: id.clone(),
             track_id: TrackId::from("track-x".to_string()),
             card_id: CardId::from("card-x".to_string()),

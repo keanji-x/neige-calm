@@ -170,6 +170,8 @@ pub struct PlannerHarness {
 }
 
 pub struct PlannerHarnessParams {
+    /// The same track fence used by operation launch and worktree clean.
+    pub track_delete_locks: crate::per_card_lock::KeyedLocks,
     pub worker_session_id: String,
     pub track_id: TrackId,
     pub card_id: CardId,
@@ -186,6 +188,7 @@ pub struct PlannerHarnessParams {
 }
 
 pub(super) struct Inner {
+    track_delete_locks: crate::per_card_lock::KeyedLocks,
     pub(super) worker_session_id: String,
     track_id: TrackId,
     card_id: CardId,
@@ -861,7 +864,6 @@ impl PlannerHarness {
     }
 
     async fn shutdown_inner(&self, strict_interrupt: bool) -> Result<()> {
-        let _durable_guard = self.inner.durable_observation.lock().await;
         {
             let mut closed = self
                 .inner
@@ -874,6 +876,9 @@ impl PlannerHarness {
         // Wake pre-issuance work without aborting an in-flight restoration.
         // The ordered release command stops the loop only after settlement.
         let _ = self.inner.shutdown.send(());
+        // A durable caller may be awaiting the loop behind a track waiter.
+        // Wake that waiter before waiting for the caller to finish persistence.
+        let _durable_guard = self.inner.durable_observation.lock().await;
         self.request_owner_release(OwnerRelease::Shutdown).await?;
         self.wait_for_run_loop().await?;
         let _issuance_guard = self.inner.issuance.lock().await;
@@ -1233,6 +1238,7 @@ fn inner_from_params(
         .live_replies
         .claim(&params.card_id, &params.worker_session_id);
     let inner = Arc::new(Inner {
+        track_delete_locks: params.track_delete_locks,
         worker_session_id: params.worker_session_id,
         track_id: params.track_id,
         card_id: params.card_id,
@@ -3743,14 +3749,14 @@ async fn persist_snapshot(inner: &Arc<Inner>) -> Result<()> {
 
 /// Persist a durable user send, and REFUSE it if the row was not written: the writer matches
 /// nothing once the row leaves the active set.
-/// `shutting_down` is not reachable from here — `shutdown_inner` takes `durable_observation` first.
+/// Already accepted commands finish persistence even when shutdown has woken a track waiter.
 async fn persist_snapshot_for_durable_send(
     inner: &Arc<Inner>,
     key: &SendKey,
     entry_id: Option<&QueueEntryId>,
 ) -> Result<()> {
     let bind = DurableSendBinding::new(inner, key, entry_id);
-    if persist_snapshot_inner(inner, None, Some(bind)).await? {
+    if persist_guarded_snapshot(inner, None, Some(bind)).await? {
         return Ok(());
     }
     Err(CalmError::PlannerHarnessRuntimeSuperseded(

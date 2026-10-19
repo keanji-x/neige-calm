@@ -173,6 +173,7 @@ async fn boot() -> Boot {
 
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),

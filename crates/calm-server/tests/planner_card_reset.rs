@@ -641,6 +641,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
@@ -709,6 +710,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
     tx.commit().await.unwrap();
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
@@ -2299,6 +2301,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: old_runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
@@ -2504,6 +2507,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
 
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: old_runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),

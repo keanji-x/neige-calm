@@ -119,6 +119,7 @@ async fn harness_with(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
         card_id: card.id,
@@ -169,6 +170,7 @@ async fn harness_from_snapshot(
     tx.commit().await.unwrap();
 
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id,
         card_id: card.id,
@@ -804,6 +806,7 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
         ..HarnessConfig::default()
     };
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id,
         track_id: card.track_id,
         card_id: card.id,

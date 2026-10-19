@@ -16,6 +16,7 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
         .await
         .unwrap();
     let old = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),

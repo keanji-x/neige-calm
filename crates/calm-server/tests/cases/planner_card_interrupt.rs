@@ -227,6 +227,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, Planne
     snapshot.last_thread_id = Some(thread_id.clone());
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),

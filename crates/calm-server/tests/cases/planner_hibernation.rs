@@ -27,6 +27,7 @@ async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
         seed_active_planner_runtime_row(boot, &card, Some(thread.clone()), Some(snapshot.clone()))
             .await;
     let handle = PlannerHarness::run(PlannerHarnessParams {
+        track_delete_locks: Default::default(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
