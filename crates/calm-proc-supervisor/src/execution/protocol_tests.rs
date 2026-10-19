@@ -164,19 +164,42 @@ async fn private_prepare_failure_after_staging_publishes_nothing() {
         ));
         let leftover = std::fs::read(&execution_file).ok();
         assert_eq!(leftover.is_some(), schedule == 2);
+        if schedule != 0 {
+            let mut changed = request.clone();
+            changed.specification.args.push("changed".into());
+            assert!(
+                executor
+                    .prepare_objects(changed, descriptors(&held))
+                    .await
+                    .is_err()
+            );
+            prepare(&executor, &request, &held).await;
+        }
         let reply = executor
             .dispatch(&secret, ExecutionRequest::Revoke(consume(&request)))
             .await;
         assert!(
             matches!(
                 reply,
-                ExecutionReply::Retired(ExecutionTombstone {
+                ExecutionReply::RevocationAcknowledged {
+                    state: ExecutionState::Revoked,
+                    ..
+                } | ExecutionReply::Retired(ExecutionTombstone {
                     outcome: TombstoneOutcome::Revoked,
                     ..
                 })
             ),
             "{reply:?}"
         );
+        if schedule != 0 {
+            executor
+                .retire_execution(
+                    request.identity.execution_id.clone(),
+                    request.control_tokens.lifecycle.clone(),
+                )
+                .await
+                .unwrap();
+        }
         assert!(!execution_file.exists());
         assert_released(&executor);
         // Even malformed stale journals cannot override a tombstone at open.
@@ -697,3 +720,6 @@ async fn private_prepare_inspect_refuses_pending_settlement() {
     ));
     assert_released(&executor);
 }
+
+#[path = "protocol_tests/transfer.rs"]
+mod transfer;

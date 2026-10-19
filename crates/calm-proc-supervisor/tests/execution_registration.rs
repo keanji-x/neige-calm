@@ -335,5 +335,5 @@ fn execution_bind_mount_alias_cannot_allocate_another_physical_root_bucket() {
     );
 }
 
-#[path = "execution_private/repair.rs"]
+#[path = "execution_registration/repair.rs"]
 mod repair;

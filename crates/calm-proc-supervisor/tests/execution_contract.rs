@@ -208,6 +208,18 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
             ExecutionReply::Refused { .. }
         ));
     }
+    let mut wrong = capability(&next, &next_receipt, ExecutionControlPurpose::Observe);
+    wrong.identity.source_registration = ObjectRegistrationId::fresh().unwrap();
+    assert!(matches!(
+        client
+            .request(ExecutionRequest::Control(ExecutionControl {
+                capability: wrong,
+                action: ProcessAction::Observe { from_cursor: None },
+            }))
+            .await
+            .unwrap(),
+        ExecutionReply::Refused { .. }
+    ));
     let mut forged = capability(&next, &next_receipt, ExecutionControlPurpose::Observe);
     forged.purpose = ExecutionControlPurpose::Lifecycle;
     assert!(matches!(

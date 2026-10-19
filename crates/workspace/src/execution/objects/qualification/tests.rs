@@ -20,7 +20,30 @@ fn object_qualification_real_ext4_roles_and_received_fds_keep_live_context() {
             .unwrap()
             .success()
     );
-    let held = HeldSourceObjects::open(temporary.path(), true).unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(temporary.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        )
+    };
+    git(&[
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "fixture",
+    ]);
+    let linked = temporary.path().join("linked");
+    git(&["worktree", "add", "-qb", "linked", linked.to_str().unwrap()]);
+    let held = HeldSourceObjects::open(&linked, true).unwrap();
     let qualified = held
         .qualify_local()
         .expect("the local qualification contract requires an actual ext4 fixture");
@@ -57,6 +80,19 @@ fn object_qualification_real_ext4_roles_and_received_fds_keep_live_context() {
         .unwrap()
         .revalidate()
         .unwrap();
+    let entry = linked.join(".git");
+    let bytes = std::fs::read(&entry).unwrap();
+    std::fs::rename(&entry, linked.join("old-entry")).unwrap();
+    std::fs::write(&entry, bytes).unwrap();
+    let changed = HeldSourceObjects::open(&linked, true).unwrap();
+    assert_eq!(
+        received
+            .live_identity()
+            .unwrap()
+            .compare(&changed.live_identity().unwrap()),
+        HeldObjectComparison::LayoutConflict
+    );
+    assert!(received.validate().is_err());
 }
 
 #[cfg(target_os = "linux")]
@@ -127,4 +163,29 @@ fn object_qualification_missing_and_invalid_mount_records_are_unknown_only() {
         let parsed = MountTable::parse(invalid);
         assert!(parsed.is_err() || parsed.unwrap().get(17).is_err());
     }
+}
+
+#[test]
+fn object_qualification_git_directory_requires_its_own_filesystem() {
+    let root = tempfile::tempdir().unwrap();
+    let unsupported = tempfile::tempdir_in("/dev/shm").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q", "--separate-git-dir"])
+            .arg(unsupported.path().join("git"))
+            .arg(root.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let held = HeldSourceObjects::open(root.path(), true).unwrap();
+    assert!(matches!(
+        held.qualify_local(),
+        Err(ObjectQualificationFailure::Unsupported(
+            ObjectQualificationUnsupported::Filesystem {
+                role: ObjectRole::GitDirectory,
+                ..
+            }
+        ))
+    ));
 }
