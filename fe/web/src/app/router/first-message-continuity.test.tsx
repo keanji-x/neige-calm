@@ -266,6 +266,10 @@ it('keeps recovered receipt adoption and its row when an older list read answers
 });
 
 it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply must not replace.'])('preserves handed-off canonical ownership when a canceled delayed queued inspection answers (%s)', async edited => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let sequence = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
   const commits: number[] = []; let capture = false;
   const fixture = renderFirstMessageFixture({ onCommit: () => { const count = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === edited).length; if (count > 0) capture = true; if (capture) commits.push(count); } });
   const shownWords = () => [...document.querySelectorAll('[data-nc-turn="you"]')].map(element => element.textContent);
@@ -280,8 +284,23 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
     await waitFor(() => expect(fixture.heldInspectionCount()).toBe(1));
     await waitFor(() => expect(shownWords()).toContain(edited));
     expect(words()).toHaveLength(edited === FIRST_MESSAGE ? 1 : 0);
-    const canonical = [...document.querySelectorAll('[data-nc-turn="you"]')].find(node => node.textContent === edited);
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7 } }]));
+    expect(document.querySelector('[data-nc-thread]')).toBeNull();
+    for (let frame = 0; frame < 2; frame++) {
+      const callbacks = [...frames.values()]; frames.clear();
+      await act(async () => { callbacks.forEach(callback => callback(0)); await Promise.resolve(); });
+    }
+    // A source witness can already exist while its words still belong to the preview.
+    // Capture only after the real ChatThread owns the projected source entry.
+    const conversation = () => document.getElementById(`conversation-${cardId}`);
+    const canonicalWords = () => [...(conversation()?.querySelectorAll('[data-nc-thread] [data-nc-entry="7:1"] [data-nc-turn="you"]') ?? [])];
+    await waitFor(() => {
+      expect(conversation()?.querySelectorAll('[data-nc-thread]')).toHaveLength(1);
+      expect(canonicalWords()).toHaveLength(1);
+      expect(canonicalWords()[0]?.textContent).toBe(edited);
+    });
+    const [canonical] = canonicalWords();
+    expect(canonical?.isConnected).toBe(true);
     const sourceReads = () => fixture.requests.filter(request => request.path.includes(`/${cardId}/harness/items`)
       || request.path.endsWith(`/${cardId}/planner/run`)).length;
     const beforeRelease = sourceReads();
@@ -291,7 +310,9 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
     expect(observed()).toBeUndefined();
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: inspectionKey }); });
     expect(fixture.client.getQueriesData({ queryKey: inspectionKey })).toEqual([]);
-    expect([...document.querySelectorAll('[data-nc-turn="you"]')].find(node => node.textContent === edited)).toBe(canonical);
+    expect(canonicalWords()).toHaveLength(1);
+    expect(canonicalWords()[0]).toBe(canonical);
+    expect(canonical?.isConnected).toBe(true);
     expect(shownWords().filter(text => text === edited)).toHaveLength(1);
     expect(words()).toHaveLength(edited === FIRST_MESSAGE ? 1 : 0);
     expect(sourceReads()).toBe(beforeRelease);

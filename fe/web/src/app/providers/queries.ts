@@ -1,6 +1,7 @@
 // Query and mutation wiring shared by app/router, app/shell and every feature slice. It lives under
 // app/providers because the router renders the shell and both need the same reads (`no-circular`).
 
+import { conversationInputMetadata } from '../../../../core/events/invalidation-plan.ts';
 import {
   useQueries, useQuery, useQueryClient, type QueryClient, type UseQueryResult,
 } from '@tanstack/react-query';
@@ -232,7 +233,7 @@ function useCardSettingWriter<A, R>(
   return writer.current.write;
 }
 
-export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function usePlannerMutations(transport: ApiTransportPort, cardId: string, trackId: string | null, unauthorized: UnauthorizedChannel) {
   const client = useQueryClient();
   const setModelWrite = useCardSettingWriter<ModelSelection, ModelSelectionResult>(
     transport, cardId, setPlannerModelOperation, unauthorized);
@@ -250,21 +251,39 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     ]).catch(() => undefined);
     return result;
   };
+  const refreshInputMetadata = (admitted: ApiTransportPort = transport, error?: unknown) => {
+    let canRead = !(error instanceof ApiError && error.failure.kind === 'unauthorized');
+    try { admitted.recovery?.capture(); } catch { canRead = false; }
+    for (const queryKey of conversationInputMetadata(trackId)) {
+      // Recovery owns read admission and resumption. Retain stale metadata while denied;
+      // do not turn a refused/unknown write into a business read outside that permission.
+      if (canRead) void cancelThenInvalidate(client, queryKey);
+      else void client.invalidateQueries({ queryKey, refetchType: 'none' }).catch(() => undefined);
+    }
+  };
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
      flight from before the answer; input acceptance must reconcile against actual reads started after its ACK. */
   const refreshAfterInput = <T,>(result: T): T => {
     for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId), queryKeys.initialInputPrefix()]) void cancelThenInvalidate(client, queryKey);
+    refreshInputMetadata();
     return result;
   };
-  const refreshAfterQueueWrite = <T extends Readonly<{ kind: string }>>(result: T): T =>
-    result.kind === 'done' ? refreshAfterInput(result) : refreshAfter(result);
+  const refreshAfterQueueWrite = <T extends Readonly<{ kind: string }>>(result: T): T => {
+    if (result.kind === 'done') return refreshAfterInput(result);
+    refreshInputMetadata();
+    return refreshAfter(result);
+  };
   return {
     /* `admitted` is the caller's: a keyed send is admitted at the press, and each retry is admitted again.
        `answered` runs when the 200 is in hand, before the refresh starts its reads. */
     send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
       admitted: ApiTransportPort, answered: () => void) =>
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
-        .then((sent) => { answered(); return refreshAfterInput(sent); }),
+        .then((sent) => { answered(); return refreshAfterInput(sent); }, (error: unknown) => {
+          // A refusal may expose a stale revision; a lost answer may follow a durable write.
+          refreshInputMetadata(admitted, error);
+          throw error;
+        }),
     /* Admitted at the press, as every chat write is: a stop that cannot leave the browser is not sent (#2068). */
     compact: () => Promise.resolve().then(() => admitTransport(transport))
       .then((admitted) => runOperation(admitted, compactPlannerOperation(cardId), unauthorized)).then(refreshAfter),

@@ -7,8 +7,8 @@ use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
 use crate::session_projection_repo::CardConversation;
 use serde_json::json;
 
-async fn card(repo: &SqlxRepo) -> (String, String) {
-    let mut tx = repo.pool().begin().await.unwrap();
+pub(super) async fn card(repo: &SqlxRepo) -> (String, String) {
+    let mut tx = repo.db().writer_pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
         calm_types::organization::LEGACY_OWNER_USER_ID,

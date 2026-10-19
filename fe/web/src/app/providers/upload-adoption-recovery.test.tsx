@@ -32,7 +32,7 @@ it.each([false, true])('consumes the upload only under its admitted generation (
   const client = new QueryClient();
   let delivered = false;
   const hook = renderHook(() => {
-    const mutations = usePlannerMutations(transport, 'card-a', createUnauthorizedChannel({ enqueue: task => task() }));
+    const mutations = usePlannerMutations(transport, 'card-a', 'track-a', createUnauthorizedChannel({ enqueue: task => task() }));
     const images = useCardImages('card-a');
     return usePlannerAttachments(async (readBytes, type) => {
       const result = await mutations.uploadAttachment(readBytes, type);

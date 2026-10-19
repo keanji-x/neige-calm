@@ -253,7 +253,7 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/tracks/w1/conversations' && revealLanding) {
         return ok([{
           id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
-          trackId: 'w1', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1,
+          trackId: 'w1', title: 'Original uncertain intent', kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1,
           archivedAt: null, lastTurnCompletedAt: null,
         }]);
       }

@@ -72,6 +72,13 @@ impl SqlxRepo {
 
 #[async_trait]
 impl RepoRead for SqlxRepo {
+    async fn conversation_title_context(
+        &self,
+        ids: &[String],
+    ) -> Result<crate::conversation_title::ConversationTitleContext> {
+        super::conversation_title::context(self, ids).await
+    }
+
     async fn track_area_membership(
         &self,
         track_id: &str,

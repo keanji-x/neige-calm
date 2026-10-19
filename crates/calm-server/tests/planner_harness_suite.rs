@@ -1,5 +1,8 @@
 mod support;
 
+#[path = "cases/planner_release_commit.rs"]
+mod planner_release_commit;
+
 #[path = "cases/claude_planner_approvals.rs"]
 mod claude_planner_approvals;
 #[path = "cases/claude_planner_availability.rs"]

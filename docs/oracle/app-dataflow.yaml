@@ -120,8 +120,8 @@
     （Sidebar 的 useAreasQuery）在下一次渲染就看到新名字，不依赖 HTTP。
     朴素的 `setQueryData([updated])` 会静默丢掉其他 area；事件与 HTTP 的到达顺序也不稳定，
     所以"保留其他行"和"保留更高版本"必须一起锁。
-  source: fe/core/domain/area.ts:52-57; fe/web/src/app/events/query-invalidation-adapter.ts:61-70
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:130-189
+  source: fe/core/domain/area.ts:52-57; fe/web/src/app/events/query-invalidation-adapter.ts:88-98
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:221-281
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -139,8 +139,8 @@
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 area，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: fe/web/src/app/events/query-invalidation-adapter.ts:88-96
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:204-232
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:88-98
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:283-308
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
@@ -158,8 +158,8 @@
   why: >
     track 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
     少一个就出现某一处静默陈旧。
-  source: fe/core/events/invalidation-plan.ts:129-145
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:19-30
+  source: fe/core/events/invalidation-plan.ts:144-147
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:43-52
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -179,8 +179,8 @@
     继续作为 placeholder 上色。删除 tree member 也会改变剩余成员的 B/N budget share，
     所以仍存活的 task verdict 查询必须重新读取服务端重投影结果；删除目标自己的 report
     endpoint 已经是 404，必须先从 cache 移除，不能被 prefix refetch 命中。
-  source: fe/core/events/invalidation-plan.ts:136-143; fe/web/src/app/events/query-invalidation-adapter.ts:56-66
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:271
+  source: fe/core/events/invalidation-plan.ts:148-154; fe/web/src/app/events/query-invalidation-adapter.ts:101-105
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:414-434
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -197,7 +197,7 @@
   why: >
     `neige_task_cancel` 将 pending task 改为 canceled 时只发送 `plan.updated`；pending 状态不轮询，
     缺少该失效会让 TASKS 面板永久保留旧状态和旧 pending reason，直到整页重载。
-  source: fe/core/events/invalidation-plan.ts:232-234
+  source: fe/core/events/invalidation-plan.ts:242-244
   authoritative_test: fe/web/src/app/events/event-bridge.contract.test.tsx:238-244
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -217,7 +217,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 track。
     没有 track 被加载时，用户根本看不到那个 track 的 card overlay 变化，等下次 track detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:195-214
+  source: fe/web/src/app/events/track-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:210-229
   authoritative_test: fe/web/src/app/events/track-lookup.test.ts:7-17
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -236,8 +236,8 @@
   why: >
     runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 track 文件派生；反查失败时宁可
     宽失效也不能静默不失效（否则报告侧栏永远看不到新产物）。
-  source: fe/core/events/invalidation-plan.ts:46-70
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:22; fe/core/events/invalidation-plan.contract.test.ts:36
+  source: fe/core/events/invalidation-plan.ts:47-53,94-102
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:161-170; fe/core/events/invalidation-plan.contract.test.ts:36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -253,8 +253,8 @@
     所属 track detail、`['overlays','card']` 与该 track 的 track-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:112-118,161-163; fe/web/src/app/events/track-lookup.ts:7-17
-  authoritative_test: fe/core/events/invalidation-plan.test.ts:100-103
+  source: fe/core/events/invalidation-plan.ts:119-127,170-172; fe/web/src/app/events/track-lookup.ts:7-17
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:121-148
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
@@ -276,7 +276,7 @@
     `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
     不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
     有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
-  source: fe/core/events/invalidation-plan.ts:196-199
+  source: fe/core/events/invalidation-plan.ts:206-209
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:24-36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -601,9 +601,9 @@
   why: >
     HTTP 响应与事件流没有固定到达顺序。尤其 Area 创建响应返回前，另一窗口可以先更新同一 Area；
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
-  source: fe/core/domain/area.ts:52-57; fe/web/src/app/providers/queries.ts:620-650
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:158-189;
-    fe/web/src/app/providers/queries.contract.test.ts:246-292,315-352
+  source: fe/core/domain/area.ts:52-57; fe/web/src/app/providers/queries.ts:845-874
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:249-281;
+    fe/web/src/app/providers/queries.contract.test.ts:411-456,481-520
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -622,8 +622,8 @@
     响应可能在服务端提交后丢失。等待 refetch 可让错误/重试界面先观察最新 Area 列表，并让更新后的
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
-  source: fe/web/src/app/providers/queries.ts:783-844
-  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:259-305
+  source: fe/web/src/app/providers/queries.ts:830-874
+  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:364-409
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -818,8 +818,8 @@
   statement: harness.item.added 必须失效同 card 的 harness-items；harness.transcript.cleared 必须同时失效同 card 的
     harness-items 与 planner-run。applyEventEffects 必须把这些计划键映射为现行查询键，不能丢弃。
   why: 转录新增与清空必须刷新可见投影。旧界面的本地 seq 状态实现已退役；新版由 core 计划和 app 查询适配器共同履行此约束。
-  source: fe/core/events/invalidation-plan.ts:162-176 ; fe/web/src/app/events/query-invalidation-adapter.ts:19-96
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:257-287
+  source: fe/core/events/invalidation-plan.ts:173-188 ; fe/web/src/app/events/query-invalidation-adapter.ts:23-108
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:336-372
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app

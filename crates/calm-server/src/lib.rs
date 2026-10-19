@@ -5,6 +5,7 @@ pub mod auth;
 pub mod builtin_plugins;
 pub mod card_kind;
 mod conversation_archive;
+mod conversation_metadata;
 pub mod execution_boot;
 pub mod execution_quiesce;
 pub mod execution_store;

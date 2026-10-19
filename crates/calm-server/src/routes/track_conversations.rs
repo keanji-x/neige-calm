@@ -384,8 +384,19 @@ async fn load_track_conversation_summaries(
         .bind(card_id)
         .fetch_all(pool.read_pool())
         .await?;
+    let ids = rows
+        .iter()
+        .filter(|row| row.title.is_none())
+        .map(|row| row.id.clone())
+        .collect::<Vec<_>>();
+    let mut titles = crate::conversation_metadata::titles(w.repo.as_ref(), &ids).await?;
     rows.into_iter()
-        .map(TrackConversationSummary::try_from)
+        .map(|mut row| {
+            if row.title.is_none() {
+                row.title = titles.remove(&row.id).flatten();
+            }
+            TrackConversationSummary::try_from(row)
+        })
         .collect()
 }
 

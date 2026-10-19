@@ -12,6 +12,24 @@ use crate::db::{
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
+/// Retire a pending input's projection in the transaction that makes its queue durable.
+pub async fn transcript_projection_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+    client_id: &str,
+) -> Result<u64> {
+    let done = sqlx::query(
+        r#"DELETE FROM harness_items
+               WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
+                 AND method = 'item/completed'"#,
+    )
+    .bind(card_id)
+    .bind(client_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(done.rows_affected())
+}
+
 /// What a card's harness transcript held, measured before it is destroyed;
 /// `params_bytes` is the summed byte length of the JSON-RPC `params` payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -565,17 +583,9 @@ impl RepoOutOfDomain for SqlxRepo {
 
     async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
         let mut tx = begin_immediate_tx(&self.db).await?;
-        let done = sqlx::query(
-            r#"DELETE FROM harness_items
-               WHERE card_id = ?1 AND item_uuid = ?2 AND turn_id IS NULL
-                 AND method = 'item/completed'"#,
-        )
-        .bind(card_id)
-        .bind(client_id)
-        .execute(&mut **tx)
-        .await?;
+        let deleted = transcript_projection_delete_tx(&mut tx, card_id, client_id).await?;
         tx.commit().await?;
-        Ok(done.rows_affected())
+        Ok(deleted)
     }
 
     async fn worker_flow_capture_commit(

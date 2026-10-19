@@ -807,12 +807,22 @@
       "query invalidation adapter removes mapped keys for a remove effect",
       "query invalidation adapter turns a real track.deleted plan into tree diagnostics refresh plus ordinary cleanup",
       "query invalidation adapter turns a report edit into a refresh of the Today document and its resolve",
-      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations",
+      "replaces initial detail metadata for deleted (transport abort=false)",
+      "replaces initial detail metadata for edited (transport abort=false)",
+      "replaces initial detail metadata for cleared (transport abort=false)",
+      "replaces initial detail metadata for persisted (transport abort=false)",
+      "replaces initial detail metadata for deleted (transport abort=true)",
+      "replaces initial detail metadata for edited (transport abort=true)",
+      "replaces initial detail metadata for cleared (transport abort=true)",
+      "replaces initial detail metadata for persisted (transport abort=true)",
+      "keeps adjacent detail input events scoped and the latest replacement authoritative",
+      "marks inactive detail metadata stale without eagerly reading it"
     ],
     "selection_paths": [
       "web/src/app/composition.test.tsx"
     ],
-    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter. The harness-phase contract also fails because Planner activity now requires the same Track-detail invalidation; CI measured this additional witness."
+    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter. The harness-phase contract also fails because Planner activity now requires the same Track-detail invalidation; CI measured this additional witness. The production detail-query witnesses also require this mapping for each input event, adjacent replacement, and inactive staleness; list witnesses remain green because their separate mapping is intact."
   },
   {
     "mutation_id": "events-driver-drop-all-epoch-protection",
@@ -1166,16 +1176,21 @@
       "oracle:CAP-APP-117"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\nindex 1582cc5..14b176c 100644\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -163,7 +163,7 @@\n   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id], ['conversation-initial-input', event.data.track_id, event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   /* `harness-items` is here because the phase event IS the delivery signal for the per-turn\n    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */\n   'harness.phase.changed': plan((event) => result([\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -170,11 +170,7 @@\n   'worker_session.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'worker_session.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([\n-    ['harness-items', event.data.card_id], ['conversation-initial-input', event.data.track_id, event.data.card_id],\n-    // The row is already persisted; only user input can change the first-input title.\n-    ...(event.data.method === 'item/completed' && isUserMessage(event.data.item_type) ? conversationInputMetadata(event.data.track_id) : []),\n-  ])),\n+  'harness.item.added': plan(() => result([])),\n   /* `harness-items` is here because the phase event IS the delivery signal for the per-turn\n    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */\n   'harness.phase.changed': plan((event) => result([\n",
     "expected_red": [
       "invalidation plan behavior plans each harness event against the projections it can change",
-      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+      "invalidation plan behavior refreshes metadata for persisted user input but not agent/tool/turn items",
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations",
+      "replaces initial detail metadata for persisted (transport abort=false)",
+      "replaces initial detail metadata for persisted (transport abort=true)",
+      "replaces initial list metadata for persisted (transport abort=false)",
+      "replaces initial list metadata for persisted (transport abort=true)"
     ],
     "selection_paths": [
       "core/events/invalidation-plan.test.ts",
       "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
-    "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path."
+    "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path. The four initial-read witnesses use production query options and a held transport (both abort behaviors); removing the persisted-user event plan also prevents their replacement metadata read."
   },
   {
     "mutation_id": "app-adapter-drops-harness-items",

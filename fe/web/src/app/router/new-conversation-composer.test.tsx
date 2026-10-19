@@ -30,7 +30,7 @@ const track = (id: string, title: string, sort: number) => ({
 const TRACKS = [track('w1', 'Track one', 1), track('w2', 'Track two', 2)];
 
 /** The whole router over a fake kernel whose create mints the row the key derives, and lists it afterwards. */
-function renderApp(managed = false) {
+function renderApp(managed = false, createdTitle: string | null = null) {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   /* Reduced motion: a closed drawer unmounts at once instead of retracting with its last frame, which jsdom never finishes. */
@@ -57,7 +57,7 @@ function renderApp(managed = false) {
         if (request.method !== 'POST') return Promise.resolve(ok(rows));
         const row = {
           id: trackConversationCardId(trackId, request.headers?.['Idempotency-Key'] ?? ''),
-          trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, archivedAt: null, lastTurnCompletedAt: null,
+          trackId, title: createdTitle, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, archivedAt: null, lastTurnCompletedAt: null,
         };
         minted.set(trackId, [...rows, row]);
         return Promise.resolve({ status: 201, statusText: 'Created', body: { ...row, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } });
@@ -168,7 +168,7 @@ it('gives another Track its own empty field', async () => {
 });
 
 it('leaves an empty field for the next `+` after the first message is sent', async () => {
-  const { requests } = renderApp();
+  const { requests } = renderApp(false, 'The first message');
   await expectEmptyConversationList();
   await pressPlus();
   await typeInto('The first message');

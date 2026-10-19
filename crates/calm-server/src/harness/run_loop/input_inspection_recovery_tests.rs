@@ -89,7 +89,7 @@ fn unstarted(fx: &Fixture, id: String, snapshot: HarnessSnapshot) -> PlannerHarn
     harness
 }
 
-async fn transfer_before_issuance(fx: &Fixture) -> PlannerHarness {
+pub(super) async fn transfer_before_issuance(fx: &Fixture) -> PlannerHarness {
     fx.harness.shutdown().await.unwrap();
     let inner = &fx.harness.inner;
     let plugin = Arc::new(PluginHost::new_full(
@@ -179,11 +179,15 @@ async fn initial_input_inspection_recovery_does_not_certify_a_predecessors_faile
     .await
     .unwrap();
     fx.daemon.fail_turn_start_for_test();
-    fx.issue().await;
+    assert!(maybe_issue_turn(&fx.harness.inner).await.is_err());
     assert_eq!(
         fx.harness.snapshot().await.projection_client_id.as_ref(),
         Some(&id)
     );
+    sqlx::query("DROP TRIGGER refuse_recovery_cleanup")
+        .execute(fx.repo.db().writer_pool())
+        .await
+        .unwrap();
     let successor = transfer_before_issuance(&fx).await;
     assert!(matches!(
         successor.inspect_input(id.clone()).await.unwrap(),

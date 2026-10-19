@@ -169,9 +169,10 @@ test('archives and restores the original Assistant through real HTTP and query i
   const area = await createArea(request);
   createdAreaIds.push(area.id);
   const track = await createTrack(request, area.id, `Archive API e2e ${Date.now()}`);
+  const message = 'fake-reply: archived answer';
   const created = await request.post(`/api/tracks/${track.id}/conversations`, {
     headers: { 'idempotency-key': `archive-${Date.now()}` },
-    data: { provider: 'codex', text: 'fake-reply: archived answer' },
+    data: { provider: 'codex', text: message },
   });
   expect(created.status(), await created.text()).toBe(201);
   const row = await created.json() as { id: string };
@@ -183,17 +184,19 @@ test('archives and restores the original Assistant through real HTTP and query i
   const history = await (await request.get(historyPath)).json() as unknown[];
   expect(history.length).toBeGreaterThan(0);
   await page.goto(`/next/track/${track.id}`);
-  const actions = page.getByRole('button', { name: /^Actions for conversation:/ });
+  const actions = page.getByRole('button', { name: `Actions for conversation: ${message}`, exact: true });
   await actions.click();
   const [archived] = await Promise.all([
     page.waitForResponse(response => response.request().method() === 'PATCH' && response.url().endsWith(`/${row.id}/archive`)),
     page.getByRole('menuitem', { name: 'Archive conversation', exact: true }).click(),
   ]);
   expect(archived.status(), await archived.text()).toBe(204);
-  const listed = await (await request.get(`/api/tracks/${track.id}/conversations`)).json() as { id: string; archivedAt: number | null }[];
+  const listed = await (await request.get(`/api/tracks/${track.id}/conversations`)).json() as { id: string; title: string | null; archivedAt: number | null }[];
+  // The same server row is named from its first input, rather than the default Assistant label.
+  expect(listed.find(item => item.id === row.id)?.title).toBe(message);
   expect(listed.find(item => item.id === row.id)?.archivedAt).toEqual(expect.any(Number));
   await page.getByRole('button', { name: 'Archived conversations', exact: true }).click();
-  await page.getByRole('button', { name: 'Conversation Assistant', exact: true }).click();
+  await page.getByRole('button', { name: `Conversation ${message}`, exact: true }).click();
   await expect(page.getByText('This conversation is archived. Restore it to continue.')).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Message' })).toHaveCount(0);
   await expect(page.getByText('archived answer', { exact: true })).toBeVisible();

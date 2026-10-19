@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "fixtures")]
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
-use tokio::task::AbortHandle;
+use tokio::task::JoinHandle;
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::{Repo, write_in_tx_typed};
@@ -86,7 +86,7 @@ pub fn install_planner_harness_drain_race_hook_for_test(
         .insert(worker_session_id.to_string(), hook);
 }
 
-async fn wait_at_planner_harness_drain_race_hook(worker_session_id: &str) {
+async fn wait_at_planner_harness_drain_race_hook(inner: &Arc<Inner>) {
     #[cfg(feature = "fixtures")]
     {
         let hook = {
@@ -94,16 +94,22 @@ async fn wait_at_planner_harness_drain_race_hook(worker_session_id: &str) {
                 .lock()
                 .expect("planner harness drain hook mutex");
             hooks
-                .remove(worker_session_id)
+                .remove(&inner.worker_session_id)
                 .or_else(|| hooks.remove(ANY_RUNTIME))
         };
         if let Some(hook) = hook {
+            let mut shutdown = inner.shutdown.subscribe();
             hook.entered.notify_one();
-            hook.release.notified().await;
+            if !inner.shutting_down.load(Ordering::SeqCst) {
+                tokio::select! {
+                    _ = hook.release.notified() => {},
+                    _ = shutdown.recv() => {},
+                }
+            }
         }
     }
     #[cfg(not(feature = "fixtures"))]
-    let _ = worker_session_id;
+    let _ = inner;
 }
 
 /// Pause one ordinary delivery after its replay watermark advances, before its
@@ -254,7 +260,7 @@ pub(super) struct Inner {
     durable_observation: Mutex<()>,
     /// Linearizes `turn/start` with shutdown. A request may have reached Codex
     /// before the daemon returns a turn id; shutdown waits for that response,
-    /// then interrupts the now-known turn before aborting the run loop.
+    /// then interrupts the now-known turn after the loop has stopped.
     issuance: Mutex<()>,
     /// Issuance kill-switch for dev-forced harnesses; only `pause_issuance_for_dev` sets it.
     issuance_paused: AtomicBool,
@@ -267,13 +273,18 @@ pub(super) struct Inner {
     /// Entries codex accepted through `turn/steer` into the running turn, held until that turn
     /// completes. Live-only: a restart loses the turn with it.
     steered_into_running_turn: Mutex<Vec<SteeredEntry>>,
+    /// Requeue transfer still owed; cleared only with an atomic snapshot/projection commit.
+    restored_projections: Mutex<Vec<QueueEntryId>>,
+    input_commit: Mutex<Option<input_commit::Continuation>>,
     /// The provider requests the running turn is paused on (#2348); see `run_loop::held`.
     held_requests: Arc<HeldRequests>,
     /// The sending half of the one channel the run loop reads the table's input from.
     held_request_sender: HeldRequestSender,
     /// The last watchdog tick that saw the table hold a request; `None` while it holds none.
     watchdog_held_since: Mutex<Option<Instant>>,
-    abort_handle: StdMutex<Option<AbortHandle>>,
+    // Retain the task across cancelled shutdown waits. A closed ingress is not proof
+    // that an in-flight notification finished registering its input transfer.
+    run_loop_task: Mutex<Option<JoinHandle<()>>>,
     turn_budget: Mutex<budget::FrozenBudget>,
     config: HarnessConfig,
 }
@@ -304,6 +315,12 @@ pub struct HarnessObservationDelivery {
     pub entry: QueueEntry,
 }
 
+#[derive(Clone, Copy)]
+enum OwnerRelease {
+    Shutdown,
+    SystemError,
+}
+
 enum HarnessObservationCommand {
     InspectInput {
         entry_id: QueueEntryId,
@@ -314,7 +331,8 @@ enum HarnessObservationCommand {
     },
     /// Recovery must snapshot on the loop that owns both queue and watermark,
     /// after earlier deliveries/notifications settle and before stopping it.
-    QuiesceSystemError {
+    Release {
+        kind: OwnerRelease,
         done: oneshot::Sender<Result<()>>,
     },
     Compact {
@@ -525,15 +543,11 @@ impl PlannerHarness {
             live,
             announce_dropped_first,
         ));
-        let abort = task.abort_handle();
         *handle
             .inner
-            .abort_handle
-            .lock()
-            .expect("planner harness abort handle mutex poisoned") = Some(abort);
-        tokio::spawn(async move {
-            let _ = task.await;
-        });
+            .run_loop_task
+            .try_lock()
+            .expect("new run loop task") = Some(task);
         handle
     }
 
@@ -792,24 +806,39 @@ impl PlannerHarness {
     /// thread. Recovery probes that exact thread before granting authority again.
     pub(crate) async fn quiesce_system_error_for_recovery(&self) -> Result<()> {
         let _durable = self.inner.durable_observation.lock().await;
-        if self.inner.shutting_down.load(Ordering::SeqCst) {
-            return Ok(());
-        }
+        self.request_owner_release(OwnerRelease::SystemError).await
+    }
+
+    /// A closing owner may still be processing a failed turn. Let that owner
+    /// settle on its loop; only a stopped receiver permits direct settlement.
+    async fn request_owner_release(&self, kind: OwnerRelease) -> Result<()> {
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
                 let (done, answer) = oneshot::channel();
-                sender
-                    .try_send(HarnessObservationCommand::QuiesceSystemError { done })
-                    .map_err(map_observation_send_error)?;
-                answer.await.map_err(|_| {
-                    CalmError::Conflict(
-                        "conversation stopped before recovery quiescence completed".into(),
-                    )
-                })?
+                match sender.try_send(HarnessObservationCommand::Release { kind, done }) {
+                    Ok(()) => {
+                        if let Ok(result) = answer.await {
+                            return result;
+                        }
+                        // An earlier cancelled release can stop the loop with this
+                        // retry still queued. Join, then run the real guards below.
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        return Err(CalmError::ServiceUnavailable(
+                            "conversation input is busy; retry settlement shortly".into(),
+                        ));
+                    }
+                    // A stopped loop cannot receive a retry. Join it before touching
+                    // its memory; do not infer settlement from closing or channel state.
+                    Err(mpsc::error::TrySendError::Closed(_)) => {}
+                }
             }
             #[cfg(feature = "fixtures")]
-            ObservationIngress::Unstarted(_) => quiesce_system_error(&self.inner).await,
+            ObservationIngress::Unstarted(_) => {}
         }
+        self.wait_for_run_loop().await?;
+        let _issuance = self.inner.issuance.lock().await;
+        release_owner_input(&self.inner, kind).await
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -840,26 +869,31 @@ impl PlannerHarness {
             *closed = true;
             self.inner.shutting_down.store(true, Ordering::SeqCst);
         }
-        let invocation = IssueTurnHandle::from_reconciliation(&self.inner).await;
+        // Wake pre-issuance work without aborting an in-flight restoration.
+        // The ordered release command stops the loop only after settlement.
         let _ = self.inner.shutdown.send(());
-        // If turn/start is already in flight, wait until its id is recorded in
-        // the shared daemon cache. If shutdown won first, maybe_issue_turn sees
-        // `shutting_down` under this same mutex and never calls the daemon.
+        self.request_owner_release(OwnerRelease::Shutdown).await?;
+        self.wait_for_run_loop().await?;
         let _issuance_guard = self.inner.issuance.lock().await;
-        persist_snapshot(&self.inner).await?;
+        let invocation = IssueTurnHandle::from_reconciliation(&self.inner).await;
         let interrupt_error = invocation.shutdown().await.err();
-        let abort = self
-            .inner
-            .abort_handle
-            .lock()
-            .expect("planner harness abort handle mutex poisoned")
-            .take();
-        if let Some(abort) = abort {
-            abort.abort();
-        }
         held::release_all(&self.inner);
         if strict_interrupt && let Some(error) = interrupt_error {
             return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Await by mutable reference while retaining the handle: cancellation must not
+    /// detach the only proof that the previous queue/notification owner has stopped.
+    async fn wait_for_run_loop(&self) -> Result<()> {
+        let mut task = self.inner.run_loop_task.lock().await;
+        if let Some(running) = task.as_mut() {
+            let result = running.await;
+            *task = None;
+            result.map_err(|error| {
+                CalmError::Internal(format!("conversation loop stopped: {error}"))
+            })?;
         }
         Ok(())
     }
@@ -931,6 +965,11 @@ impl PlannerHarness {
 
     pub async fn state_for_test(&self) -> HarnessState {
         self.inner.state.lock().await.clone()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn is_closing_for_test(&self) -> bool {
+        self.inner.shutting_down.load(Ordering::SeqCst)
     }
 
     pub async fn thread_id_for_test(&self) -> Option<String> {
@@ -1091,6 +1130,16 @@ impl PlannerHarness {
         *held_since = held_since.map(rewind);
     }
 
+    /// Advance only the deadline armed by a real interrupt; never invent an interrupt state.
+    #[cfg(feature = "fixtures")]
+    pub async fn expire_interrupt_deadline_for_test(&self) {
+        let mut deadline = self.inner.interrupt_deadline.lock().await;
+        let (_, at) = deadline
+            .as_mut()
+            .expect("a real interrupt armed its deadline");
+        *at = Instant::now();
+    }
+
     /// Whether a watchdog tick has seen the table hold a request since it last saw it empty.
     #[cfg(feature = "fixtures")]
     pub async fn watchdog_saw_held_request_for_test(&self) -> bool {
@@ -1240,10 +1289,12 @@ fn inner_from_params(
         issuance_paused: AtomicBool::new(false),
         unannounced_drops: Mutex::new(dropped_on_load),
         steered_into_running_turn: Mutex::new(Vec::new()),
+        restored_projections: Mutex::new(Vec::new()),
+        input_commit: Mutex::new(None),
         held_requests: Arc::new(HeldRequests::default()),
         held_request_sender,
         watchdog_held_since: Mutex::new(None),
-        abort_handle: StdMutex::new(None),
+        run_loop_task: Mutex::new(None),
         turn_budget: Mutex::new(snapshot.turn_budget),
         config: params.config,
     });
@@ -1345,6 +1396,7 @@ async fn run_loop(
                 let Some(command) = command else { break };
                 #[cfg(feature = "fixtures")]
                 crate::test_seams::pause_point("conversation-command-dequeued", inner.card_id.as_str()).await;
+                let Some(command) = input_commit::admit(&inner, command).await else { continue };
                 match command {
                     HarnessObservationCommand::Hibernate { done } => {
                         let result = hibernation::quiesce(&inner, observations.is_empty(), Some(&done)).await;
@@ -1356,8 +1408,11 @@ async fn run_loop(
                         let _ = done.send(result);
                         if stop { break; }
                     }
-                    HarnessObservationCommand::QuiesceSystemError {done} => {
-                        let result=quiesce_system_error(&inner).await;
+                    HarnessObservationCommand::Release {kind, done} => {
+                        let result = {
+                            let _issuance = inner.issuance.lock().await;
+                            release_owner_input(&inner, kind).await
+                        };
                         let stop=result.is_ok();
                         let _=done.send(result);
                         if stop { break; }
@@ -1368,7 +1423,10 @@ async fn run_loop(
                     }
                     HarnessObservationCommand::Delivery(delivery) => {
                         let _accepted = on_observation(&inner, delivery.entry).await;
-                        if let Err(e) = persist_snapshot(&inner).await {
+                        // This command owns the observation even if shutdown closed
+                        // ingress while it was being folded. Commit here, before the
+                        // ordered Release, rather than making every release checkpoint.
+                        if let Err(e) = persist_owned_input_snapshot(&inner).await {
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
                     }
@@ -1424,29 +1482,80 @@ async fn run_loop(
                 }
             }
             _ = shutdown.recv() => {
-                break;
+                // Wake only. The ordered Release command owns settlement and stop.
+                // A failed release must keep processing terminal notifications.
             }
         }
     }
     held::release_all(&inner);
 }
 
-/// Called only by the run loop (or the unstarted fixture). Ordinary delivery,
-/// queue mutation, notification processing and ticks cannot interleave here.
-async fn quiesce_system_error(inner: &Arc<Inner>) -> Result<()> {
-    if !matches!(&*inner.state.lock().await, HarnessState::Wedged {reason,..} if reason==HARNESS_SYSTEM_ERROR_REASON)
+/// A failed provider's accepted steers still belong to its terminal notification.
+/// Do not stop that notification owner before it can register dropped input.
+async fn require_failed_turn_settled(inner: &Arc<Inner>) -> Result<()> {
+    if matches!(&*inner.state.lock().await,
+        HarnessState::Wedged { reason, .. } if reason == HARNESS_SYSTEM_ERROR_REASON)
+        && !inner.steered_into_running_turn.lock().await.is_empty()
     {
-        return Err(CalmError::Conflict(
-            "conversation changed before recovery".into(),
-        ));
-    }
-    if !inner.steered_into_running_turn.lock().await.is_empty() {
         return Err(CalmError::ServiceUnavailable(
             "Waiting for the failed turn to settle its messages before recovery; retry shortly."
                 .into(),
         ));
     }
-    persist_failed_system_error_snapshot(inner).await?;
+    Ok(())
+}
+
+/// Settle only the input transfer this owner still owes. Ordinary ingress and
+/// issuance already persist through their own owners; stopping physical resources
+/// does not authorize another checkpoint (especially after a committed MOVE).
+/// Call on the run loop, or after joining it under durable_observation and issuance.
+async fn settle_owner_input_before_release(inner: &Arc<Inner>) -> Result<()> {
+    input_commit::resume(inner).await?;
+    require_failed_turn_settled(inner).await?;
+    // This is the existing atomic rebuffer/retirement obligation, not a queue-
+    // emptiness or runtime-state inference. No obligation means no storage access.
+    if inner.restored_projections.lock().await.is_empty() {
+        return Ok(());
+    }
+    persist_owned_input_snapshot(inner).await?;
+    if !inner.restored_projections.lock().await.is_empty() {
+        return Err(CalmError::Conflict(
+            "conversation changed before its requeued input could be settled".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Commit at the input owner's processing boundary, including work accepted
+/// before ingress closed. Only the original current-carrier guards grant writes.
+async fn persist_owned_input_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    // A terminal transition may have reached memory while the active checkpoint failed.
+    // Let that original guard commit the transition before trying the failed-current guard.
+    if persist_guarded_snapshot(inner, None, None).await? {
+        return Ok(());
+    }
+    if matches!(&*inner.state.lock().await,
+        HarnessState::Wedged { reason, .. } if reason == HARNESS_SYSTEM_ERROR_REASON)
+    {
+        persist_guarded_failed_system_error_snapshot(inner).await
+    } else {
+        Err(CalmError::Conflict(
+            "conversation changed before its input could be settled".into(),
+        ))
+    }
+}
+
+/// Called on the run loop, or after joining it under the ingress/issuance
+/// fences. Ordinary delivery, queue mutation and notifications cannot interleave.
+async fn release_owner_input(inner: &Arc<Inner>, kind: OwnerRelease) -> Result<()> {
+    if matches!(kind, OwnerRelease::SystemError)
+        && !matches!(&*inner.state.lock().await, HarnessState::Wedged {reason,..} if reason==HARNESS_SYSTEM_ERROR_REASON)
+    {
+        return Err(CalmError::Conflict(
+            "conversation changed before recovery".into(),
+        ));
+    }
+    settle_owner_input_before_release(inner).await?;
     *inner.observations_closed.lock().expect("observation gate") = true;
     inner.shutting_down.store(true, Ordering::SeqCst);
     Ok(())
@@ -1466,11 +1575,8 @@ async fn handle_queue_mutation(
                 .into(),
         ));
     }
-    let (outcome, checkpoint) = {
-        let mut queue = inner.pending_queue.lock().await;
-        let before = queue.clone();
-        (apply_mutation(&mut queue, mutation), before)
-    };
+    let checkpoint = checkpoint_durable_user_message(inner).await;
+    let outcome = apply_mutation(&mut *inner.pending_queue.lock().await, mutation);
     let applied = match outcome {
         Ok(applied) => applied,
         // A refusal changed nothing; a 404 does NOT mean the entry was delivered (`rebuffer_head`
@@ -1482,9 +1588,9 @@ async fn handle_queue_mutation(
         rearm_debounce_after_departure(inner, &applied).await;
     }
 
-    if let Err(error) = persist_snapshot(inner).await {
-        // Memory is rolled back to the exact queue the mutation started from.
-        *inner.pending_queue.lock().await = checkpoint;
+    if let Err(error) = persist_owned_input_snapshot(inner).await {
+        // Restore both queue and debounce, including a refused zero-row write.
+        restore_durable_user_message(inner, checkpoint).await;
         return Err(error);
     }
 
@@ -1607,6 +1713,15 @@ async fn handle_steer(
     let (error, mut refusal) = match steered? {
         SteerOutcome::Taken { turn } => {
             let taken_by = turn.into_string();
+            let incorporating = input_commit::retain_result(
+                inner,
+                input_commit::Continuation::SteerAccepted(SteerApplied {
+                    entry_id: entry_id.clone(),
+                    rev: applied.rev,
+                    turn_id: taken_by.clone(),
+                }),
+            )
+            .await;
             // Codex has the sentence. A failed row write is logged rather than reported: the delivery has
             // happened whatever this says, and a 500 would invite a retry of it.
             let row_id = match insert_projection_row(
@@ -1640,7 +1755,8 @@ async fn handle_steer(
                 });
             // The queue without the entry is the truth to persist; a failed write is logged and the steer
             // still answers 200.
-            if let Err(error) = persist_snapshot(inner).await {
+            drop(incorporating);
+            if let Err(error) = input_commit::resume(inner).await {
                 tracing::error!(
                     worker_session_id = %inner.worker_session_id,
                     card_id = %inner.card_id,
@@ -1738,8 +1854,9 @@ async fn handle_steer(
 }
 
 /// `TurnCompleted` sweep: every steered entry whose transcript row is still a projection was
-/// dropped by codex before it was recorded, so the row is deleted and the entry goes back to
-/// the head one rev up. Runs after the arm's gates and BEFORE the phase persist.
+/// dropped by codex before it was recorded. Rebuffer one rev up and persist pending BEFORE
+/// deleting projections, so the transfer never removes the only durable input source.
+/// Runs after the arm's gates and before its final phase/head-stamping persist.
 async fn restore_steered_entries_codex_dropped(
     inner: &Arc<Inner>,
     turn_id: &str,
@@ -1794,20 +1911,6 @@ async fn restore_steered_entries_codex_dropped(
         if !still_projection {
             continue;
         }
-        if let Err(error) = inner
-            .repo
-            .transcript_projection_delete(inner.card_id.as_str(), entry_id.as_str())
-            .await
-        {
-            tracing::warn!(
-                worker_session_id = %inner.worker_session_id,
-                card_id = %inner.card_id,
-                entry_id = %entry_id,
-                error = %error,
-                "planner harness could not delete the transcript row of a steered entry codex \
-                 dropped"
-            );
-        }
         tracing::warn!(
             worker_session_id = %inner.worker_session_id,
             card_id = %inner.card_id,
@@ -1834,7 +1937,24 @@ async fn restore_steered_entries_codex_dropped(
                 "restored input has no revision capacity; preserving its unchanged body");
         }
     }
-    rebuffer_head(inner, restored).await;
+    rebuffer_head_retiring(inner, restored, &ids).await;
+    // A restored steer can be the first visible user input (after a system-only turn).
+    // Keep its projection until pending is durably written, including a no-row result.
+    let failed_owner = matches!(&*inner.state.lock().await,
+        HarnessState::Wedged { reason, .. } if reason == HARNESS_SYSTEM_ERROR_REASON);
+    let persisted = if failed_owner {
+        persist_failed_system_error_snapshot(inner).await
+    } else {
+        persist_snapshot_inner(inner, None, None).await.map(|_| ())
+    };
+    if let Err(error) = persisted {
+        tracing::warn!(
+            worker_session_id = %inner.worker_session_id,
+            card_id = %inner.card_id,
+            error = %error,
+            "planner harness could not transfer restored entries; retaining their projections"
+        );
+    }
     ids
 }
 
@@ -3072,6 +3192,7 @@ async fn provider_holds_issuance(inner: &Inner) -> bool {
 }
 
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
+    input_commit::resume(inner).await?;
     // Dev-forced harnesses run against the replay binary's stub app-server.
     if inner.issuance_paused.load(Ordering::SeqCst) {
         return Ok(());
@@ -3283,7 +3404,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         diff_with_timeout(inner, refresh_head.as_ref(), report_patch).await
     };
     // Deterministic drain-vs-supersede window. No-op in production.
-    wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
+    wait_at_planner_harness_drain_race_hook(inner).await;
     let _issuance_guard = inner.issuance.lock().await;
     // A lifecycle write holds this fence through its commit. Observations that
     // arrive later remain queued until the person explicitly restores the card.
@@ -3551,6 +3672,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     .await;
     match issued {
         Ok(turn_id) => {
+            let incorporating = input_commit::retain_result(
+                inner,
+                input_commit::Continuation::IssueResolved {
+                    client_id: client_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                },
+            )
+            .await;
             tracing::debug!(
                 target: "calm_server::planner_harness_issue",
                 runtime_id = %inner.worker_session_id,
@@ -3577,9 +3706,18 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 turn_id: turn_id.clone(),
                 seen_head: last_seen_head_snapshot.clone(),
             });
-            persist_issuance_outcome(inner).await?;
+            drop(incorporating);
+            input_commit::commit_issue(inner).await?;
         }
         Err(failure) => {
+            let incorporating = input_commit::retain_result(
+                inner,
+                input_commit::Continuation::IssueResolved {
+                    client_id: client_id.clone(),
+                    turn_id: None,
+                },
+            )
+            .await;
             // Persisted below with the re-buffered batch. No replace runs meanwhile: it refuses
             // while this batch's projection key is set.
             *inner.pending_rewind.lock().await = pending_rewind;
@@ -3611,23 +3749,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 }
             };
             apply_refusal(inner, &refusal).await;
-            // The batch goes back on the queue, so the row that said it was sent goes too. A failed delete
-            // is logged: the next drain replaces the row under the same key. The phase change that follows
-            // the re-buffer is what tells a reader the row is gone.
-            if let Err(delete_error) = inner
-                .repo
-                .transcript_projection_delete(inner.card_id.as_str(), client_id.as_str())
-                .await
-            {
-                tracing::warn!(
-                    worker_session_id = %inner.worker_session_id,
-                    card_id = %inner.card_id,
-                    client_id = %client_id,
-                    error = %delete_error,
-                    "planner harness could not delete the projection of a re-buffered batch"
-                );
-            }
-            rebuffer_head(inner, drained).await;
+            // Returning to editable input transfers authority with its next guarded snapshot.
+            // A projection write can fail after insertion (during announcement), so even that
+            // failure owes retirement of this batch key. The DELETE preserves confirmed history.
+            rebuffer_head_retiring(inner, drained, std::slice::from_ref(&client_id)).await;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             *inner.state.lock().await = prior_turn
@@ -3637,7 +3762,8 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 });
             *inner.issued_turn_id.lock().await = None;
             *inner.issued_turn_head.lock().await = None;
-            persist_issuance_outcome(inner).await?;
+            drop(incorporating);
+            input_commit::commit_issue(inner).await?;
             tracing::warn!(
                 worker_session_id = %inner.worker_session_id,
                 card_id = %inner.card_id,
@@ -3835,13 +3961,26 @@ fn prepend_diff_block(diff_block: Option<String>, observation_text: String) -> S
 }
 
 async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
+    rebuffer_head_retiring(inner, drained, &[]).await;
+}
+
+async fn rebuffer_head_retiring(
+    inner: &Arc<Inner>,
+    drained: Vec<QueueEntry>,
+    restored: &[QueueEntryId],
+) {
     let mut queue = inner.pending_queue.lock().await;
+    let mut debounce = inner.debounce.lock().await;
+    let mut projections = inner.restored_projections.lock().await;
+    // Acquire every lock before changing memory: cancellation cannot register retirement
+    // without also re-buffering the input whose durable snapshot authorizes that retirement.
+    projections.extend_from_slice(restored);
     // A re-buffered batch keeps the ids it was drained with: the same instances going back.
     for entry in drained.into_iter().rev() {
         queue.push_front(entry);
     }
     let now = Instant::now();
-    *inner.debounce.lock().await = DebounceState {
+    *debounce = DebounceState {
         first_pending_at: Some(now),
         last_pending_at: Some(now),
         hard_fire: true,
@@ -3849,6 +3988,8 @@ async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
 }
 
 async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("conversation-watchdog-tick", inner.card_id.as_str()).await;
     held::pause_watchdog_while_held(inner).await;
     let compact_timed_out = matches!(&*inner.state.lock().await,
         HarnessState::Compacting { since } if since.elapsed() >= inner.config.interrupt_completion_budget)
@@ -3887,7 +4028,13 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
         }
     }
 
-    if let Some((_, deadline)) = *inner.interrupt_deadline.lock().await
+    let interrupt_deadline = inner
+        .interrupt_deadline
+        .lock()
+        .await
+        .as_ref()
+        .map(|(_, deadline)| *deadline);
+    if let Some(deadline) = interrupt_deadline
         && Instant::now() >= deadline
     {
         *inner.state.lock().await = HarnessState::Wedged {
@@ -4100,47 +4247,53 @@ async fn runtime_is_still_the_live_carrier(inner: &Arc<Inner>) -> Result<bool> {
     })
 }
 
-/// Persist what the runtime owes after an issuance resolved, on a row the ordinary writer may
-/// already refuse: `persist_snapshot` is a no-op once `shutting_down` is set or the row left the
-/// active set, and both are set by the re-point fence. Runs after the ordinary write, not instead.
-async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<()> {
-    persist_snapshot(inner).await?;
-    // Only the runtimes that can actually need it open the second transaction; for a live runtime
-    // it would match zero rows and only contend on the writer lock.
+/// The original issuance writer keeps its closing/retired boundary. Its caller must check
+/// whether either guarded transaction actually wrote; a skipped checkpoint is not settlement.
+async fn persist_issuance_outcome(inner: &Arc<Inner>) -> Result<bool> {
+    let active_written = persist_snapshot_inner(inner, None, None).await?;
     if !inner.shutting_down.load(Ordering::SeqCst)
         && runtime_is_still_the_live_carrier(inner).await?
     {
-        return Ok(());
+        return Ok(active_written);
     }
+    let retired_written = persist_retired_issuance_snapshot(inner).await?;
+    Ok(active_written || retired_written)
+}
+
+async fn persist_retired_issuance_snapshot(inner: &Arc<Inner>) -> Result<bool> {
+    let mut completion = inner.input_commit.lock().await;
+    let restored = inner.restored_projections.lock().await.clone();
+    let retired = restored.clone();
+    let card = inner.card_id.to_string();
     let snapshot = snapshot_for(inner).await;
     let worker_session_id = inner.worker_session_id.clone();
     let snapshot_value = serde_json::to_value(snapshot)?;
     let now = crate::model::now_ms();
     let written = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            crate::db::sqlite::session_set_handle_state_of_retired_runtime_tx(
+            let written = crate::db::sqlite::session_set_handle_state_of_retired_runtime_tx(
                 tx,
                 &worker_session_id,
                 Some(snapshot_value),
                 now,
             )
-            .await
-            .map_err(CalmError::from)
+            .await?;
+            if written {
+                retire_restored_projections(tx, &card, &restored).await?;
+            }
+            Ok(written)
         })
     })
     .await?;
-    if !written {
-        // Neither writer matched: the row flipped back into the active set between the two writes, so
-        // it still carries its PRE-drain queue. Logged: the daemon already has the batch.
-        tracing::warn!(
-            target: "calm_server::planner_harness_issue",
-            worker_session_id = %inner.worker_session_id,
-            card_id = %inner.card_id,
-            "planner harness: neither handle-state writer matched after an issuance; the row \
-             may still carry the pre-drain queue"
-        );
+    if written {
+        *completion = None;
+        inner
+            .restored_projections
+            .lock()
+            .await
+            .retain(|id| !retired.contains(id));
     }
-    Ok(())
+    Ok(written)
 }
 
 async fn clear_interruption_intent(inner: &Arc<Inner>, turn_id: &str) {
@@ -4202,20 +4355,39 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -
 }
 
 async fn persist_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    if inner.shutting_down.load(Ordering::SeqCst) {
+        return Err(CalmError::Conflict("conversation is shutting down".into()));
+    }
+    persist_guarded_failed_system_error_snapshot(inner).await
+}
+
+async fn persist_guarded_failed_system_error_snapshot(inner: &Arc<Inner>) -> Result<()> {
+    let mut completion = inner.input_commit.lock().await;
+    let restored = inner.restored_projections.lock().await.clone();
+    let retired = restored.clone();
     let snapshot = serde_json::to_value(snapshot_for(inner).await)?;
     let card = inner.card_id.to_string();
     let id = inner.worker_session_id.clone();
-    let written =
-        write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                Ok(crate::db::sqlite::session_set_failed_harness_snapshot_tx(
-                    tx, &card, &id, &snapshot,
-                )
-                .await?)
-            })
+    let written = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let written = crate::db::sqlite::session_set_failed_harness_snapshot_tx(
+                tx, &card, &id, &snapshot,
+            )
+            .await?;
+            if written {
+                retire_restored_projections(tx, &card, &restored).await?;
+            }
+            Ok(written)
         })
-        .await?;
+    })
+    .await?;
     if written {
+        *completion = None;
+        inner
+            .restored_projections
+            .lock()
+            .await
+            .retain(|id| !retired.contains(id));
         Ok(())
     } else {
         Err(CalmError::Conflict(
@@ -4275,6 +4447,18 @@ impl DurableSendBinding {
     }
 }
 
+/// Shared by snapshot owners, inside their guarded write transaction.
+async fn retire_restored_projections(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card: &str,
+    restored: &[QueueEntryId],
+) -> Result<()> {
+    for id in restored {
+        crate::db::sqlite::transcript_projection_delete_tx(tx, card, id.as_str()).await?;
+    }
+    Ok(())
+}
+
 /// Returns whether the runtime's own row was written. `false` means the write
 /// matched no row — the runtime is shutting down, or its row has left the
 /// active set — and a caller that promised durability must not report success.
@@ -4287,9 +4471,22 @@ async fn persist_snapshot_inner(
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(false);
     }
+    persist_guarded_snapshot(inner, last_seen_head_override, send).await
+}
+
+/// The existing guarded transaction, also used by the shared owner release entry.
+/// Closing an owner suppresses ordinary checkpoints, but does not invalidate its row guard.
+async fn persist_guarded_snapshot(
+    inner: &Arc<Inner>,
+    last_seen_head_override: Option<track_vcs::CommitHash>,
+    send: Option<DurableSendBinding>,
+) -> Result<bool> {
     // The truncation's record goes in BEFORE the truncation does. `?` and not a warn: a write that
     // proceeded would make a discarded user message permanently gone with nothing saying so.
     flush_dropped_announcements(inner).await?;
+    let mut completion = inner.input_commit.lock().await;
+    let restored = inner.restored_projections.lock().await.clone();
+    let retired = restored.clone();
     let mut snapshot = snapshot_for(inner).await;
     if let Some(head) = last_seen_head_override {
         snapshot.last_seen_head = Some(head);
@@ -4322,6 +4519,9 @@ async fn persist_snapshot_inner(
                 Some(snapshot_value),
             )
             .await?;
+            if written {
+                retire_restored_projections(tx, &bound_card_id, &restored).await?;
+            }
             if written && let Some(send) = &send {
                 crate::db::sqlite::planner_input_bind_tx(
                     tx,
@@ -4331,18 +4531,39 @@ async fn persist_snapshot_inner(
                 )
                 .await?;
             }
-            crate::db::sqlite::session_set_harness_observation_runtime_tx(
-                tx,
-                &runtime_id,
-                status,
-                thread_id.as_deref(),
-                active_turn_id.as_deref(),
-            )
-            .await?;
+            // A refused snapshot must not retire its own active guard by mirroring a
+            // terminal phase that never committed. Retry still owns that transition.
+            if written {
+                crate::db::sqlite::session_set_harness_observation_runtime_tx(
+                    tx,
+                    &runtime_id,
+                    status,
+                    thread_id.as_deref(),
+                    active_turn_id.as_deref(),
+                )
+                .await?;
+            }
             Ok(written)
         })
     })
-    .await?;
+    .await;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        "conversation-input-checkpoint-attempted",
+        inner.card_id.as_str(),
+    )
+    .await;
+    let written = written?;
+    if !written {
+        return Ok(false);
+    }
+    *completion = None;
+    drop(completion);
+    inner
+        .restored_projections
+        .lock()
+        .await
+        .retain(|id| !retired.contains(id));
 
     let feedback = (
         inner.compact_outcome.lock().await.clone(),
@@ -4675,6 +4896,7 @@ mod compact_tests;
 mod durable_command;
 mod held;
 mod hibernation;
+mod input_commit;
 pub(crate) mod input_inspection;
 #[cfg(test)]
 mod input_inspection_recovery_tests;
@@ -4690,6 +4912,13 @@ mod turn_permission;
 
 #[cfg(test)]
 mod checkpoint_tests;
+#[cfg(test)]
+pub(super) async fn registry_handle_for_test(worker_session_id: &str) -> PlannerHarness {
+    completed_commit_tests::Fixture::for_worker_session(worker_session_id.to_owned())
+        .await
+        .harness
+}
+
 #[cfg(test)]
 mod completed_commit_tests;
 #[cfg(test)]
@@ -4709,5 +4938,7 @@ mod workspace_report_tests;
 
 #[cfg(test)]
 mod control_mapping_tests;
+#[cfg(test)]
+mod conversation_title_tests;
 #[cfg(test)]
 mod start_mapping_tests;

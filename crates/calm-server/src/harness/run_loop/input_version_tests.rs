@@ -33,7 +33,7 @@ async fn start_running(fx: &Fixture) {
     }
 }
 
-async fn complete_running(fx: &Fixture) {
+async fn complete_running(fx: &Fixture) -> Result<()> {
     let snapshot = fx.harness.snapshot().await;
     let mut events = fx.harness.inner.backend.subscribe_events();
     fx.daemon
@@ -52,7 +52,6 @@ async fn complete_running(fx: &Fixture) {
         event,
     )
     .await
-    .unwrap();
 }
 
 #[tokio::test]
@@ -76,7 +75,11 @@ async fn versioned_input_inspection_requires_confirmation_of_the_highest_restore
     .execute(fx.repo.pool())
     .await
     .unwrap();
-    complete_running(&fx).await;
+    // Restoration and its final snapshot share the failed DELETE transaction.
+    // The provisional source stays durable while the higher revision remains in memory.
+    let error = complete_running(&fx).await.unwrap_err();
+    assert!(error.to_string().contains("retain old input"), "{error}");
+    assert!(fx.stored().await.pending_entries().is_empty());
     let restored = fx.harness.snapshot().await.pending_entries();
     let actual = restored
         .iter()

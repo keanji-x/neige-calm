@@ -36,6 +36,11 @@ impl PlannerHarness {
         .map_err(|_| {
             CalmError::ServiceUnavailable("Planner hibernation ingress wait expired".into())
         })?;
+        // A previous cancelled release may already be closing this owner.
+        // Its flag is not this hibernation request's settlement acknowledgement.
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
         match &self.inner.observations {
             ObservationIngress::Running(sender) => {
                 let (done, answer) = oneshot::channel();
@@ -89,18 +94,21 @@ pub(super) async fn quiesce(
     ingress_empty: bool,
     reply: Option<&oneshot::Sender<Result<bool>>>,
 ) -> Result<bool> {
+    let _issuance = inner.issuance.lock().await;
     if !idle_for_lifecycle(inner, ingress_empty).await {
         return Ok(false);
     }
-    // Persist before closing input: the snapshot writer deliberately skips a
-    // shutting-down owner. A failed write leaves the owner live and retryable.
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(
         crate::test_seams::PLANNER_HIBERNATION_QUIESCE,
         inner.card_id.as_str(),
     )
     .await;
-    persist_snapshot(inner).await?;
+    settle_owner_input_before_release(inner).await?;
+    // Sleep hands restoration to the durable snapshot before unloading native
+    // context, even when no input transfer remains. Require the existing guarded
+    // writer to commit before closing ingress; Err/false keeps this owner live.
+    persist_owned_input_snapshot(inner).await?;
     // observe_delivery holds this mutex through enqueue. Recheck the ingress under
     // that gate so an enqueue cannot disappear behind the stop command.
     {

@@ -322,7 +322,7 @@ async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_t
     let card_id = body["id"].as_str().unwrap().to_string();
     assert_eq!(body["kind"], "track-assistant");
     assert_eq!(body["trackId"], track_id);
-    assert_eq!(body["title"], Value::Null);
+    assert_eq!(body["title"], "hello assistant");
 
     assert_eq!(
         b.card_role(&card_id).await,
@@ -1252,3 +1252,6 @@ mod assistant_provider_create;
 mod conversation_archive;
 #[path = "track_conversation_receipt.rs"]
 mod initial_receipt;
+
+#[path = "track_conversation_titles.rs"]
+mod titles;

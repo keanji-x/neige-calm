@@ -1180,3 +1180,6 @@ async fn immediate_recovery_waits_for_the_failed_turn_to_settle_accepted_steers(
     }
     boot.harness.shutdown().await.unwrap();
 }
+
+#[path = "planner_steer_restoration.rs"]
+mod restoration;

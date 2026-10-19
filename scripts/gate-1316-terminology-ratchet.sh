@@ -3,6 +3,18 @@
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).
 # A baseline is only valid for the tree it was generated on — regenerate after every merge of upstream.
+# r16 upstream composition: the same title references add 11 crates occurrences
+# and one FE pagination import to main's 298/135 baseline, yielding 309/136.
+# Current #2858/#2859 composition: main's 300 crates occurrences plus the same
+# 11 title references yields 311; the FE composition remains 136.
+# Upstream receipt/version references retain their own bounded exception below.
+# Restored-input transfer test: harness_item/crates 298 -> 299 is one SQL trigger
+# on the existing transcript table; production DELETE is factored without a new reference.
+# Conversation-title projection bounded exception: harness_item/crates 288 -> 298 covers
+# two storage-owner SELECTs of the frozen transcript table plus eight test references to
+# that table and its existing insert/delete APIs. harness_item/fe 106 -> 107 is the frozen
+# pagination-limit import, aliased PAGE_LIMIT locally. No new domain name or scan rule;
+# ordinary new conversations and tests need no production inventory entry.
 # #2618 review-fix exception: harness_item/crates 282 -> 290 covers eight test-only SQL
 # references to the frozen transcript table: rollback timestamps and persisted rewind contexts.
 # No new domain identifier or scan rule; ordinary tests need no new inventory entry.

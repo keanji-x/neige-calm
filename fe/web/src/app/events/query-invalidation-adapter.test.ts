@@ -6,7 +6,9 @@ import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import type { CacheWrite } from '../../../../core/events/invalidation-plan.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
-import { queryKeys } from '../providers/queries.ts';
+import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { trackDetailQueryOptions, trackConversationsQueryOptions, queryKeys } from '../providers/queries.ts';
 import { applyEventEffects, mapPlannedQueryKey, type QueryCachePort } from './query-invalidation-adapter.ts';
 
 type Call = Readonly<{ op: 'invalidate' | 'remove' | 'set' | 'clear'; queryKey?: readonly unknown[] }>;
@@ -124,9 +126,10 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['tracks', 'area', 'c1'])).toEqual(['tracks', 'c1']);
   });
 
-  it('invalidates each mapped key of an invalidate effect', () => {
+  it('invalidates each mapped key of an invalidate effect', async () => {
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: [['areas'], ['track', 'w1'], ['track-files', 'w1']] }]);
+    await settleReads();
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: ['areas'] },
       { op: 'invalidate', queryKey: ['track', 'w1'] },
@@ -340,18 +343,18 @@ describe('query invalidation adapter', () => {
       [
         { ...base, old_phase: 'idle', new_phase: 'turn_running' },
         'harness.phase.changed',
-        [queryKeys.plannerRun('card-1'), queryKeys.harnessItems('card-1'), queryKeys.trackConversations('track-1'), queryKeys.trackDetail('track-1')],
+        [queryKeys.plannerRun('card-1'), queryKeys.harnessItems('card-1'), queryKeys.trackDetail('track-1'), queryKeys.trackConversations('track-1')],
       ],
       [
         { ...base, cleared_item_count: 12, cleared_params_bytes: 3400, card_age_ms_at_clear: 86400000 },
         'harness.transcript.cleared',
-        [queryKeys.harnessItems('card-1'), queryKeys.plannerRun('card-1')],
+        [queryKeys.harnessItems('card-1'), queryKeys.plannerRun('card-1'), queryKeys.trackDetail('track-1'), queryKeys.trackConversations('track-1')],
       ],
       [
         { ...base, char_count: 3 }, 'harness.user_message.enqueued',
         [
           queryKeys.harnessItems('card-1'), queryKeys.plannerRun('card-1'),
-          queryKeys.trackConversations('track-1'),
+          queryKeys.trackDetail('track-1'), queryKeys.trackConversations('track-1'),
         ],
       ],
     ] as const;
@@ -359,8 +362,12 @@ describe('query invalidation adapter', () => {
       const plan = invalidationPlanFor(wireEventSchema.parse({ ev, data }));
       const { calls, client } = recordingClient();
       applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
-      await Promise.resolve();
-      expect(calls).toEqual([...keys, queryKeys.initialInput('track-1', 'card-1')].map((queryKey) => ({ op: 'invalidate', queryKey })));
+      await settleReads();
+      expect(calls).toEqual([
+        ...keys.filter(key => key[0] !== 'track' && key[0] !== 'track-conversations'),
+        queryKeys.initialInput('track-1', 'card-1'),
+        ...keys.filter(key => key[0] === 'track' || key[0] === 'track-conversations'),
+      ].map((queryKey) => ({ op: 'invalidate', queryKey })));
     }
   });
 
@@ -378,10 +385,10 @@ describe('query invalidation adapter', () => {
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
     await Promise.resolve();
     expect(calls).toEqual([
-      { op: 'invalidate', queryKey: queryKeys.trackDetail('track-1') },
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
-      { op: 'invalidate', queryKey: queryKeys.trackConversations('track-1') },
+      { op: 'invalidate', queryKey: queryKeys.trackDetail('track-1') },
       { op: 'invalidate', queryKey: queryKeys.trackReport('track-1') },
+      { op: 'invalidate', queryKey: queryKeys.trackConversations('track-1') },
       { op: 'invalidate', queryKey: queryKeys.initialInput('track-1', 'card-1') },
     ]);
   });
@@ -398,8 +405,8 @@ describe('query invalidation adapter', () => {
     await Promise.resolve();
     expect(calls).toEqual([
       { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
-      { op: 'invalidate', queryKey: queryKeys.trackConversationsPrefix() },
       { op: 'invalidate', queryKey: queryKeys.trackReportPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.trackConversationsPrefix() },
       { op: 'invalidate', queryKey: queryKeys.initialInputPrefix() },
     ]);
   });
@@ -425,3 +432,120 @@ describe('query invalidation adapter', () => {
     ]);
   });
 });
+
+// Real production query options decode server metadata; the transport captures the server value
+// at request start so releasing an obsolete response cannot accidentally read the new value.
+function metadataRead(surface: 'detail' | 'list', respectsAbort = false, trackId = 'track-1') {
+  let title: string | null = 'Original';
+  const reads: { request: ApiRequest; release: () => void }[] = [];
+  const transport = { send: (request: ApiRequest) => new Promise<ApiTransportResponse>((resolve, reject) => {
+    const body = surface === 'detail' ? {
+      track: { id: trackId, area_id: 'area-1', title: 'Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
+      can_reopen: false, can_admin: false, can_close: true, overlays: [],
+      cards: [{ id: 'card-1', track_id: trackId, kind: 'codex', title, sort: 0, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 }],
+    } : [{ id: 'card-1', trackId, title, kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null }];
+    reads.push({ request, release: () => resolve({ status: 200, statusText: 'OK', body }) });
+    if (respectsAbort) request.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+  }) };
+  const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });
+  const options = surface === 'detail' ? trackDetailQueryOptions(transport, trackId, unauthorized)
+    : trackConversationsQueryOptions(transport, trackId, unauthorized);
+  return { reads, options, setTitle: (next: string | null) => { title = next; },
+    title: (client: QueryClient) => {
+      const data = client.getQueryData(options.queryKey);
+      return surface === 'detail' ? (data as { cards: { title: string | null }[] })?.cards[0]?.title
+        : (data as { title: string | null }[])?.[0]?.title;
+    } };
+}
+
+function inputEvent(kind: 'deleted' | 'edited' | 'cleared' | 'persisted', trackId = 'track-1') {
+  const base = { card_id: 'card-1', track_id: trackId, worker_session_id: 'runtime' };
+  return wireEventSchema.parse(kind === 'cleared'
+    ? { ev: 'harness.transcript.cleared', data: { ...base, cleared_item_count: 1, cleared_params_bytes: 20, card_age_ms_at_clear: 100 } }
+    : kind === 'persisted'
+      ? { ev: 'harness.item.added', data: { ...base, item_db_id: 1, item_uuid: null, item_type: 'userMessage', turn_id: null, method: 'item/completed' } }
+      : { ev: 'harness.queue.changed', data: { ...base, entry_id: 'first', change: kind, actor: { kind: 'User' } } });
+}
+
+function refreshInput(client: QueryClient, kind: Parameters<typeof inputEvent>[0], trackId = 'track-1') {
+  applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(inputEvent(kind, trackId)).invalidate }]);
+}
+
+// Let cancellation/invalidation continuations and a held transport response settle without timers
+// that could cause a query's retry/poll policy to supply an unrelated second event.
+async function settleReads() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
+
+for (const surface of ['detail', 'list'] as const) {
+  for (const respectsAbort of [false, true]) {
+    it.each(['deleted', 'edited', 'cleared', 'persisted'] as const)(
+      `replaces initial ${surface} metadata for %s (transport abort=${respectsAbort})`, async kind => {
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        const read = metadataRead(surface, respectsAbort);
+        const observer = new QueryObserver<unknown>(client, read.options);
+        const unsubscribe = observer.subscribe(() => undefined);
+        try {
+          expect(read.reads).toHaveLength(1);
+          expect(client.getQueryData(read.options.queryKey)).toBeUndefined();
+          const next = kind === 'edited' || kind === 'persisted' ? 'New input' : null;
+          read.setTitle(next);
+          refreshInput(client, kind);
+          await settleReads();
+          read.reads[1]?.release();
+          await settleReads();
+          // Obsolete response arrives last, including when the transport ignores abort.
+          read.reads[0].release();
+          await settleReads();
+          expect({ reads: read.reads.length, title: read.title(client), invalidated: client.getQueryState(read.options.queryKey)?.isInvalidated }).toEqual({ reads: 2, title: next, invalidated: false });
+          expect(read.reads[0].request.signal?.aborted).toBe(true);
+        } finally { unsubscribe(); client.clear(); }
+      },
+    );
+  }
+
+  it(`keeps adjacent ${surface} input events scoped and the latest replacement authoritative`, async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const read = metadataRead(surface);
+    const foreign = metadataRead(surface, false, 'foreign');
+    const release = new QueryObserver<unknown>(client, read.options).subscribe(() => undefined);
+    const releaseForeign = new QueryObserver<unknown>(client, foreign.options).subscribe(() => undefined);
+    try {
+      read.setTitle('Edited');
+      refreshInput(client, 'edited');
+      await settleReads();
+      read.setTitle(null);
+      refreshInput(client, 'deleted');
+      refreshInput(client, 'cleared'); // Same-tick adjacent events also share only a post-event read.
+      await settleReads();
+      read.reads.at(-1)?.release();
+      await settleReads();
+      for (const stale of read.reads.slice(0, -1).reverse()) stale.release();
+      foreign.reads[0].release();
+      await settleReads();
+      expect(read.reads).toHaveLength(3);
+      expect(read.title(client)).toBeNull();
+      expect(foreign.reads).toHaveLength(1);
+      expect(foreign.reads[0].request.signal?.aborted).toBe(false);
+      expect(foreign.title(client)).toBe('Original');
+      expect(client.getQueryCache().getAll().map(query => query.queryKey)).toEqual([read.options.queryKey, foreign.options.queryKey]);
+    } finally { release(); releaseForeign(); client.clear(); }
+  });
+
+  it(`marks inactive ${surface} metadata stale without eagerly reading it`, async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const read = metadataRead(surface);
+    try {
+      const first = client.fetchQuery<unknown>(read.options);
+      read.reads[0].release();
+      await first;
+      read.setTitle(null);
+      refreshInput(client, 'deleted');
+      await settleReads();
+      expect(read.reads).toHaveLength(1);
+      expect(client.getQueryState(read.options.queryKey)?.isInvalidated).toBe(true);
+      const next = client.fetchQuery<unknown>(read.options);
+      read.reads[1].release();
+      await next;
+      expect(read.title(client)).toBeNull();
+    } finally { client.clear(); }
+  });
+}

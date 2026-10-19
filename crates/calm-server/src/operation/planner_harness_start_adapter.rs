@@ -1,6 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub(crate) mod input_transfer;
+
+const SUCCESSOR_SESSION_KEY: &str = "runtime_id";
+const PREDECESSOR_SESSION_KEY: &str = "old_runtime_id";
+
 use async_trait::async_trait;
 use calm_types::conversation_receipt::{
     ConversationInitialInputReceipt, InitialInputReceiptVersion,
@@ -1147,7 +1152,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
-        let worker_session_id = output.output_string("runtime_id", "planner harness")?;
+        let worker_session_id = output.output_string(SUCCESSOR_SESSION_KEY, "planner harness")?;
         let runtime_deferred = output_bool(output, "runtime_deferred")?;
         let cwd = output.output_string("cwd", "planner harness")?;
         // The card's sticky `planner_provider` (`prepare_tx` admitted it); every row of the card shares it.
@@ -1161,7 +1166,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         // OLD PTY shutdown at Phase-2 entry: force_new_thread is a hard reset; the handle kill is the first app-server-side action after commit.
         if let Some(old_worker_session_id) =
-            output.output_optional_string("old_runtime_id", "planner harness")?
+            output.output_optional_string(PREDECESSOR_SESSION_KEY, "planner harness")?
             && old_worker_session_id != worker_session_id
         {
             self.harness_registry

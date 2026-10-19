@@ -13,10 +13,13 @@ import {
   readTrackReport, TRACK_REPORT_CARD_KIND, type TaskVerdict,
 } from '../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/track.ts';
+import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
+import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
+import { coordinateRecoveryQueries } from './recovery-queries.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import {
-  areaListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
-  trackOverlaysQueryOptions,
+  areaListQueryOptions, harnessItemsQueryOptions as transcriptQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
+  trackOverlaysQueryOptions, trackDetailQueryOptions, trackConversationsQueryOptions,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
   useTodayLaunchpadEnsureMutation, useTodayReportResetMutation, useTrackConversationMutations, useTrackRecipeMutations,
   seriesRefetchInterval, trackReportSeriesQueryOptions, trackSourceQueryOptions, type SeriesRead,
@@ -575,7 +578,7 @@ describe('delete mutation wiring', () => {
     const transport: ApiTransportPort = {
       send: () => Promise.resolve(ok({ card_id: 'card-1', worker_session_id: 'runtime-1' })),
     };
-    const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', unauthorized), {
+    const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', null, unauthorized), {
       wrapper: mutationWrapper(client),
     });
 
@@ -761,7 +764,7 @@ describe('planner history pagination', () => {
       params: '{}', created_at_ms: index,
     }));
     const { transport, paths } = recordingTransport(() => ok(firstPage));
-    const options = harnessItemsQueryOptions(transport, 'card', unauthorized);
+    const options = transcriptQueryOptions(transport, 'card', unauthorized);
     const page = await options.queryFn({ pageParam: 0 });
     const cursor = options.getNextPageParam(page);
     expect(cursor).toBe(701);
@@ -913,4 +916,156 @@ describe('track source query', () => {
     await expect(trackSourceQueryOptions(malformed.transport, 'w1', 'src_2c9e0a1b', unauthorized).queryFn({ signal }))
       .rejects.toBeInstanceOf(ApiError);
   });
+});
+
+
+describe('input metadata mutation reconciliation', () => {
+  it.each(['offline', 'expired', '401', 'local denial'] as const)(
+    'keeps input metadata stale until recovery admits reads after %s, preserving the send failure', async outcome => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+      const access = new RecoveryAccess(); access.change('connected');
+      const paths: string[] = [];
+      const channel = createUnauthorizedChannel({ enqueue: task => task() });
+      const unsubscribe = channel.subscribe(() => access.invalidate('login'));
+      const transport = createRecoveryTransports({ send: request => {
+        paths.push(request.path);
+        if (request.method === 'GET') return Promise.resolve(ok({ track: baseTrackWire,
+          can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [] }));
+        if (outcome === '401') return Promise.resolve({ status: 401, statusText: 'Unauthorized', body: { error: 'Sign in' } });
+        if (outcome === 'offline') access.change('offline');
+        else { access.invalidate('recovering'); access.change('connected'); }
+        return Promise.reject(new Error('answer lost'));
+      } }, access).business;
+      client.mount();
+      const releaseRecovery = coordinateRecoveryQueries(access, client);
+      const options = trackDetailQueryOptions(transport, 'w1', channel);
+      await client.fetchQuery(options);
+      const observer = new QueryObserver(client, options);
+      const release = observer.subscribe(() => undefined);
+      const admitted = transport.recovery!.scope(transport.recovery!.capture());
+      if (outcome === 'local denial') access.invalidate('offline');
+      const answered = vi.fn();
+      const cancel = vi.spyOn(client, 'cancelQueries');
+      const { result, unmount } = renderHook(() => usePlannerMutations(transport, 'card-1', 'w1', channel), {
+        wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children),
+      });
+      let failure: unknown;
+      await act(async () => {
+        try { await result.current.send('Keep my words', [], 'key', null, admitted, answered); }
+        catch (error) { failure = error; }
+      });
+      expect(failure).toBeInstanceOf(Error);
+      // runOperation's checkpoint remains authoritative; reconciliation cannot replace it.
+      expect((failure as Error).message).toBe('连接状态已改变，请重新操作。');
+      expect(cancel.mock.calls.filter(([filters]) => filters?.queryKey !== undefined)).toEqual([]);
+      expect(answered).not.toHaveBeenCalled();
+      expect(paths).toEqual(['/api/tracks/w1', ...(outcome === 'local denial' ? [] : ['/api/cards/card-1/planner/input'])]);
+      expect(client.getQueryState(queryKeys.trackDetail('w1'))).toMatchObject({ status: 'success', isInvalidated: true });
+      expect(client.getQueryState(queryKeys.trackConversations('w1'))).toBeUndefined();
+      // The existing recovery coordinator, rather than a retained write or custom retry, resumes stale reads.
+      act(() => { access.invalidate('recovering'); access.change('connected'); });
+      await waitFor(() => expect(paths.filter(path => path === '/api/tracks/w1')).toHaveLength(2));
+      expect(client.getQueryState(queryKeys.trackDetail('w1'))?.isInvalidated).toBe(false);
+      release(); unmount(); unsubscribe(); releaseRecovery(); client.unmount(); client.clear();
+    },
+  );
+
+  it('retains an input 401 without starting reconciliation reads even without a recovery channel subscriber', async () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const cancel = vi.spyOn(client, 'cancelQueries');
+    const transport: ApiTransportPort = { send: () => Promise.resolve({ status: 401, statusText: 'Unauthorized', body: { error: 'Sign in' } }) };
+    const channel = createUnauthorizedChannel({ enqueue: task => task() });
+    const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', 'w1', channel), {
+      wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children),
+    });
+    const answered = vi.fn();
+    await expect(result.current.send('Kept', [], 'key', null, transport, answered))
+      .rejects.toMatchObject({ failure: { kind: 'unauthorized', status: 401 } });
+    expect(answered).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(invalidate.mock.calls).toEqual([
+      [{ queryKey: queryKeys.trackDetail('w1'), refetchType: 'none' }],
+      [{ queryKey: queryKeys.trackConversations('w1'), refetchType: 'none' }],
+    ]);
+  });
+
+  it.each(['edit', 'delete', 'steer', 'send'] as const)(
+    'refreshes owned input metadata after %s outcomes and preserves the existing run/history policy', async action => {
+      for (const outcome of ['success', 'stale', 'gone', 'unknown'] as const) {
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+        let title = 'Original';
+        const paths: string[] = [];
+        const transport: ApiTransportPort = { send: async request => {
+          await Promise.resolve();
+          paths.push(request.path);
+          if (request.path === '/api/tracks/w1') return ok({ track: baseTrackWire,
+            can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [{
+              id: 'card-1', track_id: 'w1', kind: 'codex', title, sort: 0, payload: { planner_harness: true },
+              deletable: true, created_at: 1, updated_at: 2,
+            }] });
+          if (request.path === '/api/tracks/w1/conversations') return ok([{
+            id: 'assistant', trackId: 'w1', title, kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null,
+          }]);
+          title = 'Edited';
+          if (outcome === 'unknown') throw new Error('connection lost after write');
+          if (outcome !== 'success') return { status: outcome === 'gone' ? 404 : 409, statusText: 'Refused',
+            body: { code: 'planner_input_stale', error: 'Changed', text: title, rev: 1, entry_id: 'entry' } };
+          return ok({ card_id: 'card-1', worker_session_id: 'runtime', entry_id: 'entry', text: title, rev: 1, steered: true, turn_id: 'running-turn' });
+        } };
+        const detailOptions = trackDetailQueryOptions(transport, 'w1', unauthorized);
+        const listOptions = trackConversationsQueryOptions(transport, 'w1', unauthorized);
+        await client.fetchQuery(detailOptions); await client.fetchQuery(listOptions);
+        const detail = new QueryObserver(client, detailOptions);
+        const list = new QueryObserver(client, listOptions);
+        const releaseDetail = detail.subscribe(() => undefined);
+        const releaseList = list.subscribe(() => undefined);
+        for (const key of [queryKeys.trackDetail('foreign'), queryKeys.trackConversations('foreign')]) client.setQueryData(key, 'untouched');
+        const clear = vi.spyOn(client, 'clear');
+        // Active reads make accidental run/history refresh observable; inactive cache entries cannot.
+        const reads = { run: 0, history: 0 };
+        const transcriptKey = queryKeys.harnessItems('card-1');
+        const releases = (['run', 'history'] as const).map(surface => {
+          const observer = new QueryObserver(client, {
+            queryKey: surface === 'run' ? queryKeys.plannerRun('card-1') : transcriptKey,
+            queryFn: () => { reads[surface] += 1; return Promise.resolve(surface); },
+          });
+          return observer.subscribe(() => undefined);
+        });
+        await waitFor(() => expect(reads).toEqual({ run: 1, history: 1 }));
+        const cancel = vi.spyOn(client, 'cancelQueries');
+        const answered = vi.fn();
+        const { result, unmount } = renderHook(() => usePlannerMutations(transport, 'card-1', 'w1', unauthorized), {
+          wrapper: ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children),
+        });
+        const entry = { entry_id: 'entry', text: 'Original', rev: 0, queued_at_ms: 1 };
+        await act(async () => {
+          try {
+            if (action === 'edit') await result.current.editQueued(entry, 'Edited', () => undefined);
+            if (action === 'delete') await result.current.deleteQueued('entry', 0, () => undefined);
+            if (action === 'steer') await result.current.steerQueued('entry', 0, () => undefined);
+            if (action === 'send') await result.current.send('Edited', [], 'key', null, transport, answered);
+          } catch { /* Sends reject on refusal/unknown; reconciliation is still required. */ }
+        });
+        await waitFor(() => expect(detail.getCurrentResult().data?.cards[0]?.title).toBe('Edited'));
+        await waitFor(() => expect(list.getCurrentResult().data?.[0]?.title).toBe('Edited'));
+        for (const key of [queryKeys.trackDetail('foreign'), queryKeys.trackConversations('foreign')]) {
+          expect(client.getQueryData(key)).toBe('untouched');
+          expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+        }
+        const refreshExisting = action !== 'send' || outcome === 'success';
+        await waitFor(() => expect(reads).toEqual({ run: refreshExisting ? 2 : 1, history: refreshExisting ? 2 : 1 }));
+        expect(cancel.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+          ...(outcome === 'success' ? [transcriptKey, queryKeys.plannerRun('card-1'), queryKeys.initialInputPrefix()] : []),
+          queryKeys.trackDetail('w1'), queryKeys.trackConversations('w1'),
+          ...(action !== 'send' && outcome !== 'success' ? [queryKeys.initialInputPrefix()] : []),
+        ]);
+        expect(answered).toHaveBeenCalledTimes(action === 'send' && outcome === 'success' ? 1 : 0);
+        for (const release of releases) release();
+        expect(paths.some(path => path.includes('/harness/items'))).toBe(false);
+        expect(clear).not.toHaveBeenCalled();
+        releaseDetail(); releaseList(); unmount(); client.clear();
+      }
+    },
+  );
 });

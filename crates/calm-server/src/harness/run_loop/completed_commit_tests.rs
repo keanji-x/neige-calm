@@ -38,6 +38,14 @@ impl Fixture {
     }
 
     pub(super) async fn for_role(role: CardRole) -> Self {
+        Self::for_role_with_id(role, new_id()).await
+    }
+
+    pub(super) async fn for_worker_session(worker_session_id: String) -> Self {
+        Self::for_role_with_id(CardRole::Planner, worker_session_id).await
+    }
+
+    async fn for_role_with_id(role: CardRole, worker_session_id: String) -> Self {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let area = repo
             .area_create(
@@ -67,7 +75,9 @@ impl Fixture {
         let roles = CardRoleCache::new();
         let areas = TrackAreaCache::new();
         areas.insert(track.id.clone(), area.id);
-        let mut tx = repo.pool().begin().await.unwrap();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(repo.db())
+            .await
+            .unwrap();
         let card = card_create_with_id_tx(
             &mut tx,
             new_id(),
@@ -88,7 +98,6 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let worker_session_id = new_id();
         let mut snapshot = HarnessSnapshot::initial(0, vec![]);
         snapshot.phase = HarnessPhaseTag::Idle;
         snapshot.last_thread_id = Some("thread-commit-wake".into());
@@ -177,7 +186,7 @@ impl Fixture {
     pub(super) async fn event_entry(&self, event: &Event) -> (i64, QueueEntry) {
         let inner = &self.harness.inner;
         let scope = harness_event_scope(inner, event.kind_tag());
-        let mut tx = self.repo.pool().begin().await.unwrap();
+        let mut tx = self.repo.db().writer_pool().begin().await.unwrap();
         let id =
             append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher, &scope, None, event)
                 .await
@@ -223,6 +232,11 @@ impl Fixture {
             .unwrap()
             .unwrap();
         serde_json::from_value(row.handle_state_json.unwrap()).unwrap()
+    }
+
+    /// Fail the real projection DELETE in any checkpoint or issuance transfer.
+    pub(super) async fn reject_projection_retirement(&self) {
+        crate::test_seams::reject_projection_retirement_for_test(self.repo.db()).await;
     }
 
     pub(super) async fn issue(&self) {

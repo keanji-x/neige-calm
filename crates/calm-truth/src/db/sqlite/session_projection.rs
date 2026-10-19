@@ -112,9 +112,19 @@ pub(super) async fn runtime_get_projectable_for_cards_from_pool(
     if card_ids.is_empty() {
         return Ok(HashMap::new());
     }
+    let mut connection = pool.acquire().await?;
+    runtime_get_projectable_for_cards_on_connection(&mut connection, card_ids).await
+}
 
+pub(super) async fn runtime_get_projectable_for_cards_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    card_ids: &[RuntimeCardId],
+) -> WorkerSessionProjectionResult<HashMap<RuntimeCardId, WorkerSessionProjection>> {
+    if card_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let mut query = projectable_runtimes_for_cards_query(card_ids);
-    let rows = query.build().fetch_all(pool).await?;
+    let rows = query.build().fetch_all(connection).await?;
     projectable_runtimes_for_cards_from_rows(rows)
 }
 
@@ -761,7 +771,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         let row: Option<String> =
             sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = ?1")
                 .bind(id)
-                .fetch_optional(self.pool())
+                .fetch_optional(self.db.read_pool())
                 .await?;
         row.as_deref().map(run_status_from_db).transpose()
     }
@@ -773,7 +783,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         let row: Option<Option<String>> =
             sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
                 .bind(id)
-                .fetch_optional(self.pool())
+                .fetch_optional(self.db.read_pool())
                 .await?;
         Ok(row
             .flatten()

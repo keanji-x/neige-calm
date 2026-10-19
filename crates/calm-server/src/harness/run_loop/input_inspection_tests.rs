@@ -263,15 +263,9 @@ async fn initial_input_inspection_rejects_failed_issuance_residue_after_queue_de
     let id = entry.id().unwrap().clone();
     fx.enqueue(vec![entry]).await;
     // The first delete finds no rows; the failed turn's cleanup hits the real stored projection.
-    sqlx::query(
-        "CREATE TRIGGER refuse_projection_cleanup BEFORE DELETE ON harness_items \
-         BEGIN SELECT RAISE(ABORT, 'forced projection cleanup failure'); END",
-    )
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+    fx.reject_projection_retirement().await;
     fx.daemon.fail_turn_start_for_test();
-    fx.issue().await;
+    assert!(maybe_issue_turn(&fx.harness.inner).await.is_err());
     assert_eq!(
         fx.harness.inner.projection_client_id.lock().await.as_ref(),
         Some(&id)
@@ -293,6 +287,10 @@ async fn initial_input_inspection_rejects_failed_issuance_residue_after_queue_de
     else {
         panic!("failed issuance must rebuffer the actual input before deletion");
     };
+    sqlx::query("DROP TRIGGER refuse_projection_cleanup")
+        .execute(fx.repo.db().writer_pool())
+        .await
+        .unwrap();
     fx.harness
         .mutate_pending_entry(
             QueueMutation::Delete {

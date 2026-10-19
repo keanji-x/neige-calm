@@ -329,3 +329,15 @@ pub const PLANNER_HIBERNATION_QUIESCE: &str = "planner-hibernation-quiesce";
 /// Where the loop decided a hibernation request, before replying; keyed by card id.
 #[cfg(feature = "fixtures")]
 pub const PLANNER_HIBERNATION_DECIDED: &str = "planner-hibernation-decided";
+
+/// Fail the existing projection DELETE so all input-owner checkpoints exercise rollback.
+#[cfg(feature = "fixtures")]
+pub async fn reject_projection_retirement_for_test(db: &crate::db::sqlite::SqliteDb) {
+    sqlx::query(
+        "CREATE TRIGGER refuse_projection_cleanup BEFORE DELETE ON harness_items \
+         BEGIN SELECT RAISE(ABORT, 'forced projection cleanup failure'); END",
+    )
+    .execute(db.writer_pool())
+    .await
+    .unwrap();
+}

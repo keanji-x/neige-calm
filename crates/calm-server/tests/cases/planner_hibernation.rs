@@ -662,3 +662,6 @@ mod failures;
 
 #[path = "planner_hibernation_lifecycle.rs"]
 mod lifecycle;
+
+#[path = "planner_hibernation_checkpoint.rs"]
+mod checkpoint;
