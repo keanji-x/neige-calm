@@ -13,7 +13,7 @@ use utoipa::ToSchema;
 
 use crate::actor::Actor;
 use crate::auth::Principal;
-use crate::claude_planner::models::{ClaudeCatalog, ClaudeModel};
+use crate::claude_planner::models::ClaudeCatalog;
 use crate::db::sqlite::card_update_tx;
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -29,6 +29,7 @@ use crate::routes::models::CODEX_READ_TIMEOUT;
 use crate::routes::planner_cards::card_runs_headless_harness;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{CodexShellState, RouteState, WorkerState};
+use provider::claude::discovery::ClaudeModel;
 
 const ACTOR_SUBJECT: &str = "planner model selection";
 const ACTOR_REDIRECT: &str = "Which model a person's conversation runs with is their own choice; agents have no write \

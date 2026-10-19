@@ -9,10 +9,10 @@ use serde::Deserialize;
 
 use super::spawn::instructions_dir;
 use super::stop::MarkerInstance;
-use super::translate::ToolNames;
 use crate::error::{CalmError, Result};
 use crate::harness::backend::TurnStartFailure;
 use crate::model::CardRole;
+use provider::claude::translate::ToolNames;
 
 /// How long `<claude_binary> --version` may take; it answers in milliseconds.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);

@@ -14,11 +14,12 @@ use axum::{Router, routing::get};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use crate::claude_planner::models::{ClaudeCatalog, ClaudeModel};
+use crate::claude_planner::models::ClaudeCatalog;
 use crate::codex_appserver::{CodexConfig, CodexModel};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState};
+use provider::claude::discovery::ClaudeModel;
 
 /// Budget for the whole request, not each codex read. Passed down into
 /// `request_until` rather than wrapped in `tokio::time::timeout`: cancelling from

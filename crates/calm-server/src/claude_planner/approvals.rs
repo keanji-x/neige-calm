@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use super::protocol::ControlResponseOut;
 use super::turn_slot::TurnSlot;
 use crate::event::AskQuestion;
 use crate::harness::held_requests::{
@@ -21,6 +20,7 @@ use crate::harness::held_requests::{
 };
 use crate::planner_permission_mode::PlannerPermissionMode;
 use provider::claude::permission::{CanUseTool, PermissionDecision, permission_response};
+use provider::claude::protocol::ControlResponseOut;
 
 /// The options of every approval question, in the order the answer's index names them.
 pub(crate) const OPTIONS: [&str; 2] = ["Allow", "Deny"];

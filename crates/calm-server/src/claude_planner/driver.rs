@@ -12,11 +12,9 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::approvals::{Approvals, NO_APPROVAL_SURFACE, write_response};
-use super::protocol::{ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode};
 use super::session::{FinishedTurn, Shared};
 use super::spawn::{InstructionsFile, SpawnPurpose};
 use super::stop::{STOP_BOUND, stop_by};
-use super::translate::{TurnOutcome, TurnTranslator};
 use super::turn_slot::{TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached};
 use crate::error::CalmError;
 use crate::harness::planner_event::{PlannerEvent, PlannerEventKind};
@@ -24,6 +22,10 @@ use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
 use provider::claude::permission::{CanUseTool, PermissionDecision, permission_response};
+use provider::claude::protocol::{
+    ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode,
+};
+use provider::claude::translate::{TurnOutcome, TurnTranslator};
 
 /// When a stop fires, stdout lines already written are still read for at most this long.
 const DRAIN_WINDOW: Duration = Duration::from_secs(1);

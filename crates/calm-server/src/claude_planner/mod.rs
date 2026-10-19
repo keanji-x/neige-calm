@@ -18,14 +18,12 @@ pub mod config;
 mod driver;
 pub mod lifecycle;
 pub mod models;
-pub mod protocol;
 pub mod readiness_command;
 pub(crate) mod recovery;
 pub(crate) mod rewind;
 pub mod session;
 pub mod spawn;
 pub mod stop;
-pub mod translate;
 mod turn_slot;
 pub(crate) mod wiring;
 

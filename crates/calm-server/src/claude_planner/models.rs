@@ -8,61 +8,14 @@ use serde_json::Value;
 
 use crate::planner_model::{CardModelSelection, TurnModelSelection};
 
-/// The `value` of the CLI's own default entry. It is the `null` selection, never a stored one.
-pub const DEFAULT_VALUE: &str = "default";
+use provider::claude::discovery::ClaudeModel;
 
-/// One entry of the CLI's model list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClaudeModel {
-    /// The CLI's `value`: what `--model` is given, verbatim.
-    pub value: String,
-    /// The CLI's `resolvedModel`: the model this entry runs.
-    pub resolved_model: String,
-    pub display_name: String,
-    pub description: String,
-    /// The CLI's `supportedEffortLevels`, in its order; empty when it declares none, and then no
-    /// effort is accepted.
-    pub effort_levels: Vec<String>,
-}
-
-/// The CLI's model list as one `initialize` answered it.
+/// The validated CLI list together with host-owned fetch time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeCatalog {
-    /// The CLI's [`DEFAULT_VALUE`] entry: what the `null` selection runs, and its effort levels.
     pub default: ClaudeModel,
-    /// Every other entry, in the CLI's order: the values a selection may name.
     pub models: Vec<ClaudeModel>,
-    /// Wall-clock ms at which the list was fetched.
     pub fetched_at_ms: i64,
-}
-
-impl ClaudeCatalog {
-    /// The catalog of the CLI's entries: exactly one [`DEFAULT_VALUE`], at least one other entry,
-    /// and no value twice. `Err` says which rule the list breaks.
-    pub fn from_entries(entries: Vec<ClaudeModel>, fetched_at_ms: i64) -> Result<Self, String> {
-        let mut default = None;
-        let mut models: Vec<ClaudeModel> = Vec::new();
-        for entry in entries {
-            if entry.value == DEFAULT_VALUE {
-                if default.replace(entry).is_some() {
-                    return Err(format!("lists `{DEFAULT_VALUE}` twice"));
-                }
-            } else if models.iter().any(|m| m.value == entry.value) {
-                return Err(format!("lists `{}` twice", entry.value));
-            } else {
-                models.push(entry);
-            }
-        }
-        let default = default.ok_or_else(|| format!("lists no `{DEFAULT_VALUE}` entry"))?;
-        if models.is_empty() {
-            return Err("lists no model besides the default".into());
-        }
-        Ok(Self {
-            default,
-            models,
-            fetched_at_ms,
-        })
-    }
 }
 
 /// What a Claude Planner card's payload says its next turn runs, read at issue time: a type check
@@ -90,38 +43,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn entry(value: &str, levels: &[&str]) -> ClaudeModel {
-        ClaudeModel {
-            value: value.into(),
-            resolved_model: format!("resolved-{value}"),
-            display_name: value.to_uppercase(),
-            description: String::new(),
-            effort_levels: levels.iter().map(|level| level.to_string()).collect(),
-        }
-    }
-
-    #[test]
-    fn a_list_without_one_default_or_another_entry_or_with_a_repeat_is_refused() {
-        for entries in [
-            vec![],
-            vec![entry(DEFAULT_VALUE, &[])],
-            vec![entry("haiku", &[])],
-            vec![
-                entry(DEFAULT_VALUE, &[]),
-                entry(DEFAULT_VALUE, &[]),
-                entry("haiku", &[]),
-            ],
-            vec![
-                entry(DEFAULT_VALUE, &[]),
-                entry("haiku", &[]),
-                entry("haiku", &[]),
-            ],
-        ] {
-            let count = entries.len();
-            assert!(ClaudeCatalog::from_entries(entries, 1).is_err(), "{count}");
-        }
-    }
 
     #[test]
     fn the_turn_carries_the_stored_value_and_effort_and_refuses_only_an_unreadable_payload() {

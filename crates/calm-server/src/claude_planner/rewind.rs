@@ -10,11 +10,11 @@ use serde_json::Value;
 use tokio::process::Command;
 use uuid::Uuid;
 
-use super::protocol::client_line_uuid;
 use super::session::ClaudePlannerSessionParams;
 use super::spawn::{self, ResumeTruncation};
 use crate::db::TranscriptRow;
 use crate::error::{CalmError, Result};
+use provider::claude::protocol::client_line_uuid;
 use provider::control::{EditPreparation, NativeEditPlan, NativeEditTarget};
 
 /// The dry run loads the session and exits without a model call (~3 s on the pinned CLI).

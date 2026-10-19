@@ -5,9 +5,9 @@ use uuid::Uuid;
 use super::compact::{NO_BOUNDARY, result_event};
 use super::driver::{TerminalEvent, decide, init_check};
 use super::spawn::SpawnPurpose;
-use crate::claude_planner::protocol::{McpStatus, PluginRef, SystemInit};
-use crate::claude_planner::translate::TurnOutcome;
 use crate::claude_planner::turn_slot::TerminalCause;
+use provider::claude::protocol::{McpStatus, PluginRef, SystemInit};
+use provider::claude::translate::TurnOutcome;
 
 fn success(is_error: bool) -> TerminalEvent {
     TerminalEvent::ResultSuccess {

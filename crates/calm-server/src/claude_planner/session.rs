@@ -26,10 +26,8 @@ use uuid::Uuid;
 use super::approvals::Approvals;
 use super::config::{ClaudePlannerHost, needs_an_operator, unavailable_message};
 use super::driver::{TurnRun, drive};
-use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
 use super::spawn::{self, InstructionsFile, ResumeTruncation, SessionStart, SpawnPurpose};
 use super::stop::stop;
-use super::translate::{ToolNames, TurnContext, TurnTranslator};
 use super::turn_slot::{TerminalCause, TurnSlot};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
@@ -40,6 +38,8 @@ use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
 use provider::InputItem;
+use provider::claude::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
+use provider::claude::translate::{ToolNames, TurnContext, TurnTranslator};
 
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 pub const STOP_TIMER: Duration = Duration::from_secs(10);
@@ -689,9 +689,9 @@ impl ClaudePlannerSession {
 async fn interrupt(slot: &TurnSlot) -> provider::control::InterruptOutcome<CalmError> {
     slot.record(TerminalCause::Interrupted);
     slot.arm_stop(tokio::time::Instant::now() + STOP_TIMER);
-    let request = super::protocol::ControlRequestOut::new(
+    let request = provider::claude::protocol::ControlRequestOut::new(
         format!("interrupt-{}", Uuid::new_v4().simple()),
-        super::protocol::ControlRequestKind::Interrupt,
+        provider::claude::protocol::ControlRequestKind::Interrupt,
     );
     use provider::control::SubmissionEvidence;
     let written = match serde_json::to_string(&request) {

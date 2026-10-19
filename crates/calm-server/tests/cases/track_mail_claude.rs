@@ -10,13 +10,13 @@ use std::time::{Duration, Instant};
 use calm_server::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
 use calm_server::claude_planner::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
 use calm_server::claude_planner::stop::sigkill_verified_for_test;
-use calm_server::claude_planner::translate::ToolNames;
 use calm_server::harness::backend::PlannerBackend;
 use calm_server::harness::{
     HarnessConfig, HarnessState, Observation, PlannerHarness, PlannerHarnessParams,
 };
 use calm_server::mail::{Recipient, SendRequest};
 use calm_server::session_projection_repo::AgentProvider;
+use provider::claude::translate::ToolNames;
 use serde_json::json;
 
 use super::claude_planner_session_fixture::marked;
