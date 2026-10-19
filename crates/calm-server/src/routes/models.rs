@@ -4,6 +4,7 @@
 //! Claude availability check (#1822).
 
 use crate::extract::{Json, Query};
+use crate::harness::profile::HarnessProfileExt;
 use crate::planner_model::catalog::{
     CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
 };

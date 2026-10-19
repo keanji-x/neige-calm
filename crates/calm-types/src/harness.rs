@@ -1,5 +1,8 @@
 //! Harness vocabulary shared across crates: the phase tag and persisted header constants.
 
+pub mod budget;
+pub mod snapshot;
+
 /// Persisted harness header and failure vocabulary used by the codec and transactional recovery guards.
 pub const HARNESS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const HARNESS_MODE: &str = "harness";
@@ -11,6 +14,18 @@ pub const HARNESS_INTERRUPT_TIMEOUT_MESSAGE: &str =
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
+
+/// Persisted start-operation profile vocabulary. Admission and shape checks stay
+/// in the server; moving this IO-free enum does not change its serialized names.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessProfile {
+    #[default]
+    #[serde(rename = "spec")]
+    Planner,
+    PlainChat,
+    Assistant,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
@@ -217,5 +232,32 @@ mod timeout_tests {
         let mut future = current;
         future["version"] = json!("v2");
         assert!(serde_json::from_value::<HarnessInterruptionIntent>(future).is_err());
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::HarnessProfile;
+    use serde_json::json;
+
+    /// The default Planner name is pinned by the start-operation payload test in calm-server.
+    #[test]
+    fn harness_profile_keeps_persisted_names() {
+        for (profile, wire) in [
+            (HarnessProfile::PlainChat, json!("plain_chat")),
+            (HarnessProfile::Assistant, json!("assistant")),
+        ] {
+            assert_eq!(serde_json::to_value(profile).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<HarnessProfile>(wire).unwrap(),
+                profile
+            );
+        }
+        let planner = serde_json::to_value(HarnessProfile::Planner).unwrap();
+        assert_eq!(
+            serde_json::from_value::<HarnessProfile>(planner).unwrap(),
+            HarnessProfile::Planner
+        );
+        assert_eq!(HarnessProfile::default(), HarnessProfile::Planner);
     }
 }

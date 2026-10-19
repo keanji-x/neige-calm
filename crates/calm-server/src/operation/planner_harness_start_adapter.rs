@@ -1,3 +1,4 @@
+use crate::harness::profile::HarnessProfileExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 

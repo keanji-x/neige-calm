@@ -6,6 +6,7 @@ use crate::db::sqlite::{
 };
 use crate::db::write_in_tx_typed;
 use crate::error::{CalmError, Result};
+use crate::harness::profile::HarnessProfileExt;
 use crate::mcp_server::wiring::mint_and_persist_card_token;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::shared_codex_appserver::ThreadConfig;

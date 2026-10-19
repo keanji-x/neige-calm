@@ -6,6 +6,7 @@ use crate::actor::Actor;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path};
+use crate::harness::token_usage::TokenUsageExt;
 use crate::harness::{HarnessPhaseTag, QueueEntry, RunningTurn, TokenUsage};
 use crate::ids::CardId;
 use crate::model::{Card, CardRole, Track, new_id};

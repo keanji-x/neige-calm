@@ -156,12 +156,7 @@ pub struct HarnessSnapshot {
     pub last_turn_base: Option<TurnBase>,
 }
 
-/// See [`HarnessSnapshot::last_turn_base`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TurnBase {
-    pub turn_id: String,
-    pub seen_head: Option<String>,
-}
+pub use calm_types::harness::snapshot::TurnBase;
 
 impl HarnessSnapshot {
     /// Loading cannot confirm a maintenance operation whose provider completion was not observed.

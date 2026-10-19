@@ -1,9 +1,11 @@
 //! Per-start sampling and a bounded, identity-fenced warning. The watchdog never awaits steer.
 use super::{Inner, runtime_is_still_the_live_carrier, write_projection_row};
 use crate::harness::profile::HarnessProfile;
+use crate::harness::profile::HarnessProfileExt;
 use crate::harness::state::HarnessState;
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 pub use crate::planner_turn_budget::FrozenBudget;
+use crate::planner_turn_budget::PlannerTurnBudgetExt;
 use crate::planner_turn_budget::{LoadError, PlannerTurnBudget};
 use std::sync::Arc;
 use std::time::Duration;

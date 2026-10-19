@@ -1,3 +1,5 @@
+use crate::harness::token_usage::TokenUsageExt;
+use crate::planner_turn_budget::PlannerTurnBudgetExt;
 use provider::control::{
     CorrelationKey, InputRequest, InterruptRequest, SteerOutcome, SteerRequest,
 };
@@ -3520,7 +3522,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         let key = slot
             .clone()
             .or(from_queue)
-            .unwrap_or_else(QueueEntryId::mint);
+            .unwrap_or_else(crate::harness::queue::mint_entry_id);
         *slot = Some(key.clone());
         key
     };

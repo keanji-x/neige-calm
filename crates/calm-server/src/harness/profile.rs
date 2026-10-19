@@ -2,25 +2,21 @@
 use crate::model::{Card, CardRole};
 use crate::session_projection_repo::AgentProvider;
 use crate::validation::{ASSISTANT_PROVIDER_PAYLOAD_KEY, PLANNER_PROVIDER_PAYLOAD_KEY};
-use serde::{Deserialize, Serialize};
+pub use calm_types::harness::HarnessProfile;
 use serde_json::Value;
 
 pub(crate) const PLAIN_CHAT_MARKER: &str = "plain_chat";
 pub(crate) const ASSISTANT_MARKER: &str = "assistant";
 
-/// Serialized names are persisted in start operations and remain unchanged.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HarnessProfile {
-    #[default]
-    #[serde(rename = "spec")]
-    Planner,
-    PlainChat,
-    Assistant,
+/// Server-owned admission/capability helpers for the shared persisted vocabulary.
+pub(crate) trait HarnessProfileExt: Sized {
+    fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self>;
+    fn session_kind(self) -> crate::session_projection_repo::WorkerSessionKind;
+    fn mcp_role(self) -> Option<CardRole>;
 }
 
-impl HarnessProfile {
-    pub(crate) fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
+impl HarnessProfileExt for HarnessProfile {
+    fn from_shape(kind: &str, role: CardRole, payload: &Value) -> Option<Self> {
         if kind != "codex" {
             return None;
         }
@@ -42,7 +38,7 @@ impl HarnessProfile {
         }
     }
 
-    pub(crate) fn session_kind(self) -> crate::session_projection_repo::WorkerSessionKind {
+    fn session_kind(self) -> crate::session_projection_repo::WorkerSessionKind {
         use crate::session_projection_repo::WorkerSessionKind;
         match self {
             Self::Planner => WorkerSessionKind::SharedPlanner,
@@ -52,7 +48,7 @@ impl HarnessProfile {
     }
 
     /// None is an explicit no-MCP capability, never a missing role/default.
-    pub(crate) fn mcp_role(self) -> Option<CardRole> {
+    fn mcp_role(self) -> Option<CardRole> {
         match self {
             Self::Planner => Some(CardRole::Planner),
             Self::Assistant => Some(CardRole::Assistant),

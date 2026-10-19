@@ -21,7 +21,6 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::{self, error::RecvError};
-use uuid::Uuid;
 
 use crate::claude_planner::session::ClaudePlannerSession;
 use crate::codex_appserver::{ApprovalRoute, TurnApprovals};
@@ -61,20 +60,7 @@ pub type InterruptDiagnostic = Box<dyn std::error::Error + Send + Sync>;
 #[serde(transparent)]
 pub struct BackendRewind(RewindArm);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "provider", rename_all = "snake_case")]
-enum RewindArm {
-    /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`, unless `reverted`
-    /// records that it already went through (#2512). Additive and defaulted, written only when
-    /// set, so a rolled-back binary still reads the snapshot: it ignores the key and reverts again.
-    Codex {
-        before_turn_id: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        reverted: bool,
-    },
-    /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
-    Claude { resume_at: Uuid, drops_turn: Uuid },
-}
+use calm_types::harness::snapshot::PersistedRewind as RewindArm;
 
 /// The provider a Planner harness runs on. Its arms are private to this module, so code outside it
 /// cannot name or match a provider and goes through the methods below.
@@ -426,6 +412,7 @@ async fn interrupt_codex_thread(
 mod tests {
     use super::*;
     use serde_json::json;
+    use uuid::Uuid;
 
     /// `RewindArm` as the binary before #2512 reads it, kept as that release's shape.
     #[derive(Debug, PartialEq, Deserialize)]

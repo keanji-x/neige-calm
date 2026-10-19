@@ -2,35 +2,30 @@
 //! `total` is a LIFETIME sum across every response and routinely exceeds the window;
 //! `last.totalTokens` is the occupancy proxy and the only field a percentage may divide.
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Upstream's `BASELINE_TOKENS`: the first prompt already carries ~12k tokens of system prompt
 /// and tool schemas, so the floor is subtracted from BOTH numerator and denominator.
 pub const BASELINE_TOKENS: i64 = 12_000;
 
-/// Latest context-window usage observed on a harness thread; latest-wins, so it rides the
-/// runtime snapshot rather than `harness_items`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TokenUsage {
-    /// `tokenUsage.last.totalTokens` — the occupancy proxy; this, never `total_tokens`, is what a
-    /// percentage may divide.
-    pub used_tokens: i64,
-    /// `tokenUsage.total.totalTokens` — the thread's lifetime sum; unbounded, meaningless as a fill ratio.
-    pub total_tokens: i64,
-    /// `tokenUsage.modelContextWindow`. `None` means "codex has not told us", and a `None` after a
-    /// known window does not erase it; see [`TokenUsage::sticky_merge`].
-    pub context_window: Option<i64>,
-    /// Wall clock of the frame that produced this value, shipped on `GET /planner/run` so the UI
-    /// can tell a live number from one rehydrated out of an old snapshot.
-    pub at_ms: i64,
+pub use calm_types::harness::snapshot::TokenUsage;
+
+/// Server-owned frame parsing, sticky merge and percentage policy for the shared snapshot value.
+pub(crate) trait TokenUsageExt: Sized {
+    fn from_params(params: &Value, at_ms: i64) -> Option<Self>;
+    #[must_use]
+    fn sticky_merge(self, previous: Option<&Self>) -> Self;
+    #[must_use]
+    fn exceeds_window(&self) -> bool;
+    #[must_use]
+    fn percent(&self) -> Option<f64>;
 }
 
-impl TokenUsage {
+impl TokenUsageExt for TokenUsage {
     /// Parse a `thread/tokenUsage/updated` frame's `params`. `None` when `last.totalTokens` is
     /// absent, non-integer, or negative: a zero would claim the context is empty, which is a
     /// stronger claim than "unknown".
-    pub fn from_params(params: &Value, at_ms: i64) -> Option<Self> {
+    fn from_params(params: &Value, at_ms: i64) -> Option<Self> {
         let usage = params.get("tokenUsage")?;
         let used_tokens = usage.get("last")?.get("totalTokens")?.as_i64()?;
         if used_tokens < 0 {
@@ -54,8 +49,7 @@ impl TokenUsage {
 
     /// Fold this frame onto the previous one, keeping a known window across frames that omit one
     /// (a later `None` means this response did not carry it). Counts are always the incoming frame's.
-    #[must_use]
-    pub fn sticky_merge(mut self, previous: Option<&Self>) -> Self {
+    fn sticky_merge(mut self, previous: Option<&Self>) -> Self {
         if self.context_window.is_none() {
             self.context_window = previous.and_then(|p| p.context_window);
         }
@@ -64,8 +58,7 @@ impl TokenUsage {
 
     /// True when the occupancy proxy has overshot the window — the condition under which
     /// [`Self::percent`] refuses to answer. Separated so ingest can log it once per frame.
-    #[must_use]
-    pub fn exceeds_window(&self) -> bool {
+    fn exceeds_window(&self) -> bool {
         self.context_window
             .is_some_and(|window| self.used_tokens > window)
     }
@@ -74,8 +67,7 @@ impl TokenUsage {
     /// exists: no window, a window at or below the baseline, or `used_tokens > context_window`.
     /// The last is NOT clamped to 100%: `used > window` cannot be an occupancy, and clamping would
     /// render the failure as a plausible "context is full". `saturating_sub` guards snapshot values.
-    #[must_use]
-    pub fn percent(&self) -> Option<f64> {
+    fn percent(&self) -> Option<f64> {
         let window = self.context_window?;
         if window <= BASELINE_TOKENS || self.exceeds_window() {
             return None;

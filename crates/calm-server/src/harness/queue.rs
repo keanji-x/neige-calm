@@ -10,31 +10,11 @@ use crate::ids::CardId;
 use crate::model::{HarnessInputSegment, HarnessQueueEntryRef, new_id, now_ms};
 use crate::planner_attachments::bind::{BoundAttachment, MAX_ATTACHMENTS_PER_MESSAGE};
 
-/// Stable identity for one addressable user entry in the pending queue.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct QueueEntryId(String);
+pub use calm_types::harness::snapshot::QueueEntryId;
 
-impl QueueEntryId {
-    /// Mint a fresh id; production reaches this only through [`QueueEntry::user_message`].
-    pub(crate) fn mint() -> Self {
-        Self(new_id())
-    }
-
-    /// Adopt an id that arrived from a client, verbatim; an id from a URL is a lookup key, never a claim.
-    pub fn from_wire(id: String) -> Self {
-        Self(id)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for QueueEntryId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
+/// Mint a fresh entry id; production reaches this only through [`QueueEntry::user_message`].
+pub(crate) fn mint_entry_id() -> QueueEntryId {
+    QueueEntryId::from_wire(new_id())
 }
 
 /// One entry in the harness pending queue. `LegacyUser` is a `UserMessage` read back from a
@@ -104,7 +84,7 @@ impl QueueEntry {
         attachments: Vec<BoundAttachment>,
     ) -> Self {
         Self::User {
-            id: QueueEntryId::mint(),
+            id: mint_entry_id(),
             text,
             rev: 0,
             queued_at_ms: now_ms(),
