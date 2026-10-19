@@ -1,10 +1,10 @@
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // Settings › Planners through the real router and query layer (#1817): the pane reads
-// `GET /api/agent-providers/managed`, and Recheck asks the server to run every check again.
+// shared availability and managed capabilities; Recheck refreshes only availability.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +14,7 @@ import { RECHECK_TEXT, STILL_CREATES_NOTE } from '../../../../core/domain/agent-
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
+import { managedProvidersQueryKey } from '../providers/managed-providers.ts';
 import { queryKeys } from '../providers/queries.ts';
 import { settingsSectionForPath } from './settings-overlay.tsx';
 
@@ -44,7 +45,7 @@ function answer(claude: Readonly<{ status: string; reason: string | null }>) {
 
 /** The managed endpoint wraps the same availability answer as the shell subscription. */
 function providerResponse(request: ApiRequest, entries: ReturnType<typeof answer>): ApiTransportResponse {
-  return { status: 200, statusText: 'OK', body: request.path === '/api/agent-providers'
+  return { status: 200, statusText: 'OK', body: request.path.startsWith('/api/agent-providers') && !request.path.includes('/managed')
     ? entries.map(({ availability }) => availability) : entries };
 }
 
@@ -59,11 +60,11 @@ function renderPlanners(recheck?: () => Promise<ApiTransportResponse>,
       if (providersReply !== undefined && request.path.startsWith('/api/agent-providers')) return providersReply(request);
       if (request.path === '/api/agent-providers') return Promise.resolve(providerResponse(request, answer({ status: 'unavailable', reason: LOGGED_OUT })));
       if (settingsReply !== undefined && request.path === '/api/settings') return settingsReply(request);
-      if (recheck !== undefined && request.path === '/api/agent-providers/managed?refresh=true') return recheck();
+      if (recheck !== undefined && request.path === '/api/agent-providers?refresh=true') return recheck();
       const body = request.path === '/api/agent-providers/managed'
         ? answer({ status: 'unavailable', reason: LOGGED_OUT })
-        : request.path === '/api/agent-providers/managed?refresh=true'
-          ? answer({ status: 'ready', reason: null })
+        : request.path === '/api/agent-providers?refresh=true'
+          ? answer({ status: 'ready', reason: null }).map(({ availability }) => availability)
           : request.path === '/api/settings' ? { settings: {} } : [];
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
@@ -101,14 +102,14 @@ it('lists each provider with its status and reason, and Recheck replaces the ans
   await screen.findByText(LOGGED_OUT);
   expect(within(row('Claude')).getByText('Unavailable')).toBeTruthy();
   expect(within(row('Codex')).getByText('Ready')).toBeTruthy();
-  expect(sent.filter((request) => request.path === '/api/agent-providers/managed?refresh=true')).toHaveLength(0);
+  expect(sent.filter((request) => request.path === '/api/agent-providers?refresh=true')).toHaveLength(0);
   expect(client.getQueryState(claudeCatalog)?.isInvalidated).toBe(false);
   const readsBeforeRecheck = sent.filter((request) => request.path === '/api/agent-providers/managed').length;
 
   await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
   await waitFor(() => expect(screen.queryByText(LOGGED_OUT)).toBeNull());
   expect(within(row('Claude')).getByText('Ready')).toBeTruthy();
-  expect(sent.filter((request) => request.path === '/api/agent-providers/managed?refresh=true')).toHaveLength(1);
+  expect(sent.filter((request) => request.path === '/api/agent-providers?refresh=true')).toHaveLength(1);
   /* The recheck re-fetched the Claude CLI's model list on the server (#1822). */
   expect(client.getQueryState(claudeCatalog)?.isInvalidated).toBe(true);
   expect(sent.filter((request) => request.path === '/api/agent-providers/managed')).toHaveLength(readsBeforeRecheck);
@@ -237,12 +238,73 @@ it('retains Checking, first-read retry and pending Recheck states through the ro
   await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
   expect(screen.getByRole('button', { name: 'Recheck planners' }).hasAttribute('disabled')).toBe(true);
   expect(screen.getByText(LOGGED_OUT)).toBeTruthy();
-  release({ status: 200, statusText: 'OK', body: answer({ status: 'ready', reason: null }) });
+  release({ status: 200, statusText: 'OK', body: answer({ status: 'ready', reason: null }).map(({ availability }) => availability) });
   await waitFor(() => expect(screen.queryByText(LOGGED_OUT)).toBeNull());
   expect(sent.filter((request) => request.path.endsWith('refresh=true'))).toHaveLength(1);
 });
 
-it('synchronizes managed Settings facts with the shell availability notice through Recheck and Codex retry', async () => {
+it('keeps fresh Recheck availability when an older managed read resolves later', async () => {
+  let release!: (value: ApiTransportResponse) => void;
+  let hold = false;
+  const stale = answer({ status: 'unavailable', reason: LOGGED_OUT });
+  const fresh = answer({ status: 'ready', reason: null });
+  fresh[0].availability.checked_at_ms += 60_000;
+  fresh[1].availability.checked_at_ms += 120_000;
+  const { client } = renderPlanners(undefined, undefined, (request) => {
+    if (request.path.endsWith('refresh=true')) return Promise.resolve(providerResponse(request, fresh));
+    if (hold && request.path === '/api/agent-providers/managed') return new Promise((resolve) => { release = resolve; });
+    return Promise.resolve(providerResponse(request, stale));
+  });
+  await screen.findByText(LOGGED_OUT);
+  hold = true;
+  const pending = client.refetchQueries({ queryKey: managedProvidersQueryKey });
+  await waitFor(() => expect(release).toBeTypeOf('function'));
+  await userEvent.click(screen.getByRole('button', { name: 'Recheck planners' }));
+  await waitFor(() => expect(screen.queryByText(LOGGED_OUT)).toBeNull());
+  const checkedAt = `Last checked at ${new Date(fresh[0].availability.checked_at_ms).toLocaleTimeString()}. The server keeps an answer for 30 seconds.`;
+  expect(screen.getByText(checkedAt)).toBeTruthy();
+  await act(async () => { release({ status: 200, statusText: 'OK', body: stale }); await pending;
+    // React Query batches observer notifications on the next task.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(within(row('Claude')).getByText('Ready')).toBeTruthy();
+  expect(screen.queryByText(LOGGED_OUT)).toBeNull();
+  expect(screen.getByText(/^Last checked at /).textContent).toBe(checkedAt);
+  expect(client.getQueryData(queryKeys.agentProviders())).toEqual(fresh.map(({ availability }) => availability));
+});
+
+it.each(['/api/agent-providers', '/api/agent-providers/managed'])('keeps Checking until %s arrives and joins capabilities by provider', async (delayedPath) => {
+  let release!: (value: ApiTransportResponse) => void;
+  const live = answer({ status: 'unavailable', reason: LOGGED_OUT });
+  const managed = answer({ status: 'ready', reason: null }).reverse();
+  managed[0].capabilities.requires_ready_availability = false;
+  renderPlanners(undefined, undefined, (request) => request.path === delayedPath
+    ? new Promise((resolve) => { release = resolve; })
+    : Promise.resolve(providerResponse(request, request.path === '/api/agent-providers' ? live : managed)));
+  await screen.findByText('Checking providers…');
+  await waitFor(() => expect(release).toBeTypeOf('function'));
+  act(() => { release(providerResponse({ path: delayedPath } as ApiRequest, delayedPath === '/api/agent-providers' ? live : managed)); });
+  await screen.findByText(`${LOGGED_OUT} ${STILL_CREATES_NOTE}`);
+  expect(within(row('Claude')).getByText('Unavailable')).toBeTruthy();
+  expect(screen.getAllByRole('listitem').indexOf(row('Codex'))).toBeLessThan(screen.getAllByRole('listitem').indexOf(row('Claude')));
+});
+
+it('reports missing managed capabilities explicitly and retries both reads', async () => {
+  let missing = true;
+  const { sent } = renderPlanners(undefined, undefined, (request) => {
+    const entries = answer({ status: 'unavailable', reason: LOGGED_OUT });
+    return Promise.resolve(providerResponse(request, missing && request.path === '/api/agent-providers/managed' ? entries.slice(0, 1) : entries));
+  });
+  await screen.findByText('Planner capabilities are unavailable for claude.');
+  expect(screen.queryByText(LOGGED_OUT)).toBeNull();
+  missing = false;
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await screen.findByText(LOGGED_OUT);
+  expect(sent.filter(({ path }) => path === '/api/agent-providers').length).toBeGreaterThan(1);
+  expect(sent.filter(({ path }) => path === '/api/agent-providers/managed').length).toBeGreaterThan(1);
+});
+
+it('shares Settings availability with the shell notice through Recheck and Codex retry', async () => {
   let signedIn = false;
   const confirmed = 'Sign in for this server.';
   const { sent, client } = renderPlanners(undefined, undefined, (request) => {

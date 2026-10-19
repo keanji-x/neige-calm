@@ -21,7 +21,7 @@ import styles from './settings.module.css';
 export type PlannersPaneProps = Readonly<{
   turnDuration: PlannerTurnDurationProps;
   /** `undefined` means "still checking" — never render a guessed status. */
-  providers: readonly ManagedProviderAvailability[] | undefined;
+  providers: readonly PlannerProvider[] | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
   /** Run every check again now (`refresh=true`). */
@@ -38,6 +38,12 @@ export type PlannersPaneProps = Readonly<{
     onRetry: (revision: string) => void;
     onOpenConversation: (notice: AuthenticationRetryResponse['recovery_notices'][number]) => void;
   }> | null;
+}>;
+
+/** Availability and the one required capability consumed by Settings. */
+type PlannerProvider = Readonly<{
+  availability: ProviderAvailability;
+  capabilities: Pick<ManagedProviderAvailability['capabilities'], 'requires_ready_availability'>;
 }>;
 
 /** Only this setting's value and capabilities; app owns the bag, transport and invalidation. */
@@ -165,7 +171,7 @@ const STATUS_BADGES: Readonly<Record<ProviderAvailability['status'], Readonly<{
 const READY_DESCRIPTION = 'Passed every check; new tracks can use it.';
 
 /** The server's reason, and for a provider create still accepts (Codex), that it still does (#1817). */
-function describe({ availability: entry, capabilities }: ManagedProviderAvailability): string {
+function describe({ availability: entry, capabilities }: PlannerProvider): string {
   if (entry.authentication_notice !== null) return entry.authentication_notice.text;
   if (entry.reason === null) return READY_DESCRIPTION;
   return entry.status === 'unavailable' && !capabilities.requires_ready_availability

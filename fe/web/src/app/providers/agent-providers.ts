@@ -1,4 +1,4 @@
-// Availability for the model picker and managed Recheck for Settings › Planners (#1817): one
+// Availability for the model picker and Recheck for Settings › Planners (#1817): one
 // shared answer, and the Settings pane's Recheck that replaces it with a fresh one. A Recheck also
 // re-fetches the Claude CLI's model list on the server (#1822), so every model catalog is refreshed.
 
@@ -7,11 +7,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  agentProvidersOperation, managedProvidersOperation, RECHECK_TEXT, type ProviderAvailability,
+  agentProvidersOperation, RECHECK_TEXT, type ProviderAvailability,
 } from '../../../../core/domain/agent-providers.ts';
 import { probeFailureText } from '../../../../core/domain/read-failure.ts';
 import { useState } from '../../ui/state/public.ts';
-import { managedProvidersQueryKey } from './managed-providers.ts';
 import { queryKeys, runOperation } from './queries.ts';
 
 export function agentProvidersQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
@@ -36,9 +35,8 @@ export function useAgentProvidersRecheck(transport: ApiTransportPort, unauthoriz
   const recheck = () => {
     if (state.rechecking) return;
     setState({ rechecking: true, error: null });
-    runOperation(transport, managedProvidersOperation(true), unauthorized).then((answers) => {
-      client.setQueryData(managedProvidersQueryKey, answers);
-      client.setQueryData(queryKeys.agentProviders(), answers.map(({ availability }) => availability));
+    runOperation(transport, agentProvidersOperation(true), unauthorized).then((answers) => {
+      client.setQueryData(queryKeys.agentProviders(), answers);
       void client.invalidateQueries({ queryKey: queryKeys.modelCatalogPrefix() }).catch(() => undefined);
       setState({ rechecking: false, error: null });
     }, (failure: unknown) => {

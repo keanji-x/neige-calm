@@ -8,7 +8,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import type { ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { PLANNER_TURN_DURATION_KEY, plannerTurnDurationPatch } from '../../../../core/domain/settings.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
@@ -29,7 +28,7 @@ import {
   pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, queryKeys, usePluginConfigMutations,
   usePluginInstall, usePluginMutations, useSettingsMutation,
 } from '../providers/queries.ts';
-import { managedProvidersQueryOptions, managedProvidersQueryKey } from '../providers/managed-providers.ts';
+import { managedProvidersQueryOptions } from '../providers/managed-providers.ts';
 import { agentProvidersQueryOptions, useAgentProvidersRecheck } from '../providers/agent-providers.ts';
 import { useCodexAuthenticationRetry } from '../providers/codex-authentication-retry.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
@@ -166,15 +165,16 @@ function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const save = useSettingsMutation(transport, unauthorized);
   const providers = useQuery(managedProvidersQueryOptions(transport, unauthorized));
   const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
-  // The shell still polls availability. Re-read managed facts when that answer changes;
-  // Recheck writes both caches together, so an equal answer must not trigger another read.
-  useEffect(() => {
-    if (availability.data === undefined
-      || client.getQueryState(managedProvidersQueryKey)?.fetchStatus === 'fetching') return;
-    const managed = client.getQueryData<readonly ManagedProviderAvailability[]>(managedProvidersQueryKey);
-    if (managed !== undefined && JSON.stringify(managed.map((entry) => entry.availability)) === JSON.stringify(availability.data)) return;
-    void client.invalidateQueries({ queryKey: managedProvidersQueryKey });
-  }, [availability.data, availability.dataUpdatedAt, client]);
+  // Availability has one owner. Managed reads supply only static capability facts,
+  // joined by identity so a delayed response cannot replace a newer Recheck.
+  const missing = availability.data?.find((entry) => providers.data !== undefined
+    && !providers.data.some(({ availability: managed }) => managed.provider === entry.provider));
+  const joined = availability.data === undefined || providers.data === undefined || missing !== undefined
+    ? undefined : availability.data.map((entry) => ({
+      availability: entry,
+      capabilities: { requires_ready_availability: providers.data.find(({ availability: managed }) => managed.provider === entry.provider)!.capabilities.requires_ready_availability },
+    }));
+  const loadError = availability.error ?? providers.error;
   const recheck = useAgentProvidersRecheck(transport, unauthorized);
   const recovery = useCodexAuthenticationRetry(transport, unauthorized);
   const go = useGo();
@@ -188,9 +188,10 @@ function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       authenticationRecovery={{ provider: 'codex', pending: recovery.pending, error: recovery.error,
         notices: recovery.notices, onRetry: recovery.retry,
         onOpenConversation: (notice) => go({ name: 'track', trackId: notice.track_id, cardId: notice.card_id, openPlanner: true }) }}
-      providers={providers.data}
-      loadError={providers.error === null ? null : readErrorText(providers.error, 'Planners are unavailable.')}
-      onRetryLoad={() => { void providers.refetch(); }}
+      providers={joined}
+      loadError={loadError !== null ? readErrorText(loadError, 'Planners are unavailable.')
+        : missing === undefined ? null : `Planner capabilities are unavailable for ${missing.provider}.`}
+      onRetryLoad={() => { void availability.refetch(); void providers.refetch(); }}
       onRecheck={recheck.recheck}
       rechecking={recheck.rechecking}
       recheckError={recheck.error}
