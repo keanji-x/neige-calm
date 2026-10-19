@@ -211,10 +211,10 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
         </div>
       </PanelModule> : parts.key === 'cards' ? <PanelModule key={parts.key} title={parts.title} bare
         moduleMarker={parts.key} titleFieldMarker={FIELD.moduleTitle}>
-        <section aria-label={parts.title}><ContextGroup title={parts.title} collapsible open headingAs="h2" secondaryAction={deps.cardsAction} actionVisibility="always">
+        <ContextGroup title={parts.title} collapsible="controls" open secondaryAction={deps.cardsAction} actionVisibility="always">
           <div data-nc-card-inventory="">{rows ? <ContextList aria-label="Workbench tools">{children}</ContextList> : children}</div>
           {deps.cardEntries}
-        </ContextGroup></section>
+        </ContextGroup>
       </PanelModule> : (
         <PanelModule
           key={parts.key}

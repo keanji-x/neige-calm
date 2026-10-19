@@ -129,7 +129,7 @@ it('keeps empty groups hidden while retaining the single card-level creation act
   expect(root.querySelector('section[aria-label="Needs attention"]')).toBeNull();
   const creation = page.getByRole('button', { name: 'New', exact: true });
   await creation.click();
-  expect(root.querySelectorAll('details')).toHaveLength(3);
+  expect(root.querySelectorAll('details')).toHaveLength(2);
 });
 
 it('uses the existing unknown-kind fallback and preserves selection while focusing a conversation', async () => {

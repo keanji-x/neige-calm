@@ -27,7 +27,7 @@ it('lists tool names and their real statuses without type subgroups', async () =
     card({ id: 'exited-agent', kind: 'codex', title: 'Review', runtime: { worker_session_id: 'three', kind: 'codex', status: 'exited' } }),
   ], tasks: [] });
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
-  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(1);
+  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(0);
   const statuses = [...document.querySelectorAll<HTMLElement>('[data-nc-module="cards"] [data-nc-status]')];
   expect(statuses.map(status => status.textContent)).toEqual(['running', 'exited', 'exited']);
   for (const status of statuses) expect(status.getBoundingClientRect().width).toBeGreaterThan(1);
@@ -40,7 +40,7 @@ it('keeps failed tool status visible in the expanded Workbench', async () => {
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), derive({
     cards: [card({ id: 'failed-terminal', title: 'Build', runtime: { worker_session_id: 'one', kind: 'terminal', status: 'failed' } })], tasks: [],
   }))}</PanelCard></div>);
-  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(1);
+  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(0);
   expect(document.querySelector<HTMLElement>('[data-nc-row="failed-terminal"] [data-nc-status]')?.textContent).toBe('failed');
 });
 
@@ -264,7 +264,7 @@ it('lists tools directly while keeping kernel attention visible', async () => {
   const onOpenCard = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
   const inventory = document.querySelector<HTMLElement>('[data-nc-module="cards"]')!;
-  expect(inventory.querySelectorAll('details')).toHaveLength(1);
+  expect(inventory.querySelectorAll('details')).toHaveLength(0);
   expect(inventory.textContent).toContain('Needs input');
   await page.getByRole('button', { name: 'Needs a reply' }).click();
   expect(onOpenCard).toHaveBeenCalledWith(worker.id);
@@ -353,20 +353,20 @@ it('collapses Workbench while retaining tools and usable header actions', async 
   };
   renderPage(content);
   const group = document.querySelector<HTMLElement>('[data-nc-desktop-panel] [data-nc-module="cards"]')!;
-  const disclosure = group.querySelector<HTMLDetailsElement>('details')!;
+  const disclosure = group.querySelector<HTMLButtonElement>('button[aria-labelledby]')!;
   expect(disclosure).not.toBeNull();
-  expect(disclosure.open).toBe(true);
+  expect(disclosure.getAttribute('aria-expanded')).toBe('true');
   const tool = group.querySelector<HTMLButtonElement>('[data-nc-row="tool:server"] button')!;
-  await page.elementLocator(disclosure.querySelector('h2')!).click();
-  expect(disclosure.open).toBe(false);
+  await page.elementLocator(disclosure).click();
+  expect(disclosure.getAttribute('aria-expanded')).toBe('false');
   expect(tool.isConnected).toBe(true);
   expect(tool.checkVisibility()).toBe(false);
   await page.getByRole('button', { name: 'Add tool', exact: true }).click();
   expect(onAdd).toHaveBeenCalledOnce();
-  expect(disclosure.open).toBe(false);
-  disclosure.querySelector('summary')!.focus();
+  expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+  disclosure.focus();
   await userEvent.keyboard('{Enter}');
-  expect(disclosure.open).toBe(true);
+  expect(disclosure.getAttribute('aria-expanded')).toBe('true');
   expect(group.querySelector('[data-nc-row="tool:server"] button')).toBe(tool);
   await page.getByRole('button', { name: 'Development server', exact: true }).click();
   expect(onOpenCard).toHaveBeenCalledWith('server');

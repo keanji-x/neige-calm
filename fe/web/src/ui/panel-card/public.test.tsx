@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
-import { cleanup, render } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ContextGroup } from './context.tsx';
 import { PanelEmpty, PanelModule } from './public.tsx';
 
 afterEach(cleanup);
@@ -60,5 +61,47 @@ describe('PanelEmpty field marker', () => {
     const { container } = render(<PanelEmpty>No cards yet.</PanelEmpty>);
     expect(container.querySelector('[data-nc-field]')).toBeNull();
     expect(container.querySelector('p')?.hasAttribute('data-nc-field')).toBe(false);
+  });
+});
+
+
+describe('ContextGroup independent header controls', () => {
+  it('honors controlled state without unmounting the body or nesting action buttons', () => {
+    const onOpenChange = vi.fn();
+    const onMenu = vi.fn();
+    const content = (open: boolean) => <ContextGroup title="Resources" collapsible="controls" open={open}
+      onOpenChange={onOpenChange} action={<button type="button" onClick={onMenu}>Menu</button>}>
+      <input aria-label="Retained draft" defaultValue="keep me" />
+    </ContextGroup>;
+    const view = render(content(true));
+    const toggle = screen.getByRole('button', { name: 'Resources' });
+    const draft = screen.getByRole('textbox', { name: 'Retained draft' });
+    const body = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    const menu = screen.getByRole('button', { name: 'Menu' });
+    expect(toggle.contains(menu)).toBe(false);
+    fireEvent.click(toggle);
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    view.rerender(content(false));
+    expect(body.hidden).toBe(true);
+    expect(draft.isConnected).toBe(true);
+    fireEvent.click(menu);
+    expect(onMenu).toHaveBeenCalledOnce();
+    expect(onOpenChange).toHaveBeenCalledTimes(1);
+    fireEvent.click(toggle);
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    view.rerender(content(true));
+    expect(body.hidden).toBe(false);
+    expect(screen.getByRole('textbox', { name: 'Retained draft' })).toBe(draft);
+  });
+
+  it('keeps heading and uncontrolled disclosure available without header actions', () => {
+    render(<ContextGroup title="Resources" collapsible="controls" open>Body</ContextGroup>);
+    expect(screen.getByRole('region', { name: 'Resources' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Resources' })).toBeTruthy();
+    const toggle = screen.getByRole('button', { name: 'Resources' });
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)?.hidden).toBe(true);
   });
 });

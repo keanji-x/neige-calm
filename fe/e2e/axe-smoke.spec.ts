@@ -40,3 +40,29 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
     expect(results.violations, `${route.path}: ${results.violations.map((item) => item.id).join(', ')}`).toEqual([]);
   }
 });
+
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`Workbench keeps independent accessible controls in ${theme} mode`, async ({ page, request }) => {
+    await page.emulateMedia({ colorScheme: theme });
+    const area = await createArea(request);
+    createdAreaIds.push(area.id);
+    const track = await createTrack(request, area.id);
+    await page.goto(`/next/track/${track.id}`);
+    const workbench = page.getByRole('region', { name: 'Workbench', exact: true });
+    const toggle = workbench.getByRole('button', { name: 'Workbench', exact: true });
+    const tools = workbench.getByRole('button', { name: 'Tools', exact: true });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    for (const expanded of [false, true]) {
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', String(expanded));
+      const results = await new AxeBuilder({ page }).include('[data-nc-desktop-panel]')
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations).toEqual([]);
+      await tools.click();
+      await expect(page.getByRole('menuitem', { name: 'terminal', exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(toggle).toHaveAttribute('aria-expanded', String(expanded));
+    }
+  });
+}

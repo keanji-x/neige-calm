@@ -46,7 +46,13 @@
   summary.head { cursor: pointer; list-style: none; border-radius: var(--radius-highlight); }
   summary.head::-webkit-details-marker { display: none; }
   summary.head:hover { background: var(--overlay-hover); }
-  .group[open] > .head > .actionRail > .endSlot > svg { rotate: 90deg; }
+  .group[open] > .head > .endSlot > svg { rotate: 90deg; }
+  .disclosureHead { position: relative; isolation: isolate; }
+  .disclosureHeading { position: relative; z-index: 1; min-inline-size: 0; min-block-size: var(--row-h); display: flex; align-items: center; pointer-events: none; }
+  .disclosureToggle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: flex-end; border-radius: var(--radius-highlight); cursor: pointer; }
+  .disclosureToggle:hover { background: var(--overlay-hover); }
+  .disclosureToggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .disclosureActions { position: relative; z-index: 1; margin-inline-end: calc(var(--control-h-sm) + var(--space-1)); }
   .action { display: flex; align-items: center; opacity: 0; }
   .alwaysAction { opacity: 1; }
   .group:hover .action, .group:focus-within .action { opacity: 1; }

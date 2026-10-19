@@ -1,8 +1,10 @@
-import type { ButtonHTMLAttributes, HTMLAttributes, ReactElement, ReactNode } from 'react';
+import { useId, type ButtonHTMLAttributes, type HTMLAttributes, type ReactElement, type ReactNode } from 'react';
+import { useCollapsible } from '@astryxdesign/core/Collapsible';
 import { Button } from '@astryxdesign/core/Button';
 import { DropdownMenu } from '@astryxdesign/core/DropdownMenu';
 import { Icon, type IconName } from '../icon/public.tsx';
 import { ListText } from '../list-typography/public.tsx';
+import { SpringRotation } from '../motion/rotation.tsx';
 import styles from './context.module.css';
 
 /** One line and one optional overflow menu. Callers own content, actions and metadata. */
@@ -32,11 +34,11 @@ export function ContextItem({ icon, label, metadata, trailing, buttonProps, menu
 }
 
 /** Shared group title, disclosure, spacing and optional host action. */
-export function ContextGroup({ title, children, collapsible = false, headingAs, open, onOpenChange, count, action, secondaryAction, actionVisibility = 'intent' }: Readonly<{
+export function ContextGroup({ title, children, collapsible = false, open, onOpenChange, count, action, secondaryAction, actionVisibility = 'intent' }: Readonly<{
   title: string;
   children: ReactNode;
-  collapsible?: boolean;
-  headingAs?: 'h2' | 'span';
+  /** Controls mode preserves a region heading, including when header actions are absent. */
+  collapsible?: boolean | 'controls';
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   count?: number;
@@ -44,20 +46,51 @@ export function ContextGroup({ title, children, collapsible = false, headingAs, 
   secondaryAction?: ReactNode;
   actionVisibility?: 'intent' | 'always';
 }>) {
-  const heading = <ListText as={headingAs ?? (collapsible ? 'span' : 'h2')} tone="secondary" emphasis="medium" className={styles.title}>
+  const hasControls = collapsible === 'controls' || action !== undefined || secondaryAction !== undefined;
+  const heading = <ListText as={collapsible && !hasControls ? 'span' : 'h2'} tone="secondary" emphasis="medium" className={styles.title}>
     {title}{count === undefined ? null : ` · ${count}`}
   </ListText>;
   const actions = <span className={styles.actionRail}>
     {secondaryAction === undefined ? null : <span className={styles.action}>{secondaryAction}</span>}
     {action === undefined ? null : <span className={`${styles.action} ${actionVisibility === 'always' ? styles.alwaysAction : ''}`}>{action}</span>}
-    {collapsible && <span className={styles.endSlot}><Icon name="chevron-right" size="sm" /></span>}
   </span>;
+  // Native summary is itself interactive and cannot contain independent action buttons.
+  if (collapsible && hasControls) return <ActionDisclosure title={title} heading={heading} actions={actions} open={open} onOpenChange={onOpenChange}>{children}</ActionDisclosure>;
   return collapsible ? <details className={styles.group} aria-label={title} open={open} onToggle={event => onOpenChange?.(event.currentTarget.open)}>
-    <summary className={styles.head}>{heading}{actions}</summary>
+    <summary className={styles.head}>{heading}<span className={styles.endSlot}><Icon name="chevron-right" size="sm" /></span></summary>
     {children}
   </details> : <section className={styles.group} aria-label={title}>
     <div className={styles.head}>{heading}{actions}</div>
     {children}
+  </section>;
+}
+
+/** Action-bearing groups use sibling controls and retain their body while folded. */
+function ActionDisclosure({ title, heading, actions, children, open, onOpenChange }: Readonly<{
+  title: string;
+  heading: ReactNode;
+  actions: ReactNode;
+  children: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}>) {
+  const headingId = useId();
+  const contentId = useId();
+  const disclosure = useCollapsible({ isCollapsible: {
+    defaultIsOpen: open ?? false,
+    isOpen: onOpenChange === undefined ? undefined : open,
+    onOpenChange,
+  } });
+  return <section className={styles.group} aria-label={title}>
+    <div className={`${styles.head} ${styles.disclosureHead}`}>
+      <div id={headingId} className={styles.disclosureHeading}>{heading}</div>
+      <button type="button" className={styles.disclosureToggle} aria-labelledby={headingId}
+        aria-expanded={disclosure.isOpen} aria-controls={contentId} onClick={disclosure.toggle}>
+        <SpringRotation className={styles.endSlot} angle={disclosure.isOpen ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
+      </button>
+      <span className={styles.disclosureActions}>{actions}</span>
+    </div>
+    <div id={contentId} hidden={!disclosure.isOpen}>{children}</div>
   </section>;
 }
 
