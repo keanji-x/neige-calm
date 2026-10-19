@@ -50,22 +50,8 @@ impl<'a> IssueTurnHandle<'a> {
                     plan: NativeEditPlan { target },
                 })
             }
-            (
-                Arm::Claude(session),
-                NativeEditTarget::TranscriptCut {
-                    resume_at,
-                    drops_turn,
-                },
-            ) => {
-                session
-                    .check_truncation(
-                        thread_id,
-                        &ResumeTruncation {
-                            at: *resume_at,
-                            drops_turn: *drops_turn,
-                        },
-                    )
-                    .await
+            (Arm::Claude(session), NativeEditTarget::TranscriptCut { .. }) => {
+                session.prepare_edit(thread_id, target).await
             }
             (Arm::Codex(..), NativeEditTarget::TranscriptCut { .. })
             | (Arm::Claude(_), NativeEditTarget::BeforeTurn { .. }) => Err(CalmError::Internal(
@@ -155,45 +141,13 @@ impl<'a> IssueTurnHandle<'a> {
                 )
             }
             Arm::Claude(session) => {
-                let TurnRequest {
-                    input,
-                    selection,
-                    permission,
-                    edit,
-                } = request;
-                let InputRequest { items, correlation } = input;
                 if matches!(
                     invocation.rewind.as_deref().map(|rewind| &rewind.0),
                     Some(RewindArm::Codex { .. })
                 ) {
                     return Err(mismatched_rewind());
                 }
-                let truncation = match edit {
-                    TurnEdit::NoEdit => None,
-                    TurnEdit::ApplyNativePlan(NativeEditPlan {
-                        target:
-                            NativeEditTarget::TranscriptCut {
-                                resume_at,
-                                drops_turn,
-                            },
-                    }) => Some(ResumeTruncation {
-                        at: resume_at,
-                        drops_turn,
-                    }),
-                    TurnEdit::ApplyNativePlan(NativeEditPlan {
-                        target: NativeEditTarget::BeforeTurn { .. },
-                    }) => return Err(mismatched_rewind()),
-                };
-                session
-                    .turn_start_control(
-                        thread_id,
-                        items,
-                        &selection,
-                        permission,
-                        &correlation.0,
-                        truncation.as_ref(),
-                    )
-                    .await
+                session.start_turn(thread_id, request).await
             }
         }
     }

@@ -1,5 +1,8 @@
 //! Calm kernel: execution, persistence, and scoped capabilities. Compiled components and external plugins share the plugin lifecycle.
 
+#[cfg(test)]
+extern crate self as calm_server;
+
 pub mod actor;
 pub mod auth;
 pub mod builtin_plugins;

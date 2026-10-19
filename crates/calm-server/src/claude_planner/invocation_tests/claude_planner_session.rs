@@ -1,6 +1,9 @@
+#![cfg(test)]
 //! #1791 PR2b: a real `ClaudePlannerSession` driving a fake `claude` (bash) through every turn
 //! path — exit, kill, linger, undecodable, stalled write, immediate exit — plus the submission
 //! contract's refusals and the stop seam. See `claude_planner_session_fixture.rs` for the rig.
+
+use super::{ordinary_start, request};
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,15 +66,17 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
 
     let turn = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     assert_eq!(
         rig.session()
@@ -146,15 +151,17 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
     // The first init bound the session: the next turn resumes it.
     let second = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("again"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("again"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("second turn_start");
     pause.release.notify_one();
     let seen = until_completed(&mut rx).await;
@@ -232,15 +239,17 @@ async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_compl
     let rig = Rig::new("exit-with-orphan").await;
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
     let orphan_alive = rig
@@ -267,15 +276,17 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     // Kill only once the tool call is open, so settlement has an item to close.
     loop {
@@ -333,15 +344,17 @@ async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
     let rig = Rig::new("linger").await;
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
 
@@ -358,15 +371,17 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
     let rig = Rig::new("undecodable").await;
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
 
@@ -398,15 +413,17 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
     let started = Instant::now();
     let error = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            input,
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                input,
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect_err("turn_start must refuse");
     assert!(started.elapsed() < Duration::from_secs(30));
     assert!(
@@ -512,15 +529,17 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
@@ -540,15 +559,17 @@ async fn the_private_instructions_never_reach_a_cmdline() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let pids = rig.marked_pids();
@@ -598,15 +619,17 @@ async fn the_stop_seam_fails_without_signalling_until_cleared() {
     let alive_while_armed = alive(pid);
     let turn = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
-        .await;
+        .await
+        .and_then(ordinary_start);
     clear_claude_planner_stop_failure_for_test(&rig.worker_session_id);
     let cleared = stop(&rig.host.instance, &rig.worker_session_id).await;
     let _ = marked.wait();
@@ -656,15 +679,17 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     rig.session().shutdown().await.expect("shutdown stops");
@@ -676,15 +701,17 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     assert!(rig.marked_pids().is_empty());
     assert!(
         rig.session()
-            .turn_start(
+            .start_turn(
                 &rig.thread,
-                rig.text("later"),
-                &TurnModelSelection::inherit(),
-                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-                &client_id(),
-                None
+                request(
+                    rig.text("later"),
+                    &TurnModelSelection::inherit(),
+                    calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                    &client_id()
+                ),
             )
             .await
+            .and_then(ordinary_start)
             .is_err()
     );
 }
@@ -697,20 +724,22 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
     let path = image.to_string_lossy().into_owned();
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            vec![
-                InputItem::Text {
-                    text: "what colour?".into(),
-                },
-                InputItem::LocalImage { path: path.clone() },
-            ],
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                vec![
+                    InputItem::Text {
+                        text: "what colour?".into(),
+                    },
+                    InputItem::LocalImage { path: path.clone() },
+                ],
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
 
@@ -737,59 +766,4 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
         serde_json::json!({ "type": "localImage", "path": path })
     );
     assert!(!stored.to_string().contains("UE5HREFUQQ=="));
-}
-
-/// A `/proc` scan that hangs (an `environ` read blocked on a process's mm lock) fails its stop at
-/// the deadline and leaks its blocking thread; until it returns, every later stop fails closed at
-/// once instead of leaking one more thread per attempt.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_hung_proc_scan_fails_later_stops_at_once_until_it_returns() {
-    use calm_server::claude_planner::stop::{
-        MarkerInstance, hold_claude_planner_scans_for_test, hung_claude_planner_scans_for_test,
-        stop_by,
-    };
-    let dir = tempfile::tempdir().expect("tempdir");
-    let instance =
-        MarkerInstance::for_data_dir(dir.path(), calm_server::claude_planner::stop::MARKER_KEY)
-            .expect("instance");
-    let id = calm_server::model::new_id();
-    hold_claude_planner_scans_for_test(true);
-    let first = stop_by(
-        &instance,
-        &id,
-        tokio::time::Instant::now() + Duration::from_millis(300),
-    )
-    .await;
-    let hung_after_first = hung_claude_planner_scans_for_test();
-    let asked = Instant::now();
-    let second = stop_by(
-        &instance,
-        &id,
-        tokio::time::Instant::now() + Duration::from_secs(3),
-    )
-    .await;
-    let second_took = asked.elapsed();
-    let hung_after_second = hung_claude_planner_scans_for_test();
-    // Released before asserting, so a red run does not leave blocking threads parked.
-    hold_claude_planner_scans_for_test(false);
-
-    let first = first.expect_err("the hung scan fails closed");
-    assert!(
-        first.to_string().contains("did not finish in time"),
-        "{first}"
-    );
-    assert_eq!(hung_after_first, 1);
-    let second = second.expect_err("fails closed at once");
-    assert!(second_took < Duration::from_secs(1), "{second_took:?}");
-    assert!(second.to_string().contains("still hung"), "{second}");
-    assert_eq!(hung_after_second, 1, "no second leaked thread");
-
-    for _ in 0..200 {
-        if hung_claude_planner_scans_for_test() == 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert_eq!(hung_claude_planner_scans_for_test(), 0);
-    stop(&instance, &id).await.expect("scans run again");
 }

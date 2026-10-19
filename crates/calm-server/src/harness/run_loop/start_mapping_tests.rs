@@ -168,7 +168,19 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
 async fn m1_mapping_codex_edit_preparation_and_issue_handle() {
     let f = Fixture::new().await;
     let backend = &f.harness.inner.backend;
-    let target = backend.native_edit_target("old-turn", None, None).unwrap();
+    let target = backend
+        .native_edit_target(
+            "old-turn",
+            &super::super::rewind::RewindPlan {
+                boundary: 0,
+                last_row: 0,
+                row_count: 0,
+                previous_turn_id: None,
+                previous_turn_rows: vec![],
+                prompt_client_id: None,
+            },
+        )
+        .unwrap();
     let EditPreparation::Prepared { plan } = IssueTurnHandle::from_reconciliation(&f.harness.inner)
         .await
         .prepare_rewind(target)

@@ -140,6 +140,10 @@ if [ -n "$PF" ]; then cat "$PF" > "$D/instructions"; fi
 case "$SCENARIO" in
   stall) exec sleep 300 ;;
   immediate-exit) exit 1 ;;
+  closed-stdin)
+    exec 0<&-
+    : > "$D/stdin-closed"
+    exec sleep 300 ;;
 esac
 
 IFS= read -r LINE || exit 3

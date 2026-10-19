@@ -1,7 +1,7 @@
 //! One Claude Planner session: one `claude -p` process per turn, at most one at a time (design
 //! #1791 §5.1, §5.2, §5.6, §6.2).
 //!
-//! Submission contract (`ClaudePlannerSession::turn_start_control`): refuse until the harness is
+//! Submission contract (`ClaudePlannerSession::start_turn`): refuse until the harness is
 //! installed, mint the turn id, check the seal, run `--version` (before any user input), on the
 //! harness's first turn mint its MCP credential (§5.1 item 2), `stop` whatever still carries this session's marker, write the instructions file under a
 //! per-spawn guard, spawn, re-check the seal, write the one `user` line (bounded), and return
@@ -180,6 +180,7 @@ pub(super) enum SpawnInput<'a> {
     Compaction,
 }
 
+mod invocation;
 mod start;
 pub(crate) use start::SpawnFailure;
 impl ClaudePlannerSession {
@@ -252,66 +253,6 @@ impl ClaudePlannerSession {
             .as_ref()
             .filter(|active| active.thread_id == thread)
             .map(|active| active.turn_id.clone())
-    }
-
-    /// The dry run of a rewind's cut (#1923), under the issue lock so no turn spawns beside it.
-    pub(crate) async fn check_truncation(
-        &self,
-        thread: &str,
-        cut: &ResumeTruncation,
-    ) -> Result<provider::control::EditPreparation<CalmError>> {
-        let _issue = self.shared.issue.lock().await;
-        let busy = {
-            let state = self.shared.state();
-            state.shutting_down || state.active.is_some()
-        };
-        if busy {
-            return Err(CalmError::Conflict(
-                "the Claude conversation is busy".into(),
-            ));
-        }
-        super::rewind::check(&self.shared.params, thread, cut).await
-    }
-
-    /// See the module docs for the submission contract. `selection` is the card's stored choice,
-    /// read at issue and passed as it is; the CLI judges the model (#1822 6′). `mode` is the card's
-    /// permission mode, read at issue by the harness (#2348) and fixed for this spawn. `truncation`
-    /// is a rewind's pending cut, applied by this spawn.
-    /// Fixture-facing legacy projection; managed issuance consumes typed control results.
-    #[cfg(feature = "fixtures")]
-    pub async fn turn_start(
-        &self,
-        thread: &str,
-        items: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        mode: PlannerPermissionMode,
-        client_id: &str,
-        truncation: Option<&ResumeTruncation>,
-    ) -> Result<String, crate::harness::backend::TurnStartFailure> {
-        crate::harness::backend::ordinary_start_result(
-            self.turn_start_control(thread, items, selection, mode, client_id, truncation)
-                .await,
-        )
-    }
-
-    pub(crate) async fn turn_start_control(
-        &self,
-        thread: &str,
-        items: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        mode: PlannerPermissionMode,
-        client_id: &str,
-        truncation: Option<&ResumeTruncation>,
-    ) -> Result<
-        provider::control::TurnStartOutcome<CalmError, crate::harness::backend::StartDiagnostic>,
-        crate::harness::backend::TurnStartFailure,
-    > {
-        let input = SpawnInput::Turn {
-            items,
-            client_id,
-            truncation,
-        };
-        start::start_result(self.start_spawn(thread, input, selection, mode).await)
     }
 
     /// The submission contract for either kind of spawn; see the module docs.

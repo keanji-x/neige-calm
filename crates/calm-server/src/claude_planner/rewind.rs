@@ -22,13 +22,12 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest CLI reason a refusal carries.
 const MAX_REASON_CHARS: usize = 500;
 
-/// The cut that removes the turn whose prompt line is `prompt_client_id`: keep the session up to the
-/// chain entry the previous turn ended on. The outer option is absent for the first turn;
-/// the inner option is absent when the previous turn recorded no native anchor.
-pub(crate) fn truncation(
-    previous_anchor: Option<Option<Uuid>>,
+/// Resolve host transcript rows only in the Claude host integration.
+pub(crate) fn native_edit_target(
+    previous_rows: Option<&[TranscriptRow]>,
     prompt_client_id: Option<&str>,
-) -> Result<ResumeTruncation> {
+) -> Result<NativeEditTarget> {
+    let previous_anchor = previous_rows.map(anchor);
     let Some(previous_anchor) = previous_anchor else {
         return Err(CalmError::Conflict(
             "the first message of a Claude conversation cannot be edited: Claude has nothing \
@@ -50,14 +49,17 @@ pub(crate) fn truncation(
                     .into(),
             )
         })?;
-    Ok(ResumeTruncation { at, drops_turn })
+    Ok(NativeEditTarget::TranscriptCut {
+        resume_at: at,
+        drops_turn,
+    })
 }
 
 /// The last chain entry of a turn: its outcome's `lastRecordUuid`, or else the record uuid of its
 /// last `<uuid>:<n>` reasoning or message item. The fallback is legacy only: rows from before the
 /// outcome carried `lastRecordUuid` named items by record uuid, whereas items are now named by API
 /// `message.id` (`msg_…:<n>`, not a uuid, so no anchor), and every newer outcome carries it.
-pub(crate) fn anchor(turn_rows: &[TranscriptRow]) -> Option<Uuid> {
+pub(super) fn anchor(turn_rows: &[TranscriptRow]) -> Option<Uuid> {
     let recorded = turn_rows
         .iter()
         .rev()
@@ -237,10 +239,10 @@ mod mapping_tests {
             }
         }
         assert!(
-            matches!(truncation(None, None), Err(CalmError::Conflict(message)) if message == "the first message of a Claude conversation cannot be edited: Claude has nothing before it to go back to")
+            matches!(native_edit_target(None, None), Err(CalmError::Conflict(message)) if message == "the first message of a Claude conversation cannot be edited: Claude has nothing before it to go back to")
         );
         assert!(
-            matches!(truncation(Some(None), None), Err(CalmError::Conflict(message)) if message == "the previous reply did not record where it ended, so this turn cannot be removed")
+            matches!(native_edit_target(Some(&[]), None), Err(CalmError::Conflict(message)) if message == "the previous reply did not record where it ended, so this turn cannot be removed")
         );
     }
 }

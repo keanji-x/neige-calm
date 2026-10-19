@@ -295,8 +295,16 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
                 EditPreparation::Failed { error: CalmError::Conflict(message) } if message == "ACP history replacement is unsupported"
             ));
         } else {
+            let plan = super::super::rewind::RewindPlan {
+                boundary: 0,
+                last_row: 0,
+                row_count: 0,
+                previous_turn_id: None,
+                previous_turn_rows: vec![],
+                prompt_client_id: None,
+            };
             assert!(
-                matches!(backend.native_edit_target("turn", None, None), Err(CalmError::Conflict(message)) if message == "the first message of a Claude conversation cannot be edited: Claude has nothing before it to go back to")
+                matches!(backend.native_edit_target("turn", &plan), Err(CalmError::Conflict(message)) if message == "the first message of a Claude conversation cannot be edited: Claude has nothing before it to go back to")
             );
         }
         assert!(!backend.supports_steer());

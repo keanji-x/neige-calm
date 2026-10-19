@@ -24,7 +24,6 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use uuid::Uuid;
 
 use crate::claude_planner::session::ClaudePlannerSession;
-use crate::claude_planner::spawn::ResumeTruncation;
 use crate::codex_appserver::{ApprovalRoute, TurnApprovals};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
@@ -195,21 +194,18 @@ impl PlannerBackend {
     pub(crate) fn native_edit_target(
         &self,
         turn_id: &str,
-        previous_anchor: Option<Option<Uuid>>,
-        prompt_client_id: Option<&str>,
+        plan: &crate::harness::rewind::RewindPlan,
     ) -> Result<NativeEditTarget> {
         match &self.0 {
             Arm::Codex(..) | Arm::Acp(_) => Ok(NativeEditTarget::BeforeTurn {
                 before_turn_id: turn_id.into(),
             }),
-            Arm::Claude(_) => {
-                let cut =
-                    crate::claude_planner::rewind::truncation(previous_anchor, prompt_client_id)?;
-                Ok(NativeEditTarget::TranscriptCut {
-                    resume_at: cut.at,
-                    drops_turn: cut.drops_turn,
-                })
-            }
+            Arm::Claude(_) => crate::claude_planner::rewind::native_edit_target(
+                plan.previous_turn_id
+                    .as_ref()
+                    .map(|_| plan.previous_turn_rows.as_slice()),
+                plan.prompt_client_id.as_deref(),
+            ),
         }
     }
 
@@ -236,25 +232,12 @@ impl PlannerBackend {
         &self,
         source: &impl SelectionSource,
     ) -> Result<CompactRequest> {
-        let selection = match &self.0 {
-            Arm::Claude(session) => {
-                use crate::claude_planner::compact;
-                if session.host().configured().is_err() {
-                    return Err(compact::refused(
-                        crate::claude_planner::config::unavailable_message(),
-                    ));
-                }
-                self.resolve_selection(source).await.map_err(|refusal| {
-                    compact::refused(if refusal.reader.is_empty() {
-                        refusal.log
-                    } else {
-                        refusal.reader
-                    })
-                })?
-            }
-            Arm::Codex(..) | Arm::Acp(_) => TurnModelSelection::inherit(),
-        };
-        Ok(CompactRequest { selection })
+        match &self.0 {
+            Arm::Claude(session) => session.compact_request(source).await,
+            Arm::Codex(..) | Arm::Acp(_) => Ok(CompactRequest {
+                selection: TurnModelSelection::inherit(),
+            }),
+        }
     }
 
     pub(crate) fn turn_identity(&self, id: String) -> TurnIdentity {
@@ -320,23 +303,7 @@ impl PlannerBackend {
                 let payload = source.card_payload().await?;
                 codex_selection::resolve(daemon, source, &payload).await
             }
-            // #1810: a Claude Planner reads its card like Codex does, but nothing is asked of
-            // Codex. A server started without its config stops it first.
-            Arm::Claude(session) => {
-                if let Err(error) = session.host().configured() {
-                    return Err(IssuanceRefusal::needs_a_choice(
-                        error.to_string(),
-                        format!(
-                            "{}. Your message is still queued and will be sent once the server runs with it.",
-                            crate::claude_planner::config::unavailable_message()
-                        ),
-                    ));
-                }
-                let payload = source.card_payload().await?;
-                // #1822 6′: no catalog is consulted at issue; the CLI judges the model it is given.
-                crate::claude_planner::models::turn_selection(&payload)
-                    .map_err(|(log, reader)| IssuanceRefusal::needs_a_choice(log, reader))
-            }
+            Arm::Claude(session) => session.resolve_selection(source).await,
         }
     }
 

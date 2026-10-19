@@ -20,14 +20,10 @@ mod claude_planner_models;
 mod claude_planner_replace;
 #[path = "cases/claude_planner_retirement.rs"]
 mod claude_planner_retirement;
-#[path = "cases/claude_planner_session.rs"]
-mod claude_planner_session;
+// Also compiled by the crate-local session cases after removal of their public start seam.
+#[allow(dead_code)]
 #[path = "cases/claude_planner_session_fixture.rs"]
 mod claude_planner_session_fixture;
-#[path = "cases/claude_planner_session_lifecycle.rs"]
-mod claude_planner_session_lifecycle;
-#[path = "cases/claude_planner_session_results.rs"]
-mod claude_planner_session_results;
 #[path = "cases/claude_planner_stack_fixture.rs"]
 mod claude_planner_stack_fixture;
 #[path = "cases/claude_planner_wiring.rs"]

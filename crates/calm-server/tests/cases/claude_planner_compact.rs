@@ -515,3 +515,51 @@ async fn compact_boundary_failure_hides_old_reading_and_automatic_boundary_is_no
         stack.shutdown().await;
     }
 }
+
+/// Even a failed small write is conservatively unconfirmed. Compact wedges instead of
+/// restoring its phase or retrying like an ordinary start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_compact_with_uncertain_write_wedges_without_retry() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (_track, card) = stack.create_claude_track().await;
+    stack.run_turn(&root, &card, "exit-trailing", "first").await;
+    let runtime = stack.runtime(&card).await;
+    let before = rows(&stack, &card).await;
+    let spawns_before = spawns(&root);
+    let closed = root.fake_dir().join("stdin-closed");
+    root.set_scenario("closed-stdin");
+    stack
+        .harness(&runtime.id)
+        .claude_session_for_test()
+        .unwrap()
+        .set_after_spawn_hook_for_test(Arc::new(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !closed.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the fake must close stdin before the write"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }));
+
+    let (status, body) = compact(&stack, &card).await;
+    assert!(status.is_server_error(), "{status}: {body}");
+    let snapshot = stored_snapshot(&stack, &card).await;
+    assert_eq!(snapshot["compact_outcome"]["status"], "unconfirmed");
+    stack.wait_phase(&runtime.id, "wedged").await;
+    assert_eq!(rows(&stack, &card).await, before);
+    assert_eq!(spawns(&root), spawns_before + 1);
+    let (status, body) = compact(&stack, &card).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        spawns(&root),
+        spawns_before + 1,
+        "no second submission while wedged"
+    );
+    stack.shutdown().await;
+}

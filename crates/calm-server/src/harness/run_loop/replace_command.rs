@@ -93,13 +93,7 @@ pub(super) async fn handle_replace(
         .transcript_rows_of_thread(inner.card_id.as_str(), &thread_id)
         .await?;
     let plan = plan(&rows, turn_id).map_err(refused)?;
-    let target = inner.backend.native_edit_target(
-        turn_id,
-        plan.previous_turn_id
-            .as_ref()
-            .map(|_| crate::claude_planner::rewind::anchor(&plan.previous_turn_rows)),
-        plan.prompt_client_id.as_deref(),
-    );
+    let target = inner.backend.native_edit_target(turn_id, &plan);
     let preparation = async {
         IssueTurnHandle::from_reconciliation(inner)
             .await

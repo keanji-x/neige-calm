@@ -1,4 +1,7 @@
+#![cfg(test)]
 //! Drive result optionality through the real session, using only fake CLI output.
+
+use super::{ordinary_start, request};
 
 use calm_server::planner_model::TurnModelSelection;
 
@@ -9,15 +12,17 @@ async fn result_turn(scenario: &str, status: &str, error: Option<&str>) {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .turn_start(
+        .start_turn(
             &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-            &client_id(),
-            None,
+            request(
+                rig.text("hello"),
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &client_id(),
+            ),
         )
         .await
+        .and_then(ordinary_start)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
     assert_eq!(completed["id"], turn);

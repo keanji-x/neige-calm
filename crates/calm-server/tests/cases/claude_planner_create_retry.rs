@@ -206,3 +206,53 @@ async fn a_message_less_retry_after_the_creates_own_claude_spawn_failure_starts_
     assert_eq!(stack.start_ops(&card).await, 2, "the retry starts it");
     stack.runtime(&card).await;
 }
+
+/// A bounded user-line write can have reached Claude. Ordinary turns retain the existing
+/// paced requeue policy, unlike compact's submission-evidence wedge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ordinary_start_with_uncertain_write_requeues_and_retries() {
+    let root = Root::new("stall");
+    let stack = Stack::boot(&root).await;
+    let (_track, card) = stack.create_claude_track().await;
+    let runtime = stack.runtime(&card).await;
+    let harness = stack.harness(&runtime.id);
+    let session = harness.claude_session_for_test().expect("Claude session");
+    // Stay within the route's character limit while exceeding the stdin pipe buffer in bytes.
+    let text = "\u{1f600}".repeat(32768);
+    let (status, body) = stack.post_input(&card, &text).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    tokio::time::timeout(BUDGET, async {
+        while harness.refused_issuances_for_test() == 0 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the bounded write fails and requeues");
+    assert_eq!(session.user_line_writes_for_test(), 1);
+    assert_eq!(harness.pending_len_for_test().await, 1);
+    assert!(
+        harness.issuance_block().await.is_none(),
+        "transient failures do not demand recovery"
+    );
+    assert!(!matches!(
+        harness.state_for_test().await,
+        calm_server::harness::HarnessState::Wedged { .. }
+    ));
+    assert!(
+        stack.outcomes(&card).await.is_empty(),
+        "no issued turn or synthetic outcome"
+    );
+    assert!(
+        root.read_fake("stdin").is_none(),
+        "the fake never read the user line"
+    );
+
+    root.set_scenario("exit");
+    harness.retry_issuance_now().await;
+    stack.wait_outcomes(&card, 1).await;
+    assert_eq!(session.user_line_writes_for_test(), 2);
+    assert_eq!(harness.pending_len_for_test().await, 0);
+    let line: Value = serde_json::from_str(root.read_fake("stdin").unwrap().trim()).unwrap();
+    assert!(line["message"]["content"].to_string().contains(&text));
+    stack.shutdown().await;
+}

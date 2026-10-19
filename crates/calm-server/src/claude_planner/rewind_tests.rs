@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::protocol::decode;
-use super::rewind::{anchor, truncation};
+use super::rewind::{anchor, native_edit_target};
 use super::spawn::{ResumeTruncation, SessionStart, SpawnPurpose, argv, truncation_check_argv};
 use super::translate::{ToolNames, TurnContext, TurnOutcome, TurnTranslator};
 use crate::db::TranscriptRow;
@@ -184,15 +184,15 @@ fn the_anchor_is_the_outcome_record_and_falls_back_to_the_last_item_record() {
         None,
         "an API message id is no chain entry"
     );
-    assert!(truncation(Some(anchor(&items[1..2])), Some(CLIENT)).is_err());
+    assert!(native_edit_target(Some(&items[1..2]), Some(CLIENT)).is_err());
     assert!(
-        truncation(None, Some(CLIENT)).is_err(),
+        native_edit_target(None, Some(CLIENT)).is_err(),
         "a first turn has no anchor"
     );
     assert_eq!(
-        truncation(Some(anchor(&with_outcome)), Some(CLIENT)).unwrap(),
-        ResumeTruncation {
-            at: uuid(9),
+        native_edit_target(Some(&with_outcome), Some(CLIENT)).unwrap(),
+        provider::control::NativeEditTarget::TranscriptCut {
+            resume_at: uuid(9),
             drops_turn: Uuid::parse_str(CLIENT).unwrap(),
         }
     );
