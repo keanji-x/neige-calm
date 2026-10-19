@@ -440,7 +440,10 @@ async fn turn_interrupt_treats_an_already_finished_turn_as_success() {
     });
 
     assert!(
-        matches!(interrupt.await, crate::control::InterruptOutcome::NoTarget),
+        matches!(
+            interrupt.await,
+            crate::control::NativeInterruptOutcome::NoTarget
+        ),
         "interrupt is idempotent when the named turn already finished"
     );
     let _server = server_task.await.unwrap();
@@ -472,11 +475,9 @@ async fn turn_interrupt_propagates_other_rpc_errors() {
             h.server
         });
 
-        let crate::control::InterruptOutcome::Unconfirmed { error, evidence } = interrupt.await
-        else {
+        let crate::control::NativeInterruptOutcome::Unconfirmed { error } = interrupt.await else {
             panic!("only Codex's exact no-active-turn response may be ignored");
         };
-        assert_eq!(evidence, crate::control::SubmissionEvidence::Unobserved);
         let Error::Refused(actual) = error else {
             panic!("RPC refusals must retain their error type: {error}");
         };

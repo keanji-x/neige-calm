@@ -206,7 +206,7 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
         f.daemon
             .interrupt_active_outcome("thread-commit-wake")
             .await,
-        InterruptOutcome::NoTarget
+        provider::control::NativeInterruptOutcome::NoTarget
     ));
     for fail in [false, true] {
         f.daemon.fail_turn_interrupt_for_test(fail);

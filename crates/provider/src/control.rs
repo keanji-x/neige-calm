@@ -86,6 +86,27 @@ pub enum CompactSubmission<E> {
         evidence: SubmissionEvidence,
     },
 }
+/// Native interrupt evidence, which cannot represent delivery of a local signal.
+#[derive(Debug)]
+pub enum NativeInterruptOutcome<E> {
+    NativeAck,
+    NoTarget,
+    Unconfirmed { error: E },
+}
+
+impl<E> From<NativeInterruptOutcome<E>> for InterruptOutcome<E> {
+    fn from(outcome: NativeInterruptOutcome<E>) -> Self {
+        match outcome {
+            NativeInterruptOutcome::NativeAck => Self::NativeAck,
+            NativeInterruptOutcome::NoTarget => Self::NoTarget,
+            NativeInterruptOutcome::Unconfirmed { error } => Self::Unconfirmed {
+                error,
+                evidence: SubmissionEvidence::Unobserved,
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum InterruptOutcome<E> {
     NativeAck,

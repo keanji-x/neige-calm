@@ -2,7 +2,7 @@
 //! has no active worker session; the settled-worker arm ends task-owned sessions after their attempts settle or their track closes;
 //! the Planner arm hibernates idle harnesses on closed tracks;
 //! the thread arm releases shared codex threads whose session ended (#1853).
-use provider::control::InterruptOutcome;
+use provider::control::NativeInterruptOutcome;
 
 use std::time::Duration;
 
@@ -289,11 +289,8 @@ where
             .interrupt_active_outcome(thread_id)
             .await
         {
-            InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-            InterruptOutcome::LocalSignalDelivered => {
-                unreachable!("Codex does not deliver local signals")
-            }
-            InterruptOutcome::Unconfirmed { error: e, .. } => {
+            NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+            NativeInterruptOutcome::Unconfirmed { error: e } => {
                 tracing::warn!(
                     target: "shared_codex_daemon::orphan_turn",
                     worker_session_id = %session.id,

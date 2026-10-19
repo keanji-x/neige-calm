@@ -1,5 +1,5 @@
 use crate::harness::profile::HarnessProfileExt;
-use provider::control::InterruptOutcome;
+use provider::control::NativeInterruptOutcome;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1740,11 +1740,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 }
                 if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str) {
                     match self.daemon.interrupt_active_outcome(thread_id).await {
-                        InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-                        InterruptOutcome::LocalSignalDelivered => {
-                            unreachable!("Codex does not deliver local signals")
-                        }
-                        InterruptOutcome::Unconfirmed { error: e, .. } => {
+                        NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+                        NativeInterruptOutcome::Unconfirmed { error: e } => {
                             tracing::warn!(thread_id, error = %e, "planner harness compensation interrupt failed");
                         }
                     }

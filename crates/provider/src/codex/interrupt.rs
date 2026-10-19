@@ -7,7 +7,7 @@ impl CodexAppServer {
         &self,
         thread_id: &str,
         turn_id: &str,
-    ) -> crate::control::InterruptOutcome<Error> {
+    ) -> crate::control::NativeInterruptOutcome<Error> {
         let response: Result<Value> = self
             .request(
                 "turn/interrupt",
@@ -18,27 +18,24 @@ impl CodexAppServer {
     }
 }
 
-fn interrupt_response(response: Result<Value>) -> crate::control::InterruptOutcome<Error> {
-    use crate::control::{InterruptOutcome, SubmissionEvidence};
+fn interrupt_response(response: Result<Value>) -> crate::control::NativeInterruptOutcome<Error> {
+    use crate::control::NativeInterruptOutcome;
     match response {
-        Ok(_) => InterruptOutcome::NativeAck,
+        Ok(_) => NativeInterruptOutcome::NativeAck,
         Err(Error::Refused(message))
             if message == "turn/interrupt failed: no active turn to interrupt (code -32600)" =>
         {
-            InterruptOutcome::NoTarget
+            NativeInterruptOutcome::NoTarget
         }
         Err(error @ (Error::Refused(_) | Error::Transport(_) | Error::Serde(_))) => {
-            InterruptOutcome::Unconfirmed {
-                error,
-                evidence: SubmissionEvidence::Unobserved,
-            }
+            NativeInterruptOutcome::Unconfirmed { error }
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::{InterruptOutcome, SubmissionEvidence};
+    use crate::control::NativeInterruptOutcome;
 
     #[test]
     fn m1_mapping_interrupt_response() {
@@ -62,9 +59,9 @@ mod tests {
             let original = input.as_ref().err().map(ToString::to_string);
             let outcome = interrupt_response(input);
             match (&outcome, fact) {
-                (InterruptOutcome::NativeAck, "ack") | (InterruptOutcome::NoTarget, "none") => {}
-                (InterruptOutcome::Unconfirmed { error, evidence }, "unknown") => {
-                    assert_eq!(*evidence, SubmissionEvidence::Unobserved);
+                (NativeInterruptOutcome::NativeAck, "ack")
+                | (NativeInterruptOutcome::NoTarget, "none") => {}
+                (NativeInterruptOutcome::Unconfirmed { error }, "unknown") => {
                     assert_eq!(Some(error.to_string()), original);
                 }
                 other => panic!("wrong mapping: {other:?}"),

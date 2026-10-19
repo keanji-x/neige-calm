@@ -1,6 +1,6 @@
 //! Shared `codex app-server` supervisor: starts, supervises, and takes over a single
 //! daemon for the whole server.
-use provider::control::InterruptOutcome;
+use provider::control::NativeInterruptOutcome;
 
 #[cfg(target_os = "macos")]
 mod macos_process;
@@ -1139,11 +1139,8 @@ impl SharedCodexAppServer {
             });
             if self.thread_seals.is_sealed(thread_id) {
                 match self.interrupt_control(thread_id, &turn_id).await {
-                    InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-                    InterruptOutcome::Unconfirmed { error, .. } => return Err(error),
-                    InterruptOutcome::LocalSignalDelivered => {
-                        unreachable!("Codex does not deliver local signals")
-                    }
+                    NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+                    NativeInterruptOutcome::Unconfirmed { error } => return Err(error),
                 }
                 self.active_turns
                     .remove_if(thread_id, |_, active| active == &turn_id);
@@ -1173,11 +1170,8 @@ impl SharedCodexAppServer {
             .insert(thread_id.to_string(), turn_id.clone());
         if self.thread_seals.is_sealed(thread_id) {
             match self.interrupt_control(thread_id, &turn_id).await {
-                InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-                InterruptOutcome::Unconfirmed { error, .. } => return Err(error),
-                InterruptOutcome::LocalSignalDelivered => {
-                    unreachable!("Codex does not deliver local signals")
-                }
+                NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+                NativeInterruptOutcome::Unconfirmed { error } => return Err(error),
             }
             self.active_turns
                 .remove_if(thread_id, |_, active| active == &turn_id);
@@ -3262,13 +3256,11 @@ impl SharedCodexAppServer {
                     let active_turns = active_turns.clone();
                     tokio::spawn(async move {
                         match client.interrupt_outcome(&thread_id, &turn_id).await {
-                            InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {
+                            NativeInterruptOutcome::NativeAck
+                            | NativeInterruptOutcome::NoTarget => {
                                 active_turns.remove_if(&thread_id, |_, active| active == &turn_id);
                             }
-                            InterruptOutcome::LocalSignalDelivered => {
-                                unreachable!("Codex does not deliver local signals")
-                            }
-                            InterruptOutcome::Unconfirmed { error, .. } => {
+                            NativeInterruptOutcome::Unconfirmed { error } => {
                                 // Keep the id in `active_turns`: deletion's
                                 // strict quiesce can retry and must not mistake
                                 // a failed best-effort interrupt for absence.

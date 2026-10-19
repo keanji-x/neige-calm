@@ -2569,7 +2569,7 @@ async fn interrupt_active_turn_is_noop_when_no_active_turn() {
             daemon
                 .interrupt_active_outcome("thread-without-active-turn")
                 .await,
-            provider::control::InterruptOutcome::NoTarget
+            provider::control::NativeInterruptOutcome::NoTarget
         ),
         "missing active turn should be a no-op"
     );
@@ -2748,7 +2748,7 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
         .unwrap();
     assert!(matches!(
         daemon.interrupt_active_outcome(&thread_id).await,
-        provider::control::InterruptOutcome::NativeAck
+        provider::control::NativeInterruptOutcome::NativeAck
     ));
 
     unsafe {

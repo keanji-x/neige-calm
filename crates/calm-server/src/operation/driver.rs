@@ -1,4 +1,4 @@
-use provider::control::InterruptOutcome;
+use provider::control::NativeInterruptOutcome;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1365,15 +1365,12 @@ fn kill_parked_group_if_alive(artifacts: &SpawnArtifacts, alive: bool) {
 async fn codex_interrupt_settled(
     shared: &crate::shared_codex_appserver::SharedCodexAppServer,
     thread_id: &str,
-    interrupted: InterruptOutcome<CalmError>,
+    interrupted: NativeInterruptOutcome<CalmError>,
 ) -> Result<()> {
     use provider::worker::{CodexDaemonProbe, ThreadStatusLite, TurnStatusLite};
     let error = match interrupted {
-        InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => return Ok(()),
-        InterruptOutcome::Unconfirmed { error, .. } => error,
-        InterruptOutcome::LocalSignalDelivered => {
-            unreachable!("Codex does not deliver local signals")
-        }
+        NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => return Ok(()),
+        NativeInterruptOutcome::Unconfirmed { error } => error,
     };
     if !shared.is_running_per_readiness() {
         return Ok(());

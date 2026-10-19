@@ -381,24 +381,18 @@ async fn interrupt_codex_thread(
 ) {
     let active_turn_id = daemon.active_turn_id_for_thread(thread_id);
     match daemon.interrupt_active_outcome(thread_id).await {
-        InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-        InterruptOutcome::Unconfirmed { error, .. } => {
+        NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+        NativeInterruptOutcome::Unconfirmed { error } => {
             on_error(CodexInterruptStep::ActiveTurn, error)
-        }
-        InterruptOutcome::LocalSignalDelivered => {
-            unreachable!("Codex does not deliver local signals")
         }
     }
     if active_turn_id.is_none()
         && let Some(turn_id) = fallback_turn_id
     {
         match daemon.interrupt_outcome(thread_id, turn_id).await {
-            InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-            InterruptOutcome::Unconfirmed { error, .. } => {
+            NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+            NativeInterruptOutcome::Unconfirmed { error } => {
                 on_error(CodexInterruptStep::FallbackTurn(turn_id), error)
-            }
-            InterruptOutcome::LocalSignalDelivered => {
-                unreachable!("Codex does not deliver local signals")
             }
         }
     }

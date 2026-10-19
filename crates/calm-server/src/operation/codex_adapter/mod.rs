@@ -1,4 +1,4 @@
-use provider::control::InterruptOutcome;
+use provider::control::NativeInterruptOutcome;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -687,11 +687,8 @@ impl ProviderAdapter for CodexAdapter {
                         .interrupt_active_outcome(&thread_id)
                         .await
                     {
-                        InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-                        InterruptOutcome::LocalSignalDelivered => {
-                            unreachable!("Codex does not deliver local signals")
-                        }
-                        InterruptOutcome::Unconfirmed { error: e, .. } => {
+                        NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+                        NativeInterruptOutcome::Unconfirmed { error: e } => {
                             tracing::warn!(
                                 card_id = %card_id,
                                 thread_id = %thread_id,
@@ -1000,14 +997,11 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 .await
                 {
                     Ok(
-                        InterruptOutcome::NativeAck
-                        | InterruptOutcome::NoTarget
-                        | InterruptOutcome::Unconfirmed { .. },
+                        NativeInterruptOutcome::NativeAck
+                        | NativeInterruptOutcome::NoTarget
+                        | NativeInterruptOutcome::Unconfirmed { .. },
                     )
                     | Err(_) => {}
-                    Ok(InterruptOutcome::LocalSignalDelivered) => {
-                        unreachable!("Codex does not deliver local signals")
-                    }
                 }
             }
         }
@@ -1065,11 +1059,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 .interrupt_active_outcome(&thread_id)
                 .await
             {
-                InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-                InterruptOutcome::LocalSignalDelivered => {
-                    unreachable!("Codex does not deliver local signals")
-                }
-                InterruptOutcome::Unconfirmed { error: e, .. } => {
+                NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+                NativeInterruptOutcome::Unconfirmed { error: e } => {
                     let turn_id = cached_turn
                         .as_deref()
                         .or(persisted_turn.as_deref())
@@ -1091,11 +1082,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
                     .interrupt_outcome(&thread_id, persisted_turn)
                     .await
                 {
-                    InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
-                    InterruptOutcome::LocalSignalDelivered => {
-                        unreachable!("Codex does not deliver local signals")
-                    }
-                    InterruptOutcome::Unconfirmed { error: e, .. } => {
+                    NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+                    NativeInterruptOutcome::Unconfirmed { error: e } => {
                         tracing::warn!(
                             runtime_id = %runtime_id,
                             thread_id = %thread_id,

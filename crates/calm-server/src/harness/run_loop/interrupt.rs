@@ -77,15 +77,11 @@ pub(super) async fn issue_interrupt_for_turn(
     match (target, outcome) {
         (
             TurnIdentity::Native(_) | TurnIdentity::Local(_),
-            InterruptOutcome::NativeAck | InterruptOutcome::NoTarget,
+            InterruptOutcome::NativeAck
+            | InterruptOutcome::NoTarget
+            | InterruptOutcome::LocalSignalDelivered,
         )
-        | (
-            TurnIdentity::Local(_),
-            InterruptOutcome::LocalSignalDelivered | InterruptOutcome::Unconfirmed { .. },
-        ) => {}
-        (TurnIdentity::Native(_), InterruptOutcome::LocalSignalDelivered) => {
-            unreachable!("Codex does not deliver local signals")
-        }
+        | (TurnIdentity::Local(_), InterruptOutcome::Unconfirmed { .. }) => {}
         (TurnIdentity::Native(_), InterruptOutcome::Unconfirmed { error: e, .. }) => {
             tracing::warn!(
                 thread_id,

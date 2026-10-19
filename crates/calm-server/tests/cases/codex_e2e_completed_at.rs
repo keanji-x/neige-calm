@@ -424,13 +424,10 @@ async fn run_abort_probe(server: &mut BootedServer, thread_id: &str) -> String {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     match server.client.interrupt_outcome(thread_id, &turn_id).await {
-        provider::control::InterruptOutcome::NativeAck
-        | provider::control::InterruptOutcome::NoTarget => {}
-        provider::control::InterruptOutcome::Unconfirmed { error, .. } => {
+        provider::control::NativeInterruptOutcome::NativeAck
+        | provider::control::NativeInterruptOutcome::NoTarget => {}
+        provider::control::NativeInterruptOutcome::Unconfirmed { error } => {
             return format!("turn/interrupt({turn_id}) failed: {error} (skipped)");
-        }
-        provider::control::InterruptOutcome::LocalSignalDelivered => {
-            unreachable!("Codex does not deliver local signals")
         }
     }
     eprintln!("[codex-e2e-completed-at]   interrupted turn {turn_id}");

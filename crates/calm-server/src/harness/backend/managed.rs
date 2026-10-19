@@ -201,10 +201,10 @@ impl<'a> IssueTurnHandle<'a> {
                 .turn_interrupt(thread_id, turn_id)
                 .await
                 .map_error(|e| Box::new(e) as InterruptDiagnostic),
-            Arm::Codex(daemon, _) => daemon
-                .interrupt_outcome(thread_id, turn_id)
-                .await
-                .map_error(|e| Box::new(e) as InterruptDiagnostic),
+            Arm::Codex(daemon, _) => {
+                InterruptOutcome::from(daemon.interrupt_outcome(thread_id, turn_id).await)
+                    .map_error(|e| Box::new(e) as InterruptDiagnostic)
+            }
             Arm::Claude(session) => session
                 .turn_interrupt(thread_id, turn_id)
                 .await

@@ -1626,7 +1626,7 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
         boot.shared
             .interrupt_active_outcome("fake-thread-0001")
             .await,
-        provider::control::InterruptOutcome::NativeAck
+        provider::control::NativeInterruptOutcome::NativeAck
     ));
     let requests = wait_for_requests(&capture_file, 4).await;
     assert!(requests.iter().any(|row| row["method"] == "turn/interrupt"
