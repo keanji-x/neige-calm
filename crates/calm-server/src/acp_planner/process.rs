@@ -201,8 +201,8 @@ mod setup_tests {
                 finish_setup(&connection.client, &mut connection.incoming, Err(error)).await;
             let outcome = super::super::start::start_result(result.map(|_| unreachable!()));
             assert!(matches!(
-                crate::harness::backend::ordinary_start_result(outcome),
-                Err(crate::harness::backend::TurnStartFailure::Transient(CalmError::Conflict(message)))
+                outcome,
+                Ok(provider::control::TurnStartOutcome::Failed { error: CalmError::Conflict(message) })
                     if message == diagnostic
             ));
         }

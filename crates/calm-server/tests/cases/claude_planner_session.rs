@@ -10,9 +10,12 @@ use calm_server::claude_planner::stop::{
     SeamPolicy, clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
     sigkill_verified_for_test, stop, sweep,
 };
+use calm_server::error::CalmError;
+use calm_server::harness::backend::{StartDiagnostic, TurnStartFailure};
 use calm_server::proc_identity::read_proc_start_time;
 use provider::InputItem;
 use provider::TurnModelSelection;
+use provider::control::TurnStartOutcome;
 use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -21,6 +24,13 @@ use super::claude_planner_session_fixture::{
     P_D_FIXTURE, Rig, alive, client_id, cmdline, completed_turn, request, until_completed,
     wait_for_file,
 };
+
+fn started(outcome: TurnStartOutcome<CalmError, StartDiagnostic>) -> String {
+    match outcome {
+        TurnStartOutcome::Started { turn } => turn.into_string(),
+        other => panic!("expected Started, got {other:?}"),
+    }
+}
 
 /// Larger than a pipe buffer, so writing it cannot complete unless the CLI reads it.
 fn oversized_text() -> Vec<InputItem> {
@@ -73,6 +83,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     assert_eq!(
         rig.session()
@@ -153,6 +164,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
             ),
         )
         .await
+        .map(started)
         .expect("second turn_start");
     pause.release.notify_one();
     let seen = until_completed(&mut rx).await;
@@ -240,6 +252,7 @@ async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_compl
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
     let orphan_alive = rig
@@ -275,6 +288,7 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     // Kill only once the tool call is open, so settlement has an item to close.
     loop {
@@ -341,6 +355,7 @@ async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
     assert_eq!(completed_turn(&seen)["status"], "completed");
@@ -366,6 +381,7 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
     assert_eq!(completed["status"], "failed");
@@ -391,10 +407,13 @@ fn spawned(spawns: &std::sync::atomic::AtomicUsize) -> usize {
     spawns.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
+async fn assert_refused_before_ok(
+    rig: &Rig,
+    input: Vec<InputItem>,
+) -> Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
     let mut rx = rig.session().subscribe_events();
     let started = Instant::now();
-    let error = rig
+    let result = rig
         .session()
         .turn_start(
             &rig.thread,
@@ -405,8 +424,7 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
                 &client_id(),
             ),
         )
-        .await
-        .expect_err("turn_start must refuse");
+        .await;
     assert!(started.elapsed() < Duration::from_secs(30));
     assert!(
         rig.outcomes().await.is_empty(),
@@ -419,14 +437,19 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
     assert!(rig.marked_pids().is_empty(), "no marked process left");
     assert!(rx.try_recv().is_err(), "no notification for a refused turn");
     assert_eq!(rig.session().active_turn_id_for_thread(&rig.thread), None);
-    error.to_string()
+    result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stalled_write_is_refused_before_ok() {
     let rig = Rig::new("stall").await;
     let spawns = count_spawns(&rig);
-    let error = assert_refused_before_ok(&rig, oversized_text()).await;
+    let Ok(TurnStartOutcome::Failed { error }) =
+        assert_refused_before_ok(&rig, oversized_text()).await
+    else {
+        panic!("expected failed start failure");
+    };
+    let error = error.to_string();
     assert!(error.contains("in time"), "{error}");
     assert_eq!(spawned(&spawns), 1, "the fake was spawned");
     assert_eq!(
@@ -440,7 +463,12 @@ async fn a_stalled_write_is_refused_before_ok() {
 async fn an_immediate_exit_is_refused_before_ok_with_no_outcome() {
     let rig = Rig::new("immediate-exit").await;
     let spawns = count_spawns(&rig);
-    assert_refused_before_ok(&rig, oversized_text()).await;
+    let Ok(TurnStartOutcome::Failed { error }) =
+        assert_refused_before_ok(&rig, oversized_text()).await
+    else {
+        panic!("expected failed start failure");
+    };
+    let _ = error;
     assert_eq!(spawned(&spawns), 1, "the fake was spawned");
     assert_eq!(
         rig.session().user_line_writes_for_test(),
@@ -452,7 +480,12 @@ async fn an_immediate_exit_is_refused_before_ok_with_no_outcome() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_spawn_failure_leaves_no_instructions_file() {
     let rig = Rig::new("vanish-after-version").await;
-    let error = assert_refused_before_ok(&rig, rig.text("hello")).await;
+    let Ok(TurnStartOutcome::Failed { error }) =
+        assert_refused_before_ok(&rig, rig.text("hello")).await
+    else {
+        panic!("expected failed start failure");
+    };
+    let error = error.to_string();
     assert!(error.contains("spawn"), "{error}");
 }
 
@@ -468,7 +501,12 @@ async fn a_seal_after_spawn_stops_the_cli_before_any_input() {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             daemon.thread_seals().seal_for_deletion(&thread);
         }));
-    let error = assert_refused_before_ok(&rig, rig.text("hello")).await;
+    let Err(TurnStartFailure::Transient(error)) =
+        assert_refused_before_ok(&rig, rig.text("hello")).await
+    else {
+        panic!("expected transient start failure");
+    };
+    let error = error.to_string();
     assert!(error.contains("sealed"), "{error}");
     // Both observed on the session's side: the stop may end the fake before it records anything.
     assert_eq!(spawned(&spawns), 1, "the fake was spawned");
@@ -483,7 +521,13 @@ async fn a_seal_after_spawn_stops_the_cli_before_any_input() {
 async fn a_wrong_version_receives_no_user_input() {
     let rig = Rig::new("exit").await;
     std::fs::write(rig.bin("version"), "2.1.279").expect("version");
-    let error = assert_refused_before_ok(&rig, rig.text("hello")).await;
+    let Err(TurnStartFailure::Refused { error, reader }) =
+        assert_refused_before_ok(&rig, rig.text("hello")).await
+    else {
+        panic!("expected refused start failure");
+    };
+    assert!(reader.contains("2.1.279"), "{reader}");
+    let error = error.to_string();
     assert!(error.contains("2.1.279"), "{error}");
     assert!(
         rig.read_bin("spawns").is_none(),
@@ -521,6 +565,7 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
@@ -549,6 +594,7 @@ async fn the_private_instructions_never_reach_a_cmdline() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let pids = rig.marked_pids();
@@ -617,7 +663,10 @@ async fn the_stop_seam_fails_without_signalling_until_cleared() {
         "armed seam fails the stop"
     );
     assert!(alive_while_armed, "an armed seam signals nothing");
-    assert!(turn.is_err(), "turn_start's own stop fails closed");
+    assert!(
+        matches!(turn, Err(TurnStartFailure::Transient(_))),
+        "turn_start's own stop fails closed: {turn:?}"
+    );
     assert!(
         rig.read_bin("spawns").is_none(),
         "no spawn while the seam is armed"
@@ -667,6 +716,7 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     rig.session().shutdown().await.expect("shutdown stops");
@@ -676,7 +726,7 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
     assert_eq!(completed["status"], "interrupted");
     assert_eq!(rig.outcomes().await[0]["status"], "interrupted");
     assert!(rig.marked_pids().is_empty());
-    assert!(
+    assert!(matches!(
         rig.session()
             .turn_start(
                 &rig.thread,
@@ -687,9 +737,9 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
                     &client_id()
                 ),
             )
-            .await
-            .is_err()
-    );
+            .await,
+        Err(TurnStartFailure::Transient(_))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -715,6 +765,7 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     let seen = until_completed(&mut rx).await;
 

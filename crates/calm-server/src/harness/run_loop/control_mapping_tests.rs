@@ -1,9 +1,10 @@
 //! Tables exercise the real command owners, not a copy of their policy.
+#![cfg(test)]
 use super::completed_commit_tests::Fixture;
 use super::*;
 use provider::control::{
     CompactRequest, CompactSubmission, EditPreparation, InterruptOutcome, NativeEditTarget,
-    SubmissionEvidence, TurnIdentity,
+    SubmissionEvidence, TurnIdentity, TurnRequest, TurnStartOutcome,
 };
 
 #[tokio::test]
@@ -483,21 +484,28 @@ async fn m2c_two_owner_decoy_is_untouched_by_managed_operations() {
         panic!("edit not prepared")
     };
     let mut rewind = BackendRewind::from_plan(plan);
-    assert_eq!(
+    let TurnStartOutcome::Started { turn: started } =
         IssueTurnHandle::from_reconciliation(&f.harness.inner)
             .await
-            .issue(
-                vec![InputItem::text("bound start")],
-                &TurnModelSelection::inherit(),
-                PlannerPermissionMode::Never,
-                "projection",
+            .turn_start(
+                TurnRequest {
+                    input: InputRequest {
+                        items: vec![InputItem::text("bound start")],
+                        correlation: CorrelationKey("projection".into()),
+                    },
+                    selection: TurnModelSelection::inherit(),
+                    permission: PlannerPermissionMode::Never,
+                    edit: rewind.turn_edit(),
+                },
                 &[],
-                Some(&mut rewind)
+                Some(&mut rewind),
             )
             .await
-            .unwrap(),
-        turn
-    );
+            .unwrap()
+    else {
+        panic!("bound start failed")
+    };
+    assert_eq!(started.into_string(), turn);
     assert_eq!(f.daemon.started_turns_for_test()[0].0, selected);
     let reverted = f.daemon.reverted_threads_for_test();
     assert_eq!(reverted.len(), 1);

@@ -350,7 +350,15 @@ async fn a_stale_harness_tick_after_shutdown_never_mints_over_the_replacer() {
             ),
         )
         .await;
-    assert!(refused.is_err(), "a shut-down session never starts a turn");
+    assert!(
+        matches!(
+            refused,
+            Err(calm_server::harness::backend::TurnStartFailure::Transient(
+                _
+            ))
+        ),
+        "a shut-down session never starts a turn: {refused:?}"
+    );
     assert!(
         stack.token_authenticates(&token).await,
         "the replacer's token stands"

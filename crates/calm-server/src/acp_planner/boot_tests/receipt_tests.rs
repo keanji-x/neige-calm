@@ -6,7 +6,8 @@
 use super::*;
 use crate::acp_planner::config::AcpPlannerHost;
 use crate::acp_planner::session::{AcpPlannerSession, SessionParams};
-use crate::harness::{QueueEntry, backend::ordinary_start_result};
+use crate::harness::QueueEntry;
+use provider::control::TurnStartOutcome;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,12 +87,14 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
             std::fs::write(root.path().join("scenario"), "lost").unwrap();
         }
         let pause = crate::acp_planner::test_seams::pause_settlement(&row.worker);
-        let turn_id = ordinary_start_result(
-            session
-                .start_turn(&row.thread, request("same-key"), &claim)
-                .await,
-        )
-        .unwrap();
+        let TurnStartOutcome::Started { turn } = session
+            .start_turn(&row.thread, request("same-key"), &claim)
+            .await
+            .unwrap()
+        else {
+            panic!("receipt was not started")
+        };
+        let turn_id = turn.into_string();
         tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
             .await
             .unwrap();
@@ -149,15 +152,14 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
             requests(&root, "session/load"),
             requests(&root, "session/prompt"),
         );
-        assert_eq!(
-            ordinary_start_result(
-                session
-                    .start_turn(&row.thread, request("same-key"), &claim)
-                    .await
-            )
-            .unwrap(),
-            turn_id
-        );
+        let TurnStartOutcome::Started { turn } = session
+            .start_turn(&row.thread, request("same-key"), &claim)
+            .await
+            .unwrap()
+        else {
+            panic!("receipt replay was not started")
+        };
+        assert_eq!(turn.into_string(), turn_id);
         let mut revised = claim.clone();
         assert!(revised[1].bump_rev_for_restore());
         let error = session

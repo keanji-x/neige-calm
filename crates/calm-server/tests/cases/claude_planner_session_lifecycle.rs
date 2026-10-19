@@ -5,11 +5,21 @@
 use std::time::{Duration, Instant};
 
 use calm_server::claude_planner::session::{SETTLE_AFTER_STOP, STOP_TIMER};
+use calm_server::error::CalmError;
+use calm_server::harness::backend::{StartDiagnostic, TurnStartFailure};
 use provider::TurnModelSelection;
+use provider::control::TurnStartOutcome;
 
 use super::claude_planner_session_fixture::{
     Rig, client_id, completed_turn, request, until_completed, wait_for_file,
 };
+
+fn started(outcome: TurnStartOutcome<CalmError, StartDiagnostic>) -> String {
+    match outcome {
+        TurnStartOutcome::Started { turn } => turn.into_string(),
+        other => panic!("expected Started, got {other:?}"),
+    }
+}
 
 /// An interrupt's `TurnCompleted` is due by `settle_by` = the interrupt + [`STOP_TIMER`] +
 /// [`SETTLE_AFTER_STOP`]; the tests allow one second of scheduling on top.
@@ -33,6 +43,7 @@ async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let interrupted_at = Instant::now();
@@ -69,6 +80,7 @@ async fn stdout_that_is_not_utf8_fails_the_turn_as_protocol() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
 
@@ -94,6 +106,7 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     until_completed(&mut rx).await;
     assert_eq!(
@@ -114,6 +127,7 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     until_completed(&mut rx).await;
     let argv = rig.read_bin("argv").expect("argv");
@@ -141,6 +155,7 @@ async fn a_ready_result_wins_over_a_stop_that_fires_with_it() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     rig.session().shutdown().await.expect("shutdown stops");
@@ -176,6 +191,7 @@ async fn the_mcp_token_is_minted_once_at_the_first_turn() {
                 ),
             )
             .await
+            .map(started)
             .expect("turn_start");
         until_completed(&mut rx).await;
         let env = rig.read_bin("env").expect("env");
@@ -210,6 +226,9 @@ async fn a_session_that_was_never_installed_refuses_without_minting() {
         )
         .await
         .expect_err("not installed");
+    let TurnStartFailure::Transient(error) = error else {
+        panic!("expected transient host failure, got {error:?}");
+    };
     assert!(error.to_string().contains("not installed"), "{error}");
     assert_eq!(rig.mcp_token_hash().await, None);
     assert!(rig.read_bin("spawns").is_none(), "nothing spawned");
@@ -233,6 +252,7 @@ async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     let interrupted_at = Instant::now();
@@ -269,6 +289,7 @@ async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
@@ -297,6 +318,7 @@ async fn a_failed_init_check_still_binds_the_session_it_named() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
     let message = completed["error"]["message"]
@@ -321,6 +343,7 @@ async fn a_failed_init_check_still_binds_the_session_it_named() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     until_completed(&mut rx).await;
     let argv = rig.read_bin("argv").expect("argv");
@@ -346,6 +369,7 @@ async fn the_bind_leaves_active_turn_id_to_the_harness() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     until_completed(&mut rx).await;
 
@@ -378,6 +402,7 @@ async fn the_stop_timer_runs_from_the_interrupt_not_from_its_write() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     let interrupted_at = Instant::now();
@@ -413,6 +438,7 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let interrupted_at = Instant::now();
@@ -459,6 +485,9 @@ async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
         )
         .await
         .expect_err("the guarded mint refuses a retired row");
+    let TurnStartFailure::Transient(error) = error else {
+        panic!("expected transient host failure, got {error:?}");
+    };
     assert!(
         error
             .to_string()
@@ -497,6 +526,7 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     // Hold the database write lock across the bind (the CLI names the session a second in).
     let mut held = rig.repo.pool().begin().await.expect("tx");
@@ -524,6 +554,7 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
             ),
         )
         .await
+        .map(started)
         .expect("turn_start");
     until_completed(&mut rx).await;
     let argv = rig.read_bin("argv").expect("argv");
@@ -570,6 +601,9 @@ async fn a_shutdown_or_seal_during_the_version_check_mints_nothing() {
         };
         std::fs::write(rig.bin("release-version"), "").expect("release");
         let error = turn.await.expect("turn task").expect_err("refused");
+        let TurnStartFailure::Transient(error) = error else {
+            panic!("expected transient host failure, got {error:?}");
+        };
         let expected = if seal { "sealed" } else { "shutting down" };
         assert!(error.to_string().contains(expected), "seal={seal}: {error}");
         if let Some(shutdown) = shutdown {

@@ -6,10 +6,13 @@
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use calm_server::error::CalmError;
 use calm_server::event::{AskDelivery, AskQuestion, Event};
+use calm_server::harness::backend::StartDiagnostic;
 use calm_server::harness::held_requests::{ConnectionId, HeldRequestMessage, RequestKey};
 use calm_server::planner_permission_mode::PlannerPermissionMode;
 use provider::TurnModelSelection;
+use provider::control::TurnStartOutcome;
 use serde_json::{Value, json};
 
 use super::claude_planner_session_fixture::{Rig, client_id, request, until_completed};
@@ -23,6 +26,13 @@ fn question() -> AskQuestion {
         title: "Bash: echo z > /probe/outside/denied.txt\nBlocked path: /probe/outside/denied.txt"
             .into(),
         options: vec!["Allow".into(), "Deny".into()],
+    }
+}
+
+fn started(outcome: TurnStartOutcome<CalmError, StartDiagnostic>) -> String {
+    match outcome {
+        TurnStartOutcome::Started { turn } => turn.into_string(),
+        other => panic!("expected Started, got {other:?}"),
     }
 }
 
@@ -41,6 +51,7 @@ async fn start(rig: &Rig, scenario: &str, mode: PlannerPermissionMode) -> String
             ),
         )
         .await
+        .map(started)
         .expect("turn_start")
 }
 

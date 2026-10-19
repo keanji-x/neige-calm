@@ -2,8 +2,6 @@
 use super::*;
 use crate::harness::queue::QueueEntry;
 use crate::harness::run_loop::Inner;
-use crate::planner_permission_mode::PlannerPermissionMode;
-use provider::InputItem;
 
 /// A sampled binding for one operation, not another session or binding store.
 /// Construct and consume inside the caller's existing synchronization scope.
@@ -268,44 +266,5 @@ impl<'a> IssueTurnHandle<'a> {
             Some(e) => Err(e),
             None => Ok(()),
         }
-    }
-}
-
-impl IssueTurnHandle<'_> {
-    /// `selection` and `permission` are required: a default would silently answer which model
-    /// runs this turn, or what it may do without asking. `client_user_message_id` is the
-    /// projection row's key; codex hands it back as `item.clientId`.
-    #[allow(clippy::too_many_arguments)]
-    pub(in crate::harness) async fn issue(
-        self,
-        input: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        permission: PlannerPermissionMode,
-        client_user_message_id: &str,
-        claim: &[QueueEntry],
-        pending_rewind: Option<&mut BackendRewind>,
-    ) -> std::result::Result<String, TurnStartFailure> {
-        let edit = pending_rewind.as_deref().map_or(
-            provider::control::TurnEdit::NoEdit,
-            BackendRewind::turn_edit,
-        );
-        crate::harness::backend::ordinary_start_result(
-            self.turn_start(
-                provider::control::TurnRequest {
-                    input: provider::control::InputRequest {
-                        items: input,
-                        correlation: provider::control::CorrelationKey(
-                            client_user_message_id.into(),
-                        ),
-                    },
-                    selection: selection.clone(),
-                    permission,
-                    edit,
-                },
-                claim,
-                pending_rewind,
-            )
-            .await,
-        )
     }
 }

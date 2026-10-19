@@ -9,26 +9,6 @@ pub struct StartDiagnostic {
     pub reader: String,
 }
 
-/// Project native-originated outcomes to ordinary issuance policy. The outer error is already
-/// host policy (admission, durable receipts, seals); it bypasses provider outcomes entirely.
-/// Thus matching decisions here does not duplicate authority in the provider contract.
-pub(crate) fn ordinary_start_result(
-    result: std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure>,
-) -> std::result::Result<TurnId, TurnStartFailure> {
-    match result? {
-        TurnStartOutcome::Started { turn } => Ok(turn.into_string()),
-        TurnStartOutcome::Failed { error } => Err(TurnStartFailure::Transient(error)),
-        TurnStartOutcome::Rejected { error } => {
-            let StartDiagnostic { error, reader } = error;
-            Err(TurnStartFailure::Refused { error, reader })
-        }
-        TurnStartOutcome::RecoveryRequired { error } => {
-            let StartDiagnostic { error, reader } = error;
-            Err(TurnStartFailure::AwaitingRecovery { error, reader })
-        }
-    }
-}
-
 pub(super) fn codex_start_result(
     result: std::result::Result<TurnId, StartError>,
 ) -> std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {

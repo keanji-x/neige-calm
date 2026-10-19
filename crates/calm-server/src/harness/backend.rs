@@ -15,7 +15,6 @@ pub(crate) mod factory;
 mod start;
 use control::{codex_compact_submission, steer_outcome};
 pub use start::StartDiagnostic;
-pub(crate) use start::ordinary_start_result;
 use start::{codex_start_result, revert_codex_thread};
 use std::sync::Arc;
 
@@ -462,20 +461,20 @@ mod tests {
     #[test]
     fn the_sign_in_refusal_awaits_recovery_and_other_refusals_stay_refusals() {
         assert!(matches!(
-            ordinary_start_result(codex_start_result(Err(
+            codex_start_result(Err(
                 crate::shared_codex_appserver::control::StartError::RecoveryRequired(
                     CalmError::CodexRefused(crate::codex_authentication::SIGN_IN_REFUSAL.into())
                 )
-            ))),
-            Err(TurnStartFailure::AwaitingRecovery { .. })
+            )),
+            Ok(TurnStartOutcome::RecoveryRequired { .. })
         ));
         assert!(matches!(
-            ordinary_start_result(codex_start_result(Err(
+            codex_start_result(Err(
                 crate::shared_codex_appserver::control::StartError::Refused(
                     CalmError::CodexRefused("turn/start failed: unknown model".into())
                 )
-            ))),
-            Err(TurnStartFailure::Refused { .. })
+            )),
+            Ok(TurnStartOutcome::Rejected { .. })
         ));
     }
 }

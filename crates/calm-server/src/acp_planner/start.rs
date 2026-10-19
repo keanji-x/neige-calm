@@ -118,9 +118,12 @@ mod tests {
                 (Err(_), "host-refused" | "host-transient") => {}
                 other => panic!("wrong fact {other:?}"),
             }
-            match (case, crate::harness::backend::ordinary_start_result(mapped)) {
-                ("registered" | "receipt-replay" | "dispatch-failed", Ok(turn)) => {
-                    assert_eq!(turn, "durable-turn")
+            match (case, mapped) {
+                (
+                    "registered" | "receipt-replay" | "dispatch-failed",
+                    Ok(TurnStartOutcome::Started { turn }),
+                ) => {
+                    assert_eq!(turn.into_string(), "durable-turn")
                 }
                 (
                     "host-refused",
@@ -133,10 +136,16 @@ mod tests {
                     assert_eq!(message, "reset needed");
                 }
                 (
-                    "host-transient" | "setup" | "spawn",
+                    "host-transient",
                     Err(TurnStartFailure::Transient(CalmError::Conflict(message))),
+                )
+                | (
+                    "setup" | "spawn",
+                    Ok(TurnStartOutcome::Failed {
+                        error: CalmError::Conflict(message),
+                    }),
                 ) => assert_eq!(message, "original"),
-                other => panic!("wrong old result {other:?}"),
+                other => panic!("wrong operation fact {other:?}"),
             }
         }
     }

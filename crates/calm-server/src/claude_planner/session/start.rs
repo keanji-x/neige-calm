@@ -82,19 +82,41 @@ mod tests {
                 (Err(_), "host-transient" | "host-refused" | "host-recovery") => {}
                 other => panic!("wrong fact {other:?}"),
             }
-            let old = crate::harness::backend::ordinary_start_result(result);
-            match (case, old) {
-                ("success", Ok(turn)) => assert_eq!(turn, "local-turn"),
-                ("host-refused", Err(TurnStartFailure::Refused { reader, .. })) => {
-                    assert_eq!(reader, "operator wording")
+            match (case, result) {
+                ("success", Ok(TurnStartOutcome::Started { turn })) => {
+                    assert_eq!(turn.into_string(), "local-turn")
                 }
-                ("host-recovery", Err(TurnStartFailure::AwaitingRecovery { reader, .. })) => {
-                    assert_eq!(reader, "hold wording")
+                (
+                    "host-refused",
+                    Err(TurnStartFailure::Refused {
+                        reader,
+                        error: CalmError::Conflict(message),
+                    }),
+                ) => {
+                    assert_eq!(reader, "operator wording");
+                    assert_eq!(message, "original");
                 }
-                (_, Err(TurnStartFailure::Transient(CalmError::Conflict(message)))) => {
-                    assert_eq!(message, "original")
+                (
+                    "host-recovery",
+                    Err(TurnStartFailure::AwaitingRecovery {
+                        reader,
+                        error: CalmError::Conflict(message),
+                    }),
+                ) => {
+                    assert_eq!(reader, "hold wording");
+                    assert_eq!(message, "original");
                 }
-                other => panic!("wrong old projection {other:?}"),
+                (
+                    "host-transient",
+                    Err(TurnStartFailure::Transient(CalmError::Conflict(message))),
+                )
+                | (
+                    "preparation" | "spawn" | "line",
+                    Ok(TurnStartOutcome::Failed {
+                        error: CalmError::Conflict(message),
+                    }),
+                ) => assert_eq!(message, "original"),
+                other => panic!("wrong operation fact {other:?}"),
             }
         }
     }

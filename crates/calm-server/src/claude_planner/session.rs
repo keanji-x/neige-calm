@@ -255,14 +255,17 @@ impl ClaudePlannerSession {
             .map(|active| active.turn_id.clone())
     }
 
-    /// Fixture projection of the production neutral invocation entry.
+    /// Fixture access to the production neutral invocation entry.
     #[cfg(feature = "fixtures")]
     pub async fn turn_start(
         &self,
         thread: &str,
         request: provider::control::TurnRequest,
-    ) -> Result<String, crate::harness::backend::TurnStartFailure> {
-        crate::harness::backend::ordinary_start_result(self.start_turn(thread, request).await)
+    ) -> Result<
+        provider::control::TurnStartOutcome<CalmError, crate::harness::backend::StartDiagnostic>,
+        crate::harness::backend::TurnStartFailure,
+    > {
+        self.start_turn(thread, request).await
     }
 
     /// The submission contract for either kind of spawn; see the module docs.

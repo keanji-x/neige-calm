@@ -2,14 +2,16 @@
 //! If this test starts failing, audit the new caller: non-reconciliation issuance bypasses the queue/guard invariant.
 
 use std::path::{Path, PathBuf};
+use syn::visit::{self, Visit};
 
 #[test]
 fn harness_turn_start_is_gated() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let run_loop_path = manifest_dir.join("src/harness/run_loop.rs");
-    let run_loop = std::fs::read_to_string(&run_loop_path).expect("read run_loop.rs");
-
-    assert!(run_loop.contains("IssueTurnHandle::from_reconciliation(inner)"));
+    let issuance_path = "src/harness/run_loop/issuance.rs";
+    let issuance =
+        std::fs::read_to_string(manifest_dir.join(issuance_path)).expect("read ordinary issuance");
+    assert!(issuance.contains("IssueTurnHandle::from_reconciliation(inner)"));
+    OwnerBoundStarts.visit_file(&syn::parse_file(&issuance).expect("parse ordinary issuance"));
     let managed = std::fs::read_to_string(manifest_dir.join("src/harness/backend/managed.rs"))
         .expect("read private managed entry");
     assert!(managed.contains("pub(in crate::harness) struct IssueTurnHandle<'a>"));
@@ -60,7 +62,8 @@ fn harness_turn_start_is_gated() {
             continue;
         }
         assert!(
-            !src.contains(".turn_start(")
+            // Ordinary issuance uses the owner-bound handle, never a native/session start.
+            (!src.contains(".turn_start(") || rel == issuance_path)
                 && !src.contains(".turn_start_control(")
                 && !src.contains(".start_turn("),
             "unexpected turn_start callsite in {rel}"
@@ -116,5 +119,66 @@ fn turn_start_scan_excludes_only_rust_enforced_test_files() {
         "fn production() {}",
     ] {
         assert!(!is_test_only_source(source), "must scan: {source}");
+    }
+}
+
+/// The ordinary caller may use the handle, but must not open a second native/session start path.
+struct OwnerBoundStarts;
+impl<'ast> Visit<'ast> for OwnerBoundStarts {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if call.method == "turn_start" {
+            assert!(
+                owner_bound_receiver(&call.receiver),
+                "ordinary start must use its owner-bound handle"
+            );
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+}
+
+fn owner_bound_receiver(receiver: &syn::Expr) -> bool {
+    let syn::Expr::Await(awaited) = receiver else {
+        return false;
+    };
+    let syn::Expr::Call(call) = &*awaited.base else {
+        return false;
+    };
+    let syn::Expr::Path(binding) = &*call.func else {
+        return false;
+    };
+    binding
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .eq(["IssueTurnHandle", "from_reconciliation"])
+        && call.args.len() == 1
+        && matches!(call.args.first(), Some(syn::Expr::Path(owner)) if owner.path.is_ident("inner"))
+}
+
+#[test]
+fn ordinary_start_requires_the_owner_bound_receiver() {
+    for (expression, admitted) in [
+        (
+            "IssueTurnHandle::from_reconciliation(inner).await.turn_start(request, claim, rewind)",
+            true,
+        ),
+        ("daemon.turn_start(request)", false),
+        ("session.turn_start(request)", false),
+        (
+            "IssueTurnHandle::from_reconciliation(other).await.turn_start(request, claim, rewind)",
+            false,
+        ),
+        (
+            "AnotherHandle::from_reconciliation(inner).await.turn_start(request, claim, rewind)",
+            false,
+        ),
+    ] {
+        let call: syn::ExprMethodCall = syn::parse_str(expression).unwrap();
+        assert_eq!(
+            owner_bound_receiver(&call.receiver),
+            admitted,
+            "{expression}"
+        );
     }
 }

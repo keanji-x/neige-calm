@@ -34,26 +34,31 @@ fn m1_mapping_start_facts_keep_exact_error_reader_and_host_policy() {
             | StartError::Unanswered(error) => (std::mem::discriminant(error), error.to_string()),
         });
         let outcome = codex_start_result(input);
-        if case == "signin" {
-            assert!(matches!(
-                &outcome,
-                Ok(TurnStartOutcome::RecoveryRequired { .. })
-            ));
-        }
-        let result = ordinary_start_result(outcome);
-        let (error, reader) = match (case, result) {
-            ("native", Ok(turn)) => {
+        let (error, reader) = match (case, outcome) {
+            (
+                "native",
+                Ok(TurnStartOutcome::Started {
+                    turn: TurnIdentity::Native(turn),
+                }),
+            ) => {
                 assert_eq!(turn, "turn");
                 continue;
             }
-            ("signin", Err(TurnStartFailure::AwaitingRecovery { error, reader })) => {
-                (error, reader)
-            }
-            ("refused", Err(TurnStartFailure::Refused { error, reader })) => (error, reader),
-            ("transport" | "decode" | "sealed", Err(TurnStartFailure::Transient(error))) => {
-                (error, String::new())
-            }
-            other => panic!("wrong projection {other:?}"),
+            (
+                "signin",
+                Ok(TurnStartOutcome::RecoveryRequired {
+                    error: StartDiagnostic { error, reader },
+                }),
+            )
+            | (
+                "refused",
+                Ok(TurnStartOutcome::Rejected {
+                    error: StartDiagnostic { error, reader },
+                }),
+            ) => (error, reader),
+            ("transport" | "decode", Ok(TurnStartOutcome::Failed { error }))
+            | ("sealed", Err(TurnStartFailure::Transient(error))) => (error, String::new()),
+            other => panic!("wrong operation fact {other:?}"),
         };
         assert_eq!(
             Some((std::mem::discriminant(&error), error.to_string())),
@@ -84,22 +89,19 @@ fn m1_mapping_revert_facts_keep_diagnostic_and_policy() {
         }))
         .unwrap()
         .unwrap();
-        match &result {
-            TurnStartOutcome::Rejected { .. } => assert!(refused),
-            TurnStartOutcome::Failed { .. } => assert!(!refused),
-            other => panic!("wrong fact {other:?}"),
-        }
-        match ordinary_start_result(Ok(result)).unwrap_err() {
-            TurnStartFailure::Refused { error, reader } => {
+        match result {
+            TurnStartOutcome::Rejected {
+                error: StartDiagnostic { error, reader },
+            } => {
                 assert!(refused);
                 assert!(reader.contains("remove the edited turn"));
                 assert_eq!(error.to_string(), original);
             }
-            TurnStartFailure::Transient(error) => {
+            TurnStartOutcome::Failed { error } => {
                 assert!(!refused);
                 assert_eq!(error.to_string(), original);
             }
-            other => panic!("wrong policy {other:?}"),
+            other => panic!("wrong operation fact {other:?}"),
         }
     }
 }

@@ -2,7 +2,7 @@
 #![cfg(test)]
 use super::completed_commit_tests::Fixture;
 use super::*;
-use crate::harness::backend::{StartDiagnostic, ordinary_start_result};
+use crate::harness::backend::StartDiagnostic;
 use provider::control::*;
 
 fn request(rewind: Option<&BackendRewind>) -> TurnRequest {
@@ -131,8 +131,10 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
             }
             other => panic!("wrong start row: {other:?}"),
         }
-        let old = ordinary_start_result(result);
-        assert_eq!(old.is_ok(), matches!(case, "started" | "applied"));
+        assert_eq!(
+            matches!(result, Ok(TurnStartOutcome::Started { .. })),
+            matches!(case, "started" | "applied")
+        );
         if case == "revert-start-failed" {
             let stored = serde_json::to_string(rewind.as_ref().unwrap()).unwrap();
             assert_eq!(
@@ -141,13 +143,14 @@ async fn m1_mapping_start_facade_and_stored_edit_table() {
             );
             let mut restored: BackendRewind = serde_json::from_str(&stored).unwrap();
             f.daemon.clear_turn_start_failure_for_test();
-            ordinary_start_result(
+            assert!(matches!(
                 IssueTurnHandle::from_reconciliation(&f.harness.inner)
                     .await
                     .turn_start(request(Some(&restored)), &[], Some(&mut restored))
-                    .await,
-            )
-            .unwrap();
+                    .await
+                    .unwrap(),
+                TurnStartOutcome::Started { .. }
+            ));
             assert_eq!(f.daemon.reverted_threads_for_test().len(), 1);
         }
         if matches!(case, "started" | "applied") {
@@ -195,19 +198,26 @@ async fn m1_mapping_codex_edit_preparation_and_issue_handle() {
         r#"{"provider":"codex","before_turn_id":"old-turn"}"#
     );
     assert!(f.daemon.reverted_threads_for_test().is_empty());
-    let selection = TurnModelSelection::inherit();
-    IssueTurnHandle::from_reconciliation(&f.harness.inner)
-        .await
-        .issue(
-            vec![InputItem::text("through issue")],
-            &selection,
-            PlannerPermissionMode::Never,
-            "projection",
-            &[],
-            Some(&mut rewind),
-        )
-        .await
-        .unwrap();
+    assert!(matches!(
+        IssueTurnHandle::from_reconciliation(&f.harness.inner)
+            .await
+            .turn_start(
+                TurnRequest {
+                    input: InputRequest {
+                        items: vec![InputItem::text("through issue")],
+                        correlation: CorrelationKey("projection".into()),
+                    },
+                    selection: TurnModelSelection::inherit(),
+                    permission: PlannerPermissionMode::Never,
+                    edit: rewind.turn_edit(),
+                },
+                &[],
+                Some(&mut rewind),
+            )
+            .await
+            .unwrap(),
+        TurnStartOutcome::Started { .. }
+    ));
     assert_eq!(f.daemon.reverted_threads_for_test().len(), 1);
 }
 
