@@ -764,12 +764,10 @@ pub(crate) async fn create_track(
     let acp_availability = if request.planner_provider.protocol() == AgentProtocol::Acp {
         Some(
             s.provider_availability
-                .get(
+                .acp(
                     &request.planner_provider,
                     crate::agent_providers::Freshness::Cached,
-                    &s.claude_planner,
                     &s.acp_planner,
-                    &codex.shared_codex_appserver,
                 )
                 .await,
         )

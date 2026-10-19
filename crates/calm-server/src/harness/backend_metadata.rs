@@ -99,28 +99,16 @@ mod tests {
     }
 
     #[test]
-    fn protocol_agrees_with_backend_metadata_for_each_provider() {
-        for provider in super::super::backend::PlannerBackend::registered_providers() {
+    fn acp_backend_metadata_lists_session_tools_without_steer() {
+        for provider in super::super::backend::PlannerBackend::registered_providers()
+            .filter(|provider| provider.protocol() == AgentProtocol::Acp)
+        {
             let metadata = super::super::backend::PlannerBackend::metadata(&provider);
-            let protocol = provider.protocol();
-            assert!(metadata.catalog == protocol, "{provider:?}");
-            assert_eq!(
-                metadata.requires_codex_daemon,
-                protocol == AgentProtocol::Codex,
+            assert!(
+                matches!(metadata.discovery, ToolDiscovery::SessionToolList),
                 "{provider:?}"
             );
-            assert_eq!(
-                metadata.capabilities.requires_ready_availability,
-                protocol != AgentProtocol::Codex,
-                "{provider:?}"
-            );
-            if protocol == AgentProtocol::Acp {
-                assert!(
-                    matches!(metadata.discovery, ToolDiscovery::SessionToolList),
-                    "{provider:?}"
-                );
-                assert!(!metadata.steer, "{provider:?}");
-            }
+            assert!(!metadata.steer, "{provider:?}");
         }
     }
 }

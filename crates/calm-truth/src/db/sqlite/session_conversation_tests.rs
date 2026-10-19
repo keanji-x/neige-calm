@@ -704,3 +704,55 @@ async fn assistant_provider_schema_is_extensible_but_unknown_typed_identity_is_r
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn session_mirror_supersede_revokes_a_non_codex_planner_token() {
+    use crate::session_projection_repo::{AgentProvider, WorkerSessionInit};
+    use calm_types::runtime::AgentProtocol;
+    use calm_types::worker::WorkerSessionState;
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    for provider in AgentProvider::ALL {
+        let (_, track_id) = card(&repo).await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        let planner = format!("planner-{}", provider.wire_name());
+        crate::db::sqlite::card_create_with_id_tx(&mut tx, planner.clone(), NewCard {
+            track_id:track_id.clone().into(),title:None,kind:"codex".into(),sort:None,
+            payload:json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider}),
+        },crate::model::CardRole::Planner,false,repo.card_role_cache()).await.unwrap();
+        let id = format!("session-{}", provider.wire_name());
+        crate::db::sqlite::session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::shared_planner(
+                id.clone(),
+                planner,
+                provider.clone(),
+                WorkerSessionState::Idle,
+                None,
+                json!({}),
+                10,
+            ),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?1")
+            .bind(&id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        crate::db::sqlite::session_supersede_active_tx(&mut tx, &id, 20)
+            .await
+            .unwrap();
+        let hash: Option<String> =
+            sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+                .bind(&id)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            hash.is_none(),
+            provider.protocol() != AgentProtocol::Codex,
+            "{provider:?}"
+        );
+        tx.commit().await.unwrap();
+    }
+}

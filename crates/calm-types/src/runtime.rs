@@ -55,7 +55,8 @@ impl AgentProtocol {
 }
 
 impl AgentProvider {
-    /// Every provider. A new variant is added here as well as to [`Self::protocol`].
+    /// Every provider. A new variant is added here too: the exhaustive matches below do not see
+    /// this list, so a test checks it against the enum's derived schema.
     pub const ALL: [Self; 3] = [Self::Codex, Self::Claude, Self::OpenCode];
 
     /// The protocol this provider's managed backend speaks.
@@ -114,36 +115,31 @@ mod tests {
     use super::{AgentProtocol, AgentProvider};
 
     #[test]
-    fn agent_provider_protocol_partitions_every_provider() {
-        let partitioned: Vec<_> = [
-            AgentProtocol::Codex,
-            AgentProtocol::Claude,
-            AgentProtocol::Acp,
-        ]
-        .into_iter()
-        .flat_map(AgentProtocol::providers)
-        .collect();
-        assert_eq!(partitioned.len(), AgentProvider::ALL.len());
-        for provider in AgentProvider::ALL {
-            assert!(partitioned.contains(&provider), "{provider:?}");
-        }
-        assert_eq!(
-            AgentProtocol::Acp.providers().collect::<Vec<_>>(),
-            [AgentProvider::OpenCode]
+    fn agent_provider_protocol_maps_each_provider() {
+        assert_eq!(AgentProvider::Codex.protocol(), AgentProtocol::Codex);
+        assert_eq!(AgentProvider::Claude.protocol(), AgentProtocol::Claude);
+        assert_eq!(AgentProvider::OpenCode.protocol(), AgentProtocol::Acp);
+        assert!(
+            AgentProtocol::Acp
+                .providers()
+                .any(|p| p == AgentProvider::OpenCode)
         );
     }
 
+    /// `ALL` is a hand-written list, so it is checked against the variant set the derived
+    /// OpenAPI schema enumerates from the enum itself: a variant missing from `ALL` fails here.
     #[test]
-    fn agent_provider_wire_name_is_its_serde_spelling() {
-        for provider in [
-            AgentProvider::Codex,
-            AgentProvider::Claude,
-            AgentProvider::OpenCode,
-        ] {
-            assert_eq!(
-                serde_json::to_value(&provider).unwrap(),
-                provider.wire_name()
-            );
+    fn agent_provider_all_lists_every_variant_by_its_wire_name() {
+        let schema =
+            serde_json::to_value(<AgentProvider as utoipa::PartialSchema>::schema()).unwrap();
+        let names = schema["enum"]
+            .as_array()
+            .expect("AgentProvider schema enum");
+        assert_eq!(names.len(), AgentProvider::ALL.len(), "{schema}");
+        for name in names {
+            let provider: AgentProvider = serde_json::from_value(name.clone()).unwrap();
+            assert!(AgentProvider::ALL.contains(&provider), "{provider:?}");
+            assert_eq!(provider.wire_name(), name, "{provider:?}");
         }
     }
 }

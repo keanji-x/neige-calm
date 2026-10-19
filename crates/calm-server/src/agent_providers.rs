@@ -218,7 +218,7 @@ impl ProviderAvailabilityCache {
         codex: &SharedCodexAppServer,
     ) -> Checked {
         match provider.protocol() {
-            AgentProtocol::Acp => self.acp_provider(provider, freshness, acp).await,
+            AgentProtocol::Acp => self.acp(provider, freshness, acp).await,
             AgentProtocol::Codex => {
                 let stamped = self
                     .codex
@@ -244,28 +244,26 @@ impl ProviderAvailabilityCache {
         }
     }
 
-    /// The OpenCode check, as the macOS-only `acp_planner::boot_tests` fixture still calls it.
-    #[cfg(all(test, target_os = "macos"))]
+    /// The check of an ACP `provider`: its registration, then its readiness. The one reader of
+    /// ACP availability; a provider that does not speak ACP has no slot and is not configured.
     pub async fn acp(
-        &self,
-        freshness: Freshness,
-        host: &crate::acp_planner::config::AcpPlannerHost,
-    ) -> Checked {
-        self.acp_provider(&AgentProvider::OpenCode, freshness, host)
-            .await
-    }
-
-    /// The check of `provider`, which must speak ACP: its registration, then its readiness.
-    pub async fn acp_provider(
         &self,
         provider: &AgentProvider,
         freshness: Freshness,
         host: &crate::acp_planner::config::AcpPlannerHost,
     ) -> Checked {
-        let stamped = self
-            .acp
-            .get(provider.wire_name())
-            .expect("every ACP provider has an availability slot")
+        let Some(slot) = self.acp.get(provider.wire_name()) else {
+            return Checked {
+                provider: provider.clone(),
+                verdict: Verdict::NotConfigured(format!(
+                    "{} does not speak ACP",
+                    provider.wire_name()
+                )),
+                checked_at_ms: crate::model::now_ms(),
+                authentication_notice: None,
+            };
+        };
+        let stamped = slot
             .get(freshness, |_| async {
                 if let Err(error) = host.configured(provider) {
                     return Verdict::NotConfigured(error.to_string());

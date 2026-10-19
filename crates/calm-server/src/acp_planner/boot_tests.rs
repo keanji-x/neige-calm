@@ -395,7 +395,11 @@ async fn acp_boot_readiness_refuses_before_spawn() {
     };
     let state = AppState::boot(&config(&root, true)).await.unwrap();
     let checked = crate::agent_providers::ProviderAvailabilityCache::default()
-        .acp(crate::agent_providers::Freshness::Recheck, &host(&state))
+        .acp(
+            &AgentProvider::OpenCode,
+            crate::agent_providers::Freshness::Recheck,
+            &host(&state),
+        )
         .await;
     close(state).await;
     assert!(

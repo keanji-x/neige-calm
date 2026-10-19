@@ -1,7 +1,10 @@
 //! Per-provider ACP agent profiles: what one agent needs beyond the ACP contract, such as the
-//! agent's own configuration surface its launch sets. The generic ACP planner reaches a provider's
-//! policy only through [`AcpAgentProfile::of`] and never names a provider itself, so a provider
-//! speaking ACP adds one module here and one arm in [`AcpAgentProfile::of`].
+//! agent's own configuration surface its launch sets. Within the ACP planner, a provider's policy
+//! is reached only through [`AcpAgentProfile::of`], so inside this module tree a provider speaking
+//! ACP adds one module here and one arm in [`AcpAgentProfile::of`]. That is the ACP planner's
+//! share only: the provider itself is still declared where each owner keeps it (its variant and
+//! mappings in `calm_types`, its persisted `worker_sessions.provider` value, its backend
+//! capabilities and execution registration, and the frontend's provider choices).
 use crate::planner_permission_mode::PlannerPermissionMode;
 use calm_types::runtime::AgentProvider;
 

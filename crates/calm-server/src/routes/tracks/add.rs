@@ -130,7 +130,7 @@ impl TrackCreator for RouteTrackCreator {
         let acp_availability = if planner_provider.protocol() == AgentProtocol::Acp {
             Some(
                 s.provider_availability
-                    .acp_provider(
+                    .acp(
                         &planner_provider,
                         crate::agent_providers::Freshness::Cached,
                         &s.acp_planner,
