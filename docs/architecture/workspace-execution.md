@@ -261,7 +261,10 @@ scope 时 scope 仍 settled（占用结束），但 `Retire` 回复 `Busy(Output
 
 **boot 规则。** journal 持久化宿主 `boot_id`：宿主重启 → 非终态记为 `NoChild{host_rebooted}`；同宿主 executor 重启沿用
 main `open`（Prepared→Revoked、未 fork→NoChild、其余→Unknown）。终态事实与 tombstone 的重放与 executor boot 无关；launch
-与 interact 检查 boot（旧 boot 的私有 registration 不在 `live_objects`，`resolve` 拒绝）。
+与有原生副作用的 interact 检查 boot（旧 boot 的私有 registration 不在 `live_objects`，`resolve` 拒绝）。
+唯一例外是已持久化 Drained 后的 Pipe `CloseStdin`：精确旧 capability 经 identity、slot、purpose、token 与
+revoked 检查后，不再 resolve，返回历史 no-op ACK；同宿主 executor 重启后也如此。该分支不查找或关闭任何原生 writer，
+不按 alias 解析后继执行，因此旧 capability 不能影响 successor。其余 Interactive 操作仅允许 Spawned/Exited，Unknown 拒绝。
 
 **同宿主残留 Unknown。** Unknown 来自一切无法取得正向排空事实的情形：executor 崩溃或被 SIGKILL，以及 main 的
 fork/setup 错误与 fork 成功但 receipt 持久化失败（`launch.rs:120-129`、`:143-150`）。helper 没有 PDEATHSIG，helper 消失也

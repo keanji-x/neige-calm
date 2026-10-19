@@ -85,7 +85,7 @@ fn descriptors(held: &HeldSourceObjects) -> Vec<std::os::fd::OwnedFd> {
         .map(|fd| fd.as_fd().try_clone_to_owned().unwrap())
         .collect()
 }
-fn consume(request: &PrepareExecution) -> ConsumeExecution {
+pub(super) fn consume(request: &PrepareExecution) -> ConsumeExecution {
     ConsumeExecution {
         execution_id: request.identity.execution_id.clone(),
         ticket_id: request.identity.ticket_id.clone(),
@@ -512,7 +512,7 @@ async fn changed_after_every_persisted_transition() {
     );
 }
 
-fn helper(temp: &tempfile::TempDir) -> std::path::PathBuf {
+pub(super) fn helper(temp: &tempfile::TempDir) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let shim = temp.path().join("helper");
     let body = temp.path().join("helper-body");

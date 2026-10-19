@@ -172,3 +172,119 @@ async fn retire_waits_output_open() {
             .contains_key(&identity.execution_id)
     );
 }
+
+#[tokio::test]
+async fn c2a_live_unknown_refuses_interaction_without_closing_writer() {
+    use calm_session::control::IoMode;
+    use std::os::unix::fs::MetadataExt;
+    for mode in [IoMode::Pipe, IoMode::Pty { cols: 80, rows: 24 }] {
+        let temp = tempfile::tempdir().unwrap();
+        let secret = CapabilityToken::fresh().unwrap();
+        let mut executor = Executor::open(ExecutorConfig {
+            journal_directory: temp.path().join("journal"),
+            helper_program: protocol_tests::helper(&temp),
+            kernel_client_secret: secret.clone(),
+        })
+        .unwrap();
+        let image = std::fs::metadata(std::env::current_exe().unwrap()).unwrap();
+        Arc::get_mut(&mut executor).unwrap().mechanism = ScopeMechanismIdentity {
+            executable_device: image.dev(),
+            executable_inode: image.ino(),
+            protocol_version: 1,
+        };
+        let (mut request, held) = protocol_tests::private(&executor, temp.path());
+        request.specification.program = "/bin/sh".into();
+        request.specification.args =
+            vec!["-c".into(), "trap '' HUP; printf ready; read value".into()];
+        request.specification.io_mode = mode;
+        protocol_tests::prepare(&executor, &request, &held).await;
+        let receipt = match executor
+            .dispatch(
+                &secret,
+                ExecutionRequest::Launch(protocol_tests::consume(&request)),
+            )
+            .await
+        {
+            ExecutionReply::Receipt {
+                receipt: Some(receipt),
+                ..
+            } => receipt,
+            other => panic!("{other:?}"),
+        };
+        let id = &request.identity.execution_id;
+        let process = executor.processes.lock().unwrap().get(id).unwrap().clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = executor
+                .outputs
+                .lock()
+                .unwrap()
+                .get(id)
+                .unwrap()
+                .snapshot(None)
+                .unwrap()
+                .1;
+            if output.windows(5).any(|bytes| bytes == b"ready") {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // End the actual helper report stream without a drain proof. The monitor must
+        // retain Unknown and the native Process; no synthetic phase transition.
+        assert_eq!(
+            unsafe { libc::kill(receipt.process.pid as i32, libc::SIGKILL) },
+            0
+        );
+        loop {
+            if matches!(executor.record(id).unwrap().phase, Phase::Unknown { .. }) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(matches!(
+            executor.store.load().unwrap()[0].phase,
+            Phase::Unknown { .. }
+        ));
+        assert!(executor.processes.lock().unwrap().contains_key(id));
+        let capability = ExecutionCapability {
+            identity: receipt.identity,
+            slot_version: receipt.slot_version,
+            token: request.control_tokens.interactive.clone(),
+            purpose: ExecutionControlPurpose::Interactive,
+        };
+        // Clean up even when testing the intentionally broken production mutation.
+        let mut replies = Vec::new();
+        for action in [
+            ProcessAction::CloseStdin,
+            ProcessAction::WriteStdin { bytes: vec![] },
+            ProcessAction::Resize {
+                cols: 90,
+                rows: 30,
+                pixel_w: 0,
+                pixel_h: 0,
+            },
+        ] {
+            replies.push(
+                executor
+                    .dispatch(
+                        &secret,
+                        ExecutionRequest::Control(ExecutionControl {
+                            capability: capability.clone(),
+                            action,
+                        }),
+                    )
+                    .await,
+            );
+        }
+        let writer_open = process.input.lock().unwrap().is_some();
+        // Bypass state admission only for test cleanup; release the blocked target.
+        let _ = process.write(b"done\n");
+        process.input.lock().unwrap().take();
+        for reply in replies {
+            assert!(matches!(reply, ExecutionReply::Refused { .. }), "{reply:?}");
+        }
+        assert!(writer_open, "Unknown refusal closed the original writer");
+    }
+}

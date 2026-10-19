@@ -130,6 +130,15 @@ impl Executor {
                     return Ok(ExecutionReply::ActionComplete);
                 }
             }
+            // Native handles may survive a loss of drain proof. Their presence is
+            // not authority to interact with an Unknown execution.
+            anyhow::ensure!(
+                matches!(
+                    record.phase.state(),
+                    ExecutionState::Spawned | ExecutionState::Exited { .. }
+                ),
+                "execution state does not permit interaction"
+            );
             self.resolve(&record.request.identity, true)?;
         }
         let process = self.processes.lock().map_err(poison)?.get(id).cloned();

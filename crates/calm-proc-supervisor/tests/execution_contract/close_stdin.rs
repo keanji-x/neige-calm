@@ -14,6 +14,24 @@ async fn action(
         .unwrap()
 }
 
+async fn refuse_bad_capabilities(
+    c: &mut RegisteredExecutorConnection,
+    r: &PrepareExecution,
+    receipt: &ExecutionReceipt,
+) {
+    let cap = capability(r, receipt, ExecutionControlPurpose::Interactive);
+    let mut bad = vec![cap.clone(); 4];
+    bad[0].token = CapabilityToken::fresh().unwrap();
+    bad[1].slot_version += 1;
+    bad[2].identity.process_alias = "wrong".into();
+    bad[3].identity.execution_id = ExecutionId::fresh().unwrap();
+    bad.push(capability(r, receipt, ExecutionControlPurpose::Lifecycle));
+    bad.push(capability(r, receipt, ExecutionControlPurpose::Observe));
+    for cap in bad {
+        assert!(c.close_stdin(cap).await.is_err());
+    }
+}
+
 #[tokio::test]
 async fn c2a_close_unblocks_eof_preserves_output_and_exact_retries() {
     let h = Harness::start().await;
@@ -92,9 +110,7 @@ async fn c2a_close_unblocks_eof_preserves_output_and_exact_retries() {
         },
     );
     c.close_stdin(cap.clone()).await.unwrap();
-    let mut wrong = cap.clone();
-    wrong.token = CapabilityToken::fresh().unwrap();
-    assert!(c.close_stdin(wrong).await.is_err());
+    refuse_bad_capabilities(&mut c, &r, &receipt).await;
     assert!(matches!(
         c.request(ExecutionRequest::Retire {
             execution_id: r.identity.execution_id.clone(),
@@ -128,6 +144,7 @@ async fn c2a_close_after_leader_exit_reaches_descendant() {
     })
     .await;
     let cap = capability(&r, &receipt, ExecutionControlPurpose::Interactive);
+    refuse_bad_capabilities(&mut c, &r, &receipt).await;
     c.close_stdin(cap.clone()).await.unwrap();
     c.close_stdin(cap).await.unwrap();
     wait_for(&mut c, &r, &receipt, |state, out| {
@@ -158,16 +175,7 @@ async fn c2a_close_refuses_pty_wrong_capabilities_and_revocation() {
         if matches!(mode, IoMode::Pty { .. }) {
             assert!(c.close_stdin(cap.clone()).await.is_err());
         }
-        let mut bad = vec![cap.clone(); 4];
-        bad[0].token = CapabilityToken::fresh().unwrap();
-        bad[1].slot_version += 1;
-        bad[2].identity.process_alias = "wrong".into();
-        bad[3].identity.execution_id = ExecutionId::fresh().unwrap();
-        bad.push(capability(&r, &receipt, ExecutionControlPurpose::Lifecycle));
-        bad.push(capability(&r, &receipt, ExecutionControlPurpose::Observe));
-        for cap in bad {
-            assert!(c.close_stdin(cap).await.is_err());
-        }
+        refuse_bad_capabilities(&mut c, &r, &receipt).await;
         // Refusals did not close or disturb the real input.
         assert!(matches!(
             action(
@@ -273,5 +281,98 @@ async fn c2a_server_rejects_envelope_eight() {
     assert!(
         matches!(read_frame::<ControlReply, _>(&mut socket).await.unwrap(),
         ControlReply::Execution(r) if matches!(*r, ExecutionReply::Refused { .. }))
+    );
+}
+
+#[tokio::test]
+async fn c2a_close_refuses_revoked_exited_and_no_child() {
+    let h = Harness::start().await;
+    let mut c = h.connect().await;
+    let grant = authority();
+    let root = h.root("no-child", false);
+    let path = root.path.clone();
+    let (scope, registration) = external(root, &grant);
+    let r = prepare(
+        &c,
+        scope,
+        &registration,
+        grant,
+        "no-child",
+        IoMode::Pipe,
+        "cat",
+    );
+    assert!(matches!(
+        submit(&mut c, r.clone()).await,
+        ExecutionReply::Prepared
+    ));
+    std::fs::rename(&path, path.with_extension("old")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(matches!(
+        c.request(ExecutionRequest::Launch(consume(&r)))
+            .await
+            .unwrap(),
+        ExecutionReply::Receipt {
+            receipt: None,
+            state: ExecutionState::NoChild { .. }
+        }
+    ));
+    assert!(
+        c.close_stdin(ExecutionCapability {
+            identity: r.identity.clone(),
+            slot_version: 1,
+            token: r.control_tokens.interactive.clone(),
+            purpose: ExecutionControlPurpose::Interactive,
+        })
+        .await
+        .is_err()
+    );
+
+    let grant = authority();
+    let (scope, registration) = external(h.root("revoked-exited", false), &grant);
+    let r = prepare(
+        &c,
+        scope,
+        &registration,
+        grant,
+        "revoked-exited",
+        IoMode::Pipe,
+        "exec 3<&0; /bin/sh -c 'cat' <&3 3<&- & exit 0",
+    );
+    let receipt = launch(&mut c, &r).await;
+    wait_for(&mut c, &r, &receipt, |state, _| {
+        matches!(state, ExecutionState::Exited { .. })
+    })
+    .await;
+    c.request(ExecutionRequest::Revoke(consume(&r)))
+        .await
+        .unwrap();
+    assert!(
+        c.close_stdin(capability(
+            &r,
+            &receipt,
+            ExecutionControlPurpose::Interactive
+        ))
+        .await
+        .is_err()
+    );
+    action(
+        &mut c,
+        capability(&r, &receipt, ExecutionControlPurpose::Lifecycle),
+        ProcessAction::Stop,
+    )
+    .await;
+    wait_for(&mut c, &r, &receipt, |state, _| {
+        matches!(state, ExecutionState::Drained { .. })
+    })
+    .await;
+    refuse_bad_capabilities(&mut c, &r, &receipt).await;
+    assert!(
+        c.close_stdin(capability(
+            &r,
+            &receipt,
+            ExecutionControlPurpose::Interactive
+        ))
+        .await
+        .is_err()
     );
 }

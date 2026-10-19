@@ -125,8 +125,11 @@ D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新�
 | C6（可选） | 释放作业：删除事务内写入待回收的 worktree/refs 描述，提交后 sweep 消费，启动时补跑 | 修复“提交后崩溃 → worktree 与 branch 永久泄漏”；不改 7 天 trash 与回收顺序。未消费的作业行同片并入 `none` 准入的自有位置集合（§4.2 进行中的 teardown 目标），验收加“作业未消费时准入其目标 → 400”。若接受泄漏只记 follow-up，则不做，也不声称已有 crash-safe release | C5 |
 
 **C2a 范围决定。** 只读盘点未发现 C2b/C3/C4 之外独立的双向 track pipe 消费者。有界短 Git/CLI 读取
-（checkpoint、sampling、lease reads）是 request-bounded，使用 deadline + process-group reap，并由 C1 fences/leases
-覆盖；它们不成为 Engine 消费者，也不在 C5 的 quiescence 范围内。迁移还需 Engine 当前没有的 stdout/stderr 分离与
+（checkpoint、sampling、lease reads）仅在进程内由 deadline + process-group reap 与 C1 fences/leases 覆盖。
+kernel 死亡后这些 deadline/析构与进程内 fence 不再生效；遗留的短读 process group（包括 Git filter/hook 的副作用）
+不在 C5 的 empty-execution predicate 覆盖内，属于 #2862 的同一残留类别（child lifetime / PDEATHSIG）。
+这里接受较窄的保证，不把短读迁入 Engine；C5 不得据执行集合为空声称已解决此跨崩溃静默缺口。
+迁移还需 Engine 当前没有的 stdout/stderr 分离与
 每次 sample 的归属，成本不值得；不为名义消费者而扩大本片。C2a 仅补齐后续迁移的 Pipe half-close。
 升级到 envelope 9 必须重启 supervisor；严格拒绝 envelope 8，不回退 Legacy；持久 receipt 合同和 journal 版本保持 4。
 
