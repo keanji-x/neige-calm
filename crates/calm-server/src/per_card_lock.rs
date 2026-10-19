@@ -1,7 +1,7 @@
 //! Self-cleaning keyed async lock map; guards drop their map entry on release.
 //! Transient stale entries are possible if a waiter is canceled between strong_count snapshots; same-card locks reuse a stale entry safely.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use dashmap::DashMap;
 
@@ -18,7 +18,7 @@ pub fn new_per_card_locks() -> PerCardLocks {
 
 pub struct KeyedLockGuard {
     key: String,
-    lock: Arc<tokio::sync::Mutex<()>>,
+    lock: Weak<tokio::sync::Mutex<()>>,
     locks: KeyedLocks,
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
@@ -29,7 +29,7 @@ impl Drop for KeyedLockGuard {
     fn drop(&mut self) {
         let _ = self.guard.take();
         self.locks.remove_if(&self.key, |_, existing| {
-            Arc::ptr_eq(existing, &self.lock) && Arc::strong_count(existing) == 2
+            self.lock.ptr_eq(&Arc::downgrade(existing)) && Arc::strong_count(existing) == 1
         });
     }
 }
@@ -39,10 +39,22 @@ pub async fn lock_key(locks: &KeyedLocks, key: &str) -> KeyedLockGuard {
         .entry(key.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
-    let guard = lock.clone().lock_owned().await;
+    let waiting = lock.clone().lock_owned();
+    tokio::pin!(waiting);
+    #[cfg(feature = "fixtures")]
+    let guard = tokio::select! {
+        biased;
+        guard = &mut waiting => guard,
+        _ = std::future::ready(()) => {
+            crate::test_seams::pause_point("key-lock-waiting", key).await;
+            waiting.await
+        }
+    };
+    #[cfg(not(feature = "fixtures"))]
+    let guard = waiting.await;
     KeyedLockGuard {
         key: key.to_string(),
-        lock,
+        lock: Arc::downgrade(&lock),
         locks: locks.clone(),
         guard: Some(guard),
     }
@@ -54,13 +66,16 @@ pub fn try_lock_key(locks: &KeyedLocks, key: &str) -> Option<KeyedLockGuard> {
         .entry(key.to_owned())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
-    let guard = lock.clone().try_lock_owned().ok()?;
-    Some(KeyedLockGuard {
+    // Install cleanup before trying. Its weak identity does not keep the lock
+    // alive while a concurrent holder tries to remove the same map entry.
+    let mut owner = KeyedLockGuard {
         key: key.to_owned(),
-        lock,
+        lock: Arc::downgrade(&lock),
         locks: locks.clone(),
-        guard: Some(guard),
-    })
+        guard: None,
+    };
+    owner.guard = Some(lock.try_lock_owned().ok()?);
+    Some(owner)
 }
 
 pub async fn lock_card(locks: &PerCardLocks, card_id: &str) -> KeyedLockGuard {

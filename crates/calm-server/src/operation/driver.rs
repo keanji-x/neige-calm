@@ -1,5 +1,5 @@
 use provider::control::NativeInterruptOutcome;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,14 +53,20 @@ impl Default for OperationCompletionBus {
     }
 }
 
+/// An opaque hold of operation driving, used by lifecycle deletion and clean.
+pub struct OperationDriveGuard {
+    _guard: tokio::sync::OwnedMutexGuard<HashSet<String>>,
+}
+
+#[derive(Clone)]
 pub struct OperationRuntime {
     pub(super) repo: Arc<dyn OperationRepo>,
     kinds: HashMap<&'static str, Arc<dyn ProviderAdapter>>,
     completion: OperationCompletionBus,
     events: EventBus,
     spawn_ctx: SpawnCtx,
-    pub(super) drive_mutex: Arc<Mutex<()>>,
-    wait_entered_test_hook: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub(super) drive_mutex: Arc<Mutex<HashSet<String>>>,
+    wait_entered_test_hook: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>>,
 }
 
 impl OperationRuntime {
@@ -110,14 +116,16 @@ impl OperationRuntime {
     }
 
     /// Operations are the common funnel for planner resets, scheduler workers, and terminal/card starts; holding this keeps any of them from creating a runtime behind deletion's snapshot.
-    pub(crate) async fn lock_for_track_delete(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.drive_mutex.clone().lock_owned().await
+    pub(crate) async fn lock_for_track_delete(&self) -> OperationDriveGuard {
+        OperationDriveGuard {
+            _guard: self.drive_mutex.clone().lock_owned().await,
+        }
     }
 
     /// Hold the production track-delete lock from an integration test.
     #[cfg(feature = "fixtures")]
     #[doc(hidden)]
-    pub async fn lock_for_track_delete_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
+    pub async fn lock_for_track_delete_for_test(&self) -> OperationDriveGuard {
         self.lock_for_track_delete().await
     }
 
@@ -151,8 +159,8 @@ impl OperationRuntime {
             completion,
             events,
             spawn_ctx,
-            drive_mutex: Arc::new(Mutex::new(())),
-            wait_entered_test_hook: std::sync::Mutex::new(None),
+            drive_mutex: Arc::new(Mutex::new(HashSet::new())),
+            wait_entered_test_hook: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -510,6 +518,39 @@ impl OperationRuntime {
             .ok_or_else(|| CalmError::BadRequest(format!("unknown operation kind {kind}")))
     }
 
+    /// The existing drive mutex also owns the set of outstanding Busy wakeups.
+    /// Keep the claim until the waker owns drive again: releasing it earlier would
+    /// make the batch loop immediately reclaim the same blocked Pending row.
+    fn retry_after_track(&self, operation_id: &str, track: String) {
+        let runtime = self.clone();
+        let id = operation_id.to_owned();
+        let retry: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            Box::pin(async move {
+                {
+                    let mut retries = runtime.drive_mutex.lock().await;
+                    if !retries.insert(id.clone()) {
+                        return;
+                    }
+                }
+                let track_guard =
+                    crate::per_card_lock::lock_key(runtime.track_delete_locks(), &track).await;
+                // Never hold track while waiting on drive (clean takes drive -> track).
+                drop(track_guard);
+                let mut retries = runtime.drive_mutex.lock().await;
+                let result = runtime.repo.release_pending_for_retry(&id).await;
+                retries.remove(&id);
+                drop(retries);
+                if let Err(error) = result {
+                    tracing::error!(%error, operation_id = %id, "Busy retry claim release failed");
+                    return;
+                }
+                if let Err(error) = runtime.drive().await {
+                    tracing::error!(%error, operation_id = %id, "Busy retry drive failed");
+                }
+            });
+        tokio::spawn(retry);
+    }
+
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
@@ -519,7 +560,10 @@ impl OperationRuntime {
                 {
                     Some(track) => match self.try_launch_fence(&track) {
                         Ok(guard) => Some(guard),
-                        Err(CalmError::WorkspaceBusy(_)) => return Ok(()),
+                        Err(CalmError::WorkspaceBusy(_)) => {
+                            self.retry_after_track(&op.id, track);
+                            return Ok(());
+                        }
                         Err(error) => return Err(error),
                     },
                     None => None,
@@ -1252,6 +1296,9 @@ impl OperationRuntime {
     async fn apply_recovery_item(&self, item: RecoveryItem) -> Result<()> {
         match item {
             RecoveryItem::Recover { op_id, .. } => {
+                // Busy wakeups can drive while boot applies subsequent items.
+                // Serialize unconditional recovery claims with that normal driver.
+                let _drive = self.drive_mutex.lock().await;
                 let Some(op) = self.repo.claim_operation_for_recovery(&op_id).await? else {
                     return Ok(());
                 };
@@ -1277,6 +1324,7 @@ impl OperationRuntime {
                 Ok(())
             }
             RecoveryItem::Compensate { op_id, .. } => {
+                let _drive = self.drive_mutex.lock().await;
                 let Some(op) = self.repo.claim_operation_for_recovery(&op_id).await? else {
                     return Ok(());
                 };

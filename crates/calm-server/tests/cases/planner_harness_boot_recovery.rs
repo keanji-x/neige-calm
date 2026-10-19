@@ -591,6 +591,15 @@ async fn c1_fence_direct_harness_recovery_waits_then_respawns() {
         calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let locks = calm_server::harness::new_track_delete_locks();
     let held = calm_server::per_card_lock::lock_key(&locks, track.id.as_str()).await;
+    let arrival = calm_server::test_seams::PausePoint {
+        entered: Arc::default(),
+        release: Arc::default(),
+    };
+    calm_server::test_seams::install_pause_for_test(
+        "key-lock-waiting",
+        track.id.as_str(),
+        arrival.clone(),
+    );
     let recovery = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
@@ -604,11 +613,13 @@ async fn c1_fence_direct_harness_recovery_waits_then_respawns() {
         calm_server::harness::BootRows::All,
     );
     tokio::pin!(recovery);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut recovery)
-            .await
-            .is_err()
-    );
+    tokio::select! {
+        result = &mut recovery => panic!("request completed before held track released: {result:?}"),
+        arrived = tokio::time::timeout(std::time::Duration::from_secs(5), arrival.entered.notified()) => arrived.expect("request reached track fence"),
+    }
+    assert_eq!(registry.len_active(), 0);
+    assert!(daemon.resumed_threads_for_test().is_empty());
+    arrival.release.notify_one();
     drop(held);
     assert_eq!(recovery.await.unwrap(), 1);
     let handle = registry.get(&runtime_id).expect("recovered harness");

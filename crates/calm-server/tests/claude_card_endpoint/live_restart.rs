@@ -188,14 +188,24 @@ async fn c1_fence_claude_update_waits_then_resumes() {
         &boot.track_id,
     )
     .await;
+    let arrival = calm_server::test_seams::PausePoint {
+        entered: Arc::default(),
+        release: Arc::default(),
+    };
+    calm_server::test_seams::install_pause_for_test(
+        "key-lock-waiting",
+        &boot.track_id,
+        arrival.clone(),
+    );
     let restart = post_restart(boot.app.clone(), &live.card_id);
     tokio::pin!(restart);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut restart)
-            .await
-            .is_err()
-    );
+    tokio::select! {
+        result = &mut restart => panic!("request completed before held track released: {result:?}"),
+        arrived = tokio::time::timeout(std::time::Duration::from_secs(5), arrival.entered.notified()) => arrived.expect("request reached track fence"),
+    }
     assert!(alive(old_pid));
+    assert_eq!(starts(log).len(), 1);
+    arrival.release.notify_one();
     drop(held);
     let (status, response) = restart.await;
     assert_eq!(status, StatusCode::OK, "body={response:?}");

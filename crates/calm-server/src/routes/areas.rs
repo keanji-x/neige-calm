@@ -363,7 +363,7 @@ struct PreparedAreaDeletion {
     turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
     thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
     _area_guard: crate::per_card_lock::KeyedLockGuard,
-    _operation_guard: tokio::sync::OwnedMutexGuard<()>,
+    _operation_guard: crate::operation::OperationDriveGuard,
     _track_guards: Vec<crate::per_card_lock::KeyedLockGuard>,
 }
 

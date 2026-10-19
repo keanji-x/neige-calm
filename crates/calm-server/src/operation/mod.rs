@@ -39,7 +39,7 @@ pub mod track_recipe_create_adapter;
 mod tx_only;
 pub(crate) mod worker_cleanup;
 
-pub use driver::{OperationCompletionBus, OperationRuntime};
+pub use driver::{OperationCompletionBus, OperationDriveGuard, OperationRuntime};
 pub use repo_sqlite::SqlxOperationRepo;
 #[cfg(any(test, feature = "fixtures"))]
 #[doc(hidden)]
@@ -765,7 +765,7 @@ pub trait ProviderAdapter: Send + Sync {
 
     /// Adapter declares the track whose checkout preparation must exclude clean.
     /// The driver holds its existing track guard through the occupancy commit,
-    /// including boot recovery, which does not hold the drive mutex.
+    /// including boot recovery.
     async fn preparation_track(&self, _input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
         Ok(None)
     }
@@ -900,6 +900,16 @@ pub trait OperationRepo: Send + Sync {
     ) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    /// Called under drive after a Busy waker releases track; a later phase owns its lease.
+    async fn release_pending_for_retry(&self, id: &str) -> Result<()> {
+        let db = self.sqlite_db();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await?;
+        sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=? AND phase='pending'")
+            .bind(id).execute(&mut **tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn claim_interaction_retry(
         &self,
         op: &Operation,

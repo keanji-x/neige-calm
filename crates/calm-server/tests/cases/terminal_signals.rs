@@ -2752,13 +2752,19 @@ async fn c1_fence_legacy_ws_reattach_waits_then_attaches_without_stamp() {
         &h.track,
     )
     .await;
+    let arrival = calm_server::test_seams::PausePoint {
+        entered: Arc::default(),
+        release: Arc::default(),
+    };
+    calm_server::test_seams::install_pause_for_test("key-lock-waiting", &h.track, arrival.clone());
     let attach = resolve_live_renderer_from_terminal_for_test(&fresh, term);
     tokio::pin!(attach);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut attach)
-            .await
-            .is_err()
-    );
+    tokio::select! {
+        _ = &mut attach => panic!("reattach passed held track"),
+        arrived = tokio::time::timeout(Duration::from_secs(5), arrival.entered.notified()) => arrived.expect("reattach reached track fence"),
+    }
+    assert!(fresh.terminal_renderer.get(&p.terminal).is_none());
+    arrival.release.notify_one();
     drop(held);
     let entry = match attach.await.unwrap() {
         TestLiveRenderer::Alive(entry) => entry,

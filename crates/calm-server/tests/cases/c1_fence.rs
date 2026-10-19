@@ -1,6 +1,8 @@
 //! C1a exercises the real clean pass and each preparation owner, without provider E2E.
 use super::*;
-use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+use calm_server::operation::{
+    OperationKey, OperationRepo, Phase, RecoveryItem, RecoveryPlan, SqlxOperationRepo,
+};
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
 use std::{collections::HashSet, time::Duration};
 
@@ -117,12 +119,19 @@ async fn c1_fence_reopen_waits_for_clean() {
     let cleaning = clean(b.clone());
     pause.entered().await;
     let endpoint = format!("/api/tracks/{track}");
+    let arrival = Pause::arm("key-lock-waiting", &track);
     let mut reopening = Box::pin(b.as_user("PATCH", &endpoint, json!({"closed":false})));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut reopening)
-            .await
-            .is_err()
-    );
+    tokio::select! {
+        result = &mut reopening => panic!("reopen passed held track: {result:?}"),
+        _ = arrival.entered() => {}
+    }
+    let closed: Option<i64> = sqlx::query_scalar("SELECT closed_at FROM tracks WHERE id=?")
+        .bind(&track)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(closed, Some(123));
+    drop(arrival);
     drop(pause);
     assert_eq!(cleaning.await.unwrap().0, 1);
     assert!(!path.join("target/ignored").exists());
@@ -164,11 +173,25 @@ async fn preparation(kind: &str, boot: bool) {
         .await
         .unwrap();
     let op = pending(&b, kind, payload).await;
-    b.state
-        .operation_runtime
-        .prepare_once_for_test(&op, boot)
-        .await
-        .unwrap();
+    if boot {
+        b.state
+            .operation_runtime
+            .apply_recovery(RecoveryPlan {
+                items: vec![RecoveryItem::Recover {
+                    op_id: op.clone(),
+                    from_phase: Phase::Pending,
+                    action: "prepare".into(),
+                }],
+            })
+            .await
+            .unwrap();
+    } else {
+        b.state
+            .operation_runtime
+            .prepare_once_for_test(&op, false)
+            .await
+            .unwrap();
+    }
     assert_eq!(
         phase(&b, &op).await,
         "pending",
@@ -184,12 +207,34 @@ async fn preparation(kind: &str, boot: bool) {
     drop(drive);
     drop(pause);
     assert_eq!(cleaning.await.unwrap().0, 1);
-    b.state
-        .operation_runtime
-        .prepare_once_for_test(&op, boot)
+    // No HTTP waiter and no forced recovery claim: the Busy owner must wake drive.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while phase(&b, &op).await == "pending" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Busy operation must retry promptly after clean releases");
+    assert_ne!(phase(&b, &op).await, "stuck");
+    let prepared: bool =
+        sqlx::query_scalar("SELECT tx_output_json IS NOT NULL FROM operations WHERE id=?")
+            .bind(&op)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        prepared,
+        "retry must commit preparation, not merely fail Pending"
+    );
+    if boot {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while phase(&b, &op).await != "succeeded" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
         .await
-        .unwrap();
-    assert_eq!(phase(&b, &op).await, "tx_committed");
+        .expect("boot terminal operation must actually start");
+    }
 }
 #[tokio::test]
 async fn c1_fence_terminal_create_busy_retries() {

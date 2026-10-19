@@ -193,17 +193,28 @@ async fn c1_fence_legacy_auto_resume_waits_then_resumes_owner_only() {
         &boot.track_id,
     )
     .await;
+    let arrival = calm_server::test_seams::PausePoint {
+        entered: Arc::default(),
+        release: Arc::default(),
+    };
+    calm_server::test_seams::install_pause_for_test(
+        "key-lock-waiting",
+        &boot.track_id,
+        arrival.clone(),
+    );
     let resume =
         calm_server::claude_auto_resume::resume_owner_claude_cards(&boot.state, &listed_twice);
     tokio::pin!(resume);
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), &mut resume)
-            .await
-            .is_err()
-    );
+    tokio::select! {
+        _ = &mut resume => panic!("auto-resume passed held track"),
+        arrived = tokio::time::timeout(std::time::Duration::from_secs(5), arrival.entered.notified()) => arrived.expect("auto-resume reached track fence"),
+    }
+    arrival.release.notify_one();
     assert_eq!(calls.lock().await.len(), spawns_before);
     drop(held);
-    resume.await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), resume)
+        .await
+        .expect("auto-resume must not wait for lease expiry");
 
     let restarted: Vec<String> = sqlx::query(
         "SELECT json_extract(payload_json, '$.card_id') AS card_id FROM operations \
