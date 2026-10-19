@@ -10,7 +10,6 @@ use super::{IoMode, ProcSignal};
 
 pub mod attachment;
 mod attachment_client;
-mod directory_relation;
 #[cfg(target_os = "linux")]
 pub mod rights;
 #[cfg(not(target_os = "linux"))]
@@ -18,13 +17,12 @@ pub mod rights;
 pub mod rights;
 mod watch;
 pub use attachment::*;
-pub use directory_relation::*;
 pub use watch::ExecutionWatcher;
 
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 5;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 6;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
@@ -151,7 +149,6 @@ pub enum ExecutionRequest {
     Launch(ConsumeExecution),
     Revoke(ConsumeExecution),
     Control(ExecutionControl),
-    ObserveDirectories(Box<DirectoryRelationRequest>),
     /// Release this exact immutable lease after its executor references settle.
     RetireRegistration(ObjectRegistrationReceipt),
     Inspect(ExecutionId),
@@ -267,10 +264,6 @@ pub enum ExecutionReply {
     ActionComplete,
     Refused {
         reason: String,
-    },
-    DirectoryRelation(Box<DirectoryRelationReport>),
-    ObjectQualificationFailed {
-        failure: workspace::execution::objects::ObjectQualificationFailure,
     },
     Absent,
     Inspected {

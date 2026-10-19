@@ -98,9 +98,6 @@ fn checked(reply: ExecutionReply) -> Result<ExecutionReply, ExecError> {
     match reply {
         ExecutionReply::Busy(reason) => Err(ExecError::Busy(reason)),
         ExecutionReply::Refused { reason } => Err(ExecError::Refused(reason)),
-        ExecutionReply::ObjectQualificationFailed { failure } => {
-            Err(ExecError::Refused(format!("{failure:?}")))
-        }
         reply => Ok(reply),
     }
 }

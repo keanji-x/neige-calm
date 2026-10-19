@@ -63,10 +63,6 @@ pub(super) fn run(root: &Path, alias: &Path) -> anyhow::Result<()> {
     let right_stat = aliased.root().metadata()?;
     let left = held.live_identity()?;
     let right = aliased.live_identity()?;
-    let cross_mount = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(cross_mount_rpc(&held, &aliased))?;
     println!(
         "{}",
         serde_json::json!({
@@ -76,85 +72,7 @@ pub(super) fn run(root: &Path, alias: &Path) -> anyhow::Result<()> {
             "same_bucket_hash":key_hash(left.root_key())==key_hash(right.root_key()),
             "declared_different_root":left.compare(&right)==HeldObjectComparison::DifferentRoot,
             "comparison":format!("{:?}",left.compare(&right)),
-            "cross_mount_rpc":format!("{cross_mount:?}"),
         })
     );
     Ok(())
-}
-
-/// Same real namespace/mount evidence, exercised through the actual registered socket endpoint.
-async fn cross_mount_rpc(
-    ancestor: &HeldSourceObjects,
-    subject: &HeldSourceObjects,
-) -> anyhow::Result<workspace::execution::objects::DirectoryRelationOutcome> {
-    use calm_session::control::execution::*;
-    use workspace::execution::objects::ObjectRole;
-    let temporary = tempfile::tempdir()?;
-    let socket = temporary.path().join("observer.sock");
-    let secret = CapabilityToken::fresh()?;
-    let registry = calm_proc_supervisor::ProcRegistry::new().with_executor(
-        calm_proc_supervisor::execution::ExecutorConfig {
-            journal_directory: temporary.path().join("journal"),
-            helper_program: std::env::current_exe()?,
-            kernel_client_secret: secret.clone(),
-        },
-    )?;
-    let listener = calm_proc_supervisor::bind_control_listener(&socket)?;
-    let (shutdown, receiver) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(calm_proc_supervisor::serve_with_listener(
-        listener,
-        socket.clone(),
-        registry,
-        receiver,
-    ));
-    let mut client = RegisteredExecutorConnection::connect(&socket, secret).await?;
-    let mut receipts = Vec::new();
-    for held in [ancestor, subject] {
-        let metadata = held.root().metadata()?;
-        let receipt = client
-            .attach(
-                AttachRegistration {
-                    registration_id: ObjectRegistrationId::fresh()?,
-                    executor_boot: client.executor_boot().clone(),
-                    nonce: TransferNonce::fresh()?,
-                    incarnation: SourceObjectIncarnation::ExternalDir(
-                        ExternalDirectoryIncarnationId::fresh()?,
-                    ),
-                    registration: ExecutionRegistration::ExternalDir {
-                        directory_id: ExternalDirectoryId::fresh()?,
-                        root: DirectoryRegistration {
-                            path: held.shape().root.clone(),
-                            device: metadata.dev(),
-                            inode: metadata.ino(),
-                        },
-                        registration_version: 9,
-                        admission_open: true,
-                        authority: ExecutionAuthority {
-                            grant_id: ExecutionGrantId::fresh()?,
-                            authorization_binding: AuthorizationBindingId::fresh()?,
-                            authorization_version: 3,
-                        },
-                    },
-                    shape: held.shape().clone(),
-                },
-                held,
-            )
-            .await?;
-        receipts.push(RegisteredDirectoryRoot {
-            receipt,
-            role: ObjectRole::Root,
-        });
-    }
-    let observation = client
-        .observe_directories(DirectoryRelationRequest {
-            executor_boot: client.executor_boot().clone(),
-            nonce: TransferNonce::fresh()?,
-            ancestor: receipts[0].clone(),
-            subject: receipts[1].clone(),
-        })
-        .await?;
-    let outcome = observation.outcome().clone();
-    let _ = shutdown.send(());
-    task.await??;
-    Ok(outcome)
 }

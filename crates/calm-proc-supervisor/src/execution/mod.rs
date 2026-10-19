@@ -3,8 +3,6 @@
 mod attachment;
 mod controls;
 mod directory;
-mod directory_probe;
-mod directory_relation;
 mod journal;
 mod launch;
 mod monitor;
@@ -341,10 +339,8 @@ impl Executor {
         if !self.authenticates(secret) {
             return refused("unregistered kernel client");
         }
-        let qualification_report = matches!(&request, ExecutionRequest::ObserveDirectories(_));
         match self.dispatch_authorized(request).await {
             Ok(reply) => reply,
-            Err(error) if qualification_report => qualification_or_refusal(&error),
             Err(error) => refused(&error.to_string()),
         }
     }
@@ -377,9 +373,6 @@ impl Executor {
             ExecutionRequest::Launch(request) => self.launch(request).await,
             ExecutionRequest::Revoke(request) => self.revoke(request).await,
             ExecutionRequest::Control(control) => self.control(control).await,
-            ExecutionRequest::ObserveDirectories(request) => {
-                self.observe_directories(*request).await
-            }
         }
     }
 
@@ -539,14 +532,6 @@ fn reply(record: &Journal) -> ExecutionReply {
 fn refused(reason: &str) -> ExecutionReply {
     ExecutionReply::Refused {
         reason: reason.into(),
-    }
-}
-fn qualification_or_refusal(error: &anyhow::Error) -> ExecutionReply {
-    match error.downcast_ref::<workspace::execution::objects::ObjectQualificationFailure>() {
-        Some(failure) => ExecutionReply::ObjectQualificationFailed {
-            failure: failure.clone(),
-        },
-        None => refused(&error.to_string()),
     }
 }
 fn poison<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {

@@ -6,10 +6,6 @@ impl OwnedChild {
     pub(super) fn new(child: Child) -> Self {
         Self(Some(child))
     }
-    #[cfg(test)]
-    pub(super) fn is_reaped(&self) -> bool {
-        self.0.is_none()
-    }
     pub(super) fn id(&self) -> u32 {
         self.0.as_ref().expect("owned child not yet reaped").id()
     }
@@ -21,20 +17,6 @@ impl OwnedChild {
             .wait()?;
         self.0.take();
         Ok(status)
-    }
-    pub(super) fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        match self
-            .0
-            .as_mut()
-            .expect("owned child not yet reaped")
-            .try_wait()?
-        {
-            Some(status) => {
-                self.0.take();
-                Ok(Some(status))
-            }
-            None => Ok(None),
-        }
     }
 }
 impl Drop for OwnedChild {

@@ -19,7 +19,6 @@ pub(super) enum HelperPlan {
         context: HelperContext,
         specification: ExecutionSpecification,
     },
-    ObserveDirectories(super::directory_probe::ProbePlan),
 }
 #[derive(Serialize, Deserialize)]
 pub(super) struct HelperReport {
@@ -102,7 +101,6 @@ pub(super) fn run_with_command_hook(
     let image = std::fs::metadata("/proc/self/exe")?;
     let mechanism = match &plan {
         HelperPlan::Execution { context, .. } => &context.mechanism,
-        HelperPlan::ObserveDirectories(plan) => &plan.context.mechanism,
     };
     anyhow::ensure!(
         mechanism.executable_device == image.dev()
@@ -110,15 +108,10 @@ pub(super) fn run_with_command_hook(
             && mechanism.protocol_version == 1,
         "unregistered helper image/protocol"
     );
-    let (context, specification) = match plan {
-        HelperPlan::Execution {
-            context,
-            specification,
-        } => (context, specification),
-        HelperPlan::ObserveDirectories(plan) => {
-            return super::directory_probe::run(plan, report, [config_fd, report_fd]);
-        }
-    };
+    let HelperPlan::Execution {
+        context,
+        specification,
+    } = plan;
     let mut command = Command::new(&specification.program);
     command
         .args(&specification.args)
