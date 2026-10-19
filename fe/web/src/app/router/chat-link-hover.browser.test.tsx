@@ -22,7 +22,7 @@ async function setup({ streaming = false, historySuffix = '', narrow = false, fi
   await page.viewport(narrow ? 390 : 1440, narrow ? 844 : 900);
   const requests: ApiRequest[] = [];
   const evidence = createEvidencePreviewTransport();
-  const track = { id: 'link-preview', area_id: 'examples', title: 'Chat preview', sort: 1,
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/preview', frozen_at: null }, id: 'link-preview', area_id: 'examples', title: 'Chat preview', sort: 1,
     cwd: '/preview', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'chat-card', track_id: track.id, kind: 'codex', title: 'Link chat', sort: 1,
     payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };

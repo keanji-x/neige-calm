@@ -94,7 +94,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
       ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       ...(draft.recipe_id === undefined ? {} : { recipe_id: draft.recipe_id }),
-      ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
+      ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true,
+        ...(draft.isolation === 'none' ? { isolation: draft.isolation } : {}) }),
       ...(current.role === 'admin' ? { admin: true } : {}),
       ...(authorization === undefined ? {} : { allow_cross_area_cwd: authorization }),
     } satisfies NewTrackBodyWithoutFirstMessage;

@@ -33,7 +33,7 @@ type Kernel = Readonly<{
 
 function setup({ adminGrantedAt, canAdmin, patch }: Kernel) {
   const requests: ApiRequest[] = [];
-  let track: TrackWire = { id: 'w1', area_id: 'c1', title: 'Run the area', sort: 1, cwd: '/tmp',
+  let track: TrackWire = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Run the area', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, admin_granted_at: adminGrantedAt, created_at: 1, updated_at: 2 };
   const transport: ApiTransportPort = { async send(request) {
     requests.push(request);

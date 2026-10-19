@@ -21,7 +21,7 @@ const areas = [
   { id: 'c2', name: 'Two', color: '#654321', sort: 2, kind: 'user', created_at: 1, updated_at: 1 },
 ];
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const track = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, cwd: '/tmp',
+const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, cwd: '/tmp',
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 };
 const plannerCard = {
   id: 'planner', track_id: 'w1', kind: 'codex', title: 'Planner', sort: 1,

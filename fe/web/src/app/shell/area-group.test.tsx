@@ -23,7 +23,7 @@ function area(overrides: Partial<Area> = {}): Area {
 function tracks(count: number, areaId = 'c1', prefix = 'T'): Track[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `${areaId}-${index + 1}`, areaId, title: `${prefix}${index + 1}`, sort: index,
-    cwd: '/tmp', agentCwd: '/tmp',
+    cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
   }));

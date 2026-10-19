@@ -78,7 +78,7 @@ function mount(count: number) {
   const history = rows(count);
   const live = { text: 'LIVE performance probe.' };
   const requests: ApiRequest[] = [];
-  const track = { id: 'perf-track', area_id: 'perf-area', title: 'Performance probe', sort: 1,
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'perf-track', area_id: 'perf-area', title: 'Performance probe', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'perf-card', track_id: track.id, kind: 'codex', title: 'Measured chat', sort: 1,
     payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };

@@ -18,7 +18,7 @@ import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const area = { id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const openTrack = { id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, cwd: '/tmp',
+const openTrack = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Reliable', sort: 1, cwd: '/tmp',
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 };
 const card = { id: 'k1', track_id: 'w1', kind: 'notes', title: 'Build log', sort: 1, payload: {},
   deletable: true, created_at: 1, updated_at: 1 };

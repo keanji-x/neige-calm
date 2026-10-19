@@ -21,7 +21,7 @@ function draw(selected = false) {
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
   const tracks: Track[] = ['Left first', 'Left second'].map((title, i) => ({
-    id: `track-${i}`, areaId: area.id, title, sort: i, cwd: '/tmp', agentCwd: '/tmp',
+    id: `track-${i}`, areaId: area.id, title, sort: i, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY,
   }));
   const view = deriveTrackPageView({

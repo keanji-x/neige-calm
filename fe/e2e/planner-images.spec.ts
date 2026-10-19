@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('shows local screenshots in planner history after reopening and on mobile', async ({ page }, testInfo) => {
   const track = { id: 'image-track', area_id: 'image-area', title: 'Screenshot review', sort: 1,
-    cwd: '/checkout', workspace: { worktree: '/work/image-track' },
+    cwd: '/checkout', workspace: { isolation: 'worktree', kind: 'attached', path: '/checkout', frozen_at: null, worktree: '/work/image-track' },
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'image-planner', track_id: track.id, kind: 'codex', title: 'Planner', sort: 1,
     payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };

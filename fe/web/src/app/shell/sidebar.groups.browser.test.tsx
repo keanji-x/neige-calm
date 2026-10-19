@@ -31,7 +31,7 @@ async function scene(activitiesVisible: boolean, areaName = 'Work') {
     { id: 'review', title: 'Review result', attention: 'input' as const, working: false },
     { id: 'running', title: 'Build frontend', attention: 'none' as const, working: true },
     { id: 'loose', title: 'Next task', attention: 'none' as const, working: false, pinnedAt: null, activityAt: null },
-  ].map((row) => ({ areaId: area.id, sort: 1, cwd: '/tmp', agentCwd: '/tmp', pinnedAt: 10,
+  ].map((row) => ({ areaId: area.id, sort: 1, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp', pinnedAt: 10,
     closedAt: null, createdAt: 1, updatedAt: 10, ...NEUTRAL_ACTIVITY, activityAt: 10, ...row }));
   const onGo = vi.fn();
   const onSetPinned = vi.fn();
@@ -139,7 +139,7 @@ it('keeps activity markers before their own Track text at every hierarchy level'
 });
 
 it.each(['rail', 'panel'] as const)('centres both activity sizes in the %s action slot', (variant) => {
-  const track: Track = { id: 'slot', title: 'Slot geometry', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+  const track: Track = { id: 'slot', title: 'Slot geometry', areaId: 'a', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   const tree = (working: boolean) => <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
     <div style={{ inlineSize: '15rem' }}><TrackRow track={{ ...track, working }} {...(variant === 'rail' ? { variant, presentation: { kind: 'entry' as const, depth: 0 as const } } : { variant })}
@@ -208,7 +208,7 @@ it('keeps long rail labels within the shared columns without horizontal scrollin
 it('lets clicks in a decorative status slot reach Track navigation', async () => {
   await page.viewport(1400, 900);
   const onOpen = vi.fn();
-  const track: Track = { id: 'slot', title: 'Status target', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+  const track: Track = { id: 'slot', title: 'Status target', areaId: 'a', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY, working: true };
   render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
     <div style={{ inlineSize: '15rem' }}><TrackRow track={track} variant="rail" presentation={{ kind: 'entry', depth: 0 }} onOpen={onOpen} /></div>
@@ -389,7 +389,7 @@ it('uses the three-dot Track menu with keyboard and keeps actions separate from 
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
   const tracks: Track[] = ['Recent', 'Older'].map((title, i) => ({ id: `t${i}`, areaId: area.id, title, sort: i,
-    cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 2, ...NEUTRAL_ACTIVITY }));
+    cwd: '/tmp', isolation: 'none', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 2, ...NEUTRAL_ACTIVITY }));
   const onGo = vi.fn();
   const onSetPinned = vi.fn();
   render(wrap(<UiPreferencesProvider preferences={preferences}>
@@ -430,7 +430,7 @@ it('uses the three-dot Track menu with keyboard and keeps actions separate from 
 
 it('reserves room for menu actions and metadata in Today compact rows', async () => {
   await page.viewport(1400, 900);
-  const track: Track = { id: 't', title: 'Compact row', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+  const track: Track = { id: 't', title: 'Compact row', areaId: 'a', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
     <div style={{ inlineSize: '20rem' }}><TrackRow track={track} variant="compact" nowMs={10_000}
@@ -449,7 +449,7 @@ it('reserves room for menu actions and metadata in Today compact rows', async ()
 
 it('fades only overflowing rail titles and keeps the action menu distinct', async () => {
   await page.viewport(1400, 900);
-  const base: Track = { id: 'long', title: '', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+  const base: Track = { id: 'long', title: '', areaId: 'a', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   const tree = (title: string, width: string) => <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
     <div style={{ inlineSize: width }}><TrackRow track={{ ...base, title }} variant="rail" presentation={{ kind: 'entry', depth: 0 }}
@@ -484,7 +484,7 @@ it('fades only overflowing rail titles and keeps the action menu distinct', asyn
 it('reveals Track controls on hover or focus and lets the title use idle space', async () => {
   await page.viewport(1400, 900);
   const title = 'A long navigation title used to verify space for hover actions';
-  const track: Track = { id: 'hover', title, areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+  const track: Track = { id: 'hover', title, areaId: 'a', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
     <div style={{ inlineSize: '14rem' }}><TrackRow track={track} variant="rail" presentation={{ kind: 'entry', depth: 0 }} unread onOpen={vi.fn()} onDelete={vi.fn()}

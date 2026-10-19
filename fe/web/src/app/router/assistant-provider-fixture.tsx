@@ -31,7 +31,7 @@ export function renderAssistantProviderFixture(options: {
   let attempts = 0;
   let restarted = false;
   let selectedModel: string | null = null;
-  const track = { id: 'provider-track', area_id: 'area', title: 'Provider discussion', sort: 1,
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'provider-track', area_id: 'area', title: 'Provider discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const rows: Conversation[] = options.existingProvider === undefined ? [] : [{
     id: 'dormant', trackId: track.id, title: 'Saved Assistant', kind: 'track-assistant',

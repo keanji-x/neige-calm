@@ -161,3 +161,5 @@
 - { path: fe/web/src/systems/worker-task, type: directory, owner: systems/worker-task, readonly: false, basis: "Per-job typed Worker execution and cancellation for feature-owned preparation (#2711)" }
 
 - { path: fe/web/src/systems/content-preparation, type: directory, owner: systems/content-preparation, readonly: false, basis: "Generic selection-scoped preparation leases and visible derived content (#2711)" }
+
+- { path: fe/web/src/ui/explanation-badge, type: directory, owner: ui/explanation-badge, readonly: false, basis: "#2666 domain-free status chip with keyboard and touch explanation; features supply copy" }

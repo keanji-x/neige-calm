@@ -1,3 +1,5 @@
+import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';
+import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
 import { ContextAction, ContextFrame, ContextGroup } from '../../../ui/panel-card/context.tsx';
 import { TrackTitle } from '../title/public.tsx';
 // The `/track/$trackId` surface. Presentational: every mutation and navigation leaves through a callback,
@@ -450,6 +452,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
             controls={controls} host={mobileTitleReadHost} view={mobileTitleReadView} register={registerMobileTitleEdit} /> : undefined} /></h1>
         <div className={styles.mobileTitleReadHost} hidden={!titleInHeader}
           ref={(node) => { if (node !== null && mobileTitleReadHost.parentNode !== node) node.appendChild(mobileTitleReadHost); }} />
+        {track.isolation === 'none' && <ExplanationBadge label={NO_ISOLATION_LABEL}>{NO_ISOLATION_EXPLANATION}</ExplanationBadge>}
         {!titleInHeader && <TrackClosedBadge closedAt={track.closedAt} />}
         {!titleInHeader && <TrackAdminBadge adminGrantedAt={adminGrantedAt} />}
         {/* The same indicator the rail paints. `unread` is `false` by construction: the page is the reader, and its receipt clears the moment it is visible. The mobile page head carries no indicator. */}
@@ -460,7 +463,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         <MobileHeader
           title={trackDisplayTitle(track.title)}
           titleText={<TrackTitle track={track} />}
-          meta={<><TrackClosedBadge closedAt={track.closedAt} /><TrackAdminBadge adminGrantedAt={adminGrantedAt} /></>}
+          meta={<>{track.isolation === 'none' && <ExplanationBadge label={NO_ISOLATION_LABEL}>{NO_ISOLATION_EXPLANATION}</ExplanationBadge>}<TrackClosedBadge closedAt={track.closedAt} /><TrackAdminBadge adminGrantedAt={adminGrantedAt} /></>}
           level={1}
           backLabel={boardOpen ? 'Report' : mobileBackLabel}
           onBack={boardOpen ? onCloseBoard : onMobileBack}

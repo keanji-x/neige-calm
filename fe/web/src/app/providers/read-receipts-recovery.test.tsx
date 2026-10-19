@@ -97,7 +97,7 @@ it('acknowledges the open target once a bundled resume admits writes again', asy
 it('says a mark unread refused during recovery like any other write, and changes nothing', async () => {
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0 };
-  const track: Track = { id: 't', areaId: 'work', title: 'Task', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+  const track: Track = { id: 't', areaId: 'work', title: 'Task', sort: 1, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY, activityAt: 50 };
   const kernel = createReadReceiptsKernel({ baselineMs: 100 });
   bundled(kernel, <Sidebar areas={[area]} tracksByArea={new Map([['work', [track]]])} tracks={[track]} currentPath="/"

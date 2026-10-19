@@ -22,7 +22,7 @@ afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); aw
 
 function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { text: string }, onCommit?: () => void) {
   const requests: ApiRequest[] = [];
-  const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const parent: Conversation & { provider: 'codex' } = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
   const rows = [parent];

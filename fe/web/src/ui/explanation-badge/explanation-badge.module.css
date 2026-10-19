@@ -1,0 +1,24 @@
+@layer ui {
+  .trigger {
+    appearance: none;
+    border: 0;
+    background: none;
+    padding: 0;
+    cursor: pointer;
+    border-radius: var(--radius-pill);
+    max-inline-size: 100%;
+  }
+
+  .trigger:focus-visible {
+    outline: var(--space-half) solid var(--accent);
+    outline-offset: var(--space-half);
+  }
+
+  .explanation {
+    max-inline-size: min(var(--measure-form), calc(100vw - var(--space-6)));
+    padding: var(--space-3);
+    font: var(--type-content);
+    letter-spacing: var(--type-content-tracking);
+    color: var(--text-2);
+  }
+}

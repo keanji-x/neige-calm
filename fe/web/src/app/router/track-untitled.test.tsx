@@ -19,7 +19,7 @@ const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 /* `title: ''` is what the kernel stores when the POST omits the key. */
-const TRACK = {
+const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
   id: 'w1', area_id: 'c1', title: '', sort: 1, cwd: '/tmp',
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };

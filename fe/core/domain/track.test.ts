@@ -12,14 +12,14 @@ import {
 } from './track.js';
 import type { Area } from './area.js';
 
-const baseWire = {
+const baseWire = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
   id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1,
   created_at: 1_000, updated_at: 1_000,
 };
 
 function track(overrides: Partial<Track>): Track {
   return {
-    id: 'w', areaId: 'c', title: 't', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+    id: 'w', areaId: 'c', title: 't', sort: 1, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,
@@ -48,7 +48,7 @@ describe('track wire decode', () => {
 
   it('maps the wire row onto the camelCase domain shape', () => {
     expect(toTrack(trackWireSchema.parse({ ...baseWire, pinned_at: 42 }))).toEqual(track({
-      id: 'w1', areaId: 'c1', title: 'Ship it', cwd: '', agentCwd: '', pinnedAt: 42, createdAt: 1_000,
+      id: 'w1', areaId: 'c1', title: 'Ship it', cwd: '', isolation: 'none', agentCwd: '', pinnedAt: 42, createdAt: 1_000,
       updatedAt: 1_000,
     }));
   });
@@ -56,12 +56,12 @@ describe('track wire decode', () => {
   it('roots the agent at the track worktree when the kernel made one (#1830), else at the checkout', () => {
     const worktree = '/repo/.claude/worktrees/track-w1';
     const attached = toTrack(trackWireSchema.parse({
-      ...baseWire, cwd: '/repo', workspace: { kind: 'attached', path: '/repo', frozen_at: 1, worktree },
+      ...baseWire, cwd: '/repo', workspace: { isolation: 'worktree', kind: 'attached', path: '/repo', frozen_at: 1, worktree },
     }));
     expect(attached.cwd).toBe('/repo');
     expect(attached.agentCwd).toBe(worktree);
     const managed = toTrack(trackWireSchema.parse({
-      ...baseWire, cwd: '/w', workspace: { kind: 'managed', path: '/w', frozen_at: null },
+      ...baseWire, cwd: '/w', workspace: { isolation: 'managed', kind: 'managed', path: '/w', frozen_at: null },
     }));
     expect(managed.agentCwd).toBe('/w');
   });

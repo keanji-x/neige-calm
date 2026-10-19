@@ -17,7 +17,7 @@ afterEach(async () => {
   await page.viewport(1280, 720);
 });
 
-const TRACK = { id: 'asks-track', area_id: 'area', title: 'Release 2.0', sort: 1, cwd: '/tmp',
+const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'asks-track', area_id: 'area', title: 'Release 2.0', sort: 1, cwd: '/tmp',
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER = { id: 'planner', track_id: TRACK.id, kind: 'codex', title: 'Planner', sort: 1,
   payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };

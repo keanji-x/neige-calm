@@ -21,7 +21,7 @@ import '../../styles/entry.css';
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
 function setup(prepareReport: ReportPreparationPort = prepareReportDocument, initial = '/track/a', withProgress = false) {
-  const tracks = ['a', 'b'].map((id) => ({ id, area_id: 'area', title: `Track ${id}`, sort: 1,
+  const tracks = ['a', 'b'].map((id) => ({ workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id, area_id: 'area', title: `Track ${id}`, sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null,
     created_at: 1, updated_at: 2 }));
   const cardsFor = (id: string) => [{ id: `report-${id}`, track_id: id, title: null, kind: 'track-report',

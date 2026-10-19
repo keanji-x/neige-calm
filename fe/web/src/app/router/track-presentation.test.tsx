@@ -15,7 +15,7 @@ function setup(prepareReport: ReportPreparationPort = prepareReportDocument, ini
   const fixture = renderDailyFixture({ initial, prepareReport, receipts: kernel, reply: async request => {
     const extra = await reply?.(request); if (extra !== undefined) return extra;
     if (request.path === '/api/tracks/daily') return { status: 200, statusText: 'OK', body: {
-      track: { id: 'daily', area_id: 'daily-area', title: 'Staged Track', sort: 0, cwd: '/tmp',
+      track: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'daily', area_id: 'daily-area', title: 'Staged Track', sort: 0, cwd: '/tmp',
         pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
       can_reopen: false, can_close: false, can_admin: false, overlays: [], cards: [{
         id: 'staged-report', track_id: 'daily', kind: 'track-report', title: null, sort: 0,

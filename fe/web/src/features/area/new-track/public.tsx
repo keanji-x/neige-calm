@@ -3,6 +3,9 @@
 // the template list, and puts the sentence on the create as `first_message`, verbatim.
 
 import { useEffect, useMemo, useRef, useId, useCallback, type ReactNode } from 'react';
+import { RadioList, RadioListItem } from '@astryxdesign/core/RadioList';
+import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';
+import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { ChatComposer, ChatComposerInput, type ChatComposerTrigger } from '@astryxdesign/core/Chat';
@@ -52,6 +55,7 @@ export type NewTrackDraft = Readonly<{
   message: string;
   /** Absolute path, or the key is absent: an empty string would take the attached branch with a path that cannot work. */
   cwd?: string;
+  isolation?: 'none';
 }> & StartingPointFields;
 
 export type NewTrackFormProps = Readonly<{
@@ -111,6 +115,7 @@ export type NewTrackFormState = Readonly<{
   selected: StartingPoint;
   templateValues: Readonly<Record<string, Readonly<Record<string, string>>>>;
   cwd: string;
+  isolation: 'worktree' | 'none';
 }>;
 
 /** A template takes input iff a running trusted plugin is bound to it, i.e. the read returned an `input_schema`; with the plugin stopped the kernel would reject the fields. */
@@ -144,6 +149,7 @@ export function NewTrackForm({
     setSelected(next);
   };
   const [cwd, setCwd] = useState(initialDraft?.cwd ?? initialCwd ?? '');
+  const [isolation, setIsolation] = useState<'worktree' | 'none'>(initialDraft?.isolation ?? 'worktree');
   const [browsing, setBrowsing] = useState(false);
   const composerHostRef = useRef<HTMLDivElement | null>(null);
   /* One array per trigger: `useTriggerMenu` drops an open menu when the list changes identity. */
@@ -152,8 +158,8 @@ export function NewTrackForm({
   const triggerId = `${fieldId}-start-from-trigger`;
 
   useEffect(() => {
-    onDraftChange?.({ message, selected, templateValues, cwd });
-  }, [message, selected, templateValues, cwd, onDraftChange]);
+    onDraftChange?.({ message, selected, templateValues, cwd, isolation });
+  }, [message, selected, templateValues, cwd, isolation, onDraftChange]);
 
   /* The caret starts in the field. Found by query, not ref: `ChatComposerInput`
    * forwards its DOM `ref` to the wrapper, which is not focusable. Mount-only, so
@@ -218,7 +224,7 @@ export function NewTrackForm({
     /* Spread, not `cwd: cwd || undefined`: the caller keys managed-vs-attached on
            whether the key is there. A path travels byte-for-byte; leading/trailing
            spaces are legal POSIX path characters. */
-    const base = { message: text, ...(cwd === '' ? {} : { cwd }) };
+    const base = { message: text, ...(cwd === '' ? {} : { cwd, ...(isolation === 'none' ? { isolation } : {}) }) };
     if (effectiveSelection.kind === 'none') return base;
     /* A recipe carries `recipe_id` and stops here; the union has one arm at a time. */
     if (effectiveSelection.kind === 'recipe') {
@@ -309,7 +315,7 @@ export function NewTrackForm({
                 onChange: selectStartingPoint, onManageRecipes, placement: 'above', triggerId,
                 isDisabled: submitting || locked }}
               folder={{ buttonId: folderId, value: cwd, clearLabel: FOLDER_CLEAR_LABEL,
-                onBrowse: () => setBrowsing(true), onClear: () => setCwd(''),
+                onBrowse: () => setBrowsing(true), onClear: () => { setCwd(''); setIsolation('worktree'); },
                 isDisabled: submitting || locked }}
             />}
             /* Model and Create stay together at the trailing edge. */
@@ -328,6 +334,14 @@ export function NewTrackForm({
             )}
           />
         </div>
+
+        {cwd !== '' && <RadioList label="Workspace isolation" value={isolation} size="sm"
+          isDisabled={submitting || locked}
+          onChange={(value) => setIsolation(value === 'none' ? 'none' : 'worktree')}>
+          <RadioListItem value="worktree" label="Worktree (isolated)" />
+          <RadioListItem value="none" label="Directly in this folder"
+            description={<ExplanationBadge label={NO_ISOLATION_LABEL}>{NO_ISOLATION_EXPLANATION}</ExplanationBadge>} />
+        </RadioList>}
 
         {error !== null && (
           <Banner

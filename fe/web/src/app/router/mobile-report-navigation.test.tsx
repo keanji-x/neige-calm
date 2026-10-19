@@ -18,7 +18,7 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 /* A second empty Area makes the centered selector’s destination observable. */
 const OTHER_AREA = { id: 'c2', name: 'Second', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = {
+const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
   id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp',
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };

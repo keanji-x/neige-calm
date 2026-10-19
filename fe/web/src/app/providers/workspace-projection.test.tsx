@@ -13,7 +13,7 @@ afterEach(cleanup);
 const area = (id: string): Area => ({ id, name: id, color: '#123456', sort: 0, kind: 'user',
   defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 });
 const track = (id: string, areaId = 'a'): Track => ({ ...NEUTRAL_ACTIVITY,
-  id, areaId, title: id, sort: 0, cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null,
+  id, areaId, title: id, sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp', pinnedAt: null, closedAt: null,
   createdAt: 1, updatedAt: 1 });
 
 function setup(areas: readonly Area[], rows: readonly Track[], overlays: readonly OverlayWire[]) {
@@ -83,7 +83,7 @@ it('keeps a loaded Area usable while another read is pending and then fails', as
   let fail!: () => void;
   const pending = new Promise<never>((_, reject) => { fail = () => reject(new Error('Area b unavailable')); });
   const transport: ApiTransportPort = { send: request => request.path.endsWith('/b/tracks') ? pending : Promise.resolve({
-    status: 200, statusText: 'OK', body: [{ id: 'one', area_id: 'a', title: 'One', sort: 0, cwd: '/tmp',
+    status: 200, statusText: 'OK', body: [{ workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'one', area_id: 'a', title: 'One', sort: 0, cwd: '/tmp',
       pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 }],
   }) };
   const unauthorized = createUnauthorizedChannel({ enqueue: task => task() });

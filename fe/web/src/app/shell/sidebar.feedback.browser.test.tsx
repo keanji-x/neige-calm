@@ -22,7 +22,7 @@ it.each(['light', 'dark'] as const)('says a refused pin in the rail as an error 
   await page.viewport(1280, 720);
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
-  const tracks: Track[] = [{ id: 'next', title: 'Next task', areaId: area.id, sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+  const tracks: Track[] = [{ id: 'next', title: 'Next task', areaId: area.id, sort: 1, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 10, ...NEUTRAL_ACTIVITY, activityAt: null }];
   const onSetPinned = vi.fn(() => Promise.reject(new ApiError({ kind: 'http', status: 409, code: 'conflict',
     message: 'A managed track cannot be pinned.' })));

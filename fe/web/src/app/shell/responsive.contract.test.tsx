@@ -38,7 +38,7 @@ const AREA: Area = {
   defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
 };
 const TRACK: Track = {
-  id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp', agentCwd: '/tmp',
+  id: 'w1', areaId: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
   pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY,
 };
 // Read when `useWorkspace` is called, so a case may hand the shell its own rows.

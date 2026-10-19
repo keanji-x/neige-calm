@@ -24,7 +24,7 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
   };
   const tracks: Track[] = [null, 10].map((pinnedAt, index) => ({
     id: `t${index}`, areaId: area.id, title: `Touch task ${index}`, sort: index,
-    cwd: '/tmp', agentCwd: '/tmp', pinnedAt, closedAt: null, createdAt: 1, updatedAt: 1,
+    cwd: '/tmp', isolation: 'none', agentCwd: '/tmp', pinnedAt, closedAt: null, createdAt: 1, updatedAt: 1,
     ...NEUTRAL_ACTIVITY, attention: 'input',
   }));
   render(receipts.wrap(
@@ -76,7 +76,7 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
 
 it('keeps a standalone rail pin reachable without covering leading status on touch', async () => {
   const onSetPinned = vi.fn();
-  const track: Track = { id: 'standalone', areaId: 'a', title: 'Standalone rail task with a long title that must stop before its pin control', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+  const track: Track = { id: 'standalone', areaId: 'a', title: 'Standalone rail task with a long title that must stop before its pin control', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY, attention: 'input' };
   render(<ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <div style={{ inlineSize: '15rem' }}><TrackRow track={track} variant="rail" presentation={{ kind: 'entry', depth: 0 }} onOpen={vi.fn()} onSetPinned={onSetPinned} /></div>

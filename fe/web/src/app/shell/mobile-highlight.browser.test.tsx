@@ -17,7 +17,7 @@ function highlightRadius(host: HTMLElement) {
 
 it.each(['light', 'dark'])('uses the highlight contour for selected and hovered mobile Tracks in %s', async theme => {
   await page.viewport(390, 844); document.documentElement.dataset.theme = theme;
-  const view = render(<MobileTrackList tracks={[{ id: 'track', areaId: 'area', title: 'Selected track', sort: 0, cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY }]} currentTrackId="track" onOpenTrack={vi.fn()} isUnread={() => false} />);
+  const view = render(<MobileTrackList tracks={[{ id: 'track', areaId: 'area', title: 'Selected track', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY }]} currentTrackId="track" onOpenTrack={vi.fn()} isUnread={() => false} />);
   const track = view.getByRole('button', { name: 'Selected track' });
   expect(getComputedStyle(track).borderRadius).toBe(highlightRadius(view.container));
   expect(getComputedStyle(track.closest('li')!).borderRadius).toBe(highlightRadius(view.container));

@@ -42,6 +42,16 @@ function normalizeLegacyTemplateKeys(raw: unknown): unknown {
   };
 }
 
+/** Required server projection, shared by HTTP, events and the domain reader. */
+export const workspaceIsolationSchema = z.enum(['managed', 'worktree', 'none']);
+export const trackWorkspaceSchema = z.object({
+  isolation: workspaceIsolationSchema,
+  kind: z.enum(['managed', 'attached']),
+  path: z.string(),
+  frozen_at: z.number().nullable(),
+  worktree: z.string().optional(),
+});
+
 const trackObjectSchema = z.object({
   id: z.string(),
   area_id: z.string(),
@@ -65,17 +75,7 @@ const trackObjectSchema = z.object({
   creator_track_id: z.string().nullable().default(null),
   creator_key: z.string().nullable().default(null),
   /** The typed workspace; `cwd` above is a projection of `workspace.path`. */
-  workspace: z
-    .object({
-      // No per-field defaults, deliberately: a missing `workspace` key must parse, but a
-      // present-and-incomplete one is a server regression. Matches serde, not OpenAPI.
-      kind: z.enum(['managed', 'attached']),
-      path: z.string(),
-      frozen_at: z.number().nullable(),
-      /** The kernel-made git worktree the track's agents run in (#1830); absent when there is none. */
-      worktree: z.string().optional(),
-    })
-    .default({ kind: 'attached', path: '', frozen_at: null }),
+  workspace: trackWorkspaceSchema,
   created_at: z.number(),
   updated_at: z.number(),
 });

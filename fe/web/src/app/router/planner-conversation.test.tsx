@@ -24,7 +24,7 @@ vi.mock('../../../../core/domain/recovery/access.ts', async (importOriginal) => 
 }));
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
+const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const TRACK_B = { ...TRACK, id: 'w2', title: 'Second track', sort: 2 };
@@ -163,7 +163,7 @@ it('renders local screenshot references from planner history using the agent wor
   const agentRoot = '/tmp/planner-worktree';
   setup((request) => {
     if (request.path === '/api/tracks/w1') return ok({
-      track: { ...TRACK, workspace: { worktree: agentRoot } },
+      track: { ...TRACK, workspace: { ...TRACK.workspace, isolation: 'worktree', worktree: agentRoot } },
       can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [],
     });
     if (request.path.includes('/harness/items')) return ok([{

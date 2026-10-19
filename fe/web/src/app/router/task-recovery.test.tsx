@@ -37,7 +37,7 @@ function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' 
   };
   let initiallyEmpty = mode === 'empty';
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-  const track = { id: 'w1', area_id: 'c1', title: 'Continuing work', sort: 1, cwd: '/tmp',
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Continuing work', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 1, deletable: false,
     created_at: 1, updated_at: 2, payload: { schemaVersion: 3, docRev: 1, summary: '', body: '', blocks: [

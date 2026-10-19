@@ -43,7 +43,7 @@ function ok(body: unknown): ApiTransportResponse {
 const systemArea = { id: 'sys', name: 'system', color: '#000', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
 const userArea = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-const baseTrackWire = {
+const baseTrackWire = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
   id: 'w1', area_id: 'c1', title: 'Ship it', sort: 1, cwd: '/tmp',
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };
@@ -165,7 +165,7 @@ describe('failure channel', () => {
   });
 
   it('keeps neutral tracks readable while exporting an overlay failure', async () => {
-    const track = { id: 'w1', area_id: 'c1', title: 'Task', sort: 1, cwd: '/tmp',
+    const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Task', sort: 1, cwd: '/tmp',
       pinned_at: null, closed_at: null, created_at: 1, updated_at: 1 };
     const { transport } = recordingTransport((request) => {
       if (request.path === '/api/areas') return ok([userArea]);
@@ -737,7 +737,7 @@ describe('track create folders cache', () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     client.setQueryData(queryKeys.areaFolders('c1'), []);
     const transport: ApiTransportPort = {
-      send: () => Promise.resolve(ok({
+      send: () => Promise.resolve(ok({ workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
         id: 'w1', area_id: 'c1', title: 'Ship', sort: 0, created_at: 1, updated_at: 1,
       })),
     };

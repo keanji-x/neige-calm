@@ -18,7 +18,7 @@ it('keeps unchanged Track title observers and measurements out of a real row sel
   await page.viewport(1400, 900);
   const tracks: Track[] = Array.from({ length: 5 }, (_, index) => ({
     id: `track-${index}`, title: `Track title ${index}`, areaId: 'work', sort: index,
-    cwd: '/workspace', agentCwd: '/workspace', pinnedAt: null, closedAt: null,
+    cwd: '/workspace', isolation: 'none', agentCwd: '/workspace', pinnedAt: null, closedAt: null,
     createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY,
   }));
   const unchanged = new Set<Element>();

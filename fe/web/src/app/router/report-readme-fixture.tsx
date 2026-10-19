@@ -21,7 +21,7 @@ export function renderReadmeFixture(initial: string, detailReady: Promise<void> 
   options: Readonly<{ shortReport?: boolean; failFileRead?: boolean }> = {}) {
   let fileReadFailed = options.failFileRead ?? false;
   const requests: ApiRequest[] = [];
-  const track = { id: README_TRACK_ID, area_id: 'project', title: 'Documentation preview', sort: 1,
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/repo', frozen_at: null }, id: README_TRACK_ID, area_id: 'project', title: 'Documentation preview', sort: 1,
     cwd: '/repo', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'planner', track_id: track.id, kind: 'codex', title: 'Existing conversation', sort: 1,
     payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };

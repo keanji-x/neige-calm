@@ -11,9 +11,9 @@ import {
 } from './schemas.js';
 import { areaFolderWireSchema, folderConflictSchema } from '../domain/area.js';
 import type {
-  Event as GeneratedEvent,
+  EventWire as GeneratedEvent,
   Area as GeneratedArea,
-  Track as GeneratedTrack,
+  TrackWire as GeneratedTrack,
   Card as GeneratedCard,
   Overlay as GeneratedOverlay,
   AreaFolder as GeneratedAreaFolder,
@@ -120,7 +120,7 @@ describe('wireEventSchema', () => {
   it('preserves agent_message on track.updated payloads', () => {
     const parsed = wireEventSchema.parse({
       ev: 'track.updated',
-      data: {
+      data: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/repo', frozen_at: null },
         id: 'track_1',
         area_id: 'area_1',
         title: 'hello',
@@ -147,7 +147,7 @@ describe('wireEventSchema', () => {
     const templateInput = { issue_url: 'https://github.com/o/r/issues/1', issue_number: 1 };
     const parsed = wireEventSchema.parse({
       ev: 'track.updated',
-      data: {
+      data: { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/repo', frozen_at: null },
         id: 'track_1',
         area_id: 'area_1',
         title: 'hello',
@@ -198,12 +198,15 @@ describe('zod ↔ ts-rs conformance', () => {
       .toEqualTypeOf<ApiDecodeFailure>();
   });
   it('wireEventSchema infers the generated Event union', () => {
-    expectTypeOf<z.infer<typeof wireEventSchema>>().toEqualTypeOf<GeneratedEvent>();
+    // Transport types use intersections; check structural equivalence in both directions.
+    expectTypeOf<z.infer<typeof wireEventSchema>>().toExtend<GeneratedEvent>();
+    expectTypeOf<GeneratedEvent>().toExtend<z.infer<typeof wireEventSchema>>();
   });
 
   it('entity sub-schemas match their generated counterparts', () => {
     expectTypeOf<z.infer<typeof areaSchema>>().toEqualTypeOf<GeneratedArea>();
-    expectTypeOf<z.infer<typeof trackSchema>>().toEqualTypeOf<GeneratedTrack>();
+    expectTypeOf<z.infer<typeof trackSchema>>().toExtend<GeneratedTrack>();
+    expectTypeOf<GeneratedTrack>().toExtend<z.infer<typeof trackSchema>>();
     expectTypeOf<z.infer<typeof cardSchema>>().toEqualTypeOf<GeneratedCard>();
     expectTypeOf<z.infer<typeof overlaySchema>>().toEqualTypeOf<GeneratedOverlay>();
   });
@@ -885,7 +888,7 @@ describe('entity sub-schemas', () => {
   });
 
   it('trackSchema defaults `closed_at` to null when the field is missing', () => {
-    const w = {
+    const w = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
       id: 'w1',
       area_id: 'c1',
       title: 't',
@@ -896,10 +899,10 @@ describe('entity sub-schemas', () => {
     expect(trackSchema.parse(w).closed_at).toBeNull();
   });
 
-  it('trackSchema hydrates + preserves `workspace` (#1147 S1)', () => {
+  it('trackSchema requires and preserves `workspace` (#1147 S1)', () => {
     // An undeclared field is *stripped* by zod, so the "present key" case pins that
     // the field actually survives parsing.
-    const base = {
+    const base = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
       id: 'w1',
       area_id: 'c1',
       title: 't',
@@ -908,6 +911,7 @@ describe('entity sub-schemas', () => {
       updated_at: 2,
     };
     expect(trackSchema.parse(base).workspace).toEqual({
+      isolation: 'none',
       kind: 'attached',
       path: '',
       frozen_at: null,
@@ -916,12 +920,14 @@ describe('entity sub-schemas', () => {
       ...base,
       cwd: '/srv/neige-workspaces/c1/w1',
       workspace: {
+        isolation: 'managed',
         kind: 'managed',
         path: '/srv/neige-workspaces/c1/w1',
         frozen_at: 4242,
       },
     });
     expect(live.workspace).toEqual({
+      isolation: 'managed',
       kind: 'managed',
       path: '/srv/neige-workspaces/c1/w1',
       frozen_at: 4242,
@@ -933,15 +939,15 @@ describe('entity sub-schemas', () => {
     expect(
       trackSchema.parse({
         ...base,
-        workspace: { kind: 'attached', path: '/repo', frozen_at: 1, worktree },
+        workspace: { isolation: 'worktree', kind: 'attached', path: '/repo', frozen_at: 1, worktree },
       }).workspace.worktree,
     ).toBe(worktree);
     expect(live.workspace).not.toHaveProperty('worktree');
   });
 
   it('trackSchema rejects a present-but-incomplete `workspace` (#1147 S1)', () => {
-    // Present key ⇒ every field required; mirrors serde, where none of the three fields has `#[serde(default)]`.
-    const base = {
+    // Workspace and every required projection field must be present.
+    const base = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
       id: 'w1',
       area_id: 'c1',
       title: 't',
@@ -963,13 +969,13 @@ describe('entity sub-schemas', () => {
     expect(
       trackSchema.safeParse({
         ...base,
-        workspace: { kind: 'managed', path: '/p', frozen_at: null },
+        workspace: { isolation: 'managed', kind: 'managed', path: '/p', frozen_at: null },
       }).success,
     ).toBe(true);
   });
 
   it('trackSchema keeps the close stamp of a closed track', () => {
-    const w = {
+    const w = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
       id: 'w1',
       area_id: 'c1',
       title: 't',
@@ -1076,7 +1082,7 @@ describe('#955: proposal events', () => {
 // Historical rows spell the template fields with the pre-rename keys; this one-way
 // normalize is deliberately one of three independent copies, not a shared helper.
 describe('#1209 pre-rename template keys on the track shape', () => {
-  const legacyTrack = {
+  const legacyTrack = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null },
     id: 'w1',
     area_id: 'c1',
     title: 't',
@@ -1190,7 +1196,7 @@ describe('worktree.committed delivery fields', () => {
 });
 
 it('accepts admin state and grant_admin asks in the event contract', () => {
-  const track = trackSchema.parse({ id: 't', area_id: 'a', title: '', sort: 0, created_at: 1, updated_at: 1, admin_granted_at: 42 });
+  const track = trackSchema.parse({ workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '', frozen_at: null }, id: 't', area_id: 'a', title: '', sort: 0, created_at: 1, updated_at: 1, admin_granted_at: 42 });
   expect(track.admin_granted_at).toBe(42);
   expect(trackSchema.parse({ ...track, admin_granted_at: undefined }).admin_granted_at).toBeNull();
   const ask = wireEventSchema.parse({ ev: 'ask.requested', data: {

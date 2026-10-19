@@ -12,7 +12,7 @@ type Panel = NonNullable<TrackPageProps['panel']>;
 
 export function track(overrides: Partial<Track> = {}): Track {
   return {
-    id: 'w1', areaId: 'c1', title: 'Alpha', sort: 1, cwd: '/tmp/alpha', agentCwd: '/tmp/alpha',
+    id: 'w1', areaId: 'c1', title: 'Alpha', sort: 1, cwd: '/tmp/alpha', isolation: 'none', agentCwd: '/tmp/alpha',
     pinnedAt: null, closedAt: null, createdAt: 0, updatedAt: 0,
     ...NEUTRAL_ACTIVITY,
     ...overrides,

@@ -46,7 +46,7 @@ const LISTING = {
 };
 
 /* The kernel returns an empty title; the planner agent names the track later through `neige_track_rename`. */
-const TRACK_ROW = {
+const TRACK_ROW = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/srv/managed', frozen_at: null },
   id: 'w-new', area_id: 'c1', title: '', sort: 0, pinned_at: null,
   cwd: '/srv/managed', template_id: null, plugin_scope: null,
   purpose: null, template_input: null, closed_at: null, created_at: 1, updated_at: 1,

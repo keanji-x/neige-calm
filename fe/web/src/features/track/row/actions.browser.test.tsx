@@ -8,7 +8,7 @@ import { TrackActions } from './actions.tsx';
 afterEach(cleanup);
 
 const track: Track = Object.freeze({ ...NEUTRAL_ACTIVITY, id: 'one', areaId: 'work', title: 'Example', sort: 0,
-  cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1 });
+  cwd: '/tmp', isolation: 'none', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1 });
 
 it('mounts track menu items only while open and preserves keyboard navigation and actions', async () => {
   const markUnread = vi.fn();

@@ -43,7 +43,7 @@ it('closes history before opening a new conversation and Settings', async () => 
 
 it('reads only current Track conversations and excludes sibling and other workspace histories', async () => {
   await page.viewport(390, 844);
-  const track = { id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp',
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp',
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const sibling = { ...track, id: 'sibling', title: 'Sibling report' };
   const foreign = { ...track, id: 'foreign', area_id: 'other-area', title: 'Other report' };
@@ -117,7 +117,7 @@ it('keeps the closed report composer stable while its conversation is read', asy
 it.each([320, 390])('switches four sidebar views using current history and real workspace groups at %ipx', async (width) => {
   await page.viewport(width, 844);
   const receipts = createReadReceiptsKernel({ receipts: [{ kind: 'track', targetId: 'unread', readThroughMs: 0, manualUnread: true }] });
-  const current = { id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
+  const current = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const pinned = { ...current, id: 'pinned', area_id: 'other-area', title: 'Pinned report', pinned_at: 20 };
   const unread = { ...current, id: 'unread', area_id: 'other-area', title: 'Unread report' };
   const failed = { ...current, id: 'failed', area_id: 'other-area', title: 'Failed report' };
@@ -167,7 +167,7 @@ it.each([320, 390])('switches four sidebar views using current history and real 
 
 it('opens a pinned current report by closing its existing chat without sending its draft', async () => {
   await page.viewport(390, 844);
-  const track = { id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp', pinned_at: 20, closed_at: null, created_at: 1, updated_at: 2 };
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp', pinned_at: 20, closed_at: null, created_at: 1, updated_at: 2 };
   const { requests } = renderDailyFixture({ initial: '/track/project', reply: request => request.path === '/api/areas/project-area/tracks' ? ok([track]) : undefined });
   await page.getByRole('textbox', { name: 'Chat message', exact: true }).click();
   await page.getByRole('combobox', { name: 'Message', exact: true }).fill('Keep this draft');

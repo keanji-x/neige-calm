@@ -24,7 +24,7 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
   const live = { text: '' };
   const releases: (() => void)[] = [];
   const keys = new Map<string, CardWire>();
-  const track = { id: 'workbench', area_id: 'area', title: 'Workbench track', sort: 1,
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'workbench', area_id: 'area', title: 'Workbench track', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const parent = { id: 'parent', trackId: track.id, title: 'Main discussion', archivedAt: null, kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null };
   const rows = [parent];

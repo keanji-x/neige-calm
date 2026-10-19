@@ -33,7 +33,7 @@ type Kernel = Readonly<{ adminGrantedAt: number | null; canAdmin: boolean; refus
 /** The whole router over a fake kernel whose PATCH sets `admin_granted_at`, or refuses with a 403. */
 function renderTrack({ adminGrantedAt, canAdmin, refuse = false, theme = 'light' }: Kernel) {
   const requests: ApiRequest[] = [];
-  let track: TrackWire = {
+  let track: TrackWire = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
     id: 'w1', area_id: 'c1', title: 'Run the area', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, admin_granted_at: adminGrantedAt, created_at: 1, updated_at: 2,
   };

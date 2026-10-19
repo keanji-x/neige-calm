@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 // Browser integration with controlled HTTP responses; no worker is launched.
 test('refreshing an exited terminal shows its final state while secondary reads are slow', async ({ page }, testInfo) => {
   const area = { id: 'area-1', name: 'Work', color: '#6a8', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-  const track = {
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
     id: 'track-1', area_id: area.id, title: 'Terminal lifecycle', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 1,
   };

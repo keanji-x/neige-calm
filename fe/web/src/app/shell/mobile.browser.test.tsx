@@ -26,11 +26,11 @@ const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame((
 
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER_AREA = { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = {
+const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
   id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp',
   pinned_at: 30, closed_at: null, created_at: 1, updated_at: 2,
 };
-const OTHER_TRACK = {
+const OTHER_TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
   id: 'w2', area_id: 'c1', title: 'Remote access', sort: 2, cwd: '/tmp',
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 2,
 };

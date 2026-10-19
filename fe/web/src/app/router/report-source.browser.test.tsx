@@ -20,7 +20,7 @@ import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 const BOOM: ApiFailure = Object.freeze({ kind: 'http', status: 500, code: 'internal', message: 'boom' });
 
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-const TRACK = { id: 'w1', area_id: 'c1', title: 'Rates', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
+const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Rates', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER_CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const REPORT_CARD = {
   id: 'report', track_id: 'w1', title: null, kind: 'track-report', sort: 2, deletable: false, created_at: 1, updated_at: 2,
@@ -129,7 +129,7 @@ describe('the source panel on the track page', () => {
       if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
         cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
           payload: { markdown: `[Other report](${trackReportLinkUrl('w2')})` } }] } }], overlays: [] });
-      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2', cwd: '/base', workspace: { worktree: '/owned-worktree' } },
+      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2', cwd: '/base', workspace: { ...TRACK.workspace, isolation: 'worktree', worktree: '/owned-worktree' } },
         can_reopen: false, can_admin: false, can_close: true, cards: [{ ...REPORT_CARD, track_id: 'w2', payload: { ...REPORT_CARD.payload, blocks: [{
           id: 'b_1', kind: 'prose', rev: 1, payload: { markdown: '[Scoped notes](/owned-worktree/docs/notes.md)' },
         }] } }], overlays: [] });

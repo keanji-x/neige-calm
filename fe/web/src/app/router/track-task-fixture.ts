@@ -12,7 +12,7 @@ export function createTrackTaskFixture() {
   const history: TaskRecoveryView = { key: taskKey, current: first, attempts: [first] };
   const requests: ApiRequest[] = [];
   const area = { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
-  const track = { id: 'w1', area_id: 'c1', title: 'The calculation', sort: 1, cwd: '/tmp',
+  const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'The calculation', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const declaration = { id: 'calculation-task', rev: 1, kind: 'task', payload: {
     key: taskKey, kind: 'codex', declared_by: 'user', ready: true, goal,

@@ -37,7 +37,7 @@ function memoryStorage() {
 
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 
-const TRACK_ROW = {
+const TRACK_ROW = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/srv/managed', frozen_at: null },
   id: 'w-new', area_id: 'c1', title: '', sort: 0, pinned_at: null,
   cwd: '/srv/managed', template_id: null, plugin_scope: null,
   purpose: null, template_input: null, closed_at: null, created_at: 1, updated_at: 1,

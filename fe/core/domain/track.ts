@@ -3,8 +3,8 @@
 
 import { z } from 'zod';
 
-import { agentProviderSchema, askActionSchema, cardRuntimeViewSchema } from '../api/schemas.js';
-import type { AgentProvider } from '../api/generated/wire.js';
+import { agentProviderSchema, askActionSchema, cardRuntimeViewSchema, trackWorkspaceSchema } from '../api/schemas.js';
+import type { AgentProvider, WorkspaceIsolation } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
 import {
   activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
@@ -25,8 +25,7 @@ export const trackWireSchema = z.object({
   title: z.string(),
   sort: z.number(),
   cwd: z.string().default(''),
-  /** Only the kernel-made track worktree (#1830) is read; absent for a track without one. */
-  workspace: z.object({ worktree: z.string().optional() }).optional(),
+  workspace: trackWorkspaceSchema,
   pinned_at: z.number().nullable().default(null),
   closed_at: z.number().nullable().default(null),
   /** Unix-ms time a person granted Area admin; `null` otherwise. Absent on historical events, which read as not admin. */
@@ -72,6 +71,8 @@ export type Track = Readonly<{
   cwd: string;
   /** Where the track's agents run and write: the track worktree when there is one, else `cwd`. */
   agentCwd: string;
+  /** Explicit server isolation; never inferred from a worktree path. */
+  isolation: WorkspaceIsolation;
   pinnedAt: number | null;
   /** Unix-ms time the track was closed; `null` while it is open. */
   closedAt: number | null;
@@ -86,7 +87,8 @@ export function toTrack(wire: TrackWire, activity: TrackActivity = NEUTRAL_ACTIV
     title: wire.title,
     sort: wire.sort,
     cwd: wire.cwd,
-    agentCwd: wire.workspace?.worktree ?? wire.cwd,
+    agentCwd: wire.workspace.worktree ?? wire.cwd,
+    isolation: wire.workspace.isolation,
     pinnedAt: wire.pinned_at,
     closedAt: wire.closed_at,
     createdAt: wire.created_at,
@@ -385,6 +387,8 @@ export type NewTrackBody = Readonly<{
   title?: string;
   /** Omitted (or `null`) means a managed workspace the server allocates beneath its workspace root. */
   cwd?: string | null;
+  /** Only sent for a direct folder choice, alongside an explicit cwd. */
+  isolation?: 'none';
   theme: ThemeRgb;
   /**
    * `false` requires `cwd` to already sit under a claimed folder (409 naming the area otherwise);

@@ -26,7 +26,7 @@ type Harness = Readonly<{ requests: ApiRequest[]; client: QueryClient; healRefet
 /** The whole router over a fake kernel whose PATCH flips `closed_at`; with `failRefetch` the detail reads after it fail until healed. */
 function renderTrack(closedAt: number | null, { failRefetch = false } = {}): Harness {
   const requests: ApiRequest[] = [];
-  let track: TrackWire = {
+  let track: TrackWire = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
     id: 'w1', area_id: 'c1', title: 'Recover me', sort: 1, cwd: '/tmp',
     pinned_at: null, closed_at: closedAt, admin_granted_at: null, created_at: 1, updated_at: 2,
   };
