@@ -269,6 +269,7 @@ impl TxOutput {
 
 #[derive(Clone)]
 pub struct SpawnCtx {
+    pub track_delete_locks: crate::per_card_lock::KeyedLocks,
     pub execution: crate::execution_quiesce::ExecutionLifecycle,
     pub repo: Arc<dyn crate::db::RouteRepo>,
     pub operation_repo: Arc<dyn OperationRepo>,
@@ -295,9 +296,15 @@ impl SpawnCtx {
             terminal_renderer,
             events,
             completion,
+            track_delete_locks: crate::per_card_lock::new_keyed_locks(),
             shared_codex_appserver: None,
             execution: Default::default(),
         }
+    }
+
+    pub fn with_track_delete_locks(mut self, locks: crate::per_card_lock::KeyedLocks) -> Self {
+        self.track_delete_locks = locks;
+        self
     }
 
     pub fn with_execution(
@@ -755,6 +762,13 @@ pub trait ProviderAdapter: Send + Sync {
     }
 
     async fn validate(&self, input: &Value) -> Result<()>;
+
+    /// Adapter declares the track whose checkout preparation must exclude clean.
+    /// The driver holds its existing track guard through the occupancy commit,
+    /// including boot recovery, which does not hold the drive mutex.
+    async fn preparation_track(&self, _input: &Value, _ctx: &SpawnCtx) -> Result<Option<String>> {
+        Ok(None)
+    }
 
     /// Recoverable preparation that must finish outside the repository writer transaction.
     /// Adapters retain ownership of their resource protocol; the driver knows no kind list.

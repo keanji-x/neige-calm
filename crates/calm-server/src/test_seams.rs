@@ -108,10 +108,28 @@ pub async fn prepare_worker_lease_for_test(
 #[cfg(any(test, feature = "fixtures"))]
 pub async fn clean_idle_closed_track_worktrees_for_test(
     pool: &sqlx::SqlitePool,
+    runtime: &std::sync::Arc<crate::operation::OperationRuntime>,
+) -> crate::error::Result<usize> {
+    clean_closed_worktrees_with_history_for_test(
+        pool,
+        runtime,
+        &mut std::collections::HashSet::new(),
+    )
+    .await
+}
+
+#[cfg(any(test, feature = "fixtures"))]
+pub async fn clean_closed_worktrees_with_history_for_test(
+    pool: &sqlx::SqlitePool,
+    runtime: &std::sync::Arc<crate::operation::OperationRuntime>,
+    cleaned: &mut std::collections::HashSet<(String, i64)>,
 ) -> crate::error::Result<usize> {
     workspace_runtime::worktree_clean::clean_idle_closed_track_worktrees(
-        &crate::workspace_service::ports::ServerClosedWorktreeFacts { pool: pool.clone() },
-        &mut std::collections::HashSet::new(),
+        &crate::workspace_service::ports::ServerClosedWorktreeFacts {
+            pool: pool.clone(),
+            runtime: runtime.clone(),
+        },
+        cleaned,
         crate::workspace_service::ports::observe,
     )
     .await

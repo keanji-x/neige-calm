@@ -423,6 +423,18 @@ async fn mint_claude_worker_mcp_token(
 
 #[async_trait]
 impl ProviderAdapter for ClaudeAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            serde_json::from_value::<ClaudeCreateOperationPayload>(input.clone())?
+                .request
+                .track_id,
+        ))
+    }
+
     fn kind(&self) -> &'static str {
         "claude-create"
     }
@@ -781,6 +793,16 @@ impl ProviderAdapter for ClaudeAdapter {
 
 #[async_trait]
 impl ProviderAdapter for ClaudeWorkerAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            serde_json::from_value::<ClaudeWorkerOperationPayload>(input.clone())?.track_id,
+        ))
+    }
+
     async fn prepare_external(
         &self,
         input: &Value,

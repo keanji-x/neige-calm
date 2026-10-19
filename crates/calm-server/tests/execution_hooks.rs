@@ -706,17 +706,23 @@ async fn worktree_clean_skips_until_settled() {
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
-        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(f.repo.pool())
-            .await
-            .unwrap(),
+        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
+            f.repo.pool(),
+            &f.state.operation_runtime
+        )
+        .await
+        .unwrap(),
         0
     );
     assert!(worktree.join("target/build").is_file());
     f.stop(&id).await;
     assert_eq!(
-        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(f.repo.pool())
-            .await
-            .unwrap(),
+        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
+            f.repo.pool(),
+            &f.state.operation_runtime
+        )
+        .await
+        .unwrap(),
         1
     );
     assert!(!worktree.join("target").exists());

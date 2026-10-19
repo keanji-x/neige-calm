@@ -26,8 +26,13 @@ pub trait ClosedWorktreeFacts: Send + Sync + 'static {
     type Error: std::fmt::Display + Send + 'static;
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>, Self::Error>;
-    async fn checkout_free(&self, track: &str) -> Result<bool, Self::Error>;
-    async fn executions_settled(&self, track: &str) -> Result<bool, Self::Error>;
+    /// Claim the existing lifecycle fence and recheck the sampled close and occupancy.
+    /// Return only the track guard: the global drive guard must end before filesystem I/O.
+    async fn fence(
+        &self,
+        track: &str,
+        closed_at: i64,
+    ) -> Result<Option<Box<dyn Send>>, Self::Error>;
 }
 
 const CLEAN_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -75,15 +80,16 @@ where
             WorkspaceIsolation::Worktree => row.workspace.worktree.expect("decoded worktree"),
         };
         let key = (row.track_id, row.closed_at);
-        if cleaned.contains(&key) || !facts.checkout_free(&key.0).await? {
+        if cleaned.contains(&key) {
             continue;
         }
-        if !facts.executions_settled(&key.0).await? {
+        let Some(track) = facts.fence(&key.0, key.1).await? else {
             continue;
-        }
+        };
         let track_id = key.0.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            workspace::worktree::clean_ignored(&track_id, &worktree, observe)
+        let (_track, result) = tokio::task::spawn_blocking(move || {
+            let result = workspace::worktree::clean_ignored(&track_id, &worktree, observe);
+            (track, result)
         })
         .await
         .map_err(|error| WorkspaceError::Internal(format!("track worktree clean task: {error}")))?;

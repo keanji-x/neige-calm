@@ -36,9 +36,12 @@ async fn isolation_none_track_area_delete_and_clean_preserve_source() {
             .await
             .unwrap();
         assert_eq!(
-            calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(b.repo.pool())
-                .await
-                .unwrap(),
+            calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
+                b.repo.pool(),
+                &b.operation_runtime
+            )
+            .await
+            .unwrap(),
             0
         );
         assert_eq!(fingerprint(&source), before);
@@ -535,9 +538,12 @@ async fn isolation_none_sibling_lifecycle_preserves_admitted_subdirectory() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(b.repo.pool())
-            .await
-            .unwrap();
+        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
+            b.repo.pool(),
+            &b.operation_runtime,
+        )
+        .await
+        .unwrap();
         assert_eq!(fingerprint(&borrowed), before);
         assert_eq!(delete_track(&b, &owner).await.0, StatusCode::NO_CONTENT);
         assert_eq!(fingerprint(&borrowed), before);

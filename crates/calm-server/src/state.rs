@@ -260,7 +260,7 @@ impl BootState {
             track_create_mint_rendezvous: None,
             planner_attachment_locks: crate::per_card_lock::new_per_card_locks(),
             planner_input_key_locks: crate::per_card_lock::new_keyed_locks(),
-            track_delete_locks: crate::per_card_lock::new_keyed_locks(),
+            track_delete_locks: self.operation_runtime.track_delete_locks().clone(),
             thread_seals: self.shared_codex_appserver.thread_seals().clone(),
             area_delete_locks: crate::per_card_lock::new_keyed_locks(),
             claude_planner: self.claude_planner,
@@ -1047,6 +1047,7 @@ impl AppState {
 
     #[cfg(feature = "fixtures")]
     pub fn with_operation_runtime(mut self, runtime: Arc<OperationRuntime>) -> Self {
+        self.route.track_delete_locks = runtime.track_delete_locks().clone();
         self.operation_runtime = runtime.clone();
         self.route.operation_runtime = runtime;
         self.refresh_planner_wake();
@@ -1168,6 +1169,7 @@ impl AppState {
                 self.events.clone(),
                 completion,
             )
+            .with_track_delete_locks(self.route.track_delete_locks.clone())
             .with_shared_codex_appserver(self.shared_codex_appserver.clone())
             .with_execution(execution),
         ));
@@ -1600,6 +1602,7 @@ impl AppState {
             workspace_runtime::worktree_clean::spawn(
                 crate::workspace_service::ports::ServerClosedWorktreeFacts {
                     pool: pool.read_pool().clone(),
+                    runtime: state.operation_runtime.clone(),
                 },
                 crate::workspace_service::ports::observe,
             );

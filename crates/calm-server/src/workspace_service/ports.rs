@@ -73,6 +73,7 @@ pub(crate) const CLOSED_TRACK_WORKTREES_SQL: &str = "SELECT t.* \
 
 pub(crate) struct ServerClosedWorktreeFacts {
     pub(crate) pool: SqlitePool,
+    pub(crate) runtime: std::sync::Arc<crate::operation::OperationRuntime>,
 }
 
 #[async_trait]
@@ -97,21 +98,32 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         )
     }
 
-    async fn checkout_free(&self, track: &str) -> Result<bool> {
-        Ok(
-            checkout_occupancy(&mut *self.pool.acquire().await?, track, "").await?
-                == CheckoutOccupancy::Free,
-        )
-    }
-
-    async fn executions_settled(&self, track: &str) -> Result<bool> {
-        Ok(
-            calm_truth::db::sqlite::workspace_execution::unsettled_executions(
+    async fn fence(&self, track: &str, closed_at: i64) -> Result<Option<Box<dyn Send>>> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c1-clean-sampled", track).await;
+        let drive = self.runtime.lock_for_track_delete().await;
+        let guard = crate::per_card_lock::lock_key(self.runtime.track_delete_locks(), track).await;
+        // Reuse the unchanged candidate policy, including idle Planner eligibility.
+        let still_closed = self
+            .closed_idle_worktrees()
+            .await?
+            .into_iter()
+            .any(|row| row.track_id == track && row.closed_at == closed_at);
+        if !still_closed
+            || checkout_occupancy(&mut *self.pool.acquire().await?, track, "").await?
+                != CheckoutOccupancy::Free
+            || !calm_truth::db::sqlite::workspace_execution::unsettled_executions(
                 &mut *self.pool.acquire().await?,
                 calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
             )
             .await?
-            .is_empty(),
-        )
+            .is_empty()
+        {
+            return Ok(None);
+        }
+        drop(drive);
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("c1-clean-fenced", track).await;
+        Ok(Some(Box::new(guard)))
     }
 }

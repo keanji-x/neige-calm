@@ -2715,7 +2715,7 @@ async fn one_shot_output_before_attach_is_unread() {
 /// and stamps nothing: through the fresh registry the card reads `working = false` and the mark does
 /// not move.
 #[tokio::test]
-async fn reattach_replay_does_not_stamp() {
+async fn c1_fence_legacy_ws_reattach_waits_then_attaches_without_stamp() {
     use calm_server::ws::terminal::{
         TestLiveRenderer, resolve_live_renderer_from_terminal_for_test,
     };
@@ -2747,10 +2747,20 @@ async fn reattach_replay_does_not_stamp() {
         .unwrap()
         .unwrap();
     assert!(term.pid.is_some(), "the earlier lifetime persisted the pid");
-    let entry = match resolve_live_renderer_from_terminal_for_test(&fresh, term)
-        .await
-        .unwrap()
-    {
+    let held = calm_server::per_card_lock::lock_key(
+        fresh.operation_runtime.track_locks_for_test(),
+        &h.track,
+    )
+    .await;
+    let attach = resolve_live_renderer_from_terminal_for_test(&fresh, term);
+    tokio::pin!(attach);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut attach)
+            .await
+            .is_err()
+    );
+    drop(held);
+    let entry = match attach.await.unwrap() {
         TestLiveRenderer::Alive(entry) => entry,
         TestLiveRenderer::ChildExited { exit_code } => {
             panic!("the lazy reattach did not find the live PTY: {exit_code:?}")

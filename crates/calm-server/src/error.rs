@@ -43,6 +43,10 @@ pub enum CalmError {
     #[error("{0}")]
     PathNotFound(String),
 
+    /// Retryable lifecycle contention; never a terminal operation failure.
+    #[error("workspace busy: {0}")]
+    WorkspaceBusy(String),
+
     #[error("conflict: {0}")]
     Conflict(String),
 
@@ -208,6 +212,7 @@ impl CalmError {
             CalmError::NotFound(_) => "not_found",
             CalmError::PathNotFound(_) => "path_not_found",
             CalmError::Conflict(_) => "conflict",
+            CalmError::WorkspaceBusy(_) => "workspace_busy",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
             CalmError::IdempotencyKeyExhausted(_) => "idempotency_key_exhausted",
             CalmError::IdempotencyKeyInvalid(_) => "idempotency_key_invalid",
@@ -252,6 +257,7 @@ impl CalmError {
         match self {
             CalmError::NotFound(_) | CalmError::PathNotFound(_) => StatusCode::NOT_FOUND,
             CalmError::Conflict(_)
+            | CalmError::WorkspaceBusy(_)
             | CalmError::IdempotencyCollision(_)
             | CalmError::IdempotencyKeyExhausted(_)
             | CalmError::IdempotencyKeyReused(_)
@@ -317,6 +323,7 @@ impl CalmError {
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
             | CalmError::PluginDirOccupied(m)
+            | CalmError::WorkspaceBusy(m)
             | CalmError::PluginBusy(m)
             | CalmError::PluginManifestUnloaded(m)
             | CalmError::PluginConfigCorrupt(m)
@@ -560,6 +567,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
             | CalmError::PluginDirOccupied(m)
+            | CalmError::WorkspaceBusy(m)
             | CalmError::PluginBusy(m)
             | CalmError::PluginManifestUnloaded(m)
             | CalmError::PluginConfigCorrupt(m)

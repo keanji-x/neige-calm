@@ -229,6 +229,18 @@ pub(crate) async fn terminal_cwd_or_track_workspace(
 
 #[async_trait]
 impl ProviderAdapter for TerminalAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            create_payload::decode_stored(input, "terminal-create")?
+                .request
+                .track_id,
+        ))
+    }
+
     fn kind(&self) -> &'static str {
         "terminal-create"
     }
@@ -597,6 +609,16 @@ impl ProviderAdapter for TerminalAdapter {
 
 #[async_trait]
 impl ProviderAdapter for TerminalWorkerAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            serde_json::from_value::<TerminalWorkerOperationPayload>(input.clone())?.track_id,
+        ))
+    }
+
     async fn prepare_external(
         &self,
         input: &Value,

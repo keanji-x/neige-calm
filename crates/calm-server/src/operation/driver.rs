@@ -64,6 +64,42 @@ pub struct OperationRuntime {
 }
 
 impl OperationRuntime {
+    pub(crate) fn track_delete_locks(&self) -> &crate::per_card_lock::KeyedLocks {
+        &self.spawn_ctx.track_delete_locks
+    }
+
+    pub(crate) fn try_launch_fence(
+        &self,
+        track: &str,
+    ) -> Result<crate::per_card_lock::KeyedLockGuard> {
+        crate::per_card_lock::try_lock_key(self.track_delete_locks(), track)
+            .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn track_locks_for_test(&self) -> &crate::per_card_lock::KeyedLocks {
+        self.track_delete_locks()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub async fn prepare_once_for_test(&self, id: &str, boot: bool) -> Result<()> {
+        if boot {
+            self.apply_recovery_item(RecoveryItem::Recover {
+                op_id: id.into(),
+                from_phase: Phase::Pending,
+                action: "prepare".into(),
+            })
+            .await
+        } else {
+            let op = self
+                .repo
+                .claim_operation_for_recovery(id)
+                .await?
+                .expect("pending operation");
+            self.drive_claimed(self.adapter(&op.kind)?, op).await
+        }
+    }
+
     pub fn execution(&self) -> &crate::execution_quiesce::ExecutionLifecycle {
         &self.spawn_ctx.execution
     }
@@ -477,6 +513,17 @@ impl OperationRuntime {
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
+                let _track = match adapter
+                    .preparation_track(&op.payload, &self.spawn_ctx)
+                    .await?
+                {
+                    Some(track) => match self.try_launch_fence(&track) {
+                        Ok(guard) => Some(guard),
+                        Err(CalmError::WorkspaceBusy(_)) => return Ok(()),
+                        Err(error) => return Err(error),
+                    },
+                    None => None,
+                };
                 // Facts may change during external I/O. Retry boundedly under this exact
                 // claim; after that leave Pending leased, so wait()'s drive retries on expiry.
                 let mut committed = None;

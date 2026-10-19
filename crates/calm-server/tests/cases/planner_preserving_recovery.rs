@@ -46,17 +46,26 @@ pub(super) async fn failed_conversation(boot: &Boot) -> (Card, String, String, Q
 }
 
 #[tokio::test]
-async fn human_send_recovers_failed_conversation_without_reset_after_restart() {
+async fn c1_fence_planner_recovery_waits_then_preserves_conversation() {
     let boot = boot_fake_running().await;
     boot.state.shared_codex_appserver.fail_turn_start_for_test();
     let (card, runtime, thread, entry) = failed_conversation(&boot).await;
     let before = conversation_rows(&boot, &card).await;
-    let (status, body) = post_planner_input(
-        boot.app.clone(),
-        &format!("/api/cards/{}/planner/input", card.id),
-        json!({"text":"continue here"}),
+    let held = calm_server::per_card_lock::lock_key(
+        boot.state.operation_runtime.track_locks_for_test(),
+        card.track_id.as_str(),
     )
     .await;
+    let endpoint = format!("/api/cards/{}/planner/input", card.id);
+    let recovery = post_planner_input(boot.app.clone(), &endpoint, json!({"text":"continue here"}));
+    tokio::pin!(recovery);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut recovery)
+            .await
+            .is_err()
+    );
+    drop(held);
+    let (status, body) = recovery.await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["worker_session_id"], runtime);
     let row = runtime_by_id_tx_snapshot(&boot.repo, &runtime)

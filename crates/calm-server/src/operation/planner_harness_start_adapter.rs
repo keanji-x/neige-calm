@@ -499,6 +499,18 @@ pub async fn planner_instructions_for_test(
 
 #[async_trait]
 impl ProviderAdapter for PlannerHarnessStartAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            super::assistant_start_wire::StartInput::decode(input)?
+                .payload
+                .track_id,
+        ))
+    }
+
     fn kind(&self) -> &'static str {
         "planner-harness-start"
     }

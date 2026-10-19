@@ -291,6 +291,18 @@ pub fn normalize_codex_create_request(
 
 #[async_trait]
 impl ProviderAdapter for CodexAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            serde_json::from_value::<CodexCreateOperationPayload>(input.clone())?
+                .request
+                .track_id,
+        ))
+    }
+
     fn kind(&self) -> &'static str {
         "codex-create"
     }
@@ -747,6 +759,16 @@ impl ProviderAdapter for CodexAdapter {
 
 #[async_trait]
 impl ProviderAdapter for CodexWorkerAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            serde_json::from_value::<CodexWorkerOperationPayload>(input.clone())?.track_id,
+        ))
+    }
+
     async fn prepare_external(
         &self,
         input: &Value,

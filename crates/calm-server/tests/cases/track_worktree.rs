@@ -4,6 +4,8 @@
 
 #![cfg(unix)]
 
+#[path = "c1_fence.rs"]
+mod c1_fence;
 #[path = "track_metadata_concurrency.rs"]
 mod metadata_concurrency;
 
@@ -654,7 +656,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     let pool = b.repo.pool();
 
     assert_eq!(
-        clean(pool).await.unwrap(),
+        clean(pool, &b.state.operation_runtime).await.unwrap(),
         0,
         "an open track is not cleaned"
     );
@@ -714,7 +716,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
-        clean(pool).await.unwrap(),
+        clean(pool, &b.state.operation_runtime).await.unwrap(),
         0,
         "a running worker session defers the clean"
     );
@@ -725,7 +727,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
         .execute(pool)
         .await
         .unwrap();
-    assert_eq!(clean(pool).await.unwrap(), 1);
+    assert_eq!(clean(pool, &b.state.operation_runtime).await.unwrap(), 1);
     assert!(!worktree.join("target").exists(), "build output is gone");
     assert!(worktree.join(".gitignore").is_file(), "tracked files stay");
     assert!(
@@ -782,7 +784,12 @@ async fn a_closed_track_clean_never_reaches_the_users_checkout() {
         assert!(status.is_success(), "{status} {body}");
     }
 
-    assert_eq!(clean(b.repo.pool()).await.unwrap(), 0);
+    assert_eq!(
+        clean(b.repo.pool(), &b.state.operation_runtime)
+            .await
+            .unwrap(),
+        0
+    );
     assert!(
         up.clone.join("secret.env").is_file(),
         "the user's ignored file survives"

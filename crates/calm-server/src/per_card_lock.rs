@@ -48,6 +48,21 @@ pub async fn lock_key(locks: &KeyedLocks, key: &str) -> KeyedLockGuard {
     }
 }
 
+/// Never wait for a track while driving operations under the global drive mutex.
+pub fn try_lock_key(locks: &KeyedLocks, key: &str) -> Option<KeyedLockGuard> {
+    let lock = locks
+        .entry(key.to_owned())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let guard = lock.clone().try_lock_owned().ok()?;
+    Some(KeyedLockGuard {
+        key: key.to_owned(),
+        lock,
+        locks: locks.clone(),
+        guard: Some(guard),
+    })
+}
+
 pub async fn lock_card(locks: &PerCardLocks, card_id: &str) -> KeyedLockGuard {
     lock_key(locks, card_id).await
 }

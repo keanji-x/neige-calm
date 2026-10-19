@@ -1,0 +1,218 @@
+//! C1a exercises the real clean pass and each preparation owner, without provider E2E.
+use super::*;
+use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+use calm_server::test_seams::{PausePoint, install_pause_for_test};
+use std::{collections::HashSet, time::Duration};
+
+struct Pause(PausePoint);
+impl Pause {
+    fn arm(point: &str, track: &str) -> Self {
+        let pause = PausePoint {
+            entered: Arc::default(),
+            release: Arc::default(),
+        };
+        install_pause_for_test(point, track, pause.clone());
+        Self(pause)
+    }
+    async fn entered(&self) {
+        tokio::time::timeout(Duration::from_secs(15), self.0.entered.notified())
+            .await
+            .unwrap();
+    }
+}
+impl Drop for Pause {
+    fn drop(&mut self) {
+        self.0.release.notify_one();
+    }
+}
+async fn fixture() -> (Arc<Boot>, String, PathBuf) {
+    let b = Arc::new(boot().await);
+    let up = upstream(b.tmp.path());
+    let (status, body) = b.create_at(&up.clone, None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let track = body["id"].as_str().unwrap().to_owned();
+    b.shutdown_harnesses().await;
+    let path = expected_worktree(&up.clone, &track);
+    run_git(&path, ["config", "core.excludesFile", "/dev/null"]);
+    std::fs::write(up.clone.join(".git/info/exclude"), "target/\n").unwrap();
+    std::fs::create_dir_all(path.join("target")).unwrap();
+    std::fs::write(path.join("target/ignored"), "build output").unwrap();
+    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
+        .bind(&track)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    (b, track, path)
+}
+fn clean(b: Arc<Boot>) -> tokio::task::JoinHandle<(usize, HashSet<(String, i64)>)> {
+    tokio::spawn(async move {
+        let mut history = HashSet::new();
+        let count = calm_server::test_seams::clean_closed_worktrees_with_history_for_test(
+            b.repo.pool(),
+            &b.state.operation_runtime,
+            &mut history,
+        )
+        .await
+        .unwrap();
+        (count, history)
+    })
+}
+fn terminal(track: &str) -> Value {
+    json!({"actor":calm_server::ids::ActorId::Kernel, "source":"manual", "track_id":track,
+        "program":"/bin/true", "cwd":"", "env":{},
+        "theme":{"fg":[255,255,255],"bg":[0,0,0]}})
+}
+async fn pending(b: &Boot, kind: &str, payload: Value) -> String {
+    SqlxOperationRepo::new(b.repo.db().clone())
+        .insert_operation(
+            kind,
+            OperationKey {
+                operation_key: calm_server::model::new_id(),
+                idempotency_key: None,
+                payload_hash: "c1".into(),
+            },
+            payload,
+        )
+        .await
+        .unwrap()
+}
+async fn phase(b: &Boot, op: &str) -> String {
+    sqlx::query_scalar("SELECT phase FROM operations WHERE id=?")
+        .bind(op)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap()
+}
+#[tokio::test]
+async fn c1_fence_sample_then_reopen_and_launch_refuses_without_cleaned() {
+    let (b, track, path) = fixture().await;
+    let pause = Pause::arm("c1-clean-sampled", &track);
+    let cleaning = clean(b.clone());
+    pause.entered().await;
+    let (status, body) = b
+        .as_user(
+            "PATCH",
+            &format!("/api/tracks/{track}"),
+            json!({"closed":false}),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    let op = pending(&b, "terminal-create", terminal(&track)).await;
+    b.state
+        .operation_runtime
+        .prepare_once_for_test(&op, false)
+        .await
+        .unwrap();
+    assert_eq!(phase(&b, &op).await, "tx_committed");
+    drop(pause);
+    let (count, history) = cleaning.await.unwrap();
+    assert_eq!(count, 0);
+    assert!(history.is_empty());
+    assert!(path.join("target/ignored").exists());
+}
+#[tokio::test]
+async fn c1_fence_reopen_waits_for_clean() {
+    let (b, track, path) = fixture().await;
+    let pause = Pause::arm("c1-clean-fenced", &track);
+    let cleaning = clean(b.clone());
+    pause.entered().await;
+    let endpoint = format!("/api/tracks/{track}");
+    let mut reopening = Box::pin(b.as_user("PATCH", &endpoint, json!({"closed":false})));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut reopening)
+            .await
+            .is_err()
+    );
+    drop(pause);
+    assert_eq!(cleaning.await.unwrap().0, 1);
+    assert!(!path.join("target/ignored").exists());
+    assert!(reopening.await.0.is_success());
+}
+async fn preparation(kind: &str, boot: bool) {
+    let (b, track, path) = fixture().await;
+    let payload = match kind {
+        "terminal-create" => terminal(&track),
+        "planner-harness-start" => sqlx::query_scalar::<_, String>(
+            "SELECT payload_json FROM operations WHERE kind='planner-harness-start' \
+             AND target_id IN (SELECT id FROM cards WHERE track_id=?) LIMIT 1",
+        )
+        .bind(&track)
+        .fetch_one(b.repo.pool())
+        .await
+        .map(|s| serde_json::from_str(&s).unwrap())
+        .unwrap(),
+        _ => {
+            let task = format!("{track}:c1");
+            sqlx::query("INSERT INTO tasks (id,track_id,key,kind,goal,context_json,depends_on_json,\
+                 status,created_at_ms,updated_at_ms) VALUES (?,?,'c1','terminal','test','null','[]','dispatched',1,1)")
+                .bind(&task).bind(&track).execute(b.repo.pool()).await.unwrap();
+            json!({"actor":calm_server::ids::ActorId::KernelDispatcher,"track_id":track,"idempotency_key":task,"cmd":"true","goal":"test","cwd":path})
+        }
+    };
+    // A dispatched task already prevents cleaning; reserve the task only after clean's recheck.
+    sqlx::query("UPDATE tasks SET status='pending' WHERE track_id=?")
+        .bind(&track)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    let pause = Pause::arm("c1-clean-fenced", &track);
+    let cleaning = clean(b.clone());
+    pause.entered().await;
+    sqlx::query("UPDATE tasks SET status='dispatched' WHERE track_id=?")
+        .bind(&track)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+    let op = pending(&b, kind, payload).await;
+    b.state
+        .operation_runtime
+        .prepare_once_for_test(&op, boot)
+        .await
+        .unwrap();
+    assert_eq!(
+        phase(&b, &op).await,
+        "pending",
+        "contention must remain retryable"
+    );
+    // Clean's filesystem work must not hold drive.
+    let drive = tokio::time::timeout(
+        Duration::from_secs(1),
+        b.state.operation_runtime.lock_for_track_delete_for_test(),
+    )
+    .await
+    .unwrap();
+    drop(drive);
+    drop(pause);
+    assert_eq!(cleaning.await.unwrap().0, 1);
+    b.state
+        .operation_runtime
+        .prepare_once_for_test(&op, boot)
+        .await
+        .unwrap();
+    assert_eq!(phase(&b, &op).await, "tx_committed");
+}
+#[tokio::test]
+async fn c1_fence_terminal_create_busy_retries() {
+    preparation("terminal-create", false).await;
+}
+#[tokio::test]
+async fn c1_fence_terminal_prepare_busy_retries() {
+    preparation("terminal-worker", false).await;
+}
+#[tokio::test]
+async fn c1_fence_planner_start_busy_retries() {
+    preparation("planner-harness-start", false).await;
+}
+#[tokio::test]
+async fn c1_fence_boot_recovery_busy_retries() {
+    preparation("terminal-create", true).await;
+}
+
+#[tokio::test]
+async fn c1_fence_codex_worker_busy_retries() {
+    preparation("codex-worker", false).await;
+}
+#[tokio::test]
+async fn c1_fence_claude_worker_busy_retries() {
+    preparation("claude-worker", false).await;
+}

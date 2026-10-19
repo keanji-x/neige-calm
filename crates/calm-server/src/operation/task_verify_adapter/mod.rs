@@ -299,6 +299,16 @@ impl TaskVerifyAdapter {
 
 #[async_trait]
 impl ProviderAdapter for TaskVerifyAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        _ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        Ok(Some(
+            serde_json::from_value::<TaskVerifyOperationPayload>(input.clone())?.track_id,
+        ))
+    }
+
     fn kind(&self) -> &'static str {
         TASK_VERIFY_KIND
     }

@@ -162,6 +162,20 @@ pub(crate) fn claude_restart_payload(actor: ActorId, card_id: String) -> Result<
 
 #[async_trait]
 impl ProviderAdapter for ClaudeRestartAdapter {
+    async fn preparation_track(
+        &self,
+        input: &Value,
+        ctx: &crate::operation::SpawnCtx,
+    ) -> Result<Option<String>> {
+        let payload: ClaudeRestartOperationPayload = serde_json::from_value(input.clone())?;
+        let card = ctx
+            .repo
+            .card_get(payload.card_id.trim())
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {}", payload.card_id)))?;
+        Ok(Some(card.track_id.to_string()))
+    }
+
     fn kind(&self) -> &'static str {
         "claude-restart"
     }

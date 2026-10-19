@@ -30,10 +30,19 @@ pub(super) async fn execution_id(f: &Fixture, term: &Terminal) -> ExecutionId {
     id.try_into().unwrap()
 }
 #[tokio::test]
-async fn typed_terminal_create_admits_and_drives() {
+async fn c1_fence_typed_admit_busy_then_admits_and_drives() {
     let mut f = Fixture::new().await;
     wait(|| async { f.engine.available() }).await;
     f.state = f.state.clone().with_terminal_execution(true);
+    let held = calm_server::per_card_lock::lock_key(
+        f.state.operation_runtime.track_locks_for_test(),
+        &f.track,
+    )
+    .await;
+    let (status, body) = create(&f, "", "printf typed-ready; exec sleep 120").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("workspace_busy"), "{body}");
+    drop(held);
     let (status, body) = create(&f, "", "printf typed-ready; exec sleep 120").await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let term = terminal(&f, &body).await;

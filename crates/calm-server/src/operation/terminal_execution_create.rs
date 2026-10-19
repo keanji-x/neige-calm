@@ -118,6 +118,7 @@ pub async fn create(
     };
     let pool = runtime.repo.sqlite_db();
     let mut validated = false;
+    let mut track_fence = None;
     let mut tx = loop {
         let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
         if let Some(idempotency_key) = &key.idempotency_key {
@@ -133,6 +134,7 @@ pub async fn create(
                     return Err(super::idempotency_payload_conflict(Some(idempotency_key)));
                 }
                 tx.rollback().await?;
+                drop(track_fence);
                 return Ok(CreatedTerminal {
                     result: runtime.wait(&id).await?,
                     newly_admitted: false,
@@ -156,6 +158,12 @@ pub async fn create(
         // through the repository, so release the transaction before borrowing its connection.
         // Recheck the key under the final write lock after validation to close that race.
         tx.rollback().await?;
+        let track = serde_json::from_value::<
+            super::terminal_adapter::TerminalCreateOperationPayload,
+        >(payload.clone())?
+        .request
+        .track_id;
+        track_fence = Some(runtime.try_launch_fence(&track)?);
         runtime
             .adapter("terminal-create")?
             .validate(&payload)
@@ -182,6 +190,7 @@ pub async fn create(
     )
     .await?;
     tx.commit().await?;
+    drop(track_fence);
     for envelope in envelopes {
         events.emit_envelope(envelope);
     }

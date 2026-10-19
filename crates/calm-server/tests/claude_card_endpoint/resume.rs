@@ -157,7 +157,7 @@ async fn seed_task_worker_card(boot: &Boot) -> String {
 /// After a host crash, boot reconcile marks every lost PTY exited; the owner's Claude card comes
 /// back on its own, once, and a Planner task worker's card is left to its Planner.
 #[tokio::test]
-async fn boot_resumes_owner_created_claude_cards_and_leaves_task_workers_exited() {
+async fn c1_fence_legacy_auto_resume_waits_then_resumes_owner_only() {
     let _guard = ENV_LOCK.lock().await;
     let calls = Arc::new(tokio::sync::Mutex::new(Vec::<SpawnCall>::new()));
     let calls_for_factory = calls.clone();
@@ -188,7 +188,22 @@ async fn boot_resumes_owner_created_claude_cards_and_leaves_task_workers_exited(
 
     // A terminal listed twice still resumes its card once.
     let listed_twice = [stale.clone(), stale].concat();
-    calm_server::claude_auto_resume::resume_owner_claude_cards(&boot.state, &listed_twice).await;
+    let held = calm_server::per_card_lock::lock_key(
+        boot.state.operation_runtime.track_locks_for_test(),
+        &boot.track_id,
+    )
+    .await;
+    let resume =
+        calm_server::claude_auto_resume::resume_owner_claude_cards(&boot.state, &listed_twice);
+    tokio::pin!(resume);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut resume)
+            .await
+            .is_err()
+    );
+    assert_eq!(calls.lock().await.len(), spawns_before);
+    drop(held);
+    resume.await;
 
     let restarted: Vec<String> = sqlx::query(
         "SELECT json_extract(payload_json, '$.card_id') AS card_id FROM operations \
