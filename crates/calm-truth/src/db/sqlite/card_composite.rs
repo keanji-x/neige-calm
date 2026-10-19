@@ -888,16 +888,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             replaced.payload,
-            json!({ "schemaVersion": 1, "terminal_id": "z" }),
-            "a false marker is not sticky"
+            json!({ "schemaVersion": 1, "terminal_id": "z", "terminal_presentation":{"source":"unrecorded","in_workbench":false} }),
+            "a false signal marker is not sticky; presentation remains protected"
         );
         let odd = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
                 title: None,
-                kind: "terminal".into(),
+                kind: "codex".into(),
                 sort: None,
-                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false},  "schemaVersion": 1, TERMINAL_SIGNALS_PAYLOAD_KEY: false }),
+                payload: json!({"schemaVersion": 1, TERMINAL_SIGNALS_PAYLOAD_KEY: false }),
             })
             .await
             .unwrap();

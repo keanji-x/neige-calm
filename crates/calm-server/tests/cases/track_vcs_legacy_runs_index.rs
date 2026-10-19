@@ -29,7 +29,7 @@ async fn next_run_commit_after_a_pre_rename_runs_index_reprojects_every_run() {
             &area.id,
             "terminal",
             CardRole::Worker,
-            json!({"schemaVersion": 1, "idempotency_key": key}),
+            json!({"schemaVersion": 1, "idempotency_key": key, "terminal_presentation":{"source":"unrecorded","in_workbench":false}}),
         )
         .await;
         workers.push(worker);
