@@ -521,7 +521,7 @@ async fn post_terminal_card_rejects_malformed_idempotency_key() {
 }
 
 #[tokio::test]
-async fn post_terminal_card_idempotency_retry_skips_validation_after_track_delete() {
+async fn post_terminal_card_idempotency_retry_refuses_deleted_terminal_after_track_delete() {
     let boot = boot_happy().await;
     let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
@@ -545,15 +545,28 @@ async fn post_terminal_card_idempotency_retry_skips_validation_after_track_delet
         Some("terminal-route-retry-after-track-delete"),
     )
     .await;
-    assert_eq!(
-        retry_status,
-        StatusCode::CREATED,
-        "retry must return the stored operation instead of revalidating the deleted track: {retry_card:?}"
+    assert_eq!(retry_status, StatusCode::NOT_FOUND, "{retry_card}");
+    assert!(
+        retry_card["error"]
+            .as_str()
+            .unwrap()
+            .contains(first_card["id"].as_str().unwrap()),
+        "the stored receipt must reach the live Terminal check, not revalidate the deleted track"
     );
-    assert_eq!(
-        strip_runtime(retry_card.clone()),
-        strip_runtime(first_card.clone())
+    assert!(
+        boot.repo
+            .card_get(first_card["id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .is_none()
     );
+    let pool = boot.repo.sqlite_db().unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE idempotency_key=?1")
+        .bind("terminal-route-retry-after-track-delete")
+        .fetch_one(pool.read_pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "retry must not submit another create");
 }
 
 #[tokio::test]
