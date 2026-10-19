@@ -299,7 +299,7 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
                 matches!(backend.native_edit_target("turn", &plan), Err(CalmError::Conflict(message)) if message == "the first message of a Claude conversation cannot be edited: Claude has nothing before it to go back to")
             );
         }
-        assert!(!backend.supports_steer());
+        assert!(!backend.capabilities().steer);
         let identity = backend.turn_identity("local-turn".into());
         assert_eq!(
             identity,

@@ -83,7 +83,7 @@ async fn current(inner: &Arc<Inner>, turn: &str) -> bool {
 }
 
 pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
-    if !inner.backend.supports_steer() || !inner.held_requests.is_empty() {
+    if !inner.backend.capabilities().steer || !inner.held_requests.is_empty() {
         return Ok(());
     }
     let state = inner.state.lock().await.clone();

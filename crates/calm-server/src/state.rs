@@ -622,9 +622,12 @@ impl AppState {
     /// test binds it after its last fixture builder. This state (and its clones) owns the creator;
     /// the MCP context only borrows it, so dropping every clone drops the route state too.
     pub fn bind_track_creator(&mut self, max_open: u32) {
-        let creator: Arc<dyn crate::mcp_server::tools::track_add::TrackCreator> = Arc::new(
-            crate::routes::tracks::RouteTrackCreator::new(self.route.clone(), max_open),
-        );
+        let creator: Arc<dyn crate::mcp_server::tools::track_add::TrackCreator> =
+            Arc::new(crate::routes::tracks::RouteTrackCreator::new(
+                self.route.clone(),
+                self.shared_codex_appserver.clone(),
+                max_open,
+            ));
         if self
             .route
             .mcp_context

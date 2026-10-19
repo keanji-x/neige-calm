@@ -5,6 +5,10 @@ use utoipa::ToSchema;
 
 #[derive(Clone, Copy, Debug, Serialize, ToSchema)]
 pub struct ManagedCapabilities {
+    /// Whether queued input can join a running turn; internal, not an HTTP capability.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub(crate) steer: bool,
     pub managed_conversation: bool,
     pub images: bool,
     pub manual_compact: bool,
@@ -47,10 +51,10 @@ impl super::backend::PlannerBackend {
     }
 
     pub(crate) fn metadata(provider: &AgentProvider) -> BackendMetadata {
-        let (images, manual_compact, history_replacement, discovery) = match provider {
-            AgentProvider::Codex => (true, true, true, ToolDiscovery::DeferredSearch),
-            AgentProvider::Claude => (true, true, true, ToolDiscovery::DirectMcp),
-            AgentProvider::OpenCode => (false, false, false, ToolDiscovery::SessionToolList),
+        let (steer, images, manual_compact, history_replacement, discovery) = match provider {
+            AgentProvider::Codex => (true, true, true, true, ToolDiscovery::DeferredSearch),
+            AgentProvider::Claude => (false, true, true, true, ToolDiscovery::DirectMcp),
+            AgentProvider::OpenCode => (false, false, false, false, ToolDiscovery::SessionToolList),
         };
         let catalog = match provider {
             AgentProvider::Codex => CatalogProtocol::Codex,
@@ -65,6 +69,7 @@ impl super::backend::PlannerBackend {
             catalog,
             requires_codex_daemon,
             capabilities: ManagedCapabilities {
+                steer,
                 managed_conversation: true,
                 images,
                 manual_compact,
