@@ -47,3 +47,5 @@ pub mod task_execution;
 pub mod daily_planner;
 
 pub mod subtrack_route;
+
+pub mod track_wire;

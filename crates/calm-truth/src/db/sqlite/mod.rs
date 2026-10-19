@@ -181,7 +181,7 @@ pub use worker_flow_capture::worker_flow_cursor_set_for_test;
 // construct V1 on write and handle LegacyUnknown explicitly on read.
 pub use track::{
     AttachedInheritedPath, TrackCreateBinding, TrackCreateBindingClaim,
-    TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan,
+    TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan, admit_isolation_none_tx,
     track_create_idempotency_claim_tx, track_create_idempotency_get_pool, track_create_tx,
     track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx,
     track_require_reopenable_tx, track_update_tx,

@@ -616,7 +616,8 @@ async fn event_subscribe(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, 
                     body.insert("_id".into(), json!(env.id));
                     body.insert(
                         "event".into(),
-                        serde_json::to_value(&ev).unwrap_or(serde_json::Value::Null),
+                        serde_json::to_value(calm_types::track_wire::EventWire(&ev))
+                            .unwrap_or(serde_json::Value::Null),
                     );
                     let body = serde_json::Value::Object(body);
                     // notify returns Err on transport-closed; bail so we don't spin until plugin stop.

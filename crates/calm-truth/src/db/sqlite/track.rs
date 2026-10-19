@@ -47,19 +47,11 @@ pub struct AttachedInheritedPath(String);
 
 impl AttachedInheritedPath {
     /// `Err` if `path` resolves inside `workspace_root`. Both a lexical and a
-    /// canonicalized check: the lexical one misses a symlink into the root, the
-    /// canonical one is unavailable for a path that does not exist yet.
+    /// physical check: the lexical one misses a symlink into the root. Missing
+    /// tails resolve against the nearest existing physical ancestor.
     pub fn new(path: String, workspace_root: &std::path::Path) -> Result<Self> {
-        let candidate = std::path::Path::new(&path);
-        let lexically_inside = candidate.starts_with(workspace_root);
-        let physically_inside = match (
-            std::fs::canonicalize(candidate),
-            std::fs::canonicalize(workspace_root),
-        ) {
-            (Ok(real_path), Ok(real_root)) => real_path.starts_with(&real_root),
-            _ => false,
-        };
-        if lexically_inside || physically_inside {
+        let candidate = PathLocation::allow_missing(std::path::Path::new(&path))?;
+        if paths_overlap(&candidate, workspace_root, false)? {
             return Err(CalmError::Internal(format!(
                 "refusing to inherit {path} as an attached workspace: it is inside the managed \
                  workspace root {}. Recycling works on directories, not rows, so this attached \
@@ -74,6 +66,124 @@ impl AttachedInheritedPath {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// The two observed locations used by the one overlap comparison. A borrowed
+/// cwd must exist; only owned roots and inherited paths may have missing tails.
+struct PathLocation<'a> {
+    lexical: &'a std::path::Path,
+    physical: std::path::PathBuf,
+}
+
+impl<'a> PathLocation<'a> {
+    fn existing(path: &'a std::path::Path) -> Result<Self> {
+        let physical = std::fs::canonicalize(path).map_err(|error| {
+            CalmError::BadRequest(format!("cannot resolve cwd {}: {error}", path.display()))
+        })?;
+        Ok(Self {
+            lexical: path,
+            physical,
+        })
+    }
+
+    fn allow_missing(path: &'a std::path::Path) -> Result<Self> {
+        Ok(Self {
+            lexical: path,
+            physical: physical_path(path)?,
+        })
+    }
+}
+
+/// Compare lexical and physical locations, preserving a missing tail below the nearest
+/// existing ancestor. Failure to resolve a location is an error, never a disjoint proof.
+fn physical_path(path: &std::path::Path) -> Result<std::path::PathBuf> {
+    let mut ancestor = path;
+    let mut tail = Vec::new();
+    loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(mut root) => {
+                for component in tail.into_iter().rev() {
+                    root.push(component);
+                }
+                return Ok(root);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A dangling symlink exists but cannot be canonicalized. Do not
+                // step past it and silently compare its lexical name instead.
+                match std::fs::symlink_metadata(ancestor) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(_) => {
+                        return Err(CalmError::BadRequest(format!(
+                            "cannot resolve existing ancestor {} of {}",
+                            ancestor.display(),
+                            path.display()
+                        )));
+                    }
+                    Err(error) => {
+                        return Err(CalmError::BadRequest(format!(
+                            "cannot resolve {}: {error}",
+                            path.display()
+                        )));
+                    }
+                }
+                let name = ancestor.file_name().ok_or_else(|| {
+                    CalmError::BadRequest(format!("cannot resolve {}", path.display()))
+                })?;
+                tail.push(name);
+                ancestor = ancestor.parent().ok_or_else(|| {
+                    CalmError::BadRequest(format!("cannot resolve {}", path.display()))
+                })?;
+            }
+            Err(error) => {
+                return Err(CalmError::BadRequest(format!(
+                    "cannot resolve {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+}
+
+fn paths_overlap(
+    candidate: &PathLocation<'_>,
+    owned: &std::path::Path,
+    containing: bool,
+) -> Result<bool> {
+    let overlaps = |a: &std::path::Path, b: &std::path::Path| {
+        a.starts_with(b) || (containing && b.starts_with(a))
+    };
+    if overlaps(candidate.lexical, owned) {
+        return Ok(true);
+    }
+    Ok(overlaps(&candidate.physical, &physical_path(owned)?))
+}
+
+/// Authoritative none admission under the caller's SQLite write transaction. The
+/// runtime snapshot includes deletes committed before this transaction acquired its lock.
+pub async fn admit_isolation_none_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    path: &str,
+    managed_root: &std::path::Path,
+    teardown_roots: &[std::path::PathBuf],
+) -> Result<()> {
+    let candidate = PathLocation::existing(std::path::Path::new(path))?;
+    let live: Vec<String> = sqlx::query_scalar(
+        "SELECT workspace_worktree_path FROM tracks WHERE workspace_worktree_path IS NOT NULL",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for root in std::iter::once(managed_root.to_path_buf())
+        .chain(live.into_iter().map(std::path::PathBuf::from))
+        .chain(teardown_roots.iter().cloned())
+    {
+        if paths_overlap(&candidate, &root, true)? {
+            return Err(CalmError::BadRequest(format!(
+                "isolation none cwd {path} overlaps Neige-owned location {}",
+                root.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Which user recipe, at which revision, a track is being built from.
@@ -572,4 +682,96 @@ pub async fn track_create_idempotency_get_pool(
         },
     )
     .transpose()
+}
+
+#[cfg(all(test, unix))]
+mod isolation_none_tests {
+    use super::*;
+
+    #[test]
+    fn isolation_none_missing_owned_root_resolves_symlinked_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let physical = tmp.path().join("physical");
+        std::fs::create_dir(&physical).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&physical, &link).unwrap();
+        let missing = link.join("missing/root");
+        assert!(
+            paths_overlap(&PathLocation::existing(&physical).unwrap(), &missing, true).unwrap()
+        );
+        assert!(
+            paths_overlap(
+                &PathLocation::allow_missing(&physical.join("missing/root/child")).unwrap(),
+                &missing,
+                false
+            )
+            .unwrap()
+        );
+        assert!(
+            !paths_overlap(
+                &PathLocation::allow_missing(&physical.join("sibling")).unwrap(),
+                &missing,
+                true
+            )
+            .unwrap()
+        );
+        assert!(
+            AttachedInheritedPath::new(
+                physical.join("missing/root/child").to_str().unwrap().into(),
+                &missing
+            )
+            .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn isolation_none_missing_cwd_cannot_use_ancestor_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = super::super::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
+        let error = admit_isolation_none_tx(
+            &mut tx,
+            tmp.path().join("missing").to_str().unwrap(),
+            &tmp.path().join("managed"),
+            &[],
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                CalmError::Core(calm_types::error::CoreError::BadRequest(_))
+            ),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn isolation_none_unresolvable_owned_symlink_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let candidate = tmp.path().join("physical");
+        std::fs::create_dir(&candidate).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(candidate.join("missing"), &alias).unwrap();
+        let repo = super::super::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
+        let error = admit_isolation_none_tx(
+            &mut tx,
+            candidate.to_str().unwrap(),
+            &alias.join("owned-root"),
+            &[],
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                CalmError::Core(calm_types::error::CoreError::BadRequest(_))
+            ),
+            "{error}"
+        );
+    }
 }

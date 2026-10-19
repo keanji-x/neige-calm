@@ -341,3 +341,8 @@ pub async fn reject_projection_retirement_for_test(db: &crate::db::sqlite::Sqlit
     .await
     .unwrap();
 }
+
+#[cfg(feature = "fixtures")]
+pub use crate::workspace_service::sweep::{
+    WorkspaceSweepHook, install_workspace_sweep_hook_for_test,
+};

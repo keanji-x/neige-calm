@@ -239,6 +239,8 @@ async fn delete_through_sweep(repo: &SqlxRepo, current: &Track) {
     .await
     .unwrap()
     .unwrap();
+    let registration = workspace_runtime::sweep::TeardownTargets::default().registration();
+    registration.register(&sweep);
     sqlx::query("DELETE FROM areas WHERE id=?1")
         .bind(current.area_id.as_str())
         .execute(&mut *tx)
@@ -246,7 +248,7 @@ async fn delete_through_sweep(repo: &SqlxRepo, current: &Track) {
         .unwrap();
     tx.commit().await.unwrap();
     workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
-        vec![sweep],
+        registration.sweeps(vec![sweep]),
         crate::workspace_service::ports::ServerWorkspacePorts,
         crate::workspace_service::ports::observe,
     )

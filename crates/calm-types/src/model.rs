@@ -187,7 +187,9 @@ impl TryFrom<String> for TrackWorkspaceKind {
 }
 
 /// The decoded isolation of a track. This is derived, never stored separately.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum WorkspaceIsolation {
     Managed,
     Worktree,

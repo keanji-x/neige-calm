@@ -412,6 +412,8 @@ impl Task {
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TrackDetail {
+    #[serde(serialize_with = "calm_types::track_wire::serialize_track")]
+    #[schema(value_type = calm_types::track_wire::TrackWire)]
     pub track: Track,
     /// Closed, not an Area chat, and not a child a task references, resolved together so
     /// clients never advertise a Reopen the write must reject.

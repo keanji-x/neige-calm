@@ -948,7 +948,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Track"
+                    "$ref": "#/components/schemas/TrackWire"
                   }
                 }
               }
@@ -9135,7 +9135,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Track"
+                    "$ref": "#/components/schemas/TrackWire"
                   }
                 }
               }
@@ -9208,7 +9208,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Track"
+                  "$ref": "#/components/schemas/TrackWire"
                 }
               }
             }
@@ -9510,7 +9510,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Track"
+                  "$ref": "#/components/schemas/TrackWire"
                 }
               }
             }
@@ -12802,6 +12802,13 @@
         ],
         "description": "One answer of an `ask.answered` (#2348): the index of a clicked option, or typed text. Clicking\nan option and typing the same words are different answers."
       },
+      "AttachedIsolation": {
+        "type": "string",
+        "enum": [
+          "worktree",
+          "none"
+        ]
+      },
       "AttachmentId": {
         "type": "string",
         "description": "`<uuid-v4>.<ext>` — an attachment's id *and* its file name. The only constructor is\n[`AttachmentId::parse`] and `Deserialize` goes through the same gate."
@@ -14042,6 +14049,10 @@
               "null"
             ],
             "description": "One-time creation instruction: copy this track's report snapshot into the new report\ninside the track-create transaction."
+          },
+          "isolation": {
+            "$ref": "#/components/schemas/AttachedIsolation",
+            "description": "Explicit cwd with this field omitted defaults to worktree. Managed (omitted cwd)\nforbids this field. None borrows the existing Git directory without a worktree."
           },
           "model": {
             "type": [
@@ -17111,7 +17122,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/Track"
+                "$ref": "#/components/schemas/TrackWire"
               }
             ]
           }
@@ -18331,7 +18342,7 @@
             }
           },
           "track": {
-            "$ref": "#/components/schemas/Track"
+            "$ref": "#/components/schemas/TrackWire"
           }
         }
       },
@@ -19252,6 +19263,30 @@
           }
         }
       },
+      "TrackWire": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Track"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "workspace"
+                ],
+                "properties": {
+                  "workspace": {
+                    "$ref": "#/components/schemas/TrackWorkspaceWire"
+                  }
+                }
+              }
+            ],
+            "description": "Schema description of the transport intersection; domain Track stays persistence-shaped."
+          }
+        ],
+        "description": "Transport wrapper; never used for database events or operation payloads."
+      },
       "TrackWorkspace": {
         "type": "object",
         "description": "A track's typed workspace. `path` is its single stored path.",
@@ -19314,6 +19349,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "TrackWorkspaceWire": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TrackWorkspace"
+          },
+          {
+            "type": "object",
+            "required": [
+              "isolation"
+            ],
+            "properties": {
+              "isolation": {
+                "$ref": "#/components/schemas/WorkspaceIsolation"
+              }
+            }
+          }
+        ]
       },
       "TracksWindowQuery": {
         "type": "object",
@@ -19669,6 +19722,15 @@
           "exited",
           "failed",
           "superseded"
+        ]
+      },
+      "WorkspaceIsolation": {
+        "type": "string",
+        "description": "The decoded isolation of a track. This is derived, never stored separately.",
+        "enum": [
+          "managed",
+          "worktree",
+          "none"
         ]
       }
     },

@@ -27,3 +27,36 @@ pub(crate) async fn workspace_track_sweep_for_track_tx(
         git_common_dirs,
     }))
 }
+
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct WorkspaceSweepHook {
+    pub entered: std::sync::Arc<tokio::sync::Notify>,
+    pub release: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn hooks() -> &'static std::sync::Mutex<std::collections::HashMap<String, WorkspaceSweepHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, WorkspaceSweepHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(Default::default)
+}
+
+#[cfg(feature = "fixtures")]
+pub fn install_workspace_sweep_hook_for_test(track: &str, hook: WorkspaceSweepHook) {
+    hooks().lock().unwrap().insert(track.to_owned(), hook);
+}
+
+pub(crate) async fn before_sweep(sweeps: &[WorkspaceTrackSweep]) {
+    #[cfg(feature = "fixtures")]
+    for sweep in sweeps {
+        let hook = hooks().lock().unwrap().remove(&sweep.track_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = sweeps;
+}

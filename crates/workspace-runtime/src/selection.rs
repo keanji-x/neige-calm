@@ -22,6 +22,12 @@ pub fn materialize_workspace(
 /// Attached admission: absolute, exists, inside a Git work tree (a subdirectory is fine — the worker derives
 /// the root itself), and the slice-branch namespace is free. Every failure is `BadRequest`.
 pub fn validate_attached_workspace(path: &Path) -> Result<()> {
+    validate_borrowed_workspace(path)?;
+    ensure_slice_branch_namespace_is_free(path)
+}
+
+/// None needs only an existing Git work tree, without any owned branch/root requirements.
+pub fn validate_borrowed_workspace(path: &Path) -> Result<()> {
     if !path.is_absolute() {
         return Err(WorkspaceError::BadRequest(format!(
             "attached workspace: path must be absolute (start with `/`); got `{}`",
@@ -69,7 +75,6 @@ pub fn validate_attached_workspace(path: &Path) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    ensure_slice_branch_namespace_is_free(path)?;
     Ok(())
 }
 

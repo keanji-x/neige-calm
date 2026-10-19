@@ -129,9 +129,10 @@ pub(super) async fn prepare(
     s: &RouteState,
     mut p: NewTrack,
     named_source: NamedSource,
-    cwd_omitted: bool,
+    isolation: CreateIsolation,
     allow_cross_area_cwd: Option<CrossAreaCwdAuthorization>,
 ) -> Result<PreparedCreate> {
+    let cwd_omitted = isolation == CreateIsolation::Managed;
     // Validate cwd before opening the tx; the route owns every cross-area check so
     // `track_create_tx` stays a mechanical row insert. `materialize_workspace` runs after the
     // commit, so "non-201 ⇒ no side effect" is not a property of this handler.
@@ -155,7 +156,7 @@ pub(super) async fn prepare(
     let normalized_cwd = normalize_path(&p.cwd);
     // Validated before the transaction, deliberately: `materialize_workspace` runs after
     // the commit, and a failure there leaves an orphan track row.
-    if !cwd_omitted {
+    if isolation == CreateIsolation::Attached(AttachedIsolation::Worktree) {
         workspace_runtime::selection::validate_attached_workspace(std::path::Path::new(
             &normalized_cwd,
         ))?;
@@ -166,12 +167,14 @@ pub(super) async fn prepare(
 
     // The system area is exempt from the `area_folders` claim namespace: claiming a path
     // under it would poison every real area's descendant check.
-    let area = s
-        .repo
-        .area_get(p.area_id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("area `{}`", p.area_id)))?;
-    let is_system_area = area.kind == AreaKind::System;
+    let area_kind = match s.repo.area_get(p.area_id.as_str()).await? {
+        Some(area) => Some(area.kind),
+        // Defer the missing-Area refusal until the authoritative ownership check
+        // in the creation transaction. This branch can never mint a track.
+        None if isolation == CreateIsolation::Attached(AttachedIsolation::None) => None,
+        None => return Err(CalmError::NotFound(format!("area `{}`", p.area_id))),
+    };
+    let is_system_area = area_kind == Some(AreaKind::System);
     if allow_cross_area_cwd.is_some() && (is_system_area || cwd_omitted) {
         return Err(CalmError::BadRequest(
             "cross-area cwd authorization requires an explicit cwd in a user area".into(),
@@ -187,7 +190,9 @@ pub(super) async fn prepare(
     // The cwd-vs-claim decision runs inside the track-create transaction: a pre-tx scan let
     // two concurrent creates for `/a` and `/a/b` commit overlapping claims.
     let conflict = FolderConflictSlot::default();
-    let folder_claim = if is_system_area || cwd_omitted {
+    let folder_claim = if area_kind.is_none() {
+        FolderClaim::MissingArea
+    } else if is_system_area || cwd_omitted {
         FolderClaim::Skip
     } else {
         FolderClaim::Enforce {
@@ -199,15 +204,24 @@ pub(super) async fn prepare(
 
     let init = source.init;
 
-    // Omitted `cwd` is the managed-default branch (server picks the directory); an explicit
-    // `cwd` is the attached branch, which gets a track worktree under its repository root
-    // (#1830), resolved here because the create transaction runs no git.
-    let workspace_plan = if cwd_omitted {
-        TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone())
-    } else {
-        TrackWorkspacePlan::AttachedWithTrackWorktree(
-            workspace_runtime::selection::git_repo_root_for_track_cwd("(new)", &normalized_cwd)?,
-        )
+    // Only worktree isolation resolves a repository root; none borrows the cwd.
+    // The ownership proof for none runs in the mint's write transaction.
+    let workspace_plan = match isolation {
+        CreateIsolation::Managed => TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
+        CreateIsolation::Attached(AttachedIsolation::None) => {
+            workspace_runtime::selection::validate_borrowed_workspace(std::path::Path::new(
+                &normalized_cwd,
+            ))?;
+            TrackWorkspacePlan::AttachedFromCwd
+        }
+        CreateIsolation::Attached(AttachedIsolation::Worktree) => {
+            TrackWorkspacePlan::AttachedWithTrackWorktree(
+                workspace_runtime::selection::git_repo_root_for_track_cwd(
+                    "(new)",
+                    &normalized_cwd,
+                )?,
+            )
+        }
     };
     Ok(PreparedCreate {
         p,

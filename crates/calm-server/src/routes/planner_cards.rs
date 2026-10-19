@@ -106,7 +106,11 @@ pub struct ResetPlannerCardResponse {
     pub card_id: CardId,
     pub terminal_id: String,
     pub new_thread_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "calm_types::track_wire::serialize_optional_track"
+    )]
+    #[schema(value_type = Option<calm_types::track_wire::TrackWire>)]
     pub track: Option<Track>,
 }
 

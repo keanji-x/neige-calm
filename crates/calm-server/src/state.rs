@@ -95,6 +95,7 @@ pub struct RouteState {
     /// Root for server-managed track workspaces (`<root>/<area_id>/<track_id>`).
     /// Resolved once at boot; never read from env at request time.
     pub workspace_root: PathBuf,
+    pub teardown_targets: workspace_runtime::sweep::TeardownTargets,
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
@@ -243,6 +244,7 @@ impl BootState {
             terminal_renderer: self.terminal_renderer.clone(),
             repo: route_repo.clone(),
             workspace_root: self.workspace_root.clone(),
+            teardown_targets: workspace_runtime::sweep::TeardownTargets::default(),
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),

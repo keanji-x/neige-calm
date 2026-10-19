@@ -28,6 +28,7 @@ struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
+    teardown_targets: workspace_runtime::sweep::TeardownTargets,
     /// The registry `delete_track`'s teardown acts on; a harness under a known runtime id lets a test assert it is gone.
     harness: calm_server::harness::HarnessRegistry,
     roles: CardRoleCache,
@@ -38,8 +39,12 @@ struct Boot {
 }
 
 async fn boot() -> Boot {
+    boot_with_workspace_root(|root| root.join("workspaces")).await
+}
+
+async fn boot_with_workspace_root(root: impl FnOnce(&Path) -> PathBuf) -> Boot {
     let tmp = TempDir::new().unwrap();
-    let workspace_root = tmp.path().join("workspaces");
+    let workspace_root = root(tmp.path());
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let roles = CardRoleCache::new();
@@ -73,6 +78,9 @@ async fn boot() -> Boot {
     )
     .with_shared_codex_appserver(shared_codex.clone())
     .with_workspace_root(workspace_root.clone());
+    let teardown_targets =
+        <calm_server::state::RouteState as axum::extract::FromRef<AppState>>::from_ref(&state)
+            .teardown_targets;
     let harness = state.harness.clone();
     let operation_runtime = state.operation_runtime.clone();
     let app = routes::router()
@@ -93,6 +101,7 @@ async fn boot() -> Boot {
         app,
         repo: sqlx_repo,
         workspace_root,
+        teardown_targets,
         harness,
         roles,
         tracks,

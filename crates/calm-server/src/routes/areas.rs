@@ -575,6 +575,7 @@ async fn finish_area_deletion(
     terminal_ids: Vec<String>,
     actor: ActorId,
     principal: Principal,
+    registration: workspace_runtime::sweep::TeardownRegistration,
 ) -> Result<(
     Vec<workspace_runtime::sweep::WorkspaceTrackSweep>,
     Vec<String>,
@@ -619,6 +620,7 @@ async fn finish_area_deletion(
                     let release = release_workspace_leases_for_track_tx(tx, track_id).await?;
                     events.extend(release.events);
                     if let Some(sweep) = release.sweep {
+                        registration.register(&sweep);
                         sweeps.push(sweep);
                     }
                 }
@@ -637,7 +639,11 @@ async fn finish_area_deletion(
 }
 
 impl RecycledAreaDeletion {
-    async fn commit(mut self, route: &RouteState) -> Result<()> {
+    async fn commit(
+        mut self,
+        route: &RouteState,
+        registration: workspace_runtime::sweep::TeardownRegistration,
+    ) -> Result<()> {
         let area_id = self.quiesced.prepared.id.clone();
         let (fail_for_test, panic_for_test) = wait_at_area_delete_commit_hook(&area_id).await;
         if panic_for_test {
@@ -654,6 +660,7 @@ impl RecycledAreaDeletion {
                 self.quiesced.terminal_ids.clone(),
                 self.quiesced.prepared.actor.clone(),
                 self.quiesced.prepared.principal.clone(),
+                registration.clone(),
             )
             .await
         };
@@ -705,8 +712,12 @@ impl RecycledAreaDeletion {
             &area_id,
             &mut self.recycle_report,
         );
+        // Membership is committed and recycling finalized; the registry owns the
+        // remaining worktree effects, including creates in a recreated area.
+        drop(self.quiesced.prepared._area_guard);
+        crate::workspace_service::sweep::before_sweep(&sweeps).await;
         sweep_workspace_worktrees_for_tracks(
-            sweeps,
+            registration.sweeps(sweeps),
             crate::workspace_service::ports::ServerWorkspacePorts,
             crate::workspace_service::ports::observe,
         )
@@ -724,7 +735,8 @@ async fn run_recycled_area_deletion(
     let recovery_thread_ids = deletion.quiesced.sealed_thread_ids.clone();
     let recovery_thread_seals = deletion.quiesced.prepared.thread_seals.clone();
     let recovery_area_id = deletion.quiesced.prepared.id.clone();
-    match std::panic::AssertUnwindSafe(deletion.commit(route))
+    let registration = route.teardown_targets.registration();
+    match std::panic::AssertUnwindSafe(deletion.commit(route, registration.clone()))
         .catch_unwind()
         .await
     {

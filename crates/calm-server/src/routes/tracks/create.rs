@@ -102,6 +102,7 @@ pub(super) struct ResumeFirstMessage {
 /// Every request field that decides the minted track, as the caller sent it (cloned
 /// before `CreationSource::stamp` rewrites the template spelling).
 pub(super) struct CreateRequestShape {
+    pub isolation: super::CreateIsolation,
     pub admin: bool,
     pub planner_provider: crate::session_projection_repo::AgentProvider,
     pub model: Option<String>,
@@ -436,6 +437,13 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
         "theme": shape.theme,
         "fork_report_from": shape.fork_report_from,
     });
+    match shape.isolation {
+        super::CreateIsolation::Managed
+        | super::CreateIsolation::Attached(super::AttachedIsolation::Worktree) => {}
+        super::CreateIsolation::Attached(super::AttachedIsolation::None) => {
+            payload["isolation"] = serde_json::json!("none");
+        }
+    }
     // Keep historical non-admin fingerprints: explicit false and omission mean the same
     // authority. Only a grant changes the identity of a keyed create.
     if shape.admin {
@@ -773,7 +781,11 @@ pub(super) async fn resume_message_less(
         // The same 201 as the first attempt's: its start, or a reset since, already runs the card.
         ResumedStart::Conversation => {}
     }
-    Ok((StatusCode::CREATED, Json(track)).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(calm_types::track_wire::TrackWire(track)),
+    )
+        .into_response())
 }
 
 #[cfg(test)]

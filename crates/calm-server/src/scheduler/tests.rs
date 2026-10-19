@@ -35,7 +35,7 @@ fn claim_fence_revision_grid_fails_closed_for_missing_null_and_negative() {
     );
 }
 
-fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
+pub(super) fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
     Task {
         id: format!("w:{key}"),
         track_id: "w".into(),

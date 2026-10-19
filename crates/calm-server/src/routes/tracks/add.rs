@@ -200,7 +200,18 @@ impl TrackCreator for RouteTrackCreator {
             init,
             workspace_plan,
             ..
-        } = preparation::prepare(s, p, named_source, cwd_omitted, None).await?;
+        } = preparation::prepare(
+            s,
+            p,
+            named_source,
+            if cwd_omitted {
+                super::CreateIsolation::Managed
+            } else {
+                super::CreateIsolation::Attached(super::AttachedIsolation::Worktree)
+            },
+            None,
+        )
+        .await?;
         let options = CreateTrackOptions {
             admin: false,
             managed_identity: None,

@@ -1,4 +1,5 @@
 //! `/api/tracks`, `/api/areas/:id/tracks` — Track CRUD.
+use calm_types::track_wire::TrackWire;
 use workspace_runtime::sweep::{WorkspaceTrackSweep, sweep_workspace_worktrees_for_tracks};
 
 use crate::AREA_CHAT_PURPOSE;
@@ -234,6 +235,39 @@ async fn wait_at_track_delete_commit_hook(track_id: &str) -> bool {
     false
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachedIsolation {
+    Worktree,
+    None,
+}
+
+fn deserialize_attached_isolation<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<AttachedIsolation>, D::Error> {
+    AttachedIsolation::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CreateIsolation {
+    Managed,
+    Attached(AttachedIsolation),
+}
+
+impl CreateIsolation {
+    fn decode(cwd: &Option<String>, isolation: Option<AttachedIsolation>) -> Result<Self> {
+        match (cwd, isolation) {
+            (None, None) => Ok(Self::Managed),
+            (None, Some(_)) => Err(CalmError::BadRequest(
+                "isolation requires an explicit cwd".into(),
+            )),
+            (Some(_), isolation) => Ok(Self::Attached(
+                isolation.unwrap_or(AttachedIsolation::Worktree),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTrackRequest {
@@ -251,6 +285,11 @@ pub struct CreateTrackRequest {
     /// (including the empty string) keep the absolute-path + claim rules.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Explicit cwd with this field omitted defaults to worktree. Managed (omitted cwd)
+    /// forbids this field. None borrows the existing Git directory without a worktree.
+    #[serde(default, deserialize_with = "deserialize_attached_isolation")]
+    #[schema(value_type = AttachedIsolation, required = false)]
+    pub isolation: Option<AttachedIsolation>,
     /// A built-in roster template to instantiate the report from; mutually exclusive with
     /// `recipe_id` and `fork_report_from` (naming two is a 400).
     #[serde(default)]
@@ -438,17 +477,22 @@ pub(crate) async fn cat_track_file(
     tag = "tracks",
     params(("area_id" = String, Path, description = "Area id")),
     responses(
-        (status = 200, description = "Tracks under area", body = Vec<Track>),
+        (status = 200, description = "Tracks under area", body = Vec<TrackWire>),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn list_tracks_by_area(
     State(s): State<RouteState>,
     Path(area_id): Path<String>,
-) -> Result<Json<Vec<Track>>> {
+) -> Result<Json<Vec<calm_types::track_wire::TrackWire>>> {
     let mut tracks = s.repo.tracks_by_area(&area_id).await?;
     tracks.retain(user_visible_track);
-    Ok(Json(tracks))
+    Ok(Json(
+        tracks
+            .into_iter()
+            .map(calm_types::track_wire::TrackWire)
+            .collect(),
+    ))
 }
 
 /// Public track lists hide retired Area-conversation containers; repository readers such
@@ -593,7 +637,7 @@ pub struct TracksWindowQuery {
     tag = "tracks",
     params(TracksWindowQuery),
     responses(
-        (status = 200, description = "Tracks overlapping the window, sorted by created_at", body = Vec<Track>),
+        (status = 200, description = "Tracks overlapping the window, sorted by created_at", body = Vec<TrackWire>),
         (status = 400, description = "Inverted window (since > until)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -601,7 +645,7 @@ pub struct TracksWindowQuery {
 pub(crate) async fn list_tracks_window(
     State(state): State<RouteState>,
     Query(q): Query<TracksWindowQuery>,
-) -> Result<Json<Vec<Track>>> {
+) -> Result<Json<Vec<calm_types::track_wire::TrackWire>>> {
     if let (Some(since), Some(until)) = (q.since, q.until)
         && since > until
     {
@@ -614,7 +658,12 @@ pub(crate) async fn list_tracks_window(
         .tracks_window(q.area_id.as_deref(), q.since, q.until)
         .await?;
     tracks.retain(user_visible_track);
-    Ok(Json(tracks))
+    Ok(Json(
+        tracks
+            .into_iter()
+            .map(calm_types::track_wire::TrackWire)
+            .collect(),
+    ))
 }
 
 #[utoipa::path(
@@ -673,7 +722,7 @@ pub(crate) async fn get_track_detail(
     ),
     request_body = CreateTrackRequest,
     responses(
-        (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = Track),
+        (status = 201, description = "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.", body = TrackWire),
         (status = 400, description = "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty, non-ASCII or over 128 bytes; code `idempotency_key_invalid`) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "Folder-claim conflict (structured `FolderConflict` body), `idempotency_key_reused` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, `idempotency_key_concurrent` when another create under the same key committed at the same moment (nothing of this request was kept; retry the identical request under the same key and it resolves to that track), `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized, or `conflict` naming `attached-repo-diverged` when the attached checkout has unpushed commits and its upstream moved on, so the track's worktree cannot be made (the track is already committed and stays, as after a failed managed materialization; reconcile the checkout, then retry under the same key), or `conflict` when a `first_message` retry after a failed start finds that the track's Planner already has a session, so the retry starts nothing (send the message through `POST /api/cards/{id}/planner/input`). Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request after `idempotency_key_reused` (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.", body = ErrorBody),
@@ -696,6 +745,7 @@ pub(crate) async fn create_track(
             "Only the user grants Area admin.",
         )?;
     }
+    let isolation = CreateIsolation::decode(&request.cwd, request.isolation)?;
     let admin = request.admin;
     // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
     // of up to ~28 s) is read before the area lock below, which it must not hold; it and the
@@ -740,6 +790,7 @@ pub(crate) async fn create_track(
         // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
         // must not depend on `admit_template`, so a replay whose template left the roster still replays.
         create::CreateRequestShape {
+            isolation,
             admin,
             planner_provider: request.planner_provider.clone(),
             model: request.model.clone(),
@@ -764,7 +815,11 @@ pub(crate) async fn create_track(
         create::CreatePlan::Resume(resume) => {
             let track =
                 create::resume_prior_attempt(s, &create::KeyedActor::rest(&actor), resume).await?;
-            return Ok((StatusCode::CREATED, Json(track)).into_response());
+            return Ok((
+                StatusCode::CREATED,
+                Json(calm_types::track_wire::TrackWire(track)),
+            )
+                .into_response());
         }
         create::CreatePlan::MessageLessResume(resume) => {
             return create::resume_message_less(s, actor, resume).await;
@@ -818,7 +873,7 @@ pub(crate) async fn create_track(
         )));
     }
     let planner_provider = request.planner_provider.clone();
-    let (p, named_source, cwd_omitted) = request.into_parts()?;
+    let (p, named_source, _cwd_omitted) = request.into_parts()?;
 
     let preparation::PreparedCreate {
         p,
@@ -828,7 +883,7 @@ pub(crate) async fn create_track(
         init,
         workspace_plan,
         conflict,
-    } = preparation::prepare(&s, p, named_source, cwd_omitted, allow_cross_area_cwd).await?;
+    } = preparation::prepare(&s, p, named_source, isolation, allow_cross_area_cwd).await?;
     let options = CreateTrackOptions {
         admin,
         planner_provider,
@@ -857,7 +912,13 @@ pub(crate) async fn create_track(
             plan,
         )
         .await
-        .map(|track| (StatusCode::CREATED, Json(track)).into_response()),
+        .map(|track| {
+            (
+                StatusCode::CREATED,
+                Json(calm_types::track_wire::TrackWire(track)),
+            )
+                .into_response()
+        }),
     };
     // The per-key claim guard rides here so two same-key message-less creates in
     // one process cannot both read "no binding" and each mint a track. Dropped
@@ -980,6 +1041,9 @@ impl FolderConflictSlot {
 /// What the track-create transaction does about `area_folders`.
 #[derive(Clone)]
 enum FolderClaim {
+    /// A borrowed create must check teardown ownership before returning this
+    /// preflight refusal, even when Area deletion already committed.
+    MissingArea,
     /// Don't scan, don't insert. The system area is exempt from the claim
     /// namespace entirely.
     Skip,
@@ -1022,8 +1086,8 @@ enum FolderClaimPass {
     Authoritative,
 }
 
-/// The claim rules, in one place. Must run first in its transaction: every branch either
-/// rolls back or leaves the claim table consistent for the write that follows.
+/// The claim rules, in one place. Must precede claim-dependent writes: every branch
+/// either rolls back or leaves the claim table consistent for the write that follows.
 async fn enforce_folder_claim_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     claim: &FolderClaim,
@@ -1032,13 +1096,14 @@ async fn enforce_folder_claim_tx(
     intent: FolderClaimIntent,
     pass: FolderClaimPass,
 ) -> Result<()> {
-    let FolderClaim::Enforce {
-        attach,
-        allow_cross_area_cwd,
-        conflict,
-    } = claim
-    else {
-        return Ok(());
+    let (attach, allow_cross_area_cwd, conflict) = match claim {
+        FolderClaim::MissingArea => return Err(CalmError::NotFound(format!("area `{area_id}`"))),
+        FolderClaim::Skip => return Ok(()),
+        FolderClaim::Enforce {
+            attach,
+            allow_cross_area_cwd,
+            conflict,
+        } => (attach, allow_cross_area_cwd, conflict),
     };
     let existing = area_folders_list_all_tx(tx).await?;
     match find_owner(&existing, normalized_cwd) {
@@ -1158,10 +1223,6 @@ async fn create_track_with_planner_harness(
     p: NewTrack,
     options: CreateTrackOptions,
 ) -> Result<Response> {
-    let area_id = options.body_area_id.clone();
-    if s.repo.area_get(&area_id).await?.is_none() {
-        return Err(CalmError::NotFound(format!("area {area_id}")));
-    }
     let (track, _, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.to_actor_id(), p, options).await?;
     #[cfg(feature = "fixtures")]
@@ -1179,7 +1240,11 @@ async fn create_track_with_planner_harness(
     )
     .await;
     start_planner_harness(&fence, &actor, &track, planner_card_id, report_card_id).await?;
-    Ok((StatusCode::CREATED, Json(track)).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(calm_types::track_wire::TrackWire(track)),
+    )
+        .into_response())
 }
 
 #[allow(deprecated)]
@@ -1205,6 +1270,8 @@ async fn create_track_structure(
         idempotency_claim,
     } = options;
     let workspace_root_for_materialize = s.workspace_root.clone();
+    let teardown_targets = s.teardown_targets.clone();
+    let admission_root = s.workspace_root.clone();
     let templates = s.templates;
     let planner_card_id = new_id();
     let report_card_id = new_id();
@@ -1246,8 +1313,13 @@ async fn create_track_structure(
                 if let Some(creator) = &creator {
                     creator.admit_tx(tx).await?;
                 }
-                // Claim scan + insert, atomic with the track row; must stay first so every branch
-                // either rolls back or leaves the claim table consistent.
+                if matches!(workspace_plan, TrackWorkspacePlan::AttachedFromCwd) {
+                    calm_truth::db::sqlite::admit_isolation_none_tx(
+                        tx, &p.cwd, &admission_root, &teardown_targets.snapshot(),
+                    ).await?;
+                }
+                // Claim scan + insert is atomic with the row, after ownership admission and
+                // before any row writes, so every branch leaves the claim table consistent.
                 enforce_folder_claim_tx(
                     tx,
                     &folder_claim,
@@ -2288,7 +2360,7 @@ async fn repoint_track_workspace(
     drop(operation_guard.take());
     restart_planner_harness_at(s, actor, &updated, &updated.workspace.path).await;
 
-    Ok(Json(updated).into_response())
+    Ok(Json(calm_types::track_wire::TrackWire(updated)).into_response())
 }
 
 /// Reach the re-point with a caller HTTP cannot produce. `fixtures`-only.
@@ -2405,7 +2477,7 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
     params(("id" = String, Path, description = "Track id")),
     request_body = TrackPatch,
     responses(
-        (status = 200, description = "Track updated", body = Track),
+        (status = 200, description = "Track updated", body = TrackWire),
         (status = 400, description = "Unsupported workspace change", body = ErrorBody),
         (status = 403, description = "Workspace change refused (system area)", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
@@ -2540,7 +2612,7 @@ pub(crate) async fn update_track(
         || p.automation_policy.is_some()
         || p.tree_task_budget.is_some();
     if !patch_has_changes {
-        return Ok(Json(existing).into_response());
+        return Ok(Json(calm_types::track_wire::TrackWire(existing)).into_response());
     }
 
     let reopening = p.closed == Some(false);
@@ -2641,7 +2713,7 @@ pub(crate) async fn update_track(
     if reopening && let Err(error) = w.dispatcher.wake_planner_on_reopen(&track.id).await {
         tracing::warn!(%error, track_id=%track.id, "Planner resume after reopen failed; next wake can retry");
     }
-    Ok(Json(track).into_response())
+    Ok(Json(calm_types::track_wire::TrackWire(track)).into_response())
 }
 
 async fn snapshot_track_deletion(s: &RouteState, track: &Track) -> Result<TrackDeletePlan> {
@@ -2792,6 +2864,7 @@ async fn finish_track_deletion(
     s: &RouteState,
     plan: TrackDeletePlan,
     actor: ActorId,
+    registration: workspace_runtime::sweep::TeardownRegistration,
 ) -> Result<Vec<WorkspaceTrackSweep>> {
     let write_for_tx = s.write.clone();
     let track_id = plan.track_id.clone();
@@ -2828,6 +2901,9 @@ async fn finish_track_deletion(
                 overlay_delete_by_entity_tx(tx, "view", track_id.as_str()).await?;
                 let release = release_workspace_leases_for_track_tx(tx, track_id.as_str()).await?;
                 let mut events = release.events;
+                if let Some(sweep) = &release.sweep {
+                    registration.register(sweep);
+                }
                 track_delete_tx(tx, track_id.as_str(), write_for_tx.area_cache()).await?;
                 events.push((
                     actor.clone(),
@@ -2958,7 +3034,12 @@ impl QuiescedTrackDeletion {
 
 impl RecycledTrackDeletion {
     #[allow(deprecated)]
-    async fn commit(self, route: &RouteState, actor: ActorId) -> Result<()> {
+    async fn commit(
+        self,
+        route: &RouteState,
+        actor: ActorId,
+        registration: workspace_runtime::sweep::TeardownRegistration,
+    ) -> Result<()> {
         let Self {
             prepared,
             decision,
@@ -2987,7 +3068,7 @@ impl RecycledTrackDeletion {
             .observation
             .observe(
                 Stage::Commit,
-                finish_track_deletion(route, prepared.plan, actor),
+                finish_track_deletion(route, prepared.plan, actor, registration.clone()),
             )
             .await
         {
@@ -3048,8 +3129,9 @@ impl RecycledTrackDeletion {
         // workspace: the track row is already gone and the trash path is now
         // authoritative.
         let mut worktrees = prepared.observation.stage(Stage::WorktreeSweep);
+        crate::workspace_service::sweep::before_sweep(&sweeps).await;
         sweep_workspace_worktrees_for_tracks(
-            sweeps,
+            registration.sweeps(sweeps),
             crate::workspace_service::ports::ServerWorkspacePorts,
             crate::workspace_service::ports::observe,
         )
@@ -3073,7 +3155,8 @@ async fn run_recycled_track_deletion(
     let recovery_decision = deletion.decision.clone();
     let recovery_thread_ids = deletion.sealed_thread_ids.clone();
     let recovery_thread_seals = deletion.prepared.thread_seals.clone();
-    match std::panic::AssertUnwindSafe(deletion.commit(route, actor))
+    let registration = route.teardown_targets.registration();
+    match std::panic::AssertUnwindSafe(deletion.commit(route, actor, registration.clone()))
         .catch_unwind()
         .await
     {

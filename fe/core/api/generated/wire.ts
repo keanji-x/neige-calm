@@ -310,6 +310,11 @@ target?: VerifyTarget, } } | { "ev": "task.regate_requested", "data": { attempt_
 export type EventScope = { "kind": "System" } | { "kind": "Area", "id": { area: AreaId, } } | { "kind": "Track", "id": { track: TrackId, area: AreaId, } } | { "kind": "Card", "id": { card: CardId, track: TrackId, area: AreaId, } };
 
 /**
+ * The event transport replaces the Track payload while retaining every other event variant.
+ */
+export type EventWire = Exclude<Event, { ev: 'track.updated' }> | (Extract<Event, { ev: 'track.updated' }> & { data: TrackWire });
+
+/**
  * 409 body for the folder-create conflict case.
  */
 export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path: string, conflict_kind: FolderConflictKind, };
@@ -961,6 +966,11 @@ creator_track_id: string | null,
 creator_key: string | null, workspace: TrackWorkspace, created_at: number, updated_at: number, };
 
 /**
+ * Transport wrapper; never used for database events or operation payloads.
+ */
+export type TrackWire = Track & { workspace: TrackWorkspaceWire };
+
+/**
  * A track's typed workspace. `path` is its single stored path.
  */
 export type TrackWorkspace = { kind: TrackWorkspaceKind, 
@@ -984,6 +994,23 @@ worktree?: string, };
  * Ownership must be explicit because only managed workspaces may be recycled.
  */
 export type TrackWorkspaceKind = "managed" | "attached";
+
+export type TrackWorkspaceWire = { isolation: WorkspaceIsolation, kind: TrackWorkspaceKind, 
+/**
+ * Absolute path.
+ */
+path: string, 
+/**
+ * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change again. The system-area
+ * launchpad stays unfrozen because it is repointed.
+ */
+frozen_at: number | null, 
+/**
+ * The kernel-made git worktree (`<repo_root>/.claude/worktrees/track-<id>`, branch
+ * `neige/track-<id>`) an attached track's conversation agents run in. `None` for managed,
+ * child and pre-#1830 attached tracks, which run in `path`.
+ */
+worktree?: string, };
 
 /**
  * Why a gate ran without a candidate to check against.
@@ -1034,3 +1061,8 @@ last_turn_completed_ms?: number, };
  * Session state machine column (`worker_sessions.state`).
  */
 export type WorkerSessionState = "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";
+
+/**
+ * The decoded isolation of a track. This is derived, never stored separately.
+ */
+export type WorkspaceIsolation = "managed" | "worktree" | "none";

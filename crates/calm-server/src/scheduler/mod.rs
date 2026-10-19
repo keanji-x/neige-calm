@@ -1088,6 +1088,16 @@ impl Scheduler {
             return Ok(());
         };
         if task.start == TaskStart::Upstream {
+            if track.workspace.isolation() == calm_types::model::WorkspaceIsolation::None {
+                return self
+                    .fail_spawn(
+                        task,
+                        track,
+                        &crate::operation::workspace_lease::worker::track_without_worktree()
+                            .to_string(),
+                    )
+                    .await;
+            }
             // #2058 D5: a catch-up starts at the upstream the kernel fetches now; its prepare
             // refuses anything else. Outside every transaction (#1777); a re-drive fetches again.
             refresh_catch_up_upstream(track).await;
@@ -2248,3 +2258,6 @@ pub(crate) async fn mark_acknowledged_running_tx(
     )
     .await
 }
+
+#[cfg(test)]
+mod isolation_none_tests;

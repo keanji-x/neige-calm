@@ -424,7 +424,7 @@ fn snapshot_required_frame(earliest: i64) -> String {
 /// Splice `_id`, `eventVersion` and `scope` alongside the `Event` enum's own `{ev, data}` serialization, so
 /// the ts-rs type for `Event` stays authoritative.
 fn render_envelope(env: &BroadcastEnvelope) -> Result<String, serde_json::Error> {
-    let mut value = serde_json::to_value(&env.event)?;
+    let mut value = serde_json::to_value(calm_types::track_wire::EventWire(&env.event))?;
     if let serde_json::Value::Object(ref mut map) = value {
         map.insert("_id".to_string(), serde_json::Value::from(env.id));
         map.insert(
@@ -560,6 +560,30 @@ mod tests {
                 CapRoute::PromoteAnchor
             );
         }
+    }
+
+    #[test]
+    fn isolation_none_event_wire_projects_without_changing_persistent_payload() {
+        let track = serde_json::from_value(serde_json::json!({
+            "id":"track", "area_id":"area", "title":"borrowed", "sort":0,
+            "created_at":1, "updated_at":1,
+            "workspace":{"kind":"attached","path":"/borrowed","frozen_at":1}
+        }))
+        .unwrap();
+        let event = Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(track, None));
+        let stored = event.payload_value();
+        assert!(stored["workspace"].get("isolation").is_none());
+        let envelope = BroadcastEnvelope {
+            id: 1,
+            event_version: SYNC_EVENT_VERSION,
+            actor: ActorId::Kernel,
+            scope: EventScope::System,
+            event,
+        };
+        let wire: serde_json::Value =
+            serde_json::from_str(&render_envelope(&envelope).unwrap()).unwrap();
+        assert_eq!(wire["data"]["workspace"]["isolation"], "none");
+        assert_eq!(envelope.event.payload_value(), stored);
     }
 
     #[test]
