@@ -85,7 +85,7 @@ async fn probe_error_leaves_row_unchanged() {
 async fn missing_viewer_preserves_resumable_session_but_explicit_completion_still_works() {
     use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
     let fixture = TestFixture::boot_with_supervisor().await;
-    let term = fixture.seed_terminal_card("codex").await;
+    let term = fixture.seed_terminal_card("codex", json!({})).await;
     let session_id = fixture
         .seed_session(&term, WorkerSessionKind::CodexCard)
         .await;
@@ -259,10 +259,14 @@ impl TestFixture {
     }
 
     async fn seed_terminal(&self) -> Terminal {
-        self.seed_terminal_card("terminal").await
+        self.seed_terminal_card(
+            "terminal",
+            json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false}}),
+        )
+        .await
     }
 
-    async fn seed_terminal_card(&self, card_kind: &str) -> Terminal {
+    async fn seed_terminal_card(&self, card_kind: &str, payload: serde_json::Value) -> Terminal {
         let area = self
             .repo
             .area_create(
@@ -297,7 +301,7 @@ impl TestFixture {
                 title: None,
                 kind: card_kind.into(),
                 sort: None,
-                payload: json!({}),
+                payload,
             })
             .await
             .expect("create card");

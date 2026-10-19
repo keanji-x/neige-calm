@@ -12,7 +12,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_types::organization::LEGACY_OWNER_USER_ID;
-use serde_json::json;
+use serde_json::{Value, json};
 
 async fn fresh_repo() -> SqlxRepo {
     SqlxRepo::open("sqlite::memory:")
@@ -49,13 +49,13 @@ async fn make_track(repo: &SqlxRepo, area_id: &str, title: &str) -> Track {
     .expect("create track")
 }
 
-async fn make_card(repo: &SqlxRepo, track_id: &str, kind: &str) -> Card {
+async fn make_card(repo: &SqlxRepo, track_id: &str, kind: &str, payload: Value) -> Card {
     repo.card_create(NewCard {
         track_id: track_id.into(),
         title: None,
         kind: kind.into(),
         sort: None,
-        payload: json!({"hello": "world"}),
+        payload,
     })
     .await
     .expect("create card")
@@ -392,8 +392,11 @@ async fn card_crud_round_trip() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
-    assert_eq!(card.payload, json!({"hello": "world"}));
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
+    assert_eq!(
+        card.payload,
+        json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})
+    );
 
     let updated = repo
         .card_update(
@@ -409,7 +412,10 @@ async fn card_crud_round_trip() {
         .await
         .unwrap();
     assert_eq!(updated.kind, "plugin:x:view");
-    assert_eq!(updated.payload, json!({"replaced": true}));
+    assert_eq!(
+        updated.payload,
+        json!({"replaced":true,"terminal_presentation":{"source":"unrecorded","in_workbench":false}})
+    );
 
     let listed = repo.cards_by_track(w.id.as_str()).await.unwrap();
     assert_eq!(listed.len(), 1);
@@ -426,8 +432,8 @@ async fn area_delete_cascades_to_tracks_and_cards() {
     let c = make_area(&repo, "C").await;
     let w1 = make_track(&repo, c.id.as_str(), "w1").await;
     let w2 = make_track(&repo, c.id.as_str(), "w2").await;
-    let c1 = make_card(&repo, w1.id.as_str(), "terminal").await;
-    let c2 = make_card(&repo, w2.id.as_str(), "terminal").await;
+    let c1 = make_card(&repo, w1.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
+    let c2 = make_card(&repo, w2.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     repo.area_delete(c.id.as_str()).await.unwrap();
 
@@ -442,7 +448,7 @@ async fn area_delete_succeeds_when_track_references_root_session() {
     let repo = fresh_repo().await;
     let area = make_area(&repo, "rooted").await;
     let track = make_track(&repo, area.id.as_str(), "rooted track").await;
-    let root_card = make_card(&repo, track.id.as_str(), "codex").await;
+    let root_card = make_card(&repo, track.id.as_str(), "codex", json!({"hello":"world"})).await;
     let root_session_id = start_root_runtime(&repo, &root_card).await;
 
     let root: Option<String> =
@@ -470,9 +476,9 @@ async fn track_delete_cascades_to_cards() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let other_track = make_track(&repo, c.id.as_str(), "other").await;
-    let other_card = make_card(&repo, other_track.id.as_str(), "terminal").await;
+    let other_card = make_card(&repo, other_track.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     repo.track_delete(w.id.as_str()).await.unwrap();
 
@@ -497,8 +503,8 @@ async fn root_card_delete_clears_track_root_session_id() {
     let repo = fresh_repo().await;
     let area = make_area(&repo, "rooted-card").await;
     let track = make_track(&repo, area.id.as_str(), "rooted track").await;
-    let root_card = make_card(&repo, track.id.as_str(), "codex").await;
-    let other_card = make_card(&repo, track.id.as_str(), "terminal").await;
+    let root_card = make_card(&repo, track.id.as_str(), "codex", json!({"hello":"world"})).await;
+    let other_card = make_card(&repo, track.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let root_session_id = start_root_runtime(&repo, &root_card).await;
 
     let root: Option<String> =
@@ -540,7 +546,7 @@ async fn card_delete_sweeps_card_overlays() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     make_overlay(&repo, "p1", "card", card.id.as_str(), "status").await;
     make_overlay(&repo, "p2", "card", card.id.as_str(), "badge").await;
@@ -560,8 +566,8 @@ async fn track_delete_sweeps_card_overlays() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card1 = make_card(&repo, w.id.as_str(), "terminal").await;
-    let card2 = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card1 = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
+    let card2 = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     make_overlay(&repo, "p", "card", card1.id.as_str(), "status").await;
     make_overlay(&repo, "p", "card", card2.id.as_str(), "status").await;
@@ -624,7 +630,7 @@ async fn area_delete_sweeps_all_overlays_transitively() {
         make_overlay(&repo, "p", "view", track.id.as_str(), "status").await;
 
         for name in ["c1", "c2"] {
-            let card = make_card(&repo, track.id.as_str(), name).await;
+            let card = make_card(&repo, track.id.as_str(), name, json!({"hello":"world"})).await;
             make_overlay(&repo, "p", "card", card.id.as_str(), "status").await;
             card_ids.push(card.id.to_string());
         }
@@ -689,7 +695,7 @@ async fn fk_restrict_card_delete_blocked_by_terminal() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
     let err = repo.card_delete(card.id.as_str()).await.unwrap_err();
@@ -711,11 +717,11 @@ async fn fk_restrict_track_delete_blocked_by_terminal_under_card() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
     let other_track = make_track(&repo, c.id.as_str(), "other").await;
-    let other_card = make_card(&repo, other_track.id.as_str(), "terminal").await;
+    let other_card = make_card(&repo, other_track.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let other_term = make_terminal(&repo, other_card.id.as_str()).await;
 
     let err = repo.track_delete(w.id.as_str()).await.unwrap_err();
@@ -757,7 +763,7 @@ async fn fk_restrict_area_delete_blocked_by_terminal_under_subtree() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let term = make_terminal(&repo, card.id.as_str()).await;
 
     let err = repo.area_delete(c.id.as_str()).await.unwrap_err();
@@ -807,10 +813,10 @@ async fn sort_defaulting_is_scoped_per_track_for_cards() {
     let c = make_area(&repo, "c").await;
     let w1 = make_track(&repo, c.id.as_str(), "w1").await;
     let w2 = make_track(&repo, c.id.as_str(), "w2").await;
-    let c1a = make_card(&repo, w1.id.as_str(), "terminal").await;
-    let c1b = make_card(&repo, w1.id.as_str(), "terminal").await;
-    let c1c = make_card(&repo, w1.id.as_str(), "terminal").await;
-    let c2a = make_card(&repo, w2.id.as_str(), "terminal").await;
+    let c1a = make_card(&repo, w1.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
+    let c1b = make_card(&repo, w1.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
+    let c1c = make_card(&repo, w1.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
+    let c2a = make_card(&repo, w2.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     assert_eq!(c1a.sort, 1.0);
     assert_eq!(c1b.sort, 2.0);
     assert_eq!(c1c.sort, 3.0);
@@ -824,10 +830,16 @@ async fn track_detail_includes_sorted_cards_and_scoped_overlays() {
     let w = make_track(&repo, c.id.as_str(), "W").await;
     let other_w = make_track(&repo, c.id.as_str(), "other").await;
 
-    let card_a = make_card(&repo, w.id.as_str(), "a").await;
-    let card_b = make_card(&repo, w.id.as_str(), "b").await;
-    let card_c = make_card(&repo, w.id.as_str(), "c").await;
-    let other_card = make_card(&repo, other_w.id.as_str(), "other").await;
+    let card_a = make_card(&repo, w.id.as_str(), "a", json!({"hello":"world"})).await;
+    let card_b = make_card(&repo, w.id.as_str(), "b", json!({"hello":"world"})).await;
+    let card_c = make_card(&repo, w.id.as_str(), "c", json!({"hello":"world"})).await;
+    let other_card = make_card(
+        &repo,
+        other_w.id.as_str(),
+        "other",
+        json!({"hello":"world"}),
+    )
+    .await;
 
     let track_overlay = repo
         .overlay_upsert(NewOverlay {
@@ -928,7 +940,7 @@ async fn overlays_by_kind_returns_all_track_overlays_across_areas() {
     let c2 = make_area(&repo, "C2").await;
     let w1 = make_track(&repo, c1.id.as_str(), "W1").await;
     let w2 = make_track(&repo, c2.id.as_str(), "W2").await;
-    let card = make_card(&repo, w1.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w1.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     repo.overlay_upsert(NewOverlay {
         plugin_id: "p".into(),
@@ -976,7 +988,7 @@ async fn terminal_create_rejects_duplicate_card_id() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     let t = repo
         .terminal_create(NewTerminal {
@@ -1171,8 +1183,8 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    let _c1 = make_card(&repo, w.id.as_str(), "terminal").await;
-    let _c2 = make_card(&repo, w.id.as_str(), "terminal").await;
+    let _c1 = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
+    let _c2 = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
     let mut tx = repo.pool().begin().await.unwrap();
     let (card, _term) = calm_server::db::sqlite::card_with_terminal_create_tx(
@@ -1205,7 +1217,7 @@ async fn terminal_create_tx_enforces_unique_card_id() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let _seeded = make_terminal(&repo, card.id.as_str()).await;
 
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1665,7 +1677,7 @@ async fn terminal_set_exit_round_trip_all_branches() {
     let repo = fresh_repo().await;
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
-    let card = make_card(&repo, w.id.as_str(), "terminal").await;
+    let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let t = repo
         .terminal_create(NewTerminal {
             card_id: card.id.clone(),

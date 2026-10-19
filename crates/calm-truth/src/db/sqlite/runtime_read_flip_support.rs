@@ -13,6 +13,7 @@ use sqlx::SqlitePool;
 pub(super) struct RuntimeReadCase {
     pub(super) label: &'static str,
     pub(super) card_kind: &'static str,
+    pub(super) card_payload: serde_json::Value,
     pub(super) kind: WorkerSessionKind,
     pub(super) agent_provider: Option<AgentProvider>,
     pub(super) status: WorkerSessionState,
@@ -21,6 +22,7 @@ pub(super) struct RuntimeReadCase {
 pub(super) struct KeyedRuntimeSeed {
     pub(super) label: &'static str,
     pub(super) card_kind: &'static str,
+    pub(super) card_payload: serde_json::Value,
     pub(super) kind: WorkerSessionKind,
     pub(super) agent_provider: Option<AgentProvider>,
     pub(super) thread_id: Option<&'static str>,
@@ -33,6 +35,7 @@ pub(super) fn runtime_read_cases() -> Vec<RuntimeReadCase> {
         RuntimeReadCase {
             label: "terminal",
             card_kind: "terminal",
+            card_payload: json!({"schemaVersion":1,"terminal_presentation":{"source":"unrecorded","in_workbench":false}}),
             kind: WorkerSessionKind::Terminal,
             agent_provider: None,
             status: WorkerSessionState::Starting,
@@ -40,6 +43,7 @@ pub(super) fn runtime_read_cases() -> Vec<RuntimeReadCase> {
         RuntimeReadCase {
             label: "codex-card",
             card_kind: "codex",
+            card_payload: json!({"schemaVersion":1}),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
@@ -47,6 +51,7 @@ pub(super) fn runtime_read_cases() -> Vec<RuntimeReadCase> {
         RuntimeReadCase {
             label: "claude-card",
             card_kind: "claude",
+            card_payload: json!({"schemaVersion":1}),
             kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Idle,
@@ -54,6 +59,7 @@ pub(super) fn runtime_read_cases() -> Vec<RuntimeReadCase> {
         RuntimeReadCase {
             label: "shared-spec",
             card_kind: "codex",
+            card_payload: json!({"schemaVersion":1}),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::TurnPending,
@@ -72,6 +78,7 @@ pub(super) async fn create_card_in_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     label: &str,
     card_kind: &str,
+    payload: serde_json::Value,
 ) -> String {
     let area = area_create_tx(
         tx,
@@ -105,6 +112,8 @@ pub(super) async fn create_card_in_tx(
     .await
     .expect("create track");
     let card_id = format!("card-read-flip-{label}");
+    let mut payload = payload;
+    payload["case"] = json!(label);
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -113,7 +122,7 @@ pub(super) async fn create_card_in_tx(
             title: None,
             kind: card_kind.into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "case": label}),
+            payload,
         },
         CardRole::Worker,
         true,
@@ -130,7 +139,8 @@ pub(super) async fn seed_runtime(
     now_ms: i64,
 ) -> WorkerSessionProjection {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
-    let card_id = create_card_in_tx(repo, &mut tx, case.label, case.card_kind).await;
+    let card_id =
+        create_card_in_tx(repo, &mut tx, case.label, case.card_kind, case.card_payload).await;
     let runtime = session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
@@ -159,7 +169,8 @@ pub(super) async fn seed_runtime_with_keys(
     seed: KeyedRuntimeSeed,
 ) -> WorkerSessionProjection {
     let mut tx = repo.pool().begin().await.expect("begin keyed seed tx");
-    let card_id = create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind).await;
+    let card_id =
+        create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind, seed.card_payload).await;
     let runtime = session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
@@ -379,7 +390,8 @@ pub(super) async fn seed_projectable_history(
     include_active: bool,
 ) -> ProjectableHistory {
     let mut tx = repo.pool().begin().await.expect("begin projectable tx");
-    let card_id = create_card_in_tx(repo, &mut tx, label, "codex").await;
+    let card_id =
+        create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
     let older = session_start_runtime_tx(
         &mut tx,
         projectable_runtime_init(
@@ -443,7 +455,8 @@ pub(super) async fn seed_deferred_projectable_placeholder(
 ) -> (String, String) {
     let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id = create_card_in_tx(repo, &mut tx, label, "codex").await;
+    let card_id =
+        create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
     session_prepare_deferred_planner_tx(
         &mut tx,
         &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),

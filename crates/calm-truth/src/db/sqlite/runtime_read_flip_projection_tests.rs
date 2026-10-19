@@ -24,6 +24,7 @@ async fn runtime_active_shared_thread_attribution_from_pool_filters_and_orders_p
         KeyedRuntimeSeed {
             label: "attribution-shared",
             card_kind: "codex",
+            card_payload: json!({"schemaVersion":1}),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
             thread_id: Some("thread-shared"),
@@ -37,6 +38,7 @@ async fn runtime_active_shared_thread_attribution_from_pool_filters_and_orders_p
         KeyedRuntimeSeed {
             label: "attribution-codex",
             card_kind: "codex",
+            card_payload: json!({"schemaVersion":1}),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             thread_id: Some("thread-codex"),
@@ -50,6 +52,7 @@ async fn runtime_active_shared_thread_attribution_from_pool_filters_and_orders_p
         KeyedRuntimeSeed {
             label: "attribution-no-thread",
             card_kind: "codex",
+            card_payload: json!({"schemaVersion":1}),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             thread_id: None,
@@ -63,6 +66,7 @@ async fn runtime_active_shared_thread_attribution_from_pool_filters_and_orders_p
         KeyedRuntimeSeed {
             label: "attribution-claude",
             card_kind: "claude",
+            card_payload: json!({"schemaVersion":1}),
             kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             thread_id: Some("thread-claude"),
@@ -140,7 +144,8 @@ async fn projectable_deferred_planner_gap_with_active_runtime_returns_placeholde
     let label = "projectable-gap";
     let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin gap tx");
-    let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
+    let card_id =
+        create_card_in_tx(&repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
     let mut active_init = projectable_runtime_init(
         &card_id,
         label,
@@ -427,7 +432,14 @@ async fn worker_session_backed_reads_return_deferred_planner_placeholder() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-read-flip-placeholder-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id = create_card_in_tx(&repo, &mut tx, "placeholder", "codex").await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        "placeholder",
+        "codex",
+        json!({"schemaVersion":1}),
+    )
+    .await;
     session_prepare_deferred_planner_tx(
         &mut tx,
         &WorkerSessionInit {
@@ -481,7 +493,14 @@ async fn deferred_planner_placeholder_rejects_non_null_session_id() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-placeholder-session-key-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id = create_card_in_tx(&repo, &mut tx, "placeholder-session-key", "codex").await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        "placeholder-session-key",
+        "codex",
+        json!({"schemaVersion":1}),
+    )
+    .await;
     let mut init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 5_000);
     init.session_id = Some("future-placeholder-session".to_string());
 
@@ -504,7 +523,14 @@ async fn cohort_b_reads_exclude_deferred_planner_placeholder_by_null_keys() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-cohort-b-placeholder-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id = create_card_in_tx(&repo, &mut tx, "cohort-b-placeholder", "codex").await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        "cohort-b-placeholder",
+        "codex",
+        json!({"schemaVersion":1}),
+    )
+    .await;
     session_prepare_deferred_planner_tx(
         &mut tx,
         &WorkerSessionInit {
