@@ -60,10 +60,12 @@ pub(crate) enum AttemptGateOps {
 
 /// Every gate operation of `task_id`, kernel gates first, each kind by number.
 pub(crate) async fn gate_ops_of_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Result<Vec<GateOp>> {
+    type Row = (String, String, String, Option<String>, Option<String>);
     // Keys in [`<task>#g`, `<task>#h`) and [`<task>#r`, `<task>#s`) are exactly the keys of the
     // task's ops of each kind; the parsers re-check each.
-    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT kind, idempotency_key, phase, spawn_artifacts_json, json_extract(tx_output_json, '$.data.gate_execution') FROM operations \
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT kind, idempotency_key, phase, spawn_artifacts_json, \
+         json_extract(tx_output_json, '$.data.gate_execution') FROM operations \
          WHERE (kind = ?1 AND idempotency_key >= ?2 AND idempotency_key < ?3) \
             OR (kind = ?4 AND idempotency_key >= ?5 AND idempotency_key < ?6)",
     )

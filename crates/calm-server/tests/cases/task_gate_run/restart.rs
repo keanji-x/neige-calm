@@ -1,8 +1,8 @@
 //! #2464 slice 1, out of process (D9): a run across a kernel restart. The world is a file database
 //! the shipped kernel binary is launched against; the in-process kernel stays passive (its live
 //! listener stopped, its sweeps boot-gated) and only seeds rows through production paths. The run
-//! is admitted by the production admission transaction and driven by the launched kernel's boot
-//! recovery.
+//! is admitted through production paths: boot recovery for pre-release crashes and live MCP
+//! admission for the running-step crash.
 #![cfg(target_os = "linux")]
 use std::ffi::OsString;
 
@@ -61,11 +61,10 @@ impl Drop for Release {
 }
 
 /// A running attempt of `key`, claimed with its context closure (so the launched kernel's boot
-/// context sweep keeps it), in the track's checkout under a kernel-delivery lease, and its first
-/// run admitted, not driven.
+/// context sweep keeps it), in the track's checkout under a kernel-delivery lease.
 async fn attempt(world: &FileWorld, key: &str, steps: Value) -> Attempt {
     let fx = &world.fx;
-    let worker = fx.codex_worker();
+    let worker = fx.new_worker(key, AgentProvider::Codex).await;
     let lease = fx.kernel_lease(&worker.card_id).await;
     declare(
         &fx.boot,
@@ -116,10 +115,16 @@ async fn wait_run_op(
     let mut last = None;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let op = run_op(fx, key).await;
-            last = Some(op.clone());
-            if ready(&op) {
-                break op;
+            if let Some(op) = fx
+                .runtime
+                .find_by_kind_and_idempotency(TASK_GATE_RUN_KIND, key)
+                .await
+                .unwrap()
+            {
+                last = Some(op.clone());
+                if ready(&op) {
+                    break op;
+                }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -166,8 +171,8 @@ fn crash_at(world: &FileWorld, port: u16, seam: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// R8a (D9, P10): a restart before the park re-runs nothing; the re-drive replaces the
-// never-released wrapper and the run completes once.
+// R8a (D9, P10): a restart before the park re-runs nothing; the re-drive stops the
+// same never-released execution and the run completes once as infra.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -216,8 +221,8 @@ async fn a_restart_before_the_park_reruns_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// R8b (D9, P11): a restart after the park, before the release: the held wrapper exits at stdin
-// EOF having run nothing, and the run ends as infra.
+// R8b (D9, P11): a restart after the park, before release: boot stops the held wrapper
+// without a token, and the run ends as infra.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -286,6 +291,10 @@ async fn a_restart_during_a_step_ends_it_as_infra() {
     let fx = &world.fx;
     let flag = world.tmp_path.join("r8c-never-released");
     let _release = Release(flag.clone());
+    let Some(mut boot1) = launch(&world, "boot-1") else {
+        return; // SKIP was printed
+    };
+    // Create the live session after boot recovery has invalidated pre-boot sessions.
     let a = attempt(
         &world,
         "r8c",
@@ -293,9 +302,6 @@ async fn a_restart_during_a_step_ends_it_as_infra() {
     )
     .await;
 
-    let Some(mut boot1) = launch(&world, "boot-1") else {
-        return; // SKIP was printed
-    };
     let key = format!("{}#r1", a.task.id);
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
@@ -306,6 +312,18 @@ async fn a_restart_during_a_step_ends_it_as_infra() {
         .await
         .unwrap();
     calm_server::db::sqlite::session_mcp_token_set_tx(&mut tx, &a.worker.session_id, &hash)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET session_id=? WHERE id=?")
+        .bind(&a.worker.session_id)
+        .bind(&a.worker.card_id)
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET thread_id=? WHERE id=?")
+        .bind(&a.worker.thread_id)
+        .bind(&a.worker.session_id)
+        .execute(&mut **tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();

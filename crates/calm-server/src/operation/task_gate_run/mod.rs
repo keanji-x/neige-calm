@@ -54,7 +54,6 @@ const TASK_GATE_RUN_PHASES: &[PhaseTag] = &[
 
 /// `recover_parked`'s reasons. A reason that names `gate-infra` is infra whatever class the driver
 /// files it under (P11 before P13); see [`finalize::terminal_result`].
-
 const RUN_KERNEL_RESTARTED: &str = "gate-infra: the kernel restarted during the run";
 
 /// The key of run `run` of `task_id`; also its processes' `NEIGE_GATE_OP` marker.
@@ -392,25 +391,25 @@ impl ProviderAdapter for TaskGateRunAdapter {
                 || matches!(record.release,Release::Released { authorized_at_ms } if now_ms() >= authorized_at_ms+frozen.gate.timeout_secs_clamped()*1000);
             if timed_out && record.decision == Decision::Observing {
                 execution::stop(ctx, op, StopReason::Timeout).await?;
-            } else if let Some(engine) = ctx.execution.engine() {
-                if matches!(
+            } else if let Some(engine) = ctx.execution.engine()
+                && matches!(
                     engine.output(&record.execution_id, None).await,
                     Ok(ExecutionReply::Observation {
                         state: ExecutionState::Exited { .. },
                         ..
                     })
-                ) {
-                    // Stop descendants without replacing the observed decision.
-                    let pool = ctx.operation_repo.sqlite_db();
-                    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-                    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-                    let ticket = engine
-                        .request(&mut tx, &record.execution_id, Desired::Stop)
-                        .await
-                        .map_err(|e| CalmError::Internal(e.0))?;
-                    tx.commit().await?;
-                    engine.drive(ticket.committed());
-                }
+                )
+            {
+                // Stop descendants without replacing the observed decision.
+                let pool = ctx.operation_repo.sqlite_db();
+                let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                let ticket = engine
+                    .request(&mut tx, &record.execution_id, Desired::Stop)
+                    .await
+                    .map_err(|e| CalmError::Internal(e.0))?;
+                tx.commit().await?;
+                engine.drive(ticket.committed());
             }
             return Ok(ParkedRecovery::LeaveParked);
         }

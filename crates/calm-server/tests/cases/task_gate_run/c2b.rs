@@ -146,8 +146,6 @@ async fn c2b_changed_decision_aborts_completion() {
     assert_eq!(record(&retained), changed);
     assert!(retained.lease_owner.is_some());
     assert_eq!(execution_count(&fx, &retained.id).await, 1);
-    // Dropping the request cancels no execution or operation.
-    drop(call);
 }
 
 #[tokio::test]
@@ -247,34 +245,6 @@ async fn c2b_timeout_retries_while_probe_holds_claim() {
     assert_eq!(record(&after)["decision"]["Stopping"]["reason"], "Timeout");
     assert_eq!(execution_count(&fx, &after.id).await, 1);
     assert!(!flag.exists());
-}
-
-#[tokio::test]
-async fn c2b_malformed_record_is_retained_with_backoff() {
-    let (fx, a, resume) = held("malformed").await;
-    let before = op(&fx, &a.task.id).await;
-    rewrite(&fx, &before.id, &json!({"version":1,"execution_id":false})).await;
-    resume.notify_one();
-    wait_until(async || op(&fx, &a.task.id).await.last_error.is_some()).await;
-    let retained = op(&fx, &a.task.id).await;
-    assert_eq!(retained.phase.tag(), PhaseTag::Parked);
-    assert!(retained.lease_owner.is_some());
-    assert!(retained.lease_until_ms.unwrap() > calm_server::model::now_ms());
-    assert!(
-        retained
-            .last_error
-            .as_deref()
-            .unwrap()
-            .contains("owned execution retained")
-    );
-    assert_eq!(execution_count(&fx, &retained.id).await, 1);
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    let later = op(&fx, &a.task.id).await;
-    assert_eq!(
-        later.lease_owner, retained.lease_owner,
-        "no hot-loop reclaim"
-    );
-    assert_eq!(later.lease_until_ms, retained.lease_until_ms);
 }
 
 // Keep the original observer paused while recovery drives the same real execution.
@@ -404,7 +374,9 @@ async fn c2b_gate_run_refuses_unavailable_executor() {
 async fn c2b_pre_c2b_native_op_is_never_advanced() {
     let (fx, a, _) = held("native").await;
     let before = op(&fx, &a.task.id).await;
-    sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.gate_execution'),spawn_artifacts_json=? WHERE id=?")
+    sqlx::query("UPDATE operations SET \
+         tx_output_json=json_remove(tx_output_json,'$.data.gate_execution'),spawn_artifacts_json=? WHERE \
+         id=?")
         .bind(json!({"pid":2147483000,"pgid":2147483000,"start_time":1,"boot_id":"old","log_path":null,"extra":{}}).to_string())
         .bind(&before.id).execute(&fx.pool()).await.unwrap();
     boot(&fx).await;
@@ -442,110 +414,6 @@ async fn c2b_phase_writes_preserve_gate_record() {
         .unwrap()
         .unwrap();
     assert_eq!(record(&op(&fx, &a.task.id).await), record(&before));
-}
-
-#[tokio::test]
-async fn c2b_recorded_op_never_enters_compensation() {
-    use calm_server::operation::{
-        CompensationStateVersioned, OperationRepo, Phase, SqlxOperationRepo,
-    };
-    let (fx, a, _) = held("no-compensation").await;
-    let before = op(&fx, &a.task.id).await;
-    let repo = SqlxOperationRepo::new(fx.db());
-    let claimed = repo.claim_parked(&before.id).await.unwrap().unwrap();
-    assert!(matches!(
-        repo.set_compensating(
-            &claimed,
-            &CompensationStateVersioned {
-                version: 1,
-                from_phase: PhaseTag::SpawnStarted,
-                reason: "injected spawn failure".into(),
-                steps: vec![]
-            },
-            Some("gate_execution")
-        )
-        .await
-        .unwrap(),
-        calm_server::operation::LeaveWrite::Retained
-    ));
-    assert!(matches!(
-        repo.set_phase(&claimed, Phase::Succeeded, Some("gate_execution"))
-            .await
-            .unwrap(),
-        calm_server::operation::LeaveWrite::Retained
-    ));
-    assert!(matches!(
-        repo.mark_failed(
-            &claimed,
-            "spawn failed".into(),
-            PhaseTag::Parked,
-            None,
-            Some("gate_execution")
-        )
-        .await
-        .unwrap(),
-        calm_server::operation::LeaveWrite::Retained
-    ));
-    assert!(matches!(
-        repo.mark_stuck(
-            &claimed,
-            "plan failed".into(),
-            PhaseTag::Parked,
-            Some("gate_execution")
-        )
-        .await
-        .unwrap(),
-        calm_server::operation::LeaveWrite::Retained
-    ));
-    let after = op(&fx, &a.task.id).await;
-    assert_eq!(after.phase.tag(), PhaseTag::Parked);
-    assert_eq!(record(&after), record(&before));
-    assert!(after.compensation_state.is_none());
-    assert_eq!(after.lease_owner, claimed.lease_owner);
-}
-
-#[tokio::test]
-async fn c2b_park_write_failure_retains_owned_execution() {
-    for recovering in [false, true] {
-        let fx = world(Duration::from_millis(100)).await;
-        let a = running(
-            &fx,
-            "park-failure",
-            json!([{"name":"unexpected","cmd":"exit 19"}]),
-        )
-        .await;
-        sqlx::query("CREATE TRIGGER reject_gate_park BEFORE UPDATE OF phase ON operations WHEN NEW.kind='task-gate-run' AND NEW.phase='parked' BEGIN SELECT RAISE(ABORT,'injected park failure'); END")
-            .execute(&fx.pool()).await.unwrap();
-        gate_run(&fx, &a, Some("test: failed park retains execution"))
-            .await
-            .unwrap();
-        wait_until(async || op(&fx, &a.task.id).await.last_error.is_some()).await;
-        let before = op(&fx, &a.task.id).await;
-        assert_eq!(before.phase.tag(), PhaseTag::SpawnStarted);
-        assert_eq!(record(&before)["release"], "Held");
-        assert!(
-            before
-                .last_error
-                .unwrap()
-                .contains("owned execution retained")
-        );
-        assert_eq!(execution_count(&fx, &before.id).await, 1);
-        if recovering {
-            boot(&fx).await;
-            assert_eq!(
-                op(&fx, &a.task.id).await.phase.tag(),
-                PhaseTag::SpawnStarted
-            );
-        }
-        sqlx::query("DROP TRIGGER reject_gate_park")
-            .execute(&fx.pool())
-            .await
-            .unwrap();
-        expire(&fx, &before.id).await;
-        fx.runtime.drive().await.unwrap();
-        settled_infra(&fx, &a).await;
-        assert_eq!(record(&op(&fx, &a.task.id).await)["release"], "Held");
-    }
 }
 
 #[tokio::test]
@@ -674,26 +542,6 @@ async fn c2b_lost_close_ack_does_not_repeat_steps() {
 }
 
 #[tokio::test]
-async fn c2b_owned_park_requires_decodable_record() {
-    let (fx, a, _) = held("decode-before-park").await;
-    let before = op(&fx, &a.task.id).await;
-    sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
-        .bind(&before.id).execute(&fx.pool()).await.unwrap();
-    rewrite(&fx, &before.id, &json!({"version":1,"execution_id":false})).await;
-    fx.runtime.drive().await.unwrap();
-    let after = op(&fx, &a.task.id).await;
-    assert_eq!(after.phase.tag(), PhaseTag::SpawnStarted);
-    assert!(
-        after
-            .last_error
-            .unwrap()
-            .contains("owned execution retained")
-    );
-    assert_eq!(execution_count(&fx, &before.id).await, 1);
-    assert!(after.parked_at_ms.is_none());
-}
-
-#[tokio::test]
 async fn c2b_typed_gate_op_occupies_until_settled() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let (pause, entered, _resume) = pause();
@@ -778,3 +626,6 @@ async fn c2b_typed_gate_op_occupies_until_settled() {
         "{error:?}"
     );
 }
+
+#[path = "c2b/retention.rs"]
+mod retention;
