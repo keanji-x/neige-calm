@@ -632,3 +632,6 @@ async fn c2b_typed_gate_op_occupies_until_settled() {
 
 #[path = "c2b/retention.rs"]
 mod retention;
+
+#[path = "c2b/faults.rs"]
+mod faults;

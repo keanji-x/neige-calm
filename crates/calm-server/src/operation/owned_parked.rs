@@ -36,6 +36,7 @@ pub(crate) async fn reconcile(
                     ctx.events.emit_envelope(event);
                 }
                 if let ParkedCompletion::Completed(result) = completion {
+                    adapter.owned_parked_completed(op, ctx);
                     ctx.completion.complete(result);
                 }
                 Ok(())

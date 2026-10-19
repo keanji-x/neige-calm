@@ -97,7 +97,17 @@ pub(crate) async fn finalize_run(
         Some(StopReason::Timeout) => {
             timeout_verdict(evidence, frozen.run, frozen.gate.timeout_secs_clamped())
         }
-        Some(_) => infra_verdict(super::RUN_KERNEL_RESTARTED, evidence, frozen.run),
+        Some(StopReason::KernelRestarted) => {
+            infra_verdict(super::RUN_KERNEL_RESTARTED, evidence, frozen.run)
+        }
+        Some(StopReason::ReleaseRefused) => {
+            infra(
+                frozen,
+                &log_path,
+                "gate-infra: gate release or authorization failed".into(),
+            )
+            .await
+        }
         None => status
             .map(|s| verdict_from_exit_code(s, evidence, frozen.run))
             .unwrap_or_else(|| {

@@ -841,6 +841,9 @@ pub trait ProviderAdapter: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Wake owner lifecycle work only after successful parked completion commits.
+    fn owned_parked_completed(&self, _op: &Operation, _ctx: &SpawnCtx) {}
+
     async fn recover_parked(
         &self,
         _op: &Operation,

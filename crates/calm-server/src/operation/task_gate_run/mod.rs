@@ -158,6 +158,10 @@ pub(crate) fn gate_run_ref_prefix(track_id: &str) -> String {
 #[cfg(any(test, feature = "fixtures"))]
 type Hook = std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
+#[cfg(any(test, feature = "fixtures"))]
+pub(super) type FaultHook =
+    std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct TaskGateRunAdapter {
     refs: Option<String>,
@@ -173,6 +177,8 @@ struct TestHooks {
     before_spawn: Option<Hook>,
     before_release: Option<Hook>,
     before_completion: Option<Hook>,
+    release_response: Option<FaultHook>,
+    observer_read: Option<FaultHook>,
 }
 
 impl TaskGateRunAdapter {
@@ -203,6 +209,20 @@ impl TaskGateRunAdapter {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn with_before_completion(mut self, hook: Hook) -> Self {
         self.hooks.before_completion = Some(hook);
+        self
+    }
+
+    /// Fixture-only fault after real release I/O, before the observer receives its result.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn with_release_response(mut self, hook: FaultHook) -> Self {
+        self.hooks.release_response = Some(hook);
+        self
+    }
+
+    /// Fixture-only transient read fault or pause at the observer's repository boundary.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn with_observer_read(mut self, hook: FaultHook) -> Self {
+        self.hooks.observer_read = Some(hook);
         self
     }
 
@@ -448,6 +468,12 @@ impl ProviderAdapter for TaskGateRunAdapter {
         Ok(Vec::new())
     }
 
+    fn owned_parked_completed(&self, op: &Operation, ctx: &SpawnCtx) {
+        if let Ok(record) = execution::record(op) {
+            ctx.execution.drive([record.execution_id]);
+        }
+    }
+
     async fn plan_compensation(
         &self,
         from_phase: PhaseTag,
@@ -513,8 +539,22 @@ impl TaskGateRunAdapter {
         }
         let mut refusal = false;
         loop {
-            let Ok(Some(current)) = ctx.operation_repo.get_operation(&id).await else {
-                return;
+            let read = async {
+                #[cfg(any(test, feature = "fixtures"))]
+                if let Some(hook) = &self.hooks.observer_read {
+                    hook().await?;
+                }
+                ctx.operation_repo.get_operation(&id).await
+            }
+            .await;
+            let current = match read {
+                Ok(Some(current)) => current,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(op_id=%id,%error,"gate observer read failed; retrying");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
             };
             if matches!(
                 current.phase.tag(),
@@ -547,30 +587,50 @@ impl TaskGateRunAdapter {
                                 let frozen = FrozenRun::from_output(super::required_output(&op)?)?;
                                 if op.parked_deadline_ms.is_some_and(|d| now_ms() > d) {
                                     execution::stop(&ctx, &op, StopReason::Timeout).await?;
-                                } else if execution::release(&ctx, &op, &frozen.task_id)
-                                    .await
-                                    .is_err()
-                                {
-                                    refusal = true;
+                                } else {
+                                    let released = execution::release(
+                                        &ctx,
+                                        &op,
+                                        &frozen.task_id,
+                                        #[cfg(any(test, feature = "fixtures"))]
+                                        self.hooks.release_response.as_ref(),
+                                    )
+                                    .await;
+                                    if released.is_err() {
+                                        refusal = true;
+                                        // Release may have committed Released and delivered the token.
+                                        // Persist refusal against that latest record before reconciliation.
+                                        let latest = ctx
+                                            .operation_repo
+                                            .get_operation(&id)
+                                            .await?
+                                            .ok_or_else(|| {
+                                            CalmError::Conflict("gate op disappeared".into())
+                                        })?;
+                                        execution::stop(&ctx, &latest, StopReason::ReleaseRefused)
+                                            .await?;
+                                        refusal = false;
+                                    }
                                 }
                             }
                         }
                         Ok(())
                     }
                     .await;
+                    // A failed decision write must never fall through to completion.
+                    action?;
                     let latest = ctx
                         .operation_repo
                         .get_operation(&id)
                         .await?
                         .ok_or_else(|| CalmError::Conflict("gate op disappeared".into()))?;
-                    let reconciled = super::owned_parked::reconcile(
+                    super::owned_parked::reconcile(
                         &self,
                         &latest,
                         RecoveryMode::PreDeadlineProbe,
                         &ctx,
                     )
-                    .await;
-                    action.and(reconciled)
+                    .await
                 }
                 .await;
                 if let Err(error) = result {

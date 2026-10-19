@@ -189,7 +189,12 @@ pub(crate) async fn stop(ctx: &SpawnCtx, op: &Operation, reason: StopReason) -> 
 }
 
 /// Called only by the post-park observer under a parked claim.
-pub(crate) async fn release(ctx: &SpawnCtx, op: &Operation, task: &str) -> Result<()> {
+pub(crate) async fn release(
+    ctx: &SpawnCtx,
+    op: &Operation,
+    task: &str,
+    #[cfg(any(test, feature = "fixtures"))] response: Option<&super::task_gate_run::FaultHook>,
+) -> Result<()> {
     let old = record(op)?;
     if old.release != Release::Held || old.decision != Decision::Observing {
         return Ok(());
@@ -239,7 +244,13 @@ pub(crate) async fn release(ctx: &SpawnCtx, op: &Operation, task: &str) -> Resul
         engine
             .close_stdin(&old.execution_id)
             .await
-            .map_err(conflict)
+            .map_err(conflict)?;
+        // Fault the initial response only after the real token and close reached the executor.
+        #[cfg(any(test, feature = "fixtures"))]
+        if let Some(response) = response {
+            response().await?;
+        }
+        Ok(())
     };
     tokio::time::timeout(super::gate_lifecycle::RELEASE_TIMEOUT, send)
         .await
