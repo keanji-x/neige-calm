@@ -15,6 +15,12 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './default-pills.module.css';
 
+import {
+  WORKSPACE_ISOLATION_LABEL, WORKTREE_LABEL, NONE_LABEL, PRIVATE_FOLDER_ISOLATION_REASON,
+  NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION,
+} from '../../../../../core/domain/workspace-isolation.ts';
+import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
+
 export const NO_TEMPLATE_ID = '';
 const NO_TEMPLATE_LABEL = 'No template';
 
@@ -272,4 +278,33 @@ function TemplateChoice({
       {item}
     </HoverCard>
   );
+}
+
+/** Managed folders display None, but never opt into the attached-folder wire contract. */
+export function IsolationPill({ hasFolder, value, onChange, isDisabled }: Readonly<{
+  hasFolder: boolean;
+  value: 'worktree' | 'none';
+  onChange: (value: 'worktree' | 'none') => void;
+  isDisabled: boolean;
+}>) {
+  const selected = hasFolder ? value : 'none';
+  const selectedMark = <><AstryxIcon icon="check" size="sm" color="accent" /><VisuallyHidden>Selected</VisuallyHidden></>;
+  return <>
+    <DropdownMenu placement="above" button={{
+      label: `${WORKSPACE_ISOLATION_LABEL}: ${selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL}`,
+      children: selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL,
+      variant: 'secondary', size: 'sm', className: styles.trigger, isDisabled,
+    }}>
+      <DropdownMenuItem label={WORKTREE_LABEL} isDisabled={!hasFolder}
+        description={hasFolder ? undefined : PRIVATE_FOLDER_ISOLATION_REASON}
+        endContent={selected === 'worktree' ? selectedMark : undefined}
+        onClick={() => { if (hasFolder) onChange('worktree'); }} />
+      <DropdownMenuItem label={NONE_LABEL}
+        endContent={selected === 'none' ? selectedMark : undefined}
+        onClick={() => { if (hasFolder) onChange('none'); }} />
+    </DropdownMenu>
+    {hasFolder && selected === 'none' && <ExplanationBadge label={NO_ISOLATION_LABEL}>
+      {NO_ISOLATION_EXPLANATION}
+    </ExplanationBadge>}
+  </>;
 }

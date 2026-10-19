@@ -11,6 +11,14 @@
     gap: var(--space-half);
   }
 
+  .isolation {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-half);
+    min-inline-size: 0;
+  }
+
   .host {
     min-inline-size: 0;
   }

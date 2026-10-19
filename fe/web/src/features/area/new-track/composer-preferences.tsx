@@ -4,13 +4,14 @@ import { Popover } from '@astryxdesign/core/Popover';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
-import { FolderPill, StartingPointPill } from '../default-pills/public.tsx';
+import { FolderPill, StartingPointPill, IsolationPill } from '../default-pills/public.tsx';
 import styles from './composer-preferences.module.css';
 
 type Props = Readonly<{
   startingPoint: ComponentProps<typeof StartingPointPill>;
   folder: ComponentProps<typeof FolderPill>;
   browsing: boolean;
+  isolation: ComponentProps<typeof IsolationPill>;
 }>;
 
 /** Button owns truncation. Include its clipped text when measuring the space
@@ -23,7 +24,7 @@ function fullButtonWidth(button: HTMLButtonElement): number {
     + (label === undefined ? 0 : Math.max(0, label.scrollWidth - label.clientWidth));
 }
 
-export function ComposerPreferences({ startingPoint, folder, browsing }: Props) {
+export function ComposerPreferences({ startingPoint, folder, browsing, isolation }: Props) {
   const compact = useCompactViewport();
   const [collapsed, setCollapsed] = useState(false);
   const [open, setOpen] = useState(false);
@@ -32,6 +33,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing }: Props) 
   const startingRef = useRef<HTMLSpanElement>(null);
   const folderRef = useRef<HTMLSpanElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
+  const isolationRef = useRef<HTMLDivElement>(null);
   const requiredWidth = useRef(0);
   const measuredLabels = useRef('');
   const restoreFocus = useRef(false);
@@ -78,7 +80,8 @@ export function ComposerPreferences({ startingPoint, folder, browsing }: Props) 
         return;
       }
       const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
-      const available = row.clientWidth - actions.getBoundingClientRect().width - gap;
+      const isolationWidth = isolationRef.current?.getBoundingClientRect().width ?? 0;
+      const available = row.clientWidth - actions.getBoundingClientRect().width - isolationWidth - gap * 2;
       const next = compact && requiredWidth.current > available + 0.5;
       if (next !== collapsed) {
         restoreFocus.current = (items?.contains(document.activeElement) ?? false) || moreRef.current === document.activeElement;
@@ -95,6 +98,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing }: Props) 
     observer.observe(row);
     observer.observe(actions);
     if (items !== null) observer.observe(items);
+    if (isolationRef.current !== null) observer.observe(isolationRef.current);
     return () => observer.disconnect();
   });
 
@@ -110,5 +114,6 @@ export function ComposerPreferences({ startingPoint, folder, browsing }: Props) 
         label="Track options" variant="secondary" className={styles.trigger} isIconOnly
         icon={<Icon name="more" />} isDisabled={startingPoint.isDisabled} />}
     </Popover> : preferences}
+    <div ref={isolationRef} className={styles.isolation}><IsolationPill {...isolation} /></div>
   </div>;
 }

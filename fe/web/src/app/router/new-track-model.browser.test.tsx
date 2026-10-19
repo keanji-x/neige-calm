@@ -65,7 +65,7 @@ it('keeps three phone preferences while selecting model and effort in one menu',
     await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
     expect(onChange).toHaveBeenLastCalledWith({ model: 'test-model', reasoning_effort: 'high' });
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(3); // Options, Model and Create track.
+    expect(screen.getAllByRole('button')).toHaveLength(4); // Options, Isolation, Model and Create track.
     for (const [width, height] of [[390, 844], [320, 700]]) {
       await page.viewport(width, height);
       expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();

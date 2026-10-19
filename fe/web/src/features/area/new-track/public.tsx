@@ -1,11 +1,8 @@
-// The new-track page: one thing to say, and two optional chips under it. Presentational
+// The new-track page: one thing to say, with compact preferences in its footer. Presentational
 // plus local form state; the caller owns `POST /api/tracks`, `submitting`, `error` and
 // the template list, and puts the sentence on the create as `first_message`, verbatim.
 
 import { useEffect, useMemo, useRef, useId, useCallback, type ReactNode } from 'react';
-import { RadioList, RadioListItem } from '@astryxdesign/core/RadioList';
-import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';
-import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { ChatComposer, ChatComposerInput, type ChatComposerTrigger } from '@astryxdesign/core/Chat';
@@ -311,6 +308,7 @@ export function NewTrackForm({
                 {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />
             </div>}
             footerActions={<ComposerPreferences browsing={browsing}
+              isolation={{ hasFolder: cwd !== '', value: isolation, onChange: setIsolation, isDisabled: submitting || locked }}
               startingPoint={{ templates, templatesLoaded, recipes, value: effectiveSelection,
                 onChange: selectStartingPoint, onManageRecipes, placement: 'above', triggerId,
                 isDisabled: submitting || locked }}
@@ -334,14 +332,6 @@ export function NewTrackForm({
             )}
           />
         </div>
-
-        {cwd !== '' && <RadioList label="Workspace isolation" value={isolation} size="sm"
-          isDisabled={submitting || locked}
-          onChange={(value) => setIsolation(value === 'none' ? 'none' : 'worktree')}>
-          <RadioListItem value="worktree" label="Worktree (isolated)" />
-          <RadioListItem value="none" label="Directly in this folder"
-            description={<ExplanationBadge label={NO_ISOLATION_LABEL}>{NO_ISOLATION_EXPLANATION}</ExplanationBadge>} />
-        </RadioList>}
 
         {error !== null && (
           <Banner

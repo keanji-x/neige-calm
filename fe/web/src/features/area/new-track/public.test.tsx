@@ -711,14 +711,15 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     await fillMessage();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
     const order: Element[] = [];
-    for (let step = 0; step < 3; step += 1) {
+    for (let step = 0; step < 4; step += 1) {
       await userEvent.tab();
       if (document.activeElement !== null) order.push(document.activeElement);
     }
-    /* Three stops: the fourth tab leaves the composer entirely. */
-    expect(order.slice(0, 3)).toEqual([
+    /* Four stops, including isolation: menu options do not add tab stops. */
+    expect(order.slice(0, 4)).toEqual([
       templateTrigger(),
       folderChip(),
+      screen.getByRole('button', { name: 'Workspace isolation: None' }),
       submitButton(),
     ]);
   });
