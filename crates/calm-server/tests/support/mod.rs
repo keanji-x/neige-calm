@@ -61,3 +61,6 @@ pub mod builtins;
 pub mod opencode_history;
 #[allow(dead_code)]
 pub mod worker_preparation;
+
+#[allow(dead_code)]
+pub mod execution;

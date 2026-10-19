@@ -41,24 +41,8 @@ impl Fixture {
     }
     async fn with_engine(bind: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let socket_dir = calm_test_sockets::socket_dir("typed-hooks");
-        let socket = socket_dir.path().join("control.sock");
-        let secret = CapabilityToken::fresh().unwrap();
-        let registry = calm_proc_supervisor::ProcRegistry::new()
-            .with_executor(calm_proc_supervisor::execution::ExecutorConfig {
-                journal_directory: temp.path().join("journal"),
-                helper_program: env!("CARGO_BIN_EXE_osc-probe-child").into(),
-                kernel_client_secret: secret.clone(),
-            })
-            .unwrap();
-        let listener = calm_proc_supervisor::bind_control_listener(&socket).unwrap();
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(calm_proc_supervisor::serve_with_listener(
-            listener,
-            socket.clone(),
-            registry,
-            stopped,
-        ));
+        let (socket_dir, socket, secret, stop, server) =
+            crate::support::execution::supervisor(temp.path());
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let store = SqliteExecutionStore::new(repo.db().clone())
             .with_projection(

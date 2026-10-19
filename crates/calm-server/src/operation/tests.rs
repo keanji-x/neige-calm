@@ -382,9 +382,10 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
         reason: "cancel".into(),
         steps: Vec::new(),
     };
-    repo.set_compensating(&claimed, &state)
+    repo.set_compensating(&claimed, &state, None)
         .await
         .unwrap()
+        .applied()
         .expect("claim flips to compensating");
 
     let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
@@ -599,15 +600,20 @@ async fn set_phase_clears_lease_and_rejects_stale_owner() {
     assert!(op.lease_owner.is_some());
 
     let next = repo
-        .set_phase(&op, Phase::TxCommitted)
+        .set_phase(&op, Phase::TxCommitted, None)
         .await
         .unwrap()
+        .applied()
         .expect("claimed owner advances");
     assert_eq!(next.phase, Phase::TxCommitted);
     assert!(next.lease_owner.is_none());
     assert!(next.lease_until_ms.is_none());
 
-    let stale = repo.set_phase(&op, Phase::SpawnStarted).await.unwrap();
+    let stale = repo
+        .set_phase(&op, Phase::SpawnStarted, None)
+        .await
+        .unwrap()
+        .applied();
     assert!(
         stale.is_none(),
         "stale owner must not advance after set_phase clears the lease"
@@ -657,9 +663,11 @@ async fn a_committed_prepare_leaves_no_lease_to_mark_the_row_stuck_from_pending(
             &op,
             "operation drive failed: after the commit".into(),
             PhaseTag::Pending,
+            None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .applied();
     assert!(
         stuck.is_none(),
         "a row whose prepare committed must not be marked stuck from `pending`: {stuck:?}"
@@ -708,9 +716,10 @@ async fn boot_recovery_marks_a_row_stuck_from_the_phase_it_claimed_not_the_plann
     // Behind the plan the row moves on to a committed phase with no output, which the next step
     // cannot read, so that step fails.
     let claimed = repo.claim_drive_batch(1).await.unwrap().pop().unwrap();
-    repo.set_phase(&claimed, Phase::TxCommitted)
+    repo.set_phase(&claimed, Phase::TxCommitted, None)
         .await
         .unwrap()
+        .applied()
         .expect("the claiming driver advances");
 
     runtime.apply_recovery(plan).await.unwrap();
@@ -773,14 +782,16 @@ async fn stale_driver_cannot_win_final_transition_after_reclaim() {
     assert_ne!(driver_b.lease_owner, stale_driver.lease_owner);
 
     let stale = repo
-        .set_phase(&stale_driver, Phase::Succeeded)
-        .await
-        .unwrap();
-    assert!(stale.is_none(), "driver A's stale final transition loses");
-    let winner = repo
-        .set_phase(&driver_b, Phase::Succeeded)
+        .set_phase(&stale_driver, Phase::Succeeded, None)
         .await
         .unwrap()
+        .applied();
+    assert!(stale.is_none(), "driver A's stale final transition loses");
+    let winner = repo
+        .set_phase(&driver_b, Phase::Succeeded, None)
+        .await
+        .unwrap()
+        .applied()
         .expect("driver B owns the final transition");
     assert_eq!(winner.phase, Phase::Succeeded);
 
@@ -905,9 +916,11 @@ async fn completion_clears_lease_so_claimed_deadline_write_loses_ordering_b() {
             "deadline".into(),
             PhaseTag::Parked,
             Some("parked_deadline".into()),
+            None
         )
         .await
         .unwrap()
+        .applied()
         .is_none(),
         "completion cleared the claim lease so mark_failed cannot overwrite"
     );

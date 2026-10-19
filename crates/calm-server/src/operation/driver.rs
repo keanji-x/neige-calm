@@ -419,7 +419,15 @@ impl OperationRuntime {
         let state = adapter
             .plan_compensation(PhaseTag::Parked, reason, &output, &op)
             .await?;
-        if self.repo.set_compensating(&op, &state).await?.is_none() {
+        if self
+            .leave_write(
+                &op,
+                self.repo
+                    .set_compensating(&op, &state, self.adapter(&op.kind)?.owns_parked_resource())
+                    .await?,
+            )
+            .is_none()
+        {
             log_lost_lease(&op, PhaseTag::Compensating);
             return Ok(false);
         }
@@ -461,12 +469,18 @@ impl OperationRuntime {
         op: Operation,
     ) -> Result<()> {
         let from_phase = op.phase.tag();
-        if let Err(error) = self.drive_one(adapter, op.clone()).await {
-            if let Some(result) = self
-                .repo
-                .mark_stuck(&op, format!("operation drive failed: {error}"), from_phase)
-                .await?
-            {
+        if let Err(error) = self.drive_one(adapter.clone(), op.clone()).await {
+            if let Some(result) = self.leave_write(
+                &op,
+                self.repo
+                    .mark_stuck(
+                        &op,
+                        format!("operation drive failed: {error}"),
+                        from_phase,
+                        self.adapter(&op.kind)?.owns_parked_resource(),
+                    )
+                    .await?,
+            ) {
                 self.completion.complete(result);
             } else {
                 log_lost_lease(&op, PhaseTag::Stuck);
@@ -551,6 +565,32 @@ impl OperationRuntime {
         tokio::spawn(retry);
     }
 
+    fn leave_write<T>(&self, op: &Operation, write: super::LeaveWrite<T>) -> Option<T> {
+        match write {
+            super::LeaveWrite::Applied(value) => Some(value),
+            super::LeaveWrite::ClaimLost => None,
+            super::LeaveWrite::Retained => {
+                tracing::error!(operation_id = %op.id, "owned execution retained; retry after lease");
+                let runtime = self.clone();
+                let until = op
+                    .lease_until_ms
+                    .expect("claimed operation has lease expiry");
+                let retry: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                    Box::pin(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            (until - now_ms()).max(0) as u64 + 1,
+                        ))
+                        .await;
+                        if let Err(error) = runtime.drive().await {
+                            tracing::error!(%error, "retained operation retry failed");
+                        }
+                    });
+                tokio::spawn(retry);
+                None
+            }
+        }
+    }
+
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
@@ -597,16 +637,18 @@ impl OperationRuntime {
                             if let Some((last_error, last_error_class)) =
                                 crate::routes::idempotency_key::operation_failure_parts(&e)
                             {
-                                if let Some(result) = self
-                                    .repo
-                                    .mark_failed(
-                                        &op,
-                                        last_error,
-                                        PhaseTag::Pending,
-                                        Some(last_error_class.to_string()),
-                                    )
-                                    .await?
-                                {
+                                if let Some(result) = self.leave_write(
+                                    &op,
+                                    self.repo
+                                        .mark_failed(
+                                            &op,
+                                            last_error,
+                                            PhaseTag::Pending,
+                                            Some(last_error_class.to_string()),
+                                            self.adapter(&op.kind)?.owns_parked_resource(),
+                                        )
+                                        .await?,
+                                ) {
                                     self.completion.complete(result);
                                 } else {
                                     log_lost_lease(&op, PhaseTag::Failed);
@@ -631,9 +673,16 @@ impl OperationRuntime {
                 if adapter.phases().contains(&PhaseTag::AppServerInteract) {
                     let kind = adapter.app_server_interact_kind(&output, &op)?;
                     if self
-                        .repo
-                        .set_phase(&op, Phase::AppServerInteract { kind })
-                        .await?
+                        .leave_write(
+                            &op,
+                            self.repo
+                                .set_phase(
+                                    &op,
+                                    Phase::AppServerInteract { kind },
+                                    self.adapter(&op.kind)?.owns_parked_resource(),
+                                )
+                                .await?,
+                        )
                         .is_none()
                     {
                         log_lost_lease(&op, PhaseTag::AppServerInteract);
@@ -646,8 +695,16 @@ impl OperationRuntime {
                         .await
                     {
                         Ok(SpawnOutcome::Ready(_handle)) => {
-                            if let Some(result) = self.repo.set_phase(&op, Phase::Succeeded).await?
-                            {
+                            if let Some(result) = self.leave_write(
+                                &op,
+                                self.repo
+                                    .set_phase(
+                                        &op,
+                                        Phase::Succeeded,
+                                        self.adapter(&op.kind)?.owns_parked_resource(),
+                                    )
+                                    .await?,
+                            ) {
                                 if let Some(result) = operation_result_from(&result)? {
                                     self.completion.complete(result);
                                 }
@@ -764,9 +821,16 @@ impl OperationRuntime {
                 {
                     Ok(SpawnOutcome::Ready(_handle)) => {
                         if self
-                            .repo
-                            .set_phase(&op, Phase::SpawnSucceeded)
-                            .await?
+                            .leave_write(
+                                &op,
+                                self.repo
+                                    .set_phase(
+                                        &op,
+                                        Phase::SpawnSucceeded,
+                                        self.adapter(&op.kind)?.owns_parked_resource(),
+                                    )
+                                    .await?,
+                            )
                             .is_none()
                         {
                             log_lost_lease(&op, PhaseTag::SpawnSucceeded);
@@ -831,7 +895,16 @@ impl OperationRuntime {
                 Ok(())
             }
             Phase::SpawnSucceeded => {
-                if let Some(result) = self.repo.set_phase(&op, Phase::Succeeded).await? {
+                if let Some(result) = self.leave_write(
+                    &op,
+                    self.repo
+                        .set_phase(
+                            &op,
+                            Phase::Succeeded,
+                            self.adapter(&op.kind)?.owns_parked_resource(),
+                        )
+                        .await?,
+                ) {
                     if let Some(result) = operation_result_from(&result)? {
                         self.completion.complete(result);
                     }
@@ -881,7 +954,15 @@ impl OperationRuntime {
         let state = adapter
             .plan_compensation(from_phase, &reason, &output, &op)
             .await?;
-        if self.repo.set_compensating(&op, &state).await?.is_none() {
+        if self
+            .leave_write(
+                &op,
+                self.repo
+                    .set_compensating(&op, &state, self.adapter(&op.kind)?.owns_parked_resource())
+                    .await?,
+            )
+            .is_none()
+        {
             log_lost_lease(&op, PhaseTag::Compensating);
         }
         Ok(())
@@ -908,20 +989,29 @@ impl OperationRuntime {
             .apply_compensation_steps(adapter, op.clone(), state, output)
             .await
         {
-            Ok(()) => {
+            Ok(()) => Ok(self.leave_write(
+                &op,
                 self.repo
-                    .mark_failed(&op, reason, from_phase, Some("internal".into()))
-                    .await
-            }
-            Err(e) => {
+                    .mark_failed(
+                        &op,
+                        reason,
+                        from_phase,
+                        Some("internal".into()),
+                        self.adapter(&op.kind)?.owns_parked_resource(),
+                    )
+                    .await?,
+            )),
+            Err(e) => Ok(self.leave_write(
+                &op,
                 self.repo
                     .mark_stuck(
                         &op,
                         format!("compensation failed: {e}"),
                         PhaseTag::Compensating,
+                        self.adapter(&op.kind)?.owns_parked_resource(),
                     )
-                    .await
-            }
+                    .await?,
+            )),
         }
     }
 
@@ -1030,7 +1120,7 @@ impl OperationRuntime {
         };
         if matches!(claim_mode, ParkedClaimMode::SteadyState) {
             let adapter = self.adapter(&op.kind)?;
-            if adapter.owns_parked_resource() {
+            if adapter.owns_parked_resource().is_some() {
                 let eligible = adapter.owned_parked_recovery_eligible(&op).await;
                 if !eligible {
                     return Ok(());
@@ -1051,7 +1141,7 @@ impl OperationRuntime {
         claim_mode: ParkedClaimMode,
     ) -> Result<()> {
         let adapter = self.adapter(&op.kind)?;
-        if adapter.owns_parked_resource() {
+        if adapter.owns_parked_resource().is_some() {
             if let Some(claimed) = self.claim_parked_with_mode(&op.id, claim_mode).await? {
                 super::owned_parked::reconcile(
                     adapter.as_ref(),
@@ -1114,7 +1204,7 @@ impl OperationRuntime {
             return Ok(());
         };
         let adapter = self.adapter(&op.kind)?;
-        if adapter.owns_parked_resource() {
+        if adapter.owns_parked_resource().is_some() {
             return super::owned_parked::reconcile(
                 adapter.as_ref(),
                 &op,
@@ -1226,11 +1316,18 @@ impl OperationRuntime {
                 ParkedRecovery::Fail { .. } | ParkedRecovery::LeaveParked => {}
             }
         }
-        if let Some(result) = self
-            .repo
-            .mark_failed(&op, reason, PhaseTag::Parked, last_error_class)
-            .await?
-        {
+        if let Some(result) = self.leave_write(
+            &op,
+            self.repo
+                .mark_failed(
+                    &op,
+                    reason,
+                    PhaseTag::Parked,
+                    last_error_class,
+                    self.adapter(&op.kind)?.owns_parked_resource(),
+                )
+                .await?,
+        ) {
             self.publish_completion(result);
         } else {
             log_lost_lease(&op, PhaseTag::Failed);
@@ -1244,11 +1341,18 @@ impl OperationRuntime {
         reason: String,
         last_error_class: Option<String>,
     ) -> Result<()> {
-        if let Some(result) = self
-            .repo
-            .mark_failed(&op, reason, PhaseTag::Parked, last_error_class)
-            .await?
-        {
+        if let Some(result) = self.leave_write(
+            &op,
+            self.repo
+                .mark_failed(
+                    &op,
+                    reason,
+                    PhaseTag::Parked,
+                    last_error_class,
+                    self.adapter(&op.kind)?.owns_parked_resource(),
+                )
+                .await?,
+        ) {
             self.publish_completion(result);
         } else {
             log_lost_lease(&op, PhaseTag::Failed);
@@ -1306,16 +1410,18 @@ impl OperationRuntime {
                 // The phase the row was claimed at, not the one it was planned at: an earlier item's
                 // drive may have moved it on, and a row stuck from `pending` must have written nothing.
                 let from_phase = op.phase.tag();
-                if let Err(e) = self.drive_one(adapter, op.clone()).await {
-                    if let Some(result) = self
-                        .repo
-                        .mark_stuck(
-                            &op,
-                            format!("operation recovery apply failed: {e}"),
-                            from_phase,
-                        )
-                        .await?
-                    {
+                if let Err(e) = self.drive_one(adapter.clone(), op.clone()).await {
+                    if let Some(result) = self.leave_write(
+                        &op,
+                        self.repo
+                            .mark_stuck(
+                                &op,
+                                format!("operation recovery apply failed: {e}"),
+                                from_phase,
+                                self.adapter(&op.kind)?.owns_parked_resource(),
+                            )
+                            .await?,
+                    ) {
                         self.completion.complete(result);
                     } else {
                         log_lost_lease(&op, PhaseTag::Stuck);
@@ -1333,15 +1439,17 @@ impl OperationRuntime {
                     Ok(Some(result)) => self.completion.complete(result),
                     Ok(None) => log_lost_lease(&op, PhaseTag::Failed),
                     Err(e) => {
-                        if let Some(result) = self
-                            .repo
-                            .mark_stuck(
-                                &op,
-                                format!("operation compensation recovery failed: {e}"),
-                                PhaseTag::Compensating,
-                            )
-                            .await?
-                        {
+                        if let Some(result) = self.leave_write(
+                            &op,
+                            self.repo
+                                .mark_stuck(
+                                    &op,
+                                    format!("operation compensation recovery failed: {e}"),
+                                    PhaseTag::Compensating,
+                                    self.adapter(&op.kind)?.owns_parked_resource(),
+                                )
+                                .await?,
+                        ) {
                             self.completion.complete(result);
                         } else {
                             log_lost_lease(&op, PhaseTag::Stuck);
@@ -1366,7 +1474,7 @@ impl OperationRuntime {
                     return Ok(());
                 }
                 let adapter = self.adapter(&op.kind)?;
-                if adapter.owns_parked_resource() {
+                if adapter.owns_parked_resource().is_some() {
                     if let Some(claimed) = self
                         .claim_parked_with_mode(&op_id, ParkedClaimMode::Boot)
                         .await?

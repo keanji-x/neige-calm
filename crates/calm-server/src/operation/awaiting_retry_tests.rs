@@ -317,9 +317,10 @@ async fn awaiting_retry_expired_or_replaced_lease_cannot_checkpoint_a_receipt() 
             .is_none()
     );
     assert!(
-        repo.set_phase(&claimed, deferred.clone())
+        repo.set_phase(&claimed, deferred.clone(), None)
             .await
             .unwrap()
+            .applied()
             .is_none()
     );
     let newer = repo.claim_drive_batch(1).await.unwrap().pop().unwrap();

@@ -183,8 +183,13 @@ impl OperationRepo for ReverseSpawnClaimRepo {
             .await
     }
 
-    async fn set_phase(&self, op: &Operation, phase: Phase) -> CalmResult<Option<Operation>> {
-        self.inner.set_phase(op, phase).await
+    async fn set_phase(
+        &self,
+        op: &Operation,
+        phase: Phase,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
+    ) -> CalmResult<Option<Operation>> {
+        self.inner.set_phase(op, phase, owner_key).await
     }
 
     async fn set_phase_and_tx_output(
@@ -200,8 +205,9 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
     ) -> CalmResult<Option<Operation>> {
-        self.inner.set_compensating(op, state).await
+        self.inner.set_compensating(op, state, owner_key).await
     }
 
     async fn update_compensation_state(
@@ -218,9 +224,10 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         last_error: String,
         from_phase: calm_server::operation::PhaseTag,
         last_error_class: Option<String>,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
     ) -> CalmResult<Option<OperationResult>> {
         self.inner
-            .mark_failed(op, last_error, from_phase, last_error_class)
+            .mark_failed(op, last_error, from_phase, last_error_class, owner_key)
             .await
     }
 
@@ -229,8 +236,11 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         op: &Operation,
         reason: String,
         from_phase: calm_server::operation::PhaseTag,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
     ) -> CalmResult<Option<OperationResult>> {
-        self.inner.mark_stuck(op, reason, from_phase).await
+        self.inner
+            .mark_stuck(op, reason, from_phase, owner_key)
+            .await
     }
 }
 
@@ -311,8 +321,13 @@ impl OperationRepo for DriveErrorOnceRepo {
             .await
     }
 
-    async fn set_phase(&self, op: &Operation, phase: Phase) -> CalmResult<Option<Operation>> {
-        self.inner.set_phase(op, phase).await
+    async fn set_phase(
+        &self,
+        op: &Operation,
+        phase: Phase,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
+    ) -> CalmResult<Option<Operation>> {
+        self.inner.set_phase(op, phase, owner_key).await
     }
 
     async fn set_phase_and_tx_output(
@@ -328,8 +343,9 @@ impl OperationRepo for DriveErrorOnceRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
     ) -> CalmResult<Option<Operation>> {
-        self.inner.set_compensating(op, state).await
+        self.inner.set_compensating(op, state, owner_key).await
     }
 
     async fn update_compensation_state(
@@ -346,9 +362,10 @@ impl OperationRepo for DriveErrorOnceRepo {
         last_error: String,
         from_phase: calm_server::operation::PhaseTag,
         last_error_class: Option<String>,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
     ) -> CalmResult<Option<OperationResult>> {
         self.inner
-            .mark_failed(op, last_error, from_phase, last_error_class)
+            .mark_failed(op, last_error, from_phase, last_error_class, owner_key)
             .await
     }
 
@@ -357,8 +374,11 @@ impl OperationRepo for DriveErrorOnceRepo {
         op: &Operation,
         reason: String,
         from_phase: calm_server::operation::PhaseTag,
+        owner_key: calm_server::operation::LeaveWrite<&'static str>,
     ) -> CalmResult<Option<OperationResult>> {
-        self.inner.mark_stuck(op, reason, from_phase).await
+        self.inner
+            .mark_stuck(op, reason, from_phase, owner_key)
+            .await
     }
 }
 

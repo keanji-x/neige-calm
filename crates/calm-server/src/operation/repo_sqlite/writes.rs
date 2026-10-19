@@ -14,6 +14,44 @@ use crate::{
     },
 };
 
+/// Independently owned fields preserved across generic output checkpoints.
+const OWNER_STATE_KEYS: &[&str] = &["terminal_launch"];
+
+fn preserving_owner_sql(output: &str) -> String {
+    OWNER_STATE_KEYS.iter().fold(output.to_owned(), |sql, key| {
+        format!("CASE WHEN json_type(tx_output_json, '$.data.{key}') = 'object' \
+                 THEN json_set({sql}, '$.data.{key}', json_extract(tx_output_json, '$.data.{key}')) \
+                 ELSE {sql} END")
+    })
+}
+
+pub(super) async fn retain_owned_tx(
+    tx: &mut Tx<'_>,
+    op: &Operation,
+    key: Option<&'static str>,
+) -> Result<bool> {
+    let Some(key) = key else { return Ok(false) };
+    assert!(
+        OWNER_STATE_KEYS.contains(&key),
+        "unregistered owner-state key"
+    );
+    let retained: bool = sqlx::query_scalar(
+        "SELECT json_type(tx_output_json, ?1) IS NOT NULL FROM operations WHERE id=?2",
+    )
+    .bind(format!("$.data.{key}"))
+    .bind(&op.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if retained {
+        sqlx::query("UPDATE operations SET last_error=?1 WHERE id=?2")
+            .bind("owned execution retained: generic phase write refused")
+            .bind(&op.id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(retained)
+}
+
 /// Original accepted inputs remain the authority for control and recovery,
 /// independently of the operation's current phase or lease.
 pub(crate) async fn require_original_operation_tx(
@@ -149,13 +187,10 @@ pub(crate) async fn checkpoint_app_server_interact_tx(
     let detail_text = optional_json_text(detail.as_ref())?;
     let mut output_for_db = output.clone();
     output_for_db.post_commit_events.clear();
-    let result = sqlx::query(
+    let result = sqlx::query(&format!(
         r#"UPDATE operations
            SET phase_detail_json = ?1,
-               tx_output_json = CASE
-                   WHEN json_type(tx_output_json, '$.data.terminal_launch') = 'object'
-                   THEN json_set(?2, '$.data.terminal_launch', json_extract(tx_output_json, '$.data.terminal_launch'))
-                   ELSE ?2 END,
+               tx_output_json = {owner_output},
                target_type = ?3,
                target_id = ?4,
                target_json = ?5,
@@ -163,7 +198,8 @@ pub(crate) async fn checkpoint_app_server_interact_tx(
            WHERE id = ?7
              AND phase = 'app_server_interact'
              AND lease_owner = ?8"#,
-    )
+        owner_output = preserving_owner_sql("?2"),
+    ))
     .bind(detail_text)
     .bind(serde_json::to_string(&output_for_db)?)
     .bind(&output.target_type)
@@ -243,14 +279,11 @@ pub(in crate::operation) async fn write_phase_and_tx_output(
     .then_some(now);
     let mut output_for_db = output.clone();
     output_for_db.post_commit_events.clear();
-    let result = sqlx::query(
+    let result = sqlx::query(&format!(
         r#"UPDATE operations
            SET phase = ?1,
                phase_detail_json = ?2,
-               tx_output_json = CASE
-                       WHEN json_type(tx_output_json, '$.data.terminal_launch') = 'object'
-                       THEN json_set(?3, '$.data.terminal_launch', json_extract(tx_output_json, '$.data.terminal_launch'))
-                       ELSE ?3 END,
+               tx_output_json = {owner_output},
                target_type = ?4,
                target_id = ?5,
                target_json = ?6,
@@ -260,7 +293,8 @@ pub(in crate::operation) async fn write_phase_and_tx_output(
                updated_at_ms = ?8
            WHERE id = ?9
 "#,
-    )
+        owner_output = preserving_owner_sql("?3"),
+    ))
     .bind(tag.as_str())
     .bind(optional_json_text(detail.as_ref())?)
     .bind(serde_json::to_string(&output_for_db)?)
@@ -308,7 +342,9 @@ fn output_value(output: Option<&TxOutput>) -> Result<Option<Value>> {
         .map(|output| {
             let mut value = serde_json::to_value(output)?;
             if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
-                data.remove("terminal_launch");
+                for key in OWNER_STATE_KEYS {
+                    data.remove(*key);
+                }
             }
             Ok(value)
         })

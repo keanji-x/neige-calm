@@ -526,9 +526,10 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
         .app_server_interact_kind(&output, &op)
         .unwrap();
     op_repo
-        .set_phase(&op, Phase::AppServerInteract { kind })
+        .set_phase(&op, Phase::AppServerInteract { kind }, None)
         .await
         .unwrap()
+        .applied()
         .expect("the claimed op moves to app_server_interact");
     let op = op_repo
         .claim_drive_batch(1)

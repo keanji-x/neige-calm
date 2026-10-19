@@ -807,8 +807,8 @@ pub trait ProviderAdapter: Send + Sync {
 
     /// Adapter-owned resources require private stop/quiescence proof before
     /// saga completion, including resources with recorded process-group artifacts.
-    fn owns_parked_resource(&self) -> bool {
-        false
+    fn owns_parked_resource(&self) -> Option<&'static str> {
+        None
     }
 
     /// Read-only hint for steady sweeps before claiming an owned parked resource.
@@ -872,6 +872,23 @@ pub trait ProviderAdapter: Send + Sync {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()>;
+}
+
+#[derive(Debug)]
+pub enum LeaveWrite<T> {
+    Applied(T),
+    ClaimLost,
+    Retained,
+}
+impl<T> LeaveWrite<T> {
+    /// For callers that explicitly supplied no owned-resource key.
+    pub fn applied(self) -> Option<T> {
+        match self {
+            Self::Applied(value) => Some(value),
+            Self::ClaimLost => None,
+            Self::Retained => panic!("owned write requires retention handling"),
+        }
+    }
 }
 
 #[async_trait]
@@ -1023,7 +1040,12 @@ pub trait OperationRepo: Send + Sync {
         adapter: &dyn ProviderAdapter,
         prepared: Option<Box<dyn PreparedTx>>,
     ) -> Result<PrepareAdvance>;
-    async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>>;
+    async fn set_phase(
+        &self,
+        op: &Operation,
+        phase: Phase,
+        owner_key: LeaveWrite<&'static str>,
+    ) -> Result<Option<Operation>>;
     async fn set_phase_and_tx_output(
         &self,
         op: &Operation,
@@ -1034,6 +1056,7 @@ pub trait OperationRepo: Send + Sync {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
+        owner_key: LeaveWrite<&'static str>,
     ) -> Result<Option<Operation>>;
     async fn update_compensation_state(
         &self,
@@ -1046,12 +1069,14 @@ pub trait OperationRepo: Send + Sync {
         last_error: String,
         from_phase: PhaseTag,
         last_error_class: Option<String>,
+        owner_key: LeaveWrite<&'static str>,
     ) -> Result<Option<OperationResult>>;
     async fn mark_stuck(
         &self,
         op: &Operation,
         reason: String,
         from_phase: PhaseTag,
+        owner_key: LeaveWrite<&'static str>,
     ) -> Result<Option<OperationResult>>;
 }
 

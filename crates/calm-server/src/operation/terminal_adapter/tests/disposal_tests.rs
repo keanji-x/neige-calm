@@ -414,9 +414,10 @@ async fn exercise(history: History, disposal: Disposal) {
             steps: vec![],
         };
         operations
-            .set_compensating(&op, &state)
+            .set_compensating(&op, &state, None)
             .await
             .unwrap()
+            .applied()
             .unwrap();
         sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1").bind(&op.id).execute(repo.pool()).await.unwrap();
     }

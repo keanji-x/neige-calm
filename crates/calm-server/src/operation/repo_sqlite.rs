@@ -341,15 +341,24 @@ impl OperationRepo for SqlxOperationRepo {
         Ok(super::PrepareAdvance::Committed(Box::new(next), events))
     }
 
-    async fn set_phase(&self, op: &Operation, phase: Phase) -> Result<Option<Operation>> {
+    async fn set_phase(
+        &self,
+        op: &Operation,
+        phase: Phase,
+        owner_key: super::LeaveWrite<&'static str>,
+    ) -> Result<Option<Operation>> {
         if matches!(phase, Phase::AwaitingRetry { .. })
             && !matches!(op.phase, Phase::AppServerInteract { .. })
         {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
         }
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
+        }
+        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
+            tx.commit().await?;
+            return Ok(super::LeaveWrite::Retained);
         }
         let (tag, detail) = phase.serialize_split();
         let detail_text = optional_json_text(detail.as_ref())?;
@@ -378,12 +387,12 @@ impl OperationRepo for SqlxOperationRepo {
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
         }
         tx.commit().await?;
         self.find_by_id(&op.id)
             .await?
-            .map(Some)
+            .map(super::LeaveWrite::Applied)
             .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
     }
 
@@ -410,10 +419,15 @@ impl OperationRepo for SqlxOperationRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
+        owner_key: super::LeaveWrite<&'static str>,
     ) -> Result<Option<Operation>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
+        }
+        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
+            tx.commit().await?;
+            return Ok(super::LeaveWrite::Retained);
         }
         // Compensation owns its plan and phase. Domain output remains the
         // owner's last committed checkpoint, including when a later checkpoint
@@ -446,12 +460,12 @@ impl OperationRepo for SqlxOperationRepo {
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
         }
         tx.commit().await?;
         self.find_by_id(&op.id)
             .await?
-            .map(Some)
+            .map(super::LeaveWrite::Applied)
             .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
     }
 
@@ -493,10 +507,15 @@ impl OperationRepo for SqlxOperationRepo {
         last_error: String,
         from_phase: PhaseTag,
         last_error_class: Option<String>,
+        owner_key: super::LeaveWrite<&'static str>,
     ) -> Result<Option<OperationResult>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
+        }
+        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
+            tx.commit().await?;
+            return Ok(super::LeaveWrite::Retained);
         }
         let now = now_ms();
         let result = sqlx::query(
@@ -522,10 +541,10 @@ impl OperationRepo for SqlxOperationRepo {
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
         }
         tx.commit().await?;
-        Ok(Some(OperationResult {
+        Ok(super::LeaveWrite::Applied(OperationResult {
             op_id: op.id.clone(),
             outcome: OperationOutcome::Failed {
                 last_error,
@@ -540,10 +559,15 @@ impl OperationRepo for SqlxOperationRepo {
         op: &Operation,
         reason: String,
         from_phase: PhaseTag,
+        owner_key: super::LeaveWrite<&'static str>,
     ) -> Result<Option<OperationResult>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
+        }
+        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
+            tx.commit().await?;
+            return Ok(super::LeaveWrite::Retained);
         }
         let now = now_ms();
         let result = sqlx::query(
@@ -570,10 +594,10 @@ impl OperationRepo for SqlxOperationRepo {
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() == 0 {
-            return Ok(None);
+            return Ok(super::LeaveWrite::ClaimLost);
         }
         tx.commit().await?;
-        Ok(Some(OperationResult {
+        Ok(super::LeaveWrite::Applied(OperationResult {
             op_id: op.id.clone(),
             outcome: OperationOutcome::Stuck { reason, from_phase },
         }))

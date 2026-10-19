@@ -47,8 +47,18 @@ pub(crate) async fn reconcile(
         }
     }
     .await;
-    // A stale observer can neither complete nor release a replacement's claim.
-    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner=?2 AND phase='parked'")
-        .bind(&op.id).bind(owner).execute(pool.writer_pool()).await?;
+    // A stale observer can neither complete nor alter a replacement's claim.
+    let sql = if result.is_err() {
+        "UPDATE operations SET last_error=?3,updated_at_ms=?4 WHERE id=?1 AND lease_owner=?2 AND phase='parked'"
+    } else {
+        "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1 AND lease_owner=?2 AND phase='parked'"
+    };
+    let mut query = sqlx::query(sql).bind(&op.id).bind(owner);
+    if let Err(error) = &result {
+        query = query
+            .bind(format!("owned execution retained: {error}"))
+            .bind(crate::model::now_ms());
+    }
+    query.execute(pool.writer_pool()).await?;
     result
 }

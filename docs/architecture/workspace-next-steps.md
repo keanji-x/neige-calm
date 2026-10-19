@@ -274,6 +274,7 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
   留在今天就执行它的 Rust：非 owned 适配器由 `set_parked` 的 `spawn_artifacts_json IS NOT NULL`（`writes.rs:104-117`）与 driver
   的缺 artifact 检查（`driver.rs:796-815`）拒绝，C2b.0 起这是原生行唯一的围栏，由 replay 的 `operation::tests::{set_parked_requires_lease_and_artifacts_record_rejects_stale_lease,
   parked_return_without_artifacts_fails_and_drops_observer}`（`tests.rs:280`、`:1645`，后者经生产 driver 与 `set_parked`）pin 住，
+  生产中只有专用 `set_parked` 可进入 Parked；通用 phase 写者与直接 SQL 不在这个围栏内。
   实现 PR 删去 `writes.rs:117` 的条件做 mutation，两者应变红。C2b.1 起 `set_parked` 以 owner-state 键参数分支：未声明键照旧要求
   artifacts，声明键则要求同一事务内该键存在（与留存守卫同一个通用事实），不看 artifacts。记录的完整有效性只由 owner 解码器负责：
   gate 适配器在 `spawn_side_effect` 返回 Parked 前以 `gate_execution.rs` 解码本 claim 下的行（记录只在本 claim 下写入），失败即
@@ -567,7 +568,7 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
   （managed 根与 worktree 根），由配置与 DB 行给出，不按 provider、模板或路径字符串（如 `.claude`）推断所有权。
 - **外部合同事实**：Git 根只取 `rev-parse --show-toplevel`；`none` 只要求它成功；worktree 根取 DB 中 kernel 写入的
   `workspace_worktree_path`，不从路径布局推断；executor 的版本与持久形状取自其协议常量。
-- **永久成本**：没有 migration、新表或名单。新增一个等级要改：枚举、解码函数、workspace-runtime 中约 6 处穷举 `match`、
+- **永久成本**：I1/I2 没有 migration、新表或名单；C2b.0 另有 parked CHECK 重建迁移。新增一个等级要改：枚举、解码函数、workspace-runtime 中约 6 处穷举 `match`、
   请求枚举、FE 标签映射，每处一次，由编译器强制。新增一类自有位置要在重叠检查的位置集合中加一处；进行中的 teardown 目标是一个进程内登记表，只有删除路径登记、只有 `none` 准入
   读取，新增删除路径时必须同样登记（由 sweep 的入参类型要求守卫来强制，不靠名单）。它只保护同一进程内的窗口，
   已启动子进程跨崩溃存活留作 G 的显式例外（#2862），不加持久登记。准入检查每次 attached
