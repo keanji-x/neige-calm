@@ -408,7 +408,7 @@ impl ProviderAdapter for TaskGateRunAdapter {
         if settled.is_none() {
             let frozen = FrozenRun::from_output(super::required_output(op)?)?;
             let timed_out = op.parked_deadline_ms.is_some_and(|d| now_ms() > d)
-                || matches!(record.release,Release::Released { authorized_at_ms } if now_ms() >= authorized_at_ms+frozen.gate.timeout_secs_clamped()*1000);
+                || matches!(record.release,Release::Releasing { authorized_at_ms } | Release::Released { authorized_at_ms } if now_ms() >= authorized_at_ms+frozen.gate.timeout_secs_clamped()*1000);
             if timed_out && record.decision == Decision::Observing {
                 execution::stop(ctx, op, StopReason::Timeout).await?;
             } else if let Some(engine) = ctx.execution.engine()
@@ -431,6 +431,14 @@ impl ProviderAdapter for TaskGateRunAdapter {
                 tx.commit().await?;
                 engine.drive(ticket.committed());
             }
+            return Ok(ParkedRecovery::LeaveParked);
+        }
+        // Every completion-capable claimant observes the durable release outcome.
+        // A settled child cannot prove that an in-flight release was acknowledged.
+        if record.decision == Decision::Observing
+            && !matches!(record.release, Release::Released { .. })
+        {
+            execution::stop(ctx, op, StopReason::ReleaseRefused).await?;
             return Ok(ParkedRecovery::LeaveParked);
         }
         let frozen = FrozenRun::from_output(super::required_output(op)?)?;
@@ -537,7 +545,6 @@ impl TaskGateRunAdapter {
         if let Some(hook) = &self.hooks.before_release {
             hook().await;
         }
-        let mut refusal = false;
         loop {
             let read = async {
                 #[cfg(any(test, feature = "fixtures"))]
@@ -570,19 +577,9 @@ impl TaskGateRunAdapter {
                     let action: Result<()> = async {
                         let record = execution::record(&op)?;
                         if record.decision == Decision::Observing {
-                            if restart || refusal {
-                                execution::stop(
-                                    &ctx,
-                                    &op,
-                                    if restart {
-                                        StopReason::KernelRestarted
-                                    } else {
-                                        StopReason::ReleaseRefused
-                                    },
-                                )
-                                .await?;
+                            if restart {
+                                execution::stop(&ctx, &op, StopReason::KernelRestarted).await?;
                                 restart = false;
-                                refusal = false;
                             } else if record.release == Release::Held {
                                 let frozen = FrozenRun::from_output(super::required_output(&op)?)?;
                                 if op.parked_deadline_ms.is_some_and(|d| now_ms() > d) {
@@ -597,19 +594,10 @@ impl TaskGateRunAdapter {
                                     )
                                     .await;
                                     if released.is_err() {
-                                        refusal = true;
-                                        // Release may have committed Released and delivered the token.
-                                        // Persist refusal against that latest record before reconciliation.
-                                        let latest = ctx
-                                            .operation_repo
-                                            .get_operation(&id)
-                                            .await?
-                                            .ok_or_else(|| {
-                                            CalmError::Conflict("gate op disappeared".into())
-                                        })?;
+                                        // An uncertain release remains durable as Releasing.
+                                        let latest = execution::refresh_claim(&ctx, &op).await?;
                                         execution::stop(&ctx, &latest, StopReason::ReleaseRefused)
                                             .await?;
-                                        refusal = false;
                                     }
                                 }
                             }
@@ -619,11 +607,7 @@ impl TaskGateRunAdapter {
                     .await;
                     // A failed decision write must never fall through to completion.
                     action?;
-                    let latest = ctx
-                        .operation_repo
-                        .get_operation(&id)
-                        .await?
-                        .ok_or_else(|| CalmError::Conflict("gate op disappeared".into()))?;
+                    let latest = execution::refresh_claim(&ctx, &op).await?;
                     super::owned_parked::reconcile(
                         &self,
                         &latest,

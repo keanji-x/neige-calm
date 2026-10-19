@@ -147,15 +147,15 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
   与 exit 路径在准入事务之前写好，不启动一个之后才写脚本的 intent。缺 Engine 或 `!available()` 时，gate run 准入和
   spawn 前都返回 `CalmError::ExecutionUnavailable`（同终端，`server/operation/terminal_execution_create.rs:27-32`），
   不建 execution 行，不 fork；envelope 8 已由 C2a 拒绝。
-- **记录。** 必需的 `operations.tx_output_json.data.gate_execution`，`version` 为 JSON 整数 1：`{execution_id, release: Held |
-  Released{authorized_at_ms}, decision: Observing | Stopping{reason: Timeout | KernelRestarted | ReleaseRefused}}`（不设 Canceled，见留存不变量）。
+- **记录。** 必需的 `operations.tx_output_json.data.gate_execution`，`version` 为 JSON 整数 1：`{execution_id, release: Held | Releasing{authorized_at_ms} |
+  Released{authorized_at_ms}, decision: Observing | Stopping{reason: Timeout | KernelRestarted | ReleaseRefused}}`（Released 表示 CloseStdin 已确认；不设 Canceled，见留存不变量）。
   `intent_json` 不可变（`0170:19-27` 的 trigger），不能放可变位，记录放 `tx_output_json`；park 的表约束需要新迁移（见下）。记录有三种写入：① 准入，在 SpawnStarted
   的原 claim 下，与 `require_live_claim_tx`、`Engine::admit` 同一写事务，仅当记录缺失时写 Held；提交后才 `drive`
-  （`runtime/execution/engine.rs:43-60`，ticket 类型见 `mod.rs:166-182`）。② Held→Released。③ Observing→Stopping
+  （`runtime/execution/engine.rs:43-60`，ticket 类型见 `mod.rs:166-182`）。② Held→Releasing→Released（确认后）。③ Observing→Stopping
   与 `Engine::request(Stop)` 同一事务（Store 的 Tx 就是 operation 的 SQLite 事务，同终端的 `admit(tx, …)`）。
   CAS 条件固定 op id、`execution_id`、当前 `release` 与 `decision`；条件 SQL 放 calm-truth（`server/execution_store.rs:9`）。
   只有这三种写入，没有把记录换绑到另一个 execution 的写入（见 boot 矩阵的 SpawnStarted）。②③ 的写事务都先
-  `require_live_claim_tx`（`writes.rs:73-80`）：live observer、deadline sweep 与 boot 都先取 claim 再写，同一时刻只有一个 release/decision 写者。
+  `require_live_claim_tx`（`writes.rs:73-80`）：live observer、deadline sweep 与 boot 都先取 claim 再写，同一时刻只有一个 release/decision 写者。重读只刷新 owner state，必须保留 claim_parked 返回的原 token；token 不匹配就停止并重新取 claim。
   取不到 claim（`claim_parked` 返回 None，`server/operation/mod.rs:939-962`）不消耗一次性的计时器到期或 ReleaseRefused：
   写者重读 op 并重试，直到 op 终结或该 decision 已 durable（`c2b_timeout_retries_while_probe_holds_claim`）。
   通用写者今天只特判 `terminal_launch`（`server/operation/repo_sqlite/writes.rs:155-158`、`:250-253`、`output_value` `:306-315`），
@@ -165,12 +165,13 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
   （四个写者、28 个测试调用点，编译检查），不留调用者或测试清单。日后另一个 owned 资源要做 owner 注册：适配器声明键、owner 的
   记录编解码与结算、常量加键；parked CHECK 不读 owner 记录，不随 owner 加迁移；只有既有 owner 多保留一个字段才只改常量。新增的 `c2b_`
   与迁移测试随所在 suite 每个 CI workflow 各跑一次；mutation 只在实现 PR 内做一次，不进 CI。
-- **释放顺序（两种 gate 相同，只在 park 提交后由 observer 执行）。** ① durable authorize：Held→Released 与
+- **释放顺序（两种 gate 相同，只在 park 提交后由 observer 执行）。** ① durable authorize：Held→Releasing 与
   `require_attempt_startable_tx` 在同一写事务，扩展 `TaskLaunch`。它今天先检查、再在事务外运行 effect
   （`server/operation/task_launch.rs:71-91`）。之后先等 execution 有可交互的 Spawned receipt（`interact` 先 inspect，无 receipt
   即拒绝，`runtime/execution/engine.rs:301`、`:353-358`）：Prepared/Forking 只是等待，不是 ReleaseRefused，计入 60s 上限。② `Engine::interact(WriteStdin "go\n")`，同一调用内按 `StdinProgress.accepted_bytes`
-  只重试剩余后缀。③ `Engine::close_stdin`。① 输了，或 ②③ 失败、超过 60s，就走 ③ 型 Stopping{ReleaseRefused}；
-  永不用关闭未授权的 stdin 来取消。崩溃后看到 Released 不再写字节，只重试 CloseStdin。token 未完整送达时，
+  只重试剩余后缀。③ `Engine::close_stdin` 确认后，在原 claim 下将 Releasing→Released。① 输了，或 ②③ 失败、超过 60s，就走 ③ 型 Stopping{ReleaseRefused}；
+  永不用关闭未授权的 stdin 来取消。Releasing 是 durable 的未确认释放；任何 claimant 看到它已结算，都先写 Stopping{ReleaseRefused}，不能取退出码判绿。
+  崩溃后看到 Releasing 不再写字节，按未确认释放保守判 infra；Released 不再写字节。token 未完整送达时，
   `read -r _go || exit 75`（`gate_process.rs:19`）让 shell 不执行任何 step，没有已开始的 step 就判 infra（`:201-207`）。
   task verify 今天在 park 前释放（`task_verify_adapter/mod.rs:433-495`），SpawnStarted 重驱又先 kill 再重启（`:383-416`），
   所以释放后、park 前崩溃会让 step 跑第二遍；改为 park 后释放，SpawnStarted 就只可能是 Held。这是有意的行为变化。
@@ -306,7 +307,8 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
     不再推进（`runtime/execution/engine.rs:206-213`），而 Retire 只在完成事务里请求；替换需要 Retire、准入与记录换绑同事务
     及其崩溃重放，唯一要它的是 R8a 测试（`calm-server/tests/cases/task_gate_run/restart.rs:125-171` 断言重驱后 Succeeded），不是生产消费者。
   - Parked 且 Held：两种 gate 相同。Stopping{KernelRestarted} 加 Stop，永不发 token，结算后判 infra。
-  - Parked 且 Released：worker gate run 走 Stopping{KernelRestarted}，判 infra，保持今天的重启合同
+  - Parked 且 Releasing：未确认释放，不重发 token；worker gate run 写 Stopping{KernelRestarted} 加 Stop，结算后判 infra。
+  - Parked 且 Released（已确认）：worker gate run 走 Stopping{KernelRestarted}，判 infra，保持今天的重启合同
     （`task_gate_run/mod.rs:365-395`），不顺带改成恢复判决。task verify 只重试 CloseStdin，再按授权计时的剩余时间
     重挂 observer；已过期且未结算就写 ③ Stopping{Timeout}。
   - 已记 Stopping{r}：用同一 execution 完成 r，永不重启。
@@ -328,7 +330,7 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
   shell 读到 EOF 以 75 退出；半个 token 加 EOF 同样以 75 退出。prelude 只多给“无 kernel 时持有自行过期”，那只是占用，
   不是执行。备忘录要求“EOF 才是最终释放”，这里不采纳：token 只在 durable 授权之后才写，读到 token 就等于已授权。
   未找到具体风险。(b) 接受，不加 pre-drive hook。`next_step` 中 Absent/Prepared 加 Stop 得 Revoke，Spawned 加 Stop 得 Stop
-  （`runtime/execution/mod.rs:106-127`）。Engine 抢先 Launch 的 Held intent 只是一个持有中的 shell，而 boot 从不做 Held→Released，
+  （`runtime/execution/mod.rs:106-127`）。Engine 抢先 Launch 的 Held intent 只是一个持有中的 shell，而 boot 从不做 Held→Releasing，
   所以先后顺序只决定是否 fork，不影响安全。(c) 接受，合并：记录与 typed park 的唯一消费者就是 cutover，typed park 只是上述三处改动。
   (d) 接受，共四片：行为不变的 C2b.0 之后三片。gate run 先行，因为它从不恢复判决，能先验证构造、释放、Stop 与 park；task verify 再加 Released 的重挂
   与 after-sample；最后一片是纯删除。mutation 验证只针对“授权先于首字节”、“boot Held 必 Stop”、timeout 围栏（含完成事务内复核）、typed 占用读者与 owned 留存守卫五条不变量。

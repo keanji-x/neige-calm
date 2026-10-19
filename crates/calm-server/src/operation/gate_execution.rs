@@ -13,6 +13,7 @@ pub(crate) const CONSUMER: &str = "gate";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Release {
     Held,
+    Releasing { authorized_at_ms: i64 },
     Released { authorized_at_ms: i64 },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,7 +201,7 @@ pub(crate) async fn release(
         return Ok(());
     }
     let mut new = old.clone();
-    new.release = Release::Released {
+    new.release = Release::Releasing {
         authorized_at_ms: now_ms(),
     };
     transition(ctx, op, &old, &new, Some(task)).await?;
@@ -254,7 +255,30 @@ pub(crate) async fn release(
     };
     tokio::time::timeout(super::gate_lifecycle::RELEASE_TIMEOUT, send)
         .await
-        .map_err(conflict)?
+        .map_err(conflict)??;
+    // Only a CloseStdin acknowledgement makes settlement status eligible for a verdict.
+    // Persist it under the original claim; an expired/replaced claimant cannot ack.
+    let mut acked = new.clone();
+    acked.release = Release::Released {
+        authorized_at_ms: match new.release {
+            Release::Releasing { authorized_at_ms } => authorized_at_ms,
+            _ => unreachable!(),
+        },
+    };
+    transition(ctx, op, &new, &acked, None).await
+}
+
+/// Refresh owner state without acquiring authority from an unclaimed row read.
+pub(crate) async fn refresh_claim(ctx: &SpawnCtx, claimed: &Operation) -> Result<Operation> {
+    let latest = ctx
+        .operation_repo
+        .get_operation(&claimed.id)
+        .await?
+        .ok_or_else(|| conflict("gate op disappeared"))?;
+    if latest.lease_owner != claimed.lease_owner {
+        return Err(conflict("gate observer lost its original claim"));
+    }
+    Ok(latest)
 }
 
 pub(crate) async fn settlement(ctx: &SpawnCtx, record: &Record) -> Result<Option<Settlement>> {
