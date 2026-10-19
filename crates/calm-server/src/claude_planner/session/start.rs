@@ -17,15 +17,6 @@ impl From<CalmError> for SpawnFailure {
         Self::Host(error.into())
     }
 }
-impl SpawnFailure {
-    /// Compaction still owns its pre-write restore / possible-write wedge decision.
-    pub(crate) fn into_legacy(self) -> (TurnStartFailure, bool) {
-        match self {
-            Self::Host(failure) => (failure, false),
-            Self::Failed { error, line_sent } => (error.into(), line_sent),
-        }
-    }
-}
 pub(super) fn start_result(
     result: Result<String, SpawnFailure>,
 ) -> Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
@@ -104,9 +95,6 @@ mod tests {
                     assert_eq!(message, "original")
                 }
                 other => panic!("wrong old projection {other:?}"),
-            }
-            if case != "success" {
-                assert_eq!(failure().into_legacy().1, case == "line");
             }
         }
     }

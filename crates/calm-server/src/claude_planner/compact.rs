@@ -91,30 +91,33 @@ pub(crate) fn refused(reason: impl std::fmt::Display) -> CalmError {
 /// submitted nothing, so the harness goes back to its previous phase as after Codex's refusal.
 /// Once the line may have reached the CLI, the submission is unconfirmed and the harness wedges.
 fn submission_result(result: Result<String, SpawnFailure>) -> CompactSubmission<CalmError> {
-    let spawn = match result {
-        Ok(_) => {
-            return CompactSubmission::Submitted {
-                basis: SubmissionBasis::LocalWrite,
+    match result {
+        Ok(_) => CompactSubmission::Submitted {
+            basis: SubmissionBasis::LocalWrite,
+        },
+        Err(SpawnFailure::Host(failure)) => {
+            let error = match failure {
+                TurnStartFailure::Refused { error, .. } => refused(error),
+                TurnStartFailure::Transient(error)
+                | TurnStartFailure::AwaitingRecovery { error, .. } => error,
             };
+            CompactSubmission::NotSubmitted {
+                error,
+                reason: CompactNotSubmitted::PreparationFailed,
+            }
         }
-        Err(spawn) => spawn,
-    };
-    let (failure, line_sent) = spawn.into_legacy();
-    let error = match failure {
-        TurnStartFailure::Refused { error, .. } => refused(error),
-        TurnStartFailure::Transient(error) | TurnStartFailure::AwaitingRecovery { error, .. } => {
-            error
-        }
-    };
-    if line_sent {
-        CompactSubmission::Unconfirmed {
-            error,
-            evidence: SubmissionEvidence::WriteMayHaveReachedPeer,
-        }
-    } else {
-        CompactSubmission::NotSubmitted {
-            error,
-            reason: CompactNotSubmitted::PreparationFailed,
+        Err(SpawnFailure::Failed { error, line_sent }) => {
+            if line_sent {
+                CompactSubmission::Unconfirmed {
+                    error,
+                    evidence: SubmissionEvidence::WriteMayHaveReachedPeer,
+                }
+            } else {
+                CompactSubmission::NotSubmitted {
+                    error,
+                    reason: CompactNotSubmitted::PreparationFailed,
+                }
+            }
         }
     }
 }
@@ -132,7 +135,7 @@ mod tests {
             }
         ));
         for line_sent in [false, true] {
-            for kind in ["refused", "transient", "recovery"] {
+            for kind in ["refused", "transient", "recovery", "failed"] {
                 let error = CalmError::ServiceUnavailable("original diagnostic".into());
                 let original = error.to_string();
                 let failure = match kind {
@@ -140,21 +143,20 @@ mod tests {
                         error,
                         reader: "intentionally discarded compact reader".into(),
                     },
-                    "transient" => TurnStartFailure::Transient(error),
-                    _ => TurnStartFailure::AwaitingRecovery {
+                    "transient" | "failed" => TurnStartFailure::Transient(error),
+                    "recovery" => TurnStartFailure::AwaitingRecovery {
                         error,
                         reader: "intentionally discarded compact reader".into(),
                     },
+                    other => panic!("unexpected failure kind {other}"),
                 };
-                let spawn = if line_sent {
-                    // Only transport failure can occur at the user-line write.
-                    if kind != "transient" {
-                        continue;
-                    }
+                let spawn = if kind == "failed" {
                     SpawnFailure::Failed {
                         error: CalmError::ServiceUnavailable("original diagnostic".into()),
                         line_sent,
                     }
+                } else if line_sent {
+                    continue;
                 } else {
                     SpawnFailure::Host(failure)
                 };
