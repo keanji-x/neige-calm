@@ -1,7 +1,7 @@
 //! Kernel scheduler integration coverage: an in-memory `SqlxRepo` + `EventBus`, a real `OperationRuntime`
 //! with stub worker adapters, and a `Scheduler` built like the dispatcher construction site builds it.
 
-#[path = "scheduler_c2b.rs"]
+#[path = "scheduler/c2b.rs"]
 mod c2b;
 mod support;
 
