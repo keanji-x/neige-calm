@@ -72,7 +72,7 @@ pub(super) async fn inspect(
     inner: &Arc<Inner>,
     entry_id: &QueueEntryId,
 ) -> Result<InputInspection> {
-    let queue = inner.pending_queue.lock().await;
+    let queue = inner.inputs.historical_queue()?.lock().await;
     let mut matches = queue
         .iter()
         .filter_map(|entry| entry.user_view())

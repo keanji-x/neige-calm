@@ -19,6 +19,7 @@ pub mod config;
 mod driver;
 pub mod lifecycle;
 pub mod models;
+mod outcome_record;
 pub mod readiness_command;
 pub(crate) mod recovery;
 pub(crate) mod rewind;

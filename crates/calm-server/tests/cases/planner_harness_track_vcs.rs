@@ -36,7 +36,7 @@ struct Boot {
     roles: CardRoleCache,
     track_area_cache: TrackAreaCache,
     write: WriteContext,
-    runtime_id: String,
+    worker_session_id: String,
     track_id: TrackId,
     area_id: AreaId,
     planner_card_id: CardId,
@@ -87,7 +87,7 @@ async fn boot() -> Boot {
         json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
     )
     .await;
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = "thread-track-vcs-pr2".to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -96,7 +96,7 @@ async fn boot() -> Boot {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: planner_card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -118,7 +118,14 @@ async fn boot() -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            planner_card.id.as_ref(),
+            track.id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),
         thread_id: Some(thread_id.clone()),
@@ -126,8 +133,8 @@ async fn boot() -> Boot {
         events: events.clone(),
         card_role_cache: roles.clone(),
         track_area_cache: track_area_cache.clone(),
-        backend: daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(200),
@@ -136,8 +143,12 @@ async fn boot() -> Boot {
             report_edit_max_wait: Duration::from_millis(200),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     Boot {
         repo,
@@ -147,7 +158,7 @@ async fn boot() -> Boot {
         roles,
         track_area_cache,
         write,
-        runtime_id,
+        worker_session_id,
         track_id: track.id,
         area_id: area.id,
         planner_card_id: planner_card.id,
@@ -171,7 +182,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
         json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
     )
     .await;
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = "thread-plain-chat-no-vcs".to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -180,7 +191,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: chat_card.id.to_string(),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
@@ -200,7 +211,14 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.daemon.clone(),
+            chat_card.id.as_ref(),
+            boot.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: boot.track_id.clone(),
         card_id: chat_card.id,
         thread_id: Some(thread_id),
@@ -208,15 +226,19 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
-        backend: boot.daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(100),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     let before: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1 AND message = 'transcript refresh'",
     )
@@ -298,7 +320,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         "the fixture must actually move the track head, or the diff assertion is vacuous"
     );
 
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = "thread-assistant-vcs".to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -308,7 +330,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit::managed_assistant(
-            runtime_id.clone(),
+            worker_session_id.clone(),
             assistant_card.id.to_string(),
             AgentProvider::Codex,
             WorkerSessionState::Idle,
@@ -336,7 +358,14 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.daemon.clone(),
+            assistant_card.id.as_ref(),
+            boot.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: boot.track_id.clone(),
         card_id: assistant_card.id.clone(),
         thread_id: Some(thread_id),
@@ -344,15 +373,19 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
-        backend: boot.daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_millis(10),
             debounce_max_wait: Duration::from_millis(100),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     // User text goes through the durable route, the only one that mints a queue id.
     harness
         .observe_user_message_durable(
@@ -511,8 +544,8 @@ async fn start_worker_runtime_with_event(
     card: &Card,
     status: WorkerSessionState,
 ) -> String {
-    let runtime_id = new_id();
-    let returned_runtime_id = runtime_id.clone();
+    let worker_session_id = new_id();
+    let returned_runtime_id = worker_session_id.clone();
     let card_id = card.id.clone();
     let scope = EventScope::Card {
         card: card_id.clone(),
@@ -527,14 +560,14 @@ async fn start_worker_runtime_with_event(
             &boot.events,
             &boot.write,
             Box::new(move |tx| {
-                let runtime_id = runtime_id.clone();
+                let worker_session_id = worker_session_id.clone();
                 let card_id = card_id.clone();
                 let status = status;
                 Box::pin(async move {
                     let runtime = session_start_runtime_tx(
                         tx,
                         WorkerSessionInit {
-                            id: runtime_id,
+                            id: worker_session_id,
                             card_id: card_id.to_string(),
                             kind: WorkerSessionKind::CodexCard,
                             agent_provider: Some(AgentProvider::Codex),
@@ -567,11 +600,11 @@ async fn start_worker_runtime_with_event(
 async fn set_worker_runtime_status_with_event(
     boot: &Boot,
     card: &Card,
-    runtime_id: &str,
+    worker_session_id: &str,
     old_status: WorkerSessionState,
     new_status: WorkerSessionState,
 ) {
-    let runtime_id = runtime_id.to_string();
+    let worker_session_id = worker_session_id.to_string();
     let card_id = card.id.clone();
     let scope = EventScope::Card {
         card: card_id.clone(),
@@ -586,14 +619,14 @@ async fn set_worker_runtime_status_with_event(
             &boot.events,
             &boot.write,
             Box::new(move |tx| {
-                let runtime_id = runtime_id.clone();
+                let worker_session_id = worker_session_id.clone();
                 let card_id = card_id.clone();
                 let old_status = old_status;
                 let new_status = new_status;
                 Box::pin(async move {
-                    session_set_status_tx(tx, &runtime_id, new_status).await?;
+                    session_set_status_tx(tx, &worker_session_id, new_status).await?;
                     Ok(Event::WorkerSessionStatusChanged {
-                        worker_session_id: runtime_id,
+                        worker_session_id,
                         card_id: card_id.to_string(),
                         old_status,
                         new_status,
@@ -984,7 +1017,14 @@ async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let recovered = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: boot.runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.daemon.clone(),
+            boot.planner_card_id.as_ref(),
+            boot.track_id.as_ref(),
+            boot.worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: boot.worker_session_id.clone(),
         track_id: boot.track_id.clone(),
         card_id: boot.planner_card_id.clone(),
         thread_id: Some(boot.thread_id.clone()),
@@ -992,11 +1032,15 @@ async fn recovered_issued_turn_head_stamps_last_seen_head_on_completion() {
         events: boot.events.clone(),
         card_role_cache: boot.roles.clone(),
         track_area_cache: boot.track_area_cache.clone(),
-        backend: boot.daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     wait_for_state(&recovered, |s| matches!(s, HarnessState::Resumed { .. })).await;
 
     boot.daemon
@@ -1797,7 +1841,7 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
     let boot = boot().await;
     complete_first_turn_and_stamp(&boot).await;
     let worker = add_worker_card_event(&boot, "runtime-status-current-schema").await;
-    let runtime_id =
+    let worker_session_id =
         start_worker_runtime_with_event(&boot, &worker, WorkerSessionState::Starting).await;
     let before = track_vcs::head(boot.repo.pool(), &boot.track_id)
         .await
@@ -1809,7 +1853,7 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
     set_worker_runtime_status_with_event(
         &boot,
         &worker,
-        &runtime_id,
+        &worker_session_id,
         WorkerSessionState::Starting,
         WorkerSessionState::Running,
     )

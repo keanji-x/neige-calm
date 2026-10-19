@@ -120,7 +120,8 @@ impl<'a> IssueTurnHandle<'a> {
                             }
                             *reverted = true;
                         }
-                        (RewindArm::Claude { .. }, _) | (RewindArm::Codex { .. }, _) => {
+                        (RewindArm::Claude { .. } | RewindArm::CodexV2 { .. }, _)
+                        | (RewindArm::Codex { .. }, _) => {
                             return Err(mismatched_rewind());
                         }
                     }
@@ -141,7 +142,7 @@ impl<'a> IssueTurnHandle<'a> {
             Arm::Claude(session) => {
                 if matches!(
                     invocation.rewind.as_deref().map(|rewind| &rewind.0),
-                    Some(RewindArm::Codex { .. })
+                    Some(RewindArm::Codex { .. } | RewindArm::CodexV2 { .. })
                 ) {
                     return Err(mismatched_rewind());
                 }
@@ -170,6 +171,24 @@ impl<'a> IssueTurnHandle<'a> {
                 "a Claude Planner cannot steer; the run loop checks supports_steer first".into(),
             )),
         }
+    }
+
+    /// Historical budget control retains the sampled harness owner and thread.
+    pub(in crate::harness) async fn send_budget_notice(
+        self,
+        notice: &crate::planner_turn_budget::BudgetControlNotice,
+        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+    ) -> Result<super::budget_control::ControlAttemptReport> {
+        if self.thread()? != notice.thread_id() {
+            return Err(CalmError::Conflict(
+                "budget notice names another harness thread".into(),
+            ));
+        }
+        Ok(self
+            .owner
+            .backend
+            .send_budget_notice(notice, BudgetControlScope::Historical, admission)
+            .await)
     }
 
     pub(in crate::harness) async fn compact_start(

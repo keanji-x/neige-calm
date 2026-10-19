@@ -337,7 +337,7 @@ async fn initial_input_inspection_does_not_lose_a_steer_whose_projection_failed(
         }
     }
     assert_eq!(
-        fx.harness.snapshot().await.phase,
+        fx.harness.snapshot().await.unwrap().phase,
         HarnessPhaseTag::TurnRunning
     );
     let entry = QueueEntry::user_message("accepted by the running turn".into(), None, vec![]);

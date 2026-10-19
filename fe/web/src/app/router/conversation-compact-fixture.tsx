@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import type { CompactOutcome, PlannerRunTokenUsage } from '../../../../core/domain/conversation.ts';
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
@@ -23,11 +24,11 @@ export function renderCompactFixture(provider: AgentProvider, supported: boolean
     params: JSON.stringify({ id: 'turn', status: 'completed', error: null }), created_at_ms: 3,
   }];
   return { run, ...renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, plannerProvider: provider, reply: request => {
-    if (request.path === '/api/cards/second-planner/planner/run') return { status: 200, statusText: 'OK', body: { ...run, card_id: 'second-planner', worker_session_id: 'runtime2', recovery: null, compact_outcome: null, context_usage_invalidated: false, token_usage: null } };
-    if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: run };
+    if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({ ...run, card_id: 'second-planner', worker_session_id: 'runtime2', recovery: null, compact_outcome: null, context_usage_invalidated: false, token_usage: null }, 'idle', true) };
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return { status: 200, statusText: 'OK', body: historicalConversationRun(run, 'idle', true) };
     if (request.path.endsWith('/planner/compact')) return compactReply ?? { status: 200, statusText: 'OK', body: { card_id: run.card_id, started: true } };
     if (request.path.includes('/harness/items')) return historyReady
-      ? { status: 200, statusText: 'OK', body: rows }
+      ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) }
       : { status: 503, statusText: 'Unavailable', body: { error: 'internal', message: 'History unavailable' } };
     return undefined;
   } }) };

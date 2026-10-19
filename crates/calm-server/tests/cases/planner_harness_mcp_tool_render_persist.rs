@@ -55,7 +55,7 @@ async fn seed_harness(
         })
         .await
         .unwrap();
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = "thread-items-persist".to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -65,7 +65,7 @@ async fn seed_harness(
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -89,7 +89,14 @@ async fn seed_harness(
     track_area_cache.insert(track.id.clone(), area.id);
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -97,15 +104,19 @@ async fn seed_harness(
         events,
         card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
         track_area_cache,
-        backend: daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     (
         harness,

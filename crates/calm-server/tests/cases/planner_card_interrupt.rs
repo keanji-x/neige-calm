@@ -19,7 +19,6 @@ use calm_server::harness::{
 use calm_server::ids::TrackId;
 use calm_server::model::{Card, CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -105,11 +104,7 @@ async fn boot() -> Boot {
     // `with_shared_codex_appserver` rebuilds the operation runtime so the interrupt adapter shares this state's harness registry.
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = crate::support::authenticated_router::application(state.clone()).await;
 
     Boot {
         app,
@@ -220,7 +215,7 @@ async fn seed_active_planner_runtime_row(boot: &Boot, card: &Card) -> (String, S
 /// Seed a live planner harness (idle) registered under an active runtime row.
 async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, PlannerHarness) {
     let card = seed_codex_card_with_role(boot, CardRole::Planner).await;
-    let (runtime_id, thread_id) = seed_active_planner_runtime_row(boot, &card).await;
+    let (worker_session_id, thread_id) = seed_active_planner_runtime_row(boot, &card).await;
 
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -228,7 +223,14 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, Planne
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id.clone()),
@@ -236,15 +238,19 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, String, Planne
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
-        .insert(runtime_id.clone(), harness.clone());
-    (card, runtime_id, thread_id, harness)
+        .insert(worker_session_id.clone(), harness.clone());
+    (card, worker_session_id, thread_id, harness)
 }
 
 async fn shutdown_seeded_harness(boot: &Boot, runtime_id: &str, harness: PlannerHarness) {

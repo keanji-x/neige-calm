@@ -6,6 +6,9 @@ pub(super) async fn issue_interrupt_for_turn(
     target_turn_id: String,
     reason: String,
 ) -> Result<()> {
+    if inner.inputs.canonical().is_some() {
+        return canonical::control::timeout(inner, &target_turn_id).await;
+    }
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
         return Ok(());
     };

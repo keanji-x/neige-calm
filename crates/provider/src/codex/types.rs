@@ -132,7 +132,7 @@ pub struct TurnSteerResult {
 /// Pinned `thread/revert` response projection: the reported thread is required.
 /// Cursors and the full thread body are not needed to qualify this RPC's scope.
 #[derive(Debug, Deserialize)]
-pub(super) struct ThreadRevertResult {
+pub struct ThreadRevertResult {
     thread: RevertedThread,
 }
 
@@ -142,7 +142,7 @@ struct RevertedThread {
 }
 
 impl ThreadRevertResult {
-    pub(super) fn confirm_thread(self, expected: &str) -> Result<()> {
+    pub fn confirm_thread(self, expected: &str) -> Result<()> {
         if self.thread.id.is_empty() || self.thread.id != expected {
             return Err(Error::Transport(
                 "thread/revert returned an unexpected thread.id".into(),

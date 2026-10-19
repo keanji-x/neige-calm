@@ -2133,9 +2133,36 @@
             }
           },
           {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
             "name": "after_id",
             "in": "query",
-            "description": "Return items with database ids greater than this value.",
+            "description": "Legacy physical item cursor. Accepted only without contract on V1 history.",
             "required": false,
             "schema": {
               "type": [
@@ -2148,7 +2175,6 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500.",
             "required": false,
             "schema": {
               "type": [
@@ -2161,7 +2187,6 @@
           {
             "name": "direction",
             "in": "query",
-            "description": "Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/HarnessItemsDirection"
@@ -2170,20 +2195,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Persisted planner harness items",
+            "description": "Negotiated conversation page, or historical-only original raw array",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/HarnessItem"
-                  }
+                  "$ref": "#/components/schemas/ConversationItemsReadResponse"
                 }
               }
             }
           },
           "400": {
-            "description": "`bad_request`: a path or query parameter does not parse.",
+            "description": "Invalid or mixed cursor",
             "content": {
               "application/json": {
                 "schema": {
@@ -2193,7 +2215,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "Verified session required",
             "content": {
               "application/json": {
                 "schema": {
@@ -2203,7 +2225,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Current Area access refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -2222,8 +2244,18 @@
               }
             }
           },
+          "409": {
+            "description": "Read contract or canonical source unsupported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
-            "description": "Internal error",
+            "description": "Invalid persisted data",
             "content": {
               "application/json": {
                 "schema": {
@@ -2250,6 +2282,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
           }
         ],
         "responses": {
@@ -2258,7 +2305,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HarnessLiveReplies"
+                  "$ref": "#/components/schemas/HarnessLiveReadResponse"
                 }
               }
             }
@@ -2274,7 +2321,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "A verified session is required",
             "content": {
               "application/json": {
                 "schema": {
@@ -2284,7 +2331,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Current Area access is required or card is not a harness card",
             "content": {
               "application/json": {
                 "schema": {
@@ -2295,6 +2342,16 @@
           },
           "404": {
             "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Canonical live replies require the negotiated conversation contract",
             "content": {
               "application/json": {
                 "schema": {
@@ -2624,14 +2681,13 @@
         "tags": [
           "cards"
         ],
-        "summary": "Queue one message for the card's harness, under a required `Idempotency-Key`.",
-        "description": "The first request under a key that the server stores binds the key to that message, in the\ntransaction that stores it. A retry with the same key and the same body (text, attachments,\n`replaces_turn`, actor) answers 200 with the first request's body and queues nothing, whatever\nhappened to the message since. The same key with a different body is 409 `idempotency_key_reused`. A\nrefusal stores and binds nothing, so its key can be sent again. A binding lasts as long as its card.\n\nWith `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing\nqueued: it is removed and this message queued in the transaction that binds the key, and the\nprovider drops the turn when the next one starts. There is no lazy recovery on this path.\n\nA person's plain send to a card that nothing else can start any more and that has no thread or\ntranscript to preserve (a kernel-managed Track's card, whose creation starts no model, or a\nconversation whose own minting start failed) starts its conversation first, then queues it.",
+        "summary": "Select the persisted conversation contract before acceptance or replay.\nCanonical errors never enter the historical queue. Historical public work\nrequires the current deployment owner and its existing Private resources.",
         "operationId": "send_planner_input",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Planner card id",
+            "description": "Harness conversation card id",
             "required": true,
             "schema": {
               "type": "string"
@@ -2640,7 +2696,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required.** One key per message, at most 128 ASCII bytes; a retry under it replays the first answer.",
+            "description": "Required immutable key (1–128 visible ASCII bytes); canonical bindings include the verified author.",
             "required": true,
             "schema": {
               "type": "string"
@@ -2659,7 +2715,7 @@
         },
         "responses": {
           "200": {
-            "description": "User text queued for next harness turn, or the answer of the earlier request under this Idempotency-Key",
+            "description": "Input saved or its original receipt replayed after current authorization; execution may remain pending.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2669,7 +2725,7 @@
             }
           },
           "400": {
-            "description": "Empty text, a blank `replaces_turn`, or a missing or invalid Idempotency-Key (`idempotency_key_invalid`)",
+            "description": "Invalid text/request or missing/invalid Idempotency-Key (idempotency_key_invalid)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2679,7 +2735,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "A verified current Human session source is required; invalid or revoked sessions are refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -2689,7 +2745,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card, or `replaces_turn` from an actor other than `X-Calm-Actor: user`",
+            "description": "Area collaboration required; historical input also requires deployment-owner Private-resource access.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2699,7 +2755,7 @@
             }
           },
           "404": {
-            "description": "Card or track not found",
+            "description": "Conversation or its owning Area was not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -2709,7 +2765,7 @@
             }
           },
           "409": {
-            "description": "Distinguished by `code`:\n* `idempotency_key_reused` — this Idempotency-Key was already used for a different message on this card (text, attachments, `replaces_turn` or actor); final, send the new message under a new key.\n* `idempotency_key_concurrent` — another request under this key was stored at the same moment and nothing of this one was; send it again under the same key to receive that answer.\n* `planner_harness_dormant` — the planner harness session is dormant and not recoverable; `POST /planner/restart` starts a fresh one and keeps the history.\n* `planner_harness_runtime_superseded` — on a plain send, the runtime is no longer this card's and the text was NOT stored, so re-sending it reaches the successor.\n* `planner_turn_not_replaceable` — on a send with `replaces_turn`, the turn cannot be replaced now (not the latest, still running, messages waiting, the conversation shutting down or no longer the card's, or the provider refusing the cut) and nothing changed; the body carries the reason.\n* `conflict` — the conversation's run loop is shutting down, already closed, or stopped before answering, on a plain send and on a send with `replaces_turn` alike. This answer does not say whether the message was stored or the turn replaced: a loop that stopped before answering may have committed it. Send it again under the same key.",
+            "description": "Key conflict or unsupported input; no new message accepted. Reconcile uncertain outcomes with the original key.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2749,17 +2805,7 @@
             }
           },
           "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Observation queue saturated, shared codex app-server not running, a planner-harness start is still in flight, or the provider did not check a replace in time — retry shortly",
+            "description": "Internal storage or response error; reconcile an uncertain outcome with the original key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3225,7 +3271,7 @@
         "tags": [
           "cards"
         ],
-        "summary": "Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.\nIdle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.\n`IssuingTurn` also reports `stopped: false`: while `turn/start` is in flight the app-server may not know the turn yet, so the interrupt is dispatched best-effort but only `TurnRunning` guarantees a target.",
+        "summary": "Stop the running planner turn. Guard chain mirrors `/planner/input` but WITHOUT lazy recovery: a harness that needs recovering has no running turn to stop, so a registry miss is the same 409 `planner_harness_dormant`.\nIdle is a graceful no-op (`stopped: false`). The phase read and the dispatch are not atomic; the user presses Stop again.\nHistorical `IssuingTurn` is best effort and reports `stopped: false`.\nCanonical issuance requires a confirmed exact native target and otherwise\nrefuses with 409; an Actor label or operation payload cannot authorize Stop.",
         "operationId": "interrupt_planner_card",
         "parameters": [
           {
@@ -3260,7 +3306,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "Canonical Stop requires a current verified Human source",
             "content": {
               "application/json": {
                 "schema": {
@@ -3270,7 +3316,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Planner card and current Area/private execution access required",
             "content": {
               "application/json": {
                 "schema": {
@@ -3290,7 +3336,7 @@
             }
           },
           "409": {
-            "description": "No live session for this card; start a fresh one, history is kept (code `planner_harness_dormant`)",
+            "description": "No current native target or original execution changed. Retry Stop once the original turn is running.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3753,15 +3799,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Current run snapshot; `worker_session_id`/`phase` are null when no live harness session exists (dormant is not an error for a read)",
+            "description": "Current run; worker_session_id and phase are null when dormant.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GetPlannerRunResponse"
+                  "$ref": "#/components/schemas/PlannerRunReadResponse"
                 }
               }
             }
@@ -3777,7 +3838,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "Verified session required",
             "content": {
               "application/json": {
                 "schema": {
@@ -3787,7 +3848,7 @@
             }
           },
           "403": {
-            "description": "Card is not a planner codex card",
+            "description": "Current Area access or Planner shape refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -3798,6 +3859,16 @@
           },
           "404": {
             "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Canonical read requires conversation_v1",
             "content": {
               "application/json": {
                 "schema": {
@@ -9293,7 +9364,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "**Required if the body carries `first_message`; optional otherwise, and honoured when sent.** A create that sends no key at all is not idempotent — a retry mints a second track — which is the unchanged behaviour of every caller that sends none.\n\nWithout `first_message`, a key binds the minted track and nothing else: an identical repeat returns that same track with 201 and starts its Planner again only when every earlier start of it failed (a Planner that already has a session, from the first start or a reset or re-point since, keeps it; one with no session yet while another start of it is running answers 503), a different create shape under the same key is 409 `idempotency_key_reused`, and no retry slot is consumed (so this shape cannot exhaust a key). Adding or removing `first_message` under a key already bound by the other shape is itself a 409 `idempotency_key_reused`, in both directions.\n\nWith `first_message`, one transaction persists the minted track/card ids and a versioned fingerprint of the original create. The fingerprint covers every mint input (`title`, `sort`, the original `cwd`, `template_id`, `recipe_id`, `template_input`, `attach_folder`, `theme`, `fork_report_from`, non-null `model` / `reasoning_effort`, and a `planner_provider` other than `codex`) plus the initial message digest, so it still constrains the key when no operation row exists. A different create shape is always 409 `idempotency_key_reused`, including after a terminal operation failure. A different `first_message` is also `idempotency_key_reused` after success, `Stuck`, or a pre-operation failure; it may be edited only after a persisted terminal `Failed` attempt, where the fresh `#N` operation key represents a new delivery attempt against the same track.\n\nAn identical request after success returns the same track without re-delivery. A persisted terminal failure genuinely retries, unless the track's Planner already has a session (a reset or re-point started it since): that retry is 409 `conflict`, starts nothing and delivers nothing, so send the message through `POST /api/cards/{id}/planner/input`. With no session yet but another start of the Planner running, it is 503. A `Stuck` attempt keeps replaying its recorded 500; 64 failed attempts exhaust the key. Resume does not rerun mutable create-path validation, so repointing or deleting an attached workspace does not change request identity. Bindings created before request fingerprints existed fail closed with 409 `idempotency_key_reused` because the server cannot prove request equality. A key longer than 128 bytes, blank or not visible ASCII is 400 `idempotency_key_invalid`.",
+            "description": "Required with first_message; keep the original key to reconcile retries under the same creation contract.",
             "required": false,
             "schema": {
               "type": [
@@ -9315,7 +9386,7 @@
         },
         "responses": {
           "201": {
-            "description": "Track created. With `first_message`, the message is also queued for the planner agent inside the harness-start transaction; a retry under the same `Idempotency-Key` returns the same track without re-delivering it.",
+            "description": "Track created or original receipt replayed. Canonical input is saved independently of native readiness.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9325,7 +9396,7 @@
             }
           },
           "400": {
-            "description": "Malformed create (bad `cwd`, unknown `template_id`, invalid `template_input`, a `claude` Planner this server cannot run right now (not configured, a wrong binary version, not logged in, or no model list from the CLI; the error carries the reason `GET /api/agent-providers` reports), or `reasoning_effort` unsupported by the selected model's current catalog entry; no track is minted and no effort is silently adjusted), more than one of `template_id` / `recipe_id` / `fork_report_from` (each names a starting point; give at most one — naming none is the ordinary blank create), a malformed `Idempotency-Key` header (empty, non-ASCII or over 128 bytes; code `idempotency_key_invalid`) on any create, or — with `first_message` — a missing `Idempotency-Key` or an empty/over-long message. Decided before anything is minted; the multi-source refusal, like every other create-path check, is not re-run on an `Idempotency-Key` replay, which mints nothing.",
+            "description": "Invalid creation request or unsupported canonical first-input preparation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9335,7 +9406,7 @@
             }
           },
           "401": {
-            "description": "`unauthorized`: no valid session cookie.",
+            "description": "No verified live Human source for first_message, or the session is invalid or revoked",
             "content": {
               "application/json": {
                 "schema": {
@@ -9345,7 +9416,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "description": "Registered current Area collaboration access is required for Human input; System targets are not Human Track creation",
             "content": {
               "application/json": {
                 "schema": {
@@ -9355,7 +9426,7 @@
             }
           },
           "404": {
-            "description": "Area not found",
+            "description": "Area or surviving accepted resource not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -9365,7 +9436,7 @@
             }
           },
           "409": {
-            "description": "Folder-claim conflict (structured `FolderConflict` body), `idempotency_key_reused` when an `Idempotency-Key` is bound to a different create or to a legacy binding whose request cannot be proven, `idempotency_key_concurrent` when another create under the same key committed at the same moment (nothing of this request was kept; retry the identical request under the same key and it resolves to that track), `idempotency_key_exhausted` when the key used all 64 retry slots, when the track it names has been deleted, or when its managed workspace can no longer be materialized, or `conflict` naming `attached-repo-diverged` when the attached checkout has unpushed commits and its upstream moved on, so the track's worktree cannot be made (the track is already committed and stays, as after a failed managed materialization; reconcile the checkout, then retry under the same key), or `conflict` when a `first_message` retry after a failed start finds that the track's Planner already has a session, so the retry starts nothing (send the message through `POST /api/cards/{id}/planner/input`). Recovery depends on `code`: fix a folder conflict and retry the same key; preserve the original request after `idempotency_key_reused` (use a new key only for an explicit new create); use a new key after `idempotency_key_exhausted`.",
+            "description": "Key or resource conflict. Reconcile with the original key; a new key creates a new intent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9405,7 +9476,7 @@
             }
           },
           "500": {
-            "description": "Internal error. One case leaves the track behind: when the request carried a `first_message` and the planner harness start did not complete, the track, its cards and its workspace are already committed, and whether the message reached the agent is **unknown to the server** — depending on how far the start got, it may never have been handed over, or it may already have been delivered and answered. Nothing is rolled back and nothing compensates. What the server *can* promise, and this is what the `Idempotency-Key` buys: retrying the identical request under the **same** key creates no second track and delivers no second copy of the message. It does not promise the track is usable — a replay does not repair an attached workspace whose directory was deleted. Without `first_message` the same harness failure is logged and still returns 201, because no user text was riding on it — which also holds when such a create sends an `Idempotency-Key` and is answered from its binding.",
+            "description": "Internal storage or response error; an uncertain outcome must be reconciled under the original key",
             "content": {
               "application/json": {
                 "schema": {
@@ -9415,7 +9486,7 @@
             }
           },
           "503": {
-            "description": "A keyed retry found the Planner with no session yet and a start running; it started nothing. Retry shortly.",
+            "description": "A message-less resource creation found a concurrent Planner start; no Human input acceptance is inferred",
             "content": {
               "application/json": {
                 "schema": {
@@ -13762,6 +13833,24 @@
           }
         }
       },
+      "ConversationActiveInput": {
+        "type": "object",
+        "required": [
+          "logical_turn_id",
+          "submissions"
+        ],
+        "properties": {
+          "logical_turn_id": {
+            "type": "string"
+          },
+          "submissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationSubmissionDelivery"
+            }
+          }
+        }
+      },
       "ConversationArchiveRequest": {
         "type": "object",
         "required": [
@@ -13773,6 +13862,273 @@
           }
         },
         "additionalProperties": false
+      },
+      "ConversationCursor": {
+        "type": "object",
+        "required": [
+          "contract",
+          "card_id",
+          "source",
+          "position"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "contract": {
+            "$ref": "#/components/schemas/ConversationReadContract"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConversationCursorSource"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConversationCursorSource": {
+        "type": "string",
+        "enum": [
+          "presentation",
+          "historical_raw"
+        ]
+      },
+      "ConversationDelivery": {
+        "type": "string",
+        "enum": [
+          "crossing_unknown",
+          "unknown",
+          "not_dispatched",
+          "accepted"
+        ]
+      },
+      "ConversationDisplayIdentity": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "message_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "human"
+                ]
+              },
+              "message_id": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "observation_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              },
+              "observation_id": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "thread_id",
+              "item_id",
+              "kind"
+            ],
+            "properties": {
+              "item_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "native"
+                ]
+              },
+              "thread_id": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "ConversationDisplayItem": {
+        "type": "object",
+        "required": [
+          "cursor",
+          "source"
+        ],
+        "properties": {
+          "cursor": {
+            "$ref": "#/components/schemas/ConversationCursor"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConversationDisplaySource"
+          }
+        }
+      },
+      "ConversationDisplaySource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "message_id",
+              "revision",
+              "author",
+              "text",
+              "attachments",
+              "created_at_ms",
+              "kind"
+            ],
+            "properties": {
+              "attachments": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PlannerAttachment"
+                }
+              },
+              "author": {
+                "$ref": "#/components/schemas/ConversationHumanAuthor"
+              },
+              "created_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "human"
+                ]
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "observation_id",
+              "presentation",
+              "text",
+              "created_at_ms",
+              "kind"
+            ],
+            "properties": {
+              "created_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              },
+              "observation_id": {
+                "type": "string"
+              },
+              "presentation": {
+                "$ref": "#/components/schemas/SystemInputPresentation"
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "item",
+              "kind"
+            ],
+            "properties": {
+              "item": {
+                "$ref": "#/components/schemas/HarnessItem"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "native"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "item",
+              "kind"
+            ],
+            "properties": {
+              "item": {
+                "$ref": "#/components/schemas/HarnessItem"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "historical_raw"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "identity",
+              "kind"
+            ],
+            "properties": {
+              "identity": {
+                "$ref": "#/components/schemas/ConversationDisplayIdentity"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "removed"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ConversationHumanAuthor": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
       },
       "ConversationInitialInputObservation": {
         "oneOf": [
@@ -13878,19 +14234,18 @@
                     "type": "null"
                   },
                   {
-                    "$ref": "#/components/schemas/ConversationInitialInputReceipt",
-                    "description": "Required nullable evidence: unknown presence does not erase proven acceptance."
+                    "$ref": "#/components/schemas/ConversationInitialInputReceipt"
                   }
                 ]
               }
             }
           }
         ],
-        "description": "Exact current queue ownership or provider-confirmed projection; no absence\nconclusion is available from an empty queue and incomplete retained history.\nOutbound only; the client decoder enforces reason/receipt correlation."
+        "description": "Exact current queue ownership or provider-confirmed projection; no absence\nconclusion is available from an empty queue and incomplete retained history.\nOutbound only; the client decoder enforces reason/receipt correlation.\nAn unavailable observation carries required nullable evidence: unknown presence never erases proven acceptance."
       },
       "ConversationInitialInputReceipt": {
         "type": "object",
-        "description": "Immutable mint evidence. It does not assert that the input is still queued or visible.",
+        "description": "Immutable mint evidence. It does not assert that the input is still queued or visible.\n`initial_runtime_id` names the original carrier; recovery may move the same entry elsewhere.",
         "required": [
           "version",
           "entryId",
@@ -13909,8 +14264,7 @@
             "minimum": 0
           },
           "initialRuntimeId": {
-            "type": "string",
-            "description": "The original carrier; later recovery may move the same entry to another runtime."
+            "type": "string"
           },
           "queuedAtMs": {
             "type": "integer",
@@ -13962,6 +14316,177 @@
           }
         ]
       },
+      "ConversationInputContract": {
+        "type": "string",
+        "enum": [
+          "canonical",
+          "historical"
+        ]
+      },
+      "ConversationItemsReadResponse": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarnessItem"
+            }
+          },
+          {
+            "$ref": "#/components/schemas/ConversationPage"
+          }
+        ]
+      },
+      "ConversationLiveReplies": {
+        "type": "object",
+        "required": [
+          "contract",
+          "turn"
+        ],
+        "properties": {
+          "contract": {
+            "$ref": "#/components/schemas/ConversationReadContract"
+          },
+          "turn": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationLiveTurn"
+              }
+            ]
+          }
+        }
+      },
+      "ConversationLiveTurn": {
+        "type": "object",
+        "required": [
+          "thread_id",
+          "turn_id",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarnessLiveReply"
+            }
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationPage": {
+        "type": "object",
+        "required": [
+          "contract",
+          "source",
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "contract": {
+            "$ref": "#/components/schemas/ConversationReadContract"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationDisplayItem"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationCursor"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/ConversationCursorSource"
+          }
+        }
+      },
+      "ConversationPendingInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "message_id",
+              "revision",
+              "queue_position",
+              "queued_at_ms",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "human"
+                ]
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "queue_position": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "queued_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "observation_id",
+              "queue_position",
+              "queued_at_ms",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "system"
+                ]
+              },
+              "observation_id": {
+                "type": "string"
+              },
+              "queue_position": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "queued_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        ]
+      },
+      "ConversationReadContract": {
+        "type": "string",
+        "enum": [
+          "conversation_v1"
+        ]
+      },
       "ConversationRecoveryNotice": {
         "type": "object",
         "required": [
@@ -13981,6 +14506,35 @@
             "type": "string"
           },
           "track_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConversationSubmissionDelivery": {
+        "type": "object",
+        "required": [
+          "submission_id",
+          "attempt_id",
+          "delivery"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationDelivery"
+              }
+            ]
+          },
+          "submission_id": {
             "type": "string"
           }
         }
@@ -14145,14 +14699,14 @@
               "string",
               "null"
             ],
-            "description": "Omitted / null persists `default_cwd()` and skips `area_folders`; present values\n(including the empty string) keep the absolute-path + claim rules."
+            "description": "Message-less resource creation keeps the existing cwd/claim contract.\nHuman first-message creation supports only the configured managed root;\nan explicit cwd requires its own preparation and is currently refused."
           },
           "first_message": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The user's first sentence, seeded into the planner harness as a user message. Supplying\nit makes `Idempotency-Key` required and turns a harness-start failure into a 500 (the\ncommitted track is not undone)."
+            "description": "The verified Human's first accepted message. Requires Idempotency-Key.\nCanonical input and original resource acknowledgement commit before any\nnative startup; a later startup failure cannot undo that acceptance."
           },
           "fork_report_from": {
             "type": [
@@ -14894,7 +15448,7 @@
       },
       "HarnessInputOrigin": {
         "type": "object",
-        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.",
+        "description": "Why a segment was in the turn: the observation that produced it and the event behind it.\n`queue_entry` binds identity and actual revision as one fact. Legacy or non-user input\nhas no versioned reference, including released origins that omitted this metadata.",
         "required": [
           "observation",
           "event_id",
@@ -14919,8 +15473,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/HarnessQueueEntryRef",
-                "description": "Identity and actual revision are one fact. Null for non-user/legacy entries;\nreleased historical origins without this metadata remain unversioned."
+                "$ref": "#/components/schemas/HarnessQueueEntryRef"
               }
             ]
           }
@@ -15073,21 +15626,46 @@
               "null"
             ],
             "format": "int64",
-            "description": "Return items with database ids greater than this value."
+            "description": "Legacy physical item cursor. Accepted only without contract on V1 history."
+          },
+          "contract": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationReadContract"
+              }
+            ]
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id."
           },
           "direction": {
-            "$ref": "#/components/schemas/HarnessItemsDirection",
-            "description": "Fetch the oldest (`asc`) or latest (`desc`) matching rows. Defaults to `asc`."
+            "$ref": "#/components/schemas/HarnessItemsDirection"
           },
           "limit": {
             "type": [
               "integer",
               "null"
             ],
-            "format": "int64",
-            "description": "Maximum number of rows to return. Defaults to 100 and is capped at 500."
+            "format": "int64"
           }
         }
+      },
+      "HarnessLiveReadResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HarnessLiveReplies"
+          },
+          {
+            "$ref": "#/components/schemas/ConversationLiveReplies"
+          }
+        ]
       },
       "HarnessLiveReplies": {
         "type": "object",
@@ -16346,6 +16924,221 @@
           "full"
         ]
       },
+      "PlannerRunReadResponse": {
+        "anyOf": [
+          {
+            "type": "object",
+            "description": "Current harness and maintenance facts for a card. Dormancy is not an error: phase is null, while durable maintenance facts may retain their carrier runtime id.",
+            "required": [
+              "card_id",
+              "compact_outcome",
+              "context_usage_invalidated",
+              "permission_mode",
+              "recovery",
+              "pending",
+              "pending_overflow",
+              "attachments_supported",
+              "manual_compact_supported"
+            ],
+            "properties": {
+              "attachments_supported": {
+                "type": "boolean",
+                "description": "Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`)."
+              },
+              "blocked_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why this conversation's queue is not draining, or `null` when there is nothing worth saying: an undeterminable model/effort, a refused turn start, or a long codex outage. A client should render it as a standing notice, not a request error.\nA brief outage fills nothing, so `null` is not evidence that anything succeeded."
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "compact_outcome": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CompactOutcome",
+                    "description": "Current runtime's manual maintenance result; submission alone is not success."
+                  }
+                ]
+              },
+              "context_usage_invalidated": {
+                "type": "boolean",
+                "description": "A context replacement invalidated the previous occupancy; await a new trusted reading."
+              },
+              "manual_compact_supported": {
+                "type": "boolean",
+                "description": "Whether the bound Planner backend implements manual context compaction. This is not\ncurrent admission: the compact POST still checks authorization, busy state and history.\nAnswered for dormant conversations too; managed ACP does not implement it."
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The model slug this conversation's turns run with, or `null` to follow the installation default. Read off the CARD, so answered for a dormant conversation too."
+              },
+              "pending": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PendingQueueEntry"
+                },
+                "description": "The addressable user entries still waiting for the next turn, in queue order. Empty when dormant. Dispatcher observations and pre-id user entries never appear; the latter are counted in `pending_overflow`."
+              },
+              "pending_overflow": {
+                "type": "integer",
+                "format": "int32",
+                "description": "User-authored entries that exist in the queue but are NOT in `pending`: pre-id entries, plus anything past the page budget.",
+                "minimum": 0
+              },
+              "permission_mode": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlannerPermissionMode",
+                    "description": "The Planner's permission mode, read off the card like `model`; set with\n`PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a\nPlanner (a PlainChat or Assistant conversation has no permission mode). A stored value that\ncannot be read is reported as `never`."
+                  }
+                ]
+              },
+              "phase": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/HarnessPhaseTag",
+                    "description": "Current harness phase, or null when the harness is dormant."
+                  }
+                ]
+              },
+              "reasoning_effort": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The chosen reasoning effort, or `null` for the default. Same source as `model`."
+              },
+              "recovery": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RunRecovery",
+                    "description": "Explicit recovery for the current worker, independent of lifecycle and queue contents."
+                  }
+                ]
+              },
+              "running_turn": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlannerRunningTurn",
+                    "description": "The turn the harness is running. Non-null exactly when this response's `phase` is `turn_running`: both come from one read of the harness state."
+                  }
+                ]
+              },
+              "token_usage": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PlannerRunTokenUsage",
+                    "description": "Latest valid context-window reading, or null when no trusted reading exists or a context replacement invalidated it."
+                  }
+                ]
+              },
+              "worker_session_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Current live runtime id, or null when dormant (except the retained unconfirmed-stop carrier)."
+              }
+            }
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GetPlannerRunResponse"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "input_contract",
+                  "history_replacement_supported",
+                  "terminal_timeout",
+                  "runtime_state",
+                  "pending_inputs",
+                  "active_input",
+                  "native_turn_id"
+                ],
+                "properties": {
+                  "active_input": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/ConversationActiveInput"
+                      }
+                    ]
+                  },
+                  "history_replacement_supported": {
+                    "type": "boolean",
+                    "description": "Current historical edit affordance; every write rechecks its actual source."
+                  },
+                  "input_contract": {
+                    "$ref": "#/components/schemas/ConversationInputContract"
+                  },
+                  "native_turn_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "pending_inputs": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ConversationPendingInput"
+                    }
+                  },
+                  "runtime_state": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/WorkerSessionState",
+                        "description": "Actual current worker row state. Canonical is always present; null means no current historical runtime."
+                      }
+                    ]
+                  },
+                  "terminal_timeout": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/components/schemas/HarnessTimeoutEvidence",
+                        "description": "Confirmed timeout for this exact current execution, independent of execution admission."
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
       "PlannerRunTokenUsage": {
         "type": "object",
         "description": "The context-usage half of [`GetPlannerRunResponse`]. `percent` is computed on the server so there is one place to get it wrong, and `total_tokens` is NOT shipped: it is a cumulative sum across the thread, and a meter drawn from it is the most likely UI bug.",
@@ -17296,14 +18089,14 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
             },
-            "description": "Ids returned by `POST /api/cards/{id}/planner/attachments`. Naming an attachment here is what BINDS it: the bytes move out of the sweepable staging area before this request writes anything to the queue.\nAn id belonging to another card is a 400, as is naming the same one twice or naming more than eight."
+            "description": "Historical conversations retain attachment binding. Canonical attachment\ninput requires its owning admission and is currently refused."
           },
           "replaces_turn": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The `turnId` of the conversation's latest response, when this message replaces that turn\n(Edit). The turn's rows leave the conversation and this message is queued in one commit; a\nrefusal is 409 `planner_turn_not_replaceable` and changes nothing. Person only."
+            "description": "Historical replacement intent. Canonical history replacement requires\nits owning operation and is currently refused."
           },
           "text": {
             "type": "string"
@@ -17325,7 +18118,7 @@
               "string",
               "null"
             ],
-            "description": "Stable id of the queue entry this text landed in, so the client can match its optimistic echo. Null only when the text folded into a pre-id queue entry."
+            "description": "Canonical message identity or a real addressable new historical entry.\nStored historical acknowledgements retain their original optional ID."
           },
           "worker_session_id": {
             "type": "string"
@@ -17595,6 +18388,19 @@
           }
         },
         "additionalProperties": false
+      },
+      "SystemInputPresentation": {
+        "type": "string",
+        "description": "How one segment of a harness `userMessage` should be presented to a human. The rendered English\nis not a protocol: wording changes must not turn a system update into something the UI attributes to the user.",
+        "enum": [
+          "system",
+          "system_worker_turn_finished",
+          "system_report_edited",
+          "system_task_completed",
+          "system_task_failed",
+          "system_mail",
+          "system_planner_turn_budget"
+        ]
       },
       "TagMention": {
         "type": "object",

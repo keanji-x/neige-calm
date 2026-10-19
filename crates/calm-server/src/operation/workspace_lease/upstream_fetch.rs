@@ -278,11 +278,51 @@ pub(crate) async fn refresh_upstream_with(
     provenance: &FetchProvenance,
     clock: Clock<'_>,
 ) -> UpstreamRefresh {
+    refresh_upstream_with_admission(repo_root, bound, provenance, clock, &|| async { Ok(()) })
+        .await
+        .expect("internal refresh admission is infallible")
+}
+
+pub(crate) async fn refresh_upstream_admitted<F, A>(
+    repo_root: &Path,
+    admit: &F,
+) -> crate::error::Result<UpstreamRefresh>
+where
+    F: Fn() -> A + Send + Sync,
+    A: std::future::Future<Output = crate::error::Result<()>> + Send,
+{
+    refresh_upstream_with_admission(
+        repo_root,
+        UPSTREAM_FETCH_TIMEOUT,
+        FetchProvenance::global(),
+        &Instant::now,
+        admit,
+    )
+    .await
+}
+
+async fn refresh_upstream_with_admission<F, A>(
+    repo_root: &Path,
+    bound: Duration,
+    provenance: &FetchProvenance,
+    clock: Clock<'_>,
+    admit: &F,
+) -> crate::error::Result<UpstreamRefresh>
+where
+    F: Fn() -> A + Send + Sync,
+    A: std::future::Future<Output = crate::error::Result<()>> + Send,
+{
+    admit().await?;
     let root = repo_root.to_path_buf();
     let prepared = match tokio::task::spawn_blocking(move || prepare_fetch(&root)).await {
         Ok(Ok(prepared)) => prepared,
-        Ok(Err(outcome)) => return outcome,
-        Err(error) => return failed(repo_root, format!("upstream read task failed: {error}")),
+        Ok(Err(outcome)) => return Ok(outcome),
+        Err(error) => {
+            return Ok(failed(
+                repo_root,
+                format!("upstream read task failed: {error}"),
+            ));
+        }
     };
     let PreparedFetch {
         upstream,
@@ -294,10 +334,10 @@ pub(crate) async fn refresh_upstream_with(
     let (current, last) = provenance.snapshot(&key);
     if current != generation {
         // A fetch of this key finished while this call waited: share it.
-        return match last {
+        return Ok(match last {
             Some(LastFetch::Failed { reason, .. }) => UpstreamRefresh::Failed { reason },
             _ => UpstreamRefresh::Fetched { kernel_ref },
-        };
+        });
     }
     if let Some(LastFetch::Failed { at, .. }) = &last
         && clock().saturating_duration_since(*at) < FETCH_BACKOFF
@@ -307,10 +347,11 @@ pub(crate) async fn refresh_upstream_with(
             kernel_ref,
             "upstream fetch failed recently; backing off, the lease base is the last known upstream"
         );
-        return UpstreamRefresh::BackedOff { kernel_ref };
+        return Ok(UpstreamRefresh::BackedOff { kernel_ref });
     }
     let root = repo_root.to_path_buf();
     let destination = kernel_ref.clone();
+    admit().await?;
     let cleared = tokio::task::spawn_blocking(move || {
         clear_stale_lock(&root, &destination)?;
         clear_symbolic_destination(&root, &destination)
@@ -318,7 +359,10 @@ pub(crate) async fn refresh_upstream_with(
     .await
     .unwrap_or_else(|error| Err(format!("pre-fetch check task failed: {error}")));
     let result = match cleared {
-        Ok(()) => fetch_into(repo_root, &upstream, &kernel_ref, bound).await,
+        Ok(()) => {
+            admit().await?;
+            fetch_into(repo_root, &upstream, &kernel_ref, bound).await
+        }
         Err(reason) => Err(reason),
     };
     // The receipt is read while the single-flight lock is still held: no
@@ -338,7 +382,7 @@ pub(crate) async fn refresh_upstream_with(
         Err(reason) => Err(reason),
     };
     let at = clock();
-    match result {
+    Ok(match result {
         Ok(sha) => {
             provenance.record(&key, LastFetch::Succeeded { sha, at });
             UpstreamRefresh::Fetched { kernel_ref }
@@ -353,7 +397,7 @@ pub(crate) async fn refresh_upstream_with(
             );
             failed(repo_root, reason)
         }
-    }
+    })
 }
 
 fn failed(repo_root: &Path, reason: String) -> UpstreamRefresh {

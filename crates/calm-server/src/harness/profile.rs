@@ -65,6 +65,23 @@ pub struct PlannerBinding {
 }
 
 impl PlannerBinding {
+    /// The row's declared contract must agree with the card's binding. Current
+    /// card/track identity and active ownership are checked by the caller.
+    pub(crate) fn matches_session_contract(
+        &self,
+        session: &calm_types::worker::WorkerSession,
+    ) -> bool {
+        use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
+        let contract = match self.profile {
+            HarnessProfile::Planner => WorkerContract::Planner,
+            HarnessProfile::Assistant => WorkerContract::Assistant,
+            HarnessProfile::PlainChat => WorkerContract::Executor,
+        };
+        session.mode == SessionMode::Resumable
+            && session.contract == contract
+            && WorkerProviderKind::from(&self.provider) == session.provider
+    }
+
     /// A Planner card names its backend in the server-owned `planner_provider` key; missing or
     /// unknown makes it not a harness card (fail closed). Assistant names its own backend; PlainChat is Codex.
     pub(crate) fn from_card(card: &Card, role: CardRole) -> Option<Self> {
@@ -94,12 +111,52 @@ impl PlannerBinding {
     }
 }
 
+/// Canonical input callers already hold the current card/carrier fence in the
+/// same protected transaction. This owner supplies the one profile/provider/
+/// session-contract interpretation for both claim admission and dispatch.
+pub(crate) async fn input_carrier_binding_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    carrier: &crate::db::sqlite::conversation::CurrentInputCarrier,
+) -> crate::error::Result<(PlannerBinding, calm_types::worker::WorkerSession)> {
+    let (binding, session) = input_carrier_contract_tx(tx, carrier).await?;
+    if !session.state.is_active_authority() {
+        return Err(crate::error::CalmError::Conflict(
+            "input carrier is not active".into(),
+        ));
+    }
+    Ok((binding, session))
+}
+
+/// Contract facts for returned reports and END, including a failed current row.
+/// This does not grant execution; the binding wrapper above owns that decision.
+pub(crate) async fn input_carrier_contract_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    carrier: &crate::db::sqlite::conversation::CurrentInputCarrier,
+) -> crate::error::Result<(PlannerBinding, calm_types::worker::WorkerSession)> {
+    let shape = crate::db::sqlite::card_execution_shape_tx(tx, carrier.card_id()).await?;
+    let binding =
+        PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload).ok_or_else(|| {
+            crate::error::CalmError::Conflict("conversation provider binding changed".into())
+        })?;
+    let session = crate::db::sqlite::session_get_tx(
+        tx,
+        &calm_types::worker::WorkerSessionId(carrier.worker_session_id().into()),
+    )
+    .await?
+    .ok_or_else(|| crate::error::CalmError::Conflict("input carrier no longer exists".into()))?;
+    if !binding.matches_session_contract(&session) {
+        return Err(crate::error::CalmError::Conflict(
+            "input carrier contract no longer matches its conversation".into(),
+        ));
+    }
+    Ok((binding, session))
+}
+
 /// Resolve live row/card identity once for managed issuance and transport authorization.
 async fn persisted_binding(
     repo: &dyn crate::db::RouteRepo,
     session: &calm_types::worker::WorkerSession,
 ) -> crate::error::Result<Option<PlannerBinding>> {
-    use calm_types::worker::{SessionMode, WorkerContract};
     let Some(card_id) = session.card_id.as_ref() else {
         return Ok(None);
     };
@@ -113,15 +170,8 @@ async fn persisted_binding(
     let current = repo
         .card_identity_get_by_session(session.id.as_str())
         .await?;
-    let contract = match binding.profile {
-        HarnessProfile::Planner => WorkerContract::Planner,
-        HarnessProfile::Assistant => WorkerContract::Assistant,
-        HarnessProfile::PlainChat => WorkerContract::Executor,
-    };
-    Ok((session.mode == SessionMode::Resumable
+    Ok((binding.matches_session_contract(session)
         && card.track_id == session.track_id
-        && session.contract == contract
-        && calm_types::worker::WorkerProviderKind::from(&binding.provider) == session.provider
         && current.is_some_and(|current| {
             current.card_id == *card_id && current.track_id == session.track_id
         }))

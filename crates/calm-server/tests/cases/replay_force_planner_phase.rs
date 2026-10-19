@@ -85,11 +85,7 @@ async fn boot() -> Boot {
         )
         .await
         .unwrap();
-    let app = calm_server::routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = crate::support::authenticated_router::application(state.clone()).await;
     Boot {
         app,
         state,

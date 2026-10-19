@@ -100,7 +100,7 @@ async fn planner_hibernat_failed_release_survives_card_delete() {
 
 async fn send_completed(boot: &Boot, card: &Card, runtime: &String, text: &str) {
     let (status, body) = post_planner_input(
-        boot.app.clone(),
+        crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":format!("fake-reply: {text}")}),
     )
@@ -115,14 +115,14 @@ async fn send_completed(boot: &Boot, card: &Card, runtime: &String, text: &str) 
                 && r["method"] == "item/completed"
         });
         let handle = boot.state.harness.get(runtime).unwrap();
-        if answered && handle.snapshot().await.phase == HarnessPhaseTag::TurnCompleted {
+        if answered && handle.snapshot().await.unwrap().phase == HarnessPhaseTag::TurnCompleted {
             return;
         }
         assert!(
             Instant::now() < deadline,
             "send did not complete: {text}; block={:?}; snapshot={:?}; rows={rows:?}",
             handle.issuance_block().await,
-            handle.snapshot().await
+            handle.snapshot().await.unwrap()
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

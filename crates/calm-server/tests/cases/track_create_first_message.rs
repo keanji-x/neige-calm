@@ -13,10 +13,8 @@ use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::Extension;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
@@ -29,7 +27,6 @@ use calm_server::harness::run_loop::{
 };
 use calm_server::model::NewArea;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::shared_codex_appserver::TurnStartReturnHook;
@@ -40,7 +37,18 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+// Canonical acceptance emits the human presentation audit; native presentation changes
+// are unrelated. V1 retains its original enqueue audit.
+const HUMAN_ACCEPTANCE_AUDIT: &str = "((kind = 'harness.user_message.enqueued' AND NOT EXISTS \
+    (SELECT 1 FROM conversation_presentations p WHERE p.card_id=events.scope_card \
+    AND p.source_kind='human_message')) OR \
+    (kind = 'harness.presentation.changed' AND EXISTS \
+    (SELECT 1 FROM conversation_presentations p WHERE p.card_id = events.scope_card \
+    AND p.sequence = json_extract(events.payload, '$.cursor.position') \
+    AND p.source_kind = 'human_message')))";
+
 struct Boot {
+    historical: bool,
     app: axum::Router,
     state: AppState,
     area_id: String,
@@ -105,24 +113,27 @@ async fn boot() -> Boot {
     boot_with_daemon(true).await
 }
 
+/// Explicit supported V1 variant: template creation still owns the historical start/harvest path.
+async fn historical_boot() -> Boot {
+    let mut boot = boot().await;
+    boot.historical = true;
+    boot
+}
+
+async fn historical_boot_without_daemon() -> Boot {
+    let mut boot = boot_without_daemon().await;
+    boot.historical = true;
+    boot
+}
+
 /// Same fixture, but with the shared codex app-server **not running**, which `PlannerHarnessStartAdapter::validate`
 /// refuses on; with a fake installed `is_running()` short-circuits to `true` and the outage is unconstructible.
 async fn boot_without_daemon() -> Boot {
     boot_with_daemon(false).await
 }
 
-fn app_for_state(state: AppState) -> axum::Router {
-    routes::router()
-        .layer(Extension(Principal {
-            user_id: LEGACY_OWNER_USER_ID.into(),
-            display_name: "owner".into(),
-            role: "owner".into(),
-            session_id: "test".into(),
-        }))
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state)
+async fn app_for_state(state: AppState) -> axum::Router {
+    crate::support::authenticated_router::application(state).await
 }
 
 async fn boot_with_daemon(daemon_running: bool) -> Boot {
@@ -207,8 +218,9 @@ async fn instance_on(
     } else {
         SharedCodexAppServer::new_stub_with_pending(repo_dyn, None)
     });
-    let app = app_for_state(state.clone());
+    let app = app_for_state(state.clone()).await;
     Boot {
+        historical: false,
         app,
         state,
         area_id,
@@ -218,12 +230,12 @@ async fn instance_on(
 }
 
 impl Boot {
-    fn app_with_running_daemon(&self) -> axum::Router {
+    async fn app_with_running_daemon(&self) -> axum::Router {
         let repo: Arc<dyn Repo> = self.repo.clone();
         let state = self.state.clone().with_shared_codex_appserver(
             SharedCodexAppServer::new_fake_running_with_pending(repo, None),
         );
-        app_for_state(state)
+        app_for_state(state).await
     }
 
     /// `POST /api/tracks`; `idempotency_key` and `first_message` are both optional.
@@ -275,8 +287,11 @@ impl Boot {
         &self,
         app: axum::Router,
         idempotency_key: Option<&str>,
-        body: Value,
+        mut body: Value,
     ) -> (StatusCode, Value) {
+        if self.historical && body.get("template_id").is_none() {
+            body["template_id"] = json!("investigation");
+        }
         let mut builder = Request::builder()
             .method("POST")
             .uri("/api/tracks")
@@ -392,15 +407,17 @@ impl Boot {
     }
 
     async fn user_message_event_count(&self) -> i64 {
-        self.count("SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued'")
-            .await
+        self.count(&format!(
+            "SELECT COUNT(*) FROM events WHERE {HUMAN_ACCEPTANCE_AUDIT}"
+        ))
+        .await
     }
 
-    /// The `actor` column of the single `harness.user_message.enqueued` row.
+    /// The acceptance audit's actor: V1 enqueue or canonical human presentation event.
     async fn user_message_actor(&self) -> String {
-        sqlx::query_scalar(
-            "SELECT actor FROM events WHERE kind = 'harness.user_message.enqueued' LIMIT 1",
-        )
+        sqlx::query_scalar(&format!(
+            "SELECT actor FROM events WHERE {HUMAN_ACCEPTANCE_AUDIT} LIMIT 1"
+        ))
         .fetch_one(self.repo.pool())
         .await
         .unwrap()
@@ -412,7 +429,7 @@ impl Boot {
         settled(want, || async {
             let mut seen = self.turn_copies(needle);
             let worker_session_ids: Vec<String> =
-                sqlx::query_scalar("SELECT id FROM worker_sessions")
+                sqlx::query_scalar("SELECT id FROM worker_sessions WHERE json_extract(handle_state_json, '$.canonical_inputs') IS NULL")
                     .fetch_all(self.repo.pool())
                     .await
                     .unwrap();
@@ -863,11 +880,18 @@ async fn the_first_message_is_a_user_message_attributed_to_the_human() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let turns = b.started_turn_text("User says:").await;
-    assert!(
-        turns.contains("User says:"),
-        "the seeded observation must render as a user message, not as a bare track goal: turns={turns}"
-    );
+    let turns = b.started_turn_text("please rename the track").await;
+    let (_, card) = b.only_runtime().await;
+    let (status, page) = b
+        .get_json(&format!(
+            "/api/cards/{card}/harness/items?contract=conversation_v1"
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let human = &page["items"][0]["source"];
+    assert_eq!(human["kind"], "human");
+    assert_eq!(human["text"], "please rename the track");
+    assert_eq!(human["author"]["user_id"], LEGACY_OWNER_USER_ID);
     assert!(
         turns.contains("please rename the track"),
         "…carrying the user's own text: turns={turns}"
@@ -1146,7 +1170,7 @@ async fn a_first_message_with_an_unknown_recipe_leaves_nothing_behind() {
 /// the 5xx says "the delivery promise was not kept", not "nothing happened".
 #[tokio::test]
 async fn a_failed_harness_start_fails_a_create_that_carried_a_first_message() {
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -1208,7 +1232,7 @@ async fn a_failed_harness_start_still_creates_a_track_without_a_first_message() 
 /// claim is absent — because asserting one alone goes vacuous the next time the sentence is rewritten.
 #[tokio::test]
 async fn a_stuck_start_after_spawn_has_already_delivered_the_first_message() {
-    let b = boot().await;
+    let b = historical_boot().await;
     // Reject the `spawn_succeeded` phase write: fail the operation at the one point past the side effect.
     b.reject_spawn_succeeded().await;
 
@@ -1417,7 +1441,7 @@ async fn replaying_a_successful_create_returns_the_same_track_and_delivers_once(
 /// first, so a replay must carry the chosen operation's own `cwd`, not the repointed `track.workspace.path`.
 #[tokio::test]
 async fn a_replay_survives_the_track_being_repointed_in_between() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (first, first_body) = b
         .create_track(Some("idem-repoint-replay"), Some("ship the thing"))
         .await;
@@ -1483,7 +1507,7 @@ async fn a_replay_survives_the_track_being_repointed_in_between() {
 /// started the Planner would leave it a conversation, which the retry refuses to supersede (#2212).
 #[tokio::test]
 async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -1553,7 +1577,7 @@ async fn a_retry_after_a_failure_uses_the_repointed_workspace() {
 /// stops on `#2`, which already holds a succeeded operation, so this is a replay.
 #[tokio::test]
 async fn a_replay_of_a_success_that_happened_on_a_retry_key_survives_a_repoint() {
-    let b = boot().await;
+    let b = historical_boot().await;
     // (1) burn the base key.
     b.state
         .shared_codex_appserver
@@ -1643,7 +1667,7 @@ async fn the_same_key_with_a_different_first_message_is_a_conflict() {
 /// After a terminally failed attempt the same key genuinely RETRIES: no replay of the recorded failure, no second track.
 #[tokio::test]
 async fn the_same_key_after_a_failed_start_retries_against_the_same_track() {
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -1686,7 +1710,7 @@ async fn the_same_key_after_a_failed_start_retries_against_the_same_track() {
 /// retry to a fresh `#N` key, so an edited sentence resent after a failure is accepted; the abandoned draft must not be delivered too.
 #[tokio::test]
 async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -1781,7 +1805,7 @@ async fn the_same_key_after_a_failure_accepts_an_edited_first_message() {
 /// committed, so changing one must still conflict with the binding-level request shape.
 #[tokio::test]
 async fn a_failed_operation_does_not_unbind_the_create_shape() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let key = "idem-failed-shape";
     b.state
         .shared_codex_appserver
@@ -1817,7 +1841,7 @@ async fn a_failed_operation_does_not_unbind_the_create_shape() {
 /// real endpoint 64 times so the `#N` chain, payload and track-reuse branch all have to hold.
 #[tokio::test]
 async fn a_key_exhausted_by_64_failed_attempts_answers_409() {
-    let b = boot().await;
+    let b = historical_boot().await;
     for attempt in 1..=64 {
         b.state
             .shared_codex_appserver
@@ -2060,7 +2084,7 @@ async fn a_create_without_a_first_message_still_runs_every_create_check() {
 /// before `insert_operation`, so the binding row is the only record of which track a key created.
 #[tokio::test]
 async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
-    let b = boot_without_daemon().await;
+    let b = historical_boot_without_daemon().await;
     let (first, first_body) = b.create_track(Some("idem-out"), Some("do the thing")).await;
     let (second, second_body) = b.create_track(Some("idem-out"), Some("do the thing")).await;
     assert_eq!(
@@ -2104,7 +2128,7 @@ async fn a_daemon_outage_adopts_the_track_it_already_minted_under_one_key() {
 /// an edited sentence is accepted on the vacant operation key and delivered to the original track.
 #[tokio::test]
 async fn an_operationless_binding_rejects_a_different_first_message() {
-    let b = boot_without_daemon().await;
+    let b = historical_boot_without_daemon().await;
     let key = "idem-operationless-message";
     let (first, first_body) = b.create_track(Some(key), Some("original sentence")).await;
     assert_eq!(
@@ -2120,7 +2144,7 @@ async fn an_operationless_binding_rejects_a_different_first_message() {
         "premise: no payload hash exists"
     );
 
-    let running_app = b.app_with_running_daemon();
+    let running_app = b.app_with_running_daemon().await;
     let mut edited = json!({
         "planner_provider": "codex",
         "area_id": b.area_id,
@@ -2147,7 +2171,7 @@ async fn an_operationless_binding_rejects_a_different_first_message() {
 /// a different title look like a retryable operation parameter.
 #[tokio::test]
 async fn an_operationless_binding_rejects_a_different_create_shape() {
-    let b = boot_without_daemon().await;
+    let b = historical_boot_without_daemon().await;
     let key = "idem-operationless-shape";
     let base = json!({
         "planner_provider": "codex",
@@ -2171,7 +2195,7 @@ async fn an_operationless_binding_rejects_a_different_create_shape() {
     let mut edited = base;
     edited["title"] = json!("different title");
     let (status, body) = b
-        .post_create_on(b.app_with_running_daemon(), Some(key), edited)
+        .post_create_on(b.app_with_running_daemon().await, Some(key), edited)
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], "idempotency_key_reused", "body={body}");
@@ -2188,10 +2212,16 @@ async fn an_operationless_binding_rejects_a_different_create_shape() {
 /// effects instead of pretending NULL hashes mean a match.
 #[tokio::test]
 async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let key = "idem-legacy-fingerprint";
     let (created, body) = b.create_track(Some(key), Some("same sentence")).await;
     assert_eq!(created, StatusCode::CREATED, "body={body}");
+    assert_eq!(
+        b.count("SELECT COUNT(*) FROM conversation_human_track_creations")
+            .await,
+        0,
+        "the upgrade fixture is a genuine V1 binding, never canonical acceptance"
+    );
     let operations_before = b.operation_count().await;
     sqlx::query(
         "UPDATE track_create_idempotency \
@@ -2219,17 +2249,23 @@ async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
     b.shutdown_harnesses().await;
 }
 
-/// Frozen pre-cross-area request fingerprint: seed the old persisted digest, then replay through the real
+/// Frozen pre-cross-area investigation-template fingerprint: seed the old persisted digest, then replay through the real
 /// HTTP route on the upgraded server.
 #[tokio::test]
 async fn pre_cross_area_bindings_replay_after_upgrade() {
     for message in [None, Some("same sentence")] {
-        let b = boot().await;
+        let b = historical_boot().await;
         let key = "idem-pre-cross-area";
         let (created, original) = b.create_track(Some(key), message).await;
         assert_eq!(created, StatusCode::CREATED, "body={original}");
+        assert_eq!(
+            b.count("SELECT COUNT(*) FROM conversation_human_track_creations")
+                .await,
+            0,
+            "the pre-canonical upgrade fixture has no immutable canonical receipt"
+        );
         sqlx::query("UPDATE track_create_idempotency SET create_request_sha256 = ?1 WHERE idempotency_key = ?2")
-            .bind("2e059b04225d633c402c23612df059bda03c1d064f4eac24d817061e9c9095ce")
+            .bind("59e6992a2e9d3cb981bcf451d1cfd839cfa685a075a58750ea7e22c73dca151b")
             .bind(key)
             .execute(b.repo.pool()).await.unwrap();
         let messages_before = b.user_message_event_count().await;
@@ -2305,7 +2341,7 @@ async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
 /// create produced puts the next request onto the `Replay` arm, which must answer 500 and deliver nothing.
 #[tokio::test]
 async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let key = "idem-stuck-replay";
     let (created, body) = b.create_track(Some(key), Some("the stuck sentence")).await;
     assert_eq!(created, StatusCode::CREATED, "body={body}");
@@ -2382,7 +2418,9 @@ async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
 async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_the_winner() {
     use calm_server::routes::tracks::TrackCreateMintGate;
 
-    let (winner, loser) = boot_two_instances_on_one_database().await;
+    let (mut winner, mut loser) = boot_two_instances_on_one_database().await;
+    winner.historical = true;
+    loser.historical = true;
     let key = "idem-cross-instance-race";
     let gate = Arc::new(TrackCreateMintGate::new());
     let loser_app = app_for_state(
@@ -2390,7 +2428,8 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
             .state
             .clone()
             .with_track_create_mint_rendezvous(gate.clone()),
-    );
+    )
+    .await;
 
     // The loser starts first and parks after its lookup 1 missed, before its create transaction opens.
     let loser_body = json!({
@@ -2399,6 +2438,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
         "title": "",
         "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         "first_message": "one sentence, two instances",
+        "template_id": "investigation",
     });
     let loser_request = tokio::spawn({
         let app = loser_app.clone();
@@ -2485,12 +2525,13 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
             loser.app.clone(),
             Some(key),
             json!({
-                "planner_provider": "codex",
-                "area_id": loser.area_id,
-                "title": "",
-                "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-                "first_message": "one sentence, two instances",
-            }),
+                    "planner_provider": "codex",
+                    "area_id": loser.area_id,
+                    "title": "",
+                    "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+                    "first_message": "one sentence, two instances",
+            "template_id": "investigation",
+                }),
         )
         .await;
     assert_eq!(retry_status, StatusCode::CREATED, "body={retry_body}");
@@ -2509,7 +2550,7 @@ async fn a_loser_of_the_cross_instance_key_race_writes_nothing_and_retries_onto_
 /// and a resume that only re-submitted the operation would 201 onto a directory with no `HEAD`.
 #[tokio::test]
 async fn a_resume_after_a_materialize_failure_materializes_the_workspace() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (first, first_body) = b
         .create_track(Some("idem-remat"), Some("ship the thing"))
         .await;
@@ -2553,7 +2594,7 @@ async fn a_resume_after_a_materialize_failure_materializes_the_workspace() {
 /// compared across the replay.
 #[tokio::test]
 async fn a_resume_on_a_healthy_managed_workspace_is_a_no_op() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (first, first_body) = b
         .create_track(Some("idem-noop"), Some("ship the thing"))
         .await;
@@ -2610,7 +2651,7 @@ async fn a_resume_on_a_healthy_managed_workspace_is_a_no_op() {
 /// and no marker, which `materialize_workspace` refuses forever; the key is poisoned and the answer is 409 `idempotency_key_exhausted`.
 #[tokio::test]
 async fn a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (first, first_body) = b
         .create_track(Some("idem-brick"), Some("ship the thing"))
         .await;
@@ -2644,7 +2685,7 @@ async fn a_resume_onto_an_unmarked_non_empty_workspace_is_key_exhausted() {
 /// from *that* id, so the poisoned directory is never revisited.
 #[tokio::test]
 async fn a_new_idempotency_key_recovers_from_a_poisoned_workspace() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (first, first_body) = b
         .create_track(Some("idem-poisoned"), Some("ship the thing"))
         .await;
@@ -2937,7 +2978,7 @@ async fn every_mint_input_is_bound_to_the_track_create_key() {
 /// bytes, and an operation submitted by an older binary and retried after a deploy would come back 409.
 #[tokio::test]
 async fn a_message_less_create_writes_byte_identical_payload_json() {
-    let b = boot().await;
+    let mut b = boot().await;
     let (status, body) = b.create_track(None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let payloads = b.operation_payloads().await;
@@ -2949,22 +2990,86 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
         );
     }
 
-    // And the positive half: a keyed create DOES carry it.
+    // Human first input binds the original fingerprint in canonical storage,
+    // independently of the old start-operation body and native readiness.
+    // Only this test gains a real issuer; the shared legacy fixture is unchanged.
+    b.app = b.app.layer(axum::middleware::from_fn_with_state(
+        calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+            username: None,
+            password: None,
+            dev_autologin: true,
+            display_name: "fixture owner".into(),
+        }),
+        calm_server::auth::require_session,
+    ));
     let (status, body) = b
         .create_track(Some("idem-digest"), Some("ship the thing"))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    let payloads = b.operation_payloads().await;
-    let keyed: Vec<&Value> = payloads
-        .iter()
-        .filter(|p| p.get("first_message").is_some())
-        .collect();
-    assert_eq!(keyed.len(), 1, "one keyed start: {payloads:?}");
-    assert!(
-        keyed[0]["create_request_sha256"].is_string(),
-        "a keyed create must carry the digest so operation replay keeps the same payload identity: {:?}",
-        keyed[0]
+    assert_eq!(
+        b.operation_payloads().await,
+        payloads,
+        "accepted Human body is not copied into a V1 start operation"
     );
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
+        .await
+        .unwrap();
+    let original = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
+        &mut tx,
+        &b.area_id,
+        "idem-digest",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(original.source_user_id, LEGACY_OWNER_USER_ID);
+    assert_eq!(original.create_request_sha256.len(), 64);
+    let calm_server::db::sqlite::conversation::HumanTrackCreationAck::V1 {
+        track_id,
+        planner_card_id,
+        first_message,
+        ..
+    } = &original.acknowledgement;
+    assert_eq!(track_id, body["id"].as_str().unwrap());
+    let author =
+        calm_server::db::sqlite::conversation::message_tx(&mut tx, &first_message.message_id)
+            .await
+            .unwrap();
+    assert_eq!(author.card_id, *planner_card_id);
+    assert_eq!(
+        author.author,
+        calm_types::conversation::MessageAuthor::AuthenticatedHuman {
+            registered_user_id: LEGACY_OWNER_USER_ID.into(),
+        }
+    );
+    let revision = calm_server::db::sqlite::conversation::revision_tx(&mut tx, first_message)
+        .await
+        .unwrap();
+    assert!(
+        matches!(revision.payload, calm_types::conversation::PrivateHistoryPayload::Present { value } if value.text == "ship the thing")
+    );
+    tx.commit().await.unwrap();
+    let (status, replay) = b
+        .create_track(Some("idem-digest"), Some("ship the thing"))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{replay}");
+    assert_eq!(replay["id"], body["id"]);
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
+        .await
+        .unwrap();
+    let retained = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
+        &mut tx,
+        &b.area_id,
+        "idem-digest",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        retained, original,
+        "the original fingerprints and ACK survive replay"
+    );
+    tx.commit().await.unwrap();
     b.shutdown_harnesses().await;
 }
 
@@ -2977,7 +3082,7 @@ const STRANDED: &str = "reconcile the ledger before Friday";
 /// THE repro. Deterministic, no load required.
 #[tokio::test]
 async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_reaches_the_agent() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (status, body) = b.create_track(Some("idem-1449"), Some(STRANDED)).await;
@@ -2985,7 +3090,9 @@ async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_r
     let track_id = body["id"].as_str().unwrap().to_string();
 
     // The drain is now parked with the sentence still on the queue.
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (stranded_runtime, _card_id) = b.only_runtime().await;
 
     let target = user_repo(&b.tmp.path().join("my-project"));
@@ -3023,14 +3130,16 @@ async fn a_first_message_not_yet_drained_when_the_workspace_is_repointed_still_r
 /// `superseded` row that still carries the sentence in its snapshot and must take nothing from it.
 #[tokio::test]
 async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (status, body) = b
         .create_track(Some("idem-1449-twice"), Some(STRANDED))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (parked_runtime, card_id) = b.only_runtime().await;
 
     let (reset, reset_body) = b.reset_planner(&card_id).await;
@@ -3078,7 +3187,7 @@ async fn a_harvested_sentence_is_not_delivered_again_by_a_second_restart() {
 async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
     const OLD_BRIEFING: &str = "briefing about the workspace this track is leaving";
 
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (status, body) = b
@@ -3086,7 +3195,9 @@ async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     let track_id = body["id"].as_str().unwrap().to_string();
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (stranded_runtime, _card_id) = b.only_runtime().await;
 
     // Put a briefing on the parked runtime's queue and persist it, so the retired row carries BOTH kinds of observation.
@@ -3136,7 +3247,7 @@ async fn a_repoint_does_not_carry_the_old_workspace_briefing_forward() {
 /// emptied queue; on a fenced runtime that last write is lost, so the harvest would re-deliver the batch.
 #[tokio::test]
 async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retired() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_turn_start();
 
     let (status, body) = b
@@ -3144,7 +3255,9 @@ async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retire
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     // Parked inside `turn/start`: the fake daemon has recorded the batch, the emptied queue is not yet written back.
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (runtime, card_id) = b.only_runtime().await;
     assert_eq!(
         b.persisted_queue(&runtime).await.len(),
@@ -3181,14 +3294,16 @@ async fn a_batch_the_daemon_already_has_is_not_harvested_after_the_row_is_retire
 /// (`shutting_down` is process memory), so it would otherwise drain the same batch too.
 #[tokio::test]
 async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (status, body) = b
         .create_track(Some("idem-1449-carrier"), Some(STRANDED))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (runtime, _card_id) = b.only_runtime().await;
 
     // Somebody else now owns this queue.
@@ -3230,14 +3345,16 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
 /// A runtime whose row is GONE does not issue either: the carrier check fails closed on a missing row.
 #[tokio::test]
 async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (status, body) = b
         .create_track(Some("idem-1449-deleted-row"), Some(STRANDED))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (runtime, _card_id) = b.only_runtime().await;
 
     // Through the production deleter, not a raw `DELETE`: `session_delete_tx` clears `tracks.root_session_id`
@@ -3269,14 +3386,16 @@ async fn a_runtime_whose_row_has_been_deleted_does_not_issue_its_queue() {
 /// successor `failed`, a state the harvest predicate never reads, and compensation is a different transaction from the mint.
 #[tokio::test]
 async fn a_failed_restart_gives_the_harvested_sentence_back() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (status, body) = b
         .create_track(Some("idem-1449-compensate"), Some(STRANDED))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (stranded_runtime, card_id) = b.only_runtime().await;
     b.retire_runtime_in_the_database(&stranded_runtime).await;
     release.notify_one();
@@ -3340,7 +3459,9 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
         StatusCode::OK,
         "premise: the send must be accepted: body={sent_body}"
     );
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     assert_eq!(
         b.persisted_queue(&runtime).await.len(),
         1,
@@ -3373,14 +3494,16 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
 /// journal cannot cover (the predecessor is still `active`), so it files its own journal entry.
 #[tokio::test]
 async fn a_failed_deferred_mint_gives_the_inherited_sentence_back() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
     let (status, body) = b
         .create_track(Some("idem-1449-inherit"), Some(STRANDED))
         .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     let (predecessor, card_id) = b.only_runtime().await;
     assert_eq!(
         b.persisted_queue(&predecessor).await.len(),
@@ -3507,7 +3630,9 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
         StatusCode::OK,
         "premise: the send lands: body={sent_body}"
     );
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
 
     // Rewrite the row the way an older binary left it: the queue is there, the id array is not.
     let state: String =
@@ -3584,7 +3709,9 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
         StatusCode::OK,
         "premise: the bootstrap must be queued: body={sent_body}"
     );
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("historical harness reaches the held lifecycle seam");
     assert_eq!(
         b.persisted_queue(&runtime).await.len(),
         1,
@@ -3601,7 +3728,12 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
 
     let successor = b.active_runtime_of_card(&planner_card_id).await;
     assert_ne!(successor, runtime, "premise: a replacement really happened");
-    successor_entered.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        successor_entered.notified(),
+    )
+    .await
+    .expect("historical harness reaches the held lifecycle seam");
     let carried = b
         .persisted_queue(&successor)
         .await
@@ -3643,50 +3775,43 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
 #[tokio::test]
 async fn the_tracks_first_message_is_addressable_in_the_pending_page() {
     const SENTENCE: &str = "the first thing anybody said on this track";
-    let b = boot().await;
-    let (entered, release) = b.hold_the_next_drain();
-
+    // Native unavailability leaves the canonical reference pending without a V1 drain hook.
+    let b = boot_without_daemon().await;
     let (status, body) = b
         .create_track(Some("idem-first-addressable"), Some(SENTENCE))
         .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-    // `POST /api/tracks` does not name the planner card in its body, so it is read from the one runtime row the create minted.
-    let (_runtime, planner_card_id) = b.only_runtime().await;
-
-    // PREMISE, not a wait: the runtime is parked at the drain hook, so what follows reads a queue that provably
-    // still holds the sentence.
-    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
-        .await
-        .expect("the harness must reach the drain hook before it can drain");
-
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (_, card) = b.only_runtime().await;
     let (status, run) = b
-        .get_json(&format!("/api/cards/{planner_card_id}/planner/run"))
+        .get_json(&format!(
+            "/api/cards/{card}/planner/run?contract=conversation_v1"
+        ))
         .await;
-    assert_eq!(status, StatusCode::OK, "body={run}");
-
-    let pending = run["pending"]
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["input_contract"], "canonical", "{run}");
+    let pending = run["pending_inputs"]
         .as_array()
-        .expect("planner/run carries a pending page");
+        .expect("canonical pending references");
+    assert_eq!(pending.len(), 1, "{run}");
+    assert_eq!(pending[0]["kind"], "human");
+    let message_id = pending[0]["message_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .expect("addressable message identity");
+    let (status, page) = b
+        .get_json(&format!(
+            "/api/cards/{card}/harness/items?contract=conversation_v1"
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items"][0]["source"]["message_id"], message_id);
     assert_eq!(
-        pending.len(),
-        1,
-        "the first message must BE on the addressable page, not merely in the queue: run={run}"
+        page["items"][0]["source"]["revision"],
+        pending[0]["revision"]
     );
-    assert_eq!(pending[0]["text"], json!(SENTENCE));
-    assert!(
-        pending[0]["entry_id"]
-            .as_str()
-            .is_some_and(|id| !id.is_empty()),
-        "…carrying a real id, which is the whole of what makes it editable and deletable: run={run}"
-    );
-    assert_eq!(
-        run["pending_overflow"],
-        json!(0),
-        "…and not withheld from the page and counted as overflow instead, which is exactly \
-         where a `LegacyUser` first message would land: run={run}"
-    );
-
-    release.notify_one();
+    assert_eq!(page["items"][0]["source"]["text"], SENTENCE);
+    assert_eq!(run["pending_overflow"], 0);
     b.shutdown_harnesses().await;
 }
 

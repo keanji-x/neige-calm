@@ -8,9 +8,27 @@ import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.t
 import { focusManager } from '@tanstack/react-query';
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); document.getElementById('root')?.remove(); });
-const words = () => [...document.querySelectorAll('[data-nc-turn="you"]')].filter(element => element.textContent === FIRST_MESSAGE);
+const words = () => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(element => element.textContent === FIRST_MESSAGE);
 const creates = (fixture: ReturnType<typeof renderFirstMessageFixture>) => fixture.requests.filter(request => request.method === 'POST'
   && request.path.endsWith('/conversations'));
+
+/** jsdom leaves native animation completion to the caller; finish only already-departed queue surfaces. */
+function captureQueueExits() {
+  const animations = vi.spyOn(Element.prototype, 'animate');
+  return {
+    async finish() {
+      await act(async () => {
+        for (const [index, result] of animations.mock.results.entries()) {
+          const surface = animations.mock.contexts[index];
+          if (surface instanceof Element && surface.matches('[data-nc-collapse-presence][aria-hidden="true"]')
+            && result.type === 'return' && result.value.playState === 'running') result.value.finish();
+        }
+        await Promise.resolve();
+      });
+    },
+    restore: () => animations.mockRestore(),
+  };
+}
 
 async function sendFirst() {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
@@ -52,6 +70,7 @@ it('keeps exactly one first sentence through accepted adoption, newer empty read
     }
     await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
     expect(words()).toHaveLength(1);
+    expect(words()[0].getAttribute('data-nc-turn')).toBe('unknown');
     expect(commits.length).toBeGreaterThan(2);
     expect(new Set(commits)).toEqual(new Set([1]));
     expect(creates(fixture)).toHaveLength(1);
@@ -169,12 +188,12 @@ it('keeps a positively changed queue body across the declared source pair and ro
     await waitFor(() => expect(fixture.client.getQueriesData({ queryKey: key })).toEqual([]));
     const inspections = fixture.inspectionCount();
     act(() => { fixture.releaseHistory(1); });
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.harnessItems(cardId))?.fetchStatus).toBe('idle'));
+    await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.harnessItems(cardId), exact: false })?.state?.fetchStatus).toBe('idle'));
     await act(async () => { await fixture.router.navigate({ to: '/settings' }); });
     await act(async () => { await fixture.router.navigate({ to: '/track/daily' }); });
     await screen.findByRole('combobox', { name: 'Message' });
     expect(words()).toHaveLength(0);
-    expect([...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === changed)).toHaveLength(1);
+    expect([...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === changed)).toHaveLength(1);
     expect(fixture.outbox()).toMatchObject([{ inputFact: { rev: 1, text: changed } }]);
     expect(fixture.inspectionCount()).toBe(inspections);
   } finally { cleanup(); fixture.client.clear(); }
@@ -223,7 +242,7 @@ it('shows newer edited canonical words over an older queued observation when cur
     fixture.project(1, edited);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
-    expect([...document.querySelectorAll('[data-nc-turn="you"]')].map(element => element.textContent)).toContain(edited);
+    expect([...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].map(element => element.textContent)).toContain(edited);
     expect(words()).toHaveLength(0);
     expect(fixture.outbox()).toMatchObject([{ phase: 'initial-accepted' }]);
     expect(observed()).toBeUndefined();
@@ -271,8 +290,8 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
   const commits: number[] = []; let capture = false;
-  const fixture = renderFirstMessageFixture({ onCommit: () => { const count = [...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === edited).length; if (count > 0) capture = true; if (capture) commits.push(count); } });
-  const shownWords = () => [...document.querySelectorAll('[data-nc-turn="you"]')].map(element => element.textContent);
+  const fixture = renderFirstMessageFixture({ onCommit: () => { const count = [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === edited).length; if (count > 0) capture = true; if (capture) commits.push(count); } });
+  const shownWords = () => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].map(element => element.textContent);
   try {
     await sendFirst();
     fixture.project(1, edited); fixture.holdNextInspection(); fixture.observe('queued');
@@ -293,7 +312,7 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
     // A source witness can already exist while its words still belong to the preview.
     // Capture only after the real ChatThread owns the projected source entry.
     const conversation = () => document.getElementById(`conversation-${cardId}`);
-    const canonicalWords = () => [...(conversation()?.querySelectorAll('[data-nc-thread] [data-nc-entry="7:1"] [data-nc-turn="you"]') ?? [])];
+    const canonicalWords = () => [...(conversation()?.querySelectorAll('[data-nc-thread] [data-nc-entry="7:1"] :is([data-nc-turn="you"], [data-nc-turn="unknown"])') ?? [])];
     await waitFor(() => {
       expect(conversation()?.querySelectorAll('[data-nc-thread]')).toHaveLength(1);
       expect(canonicalWords()).toHaveLength(1);
@@ -302,7 +321,7 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
     const [canonical] = canonicalWords();
     expect(canonical?.isConnected).toBe(true);
     const sourceReads = () => fixture.requests.filter(request => request.path.includes(`/${cardId}/harness/items`)
-      || request.path.endsWith(`/${cardId}/planner/run`)).length;
+      || request.path.endsWith(`/${cardId}/planner/run?contract=conversation_v1`)).length;
     const beforeRelease = sourceReads();
     // The held response already captured the unchanged queued result; only later requests see unavailable.
     fixture.observe('unavailable');
@@ -365,8 +384,8 @@ it('lets slow dependent reads finish across polling intervals and hand off witho
     expect(fixture.runCount()).toBe(2);
     const cardId = fixture.createdId();
     const sourceReads = fixture.requests.filter(request => request.path.includes(`/${cardId}/harness/items`)
-      || request.path.endsWith(`/${cardId}/planner/run`));
-    expect(sourceReads.findLast(request => request.path.endsWith('/planner/run'))?.signal?.aborted).toBe(false);
+      || request.path.endsWith(`/${cardId}/planner/run?contract=conversation_v1`));
+    expect(sourceReads.findLast(request => request.path.endsWith('/planner/run?contract=conversation_v1'))?.signal?.aborted).toBe(false);
     expect(words()).toHaveLength(1);
     expect(fixture.outbox()).toHaveLength(1);
     act(() => { fixture.releaseHistory(1); fixture.releaseRun(1); });
@@ -393,7 +412,7 @@ it('keeps the real first-input queue readable through parked thread admission', 
     act(() => { fixture.answerCreate(); });
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
-    await waitFor(() => expect(fixture.client.getQueryData<{ pending: readonly unknown[] }>(queryKeys.plannerRun(cardId))?.pending).toHaveLength(1));
+    await waitFor(() => expect(fixture.client.getQueriesData<{ pending: readonly unknown[] }>({ queryKey: queryKeys.plannerRun(cardId) })[0]?.[1]?.pending).toHaveLength(1));
     expect(document.querySelector('[data-nc-thread]')).toBeNull();
     expect(document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
     expect(screen.queryByText('Loading conversation…')).toBeNull();
@@ -422,6 +441,7 @@ it('keeps the real first-input queue readable through parked thread admission', 
 
 
 it.each(['unavailable', 'held'] as const)('does not revive the original first-input copy after a real Delete acknowledgement while inspection is %s', async inspection => {
+  const exits = captureQueueExits();
   const fixture = renderFirstMessageFixture();
   try {
     await sendFirst(); fixture.queueOriginal();
@@ -440,11 +460,12 @@ it.each(['unavailable', 'held'] as const)('does not revive the original first-in
     fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
     await waitFor(() => expect(fixture.requests.filter(request => request.method === 'DELETE' && request.path.endsWith('/planner/input/first-entry'))).toHaveLength(1));
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).toBeNull());
-    expect([...document.querySelectorAll('[data-nc-entry] [data-nc-turn="you"]')].filter(node => node.textContent === FIRST_MESSAGE)).toHaveLength(0);
+    expect([...document.querySelectorAll('[data-nc-entry] :is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === FIRST_MESSAGE)).toHaveLength(0);
+    await exits.finish();
     expect(words()).toHaveLength(0);
     if (inspection === 'held') act(() => { fixture.releaseInspection(0); });
     expect(words()).toHaveLength(0);
-  } finally { cleanup(); fixture.client.clear(); }
+  } finally { cleanup(); fixture.client.clear(); exits.restore(); }
 });
 
 
@@ -474,7 +495,7 @@ it('keeps acknowledged deletion nondrawing over cached sources and retains its t
     act(() => { fixture.releaseRun(2); });
     expect(words()).toHaveLength(0); expect(fixture.outbox()).toHaveLength(1);
     act(() => { fixture.releaseHistory(2); });
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.harnessItems(cardId))?.fetchStatus).toBe('idle'));
+    await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.harnessItems(cardId), exact: false })?.state?.fetchStatus).toBe('idle'));
     expect(fixture.outbox()).toHaveLength(1);
     expect(words()).toHaveLength(0);
     const name = screen.getByRole('button', { name: 'Close conversation' }).closest('[role="complementary"]')?.querySelector('h2')?.textContent;
@@ -531,7 +552,7 @@ it.each([false, true])('preserves actual queued edit acceptance without reviving
     fixture.clearQueue(); fixture.project(1, revised, true);
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['harness-items', cardId] }); });
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['planner-run', cardId] }); });
-    expect([...document.querySelectorAll('[data-nc-turn="you"]')].filter(node => node.textContent === revised)).toHaveLength(1);
+    expect([...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === revised)).toHaveLength(1);
     if (sameBody) { expect(words()).toHaveLength(1); expect(fixture.outbox()).toHaveLength(1); }
     else { expect(words()).toHaveLength(0); expect(fixture.outbox()).toHaveLength(1); }
   } finally { cleanup(); fixture.client.clear(); }
@@ -556,7 +577,7 @@ it('starts an actual post-ACK history read when Delete is accepted before the fi
     await waitFor(() => expect(fixture.historyCount()).toBe(3));
     expect(words()).toHaveLength(0); expect(fixture.outbox()).toHaveLength(1);
     act(() => { fixture.releaseHistory(2); });
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.harnessItems(cardId))?.fetchStatus).toBe('idle'));
+    await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.harnessItems(cardId), exact: false })?.state?.fetchStatus).toBe('idle'));
     expect(fixture.outbox()).toHaveLength(1);
     expect(words()).toHaveLength(0);
   } finally { cleanup(); fixture.client.clear(); }
@@ -567,6 +588,7 @@ it('keeps a real Delete acknowledgement stronger than freshly reread old unbound
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal('cancelAnimationFrame', () => undefined);
+  const exits = captureQueueExits();
   const fixture = renderFirstMessageFixture();
   focusManager.setFocused(true);
   try {
@@ -583,8 +605,9 @@ it('keeps a real Delete acknowledgement stronger than freshly reread old unbound
     const reads = fixture.requests.filter(request => request.path.includes(`/${cardId}/harness/items`)).length;
     fireEvent.click(screen.getByRole('button', { name: 'Delete this message' }));
     await waitFor(() => expect(fixture.requests.filter(request => request.path.includes(`/${cardId}/harness/items`)).length).toBeGreaterThan(reads));
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.harnessItems(cardId))?.fetchStatus).toBe('idle'));
-    await waitFor(() => expect(fixture.client.getQueryState(queryKeys.plannerRun(cardId))?.fetchStatus).toBe('idle'));
+    await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.harnessItems(cardId), exact: false })?.state?.fetchStatus).toBe('idle'));
+    await waitFor(() => expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.plannerRun(cardId), exact: false })?.state?.fetchStatus).toBe('idle'));
+    await exits.finish();
     expect(words()).toHaveLength(0);
     expect(fixture.outbox()).toHaveLength(1);
     await waitFor(() => expect(fixture.client.isFetching({ queryKey: queryKeys.initialInput('daily', cardId) })).toBe(0));
@@ -601,7 +624,7 @@ it('keeps a real Delete acknowledgement stronger than freshly reread old unbound
     fireEvent.click(await screen.findByRole('button', { name: `Conversation ${name}` }));
     await screen.findByRole('combobox', { name: 'Message' });
     expect(words()).toHaveLength(0);
-  } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); vi.useRealTimers(); }
+  } finally { cleanup(); fixture.client.clear(); exits.restore(); focusManager.setFocused(undefined); vi.useRealTimers(); }
 });
 
 
@@ -684,7 +707,7 @@ it('retains one provider-bound first input after it leaves the latest window and
     await waitFor(() => expect(words()).toHaveLength(1));
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
-    const historyKey = queryKeys.harnessItems(cardId);
+    const historyKey = [...queryKeys.harnessItems(cardId), 'conversation_v1'];
     fixture.advanceHistoryWindow();
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: historyKey }); });
     await screen.findByText(`Later page reply ${HARNESS_ITEMS_PAGE_LIMIT - 1}.`);
@@ -699,7 +722,7 @@ it('retains one provider-bound first input after it leaves the latest window and
     await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
     await waitFor(() => expect(fixture.client.getQueryState(historyKey)?.fetchStatus).toBe('idle'));
     const earlierReads = () => fixture.requests.filter(request => request.path.includes(`/${cardId}/harness/items`)
-      && Number(new URL(request.path, 'http://fixture.test').searchParams.get('after_id')) > 0);
+      && new URL(request.path, 'http://fixture.test').searchParams.has('cursor'));
     expect(earlierReads()).toHaveLength(0);
     fireEvent.wheel(document.querySelector('[data-nc-drawer-scroll]')!, { deltaY: -40 });
     await waitFor(() => expect(words()).toHaveLength(1));
@@ -719,7 +742,7 @@ it('keeps periodic projected lookup reconciliation while actual source history r
     await waitFor(() => expect(fixture.inspectionCount()).toBe(1));
     const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
     await waitFor(() => expect(fixture.client.isFetching({ queryKey: queryKeys.harnessItems(cardId) })).toBe(0));
-    expect(fixture.client.getQueryState(queryKeys.harnessItems(cardId))?.status).toBe('error');
+    expect(fixture.client.getQueryCache().find({ queryKey: queryKeys.harnessItems(cardId), exact: false })?.state?.status).toBe('error');
     const before = fixture.inspectionCount();
     await act(async () => { await vi.advanceTimersByTimeAsync(2200); });
     expect(fixture.inspectionCount()).toBeGreaterThan(before);

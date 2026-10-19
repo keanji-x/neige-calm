@@ -8,10 +8,25 @@ impl CodexAppServer {
         thread_id: &str,
         turn_id: &str,
     ) -> crate::control::NativeInterruptOutcome<Error> {
+        self.interrupt_outcome_gated(
+            thread_id,
+            turn_id,
+            &PreSendGate::new(gated_requests::allow_send),
+        )
+        .await
+    }
+
+    pub async fn interrupt_outcome_gated(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        gate: &PreSendGate<'_>,
+    ) -> crate::control::NativeInterruptOutcome<Error> {
         let response: Result<Value> = self
-            .request(
+            .request_gated(
                 "turn/interrupt",
                 json!({ "threadId": thread_id, "turnId": turn_id }),
+                gate,
             )
             .await;
         interrupt_response(response)

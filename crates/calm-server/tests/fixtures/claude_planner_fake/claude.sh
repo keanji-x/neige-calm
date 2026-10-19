@@ -158,6 +158,11 @@ if [ "$SCENARIO" = "invalid-utf8" ]; then
   exec sleep 300
 fi
 
+# C3 adversarial native streams: the driver must qualify their session before proof.
+if [ "$SCENARIO" = "receipt-before-init" ]; then jq -c '. + {isReplay: true}' <<< "$LINE"; fi
+if [ "$SCENARIO" = "result-before-init" ]; then
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{},"terminal_reason":"completed"}'
+fi
 INIT='{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"2.1.280",'
 INIT+='"model":"claude-haiku-4-5","capabilities":["interrupt_receipt_v1"],'
 # A skill fails the init check after the CLI has already named (and created) the session.
@@ -169,7 +174,14 @@ INIT+='"plugins":[{"name":"telemetry","source":"telemetry@builtin"}]}\n'
 # can hold the database across the bind of `agent_session_id` and release it before the result.
 if [ "$SCENARIO" = "slow-bind" ]; then sleep 1; fi
 # shellcheck disable=SC2059
-printf "$INIT" "$SID"
+if [ "$SCENARIO" = "wrong-init-session" ]; then
+  printf "$INIT" "00000000-0000-4000-8000-000000000000"
+else
+  printf "$INIT" "$SID"
+fi
+if [ "$SCENARIO" = "wrong-replay-session" ]; then
+  jq -c '. + {isReplay: true, session_id: "00000000-0000-4000-8000-000000000000"}' <<< "$LINE"
+fi
 jq -c '. + {isReplay: true}' <<< "$LINE"
 if [ "$SCENARIO" = "slow-bind" ]; then sleep 7; SCENARIO=exit; fi
 
@@ -203,7 +215,7 @@ case "$SCENARIO" in
     esac
     cat > /dev/null
     exit 0 ;;
-  exit)
+  exit|receipt-before-init|result-before-init|wrong-init-session|wrong-replay-session)
     echo "$TEXT"; echo "$SUCCESS"
     cat > /dev/null
     exit 0 ;;
@@ -345,7 +357,7 @@ PY
     # out), then `streamed`. `stream` then waits for `release-burst` before `stream-burst` and for
     # `release` before `stream-rest`, each if the test wrote it, and succeeds; `stream-hold` ends at
     # the next stdin line (an interrupt) as the CLI does after one.
-    jq -c 'select(.type != "result")' "$D/stream"
+    jq -c --arg session_id "$SID" 'select(.type != "result") | .session_id = $session_id' "$D/stream"
     touch "$D/streamed"
     if [ "$SCENARIO" = stream-hold ]; then
       IFS= read -r CONTROL || exit 4
@@ -354,11 +366,11 @@ PY
     else
       if [ -e "$D/stream-burst" ]; then
         while [ ! -e "$D/release-burst" ]; do sleep 0.05; done
-        jq -c 'select(.type != "result")' "$D/stream-burst"
+        jq -c --arg session_id "$SID" 'select(.type != "result") | .session_id = $session_id' "$D/stream-burst"
       fi
       if [ -e "$D/stream-rest" ]; then
         while [ ! -e "$D/release" ]; do sleep 0.05; done
-        jq -c 'select(.type != "result")' "$D/stream-rest"
+        jq -c --arg session_id "$SID" 'select(.type != "result") | .session_id = $session_id' "$D/stream-rest"
       fi
       echo "$SUCCESS"
     fi

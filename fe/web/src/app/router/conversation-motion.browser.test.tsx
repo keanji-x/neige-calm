@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun, humanPresentation, nativePresentation, presentationPage } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { act, cleanup, waitFor } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
@@ -17,19 +18,25 @@ it('keeps the composer and message bubble in place through queue acknowledgement
   const prior = [{ id: 1, card_id: 'daily-planner', worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread',
     turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ item: { text: 'An existing conversation before this message.' }, completedAtMs: sentAt - 3600000 }), created_at_ms: 1 }];
-  const { client } = renderDailyFixture({ reply: async request => {
+  const { client } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: async request => {
+    const url = new URL(request.path, 'http://fixture');
     if (request.path.endsWith('/planner/input')) {
       await new Promise<void>(resolve => { answer = resolve; });
       phase = 'queued';
       return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', entry_id: entry.entry_id });
     }
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
+    if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
-      pending: phase === 'queued' ? [entry] : [], pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
-    if (request.path.includes('/harness/items')) return ok([...prior, ...(phase === 'drained' ? [{ id: 2,
-      card_id: 'daily-planner', worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread',
-      turn_id: null, turn_error_text: null, item_uuid: entry.entry_id, item_type: 'userMessage', method: 'item/completed',
-      params: JSON.stringify({ item: { content: [{ text }] }, completedAtMs: sentAt }), created_at_ms: sentAt }] : [])]);
+      pending: [], pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
+      input_contract: 'canonical', runtime_state: 'idle', history_replacement_supported: false, terminal_timeout: null,
+      // The run read has caught up with consumption before the body page arrives.
+      pending_inputs: [],
+      active_input: null, native_turn_id: null });
+    if (url.pathname.endsWith('/harness/items') && url.searchParams.get('contract') === 'conversation_v1') return ok(presentationPage([
+      ...prior.map(row => nativePresentation('daily-planner', row)),
+      ...(phase === 'drained' ? [humanPresentation('daily-planner', 2, entry.entry_id,
+        { user_id: 'motion-user', display_name: 'Motion User' }, text, sentAt)] : []),
+    ]));
     return undefined;
   } });
   await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();
@@ -59,7 +66,7 @@ it('keeps the composer and message bubble in place through queue acknowledgement
   await act(async () => { await client.invalidateQueries(); });
   await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="motion-entry"]')).toBeNull());
   expect(document.querySelectorAll('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')).toHaveLength(1);
-  expect(bubble().closest('[data-nc-entry]')?.getAttribute('data-nc-entry')).toBe('2');
+  expect(bubble().closest('[data-nc-entry]')?.getAttribute('data-nc-entry')).toBe('human:motion-entry');
   const delivered = bubble().getBoundingClientRect();
   expect(delivered.x).toBeCloseTo(before.x, 0);
   expect(delivered.width).toBeCloseTo(before.width, 0);
@@ -72,7 +79,8 @@ it('keeps a middle edit stable while an earlier input is revoked and the reply k
   await page.viewport(1400, 900);
   let pending = ['First waiting message', 'Middle waiting message', 'Last waiting message'].map((text, index) => ({ entry_id: `queued-${index}`, text, rev: 0, queued_at_ms: Date.now() + index }));
   let liveText = 'The current reply is still streaming.';
-  const { client, requests } = renderDailyFixture({ reply: request => {
+  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+    const url = new URL(request.path, 'http://fixture');
     if (request.method === 'DELETE' && request.path.endsWith('/planner/input/queued-0')) {
       expect(request.body).toEqual({ if_entry_rev: 0 });
       pending = pending.filter(entry => entry.entry_id !== 'queued-0');
@@ -83,18 +91,18 @@ it('keeps a middle edit stable while an earlier input is revoked and the reply k
       pending = pending.map(entry => entry.entry_id === 'queued-1' ? { ...entry, text: 'Middle revised while the first is removed', rev: 1 } : entry);
       return { status: 200, statusText: 'OK', body: { card_id: 'daily-planner', entry_id: 'queued-1', rev: 1, text: 'Middle revised while the first is removed' } };
     }
-    if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
+    if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending, pending_overflow: 0, manual_compact_supported: true,
-      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 1000 } } };
-    if (request.path.endsWith('/harness/live')) return { status: 200, statusText: 'OK', body: { turn_id: 'stream', items: [{ item_id: 'reply', text: liveText }] } };
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 1000 } }, 'running', true) };
+    if (url.pathname.endsWith('/harness/live') && url.search === '') return { status: 200, statusText: 'OK', body: { turn_id: 'stream', items: [{ item_id: 'reply', text: liveText }] } };
     return undefined;
   } });
   await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();
   await expect.element(page.getByText('The current reply is still streaming.', { exact: true })).toBeVisible();
   await waitFor(() => expect([...document.querySelectorAll('[data-nc-size-motion], [data-nc-collapse-presence]')].flatMap(element => element.getAnimations())).toHaveLength(0), { timeout: 4000 });
   const queued = document.querySelector('[data-nc-pending-entry="queued-0"]')!;
-  expect(queued.querySelector('[data-nc-turn="you"]')?.textContent).toBe('First waiting message');
+  expect(queued.querySelector('[data-nc-turn="unknown"]')?.textContent).toBe('First waiting message');
   expect(document.querySelector('[data-nc-queue-toggle]')).toBeNull();
   const responseIcon = document.querySelector<SVGElement>('[data-nc-current-meta] [aria-label^="Edit message"] svg')!;
   const queuedIcon = queued.querySelector<SVGElement>('[aria-label="Edit queued message"] svg')!;
@@ -103,7 +111,7 @@ it('keeps a middle edit stable while an earlier input is revoked and the reply k
   expect(getComputedStyle(queuedIcon).height).toBe(getComputedStyle(responseIcon).height);
   expect(getComputedStyle(queuedIcon).color).toBe(getComputedStyle(responseIcon).color);
   const lastIcon = [...queued.querySelectorAll('[role="group"] button')].at(-1)!.querySelector('svg')!;
-  const bubble = queued.querySelector('[data-nc-turn="you"]')!;
+  const bubble = queued.querySelector('[data-nc-turn="unknown"]')!;
   expect(lastIcon.getBoundingClientRect().right).toBeCloseTo(bubble.getBoundingClientRect().right, 0);
   const status = document.querySelector('[data-nc-current-meta]')!;
   const statusIcon = [...status.querySelectorAll('[role="group"] button')].at(-1)!.querySelector('svg')!;
@@ -113,7 +121,7 @@ it('keeps a middle edit stable while an earlier input is revoked and the reply k
   const editorButton = document.querySelector<HTMLElement>('[data-nc-pending-entry="queued-1"] [aria-label="Edit queued message"]')!;
   await userEvent.click(editorButton);
   expect(document.querySelectorAll('[data-nc-composer]')).toHaveLength(1);
-  const originalBubble = document.querySelector('[data-nc-pending-entry="queued-1"] [data-nc-turn="you"]')!;
+  const originalBubble = document.querySelector('[data-nc-pending-entry="queued-1"] [data-nc-turn="unknown"]')!;
   expect(originalBubble.textContent).toBe('Middle waiting message');
   expect(originalBubble.hasAttribute('data-nc-editing')).toBe(true);
   expect(getComputedStyle(originalBubble).outlineStyle).toBe('dashed');
@@ -205,7 +213,8 @@ it('processes locally queued edits in order without leaving their old outbox tex
   let pending: Array<{ entry_id: string; text: string; rev: number; queued_at_ms: number }> = [];
   let drained = false;
   const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
-  const { client, requests } = renderDailyFixture({ reply: request => {
+  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+    const url = new URL(request.path, 'http://fixture');
     if (request.path.endsWith('/planner/input') && request.method === 'POST') {
       const body = request.body as { text: string };
       const entry = { entry_id: `local-${pending.length}`, text: body.text, rev: 0, queued_at_ms: now + pending.length };
@@ -217,16 +226,18 @@ it('processes locally queued edits in order without leaving their old outbox tex
       pending = pending.map(entry => entry.entry_id === 'local-1' ? { ...entry, text: 'Revised middle input', rev: 1 } : entry);
       return ok({ card_id: 'daily-planner', entry_id: 'local-1', text: 'Revised middle input', rev: 1 });
     }
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
+    if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return ok(historicalConversationRun({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: drained ? 'idle' : 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null,
       pending: drained ? [] : pending, pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null,
-      context_usage_invalidated: false, running_turn: null });
-    if (request.path.endsWith('/harness/live')) return ok({ turn_id: null, items: [] });
-    if (request.path.includes('/harness/items')) return ok(drained ? pending.map((entry, index) => ({
+      context_usage_invalidated: false, running_turn: null }, drained ? 'idle' : 'running', true));
+    if (url.pathname.endsWith('/harness/live') && url.search === '') return ok({ turn_id: null, items: [] });
+    if (url.pathname.endsWith('/harness/items') && url.searchParams.get('contract') === 'conversation_v1') return ok(historicalConversationPage('daily-planner', drained ? pending.map((entry, index) => ({
       id: 10 + index, card_id: 'daily-planner', worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: entry.entry_id, item_type: 'userMessage', method: 'item/completed',
-      params: JSON.stringify({ item: { content: [{ text: entry.text }] }, completedAtMs: entry.queued_at_ms }), created_at_ms: entry.queued_at_ms,
-    })) : []);
+      params: JSON.stringify({ item: { content: [{ text: entry.text }] } }), created_at_ms: entry.queued_at_ms,
+      input_segments: [{ presentation: 'user', text: entry.text, attachments: [],
+        origin: { observation: 'user_message', event_id: null, queue_entry: { id: entry.entry_id, rev: entry.rev } } }],
+    })) : [], null));
     return undefined;
   } });
   await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();
@@ -246,7 +257,7 @@ it('processes locally queued edits in order without leaving their old outbox tex
   drained = true;
   await act(async () => { await client.invalidateQueries(); });
   await waitFor(() => expect(document.querySelector('[data-nc-pending-queue]')).toBeNull(), { timeout: 4000 });
-  expect([...document.querySelectorAll('[data-nc-thread] [data-nc-entry] [data-nc-turn="you"]')].map(element => element.textContent))
+  expect([...document.querySelectorAll('[data-nc-thread] [data-nc-entry] [data-nc-turn="unknown"]')].map(element => element.textContent))
     .toEqual(['First local input', 'Revised middle input', 'Last local input']);
   expect(document.querySelector('[data-nc-drawer]')?.textContent).not.toContain('Old middle input');
   expect(requests.filter(request => request.method === 'PATCH')).toHaveLength(1);
@@ -255,14 +266,15 @@ it('processes locally queued edits in order without leaving their old outbox tex
 it('keeps a queued edit mounted when the first reply creates the transcript', async () => {
   await page.viewport(1400, 900);
   let text = '';
-  const { client } = renderDailyFixture({ reply: request => {
-    if (request.path.includes('/harness/items')) return { status: 200, statusText: 'OK', body: [] };
-    if (request.path.endsWith('/harness/live')) return { status: 200, statusText: 'OK', body: { turn_id: 'first', items: text === '' ? [] : [{ item_id: 'first-reply', text }] } };
-    if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
+  const { client } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+    const url = new URL(request.path, 'http://fixture');
+    if (url.pathname.endsWith('/harness/items') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [], null) };
+    if (url.pathname.endsWith('/harness/live') && url.search === '') return { status: 200, statusText: 'OK', body: { turn_id: 'first', items: text === '' ? [] : [{ item_id: 'first-reply', text }] } };
+    if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending: [{ entry_id: 'waiting', text: 'Original queued input', rev: 0, queued_at_ms: 1 }],
       pending_overflow: 0, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false,
-      running_turn: { turn_id: 'first', elapsed_ms: 0 } } };
+      running_turn: { turn_id: 'first', elapsed_ms: 0 } }, 'running', true) };
     return undefined;
   } });
   await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();
@@ -280,11 +292,12 @@ it('keeps a queued edit mounted when the first reply creates the transcript', as
 it('saves from the original queued revision and keeps the main-composer draft after a conflict', async () => {
   await page.viewport(1400, 900);
   let pending = { entry_id: 'changing', text: 'Original queued words', rev: 2, queued_at_ms: 1 };
-  const { client, requests } = renderDailyFixture({ reply: request => {
-    if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
+  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+    const url = new URL(request.path, 'http://fixture');
+    if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending: [pending], pending_overflow: 0, manual_compact_supported: true,
-      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } } };
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } }, 'running', true) };
     if (request.method === 'PATCH') {
       if ((request.body as { if_entry_rev: number }).if_entry_rev === 2) return { status: 409, statusText: 'Conflict', body: {
         error: 'The queued entry changed.', code: 'planner_input_stale', text: pending.text, rev: pending.rev, entry_id: pending.entry_id } };
@@ -317,11 +330,12 @@ it('saves from the original queued revision and keeps the main-composer draft af
 it('retains unsaved main-composer words when the edited queue entry disappears and Escape cancels edit mode', async () => {
   await page.viewport(1400, 900);
   let pending = [{ entry_id: 'draining-edit', text: 'Queued original', rev: 0, queued_at_ms: 1 }];
-  const { client, requests } = renderDailyFixture({ reply: request => {
-    if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
+  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+    const url = new URL(request.path, 'http://fixture');
+    if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending, pending_overflow: 0, manual_compact_supported: true,
-      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } } };
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'stream', elapsed_ms: 0 } }, 'running', true) };
     return undefined;
   } });
   await page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true }).click();

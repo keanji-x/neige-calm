@@ -174,6 +174,9 @@ fn verify_test_registration_gated(
         if !normalized.contains(&registration) {
             continue;
         }
+        if crate::support::source_scan::is_test_only_source(&src) {
+            return;
+        }
         if production_lines(&normalized)
             .iter()
             .any(|(_, l)| l.contains(&registration))
@@ -194,6 +197,33 @@ fn verify_test_registration_gated(
         "{rel}: exempted by test-file naming, but no `{registration}` registration \
          was found in its parent module candidates — fail closed"
     ));
+}
+
+#[test]
+fn test_file_registration_requires_an_actual_rust_test_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("probe/src");
+    let child = src.join("fixture/child_tests.rs");
+    std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+    std::fs::write(&child, "").unwrap();
+    for (registrar, expected) in [
+        ("#![cfg(test)]\nmod child_tests;", 0),
+        ("#[cfg(test)]\nmod child_tests;", 0),
+        ("#![cfg(any(test, unix))]\nmod child_tests;", 1),
+        ("// #![cfg(test)]\nmod child_tests;", 1),
+        ("#![cfg(test)]\nmod unrelated;", 1),
+        ("mod child_tests;", 1),
+    ] {
+        std::fs::write(src.join("fixture.rs"), registrar).unwrap();
+        let mut violations = Vec::new();
+        verify_test_registration_gated(
+            root.path(),
+            "probe/src/fixture/child_tests.rs",
+            &child,
+            &mut violations,
+        );
+        assert_eq!(violations.len(), expected, "{registrar}: {violations:?}");
+    }
 }
 
 /// Reduce Rust source to a scan-safe form with line numbering preserved: comments become a

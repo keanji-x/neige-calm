@@ -11,6 +11,7 @@ import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter, APP_BASEPATH } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { conversationCardId, historicalConversationPage, historicalConversationRun } from './conversation-read-data.ts';
 
 export function terminalCard(id: string, presentation: TerminalPresentation, trackId = 'workbench'): CardWire {
   return { id, track_id: trackId, kind: 'terminal', title: id, sort: 1, payload: { terminal_presentation: presentation }, deletable: true, created_at: 1, updated_at: 2 };
@@ -74,8 +75,9 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
       return ok(cards[index]);
     }
     if (method === 'DELETE' && path.startsWith('/api/cards/')) { cards.splice(cards.findIndex(card => card.id === path.split('/')[3]), 1); return ok(undefined); }
-    if (path.endsWith('/planner/run')) return ok({ card_id: 'parent', worker_session_id: 'session-parent', phase: live.text === '' ? 'idle' : 'issuing_turn', model: null,
-      reasoning_effort: null, permission_mode: null, blocked_reason: null, recovery: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+    if (path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: conversationCardId(path), worker_session_id: 'session-parent', phase: live.text === '' ? 'idle' : 'issuing_turn', model: null,
+      reasoning_effort: null, permission_mode: null, blocked_reason: null, recovery: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, live.text === '' ? 'idle' : 'running', true));
+    if (path.includes('/harness/items?contract=conversation_v1')) return ok(historicalConversationPage(conversationCardId(path), [], null));
     if (path.endsWith('/harness/live')) return ok(live.text === '' ? { turn_id: null, items: [] }
       : { turn_id: 'streamed-turn', items: [{ item_id: 'streamed-message', text: live.text }] });
     return ok([]);

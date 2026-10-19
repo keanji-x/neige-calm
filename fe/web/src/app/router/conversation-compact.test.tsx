@@ -10,11 +10,11 @@ it('compact capability is a required boolean in the run contract', () => {
   const { run } = renderCompactFixture('claude', true);
   const schema = plannerRunOperation('daily-planner').responseSchema;
   expect(schema.safeParse(run).success).toBe(true);
-  expect(schema.safeParse({ ...run, manual_compact_supported: false }).success).toBe(true);
+  expect(schema.safeParse({ ...run, recovery: null, manual_compact_supported: false }).success).toBe(true);
   const missing: Partial<typeof run> = { ...run };
   delete missing.manual_compact_supported;
   expect(schema.safeParse(missing).success).toBe(false);
-  expect(schema.safeParse({ ...run, manual_compact_supported: 'true' }).success).toBe(false);
+  expect(schema.safeParse({ ...run, recovery: null, manual_compact_supported: 'true' }).success).toBe(false);
   for (const field of ['compact_outcome', 'context_usage_invalidated'] as const) {
     const missing = { ...run } as Partial<typeof run>;
     delete missing[field];

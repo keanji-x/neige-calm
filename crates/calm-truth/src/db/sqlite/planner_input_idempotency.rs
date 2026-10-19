@@ -3,10 +3,14 @@
 //! a binding exists exactly when its message was stored. Bindings are dedup walls and are kept
 //! until their card is deleted (docs/design-1428-idempotency-retention.md §3.2).
 
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Executor, Sqlite, Transaction};
 
 use crate::error::{Result, idempotency_binding_insert_error};
 use crate::model::now_ms;
+
+/// Versioned storage format of source-bound canonical send receipts. The prefix
+/// proves a persisted contract only; it never proves an author or grants access.
+pub const CANONICAL_PLANNER_INPUT_BINDING_PREFIX: &str = "v2:";
 
 /// What an earlier send under one key was answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,18 +21,21 @@ pub struct PlannerInputBinding {
     pub entry_id: Option<String>,
 }
 
-pub async fn planner_input_binding_get(
-    pool: &SqlitePool,
+pub async fn planner_input_binding_get<'e, E>(
+    executor: E,
     card_id: &str,
     idempotency_key: &str,
-) -> Result<Option<PlannerInputBinding>> {
+) -> Result<Option<PlannerInputBinding>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let row: Option<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT payload_hash, worker_session_id, entry_id FROM planner_input_idempotency \
          WHERE card_id = ?1 AND idempotency_key = ?2",
     )
     .bind(card_id)
     .bind(idempotency_key)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     Ok(row.map(
         |(payload_hash, worker_session_id, entry_id)| PlannerInputBinding {

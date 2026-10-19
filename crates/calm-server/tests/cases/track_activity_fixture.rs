@@ -508,6 +508,10 @@ impl Fx {
         let (handle, _obs) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
                 track_delete_locks: Default::default(),
+                backend: calm_server::harness::backend::PlannerBackend::codex(
+                    daemon, card_id, track_id, session_id,
+                )
+                .unwrap(),
                 worker_session_id: session_id.to_string(),
                 track_id: TrackId::from(track_id.to_string()),
                 card_id: CardId::from(card_id.to_string()),
@@ -516,10 +520,12 @@ impl Fx {
                 events: self.events.clone(),
                 card_role_cache: self.role_cache.clone(),
                 track_area_cache: self.area_cache.clone(),
-                backend: daemon.into(),
-                live_replies: calm_server::harness::LiveReplies::for_test(),
+
+                registry: calm_server::harness::HarnessRegistry::new(),
                 config: HarnessConfig::default(),
-                snapshot: HarnessSnapshot::initial(0, vec![]),
+                snapshot: (HarnessSnapshot::initial(0, vec![]))
+                    .try_into()
+                    .expect("historical fixture snapshot contract"),
             },
             8,
         );

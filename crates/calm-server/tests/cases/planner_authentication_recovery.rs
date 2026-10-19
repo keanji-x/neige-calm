@@ -55,12 +55,12 @@ async fn run_recovery_authentication_hold_preserves_queue_metadata_and_attachmen
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{posted}");
-    let before = boot.harness.snapshot().await.pending_entries();
+    let before = boot.harness.snapshot().await.unwrap().pending_entries();
     assert_eq!(before.len(), 1);
     assert_eq!(before[0].attachments().len(), 1);
     settle_ticks(Duration::from_secs(6)).await;
     assert_eq!(
-        boot.harness.snapshot().await.pending_entries(),
+        boot.harness.snapshot().await.unwrap().pending_entries(),
         before,
         "hold changes neither id/rev/time/message identity nor attachments"
     );
@@ -111,7 +111,14 @@ async fn run_recovery_authentication_hold_preserves_queue_metadata_and_attachmen
     let turns = boot.daemon.started_turns_for_test();
     assert_eq!(turns.len(), 1, "one queued batch continues once");
     assert_eq!(turns[0].1.len(), 2, "text plus the preserved image");
-    assert!(boot.harness.snapshot().await.pending_entries().is_empty());
+    assert!(
+        boot.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .is_empty()
+    );
     assert_eq!(boot.harness.issuance_block().await, None);
     boot.harness.shutdown().await.unwrap();
 }
@@ -139,7 +146,7 @@ async fn authentication_hold_refuses_steer_without_taking_or_revising_the_entry(
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{posted}");
-    let before = boot.harness.snapshot().await.pending_entries();
+    let before = boot.harness.snapshot().await.unwrap().pending_entries();
     let changes_before = boot.event_payloads("harness.queue_changed").await.len();
     let entry = before[0].user_view().unwrap();
     let (status, answer) = send_json(
@@ -154,7 +161,10 @@ async fn authentication_hold_refuses_steer_without_taking_or_revising_the_entry(
     )
     .await;
     assert!(!status.is_success(), "held steer must refuse: {answer}");
-    assert_eq!(boot.harness.snapshot().await.pending_entries(), before);
+    assert_eq!(
+        boot.harness.snapshot().await.unwrap().pending_entries(),
+        before
+    );
     assert!(boot.daemon.steered_turns_for_test().is_empty());
     assert_eq!(
         boot.event_payloads("harness.queue_changed").await.len(),

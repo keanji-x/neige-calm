@@ -88,13 +88,34 @@ impl CodexAppServer {
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> StartDelivery<RpcAttemptFailure> {
+        self.turn_start_delivery_gated(
+            thread_id,
+            input,
+            selection,
+            approvals,
+            client_user_message_id,
+            &super::PreSendGate::new(super::gated_requests::allow_send),
+        )
+        .await
+    }
+
+    pub async fn turn_start_delivery_gated(
+        &self,
+        thread_id: &str,
+        input: Vec<InputItem>,
+        selection: &TurnModelSelection,
+        approvals: TurnApprovals,
+        client_user_message_id: Option<&str>,
+        gate: &super::PreSendGate<'_>,
+    ) -> StartDelivery<RpcAttemptFailure> {
         match self
-            .turn_start_attempt(
+            .turn_start_attempt_gated(
                 thread_id,
                 input,
                 selection,
                 approvals,
                 client_user_message_id,
+                gate,
             )
             .await
         {
@@ -123,8 +144,32 @@ impl CodexAppServer {
         input: Vec<InputItem>,
         client_user_message_id: Option<&str>,
     ) -> SteerDelivery<RpcAttemptFailure> {
+        self.turn_steer_delivery_gated(
+            thread_id,
+            expected_turn_id,
+            input,
+            client_user_message_id,
+            &super::PreSendGate::new(super::gated_requests::allow_send),
+        )
+        .await
+    }
+
+    pub async fn turn_steer_delivery_gated(
+        &self,
+        thread_id: &str,
+        expected_turn_id: &str,
+        input: Vec<InputItem>,
+        client_user_message_id: Option<&str>,
+        gate: &super::PreSendGate<'_>,
+    ) -> SteerDelivery<RpcAttemptFailure> {
         match self
-            .turn_steer_attempt(thread_id, expected_turn_id, input, client_user_message_id)
+            .turn_steer_attempt_gated(
+                thread_id,
+                expected_turn_id,
+                input,
+                client_user_message_id,
+                gate,
+            )
             .await
         {
             Ok(result) if !result.turn_id.is_empty() && result.turn_id == expected_turn_id => {

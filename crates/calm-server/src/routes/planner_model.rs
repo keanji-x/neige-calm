@@ -259,6 +259,31 @@ pub(super) struct CatalogAdvice {
     pub(super) unknown_model: bool,
 }
 
+impl CatalogAdvice {
+    pub(super) fn require_create_selection(
+        self,
+        model: Option<&str>,
+        reasoning_effort: Option<&str>,
+    ) -> Result<()> {
+        if let (Some(adjustment), Some(effort)) = (self.adjustment, reasoning_effort) {
+            let named = model.map_or_else(
+                || "the default model".to_string(),
+                |m| format!("model `{m}`"),
+            );
+            let default = match adjustment.to {
+                Some(d) => format!("its current catalog default is `{d}`"),
+                None if self.unknown_model => "the catalog does not list it".to_string(),
+                None => "it declares no default effort".to_string(),
+            };
+            return Err(CalmError::BadRequest(format!(
+                "track create: reasoning_effort `{effort}` is unsupported for {named}; {default}. \
+             Refresh the model list and choose a supported effort."
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Where an unsupported effort is moved: the entry's own default, `None` for a provider that
 /// declares none (every Claude entry), which drops the effort.
 #[derive(Debug, PartialEq, Eq)]

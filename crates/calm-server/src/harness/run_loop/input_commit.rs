@@ -125,6 +125,8 @@ pub(super) async fn admit(
             let _ = answer.send(Err(busy()));
         }
         command @ (HarnessObservationCommand::InspectInput { .. }
+        | HarnessObservationCommand::CanonicalInterrupt { .. }
+        | HarnessObservationCommand::CanonicalSource { .. }
         | HarnessObservationCommand::Release { .. }
         | HarnessObservationCommand::Delivery(_)) => return Some(command),
     }

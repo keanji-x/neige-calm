@@ -6,9 +6,9 @@ import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import type { CacheWrite } from '../../../../core/events/invalidation-plan.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
-import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { ApiRequest, ApiTransportResponse, ApiTransportPort, ApiAbortSignal } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { trackDetailQueryOptions, trackConversationsQueryOptions, queryKeys } from '../providers/queries.ts';
+import { trackDetailQueryOptions, trackConversationsQueryOptions, conversationHistoryQueryOptions, queryKeys } from '../providers/queries.ts';
 import { applyEventEffects, mapPlannedQueryKey, type QueryCachePort } from './query-invalidation-adapter.ts';
 
 type Call = Readonly<{ op: 'reset' | 'invalidate' | 'remove' | 'set' | 'clear'; queryKey?: readonly unknown[] }>;
@@ -363,12 +363,11 @@ describe('query invalidation adapter', () => {
       const plan = invalidationPlanFor(wireEventSchema.parse({ ev, data }));
       const { calls, client } = recordingClient();
       applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
-      await settleReads();
-      expect(calls).toEqual([
-        ...keys.filter(key => key[0] !== 'track' && key[0] !== 'track-conversations'),
-        queryKeys.initialInput('track-1', 'card-1'),
-        ...keys.filter(key => key[0] === 'track' || key[0] === 'track-conversations'),
-      ].map((queryKey) => ({ op: 'invalidate', queryKey })));
+      const expectedCalls = [...keys, queryKeys.initialInput('track-1', 'card-1')].map((queryKey) => ({ op: 'invalidate', queryKey }));
+      await vi.waitFor(() => {
+        expect(calls).toHaveLength(expectedCalls.length);
+        expect(calls).toEqual(expect.arrayContaining(expectedCalls));
+      });
     }
   });
 
@@ -459,9 +458,11 @@ function metadataRead(surface: 'detail' | 'list', respectsAbort = false, trackId
     } };
 }
 
-function inputEvent(kind: 'deleted' | 'edited' | 'cleared' | 'persisted', trackId = 'track-1') {
+function inputEvent(kind: 'deleted' | 'edited' | 'cleared' | 'persisted' | 'presentation', trackId = 'track-1') {
   const base = { card_id: 'card-1', track_id: trackId, worker_session_id: 'runtime' };
-  return wireEventSchema.parse(kind === 'cleared'
+  return wireEventSchema.parse(kind === 'presentation'
+    ? { ev: 'harness.presentation.changed', data: { card_id: 'card-1', track_id: trackId, cursor: { contract: 'conversation_v1', card_id: 'card-1', source: 'presentation', position: 1 } } }
+    : kind === 'cleared'
     ? { ev: 'harness.transcript.cleared', data: { ...base, cleared_item_count: 1, cleared_params_bytes: 20, card_age_ms_at_clear: 100 } }
     : kind === 'persisted'
       ? { ev: 'harness.item.added', data: { ...base, item_db_id: 1, item_uuid: null, item_type: 'userMessage', turn_id: null, method: 'item/completed' } }
@@ -478,7 +479,7 @@ async function settleReads() { for (let i = 0; i < 20; i++) await Promise.resolv
 
 for (const surface of ['detail', 'list'] as const) {
   for (const respectsAbort of [false, true]) {
-    it.each(['deleted', 'edited', 'cleared', 'persisted'] as const)(
+    it.each(['deleted', 'edited', 'cleared', 'persisted', 'presentation'] as const)(
       `replaces initial ${surface} metadata for %s (transport abort=${respectsAbort})`, async kind => {
         const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
         const read = metadataRead(surface, respectsAbort);
@@ -550,3 +551,26 @@ for (const surface of ['detail', 'list'] as const) {
     } finally { client.clear(); }
   });
 }
+it('presentation event replaces an in-flight old empty conversation page before its late response', async () => {
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  const reads:Array<{finish:(value:ApiTransportResponse)=>void;signal:ApiAbortSignal|undefined}>=[];
+  const transport:ApiTransportPort={send:request=>new Promise(resolve=>reads.push({finish:resolve,signal:request.signal}))};
+  const unauthorized=createUnauthorizedChannel({enqueue:task=>task()});
+  const options=conversationHistoryQueryOptions(transport,'card',unauthorized);
+  const observer=new QueryObserver(client,{...options,queryFn:({signal})=>options.queryFn({position:{kind:'latest'},signal})});
+  const release=observer.subscribe(()=>undefined);
+  await vi.waitFor(()=>expect(reads).toHaveLength(1));
+  const cursor={contract:'conversation_v1',card_id:'card',source:'presentation',position:1} as const;
+  const event=wireEventSchema.parse({ev:'harness.presentation.changed',data:{card_id:'card',track_id:'track',cursor}});
+  applyEventEffects(client,[{type:'invalidate',keys:invalidationPlanFor(event).invalidate}]);
+  await vi.waitFor(()=>expect(reads).toHaveLength(2));
+  expect(reads[0].signal?.aborted).toBe(true);
+  const page={contract:'conversation_v1',source:'presentation',items:[{cursor,source:{kind:'human',message_id:'message',revision:1,
+    author:{user_id:'jian',display_name:'Jian'},text:'already saved',attachments:[],created_at_ms:1}}],next_cursor:null};
+  reads[1].finish({status:200,statusText:'OK',body:page});
+  await vi.waitFor(()=>expect(observer.getCurrentResult().data).toEqual(page));
+  reads[0].finish({status:200,statusText:'OK',body:{...page,items:[]}});
+  await Promise.resolve();await Promise.resolve();
+  expect(observer.getCurrentResult().data).toEqual(page);
+  release();client.clear();
+});

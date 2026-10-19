@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 // `@` on the real routes, in a real engine (#1881 S2): the Planner's conversation and the
@@ -51,25 +52,26 @@ function mount(path: string, storedText: string | null = null, pluginDescription
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
     if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [PLANNER_CARD], overlays: [] }));
     if (request.path === '/api/tracks/w1/conversations') return Promise.resolve(ok([ASSISTANT_ROW]));
-    if (request.path.endsWith('/planner/run')) {
-      return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
+    if (request.path.includes('/planner/run?contract=conversation_v1')) {
+      return Promise.resolve(ok(historicalConversationRun({ card_id: conversationCardId(request.path), worker_session_id: 'runtime', phase: running ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, running ? 'running' : 'idle', true)));
     }
     if (request.path.endsWith('/planner/input')) {
       storedText = (request.body as { text: string }).text;
       return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', entry_id: 'entry-1' }));
     }
-    if (running && request.path.includes('/harness/items?')) return Promise.resolve(ok(Array.from({ length: 5 }).flatMap((_, index) => ['userMessage', 'agentMessage'].map((item_type, offset) => ({
+    if (running && request.path.includes('/harness/items?')) return Promise.resolve(ok(historicalConversationPage(conversationCardId(request.path), Array.from({ length: 5 }).flatMap((_, index) => ['userMessage', 'agentMessage'].map((item_type, offset) => ({
       id: index * 2 + offset + 1, worker_session_id: 'runtime', card_id: PLANNER_CARD.id, track_id: TRACK.id,
       thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: `entry-${index}-${offset}`,
       item_type, method: 'item/completed', params: JSON.stringify({ item: offset === 0 ? { content: [{ text: `${item_type} ${index}` }] } : { text: `${item_type} ${index}` } }), created_at_ms: index * 2000 + offset,
-    })))));
+    }))), null)));
     if (request.path.endsWith('/planner/interrupt')) return Promise.resolve(ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', stopped: true }));
-    if (request.path.includes('/harness/items?')) return Promise.resolve(ok(storedText === null ? [] : [{
+    if (request.path.includes('/harness/items?')) return Promise.resolve(ok(historicalConversationPage(conversationCardId(request.path), storedText === null ? [] : [{
       id: 1, worker_session_id: 'runtime', card_id: PLANNER_CARD.id, track_id: TRACK.id,
       thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: 'entry-1',
       item_type: 'userMessage', method: 'item/completed', params: '{}', created_at_ms: 50,
-      input_segments: [{ presentation: 'user', text: storedText, attachments: [] }],
-    }]));
+      input_segments: [{ presentation: 'user', text: storedText, attachments: [],
+        origin: { observation: 'user_message', event_id: null, queue_entry: { id: 'entry-1', rev: 0 } } }],
+    }], null)));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };
@@ -110,7 +112,8 @@ it('groups the area\'s tags, reports and blocks under @ in the Planner conversat
   const sent = requests.find((request) => request.path.endsWith('/planner/input'))!.body as { text: string };
   expect(sent.text).toBe(`see ${BLOCK_INSERT}`);
   await expect.element(page.getByText('Deploy notes › b_1a2b', { exact: true })).toBeVisible();
-  expect(document.querySelector('[data-nc-turn="you"]')?.textContent).toBe('see Deploy notes › b_1a2b');
+  expect(document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')).toHaveLength(1);
+  expect(document.querySelector('[data-nc-turn="unknown"]')?.textContent).toBe('see Deploy notes › b_1a2b');
   // A fresh route has no memory of the menu pick: the stored address still renders as a pill.
   cleanup();
   mount('/track/w1', sent.text);

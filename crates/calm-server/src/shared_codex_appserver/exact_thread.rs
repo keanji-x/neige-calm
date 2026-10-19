@@ -54,9 +54,14 @@ impl SharedCodexAppServer {
         })
         .await
     }
-    async fn read_recovery_thread(&self, thread_id: &str) -> Result<Value> {
+    async fn read_recovery_thread(
+        &self,
+        thread_id: &str,
+        admit: &NativePromptAdmission<'_>,
+    ) -> Result<Value> {
         #[cfg(feature = "fixtures")]
         if self.fake.is_some() {
+            admit.check_fixture().await?;
             let status = if self.active_turn_id_for_thread(thread_id).is_some() {
                 "active"
             } else {
@@ -64,17 +69,22 @@ impl SharedCodexAppServer {
             };
             return Ok(json!({"id":thread_id,"status":{"type":status}}));
         }
-        Ok(self
-            .connected_client()
-            .await?
-            .thread_read_full(thread_id)
-            .await?
+        let client = self.connected_client().await?;
+        let gate = admit;
+        Ok(gate
+            .finish(client.thread_read_full_gated(thread_id, gate.gate()).await)?
             .thread)
     }
 
-    async fn resume_recovery_thread(&self, thread_id: &str, config: ThreadConfig) -> Result<Value> {
+    async fn resume_recovery_thread(
+        &self,
+        thread_id: &str,
+        config: ThreadConfig,
+        admit: &NativePromptAdmission<'_>,
+    ) -> Result<Value> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
+            admit.check_fixture().await?;
             if fake.fail_thread_resume.load(Ordering::SeqCst) {
                 return Err(CalmError::CodexAppServer(
                     "forced thread/resume failure".into(),
@@ -89,11 +99,15 @@ impl SharedCodexAppServer {
                 ));
             return Ok(json!({"id":thread_id,"status":{"type":"idle"}}));
         }
-        Ok(self
-            .connected_client()
-            .await?
-            .thread_resume_with_config(thread_id, config.to_wire_config()?)
-            .await?
+        let config = config.to_wire_config()?;
+        let client = self.connected_client().await?;
+        let gate = admit;
+        Ok(gate
+            .finish(
+                client
+                    .thread_resume_with_config_gated(thread_id, config, gate.gate())
+                    .await,
+            )?
             .thread)
     }
 
@@ -124,19 +138,33 @@ impl RecoveryThread<'_> {
     pub(crate) fn socket_path(&self) -> &std::path::Path {
         &self.daemon.kernel_mcp_socket_path
     }
-    pub(crate) async fn read_active(&self) -> Result<RecoveryState> {
+    pub(crate) async fn read_active(
+        &self,
+        admit: &NativePromptAdmission<'_>,
+    ) -> Result<RecoveryState> {
         #[cfg(feature = "fixtures")]
         if self.daemon.fake.is_some() && !self.daemon.thread_cache.contains_key(self.thread_id) {
+            admit.check_fixture().await?;
             return Ok(RecoveryState::from_thread(
                 &json!({"id":self.thread_id,"status":{"type":"notLoaded"}}),
             ));
         }
         Ok(RecoveryState::from_thread(
-            &self.daemon.read_recovery_thread(self.thread_id).await?,
+            &self
+                .daemon
+                .read_recovery_thread(self.thread_id, admit)
+                .await?,
         ))
     }
-    pub(crate) async fn read(&self, expected_turn: Option<&str>) -> Result<RecoveryRead> {
-        let thread = self.daemon.read_recovery_thread(self.thread_id).await?;
+    pub(crate) async fn read(
+        &self,
+        expected_turn: Option<&str>,
+        admit: &NativePromptAdmission<'_>,
+    ) -> Result<RecoveryRead> {
+        let thread = self
+            .daemon
+            .read_recovery_thread(self.thread_id, admit)
+            .await?;
         let terminal = expected_turn
             .and_then(|id| {
                 thread
@@ -158,10 +186,14 @@ impl RecoveryThread<'_> {
             terminal,
         })
     }
-    pub(crate) async fn resume(&self, config: ThreadConfig) -> Result<RecoveryState> {
+    pub(crate) async fn resume(
+        &self,
+        config: ThreadConfig,
+        admit: &NativePromptAdmission<'_>,
+    ) -> Result<RecoveryState> {
         let thread = self
             .daemon
-            .resume_recovery_thread(self.thread_id, config)
+            .resume_recovery_thread(self.thread_id, config, admit)
             .await?;
         Ok(RecoveryState::from_thread(&thread))
     }

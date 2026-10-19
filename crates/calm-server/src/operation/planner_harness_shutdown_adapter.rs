@@ -190,6 +190,13 @@ mod tests {
         let id = "rt-shutdown-read-fails".to_string();
         let handle = PlannerHarness::run(PlannerHarnessParams {
             track_delete_locks: Default::default(),
+            backend: crate::harness::backend::PlannerBackend::codex(
+                daemon.clone(),
+                "card-x",
+                "track-x",
+                id.as_ref(),
+            )
+            .unwrap(),
             worker_session_id: id.clone(),
             track_id: TrackId::from("track-x".to_string()),
             card_id: CardId::from("card-x".to_string()),
@@ -198,11 +205,15 @@ mod tests {
             events: EventBus::new(),
             card_role_cache: crate::card_role_cache::CardRoleCache::new(),
             track_area_cache: crate::track_area_cache::TrackAreaCache::new(),
-            backend: daemon.clone().into(),
-            live_replies: crate::harness::LiveReplies::for_test(),
+
+            registry: registry.clone(),
             config: HarnessConfig::default(),
-            snapshot: HarnessSnapshot::initial(0, vec![]),
-        });
+            snapshot: (HarnessSnapshot::initial(0, vec![]))
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
         registry.insert(id.clone(), handle);
         let adapter = PlannerHarnessShutdownAdapter::new(
             registry.clone(),

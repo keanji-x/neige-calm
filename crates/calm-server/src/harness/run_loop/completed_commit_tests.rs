@@ -129,6 +129,13 @@ impl Fixture {
         let (harness, ingress) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
                 track_delete_locks: Default::default(),
+                backend: crate::harness::backend::PlannerBackend::codex(
+                    daemon.clone(),
+                    card.id.as_ref(),
+                    track.id.as_ref(),
+                    worker_session_id.as_ref(),
+                )
+                .unwrap(),
                 worker_session_id,
                 track_id: track.id,
                 card_id: card.id,
@@ -137,14 +144,16 @@ impl Fixture {
                 events: EventBus::new(),
                 card_role_cache: roles,
                 track_area_cache: areas,
-                backend: daemon.clone().into(),
-                live_replies: crate::harness::LiveReplies::for_test(),
+
+                registry: crate::harness::HarnessRegistry::new(),
                 config: HarnessConfig {
                     debounce_min_idle: Duration::ZERO,
                     debounce_max_wait: Duration::ZERO,
                     ..HarnessConfig::default()
                 },
-                snapshot,
+                snapshot: (snapshot)
+                    .try_into()
+                    .expect("historical fixture snapshot contract"),
             },
             8,
         );
@@ -206,7 +215,7 @@ impl Fixture {
 
     pub(super) async fn enqueue(&self, entries: Vec<QueueEntry>) {
         self.harness
-            .observe_durable_entries(entries, crate::harness::SendKey::unique_for_test())
+            .observe_durable_entries(entries, crate::harness::SendKey::unique_for_test(), None)
             .await
             .unwrap();
     }
@@ -328,9 +337,11 @@ async fn committed_row_is_not_replayed_and_an_old_queued_commit_is_consumed_once
             card_role_cache: inner.card_role_cache.clone(),
             track_area_cache: inner.track_area_cache.clone(),
             backend: inner.backend.clone(),
-            live_replies: crate::harness::LiveReplies::for_test(),
+            registry: crate::harness::HarnessRegistry::new(),
             config: inner.config,
-            snapshot,
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
         },
         8,
     );
@@ -419,7 +430,7 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
     fx.close().await;
     let (_, commit) = fx.commit().await;
     fx.enqueue(vec![commit]).await;
-    let before = fx.harness.snapshot().await;
+    let before = fx.harness.snapshot().await.unwrap();
     let debounce = *fx.harness.inner.debounce.lock().await;
     sqlx::query("CREATE TRIGGER refuse_consumption BEFORE UPDATE OF handle_state_json ON worker_sessions BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END")
         .execute(fx.repo.pool()).await.unwrap();
@@ -429,14 +440,17 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
         "{error}"
     );
     assert_eq!(
-        fx.harness.snapshot().await.pending_entries(),
+        fx.harness.snapshot().await.unwrap().pending_entries(),
         before.pending_entries()
     );
     assert_eq!(
         fx.stored().await.pending_entries(),
         before.pending_entries()
     );
-    assert_eq!(fx.harness.snapshot().await.phase, HarnessPhaseTag::Idle);
+    assert_eq!(
+        fx.harness.snapshot().await.unwrap().phase,
+        HarnessPhaseTag::Idle
+    );
     let after_debounce = *fx.harness.inner.debounce.lock().await;
     assert_eq!(after_debounce.first_pending_at, debounce.first_pending_at);
     assert_eq!(after_debounce.last_pending_at, debounce.last_pending_at);

@@ -1,6 +1,7 @@
+import { historicalConversationPage } from '../router/conversation-read-data.ts';
 // @vitest-environment jsdom
 // Invariants owned by the shared query layer.
-import { earlierReadingPosition, latestHistory, observedWindow, type History } from '../conversations/history.ts';
+import { observedWindow, type History } from '../conversations/history.ts';
 import { onlineManager, QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -19,7 +20,7 @@ import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { coordinateRecoveryQueries } from './recovery-queries.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
 import {
-  areaListQueryOptions, harnessItemsQueryOptions as transcriptQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
+  areaListQueryOptions, conversationHistoryQueryOptions as transcriptQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
   trackOverlaysQueryOptions, trackDetailQueryOptions, trackConversationsQueryOptions,
   useAreaMutations, usePlannerMutations, useTrackMutations, useWorkspace, tracksInAreaQueryOptions,
   useTodayLaunchpadEnsureMutation, useTodayReportResetMutation, useTrackConversationMutations, useTrackRecipeMutations,
@@ -573,13 +574,13 @@ describe('delete mutation wiring', () => {
   it('expires loaded history only after a successful replacement ACK before its source refresh', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const key = queryKeys.harnessItems('card-1');
-    const rows: History['latest']['rows'] = Array.from({ length: 120 }, (_, index) => ({
+    const rows = Array.from({ length: 120 }, (_, index) => ({
       id: index + 1, worker_session_id: 'runtime', card_id: 'card-1', track_id: 'track-1', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: '{}', created_at_ms: index,
     }));
-    client.setQueryData<History>(key, { latest: observedWindow(rows.slice(60), { kind: 'latest' }),
-      retained: [observedWindow(rows.slice(0, 60), { kind: 'before', rowId: 61 })] });
+    client.setQueryData<History>(key, { latest: observedWindow(historicalConversationPage('card-1', rows.slice(60), {contract:'conversation_v1',source:'historical_raw',card_id:'card-1',position:61}), { kind: 'latest' }),
+      retained: [observedWindow(historicalConversationPage('card-1', rows.slice(0, 60), null), { kind: 'before', cursor: {contract:'conversation_v1',source:'historical_raw',card_id:'card-1',position:61} })] });
     const order: string[] = [];
     const reset = vi.spyOn(client, 'resetQueries');
     reset.mockImplementation(filters => {
@@ -783,22 +784,17 @@ describe('track create folders cache', () => {
 });
 
 describe('planner history pagination', () => {
-  it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
-    const firstPage = (limit: number) => Array.from({ length: limit }, (_, index) => ({
-      id: 701 + index, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
-      turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
-      params: '{}', created_at_ms: index,
+  it('uses the returned contract cursor rather than a raw item row id', async () => {
+    const cursor = { contract:'conversation_v1',card_id:'card',source:'presentation',position:7 } as const;
+    const { transport, paths } = recordingTransport(request => ok({
+      contract:'conversation_v1',source:'presentation',items:[],next_cursor:request.path.includes('&cursor=') ? null : cursor,
     }));
-    const { transport, paths } = recordingTransport(request => {
-      const url = new URL(request.path, 'http://localhost');
-      return ok(url.searchParams.get('after_id') === '0' ? firstPage(Number(url.searchParams.get('limit'))) : []);
-    });
     const options = transcriptQueryOptions(transport, 'card', unauthorized);
     const page = await options.queryFn({ position: { kind: 'latest' } });
-    const position = earlierReadingPosition(latestHistory(undefined, page));
-    expect(position).toEqual({ kind: 'before', rowId: 701 });
-    await options.queryFn({ position: position! });
-    expect(paths[1]).toContain('after_id=701');
+    expect(page.next_cursor).toEqual(cursor);
+    await options.queryFn({ position: { kind: 'before', cursor } });
+    expect(paths[1]).toContain(`cursor=${encodeURIComponent(JSON.stringify(cursor))}`);
+    expect(paths[1]).not.toContain('after_id=');
   });
 });
 

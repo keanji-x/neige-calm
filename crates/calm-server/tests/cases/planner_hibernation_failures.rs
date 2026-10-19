@@ -186,7 +186,7 @@ async fn planner_hibernat_failed_unsubscribe_retries_and_cold_wire_wake() {
     )
     .unwrap();
     let (status, body) = post_planner_input(
-        boot.app.clone(),
+        crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"wake cold"}),
     )

@@ -164,7 +164,9 @@ async fn acp_boot_unconfigured_serves_http() {
     };
     let state = AppState::boot(&config(&root, false))
         .await
-        .expect("unconfigured ACP must not block boot");
+        .expect("unconfigured ACP must not block boot")
+        .into_parts()
+        .0;
     http_available(&state).await;
     close(state).await;
 }
@@ -176,9 +178,14 @@ async fn acp_boot_configured_serves_http() {
     };
     let state = AppState::boot(&config(&root, true))
         .await
-        .expect("ACP cleanup failure must not block boot");
+        .expect("ACP cleanup failure must not block boot")
+        .into_parts()
+        .0;
     http_available(&state).await;
     close(state).await;
+    // Full production boot now includes provider availability probes. Linux can
+    // run this configured fake; macOS cleanup failure must still prevent it.
+    #[cfg(target_os = "macos")]
     assert!(!root.join("spawned").exists());
 }
 
@@ -320,7 +327,9 @@ async fn acp_boot_unconfigured_revokes_only_owned_credentials() {
     assert!(authenticates(&other_repo, &other).await);
     let state = AppState::boot(&cfg)
         .await
-        .expect("historical ACP rows without configuration must boot");
+        .expect("historical ACP rows without configuration must boot")
+        .into_parts()
+        .0;
     assert!(
         !authenticates(&repo, &owned).await,
         "revoked credential must fail the real MCP handshake"
@@ -364,7 +373,7 @@ async fn acp_boot_revocation_error_prevents_listener() {
     .unwrap();
     let error = match AppState::boot(&cfg).await {
         Ok(state) => {
-            close(state).await;
+            close(state.into_parts().0).await;
             panic!("revocation failure must abort boot before listening")
         }
         Err(error) => error,
@@ -393,7 +402,11 @@ async fn acp_boot_readiness_refuses_before_spawn() {
     let Some(root) = isolated("acp_boot_readiness_refuses_before_spawn") else {
         return;
     };
-    let state = AppState::boot(&config(&root, true)).await.unwrap();
+    let state = AppState::boot(&config(&root, true))
+        .await
+        .unwrap()
+        .into_parts()
+        .0;
     let checked = crate::agent_providers::ProviderAvailabilityCache::default()
         .acp(
             &AgentProvider::OpenCode,
@@ -418,7 +431,11 @@ async fn acp_boot_catalog_refuses_before_spawn() {
     let Some(root) = isolated("acp_boot_catalog_refuses_before_spawn") else {
         return;
     };
-    let state = AppState::boot(&config(&root, true)).await.unwrap();
+    let state = AppState::boot(&config(&root, true))
+        .await
+        .unwrap()
+        .into_parts()
+        .0;
     let catalog = host(&state)
         .discover_catalog(&AgentProvider::OpenCode, Some(&root))
         .await;
@@ -440,7 +457,7 @@ async fn acp_boot_turn_refuses_before_spawn_and_revokes_minted_token() {
         return;
     };
     let cfg = config(&root, true);
-    let state = AppState::boot(&cfg).await.unwrap();
+    let state = AppState::boot(&cfg).await.unwrap().into_parts().0;
     let repo = Arc::new(SqlxRepo::open(&cfg.db_url).await.unwrap());
     let row = owner(&repo, &root, AgentProvider::OpenCode).await;
     // This test isolates the macOS launch scanner before any child can start. Use the

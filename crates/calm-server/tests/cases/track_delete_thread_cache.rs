@@ -668,7 +668,7 @@ async fn a_late_thread_started_after_cleanup_does_not_bind_an_unrelated_pending_
 // The thread seals and `active_turns` had no remover on the committed delete path: the seal is dropped
 // only by a ROLLBACK, the active turn only by a matching interrupt. Both arms are asserted.
 
-/// Give the track's live planner worker session a codex thread id, the shape `quiesce_shared_card_active_turn`
+/// Give the track's live planner worker session a codex thread id, the shape `quiesce_shared_codex_card_active_turn`
 /// reads to decide what to seal.
 async fn seal_bait_thread(b: &Boot, track_id: &str, thread_id: &str) {
     let session_id: String = sqlx::query_scalar(

@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { initialReceiptFor } from './initial-input-fixture.ts';
 import { useLayoutEffect } from 'react';
 import { useConversationDraft } from '../conversations/public.tsx';
@@ -27,7 +28,8 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
   const heldCapabilities: (() => void)[] = [];
   const row = (cardId: string, user = false) => ({ id: user ? 2 : 1, card_id: cardId, track_id: 'daily', worker_session_id: 'runtime',
     thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: null, item_type: user ? 'userMessage' : 'agentMessage',
-    method: 'item/completed', params: JSON.stringify({ item: user ? { content: [{ text: sentText }] } : { text: 'A retained response.' } }), created_at_ms: user ? 2 : 1 });
+    method: 'item/completed', params: JSON.stringify({ item: user ? { content: [{ text: sentText }] } : { text: 'A retained response.' } }), created_at_ms: user ? 2 : 1, ...(user ? { input_segments: [{ presentation: 'user', text: sentText, attachments: [],
+      origin: { observation: 'user_message', event_id: null, queue_entry: { id: 'sent-entry', rev: 0 } } }] } : {}) });
   const read = (body: () => unknown): ApiTransportResponse | Promise<ApiTransportResponse> => {
     const answer = () => failedReads ? { status: 500, statusText: 'Error', body: { error: 'Conversation refresh is unavailable.' } } : ok(body());
     return sent && holdReads ? new Promise(resolve => { heldReads.push(() => resolve(answer())); }) : answer();
@@ -39,6 +41,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
   }
   const view = renderDailyFixture({ strict, routeProbe: onDraftCommit === undefined ? undefined : <DraftCommitProbe />, withTransport: recovery === undefined ? undefined : transport => createRecoveryTransports(transport, recovery).business,
     initial: '/track/daily?panel=conversations', extraPlanner: true, reply: async request => {
+    const url = new URL(request.path, 'http://fixture');
     if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationCreateModel: true,
       webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'recovery-feedback' });
     if (request.path.startsWith('/api/agent-providers/managed')) {
@@ -64,7 +67,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
         created = { id: trackConversationCardId('daily', key), trackId: 'daily', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
         return { status: 201, statusText: 'Created', body: { ...created, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'first-entry', 0) } } };
       }
-      return ok({ card_id: 'second-planner', worker_session_id: 'runtime' });
+      return ok({ card_id: 'second-planner', worker_session_id: 'runtime', entry_id: 'sent-entry' });
     }
     if (created !== null && request.path.endsWith('/initial-input')) {
       const post = view.requests.find(candidate => candidate.method === 'POST' && candidate.path.endsWith('/conversations')
@@ -73,14 +76,14 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
       return ok({ kind: 'projected', entryRev: 0, receipt: initialReceiptFor(post, 'first-entry', 0), runtimeId: 'runtime', itemId: 2, segmentIndex: 0 });
     }
     if (created !== null && request.path === '/api/tracks/daily/conversations') return ok([created]);
-    if (request.path.endsWith('/planner/run')) return read(() => ({ card_id: created?.id ?? 'second-planner', worker_session_id: 'runtime', phase: 'idle',
+    if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return read(() => (historicalConversationRun({ card_id: created?.id ?? 'second-planner', worker_session_id: 'runtime', phase: 'idle',
       model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true,
-      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }));
-    if (request.path.includes('/harness/items')) {
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true)));
+    if (url.pathname.endsWith('/harness/items') && url.searchParams.get('contract') === 'conversation_v1') {
       const cardId = created?.id ?? 'second-planner';
-      return read(() => created !== null ? [{ ...row(cardId, true), turn_id: 'accepted-initial-turn', input_segments: [{
+      return read(() => historicalConversationPage(conversationCardId(request.path), created !== null ? [{ ...row(cardId, true), turn_id: 'accepted-initial-turn', input_segments: [{
         presentation: 'user', text: sentText, attachments: [], origin: { observation: 'user_message', event_id: null, queue_entry: { id: 'first-entry', rev: 0 } },
-      }] }] : [row(cardId), ...(sent && storeMessage ? [row(cardId, true)] : [])]);
+      }] }] : [row(cardId), ...(sent && storeMessage ? [row(cardId, true)] : [])], null));
     }
     return undefined;
   } });

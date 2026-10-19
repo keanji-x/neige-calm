@@ -8,6 +8,21 @@ use crate::ids::CardId;
 use ts_rs::TS;
 use utoipa::ToSchema;
 
+/// Server-private binding fact. Its host path is never exported in HTTP or TS
+/// schemas; binding and live workspace authorization stay with their IO owners.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundAttachment {
+    pub id: AttachmentId,
+    pub size: u64,
+    pub path: String,
+}
+
+impl BoundAttachment {
+    pub fn wire(&self, card_id: &CardId) -> PlannerAttachment {
+        PlannerAttachment::new(card_id, self.id.clone(), self.size)
+    }
+}
+
 /// The image formats a planner attachment may have: the four whose source bytes codex keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentFormat {

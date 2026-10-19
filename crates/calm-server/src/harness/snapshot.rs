@@ -17,6 +17,11 @@ pub use calm_types::harness::HarnessPhaseTag;
 
 pub use calm_types::harness::{HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION};
 
+mod canonical;
+mod runtime_header;
+pub(crate) use canonical::CanonicalHarnessSnapshot;
+use runtime_header::{HarnessRuntimeHeader, HarnessRuntimeHeaderExt};
+
 /// The segments of the turn an older binary had in flight when it stopped. Read on load and
 /// never written (the type cannot be serialized): that turn has no projection row, so without
 /// this its echo would be stored with no segments.
@@ -159,6 +164,31 @@ pub struct HarnessSnapshot {
 pub use calm_types::harness::snapshot::TurnBase;
 
 impl HarnessSnapshot {
+    /// Pure extraction of the existing V1 runtime metadata, without its body queue.
+    pub(crate) fn runtime_header(&self) -> HarnessRuntimeHeader {
+        HarnessRuntimeHeader {
+            phase: self.phase,
+            turn_budget: self.turn_budget.clone(),
+            push_watermark: self.push_watermark,
+            last_thread_id: self.last_thread_id.clone(),
+            last_turn_id: self.last_turn_id.clone(),
+            last_report_body_sha256: self.last_report_body_sha256.clone(),
+            last_seen_head: self.last_seen_head.clone(),
+            issued_turn_head: self.issued_turn_head.clone(),
+            wedged_reason: self.wedged_reason.clone(),
+            interruption_intent: self.interruption_intent.clone(),
+            token_usage: self.token_usage.clone(),
+            compact_outcome: self.compact_outcome.clone(),
+            context_usage_invalidated: self.context_usage_invalidated,
+            context_usage_invalidated_turn: self.context_usage_invalidated_turn.clone(),
+            pending_rewind: self
+                .pending_rewind
+                .as_ref()
+                .map(|value| value.persisted().clone()),
+            last_turn_base: self.last_turn_base.clone(),
+        }
+    }
+
     /// Loading cannot confirm a maintenance operation whose provider completion was not observed.
     pub fn restore_context_feedback(&mut self) {
         if let Some(outcome) = self.compact_outcome.as_mut()
@@ -179,34 +209,7 @@ impl HarnessSnapshot {
     }
 
     pub fn initial(push_watermark: i64, entries: Vec<QueueEntry>) -> Self {
-        let mut snapshot = Self {
-            schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
-            mode: HARNESS_MODE.to_string(),
-            phase: HarnessPhaseTag::PendingThreadStart,
-            turn_budget: FrozenBudget::Legacy,
-            push_watermark,
-            pending_queue: Vec::new(),
-            pending_envelope_ids: Vec::new(),
-            pending_entry_meta: Vec::new(),
-            pending_message_ids: Vec::new(),
-            last_thread_id: None,
-            last_turn_id: None,
-            last_report_body_sha256: None,
-            last_seen_head: None,
-            issued_turn_head: None,
-            issued_input_segments: None,
-            projection_client_id: None,
-            wedged_reason: None,
-            interruption_intent: None,
-            token_usage: None,
-            compact_outcome: None,
-            context_usage_invalidated: false,
-            context_usage_invalidated_turn: None,
-            pending_rewind: None,
-            last_turn_base: None,
-        };
-        snapshot.set_pending_entries(entries);
-        snapshot
+        Self::from_runtime_header(HarnessRuntimeHeader::initial(push_watermark), entries)
     }
 
     pub fn from_state(
@@ -218,11 +221,40 @@ impl HarnessSnapshot {
         last_turn_id: Option<String>,
         last_report_body_sha256: Option<String>,
     ) -> Self {
-        let phase = HarnessPhaseTag::from(state);
-        let wedged_reason = match state {
-            HarnessState::Wedged { reason, .. } => Some(reason.clone()),
-            _ => None,
-        };
+        Self::from_runtime_header(
+            HarnessRuntimeHeader::from_state(
+                state,
+                turn_budget,
+                push_watermark,
+                last_thread_id,
+                last_turn_id,
+                last_report_body_sha256,
+            ),
+            entries,
+        )
+    }
+
+    /// Explicit V1 wire adapter. Keep its field order/lenient decoders and queue
+    /// codec unchanged while both frame versions share the runtime initializer.
+    fn from_runtime_header(header: HarnessRuntimeHeader, entries: Vec<QueueEntry>) -> Self {
+        let HarnessRuntimeHeader {
+            phase,
+            turn_budget,
+            push_watermark,
+            last_thread_id,
+            last_turn_id,
+            last_report_body_sha256,
+            last_seen_head,
+            issued_turn_head,
+            wedged_reason,
+            interruption_intent,
+            token_usage,
+            compact_outcome,
+            context_usage_invalidated,
+            context_usage_invalidated_turn,
+            pending_rewind,
+            last_turn_base,
+        } = header;
         let mut snapshot = Self {
             schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
@@ -236,32 +268,18 @@ impl HarnessSnapshot {
             last_thread_id,
             last_turn_id,
             last_report_body_sha256,
-            last_seen_head: None,
-            issued_turn_head: None,
+            last_seen_head,
+            issued_turn_head,
             issued_input_segments: None,
             projection_client_id: None,
-            // Set by `snapshot_for` from `Inner`; `from_state` sees only `HarnessState`.
-            token_usage: None,
-            compact_outcome: None,
-            context_usage_invalidated: false,
-            context_usage_invalidated_turn: None,
-            pending_rewind: None,
-            last_turn_base: None,
             wedged_reason,
-            interruption_intent: match state {
-                HarnessState::Issuing {
-                    kind:
-                        IssuingKind::Interrupt {
-                            target_turn_id,
-                            reason,
-                        },
-                    ..
-                } => calm_types::harness::HarnessInterruptionIntent::from_request(
-                    target_turn_id,
-                    reason,
-                ),
-                _ => None,
-            },
+            interruption_intent,
+            token_usage,
+            compact_outcome,
+            context_usage_invalidated,
+            context_usage_invalidated_turn,
+            pending_rewind: pending_rewind.map(BackendRewind::from_persisted),
+            last_turn_base,
         };
         snapshot.set_pending_entries(entries);
         snapshot

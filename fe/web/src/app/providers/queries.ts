@@ -1,3 +1,6 @@
+import { conversationItemsOperation, conversationRunOperation } from '../../../../core/domain/conversation-display.ts';
+import { conversationLiveOperation } from '../../../../core/domain/conversation-live.ts';
+import type { ConversationCursor, ConversationLiveReplies, HarnessLiveReplies } from '../../../../core/api/generated/wire.ts';
 // Query and mutation wiring shared by app/router, app/shell and every feature slice. It lives under
 // app/providers because the router renders the shell and both need the same reads (`no-circular`).
 
@@ -57,8 +60,8 @@ import {
   type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
-  harnessItemsOperation, compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
-  plannerRunOperation, createTrackConversationOperation, trackConversationsOperation, setConversationArchiveOperation,
+  compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
+  createTrackConversationOperation, trackConversationsOperation, setConversationArchiveOperation,
   createSerialWriter, deletePlannerInputOperation, editPlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
   uploadPlannerAttachmentOperation, PLANNER_ATTACHMENT_FAILURES, UPLOAD_TEXT,
@@ -174,15 +177,16 @@ export const queryKeys = Object.freeze({
   trackConversationsPrefix: () => ['track-conversations'] as const,
 });
 
-export type TranscriptPosition = Readonly<{ kind: 'latest' } | { kind: 'before'; rowId: number }>;
+export type TranscriptPosition = Readonly<{ kind: 'latest' } | { kind: 'before'; cursor: ConversationCursor }>;
 
-export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function conversationHistoryQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.harnessItems(cardId),
-    queryFn: async ({ position }: { position: TranscriptPosition }) => {
-      const cursor = position.kind === 'latest' ? 0 : position.rowId;
-      const page = await runOperation(transport, harnessItemsOperation(cardId, cursor, 'desc'), unauthorized);
-      if (page.length > 0 && position.kind === 'before' && (page[0]?.id ?? cursor) >= cursor) {
+    queryKey: [...queryKeys.harnessItems(cardId),'conversation_v1'],
+    queryFn: async ({ position, signal }: { position: TranscriptPosition; signal?: AbortSignal }) => {
+      const cursor = position.kind === 'latest' ? null : position.cursor;
+      const page = await runOperation(transport, { ...conversationItemsOperation(cardId, cursor), signal }, unauthorized);
+      if (cursor !== null && (page.items.some(item => item.cursor.position >= cursor.position)
+        || (page.next_cursor !== null && page.next_cursor.position >= cursor.position))) {
         throw new Error('Conversation history did not advance to an earlier page.');
       }
       return page;
@@ -190,19 +194,20 @@ export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: st
   };
 }
 
-export function harnessLiveQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+export function harnessLiveQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel, canonical:boolean) {
   return {
-    queryKey: queryKeys.harnessLive(cardId),
-    queryFn: ({ signal }: { signal: AbortSignal }) =>
-      runOperation(transport, { ...harnessLiveOperation(cardId), signal }, unauthorized),
+    queryKey: [...queryKeys.harnessLive(cardId),canonical ? 'conversation_v1':'historical'],
+    queryFn: async ({ signal }: { signal: AbortSignal }):Promise<ConversationLiveReplies|HarnessLiveReplies> => canonical
+      ? runOperation(transport,{...conversationLiveOperation(cardId),signal},unauthorized)
+      : runOperation(transport,{...harnessLiveOperation(cardId),signal},unauthorized),
   };
 }
 
 export function plannerRunQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   return {
-    queryKey: queryKeys.plannerRun(cardId),
+    queryKey: [...queryKeys.plannerRun(cardId),'conversation_v1'],
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      runOperation(transport, { ...plannerRunOperation(cardId), signal }, unauthorized),
+      runOperation(transport, { ...conversationRunOperation(cardId), signal }, unauthorized),
   };
 }
 

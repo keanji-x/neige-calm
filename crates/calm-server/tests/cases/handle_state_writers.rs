@@ -51,7 +51,12 @@ fn repo_relative(path: &Path) -> String {
 fn line_writes_handle_state(trimmed: &str) -> bool {
     let assigns_column = trimmed
         .match_indices("handle_state_json")
-        .any(|(start, name)| trimmed[start + name.len()..].trim_start().starts_with('='));
+        .any(|(start, name)| {
+            let after = trimmed[start + name.len()..].trim_start();
+            // Rust equality is not assignment. SQLite SET targets are unqualified;
+            // a qualified column here is a read predicate, never a SET target.
+            !trimmed[..start].ends_with('.') && after.starts_with('=') && !after.starts_with("==")
+        });
     (assigns_column && !trimmed.starts_with("let "))
         || trimmed.contains("INSERT INTO worker_sessions")
 }
@@ -263,4 +268,18 @@ fn writer_inventory_recognizes_compact_assignments() {
     assert!(!line_writes_handle_state(
         "SELECT handle_state_json FROM worker_sessions"
     ));
+}
+
+#[test]
+fn writer_inventory_rejects_read_only_comparisons() {
+    for read in [
+        "handle_state_json == expected",
+        "row.handle_state_json == expected.handle_state_json",
+        "AND ws.handle_state_json=?3)",
+    ] {
+        assert!(
+            !line_writes_handle_state(read),
+            "read classified as write: {read}"
+        );
+    }
 }

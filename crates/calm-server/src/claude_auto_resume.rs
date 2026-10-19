@@ -123,16 +123,16 @@ mod tests {
     /// Boot resumes from the reconcile's own stale set, and only once operation recovery has run.
     #[test]
     fn main_resumes_after_operation_recovery_from_the_reconcile_result() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         let reconcile = main_rs
             .find("let stale_terminals = calm_server::reconcile_supervisor_on_boot(&state).await;")
-            .expect("main boot keeps the reconcile's stale terminals");
+            .expect("application boot keeps the reconcile's stale terminals");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await?")
-            .expect("main boot recovers operations");
+            .expect("application boot recovers operations");
         let resume = main_rs
             .find("claude_auto_resume::spawn_on_boot(")
-            .expect("main boot resumes owner-created Claude cards");
+            .expect("application boot resumes owner-created Claude cards");
         assert!(reconcile < recover && recover < resume);
         let call = &main_rs[resume..];
         let call = &call[..call.find(')').expect("call closes")];

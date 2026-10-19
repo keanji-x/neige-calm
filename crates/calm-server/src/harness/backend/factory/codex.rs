@@ -44,14 +44,15 @@ impl PlannerFactory<'_> {
         &self,
         card_id: &str,
         card_role: CardRole,
-        track_id: &str,
+        _track_id: &str,
         cwd: String,
         developer_instructions: Option<String>,
         mcp_role: Option<CardRole>,
         socket_path: PathBuf,
         raw_token: String,
         deferred: bool,
-    ) -> Result<String> {
+        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+    ) -> std::result::Result<String, crate::shared_codex_appserver::ThreadMintFailure> {
         let daemon = self.daemon()?;
         let params = SharedThreadStartParams {
             cwd,
@@ -68,10 +69,12 @@ impl PlannerFactory<'_> {
             },
         };
         if deferred {
-            daemon.thread_start_mint_for_card(card_id, params).await
+            daemon
+                .thread_start_mint_admitted_for_card(card_id, params, admission)
+                .await
         } else {
             daemon
-                .thread_start_for_card(card_id, card_role, Some(track_id), params)
+                .thread_start_admitted_for_card(card_id, Some(card_role), params, admission)
                 .await
         }
     }

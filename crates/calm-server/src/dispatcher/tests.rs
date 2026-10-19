@@ -121,7 +121,7 @@ fn periodic_reconcile_sweeps_context_before_scheduler() {
         .find("interval.tick().await;\n                tick_inner.reconcile_once().await;")
         .expect("the production periodic loop drives the shared reconcile body");
     let method_start = source
-        .find("async fn reconcile_once(&self)")
+        .find("async fn reconcile_once(")
         .expect("shared production reconcile body");
     let body = &source[method_start..];
     let context = body.find("self.context_monitor.sweep().await").unwrap();
@@ -2829,6 +2829,20 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         // Neither a push nor an observation: the queue change is applied before the event is
         // written, so a wake would deliver a turn for no new input.
         row(
+            Event::HarnessPresentationChanged {
+                card_id: planner.clone(),
+                track_id: track.clone(),
+                cursor: calm_types::conversation_display::ConversationCursor::new(
+                    planner.as_str(),
+                    calm_types::conversation_display::ConversationCursorSource::Presentation,
+                    1,
+                ),
+            },
+            ActorId::Kernel,
+            false,
+            false,
+        ),
+        row(
             Event::HarnessQueueChanged {
                 worker_session_id: "rt".into(),
                 card_id: planner.clone(),
@@ -3800,6 +3814,13 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
     let registry = HarnessRegistry::new();
     let handle = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: crate::harness::backend::PlannerBackend::codex(
+            SharedCodexAppServer::new_stub(repo.clone()),
+            planner_card.id.as_ref(),
+            track.id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: worker_session_id.clone(),
         track_id: track.id.clone(),
         card_id: planner_card.id.clone(),
@@ -3808,11 +3829,15 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         events: events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        backend: SharedCodexAppServer::new_stub(repo.clone()).into(),
-        live_replies: crate::harness::LiveReplies::for_test(),
+
+        registry: registry.clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     handle
         .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
         .await
@@ -3849,6 +3874,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
     ));
     let inner = Arc::new(Inner {
         planner_wake: std::sync::RwLock::new(None),
+        canonical_producer: std::sync::RwLock::new(None),
         repo: repo.clone(),
         write,
         harness: registry,
@@ -3898,6 +3924,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         handle
             .snapshot()
             .await
+            .unwrap()
             .pending_observations()
             .into_iter()
             .filter(|observation| {

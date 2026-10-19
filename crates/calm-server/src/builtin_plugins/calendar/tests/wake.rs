@@ -32,8 +32,16 @@ pub(super) async fn planner(fx: &Fixture) -> Planner {
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(identity.thread_id.clone());
     let repo: Arc<dyn crate::db::Repo> = fx.repo.clone();
+    let registry = HarnessRegistry::new();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: crate::harness::backend::PlannerBackend::codex(
+            SharedCodexAppServer::new_stub(repo.clone()),
+            identity.card_id.as_str(),
+            identity.track_id.as_deref().unwrap(),
+            identity.session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: identity.session_id.clone(),
         track_id: identity.track_id.as_deref().unwrap().into(),
         card_id: identity.card_id.as_str().into(),
@@ -42,17 +50,20 @@ pub(super) async fn planner(fx: &Fixture) -> Planner {
         events: fx.ctx.events.clone(),
         card_role_cache: fx.roles.clone(),
         track_area_cache: fx.areas.clone(),
-        backend: SharedCodexAppServer::new_stub(repo.clone()).into(),
-        live_replies: crate::harness::LiveReplies::for_test(),
+
+        registry: registry.clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     // Keep delivered observations queued instead of issuing a turn on the stub backend.
     harness
         .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
         .await
         .unwrap();
-    let registry = HarnessRegistry::new();
     registry.insert(identity.session_id.clone(), harness.clone());
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
         repo.clone(),

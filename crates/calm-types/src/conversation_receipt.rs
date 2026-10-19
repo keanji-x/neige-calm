@@ -12,6 +12,7 @@ pub enum InitialInputReceiptVersion {
 }
 
 /// Immutable mint evidence. It does not assert that the input is still queued or visible.
+/// `initial_runtime_id` names the original carrier; recovery may move the same entry elsewhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -21,7 +22,7 @@ pub struct ConversationInitialInputReceipt {
     pub entry_rev: u32,
     pub queued_at_ms: i64,
     pub text_sha256: String,
-    /// The original carrier; later recovery may move the same entry to another runtime.
+    // The original carrier; later recovery may move the same entry to another runtime.
     pub initial_runtime_id: String,
 }
 
@@ -61,6 +62,7 @@ pub enum InitialInputUnavailableReason {
 /// Exact current queue ownership or provider-confirmed projection; no absence
 /// conclusion is available from an empty queue and incomplete retained history.
 /// Outbound only; the client decoder enforces reason/receipt correlation.
+/// An unavailable observation carries required nullable evidence: unknown presence never erases proven acceptance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, ToSchema, TS)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -89,7 +91,7 @@ pub enum ConversationInitialInputObservation {
     },
     Unavailable {
         reason: InitialInputUnavailableReason,
-        /// Required nullable evidence: unknown presence does not erase proven acceptance.
+        // Required nullable evidence: unknown presence does not erase proven acceptance.
         #[schema(required = true, nullable = true)]
         receipt: Option<ConversationInitialInputReceipt>,
     },

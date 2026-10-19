@@ -83,6 +83,12 @@ pub enum PersistedRewind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         reverted: bool,
     },
+    /// Positive V2 rewind receipts are bound to their native thread.
+    CodexV2 {
+        thread_id: String,
+        before_turn_id: String,
+        reverted: bool,
+    },
     /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
     Claude { resume_at: Uuid, drops_turn: Uuid },
 }

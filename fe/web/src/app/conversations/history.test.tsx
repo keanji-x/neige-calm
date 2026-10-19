@@ -1,3 +1,4 @@
+import { conversationCursorSchema } from '../../../../core/api/schemas.ts';
 // @vitest-environment jsdom
 import { createElement, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -7,15 +8,26 @@ import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { harnessItemsQueryOptions as pageOptions } from '../providers/queries.ts';
-import { earlierReadingPosition, historyRows, latestHistory, observedWindow, useTranscriptReads, useTranscriptHistory, type History } from './history.ts';
+import { conversationHistoryQueryOptions as pageOptions } from '../providers/queries.ts';
+import { earlierReadingPosition, historyRows, latestHistory as applyLatestPage, observedWindow as observePage, useTranscriptReads, useTranscriptHistory, type History } from './history.ts';
 
-type Row = History['latest']['rows'][number];
-function rows(first: number, count = 60): Row[] {
-  return Array.from({ length: count }, (_, i) => ({ id: first + i, card_id: 'card', track_id: 'track',
-    worker_session_id: 'worker', thread_id: 'thread', turn_id: null, turn_error_text: null,
-    item_uuid: null, item_type: 'agentMessage', method: 'item/completed', params: '{}', created_at_ms: first + i }));
+import type { ConversationCursor, ConversationPage, ConversationDisplayItem } from '../../../../core/api/generated/wire.ts';
+type Row = ConversationDisplayItem;
+function cursor(position: number): ConversationCursor {
+  return { contract: 'conversation_v1', source: 'historical_raw', card_id: 'card', position };
 }
+function rows(first: number, count = 60): Row[] {
+  return Array.from({ length: count }, (_, i) => ({ cursor: cursor(first + i), source: { kind: 'historical_raw', item: {
+    id: first + i, card_id: 'card', track_id: 'track', worker_session_id: 'worker', thread_id: 'thread',
+    turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed', params: '{}', created_at_ms: first + i,
+  } } }));
+}
+function page(items: Row[]): ConversationPage {
+  return { contract: 'conversation_v1', source: 'historical_raw', items,
+    next_cursor: items.length < 60 ? null : items[0].cursor };
+}
+const latestHistory = (previous: History | undefined, items: Row[]) => applyLatestPage(previous, page(items));
+const observedWindow = <P extends Parameters<typeof observePage>[1]>(items: Row[], position: P) => observePage(page(items), position);
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
@@ -29,8 +41,8 @@ function setup() {
   let held: ReturnType<typeof deferred<Row[]>> | null = null;
   const options = pageOptions({ send: async request => {
     paths.push(request.path);
-    const body = request.path.includes('after_id=0&') ? newest : await (held?.promise ?? earlier);
-    return { status: 200, statusText: 'OK', body };
+    const body = !new URL(request.path, 'http://fixture').searchParams.has('cursor') ? newest : await (held?.promise ?? earlier);
+    return { status: 200, statusText: 'OK', body: page(body) };
   } }, 'card', createUnauthorizedChannel({ enqueue: task => task() }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   let sequence = 0;
@@ -56,9 +68,9 @@ it('refreshes latest facts with two cached windows without replaying old HTTP an
   const older = view.result.current.history.data!.retained[0].rows;
   view.newest(rows(62));
   await act(async () => { await view.client.invalidateQueries({ queryKey: view.key }); });
-  await waitFor(() => expect(historyRows(view.result.current.history.data).map(row => row.id)).toEqual(rows(1, 121).map(row => row.id)));
+  await waitFor(() => expect(historyRows(view.result.current.history.data).map(row => row.cursor.position)).toEqual(rows(1, 121).map(row => row.cursor.position)));
   expect(historyRows(view.result.current.history.data)[0]).toBe(older[0]);
-  expect(view.paths.map(path => new URL(path, 'http://test').searchParams.get('after_id'))).toEqual(['0', '61', '0']);
+  expect(view.paths.map(path => { const value = new URL(path, 'http://test').searchParams.get('cursor'); return value === null ? null : conversationCursorSchema.parse(JSON.parse(value)); })).toEqual([null, cursor(61), null]);
   expect(view.result.current.reads.startOf(view.result.current.history.data)).toBeGreaterThan(before);
   view.client.clear();
 });
@@ -110,25 +122,25 @@ it('surfaces an expired nonadvancing cursor and retries only on explicit input',
 });
 
 it('applies latest interval edits and deletions without duplicate or unordered rows', () => {
-  const previous: History = { latest: observedWindow(rows(61), { kind: 'latest' }), retained: [observedWindow(rows(1), { kind: 'before', rowId: 61 })] };
-  const latest = rows(62, 61).filter(row => row.id !== 100).map(row => row.id === 101 ? { ...row, params: 'edited' } : row);
+  const previous: History = { latest: observedWindow(rows(61), { kind: 'latest' }), retained: [observedWindow(rows(1), { kind: 'before', cursor: cursor(61) })] };
+  const latest = rows(62, 61).filter(row => row.cursor.position !== 100).map(row => row.cursor.position === 101 ? { ...row, source: { ...row.source, ...(row.source.kind === 'historical_raw' ? { item: { ...row.source.item, params: 'edited' } } : {}) } } : row);
   const data = latestHistory(previous, latest);
   const result = historyRows(data);
-  expect(result.map(row => row.id)).toEqual(rows(1, 122).filter(row => row.id !== 100).map(row => row.id));
-  expect(result.find(row => row.id === 101)?.params).toBe('edited');
-  expect(earlierReadingPosition(data)).toEqual({ kind: 'before', rowId: 1 });
+  expect(result.map(row => row.cursor.position)).toEqual(rows(1, 122).filter(row => row.cursor.position !== 100).map(row => row.cursor.position));
+  expect(JSON.stringify(result.find(row => row.cursor.position === 101))).toContain('edited');
+  expect(earlierReadingPosition(data)).toEqual({ kind: 'before', cursor: cursor(1) });
   expect(historyRows(latestHistory(data, []))).toEqual([]);
-  expect(historyRows(latestHistory(data, rows(10, 3))).map(row => row.id)).toEqual([10, 11, 12]);
+  expect(historyRows(latestHistory(data, rows(10, 3))).map(row => row.cursor.position)).toEqual([10, 11, 12]);
 });
 
 it('bounds retained snapshots by loaded windows through repeated one-row rollovers', () => {
-  let data: History = { latest: observedWindow(rows(61), { kind: 'latest' }), retained: [observedWindow(rows(1), { kind: 'before', rowId: 61 })] };
+  let data: History = { latest: observedWindow(rows(61), { kind: 'latest' }), retained: [observedWindow(rows(1), { kind: 'before', cursor: cursor(61) })] };
   for (let first = 62; first <= 110; first++) data = latestHistory(data, rows(first));
   expect(data.retained).toHaveLength(1);
   expect(data.retained[0].rows.length).toBeGreaterThan(60);
-  expect(data.retained[0].coverage.lower).toEqual({ kind: 'from', rowId: 1 });
-  expect(historyRows(data).map(row => row.id)).toEqual(rows(1, 169).map(row => row.id));
-  expect(earlierReadingPosition(data)).toEqual({ kind: 'before', rowId: 1 });
+  expect(data.retained[0].coverage.lower).toEqual({ kind: 'from', cursor: cursor(1) });
+  expect(historyRows(data).map(row => row.cursor.position)).toEqual(rows(1, 169).map(row => row.cursor.position));
+  expect(earlierReadingPosition(data)).toEqual({ kind: 'before', cursor: cursor(1) });
 });
 
 it.each([0, 3])('records the actual earlier short response as read-to-start (%i rows)', async count => {
@@ -139,9 +151,9 @@ it.each([0, 3])('records the actual earlier short response as read-to-start (%i 
   act(() => { expect(view.result.current.history.loadEarlier()).toBe(true); });
   await waitFor(() => expect(view.result.current.history.earlier.cursor).toBeNull());
   expect(view.result.current.history.data?.retained[0].coverage).toEqual({
-    upper: { kind: 'before', rowId: 61 }, lower: { kind: 'start' },
+    upper: { kind: 'before', cursor: cursor(61) }, lower: { kind: 'start' },
   });
-  expect(historyRows(view.result.current.history.data).map(row => row.id)).toEqual([...rows(10, count), ...rows(61)].map(row => row.id));
+  expect(historyRows(view.result.current.history.data).map(row => row.cursor.position)).toEqual([...rows(10, count), ...rows(61)].map(row => row.cursor.position));
   expect(view.result.current.reads.startOf(view.result.current.history.data)).toBe(latestRead);
   expect(view.paths).toHaveLength(2);
   view.client.clear();
@@ -169,10 +181,10 @@ it.each(['clear', 'rewind', 'restored', 'replay'] as const)('expires retained wi
       applyEventEffects(view.client, [{ type: 'write-through', writes: plan.writeThrough }, { type: 'invalidate', keys: plan.invalidate }]);
     }
   });
-  await waitFor(() => expect(historyRows(view.result.current.history.data).map(row => row.id)).toEqual(rows(181).map(row => row.id)));
+  await waitFor(() => expect(historyRows(view.result.current.history.data).map(row => row.cursor.position)).toEqual(rows(181).map(row => row.cursor.position)));
   act(() => { held.resolve(rows(1)); });
   await waitFor(() => expect(view.result.current.history.earlier.pending).toBe(false));
-  expect(historyRows(view.result.current.history.data).map(row => row.id)).toEqual(rows(181).map(row => row.id));
+  expect(historyRows(view.result.current.history.data).map(row => row.cursor.position)).toEqual(rows(181).map(row => row.cursor.position));
   view.client.clear();
 });
 
@@ -187,7 +199,7 @@ it('retires an old cursor error when a real latest read supersedes it without re
   await waitFor(() => expect(view.result.current.history.earlier.cursor).toBe(181));
   expect(view.result.current.history.error).toBeNull();
   expect(view.result.current.history.earlier.failed).toBe(false);
-  expect(view.paths.map(path => new URL(path, 'http://test').searchParams.get('after_id'))).toEqual(['0', '61', '0']);
+  expect(view.paths.map(path => { const value = new URL(path, 'http://test').searchParams.get('cursor'); return value === null ? null : conversationCursorSchema.parse(JSON.parse(value)); })).toEqual([null, cursor(61), null]);
   view.client.clear();
 });
 
@@ -204,7 +216,7 @@ it('keeps a remounted owner’s equal latest read ahead of an earlier response f
   act(() => { held.resolve(rows(1)); });
   await waitFor(() => expect(view.client.isMutating()).toBe(0));
   expect(historyRows(reopened.result.current.history.data)).toHaveLength(60);
-  expect(view.paths.map(path => new URL(path, 'http://test').searchParams.get('after_id'))).toEqual(['0', '61', '0']);
+  expect(view.paths.map(path => { const value = new URL(path, 'http://test').searchParams.get('cursor'); return value === null ? null : conversationCursorSchema.parse(JSON.parse(value)); })).toEqual([null, cursor(61), null]);
   reopened.unmount(); view.client.clear();
 });
 
@@ -310,7 +322,7 @@ it.each(['rollover', 'equal', 'remount', 'reset', 'ABA'] as const)(
     act(() => { active.resolve(rows(cursor - 60)); });
     await waitFor(() => expect(current.result.current.history.earlier.pending).toBe(false));
     expect(current.result.current.reads.startOf(current.result.current.history.data)).toBe(fence);
-    expect(historyRows(current.result.current.history.data).map(row => row.id)).toContain(cursor - 60);
+    expect(historyRows(current.result.current.history.data).map(row => row.cursor.position)).toContain(cursor - 60);
 
     // Now retire another request, admit its successor, and reject the obsolete HTTP.
     const staleError = view.hold();

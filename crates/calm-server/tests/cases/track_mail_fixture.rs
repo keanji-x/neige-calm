@@ -218,6 +218,13 @@ impl World {
             .await;
         let harness = PlannerHarness::run(PlannerHarnessParams {
             track_delete_locks: Default::default(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                self.daemon.clone(),
+                planner.card_id.as_ref(),
+                planner.track_id.as_ref(),
+                planner.session_id.as_ref(),
+            )
+            .unwrap(),
             worker_session_id: planner.session_id.clone(),
             track_id: planner.track_id.clone(),
             card_id: planner.card_id.clone(),
@@ -226,11 +233,15 @@ impl World {
             events: self.events.clone(),
             card_role_cache: self.role_cache.clone(),
             track_area_cache: self.area_cache.clone(),
-            backend: self.daemon.clone().into(),
-            live_replies: calm_server::harness::LiveReplies::for_test(),
+
+            registry: self.registry.clone(),
             config: HarnessConfig::default(),
-            snapshot: idle_snapshot(&planner.thread_id),
-        });
+            snapshot: (idle_snapshot(&planner.thread_id))
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
         self.registry
             .insert(planner.session_id.clone(), harness.clone());
         planner.harness = Some(harness);

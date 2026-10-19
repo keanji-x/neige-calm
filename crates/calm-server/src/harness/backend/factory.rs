@@ -15,7 +15,7 @@ use calm_types::runtime::AgentProtocol;
 
 mod codex;
 mod recovery;
-pub(crate) use recovery::RecoveryTarget;
+pub(crate) use recovery::{ActiveRecoveryAdmission, RecoveryTarget};
 
 /// Preserve the existing operation vs HTTP refusal classes, with one readiness decision.
 pub(crate) enum ReadinessFor {
@@ -78,7 +78,12 @@ impl<'a> PlannerFactory<'a> {
         row: PlannerRow<'_>,
     ) -> Result<PlannerBackend> {
         Ok(match row.binding.provider.protocol() {
-            AgentProtocol::Codex => self.daemon()?.into(),
+            AgentProtocol::Codex => PlannerBackend::codex(
+                self.daemon()?,
+                row.card_id,
+                row.track_id,
+                row.worker_session_id,
+            )?,
             AgentProtocol::Acp => PlannerBackend(Arm::Acp(
                 crate::acp_planner::wiring::open_session(self.acp, wiring, repo, seals, row)
                     .await?,

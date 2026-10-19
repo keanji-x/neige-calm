@@ -19,7 +19,7 @@ function entry(overrides: Partial<PendingQueueEntry> = {}): PendingQueueEntry {
 function renderQueue(props: Partial<PendingQueueProps> = {}) {
   const onDelete = vi.fn<PendingQueueProps['onDelete']>(() => done);
   const view = render(<PendingQueue
-    entries={[entry()]} queueDisplayAccounting={{ displayed: [], suppressed: [] }}
+    entries={[entry()]} pendingInputCount={0} queueDisplayAccounting={{ displayed: [], suppressed: [] }}
     overflow={0}
     busy={false}
     onDelete={onDelete}
@@ -224,7 +224,7 @@ it('offers editing for every queued message', () => {
 it('marks the original bubble and hands editing to the existing composer owner', async () => {
   const onEdit = vi.fn();
   renderQueue({ entries: [entry()], onEdit, editingEntryId: 'e1' });
-  expect(document.querySelector('[data-nc-turn="you"][data-nc-editing]')?.textContent).toBe('look at the report');
+  expect(document.querySelector('[data-nc-turn="unknown"][data-nc-editing]')?.textContent).toBe('look at the report');
   expect(document.querySelector('[data-nc-composer]')).toBeNull();
   await userEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
   expect(onEdit).toHaveBeenCalledWith(entry());
@@ -232,7 +232,7 @@ it('marks the original bubble and hands editing to the existing composer owner',
 
 it('reuses outgoing bubbles and exposes only icons without a queue header', () => {
   renderQueue({ onSteer: () => done });
-  expect(document.querySelector('[data-nc-pending-entry] [data-nc-turn="you"]')?.textContent).toBe('look at the report');
+  expect(document.querySelector('[data-nc-pending-entry] [data-nc-turn="unknown"]')?.textContent).toBe('look at the report');
   expect(document.querySelector('[data-nc-queue-toggle]')).toBeNull();
   const actions = screen.getAllByRole('button');
   expect(actions).toHaveLength(3);
@@ -250,7 +250,7 @@ it.each([false, true])('follows authoritative queue order when a steered entry r
   const first = entry({ entry_id: 'a', text: 'A waiting' });
   const middle = entry({ entry_id: 'b', text: 'B waiting' });
   const last = entry({ entry_id: 'c', text: 'C waiting' });
-  const props = { entries: [first, middle, last], queueDisplayAccounting: { displayed: [], suppressed: [] }, overflow: 0, busy: false, onDelete: () => done,
+  const props = { pendingInputCount: 0, entries: [first, middle, last], queueDisplayAccounting: { displayed: [], suppressed: [] }, overflow: 0, busy: false, onDelete: () => done,
     onEdit: () => undefined, canEdit: true, editingEntryId: null, savedEntry: null, onFocusComposer: () => undefined };
   const view = render(<PendingQueue {...props} />);
   view.rerender(<PendingQueue {...props} entries={[first, last]} />);
@@ -264,7 +264,7 @@ it.each([false, true])('follows authoritative queue order when a steered entry r
 it('removes only departed source-accounted copies and preserves active rows and ordinary departure motion', () => {
   const first = entry({ entry_id: 'first', text: 'Canonical carrier now owns this input' });
   const second = entry({ entry_id: 'second', text: 'An ordinary deleted input still animates' });
-  const props = { entries: [first, second], queueDisplayAccounting: { displayed: [{ id: first.entry_id, rev: first.rev }], suppressed: [] }, overflow: 0, busy: false,
+  const props = { pendingInputCount: 0, entries: [first, second], queueDisplayAccounting: { displayed: [{ id: first.entry_id, rev: first.rev }], suppressed: [] }, overflow: 0, busy: false,
     onDelete: () => done, onEdit: () => undefined, canEdit: true, editingEntryId: null,
     savedEntry: null, onFocusComposer: () => undefined };
   const view = render(<PendingQueue {...props} />);
@@ -280,7 +280,7 @@ it('removes only departed source-accounted copies and preserves active rows and 
 it('compares the actual saved departing revision with declared carrier versions', () => {
   const original = entry({ entry_id: 'saved-version', rev: 0, text: 'Earlier cached text' });
   const saved = { ...original, rev: 1, text: 'Actual acknowledged saved text' };
-  const props = { entries: [original], queueDisplayAccounting: { displayed: [{ id: original.entry_id, rev: 0 }], suppressed: [] },
+  const props = { pendingInputCount: 0, entries: [original], queueDisplayAccounting: { displayed: [{ id: original.entry_id, rev: 0 }], suppressed: [] },
     overflow: 0, busy: false, onDelete: () => done, onEdit: () => undefined, canEdit: true,
     editingEntryId: null, savedEntry: null, onFocusComposer: () => undefined };
   const view = render(<PendingQueue {...props} />);

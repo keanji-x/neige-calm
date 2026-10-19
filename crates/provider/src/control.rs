@@ -94,6 +94,18 @@ pub enum NativeInterruptOutcome<E> {
     Unconfirmed { error: E },
 }
 
+impl<E> NativeInterruptOutcome<E> {
+    pub fn map_error<F>(self, map: impl FnOnce(E) -> F) -> NativeInterruptOutcome<F> {
+        match self {
+            Self::NativeAck => NativeInterruptOutcome::NativeAck,
+            Self::NoTarget => NativeInterruptOutcome::NoTarget,
+            Self::Unconfirmed { error } => {
+                NativeInterruptOutcome::Unconfirmed { error: map(error) }
+            }
+        }
+    }
+}
+
 impl<E> From<NativeInterruptOutcome<E>> for InterruptOutcome<E> {
     fn from(outcome: NativeInterruptOutcome<E>) -> Self {
         match outcome {

@@ -1,5 +1,4 @@
 use super::*;
-use crate::codex::request_attempt::{FailureCause, RequestCrossing};
 
 #[tokio::test]
 async fn expired_attempt_has_pre_send_evidence_and_never_reaches_peer() {
@@ -10,9 +9,9 @@ async fn expired_attempt_has_pre_send_evidence_and_never_reaches_peer() {
         .request_attempt_until::<Value>("turn/start", json!({}), deadline)
         .await
         .unwrap_err();
-    assert_eq!(failure.crossing, RequestCrossing::BeforeSend);
-    assert_eq!(failure.method, "turn/start");
-    assert_eq!(failure.request_id, None);
+    assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
+    assert_eq!(failure.method(), "turn/start");
+    assert_eq!(failure.request_id(), None);
     assert!(h.client.pending.lock().unwrap().is_empty());
     assert!(
         tokio::time::timeout(Duration::from_millis(20), h.server.next())
@@ -36,8 +35,8 @@ async fn poisoned_transport_refuses_new_attempt_before_send() {
         )
         .await
         .unwrap_err();
-    assert_eq!(failure.crossing, RequestCrossing::BeforeSend);
-    assert_eq!(failure.request_id, None);
+    assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
+    assert_eq!(failure.request_id(), None);
 }
 
 #[tokio::test]
@@ -68,16 +67,17 @@ async fn remote_steer_error_preserves_structure_and_is_not_non_delivery_proof() 
         .await
         .unwrap_err();
     let (request_id, _peer) = responder.await.unwrap();
-    assert_eq!(failure.crossing, RequestCrossing::AfterSend);
-    assert_eq!(failure.method, "turn/steer");
-    assert_eq!(failure.request_id, Some(request_id));
+    assert_eq!(failure.crossing(), RequestCrossing::AfterSend);
+    assert_eq!(failure.method(), "turn/steer");
+    assert_eq!(failure.request_id(), Some(request_id));
     assert!(!format!("{failure:?}").contains("provider-owned-detail"));
-    let FailureCause::Response(RpcResponseError::Remote(remote)) = &failure.cause else {
-        panic!("remote error not retained: {failure:?}");
-    };
-    assert_eq!(remote.code, -32602);
-    assert_eq!(remote.message, "invalid input");
-    assert_eq!(remote.data, Some(json!({"detail":"provider-owned-detail"})));
+    let remote = failure.remote_error().expect("remote error retained");
+    assert_eq!(remote.code(), -32602);
+    assert_eq!(remote.message(), "invalid input");
+    assert_eq!(
+        remote.data(),
+        Some(&json!({"detail":"provider-owned-detail"}))
+    );
     assert!(!format!("{remote:?}").contains("provider-owned-detail"));
     let legacy = failure.into_legacy_error();
     assert!(
@@ -100,9 +100,9 @@ async fn malformed_result_after_wire_retains_unknown_crossing() {
         .turn_steer_attempt("thread", "turn", Vec::new(), Some("submission"))
         .await
         .unwrap_err();
-    assert_eq!(failure.crossing, RequestCrossing::AfterSend);
-    assert!(failure.request_id.is_some());
-    assert!(matches!(failure.cause, FailureCause::Local(_)));
+    assert_eq!(failure.crossing(), RequestCrossing::AfterSend);
+    assert!(failure.request_id().is_some());
+    assert!(failure.remote_error().is_none());
     assert!(matches!(failure.into_legacy_error(), Error::Transport(_)));
     let _peer = responder.await.unwrap();
 }
@@ -120,9 +120,9 @@ async fn unanswered_attempt_after_wire_retains_request_correlation() {
         .await
         .unwrap_err();
     let (request_id, _peer) = responder.await.unwrap();
-    assert_eq!(failure.crossing, RequestCrossing::AfterSend);
-    assert_eq!(failure.request_id, Some(request_id));
-    assert!(matches!(failure.cause, FailureCause::Local(_)));
+    assert_eq!(failure.crossing(), RequestCrossing::AfterSend);
+    assert_eq!(failure.request_id(), Some(request_id));
+    assert!(failure.remote_error().is_none());
     assert!(client.pending.lock().unwrap().is_empty());
 }
 
@@ -135,8 +135,8 @@ async fn failed_send_is_after_send_and_poisons_transport() {
         .turn_steer_attempt("thread", "turn", Vec::new(), Some("submission"))
         .await
         .unwrap_err();
-    assert_eq!(failure.crossing, RequestCrossing::AfterSend);
-    assert!(failure.request_id.is_some());
+    assert_eq!(failure.crossing(), RequestCrossing::AfterSend);
+    assert!(failure.request_id().is_some());
     assert!(h.client.pending.lock().unwrap().is_empty());
     assert!(
         h.client.transport.check().is_err(),
@@ -148,4 +148,81 @@ async fn failed_send_is_after_send_and_poisons_transport() {
             if message.starts_with("send turn/steer: ")),
         "{legacy}"
     );
+}
+
+#[tokio::test]
+async fn opaque_pre_send_gate_runs_under_sink_and_refusal_never_poison_transport() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut h = harness().await;
+    let allowed = AtomicBool::new(true);
+    let gate = PreSendGate::new(|| -> futures_util::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async {
+            assert!(
+                h.client.sink.try_lock().is_err(),
+                "gate owns the actual outbound sink"
+            );
+            if allowed.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(Error::Refused("caller refused".into()))
+            }
+        })
+    });
+    let held = h.client.sink.lock().await;
+    let request = h
+        .client
+        .request_attempt_gated::<Value>("turn/start", json!({}), &gate);
+    tokio::pin!(request);
+    assert!(futures_util::poll!(&mut request).is_pending());
+    allowed.store(false, Ordering::SeqCst);
+    drop(held);
+    let failure = request.await.unwrap_err();
+    assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
+    assert!(failure.request_id().is_some());
+    assert!(h.client.pending.lock().unwrap().is_empty());
+    assert!(
+        h.client.transport.check().is_ok(),
+        "policy refusal cannot poison the shared connection"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), h.server.next())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn cancel_pending_pre_send_gate_releases_sink_without_poisoning() {
+    let h = harness().await;
+    let gate = PreSendGate::new(|| -> futures_util::future::BoxFuture<'_, Result<()>> {
+        Box::pin(std::future::pending())
+    });
+    let mut attempt = Box::pin(h.client.request_attempt_gated::<Value>(
+        "turn/start",
+        json!({}),
+        &gate,
+    ));
+    assert!(futures_util::poll!(&mut attempt).is_pending());
+    assert!(h.client.sink.try_lock().is_err());
+    drop(attempt);
+    assert!(h.client.sink.try_lock().is_ok());
+    assert!(h.client.pending.lock().unwrap().is_empty());
+    assert!(h.client.transport.check().is_ok());
+}
+
+#[tokio::test]
+async fn pre_send_gate_respects_shorter_request_deadline() {
+    let h = harness().await;
+    let gate = PreSendGate::new(|| -> futures_util::future::BoxFuture<'_, Result<()>> {
+        Box::pin(std::future::pending())
+    });
+    let client = h.client.with_request_timeout(Duration::from_millis(10));
+    let attempt = client.request_attempt_gated::<Value>("turn/start", json!({}), &gate);
+    let failure = tokio::time::timeout(Duration::from_secs(1), attempt)
+        .await
+        .expect("gate must respect the caller's budget")
+        .unwrap_err();
+    assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
+    assert!(client.sink.try_lock().is_ok());
+    assert!(client.transport.check().is_ok());
 }

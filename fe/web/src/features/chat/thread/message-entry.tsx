@@ -17,6 +17,7 @@ type MessageEntryProps = Readonly<{
   timestampFormatter: Intl.DateTimeFormat | null;
   entryKey: string;
   author: ConversationTurn['author'];
+  human: ConversationTurn['human'];
   text: string;
   attachments: ConversationTurn['attachments'];
   opens: boolean;
@@ -29,12 +30,12 @@ type MessageEntryProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, text, attachments,
+export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, human, text, attachments,
   opens, gapLabel, queued, edited, replacement, working, imageFiles, renderLink, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   return (
     <div
-      className={[opens ? styles.exchange : '', mobile && author === 'you' ? mobileStyles.userTurn : ''].filter(Boolean).join(' ') || undefined}
+      className={[opens ? styles.exchange : '', mobile && author !== 'agent' ? mobileStyles.userTurn : ''].filter(Boolean).join(' ') || undefined}
       data-nc-entry={entryKey}
       {...(opens ? { 'data-nc-exchange': id } : {})}
     >
@@ -42,9 +43,11 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
       {gapLabel !== null && (
         <p className={styles.gap}>{gapLabel}</p>
       )}
-      {author === 'you' ? (
+      {author !== 'agent' ? (
         <>
-          <OutgoingMessage text={text} mobile={mobile} queued={queued} edited={edited} replacement={replacement} />
+          <OutgoingMessage speaker={author} text={text} mobile={mobile} queued={queued} edited={edited} replacement={replacement} />
+          {/* Attribution follows the bubble so a real source handoff preserves its position. */}
+          {author !== 'you' && <p className={styles.queuedNote}>{author === 'human' ? human?.displayName : 'Unknown author'}</p>}
           {/* `alt=""` and `aria-hidden`: the transcript has no description of the image to offer, and the count is said once in text above. */}
           {(attachments ?? []).length > 0 && (
             <ul className={styles.attachments} data-nc-turn-attachments="" {...(edited ? { 'data-nc-editing': '' } : {})}>

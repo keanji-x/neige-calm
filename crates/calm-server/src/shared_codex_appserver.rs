@@ -3,13 +3,23 @@
 use provider::codex::delivery::{CompactDelivery, StartDelivery, SteerDelivery};
 use provider::control::NativeInterruptOutcome;
 
+pub mod control;
 #[cfg(target_os = "macos")]
 mod macos_process;
 
-pub mod control;
 pub(crate) mod exact_thread;
 use crate::harness::profile::HarnessProfileExt;
 use control::ControlError;
+mod metadata_reads;
+mod native_turns;
+mod prompt_attempt;
+mod thread_mint;
+pub(crate) use native_turns::{CodexHarnessBinding, NativeInput, NativeSteer};
+use native_turns::{NativeTurns, SourceRetirement};
+pub(crate) use thread_mint::ThreadMintFailure;
+#[cfg(all(test, feature = "fixtures"))]
+pub(crate) mod native_owner_tests;
+pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport, NativePromptAdmission};
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod termination_identity_tests;
 mod thread_release;
@@ -448,7 +458,7 @@ pub struct SharedCodexAppServer {
     /// Attribution can be forgotten before unsubscribe succeeds. Keep the
     /// hibernation obligation independently until release or successful wake.
     hibernating_releases: DashMap<String, ()>,
-    active_turns: Arc<DashMap<String, String>>,
+    native_turns: Arc<NativeTurns>,
     /// The server's one deletion-seal registry, built here and shared through [`Self::thread_seals`].
     /// A late turn/start response or notification on a sealed thread is interrupted instead of
     /// becoming active after the owning workspace has been recycled.
@@ -581,6 +591,7 @@ pub struct FakeSharedCodexAppServer {
     reverted_threads: std::sync::Mutex<Vec<(String, String, u64)>>,
     /// Answer `thread/revert` with codex's `turn not found`, as a wrong or reverted turn gets.
     revert_turn_not_found: AtomicBool,
+    revert_result: std::sync::Mutex<Option<serde_json::Value>>,
     /// How many `config/mcpServer/reload` calls this fake answered as sent.
     mcp_server_reloads: AtomicU64,
     /// How many `config/mcpServer/reload` calls reached this fake, whatever the answer.
@@ -639,6 +650,7 @@ impl FakeSharedCodexAppServer {
             turn_steer_return_hook: std::sync::Mutex::new(None),
             reverted_threads: std::sync::Mutex::new(Vec::new()),
             revert_turn_not_found: AtomicBool::new(false),
+            revert_result: std::sync::Mutex::new(None),
             mcp_server_reloads: AtomicU64::new(0),
             mcp_server_reload_attempts: AtomicU64::new(0),
             mcp_server_reload_answer: std::sync::Mutex::new(FakeMcpServerReload::Sent),
@@ -693,7 +705,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             hibernating_releases: DashMap::new(),
-            active_turns: Arc::new(DashMap::new()),
+            native_turns: Arc::new(NativeTurns::default()),
             thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             start_timeout: Duration::from_secs(120),
@@ -760,7 +772,7 @@ impl SharedCodexAppServer {
             repo,
             thread_cache: Arc::new(DashMap::new()),
             hibernating_releases: DashMap::new(),
-            active_turns: Arc::new(DashMap::new()),
+            native_turns: Arc::new(NativeTurns::default()),
             thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(
                 Duration::from_millis(cfg.shared_codex_appserver_restart_initial_delay_ms),
@@ -956,6 +968,45 @@ impl SharedCodexAppServer {
             .map(|minted| minted.thread_id)
     }
 
+    /// The caller's real source owner re-admits new native effects after this
+    /// owner's awaited start gate/settings work. No credential enters this owner.
+    pub(crate) async fn thread_start_admitted_for_card(
+        self: &Arc<Self>,
+        card_id: &str,
+        role: Option<CardRole>,
+        params: SharedThreadStartParams,
+        admission: &NativePromptAdmission<'_>,
+    ) -> std::result::Result<String, ThreadMintFailure> {
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            admission.check_fixture().await?;
+            fake.started_thread_params
+                .lock()
+                .expect("fake shared codex thread params mutex poisoned")
+                .push((
+                    params.developer_instructions.clone(),
+                    matches!(params.config, ThreadConfig::NoMcp),
+                    role,
+                ));
+        }
+        #[cfg(not(feature = "fixtures"))]
+        let _ = role;
+        self.thread_start_mint_inner_admitted(card_id, params, admission)
+            .await
+            .map(|minted| minted.thread_id)
+    }
+
+    pub(crate) async fn thread_start_mint_admitted_for_card(
+        self: &Arc<Self>,
+        card_id: &str,
+        params: SharedThreadStartParams,
+        admission: &NativePromptAdmission<'_>,
+    ) -> std::result::Result<String, ThreadMintFailure> {
+        self.thread_start_admitted_for_card(card_id, None, params, admission)
+            .await
+    }
+
     /// Worker mint: inject per-card MCP shell credentials without Planner tool delegation.
     pub async fn thread_start_mint_mcp_shell(
         self: &Arc<Self>,
@@ -986,12 +1037,26 @@ impl SharedCodexAppServer {
         card_id: &str,
         params: SharedThreadStartParams,
     ) -> Result<MintedThread> {
+        self.thread_start_mint_inner_admitted(
+            card_id,
+            params,
+            &NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) })),
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    async fn thread_start_mint_inner_admitted(
+        self: &Arc<Self>,
+        card_id: &str,
+        params: SharedThreadStartParams,
+        admission: &NativePromptAdmission<'_>,
+    ) -> std::result::Result<MintedThread, ThreadMintFailure> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
+            admission.check_fixture().await?;
             if fake.fail_next_thread_start.swap(false, Ordering::SeqCst) {
-                return Err(CalmError::CodexAppServer(
-                    "forced thread/start failure".into(),
-                ));
+                return Err(CalmError::CodexAppServer("forced thread/start failure".into()).into());
             }
             let n = fake.next_thread.fetch_add(1, Ordering::SeqCst);
             let thread_id = format!("fake-thread-{n:04}");
@@ -1006,21 +1071,43 @@ impl SharedCodexAppServer {
                 resolved_model: Some("fake-model".into()),
             });
         }
+        self.thread_start_mint_native(card_id, params, admission)
+            .await
+    }
+
+    // Native preparation carries an opaque policy value all the way to the
+    // gated provider method. It cannot invoke admission before an awaited lock.
+    async fn thread_start_mint_native(
+        self: &Arc<Self>,
+        card_id: &str,
+        params: SharedThreadStartParams,
+        admission: &prompt_attempt::NativePromptAdmission<'_>,
+    ) -> std::result::Result<MintedThread, ThreadMintFailure> {
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
         let config = params.config.to_wire_config()?;
-        let thread = client
-            .thread_start_with_params(ThreadStartParams {
-                cwd: params.cwd,
-                approval_policy: params.approval_policy,
-                sandbox_mode: params.sandbox_mode,
-                developer_instructions: params.developer_instructions,
-                config,
-            })
-            .await?;
+        let thread = admission.finish_mint(
+            client
+                .thread_start_with_params_gated(
+                    ThreadStartParams {
+                        cwd: params.cwd,
+                        approval_policy: params.approval_policy,
+                        sandbox_mode: params.sandbox_mode,
+                        developer_instructions: params.developer_instructions,
+                        config,
+                    },
+                    admission.gate(),
+                )
+                .await,
+        )?;
         let thread_id = thread
             .thread_id()
-            .ok_or_else(|| CalmError::CodexAppServer("thread/start returned no thread.id".into()))?
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| {
+                ThreadMintFailure::Unknown(CalmError::CodexAppServer(
+                    "thread/start returned no thread.id".into(),
+                ))
+            })?
             .to_string();
         self.kernel_initiated_threads
             .lock()
@@ -1078,199 +1165,25 @@ impl SharedCodexAppServer {
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         approvals: TurnApprovals,
-        client_user_message_id: Option<&str>,
+        client_id: Option<&str>,
     ) -> StartDelivery<control::StartError> {
-        macro_rules! before {
-            ($result:expr) => {
-                match $result {
-                    Ok(value) => value,
-                    Err(error) => {
-                        return StartDelivery::NotWritten {
-                            error: error.into(),
-                        }
-                    }
-                }
-            };
-        }
-        before!(self.require_start_authentication());
-        if self.thread_seals.is_sealed(thread_id) {
-            return StartDelivery::NotWritten {
-                error: control::StartError::Host(CalmError::Conflict(format!(
-                    "thread {thread_id} is sealed because its track is being deleted"
-                ))),
-            };
-        }
-        if !self.thread_cache.contains_key(thread_id) {
-            tracing::warn!(
-                target = "shared_codex_daemon::mapping_miss",
-                %thread_id,
-                method = "turn/start",
-                "turn/start for thread missing shared daemon card mapping"
-            );
-        }
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            if fake.reject_turn_start.load(Ordering::SeqCst) {
-                return StartDelivery::Unknown {
-                    response_turn: None,
-                    error: control::StartError::Refused(CalmError::CodexRefused(
-                        "turn/start failed: unknown model (code -32602)".into(),
-                    )),
-                };
-            }
-            if fake.fail_turn_start.load(Ordering::SeqCst) {
-                return StartDelivery::Unknown {
-                    response_turn: None,
-                    error: control::StartError::Unanswered(CalmError::CodexAppServer(
-                        "forced turn/start failure for test".into(),
-                    )),
-                };
-            }
-            fake.started_turns
-                .lock()
-                .expect("fake shared codex started turns mutex poisoned")
-                .push((thread_id.to_string(), items.clone()));
-            fake.started_turn_selections
-                .lock()
-                .expect("fake shared codex turn selections mutex poisoned")
-                .push((thread_id.to_string(), selection.clone()));
-            fake.started_turn_client_ids
-                .lock()
-                .expect("fake shared codex turn client ids mutex poisoned")
-                .push(client_user_message_id.map(ToOwned::to_owned));
-            fake.started_turn_approvals
-                .lock()
-                .expect("fake shared codex turn approvals mutex poisoned")
-                .push(approvals);
-            // Counted after the records above, so `turn_start_count_for_test` never runs ahead of them.
-            let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
-            let turn_id = format!("fake-turn-{n:04}");
-            let hook = fake
-                .turn_start_return_hook
-                .lock()
-                .expect("fake shared codex turn-start hook mutex poisoned")
-                .take();
-            if let Some(hook) = hook {
-                hook.entered.notify_one();
-                hook.release.notified().await;
-            }
-            self.active_turns
-                .insert(thread_id.to_string(), turn_id.clone());
-            let _ = self.notifications.send(Notification::TurnStarted {
-                thread_id: thread_id.to_string(),
-                turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
-            });
-            return self.finish_start_reply(thread_id, turn_id, None).await;
-        }
-        let client = before!(self.connected_client().await);
-        before!(self.require_start_authentication());
-        let (turn_id, invalid_result) = match client
-            .turn_start_delivery(
-                thread_id,
-                items,
-                selection,
-                approvals,
-                client_user_message_id,
-            )
-            .await
-        {
-            StartDelivery::NativeAck {
-                turn,
-                cleanup: None,
-            } => (turn, None),
-            StartDelivery::NativeAck {
-                turn,
-                cleanup: Some(error),
-            } => {
-                return StartDelivery::NativeAck {
-                    turn,
-                    cleanup: Some(error.into()),
-                };
-            }
-            StartDelivery::NotWritten { error } => {
-                return StartDelivery::NotWritten {
-                    error: error.into(),
-                };
-            }
-            StartDelivery::Unknown {
-                error,
-                response_turn: Some(turn),
-            } => (turn, Some(control::StartError::from(error))),
-            StartDelivery::Unknown {
-                error,
-                response_turn: None,
-            } => {
-                return StartDelivery::Unknown {
-                    response_turn: None,
-                    error: error.into(),
-                };
-            }
-        };
-        self.active_turns
-            .insert(thread_id.to_string(), turn_id.clone());
-        self.finish_start_reply(thread_id, turn_id, invalid_result)
-            .await
+        self.turn_start_report(
+            thread_id,
+            items,
+            selection,
+            approvals,
+            client_id,
+            NativeInput::Legacy,
+            &NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) })),
+        )
+        .await
+        .into_start_delivery()
     }
 
     /// Whether a live app-server connection exists right now. Awaits the core lock rather than
     /// `try_lock`-ing it, and does not report the fixtures fake as connected.
     pub async fn has_connection(&self) -> bool {
         self.running_client().await.is_some()
-    }
-
-    /// `model/list`, drained across codex's pagination cursor. Read-only and connection-only:
-    /// it never spawns or heals the daemon.
-    pub async fn model_list(&self, deadline: tokio::time::Instant) -> Result<Vec<CodexModel>> {
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref()
-            && fake.reject_model_list.load(Ordering::SeqCst)
-        {
-            return Err(CalmError::CodexRefused(
-                "model/list failed: catalog unavailable for this account (code -32603)".into(),
-            ));
-        }
-        let client = self.connected_client().await?;
-        let mut models: Vec<CodexModel> = Vec::new();
-        let mut skipped = 0usize;
-        let mut cursor: Option<String> = None;
-        // A server that echoes a cursor forever would otherwise pin this loop.
-        for _ in 0..MODEL_LIST_MAX_PAGES {
-            let page = client.model_list(cursor.as_deref(), deadline).await?;
-            // Entries are decoded ONE AT A TIME; a malformed one is skipped rather than failing the
-            // page, because an all-or-nothing decode would present a fabricated outage.
-            for entry in page.data {
-                match serde_json::from_value::<CodexModel>(entry) {
-                    Ok(model) => models.push(model),
-                    Err(e) => {
-                        skipped += 1;
-                        tracing::warn!(
-                            target = "shared_codex_daemon::model_list",
-                            error = %e,
-                            "skipping a model/list entry this build cannot decode"
-                        );
-                    }
-                }
-            }
-            match page.next_cursor {
-                Some(next) if !next.is_empty() => cursor = Some(next),
-                _ => {
-                    if skipped > 0 {
-                        tracing::warn!(
-                            target = "shared_codex_daemon::model_list",
-                            skipped,
-                            kept = models.len(),
-                            "model/list returned entries this build cannot decode"
-                        );
-                    }
-                    return Ok(models);
-                }
-            }
-        }
-        // The peer never cleared `nextCursor`. A partial catalog is never presented as a whole
-        // one, which is also why `?` above abandons the pages already collected.
-        Err(CalmError::CodexAppServer(format!(
-            "model/list did not terminate its pagination within {MODEL_LIST_MAX_PAGES} pages"
-        )))
     }
 
     /// `account/read` — whether the daemon is logged in (#1817). Read-only and connection-only,
@@ -1286,37 +1199,6 @@ impl SharedCodexAppServer {
         }
         let client = self.connected_client().await?;
         client.account_read(deadline).await.map_err(Into::into)
-    }
-
-    /// `config/read` — the layer-merged effective config, narrowed to the model defaults;
-    /// `cwd` selects the project layers.
-    pub async fn config_read(
-        &self,
-        cwd: Option<&str>,
-        deadline: tokio::time::Instant,
-    ) -> Result<CodexConfig> {
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            fake.config_read_cwds
-                .lock()
-                .expect("fake shared codex config-read cwds mutex poisoned")
-                .push(cwd.map(str::to_string));
-            if fake.reject_config_read.load(Ordering::SeqCst) {
-                return Err(CalmError::CodexRefused(
-                    "config/read failed: no such workspace (code -32602)".into(),
-                ));
-            }
-            if let Some(config) = fake
-                .config_read
-                .lock()
-                .expect("fake shared codex config-read mutex poisoned")
-                .clone()
-            {
-                return Ok(config);
-            }
-        }
-        let client = self.connected_client().await?;
-        Ok(client.config_read(cwd, deadline).await?.config)
     }
 
     /// `thread/read` (metadata only) for the thread's rollout file. Upstream marks `Thread.path`
@@ -1387,12 +1269,12 @@ impl SharedCodexAppServer {
 
     /// Drop the active-turn bookkeeping for threads a committed delete has sealed and quiesced;
     /// the caller forgets their seals in [`ThreadSeals::forget_deleted`]. Deliberately takes no
-    /// guard: every other writer of this map uses `DashMap`'s per-entry locking only, and taking
+    /// guard: the native owner uses its own short lock only, and taking
     /// the start serial across a respawn self-deadlocks.
     pub fn forget_turn_state_for_deleted_threads(&self, thread_ids: &[String]) -> usize {
         let mut dropped = 0_usize;
         for thread_id in thread_ids {
-            if self.active_turns.remove(thread_id).is_some() {
+            if self.native_turns.remove(thread_id).is_some() {
                 dropped += 1;
             }
         }
@@ -1430,7 +1312,7 @@ impl SharedCodexAppServer {
 
     /// `turn/steer` — hand `items` to the turn running on `thread_id`; codex refuses when
     /// `expected_turn_id` is not the active turn (`CalmError::CodexRefused`). No seal check and
-    /// no `active_turns` write: a steer creates no turn.
+    /// no `native_turns` write: a steer creates no turn.
     pub async fn turn_steer(
         &self,
         thread_id: &str,
@@ -1438,88 +1320,16 @@ impl SharedCodexAppServer {
         items: Vec<InputItem>,
         client_user_message_id: Option<&str>,
     ) -> SteerDelivery<ControlError> {
-        if let Err(error) = self.require_authentication() {
-            return SteerDelivery::NotWritten { error };
-        }
-        #[cfg(feature = "fixtures")]
-        if let Some(fake) = self.fake.as_ref() {
-            fake.steered_turns
-                .lock()
-                .expect("fake shared codex steered turns mutex poisoned")
-                .push((
-                    thread_id.to_string(),
-                    expected_turn_id.to_string(),
-                    items.clone(),
-                    client_user_message_id.map(ToOwned::to_owned),
-                ));
-            let hook = fake
-                .turn_steer_return_hook
-                .lock()
-                .expect("fake shared codex turn-steer hook mutex poisoned")
-                .take();
-            if let Some(hook) = hook {
-                hook.entered.notify_one();
-                hook.release.notified().await;
-            }
-            let scripted = fake
-                .reject_turn_steer
-                .lock()
-                .expect("fake shared codex reject-steer mutex poisoned")
-                .clone();
-            if let Some(message) = scripted {
-                return SteerDelivery::Unknown {
-                    error: ControlError::Refused(CalmError::CodexRefused(message)),
-                    response_turn: None,
-                };
-            }
-            if fake.fail_turn_steer.load(Ordering::SeqCst) {
-                return SteerDelivery::Unknown {
-                    error: ControlError::Unanswered(CalmError::CodexAppServer(
-                        "request turn/steer timed out".into(),
-                    )),
-                    response_turn: None,
-                };
-            }
-            let result = match self.active_turn_id_for_thread(thread_id) {
-                None => Err(ControlError::Refused(CalmError::CodexRefused(
-                    "turn/steer failed: no active turn to steer (code -32600)".into(),
-                ))),
-                Some(active) if active != expected_turn_id => {
-                    Err(ControlError::Refused(CalmError::CodexRefused(format!(
-                        "turn/steer failed: expected active turn id `{expected_turn_id}` but \
-                         found `{active}` (code -32600)"
-                    ))))
-                }
-                Some(active) => Ok(active),
-            };
-            return match result {
-                Ok(turn) => SteerDelivery::NativeAck { turn },
-                Err(error) => SteerDelivery::Unknown {
-                    error,
-                    response_turn: None,
-                },
-            };
-        }
-        let client = match self.authenticated_client().await {
-            Ok(client) => client,
-            Err(error) => return SteerDelivery::NotWritten { error },
-        };
-        match client
-            .turn_steer_delivery(thread_id, expected_turn_id, items, client_user_message_id)
-            .await
-        {
-            SteerDelivery::NativeAck { turn } => SteerDelivery::NativeAck { turn },
-            SteerDelivery::NotWritten { error } => SteerDelivery::NotWritten {
-                error: error.into(),
-            },
-            SteerDelivery::Unknown {
-                error,
-                response_turn,
-            } => SteerDelivery::Unknown {
-                error: error.into(),
-                response_turn,
-            },
-        }
+        self.turn_steer_report(
+            thread_id,
+            expected_turn_id,
+            items,
+            client_user_message_id,
+            NativeSteer::Legacy,
+            &NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) })),
+        )
+        .await
+        .into_steer_delivery()
     }
 
     /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
@@ -1551,24 +1361,35 @@ impl SharedCodexAppServer {
                         "thread/revert failed: turn not found: {before_turn_id} (code -32600)"
                     )))
                 } else {
-                    Ok(serde_json::json!({ "thread": { "id": thread_id } }))
+                    Ok(fake
+                        .revert_result
+                        .lock()
+                        .expect("fake revert result")
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({ "thread": { "id": thread_id } })))
                 }
             });
         #[cfg(not(feature = "fixtures"))]
         let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> = None;
         match fake_answer {
             Some(answer) => {
-                answer?;
+                serde_json::from_value::<provider::codex::ThreadRevertResult>(answer?)
+                    .map_err(|error| control::StartError::Host(error.into()))?
+                    .confirm_thread(thread_id)?;
             }
             None => {
-                self.authenticated_client()
-                    .await?
-                    .thread_revert(thread_id, before_turn_id)
-                    .await?
+                let client = self.authenticated_client().await?;
+                client.thread_revert(thread_id, before_turn_id).await?;
+                self.native_turns.retire_from_source(
+                    &Arc::downgrade(&client),
+                    thread_id,
+                    before_turn_id,
+                );
+                return Ok(());
             }
         }
-        self.active_turns
-            .remove_if(thread_id, |_, active| active == before_turn_id);
+        self.native_turns
+            .retire_if(thread_id, |_, active| active == before_turn_id);
         Ok(())
     }
 
@@ -2050,7 +1871,7 @@ impl SharedCodexAppServer {
                     process_start_time: start_time,
                     started_at,
                 };
-                self.install_client(client.clone(), notifications).await?;
+                drop(self.install_client(client.clone(), notifications).await?);
                 let watcher_self = Arc::downgrade(self);
                 let watcher_runtime = runtime.clone();
                 let handle = tokio::spawn(async move {
@@ -2167,6 +1988,7 @@ impl SharedCodexAppServer {
                 }
                 core.attempts = core.attempts.saturating_add(1);
                 let attempts = core.attempts;
+                self.native_turns.invalidate();
                 let prev_pid = match &core.state {
                     SupervisorState::Running { runtime, .. } => Some(runtime.pid),
                     _ => None,
@@ -2446,6 +2268,7 @@ impl SharedCodexAppServer {
     ) {
         let generation = {
             let mut core = self.core.lock().await;
+            self.native_turns.invalidate();
             core.state = SupervisorState::Failed {
                 last_error,
                 class,
@@ -2681,7 +2504,7 @@ impl SharedCodexAppServer {
             );
         }
         let client = Arc::new(client);
-        self.install_client(client.clone(), notifications).await?;
+        drop(self.install_client(client.clone(), notifications).await?);
         let child = spawn_guard.disarm();
         let watcher_self = Arc::downgrade(self);
         let handle = tokio::spawn(async move {
@@ -2936,6 +2759,7 @@ impl SharedCodexAppServer {
                 .flatten()
             {
                 Some(status) => {
+                    self.native_turns.invalidate();
                     *child = None;
                     Some((status, runtime.clone(), generation))
                 }
@@ -3088,6 +2912,7 @@ impl SharedCodexAppServer {
         let socket_path = self.sock.clone();
         {
             let mut core = self.core.lock().await;
+            self.native_turns.invalidate();
             core.state = SupervisorState::Starting {
                 backoff_until: None,
                 socket_path: socket_path.clone(),
@@ -3100,6 +2925,7 @@ impl SharedCodexAppServer {
                     core.attempts = 0;
                     // A new Running incarnation is installed: bump the generation (wrapping; equality-only consumers).
                     core.generation = core.generation.wrapping_add(1);
+                    self.native_turns.publish(&launched.client);
                     core.state = SupervisorState::Running {
                         child: launched.child,
                         client: launched.client,
@@ -3119,6 +2945,7 @@ impl SharedCodexAppServer {
                 let class = classify_spawn_failure(&err);
                 let generation = {
                     let mut core = self.core.lock().await;
+                    self.native_turns.invalidate();
                     core.state = SupervisorState::Failed {
                         last_error: err.to_string(),
                         class,
@@ -3274,7 +3101,7 @@ impl SharedCodexAppServer {
         self: &Arc<Self>,
         client: Arc<CodexAppServer>,
         mut notifications: crate::codex_appserver::NotificationStream,
-    ) -> Result<()> {
+    ) -> Result<JoinHandle<()>> {
         self.start_authentication_monitor();
         // Stamp the daemon (re)connect wall-clock; common path for both fresh-spawn and hot-takeover.
         self.daemon_connected_at_ms
@@ -3288,14 +3115,26 @@ impl SharedCodexAppServer {
         let pending = self.pending_codex_threads_handle.clone();
         let repo = self.repo.clone();
         let thread_cache = self.thread_cache.clone();
-        let active_turns = self.active_turns.clone();
+        let native_turns = self.native_turns.clone();
         let thread_seals = self.thread_seals.clone();
         let kernel_initiated_threads = self.kernel_initiated_threads.clone();
         let forgotten_threads = self.forgotten_threads.clone();
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
-        tokio::spawn(async move {
+        // Construct outside the async body so an unpolled abort also retires
+        // this exact owner; the Weak client cannot keep its reader alive.
+        let retirement = SourceRetirement::new(native_turns.clone(), client.clone());
+        let forwarder = tokio::spawn(async move {
+            let _retirement = retirement;
             while let Some(notification) = notifications.recv().await {
                 authentication.observe_from_connection(authentication_epoch, &notification);
+                // Modeled native events require the actual installed source even
+                // when malformed frames omit their thread. Unscoped Other frames
+                // remain diagnostics; they cannot carry a native END/receipt.
+                let native_scoped = !matches!(&notification,
+                    Notification::Other { params, .. } if other_thread_id(params).is_none());
+                if native_scoped && !native_turns.is_current_source(&client) {
+                    continue;
+                }
                 if let Some(thread_id) = thread_started_id(&notification) {
                     match handle_thread_started_notification(
                         pending.as_ref(),
@@ -3320,45 +3159,61 @@ impl SharedCodexAppServer {
                         }
                     }
                 }
-                if let Some((thread_id, turn_id)) =
-                    track_active_turn(&active_turns, &thread_seals, &notification)
+                if !native_turns.observe(&client, &notification) && native_scoped {
+                    continue;
+                }
+                if let Notification::TurnStarted { thread_id, turn } = &notification
+                    && let Some(turn_id) =
+                        turn_id(turn).filter(|_| thread_seals.is_sealed(thread_id))
                 {
-                    let Some(client) = client.upgrade() else {
+                    let Some(connection) = client.upgrade() else {
                         break;
                     };
-                    let active_turns = active_turns.clone();
+                    let source = client.clone();
+                    let native_turns = native_turns.clone();
+                    let thread_id = thread_id.clone();
+                    let turn_id = turn_id.to_owned();
                     tokio::spawn(async move {
-                        match client.interrupt_outcome(&thread_id, &turn_id).await {
+                        match connection.interrupt_outcome(&thread_id, &turn_id).await {
                             NativeInterruptOutcome::NativeAck
-                            | NativeInterruptOutcome::NoTarget => {
-                                active_turns.remove_if(&thread_id, |_, active| active == &turn_id);
-                            }
+                            | NativeInterruptOutcome::NoTarget => native_turns
+                                .acknowledge_control_from_source(&source, &thread_id, &turn_id),
                             NativeInterruptOutcome::Unconfirmed { error } => {
-                                // Keep the id in `active_turns`: deletion's
-                                // strict quiesce can retry and must not mistake
-                                // a failed best-effort interrupt for absence.
-                                tracing::warn!(
-                                    thread_id,
-                                    turn_id,
-                                    error = %error,
-                                    "failed to interrupt late turn on deletion-sealed thread"
-                                );
+                                tracing::warn!(thread_id, turn_id, error=%error,
+                                    "failed to interrupt late turn on deletion-sealed thread")
                             }
                         }
                     });
                 }
-                if let Some(thread_id) = turn_completed_thread_id(&notification) {
-                    kernel_initiated_threads.lock().await.remove(thread_id);
+                let completed_thread = turn_completed_thread_id(&notification).map(str::to_owned);
+                let mut completion_markers = if completed_thread.is_some() {
+                    Some(kernel_initiated_threads.lock().await)
+                } else {
+                    None
+                };
+                // All prerequisite waits are over. Bookkeeping and publication
+                // share one final source decision under the actual native owner.
+                let publish = || {
+                    if let (Some(thread), Some(markers)) =
+                        (completed_thread.as_ref(), completion_markers.as_mut())
+                    {
+                        markers.remove(thread);
+                    }
+                    let _ = tx.send(notification);
+                };
+                if native_scoped {
+                    native_turns.publish_from_current_source(&client, publish);
+                } else {
+                    publish();
                 }
-                let _ = tx.send(notification);
             }
         });
-        Ok(())
+        Ok(forwarder)
     }
 
     async fn rebuild_thread_cache_from_db(&self) -> Result<()> {
         self.thread_cache.clear();
-        self.active_turns.clear();
+        self.native_turns.clear();
 
         let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
         for (card_id, thread_id) in active_threads {
@@ -3400,6 +3255,19 @@ impl SharedCodexAppServer {
                      while the resume replay was in flight"
                 );
                 continue;
+            }
+            match crate::conversation_inputs::has_canonical_storage(self.repo.as_ref(), &card_id)
+                .await
+            {
+                Ok(false) => {}
+                Ok(true) => {
+                    tracing::info!(%card_id, "canonical conversation awaits current-source recovery");
+                    continue;
+                }
+                Err(_) => {
+                    tracing::warn!(%card_id, "conversation storage contract unavailable; automatic resume held");
+                    continue;
+                }
             }
             tracing::info!(
                 target = "shared_codex_daemon::resume",
@@ -3536,9 +3404,7 @@ impl SharedCodexAppServer {
 
     #[cfg(feature = "fixtures")]
     pub fn active_turn_for_test(&self, thread_id: &str) -> Option<String> {
-        self.active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
+        self.native_turns.active(thread_id)
     }
 
     /// Every `thread/revert` the fake was asked: thread, `beforeTurnId`, `turn/start`s before it.
@@ -3562,10 +3428,21 @@ impl SharedCodexAppServer {
             .store(not_found, Ordering::SeqCst);
     }
 
+    #[cfg(feature = "fixtures")]
+    pub fn answer_revert_result_for_test(&self, result: serde_json::Value) {
+        *self
+            .fake
+            .as_ref()
+            .expect("fake daemon")
+            .revert_result
+            .lock()
+            .expect("fake revert result") = Some(result);
+    }
+
     /// What a `turn/completed` does to the cache, for a test that injects the completion itself.
     #[cfg(feature = "fixtures")]
     pub fn clear_active_turn_for_test(&self, thread_id: &str) {
-        self.active_turns.remove(thread_id);
+        self.native_turns.remove(thread_id);
     }
 
     /// Script `thread/read`'s `thread.path` for `thread_id`; `None` is codex's `null`.
@@ -3897,7 +3774,7 @@ impl SharedCodexAppServer {
 
     #[cfg(feature = "fixtures")]
     pub fn set_active_turn_for_test(&self, thread_id: &str, turn_id: &str) {
-        self.active_turns
+        self.native_turns
             .insert(thread_id.to_string(), turn_id.to_string());
     }
 
@@ -4353,45 +4230,6 @@ pub(crate) fn other_turn_id(params: &serde_json::Value) -> Option<&str> {
         .get("turn")
         .and_then(turn_id)
         .or_else(|| params.get("turnId").and_then(serde_json::Value::as_str))
-}
-
-fn track_active_turn(
-    active_turns: &DashMap<String, String>,
-    thread_seals: &ThreadSeals,
-    notification: &Notification,
-) -> Option<(String, String)> {
-    match notification {
-        Notification::TurnStarted { thread_id, turn } => {
-            if let Some(turn_id) = turn_id(turn) {
-                if thread_seals.is_sealed(thread_id) {
-                    active_turns.insert(thread_id.clone(), turn_id.to_string());
-                    return Some((thread_id.clone(), turn_id.to_string()));
-                }
-                active_turns.insert(thread_id.clone(), turn_id.to_string());
-                if thread_seals.is_sealed(thread_id) {
-                    return Some((thread_id.clone(), turn_id.to_string()));
-                }
-            }
-        }
-        Notification::TurnCompleted { thread_id, turn } => {
-            if let Some(turn_id) = turn_id(turn) {
-                active_turns.remove_if(thread_id, |_, active| active == turn_id);
-            } else {
-                active_turns.remove(thread_id);
-            }
-        }
-        Notification::Other { method, params } if method == "turn/aborted" => {
-            if let Some(thread_id) = other_thread_id(params) {
-                if let Some(turn_id) = other_turn_id(params) {
-                    active_turns.remove_if(thread_id, |_, active| active == turn_id);
-                } else {
-                    active_turns.remove(thread_id);
-                }
-            }
-        }
-        _ => {}
-    }
-    None
 }
 
 enum ThreadStartedHandling {

@@ -17,6 +17,16 @@ pub(crate) async fn observation(
     ask_id: i64,
     answers: &[AskAnswer],
 ) -> Result<Option<Observation>> {
+    qualified_observation(repo, track_id, ask_id, answers, false).await
+}
+
+pub(super) async fn qualified_observation(
+    repo: &dyn RepoEventWrite,
+    track_id: &TrackId,
+    ask_id: i64,
+    answers: &[AskAnswer],
+    strict: bool,
+) -> Result<Option<Observation>> {
     let asked = repo
         .events_for_track(track_id.as_str(), &["ask.requested"], Some(ask_id - 1))
         .await?
@@ -29,6 +39,11 @@ pub(crate) async fn observation(
         ..
     }) = asked.map(|row| row.event)
     else {
+        if strict {
+            return Err(crate::error::CalmError::Conflict(
+                "answer source question is unavailable".into(),
+            ));
+        }
         tracing::warn!(%track_id, ask_id, "ask.answered names no ask.requested on its track");
         return Ok(None);
     };

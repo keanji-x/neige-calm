@@ -39,6 +39,19 @@ pub(super) async fn recover(
     cs: &CodexShellState,
     runtime: WorkerSessionProjection,
 ) -> Result<WorkerSessionProjection> {
+    recover_admitted(s, w, cs, runtime, None).await
+}
+
+#[allow(deprecated)]
+pub(super) async fn recover_admitted(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    runtime: WorkerSessionProjection,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<WorkerSessionProjection> {
+    crate::conversation_inputs::require_historical_storage(s.repo.as_ref(), &runtime.card_id)
+        .await?;
     let card = s
         .repo
         .card_get(&runtime.card_id)
@@ -67,7 +80,12 @@ pub(super) async fn recover(
         )
         .await?;
     let outcome = factory
-        .resume_system_error_conversation(w.repo.as_ref(), &runtime, async || {
+        .resume_system_error_conversation(w.repo.as_ref(), &runtime, source.clone(), async || {
+            if let Some(source) = &source {
+                source
+                    .require_card(s.repo.as_ref(), &runtime.card_id)
+                    .await?;
+            }
             if let Some(old) = s.harness.get(&runtime.id) {
                 old.quiesce_system_error_for_recovery().await?;
                 s.harness.remove_if_same(&runtime.id, &old);

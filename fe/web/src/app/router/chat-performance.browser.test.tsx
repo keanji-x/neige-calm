@@ -1,4 +1,6 @@
 import { historyRows, type History } from '../conversations/history.ts';
+import { conversationCursorSchema } from '../../../../core/api/schemas.ts';
+import { historicalConversationPage, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 /** Production router/component probe. Durations are diagnostic, never a CI speed threshold. */
 import { memo, Profiler, type ProfilerOnRenderCallback } from 'react';
@@ -91,13 +93,16 @@ function mount(count: number) {
     if (request.path === `/api/areas/${track.area_id}/tracks`) body = [track];
     if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card], overlays: [] };
     if (request.path === '/api/settings') body = {};
-    if (request.path.endsWith('/planner/run')) body = { card_id: card.id, worker_session_id: 'perf-runtime',
-      phase: 'issuing_turn', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
+    if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: card.id, worker_session_id: 'perf-runtime',
+      phase: 'issuing_turn', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);
     if (request.path.includes('/harness/items')) {
       const url = new URL(request.path, 'http://localhost');
-      const cursor = Number(url.searchParams.get('after_id'));
-      const before = cursor === 0 ? history : history.filter((row) => row.id < cursor);
-      body = before.slice(-Number(url.searchParams.get('limit')));
+      const cursor = url.searchParams.get('cursor');
+      const position: number | null = cursor === null ? null : conversationCursorSchema.parse(JSON.parse(cursor)).position;
+      const before = position === null ? history : history.filter(row => row.id < position);
+      const shown=before.slice(-PAGE_LIMIT);
+      body = historicalConversationPage(card.id, shown, before.length > shown.length
+        ? {contract:'conversation_v1',source:'historical_raw',card_id:card.id,position:shown[0].id} : null);
     }
     if (request.path.endsWith('/harness/live')) body = { turn_id: 'live-probe', items: [{ item_id: 'live-message', text: live.text }] };
     return { status: 200, statusText: 'OK', body };
@@ -136,7 +141,7 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
   try {
     await page.getByRole('button', { name: /^Conversation Measured chat/ }).click();
     await expect.element(page.getByText('LIVE performance probe.', { exact: true })).toBeVisible();
-    const loadedRows = () => historyRows(view.client.getQueryData<History>(['harness-items', 'perf-card'])).length;
+    const loadedRows = () => historyRows(view.client.getQueryData<History>(['harness-items', 'perf-card', 'conversation_v1'])).length;
     await expect.poll(loadedRows).toBe(Math.min(count, PAGE_LIMIT));
     while (loadedRows() < count) {
       const before = loadedRows();
@@ -152,7 +157,7 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
       expect(document.querySelectorAll('img[alt="Probe image"]').length).toBe(7);
       await expect.poll(() => [...document.querySelectorAll<HTMLImageElement>('img[alt="Probe image"]')].filter((image) => image.complete && image.naturalWidth > 0).length).toBeGreaterThan(0);
       expect(document.querySelectorAll('[data-nc-tool-complete]').length).toBe(12);
-    } else expect(document.querySelectorAll('[data-nc-turn="you"], [data-nc-turn="agent"]').length).toBe(count + 1);
+    } else expect(document.querySelectorAll('[data-nc-turn="unknown"], [data-nc-turn="agent"]').length).toBe(count + 1);
     const loaded = { durationMs: performance.now() - start, ...snapshot(), domElements: document.querySelectorAll('#root *').length,
       loadedImages: [...document.querySelectorAll<HTMLImageElement>('img[alt="Probe image"]')].filter((image) => image.complete && image.naturalWidth > 0).length };
     resetMetrics();

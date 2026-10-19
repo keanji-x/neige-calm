@@ -319,7 +319,7 @@ describe('transcriptRowToMessages', () => {
       item_type: 'userMessage',
       input_segments: [{ presentation: 'user', text: '', attachments: [attachment] }],
       params: '{}',
-    }))).toEqual([{ id: '7', author: 'you', text: '', atMs: 50, attachments: [attachment], inputSource: { itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
+    }))).toEqual([{ id: '7', author: 'you', text: '', atMs: 50, attachments: [attachment], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
 
     expect(transcriptRowToMessages(item({
       item_type: 'userMessage',
@@ -337,7 +337,7 @@ describe('transcriptRowToMessages', () => {
       item_type: 'userMessage',
       input_segments: [{ presentation: 'user', text: 'User says:\nlook', attachments: [attachment] }],
       params: '{}',
-    }))).toEqual([{ id: '7', author: 'you', text: 'look', atMs: 50, attachments: [attachment], inputSource: { itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
+    }))).toEqual([{ id: '7', author: 'you', text: 'look', atMs: 50, attachments: [attachment], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: 'turn', entryRev: null } }]);
   });
 
   it('maps completed agent messages', () => {
@@ -359,7 +359,7 @@ describe('transcriptRowToMessages', () => {
       input_segments: [{ presentation: 'user', text: 'User says:\nhello from the queue', attachments: [] }],
     });
     expect(transcriptRowToMessages(projection)).toEqual([
-      { id: '7', author: 'you', text: 'hello from the queue', atMs: 50, attachments: [], inputSource: { itemId: 7, segmentIndex: 0, turnId: null, entryRev: null } },
+      { id: '7', author: 'you', text: 'hello from the queue', atMs: 50, attachments: [], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: null, entryRev: null } },
     ]);
     /* The same row after the completed echo upgraded it in place. */
     const upgraded = item({
@@ -373,7 +373,7 @@ describe('transcriptRowToMessages', () => {
       }),
     });
     expect(transcriptRowToMessages(upgraded)).toEqual([
-      { id: '7', author: 'you', text: 'hello from the queue', atMs: 99, attachments: [], inputSource: { itemId: 7, segmentIndex: 0, turnId: 'turn-1', entryRev: null } },
+      { id: '7', author: 'you', text: 'hello from the queue', atMs: 99, attachments: [], inputSource: { cardId: 'card', threadId: 'thread', itemId: 7, segmentIndex: 0, turnId: 'turn-1', entryRev: null } },
     ]);
     expect(buildTranscript([projection]).map((entry) => entry.id)).toEqual(['7']);
     expect(buildTranscript([upgraded]).map((entry) => entry.id)).toEqual(['7']);

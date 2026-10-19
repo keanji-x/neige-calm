@@ -67,14 +67,14 @@ async fn selections_after(boot: &Boot, count: usize) -> Vec<TurnModelSelection> 
 }
 
 async fn phase(boot: &Boot) -> HarnessPhaseTag {
-    boot.harness.snapshot().await.phase
+    boot.harness.snapshot().await.unwrap().phase
 }
 
 /// Tell the harness the in-flight turn finished: the fixtures fake never ends a turn, so a second turn is otherwise unreachable.
 async fn complete_the_running_turn(boot: &Boot) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let turn_id = loop {
-        if let Some(id) = boot.harness.snapshot().await.last_turn_id.clone() {
+        if let Some(id) = boot.harness.snapshot().await.unwrap().last_turn_id.clone() {
             break id;
         }
         assert!(Instant::now() < deadline, "no turn ever started");
@@ -394,7 +394,12 @@ async fn an_unresolvable_default_defers_the_turn_and_recovers_when_it_becomes_re
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(
-        boot.harness.snapshot().await.pending_entries().len(),
+        boot.harness
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_entries()
+            .len(),
         1,
         "the refused turn must leave the person's message queued, not drop it"
     );

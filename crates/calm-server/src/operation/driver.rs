@@ -184,13 +184,7 @@ impl OperationRuntime {
         payload: Value,
     ) -> Result<OperationId> {
         let adapter = self.adapter(kind)?;
-        if adapter.phases().contains(&PhaseTag::AwaitingRetry)
-            && key.idempotency_key.as_deref().is_none_or(str::is_empty)
-        {
-            return Err(CalmError::BadRequest(
-                "explicit-retry interactions require an idempotency key".into(),
-            ));
-        }
+        Self::require_submission_key(adapter.as_ref(), &key)?;
         // A keyed `operations` row is PERMANENT: this short-circuit is the only thing that stops a byte-identical retry from re-running an
         // operation that already succeeded (for `planner-harness-start`, delivering the user's first message twice). Never add a retention pass over keyed rows.
         if let Some(op_id) = self.keyed_replay(kind, &key).await? {
@@ -201,6 +195,62 @@ impl OperationRuntime {
         let op_id = self.repo.insert_operation(kind, key, payload).await?;
         self.drive().await?;
         Ok(op_id)
+    }
+
+    fn require_submission_key(adapter: &dyn ProviderAdapter, key: &OperationKey) -> Result<()> {
+        if adapter.phases().contains(&PhaseTag::AwaitingRetry)
+            && key.idempotency_key.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(CalmError::BadRequest(
+                "explicit-retry interactions require an idempotency key".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Drive one invocation of an installed adapter. Domain request authority
+    /// belongs to that invocation, never to this generic runtime or its rows.
+    pub(crate) async fn execute_with_adapter(
+        &self,
+        registered: Arc<dyn ProviderAdapter>,
+        invocation: Arc<dyn ProviderAdapter>,
+        key: OperationKey,
+        payload: Value,
+    ) -> Result<OperationResult> {
+        let installed = self.adapter(registered.kind())?;
+        if !Arc::ptr_eq(&installed, &registered)
+            || invocation.kind() != registered.kind()
+            || invocation.phases() != registered.phases()
+        {
+            return Err(CalmError::Conflict(
+                "operation adapter composition changed".into(),
+            ));
+        }
+        Self::require_submission_key(invocation.as_ref(), &key)?;
+        let _drive = self.drive_mutex.lock().await;
+        // Like submit, an original keyed receipt precedes mutable validation.
+        // The invocation owner still re-admits every fresh effect while driving
+        // this exact operation; a completed result needs no new native start.
+        let op_id = match self.keyed_replay(invocation.kind(), &key).await? {
+            Some(op_id) => op_id,
+            None => {
+                invocation.validate(&payload).await?;
+                self.repo
+                    .insert_operation(invocation.kind(), key, payload)
+                    .await?
+            }
+        };
+        loop {
+            if let Some(result) = self.repo.operation_result(&op_id).await? {
+                return Ok(result);
+            }
+            let op = self
+                .repo
+                .claim_drive_operation(&op_id)
+                .await?
+                .ok_or_else(|| CalmError::Conflict("operation is held by another driver".into()))?;
+            self.drive_claimed(invocation.clone(), op).await?;
+        }
     }
 
     /// The operation that already holds this request's key: `Some` for the same payload hash (a

@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // #2209 U3: the Planner's open asks, answered from its composer through the production router.
@@ -53,11 +54,11 @@ function setup({ reopen = false, refusal = false } = {}) {
         if (reopen && (request.body as { answers: { option: number }[] }).answers[0].option === 0) currentTrack = { ...currentTrack, closed_at: null };
         return ok(undefined, 204);
       }
-      if (request.path.includes('/harness/items')) return ok([]);
-      if (request.path.endsWith('/planner/run')) return ok({
+      if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
+      if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({
         card_id: request.path.split('/')[3], worker_session_id: 'runtime', phase: 'idle', model: null,
         reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-      });
+      }, 'idle', true));
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },

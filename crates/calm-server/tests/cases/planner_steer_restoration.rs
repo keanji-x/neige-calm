@@ -50,7 +50,15 @@ async fn restored_pair(reject_retirement: bool) -> (Boot, String, String) {
             .unwrap();
         let snapshot = HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap());
         if row.status == calm_server::session_projection_repo::WorkerSessionState::Failed
-            && ((reject_retirement && boot.harness.snapshot().await.pending_entries().len() == 2)
+            && ((reject_retirement
+                && boot
+                    .harness
+                    .snapshot()
+                    .await
+                    .unwrap()
+                    .pending_entries()
+                    .len()
+                    == 2)
                 || (!reject_retirement
                     && snapshot.pending_entries().len() == 2
                     && queue_changes(&boot)
@@ -118,9 +126,40 @@ async fn recover_and_drain(boot: &Boot) {
         boot.daemon.turn_start_count_for_test() >= 2
     })
     .await;
+    // Recovery may issue the restored pair before this send reaches the actor.
+    // A later Resume stays queued until that real provider turn completes.
+    let queued = pending(boot).await;
+    if !queued.is_empty() {
+        assert_eq!(queued.len(), 1, "only the new send may remain: {queued:?}");
+        assert_eq!(queued[0]["text"], "Resume here");
+        let turn = boot
+            .daemon
+            .active_turn_id_for_thread(SEED_THREAD_ID)
+            .expect("the recovered pair has a native running turn");
+        complete_turn(boot, &turn);
+        // Like failed-pair setup, fake notifications do not run the daemon reducer.
+        boot.daemon.clear_active_turn_for_test(SEED_THREAD_ID);
+        wait_until("new send after recovered turn", || {
+            boot.daemon.turn_start_count_for_test() >= 3
+        })
+        .await;
+    }
     let deadline = Instant::now() + Duration::from_secs(3);
-    while !pending(boot).await.is_empty() {
-        assert!(Instant::now() < deadline);
+    loop {
+        let queued = pending(boot).await;
+        if queued.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pending after recovery: {queued:?}; run={:?}",
+            get(
+                boot.app.clone(),
+                format!("/api/cards/{}/planner/run", boot.planner_card.id)
+            )
+            .await
+            .1,
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
@@ -335,7 +374,15 @@ async fn restoration_shutdown_before_completion_keeps_terminal_notification_owne
     end_turn(&boot, FIRST_TURN, "failed");
     boot.daemon.clear_active_turn_for_test(SEED_THREAD_ID);
     let deadline = Instant::now() + Duration::from_secs(3);
-    while boot.harness.snapshot().await.pending_entries().len() != 2 {
+    while boot
+        .harness
+        .snapshot()
+        .await
+        .unwrap()
+        .pending_entries()
+        .len()
+        != 2
+    {
         assert!(
             Instant::now() < deadline,
             "failed release must keep receiving completion"

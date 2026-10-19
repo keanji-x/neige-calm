@@ -1,9 +1,12 @@
+import { conversationCursorSchema } from '../../../../core/api/schemas.ts';
 import { historyRows, latestHistory, observedWindow, type History } from '../conversations/history.ts';
+import { historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import type { HarnessItem as TranscriptRow } from '../../../../core/api/generated/wire.ts';
+import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { queryKeys } from '../providers/queries.ts';
 import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
@@ -15,7 +18,7 @@ declare module 'vitest/internal/browser' {
 // Existing server boundary, checked against the actual presentation requests below.
 const PAGE_LIMIT = 60;
 
-function transcriptKey(cardId = 'second-planner') { return queryKeys.harnessItems(cardId); }
+function transcriptKey(cardId = 'second-planner') { return [...queryKeys.harnessItems(cardId), 'conversation_v1']; }
 
 function history(count: number, cardId = 'second-planner'): TranscriptRow[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -26,32 +29,20 @@ function history(count: number, cardId = 'second-planner'): TranscriptRow[] {
   }));
 }
 
-// Match the HTTP range contract: exclusive cursors, ascending response rows,
-// and a budget applied from the requested end (never a cache/window merge).
-function transcriptPage(rows: TranscriptRow[], path: string): TranscriptRow[] {
-  const params = new URL(path, 'http://fixture').searchParams;
-  const cursor = Number(params.get('after_id') ?? 0);
-  const limit = Math.min(500, Math.max(0, Number(params.get('limit') ?? 100)));
-  if (limit === 0) return [];
-  return params.get('direction') === 'desc'
-    ? rows.filter(row => cursor === 0 || row.id < cursor).slice(-limit)
-    : rows.filter(row => row.id > cursor).slice(0, limit);
+function cursor(card: string, position: number) {
+  return { contract: 'conversation_v1' as const, source: 'historical_raw' as const, card_id: card, position };
 }
-
-it('serves budgeted transcript ranges and terminal empty reads in server order', () => {
-  const rows = history(900);
-  const read = (cursor: number, direction: 'asc' | 'desc' = 'desc') =>
-    transcriptPage(rows, `/api/cards/second-planner/harness/items?after_id=${cursor}&direction=${direction}&limit=${PAGE_LIMIT}`).map(row => row.id);
-  expect(read(0)).toEqual(rows.slice(-PAGE_LIMIT).map(row => row.id));
-  expect(read(841)).toEqual(rows.slice(780, 840).map(row => row.id));
-  expect(read(61)).toEqual(rows.slice(0, 60).map(row => row.id));
-  expect(read(21)).toEqual(rows.slice(0, 20).map(row => row.id));
-  expect(read(1)).toEqual([]);
-  expect(read(840, 'asc')).toEqual(rows.slice(840).map(row => row.id));
-  expect(read(900, 'asc')).toEqual([]);
-  expect(transcriptPage(rows, '/harness/items?after_id=841&direction=desc&limit=3').map(row => row.id)).toEqual([838, 839, 840]);
-  expect(transcriptPage(rows, '/harness/items?after_id=0&direction=desc&limit=0')).toEqual([]);
-});
+function historyPage(rows: TranscriptRow[], card = rows[0]?.card_id ?? 'second-planner') {
+  return historicalConversationPage(card, rows, rows.length < PAGE_LIMIT ? null : cursor(card, rows[0].id));
+}
+function transcriptPage(rows: TranscriptRow[], path: string) {
+  const params = new URL(path, 'http://fixture').searchParams;
+  const value = params.get('cursor');
+  const before = value === null ? null : conversationCursorSchema.parse(JSON.parse(value)).position;
+  const limit = Number(params.get('limit'));
+  const selected = rows.filter(row => before === null || row.id < before).slice(-limit);
+  return historyPage(selected, conversationCardId(path));
+}
 
 afterEach(async () => { cleanup(); await page.viewport(1280, 800); });
 
@@ -75,16 +66,16 @@ it.each([false, true])('keeps expanded Track A → B → A idle without earlier 
     if (!request.path.includes('/harness/items')) return undefined;
     await waiting;
     const cardId = request.path.includes('/daily-planner/') ? 'daily-planner' : 'project-planner';
-    const cursor = new URL(request.path, 'http://fixture').searchParams.get('after_id');
+    const cursor = new URL(request.path, 'http://fixture').searchParams.get('cursor');
     const latest = newest(cardId);
     if (refreshed && cardId === 'daily-planner') latest.push({ ...latest.at(-1)!, id: 121, created_at_ms: 121,
       params: JSON.stringify({ item: { text: 'Fresh reply after returning to A' } }) });
-    return ok(cursor === '0' ? latest.slice(-PAGE_LIMIT) : history(PAGE_LIMIT, cardId).map(row => ({ ...row,
+    return ok(historyPage(cursor === null ? latest.slice(-PAGE_LIMIT) : history(PAGE_LIMIT, cardId).map(row => ({ ...row,
       track_id: cardId === 'daily-planner' ? 'daily' : 'project',
-    })));
+    })), cardId));
   } });
   const reads = () => fixture.requests.filter(request => request.path.includes('/harness/items'));
-  const earlier = () => reads().filter(request => new URL(request.path, 'http://fixture').searchParams.get('after_id') !== '0');
+  const earlier = () => reads().filter(request => new URL(request.path, 'http://fixture').searchParams.get('cursor') !== null);
   const evidence: Array<{ phase: string; paths: string[] }> = [];
   const settle = async (phase: string) => {
     // Include presentation frames, idle work and the reader-input lease; supply no scroll input.
@@ -113,8 +104,8 @@ it.each([false, true])('keeps expanded Track A → B → A idle without earlier 
     await expect.poll(() => document.querySelectorAll('#conversation-project-planner [data-nc-turn="agent"]').length).toBe(PAGE_LIMIT);
     await settle('B initial layout');
     if (cachedEarlier) fixture.client.setQueryData(transcriptKey('daily-planner'), {
-      latest: observedWindow(newest('daily-planner'), { kind: 'latest' }),
-      retained: [observedWindow(history(PAGE_LIMIT, 'daily-planner'), { kind: 'before', rowId: PAGE_LIMIT + 1 })],
+      latest: observedWindow(historyPage(newest('daily-planner')), { kind: 'latest' }),
+      retained: [observedWindow(historyPage(history(PAGE_LIMIT, 'daily-planner')), { kind: 'before', cursor: cursor('daily-planner', PAGE_LIMIT + 1) })],
     });
     waiting = new Promise<void>(resolve => { release = resolve; });
     refreshed = true;
@@ -125,7 +116,7 @@ it.each([false, true])('keeps expanded Track A → B → A idle without earlier 
     release();
     await expect.element(page.getByText('Fresh reply after returning to A', { exact: true })).toBeVisible();
     expect(document.querySelector('#conversation-daily-planner [data-nc-turn="agent"]')).toBe(retained);
-    expect(reads().filter(request => request.path.includes('/daily-planner/') && new URL(request.path, 'http://fixture').searchParams.get('after_id') === '0')).toHaveLength(2);
+    expect(reads().filter(request => request.path.includes('/daily-planner/') && new URL(request.path, 'http://fixture').searchParams.get('cursor') === null)).toHaveLength(2);
     await settle('A cached return layout');
     // B also retains its expanded pane when revisited; neither visit authorizes history.
     await navigate('project');
@@ -177,17 +168,14 @@ it.each([20, 900])('presents the selected shell before mounting %i cached messag
     await expect.poll(() => document.getElementById('conversation-daily-planner')?.querySelectorAll('[data-nc-turn="agent"]').length).toBe(20);
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await expect.element(page.getByRole('button', { name: /Conversation Other conversation/ })).toBeVisible();
-    const latest = observedWindow(rows.slice(-PAGE_LIMIT), { kind: 'latest' });
+    const latest = observedWindow(historyPage(rows.slice(-PAGE_LIMIT)), { kind: 'latest' });
     const older = rows.slice(0, -PAGE_LIMIT);
-    const cached: History = { latest, retained: older.length === 0 ? [] : [{
-      // Compacted full earlier responses: 1..840, each read below the next
-      // window's exclusive bound. A full oldest page does not prove start.
-      rows: older, coverage: { lower: { kind: 'from', rowId: older[0].id },
-        upper: { kind: 'before', rowId: latest.rows[0].id } },
-    }] };
+    const cached: History = { latest, retained: older.length === 0 ? [] : [
+      observedWindow(historyPage(older), { kind: 'before', cursor: latest.rows[0].cursor }),
+    ] };
     fixture.client.setQueryData(transcriptKey(), cached);
     expect(cached.latest.rows).toHaveLength(Math.min(count, PAGE_LIMIT));
-    expect(historyRows(cached)).toEqual(rows);
+    expect(historyRows(cached)).toEqual(historicalConversationPage('second-planner', rows, null).items);
     const start = performance.now();
     observing = true;
     fireEvent.click(screen.getByRole('button', { name: /Conversation Other conversation/ }));
@@ -205,13 +193,13 @@ it.each([20, 900])('presents the selected shell before mounting %i cached messag
     // Reopening still performs a real latest refresh; the budgeted response
     // must preserve all loaded history and all mounted message bodies.
     await expect.poll(() => fixture.requests.filter(request => request.path.includes('/second-planner/harness/items')
-      && new URL(request.path, 'http://fixture').searchParams.get('after_id') === '0').length).toBe(1);
+      && new URL(request.path, 'http://fixture').searchParams.get('cursor') === null).length).toBe(1);
     await expect.poll(() => fixture.client.getQueryState(transcriptKey())?.fetchStatus).toBe('idle');
     expect(fixture.client.getQueryState(transcriptKey())).toMatchObject({ status: 'success', error: null });
     const refreshed = fixture.client.getQueryData<History>(transcriptKey())!;
     expect(refreshed).not.toBe(cached);
-    expect(refreshed.latest.rows).toEqual(rows.slice(-PAGE_LIMIT));
-    expect(historyRows(refreshed)).toEqual(rows);
+    expect(refreshed.latest.rows).toEqual(historyPage(rows.slice(-PAGE_LIMIT)).items);
+    expect(historyRows(refreshed)).toEqual(historicalConversationPage('second-planner', rows, null).items);
     expect(document.querySelectorAll('#conversation-second-planner [data-nc-turn="agent"]')).toHaveLength(count);
     if (count === 900) await page.screenshot({ path: './__screenshots__/conversation-presentation-desktop.png' });
   } finally { observing = false; cleanup(); fixture.client.clear(); }
@@ -234,11 +222,11 @@ it.each([390, 1400])('can close at the first shell frame before cached content m
       });
     },
     reply: request => request.path.includes('/second-planner/harness/items')
-      ? { status: 200, statusText: 'OK', body: rows } : undefined,
+      ? { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) } : undefined,
   });
   try {
     await expect.element(page.getByRole('button', { name: /Conversation Other conversation/ })).toBeVisible();
-    fixture.client.setQueryData(transcriptKey(), latestHistory(undefined, rows));
+    fixture.client.setQueryData(transcriptKey(), latestHistory(undefined, historyPage(rows)));
     fireEvent.click(screen.getByRole('button', { name: /Conversation Other conversation/ }));
     await expect.poll(() => frame).toEqual({ thread: false, closed: true });
     await expect.poll(() => document.getElementById('conversation-second-planner')).toBeNull();
@@ -246,16 +234,19 @@ it.each([390, 1400])('can close at the first shell frame before cached content m
   } finally { cleanup(); fixture.client.clear(); }
 });
 
-it('lets a slow history read finish after closing without painting its body', async () => {
+it('cancels a closing history read and fetches fresh history on reopen without publishing the late body', async () => {
   const rows = history(1);
-  let release!: () => void;
-  const pending = new Promise<void>(resolve => { release = resolve; });
+  const reads: ApiRequest[] = [];
+  let release!: (reply: ApiTransportResponse) => void;
+  const pending = new Promise<ApiTransportResponse>(resolve => { release = resolve; });
+  const lateReply = { status: 200, statusText: 'OK', body: historicalConversationPage('second-planner', rows, null) };
   const receipts = createReadReceiptsKernel({ baselineMs: 0 });
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, receipts,
-    reply: async request => {
+    reply: request => {
       if (request.path.includes('/second-planner/harness/items')) {
-        await pending;
-        return { status: 200, statusText: 'OK', body: rows };
+        reads.push(request);
+        if (reads.length === 1) return pending;
+        return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) };
       }
       return undefined;
     },
@@ -265,12 +256,22 @@ it('lets a slow history read finish after closing without painting its body', as
     await expect.element(page.getByText('Loading conversation…')).toBeVisible();
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await expect.poll(() => document.getElementById('conversation-second-planner')).toBeNull();
-    await act(async () => { release(); await pending; });
-    await expect.poll(() => fixture.client.getQueryState(transcriptKey())?.status).toBe('success');
+    expect(reads).toHaveLength(1);
+    expect(reads[0].signal?.aborted).toBe(true);
+    // Negotiated reads retain the refresh abort fence. Closing cancels first-read cache warming too.
+    await act(async () => { release(lateReply); await pending; });
+    await expect.poll(() => fixture.client.getQueryState(transcriptKey())?.fetchStatus).toBe('idle');
+    expect(fixture.client.getQueryData(transcriptKey())).toBeUndefined();
     expect(document.getElementById('conversation-second-planner')).toBeNull();
     expect(screen.queryByText(/Switch reply 0/)).toBeNull();
     expect(receipts.posts().filter(request => request.path.includes('/second-planner/'))).toHaveLength(0);
-  } finally { release(); cleanup(); fixture.client.clear(); }
+    await page.getByRole('button', { name: /Conversation Other conversation/ }).click();
+    await expect.poll(() => reads.length).toBe(2);
+    expect(reads[1].signal).not.toBe(reads[0].signal);
+    expect(reads[1].signal?.aborted).toBe(false);
+    await expect.element(page.getByText('Switch reply 0.', { exact: false })).toBeVisible();
+    await expect.poll(() => fixture.client.getQueryState(transcriptKey())?.status).toBe('success');
+  } finally { release(lateReply); cleanup(); fixture.client.clear(); }
 });
 
 it('gives a late history result its own rendering opportunity before first mounting', async () => {
@@ -288,7 +289,7 @@ it('gives a late history result its own rendering opportunity before first mount
     reply: async request => {
       if (!request.path.includes('/second-planner/harness/items')) return undefined;
       await pending;
-      return { status: 200, statusText: 'OK', body: rows };
+      return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), rows, null) };
     },
   });
   try {

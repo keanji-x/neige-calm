@@ -1,6 +1,9 @@
 //! The person's sentence is on the transcript from the moment the queue
 //! drains, not from the moment codex echoes it.
 
+#[path = "planner_transcript_projection/entry_identity.rs"]
+mod entry_identity;
+
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -216,6 +219,13 @@ async fn boot_with(plan: BootPlan) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
@@ -224,8 +234,8 @@ async fn boot_with(plan: BootPlan) -> Boot {
         events: events.clone(),
         card_role_cache: role_cache.clone(),
         track_area_cache: track_area_cache.clone(),
-        backend: daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
@@ -234,8 +244,12 @@ async fn boot_with(plan: BootPlan) -> Boot {
             resumed_reconcile_budget: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     let state = AppState::from_parts(
         repo_dyn,
@@ -257,6 +271,15 @@ async fn boot_with(plan: BootPlan) -> Boot {
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
         ))
         .with_state(state);
 
@@ -527,7 +550,7 @@ async fn refused_turn_start_deletes_the_projection_and_rebuffers_the_entry() {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let rows = get_items(&boot).await;
-        let pending = boot.harness.snapshot().await.pending_entries();
+        let pending = boot.harness.snapshot().await.unwrap().pending_entries();
         if rows.is_empty() && pending.len() == 1 {
             assert_eq!(pending[0].id(), Some(&entry_id));
             break;
@@ -623,7 +646,14 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batc
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(get_items(&boot).await.len(), 1);
     let deadline = Instant::now() + Duration::from_secs(2);
-    while boot.harness.snapshot().await.projection_client_id.is_some() {
+    while boot
+        .harness
+        .snapshot()
+        .await
+        .unwrap()
+        .projection_client_id
+        .is_some()
+    {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for the issuance outcome to clear the key"
@@ -750,7 +780,14 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
 
     release.notify_one();
     let deadline = Instant::now() + Duration::from_secs(2);
-    while boot.harness.snapshot().await.projection_client_id.is_some() {
+    while boot
+        .harness
+        .snapshot()
+        .await
+        .unwrap()
+        .projection_client_id
+        .is_some()
+    {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for the issuance outcome to clear the key"

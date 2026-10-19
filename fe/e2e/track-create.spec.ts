@@ -1,3 +1,4 @@
+import type { ConversationPage } from '../core/api/generated/wire.ts';
 import { expect, test, type Page, type Request } from '@playwright/test';
 import { createArea } from './helpers/seed.js';
 
@@ -32,8 +33,7 @@ test('creates a track from an Area group with no title, and persists it', async 
       creates.push(pending);
     }
   });
-  /* `harness.user_message.enqueued` is the one signal at this tier that the SERVER queued the message.
-   * Registered before `goto`: the app subscribes to `['*']` with a replay cursor on first paint. */
+  // Observe actual execution transitions, including any accidental second execution after replay.
   const frames: Record<string, unknown>[] = [];
   page.on('websocket', (socket) => {
     if (new URL(socket.url()).pathname !== '/api/events') return;
@@ -55,7 +55,9 @@ test('creates a track from an Area group with no title, and persists it', async 
   /* `waitForURL` is the surface being ready; the composer visible is it being usable. */
   await page.waitForURL(/\/area\/[^/]+\/new$/);
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  const message = `FE e2e track ${Date.now()}`;
+  // The stack's protocol probe keeps ordinary turns open. Script a real reply
+  // and END so the completion below proves execution, including after replay.
+  const message = `fake-reply: FE e2e track ${Date.now()}`;
   await expect(page.getByLabel(TASK_LABEL)).toBeVisible();
   await expect(page.getByText(TASK_PLACEHOLDER)).toBeVisible();
   // The default path must stay byte-identical: the kernel keys its managed-workspace branch on the
@@ -104,53 +106,48 @@ test('creates a track from an Area group with no title, and persists it', async 
     && (card.payload as { planner_harness?: unknown }).planner_harness === true);
   expect(plannerCard, 'the created track must carry a planner card').toBeTruthy();
 
-  /* The kernel writes the drained sentence as a `userMessage` row (`turn_id: null`, `_projection`) before
-   * `turn/start`; the fixture emits no items, so the row read back is the kernel's own. The drawer is
-   * located by the control only it has: its name derives from its turns, which is the thing under test. */
   const drawer = page.locator('[role="complementary"]')
     .filter({ has: page.getByRole('button', { name: 'Close conversation' }) });
   await expect(drawer).toBeVisible();
   await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
-  const plannerItems = await request.get(`/api/cards/${plannerCard?.id ?? ''}/harness/items`);
-  expect(plannerItems.ok()).toBe(true);
-  const plannerRows = await plannerItems.json() as {
-    item_type: string | null; method: string; turn_id: string | null; item_uuid: string | null;
-    params: string; input_segments: { presentation: string; text: string; attachments: unknown[]; origin?: { observation: string; event_id: number | null; queue_entry: { id: string; rev: number } | null } }[];
-  }[];
-  expect(
-    plannerRows.map((row) => [row.item_type, row.method, row.turn_id]),
-    'the kernel writes exactly one row for the drained sentence, before any echo (#1625 P2)',
-  ).toEqual([['userMessage', 'item/completed', null]]);
-  const projection = plannerRows[0];
-  expect(projection.input_segments).toEqual([
-    { presentation: 'system_planner_turn_budget', text: "[Trusted Planner turn budget]\nThis turn's execution budget is 30 minutes, excluding held requests. Begin wrapping up with 300 seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.", attachments: [] },
-    { presentation: 'user', text: `User says:\n${message}`, attachments: [],
-      // Primary-track creation exposes no queue-entry receipt; require real provenance without deriving its identity.
-      origin: { observation: 'user_message', event_id: null, queue_entry: { id: expect.stringMatching(/\S/), rev: expect.any(Number) } } },
-  ]);
-  const sourceRef = projection.input_segments[1].origin?.queue_entry;
-  expect(sourceRef).not.toBeNull();
-  expect(Number.isInteger(sourceRef?.rev)).toBe(true);
-  expect(sourceRef?.rev).toBeGreaterThanOrEqual(0);
-  const projectionParams = JSON.parse(projection.params) as { _projection: boolean; item: { clientId: string } };
-  expect(projectionParams._projection, 'the row is the kernel\'s own, not an echo').toBe(true);
-  expect(projection.item_uuid).toEqual(expect.any(String));
-  expect(projectionParams.item.clientId, 'keyed by the id the drain sent codex').toBe(projection.item_uuid);
+  const identityResponse = await request.get('/api/auth/whoami');
+  expect(identityResponse.ok()).toBe(true);
+  const identity = await identityResponse.json() as { userId: string; displayName: string };
+  const path = `/api/cards/${plannerCard?.id ?? ''}/harness/items?contract=conversation_v1`;
+  const readPage = async (): Promise<ConversationPage> => {
+    const response = await request.get(path);
+    expect(response.ok()).toBe(true);
+    return await response.json() as ConversationPage;
+  };
+  const beforeReplay = await readPage();
+  expect(beforeReplay).toMatchObject({ contract: 'conversation_v1', source: 'presentation' });
+  const humans = beforeReplay.items.filter(item => item.source.kind === 'human');
+  expect(humans).toHaveLength(1);
+  expect(humans[0].source).toMatchObject({ kind: 'human', message_id: expect.stringMatching(/\S/), revision: 1,
+    author: { user_id: identity.userId, display_name: identity.displayName }, text: message, attachments: [] });
+  // The track response exposes the allocation, not its private creation receipt. Replaying the
+  // original request proves that receipt reuses both the allocation and the saved Human identity.
+  const key = await createRequest.headerValue('idempotency-key');
+  expect(key).toBeTruthy();
+  const replay = await request.post('/api/tracks', { headers: { 'Idempotency-Key': key! }, data: body });
+  expect(replay.status(), await replay.text()).toBe(201);
+  expect(await replay.json()).toMatchObject({ id: trackId });
+  const afterReplay = await readPage();
+  expect(afterReplay.items.filter(item => item.source.kind === 'human')).toEqual(humans);
 
   /* `waitForRequest` returned on the first create; give the page a bounded moment, then count again. */
   await page.waitForTimeout(1_000);
   expect(creates, 'the create carrying the sentence must happen exactly once').toHaveLength(1);
   expect((creates[0]?.postDataJSON() as { first_message?: unknown }).first_message).toBe(message);
 
-  /* `char_count` is asserted because the event carries no message body. */
-  const enqueued = frames.filter((frame) => frame.ev === 'harness.user_message.enqueued'
-    && (frame.data as { track_id?: unknown } | undefined)?.track_id === trackId);
-  expect(
-    enqueued,
-    'the kernel must enqueue the sentence onto the new track\'s harness exactly once',
-  ).toHaveLength(1);
-  expect((enqueued[0]?.data as { char_count?: unknown }).char_count).toBe([...message].length);
+  await expect.poll(() => frames.filter(frame => frame.ev === 'harness.phase.changed'
+    && (frame.data as { card_id?: string; new_phase?: string } | undefined)?.card_id === plannerCard?.id
+    && (frame.data as { new_phase?: string }).new_phase === 'turn_completed').length).toBe(1);
+  expect(frames.filter(frame => frame.ev === 'harness.phase.changed'
+    && (frame.data as { card_id?: string; new_phase?: string } | undefined)?.card_id === plannerCard?.id
+    && (frame.data as { new_phase?: string }).new_phase === 'turn_running'),
+  'receipt replay must execute the accepted first message exactly once').toHaveLength(1);
 
   const foldersResponse = await request.get(`/api/areas/${area.id}/folders`);
   expect(foldersResponse.ok()).toBe(true);
@@ -255,9 +252,9 @@ test('creates the planner with the model and effort selected beside Send', async
   const detail = await detailResponse.json() as { cards: { id: string; payload: { planner_harness?: boolean } }[] };
   const planner = detail.cards.find((card) => card.payload.planner_harness === true);
   if (planner === undefined) throw new Error('Created track has no planner card');
-  const run = await request.get(`/api/cards/${planner.id}/planner/run`);
+  const run = await request.get(`/api/cards/${planner.id}/planner/run?contract=conversation_v1`);
   expect(run.ok()).toBe(true);
-  expect(await run.json()).toMatchObject({ model: 'e2e-model', reasoning_effort: 'high' });
+  expect(await run.json()).toMatchObject({ input_contract: 'canonical', model: 'e2e-model', reasoning_effort: 'high' });
 });
 
 /**

@@ -1,3 +1,4 @@
+import { historicalConversationPage, historicalConversationRun } from '../web/src/app/router/conversation-read-data.ts';
 import { expect, test } from '@playwright/test';
 
 test('shows local screenshots in planner history after reopening and on mobile', async ({ page }, testInfo) => {
@@ -27,15 +28,15 @@ test('shows local screenshots in planner history after reopening and on mobile',
       kind: 'user', created_at: 1, updated_at: 1 }];
     if (path === `/api/areas/${track.area_id}/tracks`) body = [track];
     if (path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card], overlays: [] };
-    if (path === `/api/cards/${card.id}/planner/run`) body = { card_id: card.id, worker_session_id: 'image-session',
-      phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
-    if (path === `/api/cards/${card.id}/harness/items`) body = [{ id: 1, worker_session_id: 'image-session',
+    if (path === `/api/cards/${card.id}/planner/run` && url.searchParams.get('contract') === 'conversation_v1') body = historicalConversationRun({ card_id: card.id, worker_session_id: 'image-session',
+      phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true);
+    if (path === `/api/cards/${card.id}/harness/items` && url.searchParams.get('contract') === 'conversation_v1') body = historicalConversationPage(card.id, [{ id: 1, worker_session_id: 'image-session',
       card_id: card.id, track_id: track.id, thread_id: 'image-thread', turn_id: null, turn_error_text: null,
       item_uuid: 'reply', item_type: 'agentMessage', method: 'item/completed', created_at_ms: 1,
       params: JSON.stringify({ item: { text: 'Here is the screenshot.\n\n'
         + '![Screenshot](/work/image-track/screenshots/page.png)\n\n'
         + '![Detail](screenshots/detail.png)\n\n![Missing](screenshots/missing.png)\n\n'
-        + '![Outside](/other-track/secret.png)' } }) }];
+        + '![Outside](/other-track/secret.png)' } }) }], null);
     if (path === `/api/tracks/${track.id}/workspace/readfile-raw`) {
       rawRequests.push(url.searchParams.get('path') ?? '');
       const missing = url.searchParams.get('path') === 'screenshots/missing.png';

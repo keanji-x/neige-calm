@@ -11,16 +11,15 @@ use sqlx::Row;
 /// Work that prevents both Admin close and closed-Planner hibernation. SQL closed set owned here.
 pub(crate) const RUNNING_WORK_STATUSES_SQL: &str = "('dispatched','running','verifying')";
 
-/// Authoritative persisted eligibility for sleep, automatic install and cold daemon replay.
-/// Live eligibility is checked on the harness's own loop before quiescence.
-const ELIGIBLE_SQL_PREFIX: &str = "SELECT ws.id, ws.card_id, ws.track_id \
+/// Cheap lifecycle candidates. The harness input owner interprets the persisted
+/// checkpoint, and its original loop rechecks live eligibility before quiescence.
+const ELIGIBLE_SQL_PREFIX: &str = "SELECT ws.id, ws.card_id, ws.track_id, ws.handle_state_json \
     FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.track_id=ws.track_id \
     JOIN tracks t ON t.id=ws.track_id \
     WHERE c.role='planner' AND ws.contract='planner' AND ws.mode='resumable' \
       AND ws.state='idle' AND ws.completed_at_ms IS NULL \
       AND ws.terminal_run_id IS NULL AND ws.active_turn_id IS NULL AND t.closed_at IS NOT NULL \
       AND json_extract(ws.handle_state_json,'$.mode')='harness' \
-      AND json_array_length(json_extract(ws.handle_state_json,'$.pending_queue'))=0 \
       AND NOT EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id=t.id \
                        AND ct.status IN ";
 
@@ -30,11 +29,19 @@ fn eligible_sql() -> String {
 
 pub(crate) async fn eligible(pool: &sqlx::SqlitePool, session_id: &str) -> Result<bool> {
     let sql = format!("{} AND ws.id=?1", eligible_sql());
-    Ok(sqlx::query(&sql)
+    let row = sqlx::query(&sql)
         .bind(session_id)
         .fetch_optional(pool)
-        .await?
-        .is_some())
+        .await?;
+    match row {
+        Some(row) => snapshot_idle(&row),
+        None => Ok(false),
+    }
+}
+
+fn snapshot_idle(row: &sqlx::sqlite::SqliteRow) -> Result<bool> {
+    let snapshot: String = row.try_get("handle_state_json")?;
+    crate::harness::HarnessRuntimeSnapshot::idle_for_lifecycle(serde_json::from_str(&snapshot)?)
 }
 
 pub(crate) async fn sweep(state: &AppState) -> Result<()> {
@@ -133,11 +140,12 @@ async fn hibernate_one(
 
 pub(crate) async fn sleeping_thread(pool: &sqlx::SqlitePool, thread: &str) -> Result<bool> {
     let sql = format!("{} AND ws.thread_id=?1", eligible_sql());
-    Ok(sqlx::query(&sql)
-        .bind(thread)
-        .fetch_optional(pool)
-        .await?
-        .is_some())
+    for row in sqlx::query(&sql).bind(thread).fetch_all(pool).await? {
+        if snapshot_idle(&row)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Shared restoration owner for sends, Dispatcher observations and reopen.
@@ -145,6 +153,11 @@ pub(crate) async fn sleeping_thread(pool: &sqlx::SqlitePool, thread: &str) -> Re
 /// this context cannot retain their resources after the application is dropped.
 #[derive(Clone)]
 pub(crate) struct WakeContext {
+    canonical_adapter: std::sync::Weak<
+        crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter,
+    >,
+    workspace_root: std::path::PathBuf,
+    historical_source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     repo: std::sync::Arc<dyn crate::db::Repo>,
     events: crate::event::EventBus,
     write: crate::state::WriteContext,
@@ -164,6 +177,9 @@ impl WakeContext {
         shell: crate::state::CodexShellState,
     ) -> Self {
         Self {
+            canonical_adapter: std::sync::Arc::downgrade(&route.planner_start_adapter),
+            workspace_root: route.workspace_root.clone(),
+            historical_source: None,
             repo,
             events: route.events.clone(),
             write: route.write.clone(),
@@ -175,6 +191,39 @@ impl WakeContext {
             thread_seals: route.thread_seals.clone(),
             providers: route.planner_wiring(),
         }
+    }
+
+    pub(crate) async fn wake_canonical(
+        &self,
+        card: &CardId,
+        source: crate::conversation_inputs::InputSource,
+    ) -> Result<()> {
+        source.check_current()?;
+        let runtime = self.operation_runtime.upgrade().ok_or_else(|| {
+            crate::error::CalmError::ServiceUnavailable("application runtime stopped".into())
+        })?;
+        let adapter = self.canonical_adapter.upgrade().ok_or_else(|| {
+            crate::error::CalmError::ServiceUnavailable("application start owner stopped".into())
+        })?;
+        let repo: std::sync::Arc<dyn crate::db::RouteRepo> = self.repo.clone();
+        let fence = CardStartFence::lock(&self.planner_recovery_locks, &repo, &runtime, card).await;
+        source.check_current()?;
+        fence
+            .wake_retained(
+                adapter,
+                source,
+                self.workspace_root.clone(),
+                self.events.clone(),
+            )
+            .await
+    }
+
+    pub(crate) fn with_historical_source(
+        mut self,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Self {
+        self.historical_source = source;
+        self
     }
 
     pub(crate) async fn ensure(
@@ -220,7 +269,17 @@ impl WakeContext {
         runtime: crate::session_projection_repo::WorkerSessionProjection,
     ) -> Result<crate::harness::PlannerHarness> {
         use calm_types::runtime::AgentProtocol;
+        crate::conversation_inputs::require_historical_storage(
+            self.repo.as_ref(),
+            &runtime.card_id,
+        )
+        .await?;
         let s = self;
+        if let Some(source) = &s.historical_source {
+            source
+                .require_card(s.repo.as_ref(), &runtime.card_id)
+                .await?;
+        }
         match runtime.agent_provider.as_ref() {
             Some(provider) if provider.protocol() == AgentProtocol::Codex => {
                 let card =
@@ -245,7 +304,7 @@ impl WakeContext {
                     &s.providers.claude,
                     &s.providers.acp,
                 )
-                .resume_active_conversation(s.repo.as_ref(), &runtime)
+                .resume_active_conversation(s.repo.as_ref(), &runtime, s.historical_source.clone())
                 .await?;
             }
             Some(provider) => {
@@ -275,7 +334,7 @@ impl WakeContext {
         runtime: crate::session_projection_repo::WorkerSessionProjection,
     ) -> Result<crate::harness::PlannerHarness> {
         let s = self;
-        crate::harness::spawn_recovered_harness(
+        crate::harness::spawn_recovered_harness_admitted(
             self.repo.clone(),
             s.events.clone(),
             s.write.role_cache().clone(),
@@ -289,6 +348,7 @@ impl WakeContext {
             &s.track_delete_locks,
             runtime,
             crate::harness::ClaimMode::Replace,
+            s.historical_source.clone(),
         )
         .await?
         .installed()

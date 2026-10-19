@@ -101,10 +101,17 @@ impl BackendRewind {
     /// placed in the ephemeral protocol plan.
     pub(crate) fn turn_edit(&self) -> TurnEdit {
         let target = match &self.0 {
-            RewindArm::Codex { reverted: true, .. } => return TurnEdit::NoEdit,
+            RewindArm::Codex { reverted: true, .. } | RewindArm::CodexV2 { reverted: true, .. } => {
+                return TurnEdit::NoEdit;
+            }
             RewindArm::Codex {
                 before_turn_id,
                 reverted: false,
+            }
+            | RewindArm::CodexV2 {
+                before_turn_id,
+                reverted: false,
+                ..
             } => NativeEditTarget::BeforeTurn {
                 before_turn_id: before_turn_id.clone(),
             },

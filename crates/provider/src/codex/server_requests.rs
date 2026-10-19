@@ -6,10 +6,15 @@
 //! cause unbounded tasks or memory.
 use super::approvals::{ApprovalRequest, ApprovalResponder, ApprovalRoutes, HandedRequests};
 use super::*;
+use futures_util::SinkExt;
 use tokio::task::JoinSet;
 
 const REPLY_LIMIT: usize = 32;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+// A policy gate shares the reply writer's sink. Reserve most of its five-second
+// budget for acquiring and flushing replies, even when admission waits for SQL.
+// Cancellation before send drops only the gate and sink, never the transport.
+pub(super) const PRE_SEND_GATE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Echo the provider's JSON-RPC ID in its own spelling, independently of client-generated IDs.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]

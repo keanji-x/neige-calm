@@ -15,11 +15,14 @@ mod types;
 pub use types::*;
 mod client_transport;
 pub mod delivery;
+mod gated_requests;
 mod interrupt;
 pub mod request_attempt;
 #[cfg(test)]
 mod start_mapping_tests;
-use request_attempt::{RpcAttemptFailure, RpcRemoteError, RpcResponseError};
+pub use gated_requests::PreSendGate;
+use request_attempt::RpcResponseError;
+pub use request_attempt::{RequestCrossing, RpcAttemptFailure, RpcRemoteError};
 #[cfg(test)]
 mod server_request_tests;
 mod server_requests;
@@ -29,7 +32,9 @@ use client_transport::TransportAbort;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+#[cfg(test)]
+use futures_util::SinkExt;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
@@ -108,6 +113,8 @@ pub struct CodexAppServer {
     request_timeout: Duration,
     /// Kept so dropping the client aborts the reader task.
     reader: tokio::task::JoinHandle<()>,
+    /// Observes the original consumer without keeping the channel open.
+    notifications: mpsc::WeakUnboundedSender<Notification>,
 }
 
 impl Drop for CodexAppServer {
@@ -214,6 +221,18 @@ fn turn_steer_params(
 }
 
 impl CodexAppServer {
+    /// Local transport-reader lifetime only; this does not prove a remote turn ended.
+    pub fn reader_finished(&self) -> bool {
+        self.reader.is_finished()
+    }
+
+    /// The original notification consumer is gone. This is not remote quiescence.
+    pub fn notification_stream_closed(&self) -> bool {
+        self.notifications
+            .upgrade()
+            .is_none_or(|sender| sender.is_closed())
+    }
+
     /// Test-only: a fully-constructed [`CodexAppServer`] over an in-process `UnixStream::pair` handshake; the returned server end must be kept alive or the connection closes.
     #[cfg(test)]
     pub(crate) async fn connect_pair_for_test()
@@ -240,6 +259,7 @@ impl CodexAppServer {
         let sink: WsSink = Arc::new(Mutex::new(write));
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+        let notifications = notif_tx.downgrade();
         let reader = tokio::spawn(reader_loop(
             read,
             pending.clone(),
@@ -255,6 +275,7 @@ impl CodexAppServer {
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             reader,
+            notifications,
         };
         (client, NotificationStream { rx: notif_rx }, server)
     }
@@ -333,6 +354,7 @@ impl CodexAppServer {
         let pending: Pending = Arc::new(StdMutex::new(HashMap::new()));
         // Unbounded: notification delivery must never block the reader's response routing.
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+        let notifications = notif_tx.downgrade();
 
         let reader = tokio::spawn(reader_loop(
             read,
@@ -352,6 +374,7 @@ impl CodexAppServer {
             next_id: AtomicU64::new(1),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             reader,
+            notifications,
         };
         Ok((client, NotificationStream { rx: notif_rx }))
     }
@@ -392,27 +415,15 @@ impl CodexAppServer {
         &self,
         params: ThreadStartParams,
     ) -> Result<ThreadResult> {
-        let mut value = json!({
-            "cwd": params.cwd,
-            "approvalPolicy": params.approval_policy,
-            "sandbox": params.sandbox_mode,
-        });
-        if let Some(prompt) = params.developer_instructions {
-            value["developerInstructions"] = Value::String(prompt);
-        }
-        if let Some(config) = params.config {
-            value["config"] = config;
-        }
-        self.request("thread/start", value).await
+        self.thread_start_with_params_gated(params, &PreSendGate::new(gated_requests::allow_send))
+            .await
+            .map_err(RpcAttemptFailure::into_legacy_error)
     }
 
     /// Full provider-owned details for exact-thread reconciliation; no new recorder.
     pub async fn thread_read_full(&self, thread_id: &str) -> Result<ThreadResult> {
-        self.request(
-            "thread/read",
-            json!({"threadId":thread_id,"includeTurns":true}),
-        )
-        .await
+        self.thread_read_full_gated(thread_id, &PreSendGate::new(gated_requests::allow_send))
+            .await
     }
 
     /// `thread/resume` — fails with `-32600 "no rollout found …"` if the thread has not yet run a turn.
@@ -426,11 +437,12 @@ impl CodexAppServer {
         thread_id: &str,
         config: Option<serde_json::Value>,
     ) -> Result<ThreadResult> {
-        let mut value = json!({ "threadId": thread_id });
-        if let Some(config) = config {
-            value["config"] = config;
-        }
-        self.request("thread/resume", value).await
+        self.thread_resume_with_config_gated(
+            thread_id,
+            config,
+            &PreSendGate::new(gated_requests::allow_send),
+        )
+        .await
     }
 
     /// `thread/read` — current status and, with `include_turns`, the turn history whose last `completed_at` is the died-mid-turn discriminator.
@@ -469,6 +481,7 @@ impl CodexAppServer {
 
     /// `turn/start` keeping whether the request entered the transport. A successful
     /// RPC still requires the owning adapter to validate its turn ID.
+    #[cfg(test)]
     async fn turn_start_attempt(
         &self,
         thread_id: &str,
@@ -477,15 +490,13 @@ impl CodexAppServer {
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> std::result::Result<TurnStartResult, RpcAttemptFailure> {
-        self.request_attempt(
-            "turn/start",
-            turn_start_params(
-                thread_id,
-                &input,
-                selection,
-                approvals,
-                client_user_message_id,
-            ),
+        self.turn_start_attempt_gated(
+            thread_id,
+            input,
+            selection,
+            approvals,
+            client_user_message_id,
+            &PreSendGate::new(gated_requests::allow_send),
         )
         .await
     }
@@ -496,11 +507,12 @@ impl CodexAppServer {
         cursor: Option<&str>,
         deadline: tokio::time::Instant,
     ) -> Result<ModelListPage> {
-        let mut params = json!({ "includeHidden": false });
-        if let Some(cursor) = cursor {
-            params["cursor"] = Value::String(cursor.to_string());
-        }
-        self.request_until("model/list", params, deadline).await
+        self.model_list_gated(
+            cursor,
+            deadline,
+            &PreSendGate::new(gated_requests::allow_send),
+        )
+        .await
     }
 
     /// `config/read` — `cwd` decides which project layers are folded in; a `None` read must not be presented as a thread's effective default.
@@ -509,11 +521,8 @@ impl CodexAppServer {
         cwd: Option<&str>,
         deadline: tokio::time::Instant,
     ) -> Result<ConfigReadResponse> {
-        let mut params = json!({ "includeLayers": false });
-        if let Some(cwd) = cwd {
-            params["cwd"] = Value::String(cwd.to_string());
-        }
-        self.request_until("config/read", params, deadline).await
+        self.config_read_gated(cwd, deadline, &PreSendGate::new(gated_requests::allow_send))
+            .await
     }
 
     /// `account/read` without a token refresh — whether this daemon is logged in.
@@ -524,6 +533,7 @@ impl CodexAppServer {
 
     /// `turn/steer` keeping crossing and correlation: a remote error, timeout or failed
     /// send is not proof that the supplemental input was not taken.
+    #[cfg(test)]
     async fn turn_steer_attempt(
         &self,
         thread_id: &str,
@@ -531,9 +541,12 @@ impl CodexAppServer {
         input: Vec<InputItem>,
         client_user_message_id: Option<&str>,
     ) -> std::result::Result<TurnSteerResult, RpcAttemptFailure> {
-        self.request_attempt(
-            "turn/steer",
-            turn_steer_params(thread_id, expected_turn_id, &input, client_user_message_id),
+        self.turn_steer_attempt_gated(
+            thread_id,
+            expected_turn_id,
+            input,
+            client_user_message_id,
+            &PreSendGate::new(gated_requests::allow_send),
         )
         .await
     }

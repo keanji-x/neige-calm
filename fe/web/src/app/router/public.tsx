@@ -88,6 +88,7 @@ import {
 import type { ReportSourceLinkTarget } from '../../../../core/domain/report-source.ts';
 import {
   conversationName,
+  isUserConversationTurn,
   trackConversationCardId,
   FOLLOW_INSTALLATION_DEFAULT,
   type Conversation,
@@ -506,12 +507,12 @@ function useConversationPane(
     root: imageRoot, files: conversationFiles, onOpenLink: openChatLink, onOpenFile: openChatFile });
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   const openTurns = open === null ? [] : store.turns;
-  const hasPendingMessages = store.pendingQueue.length > 0 || store.pendingSends.length > 0 || store.pendingQueueOverflow > 0;
+  const hasPendingMessages = store.pendingQueue.length > 0 || store.pendingSends.length > 0 || store.pendingQueueOverflow > 0 || store.pendingInputs.length > 0;
   const threadAvailable = open !== null
     && (store.historyReady || openTurns.length > 0 || hasPendingMessages || store.stalled || store.stopFeedback !== null);
   const threadPresented = useContentAdmission(open?.id ?? null, threadAvailable);
-  const outgoingPreview = open === null || threadPresented ? undefined : openTurns.findLast((entry): entry is ConversationTurn =>
-    entry.author === 'you' && entry.text !== '' && (entry.attachments?.length ?? 0) === 0);
+  const outgoingPreview = open === null || threadPresented ? undefined : openTurns.findLast((entry): entry is ConversationTurn & { author: 'you' | 'human' | 'unknown' } =>
+    isUserConversationTurn(entry) && entry.text !== '' && (entry.attachments?.length ?? 0) === 0);
   const conversationBodyVisible = hasPendingMessages || (threadPresented ? openTurns.length > 0 : outgoingPreview !== undefined);
   const threadStatusUnconfirmed = !store.runReady || store.runError !== null;
   const sideSourceReady = threadPresented && store.historyReady;
@@ -633,11 +634,11 @@ function useConversationPane(
       ? previous : { conversationId: existingId, visible });
   }, [existingId]);
   const pendingMessages = useMemo(() => <PendingQueue key={existingId}
-    entries={store.pendingQueue} sending={store.pendingSends} overflow={store.pendingQueueOverflow} queueDisplayAccounting={store.queueDisplayAccounting}
+    entries={store.pendingQueue} pendingInputCount={store.pendingInputs.length} sending={store.pendingSends} overflow={store.pendingQueueOverflow} queueDisplayAccounting={store.queueDisplayAccounting}
     busy={!threadPresented || store.sending || store.queueWriteOut} onDelete={deleteQueuedEntry} onEdit={editQueuedEntry}
     canEdit={edit.canEditQueued} editingEntryId={edit.queued?.entry.entry_id ?? null}
     savedEntry={edit.savedQueuedEntry} onFocusComposer={refocusQueuedComposer} onPresenceChange={pendingPresenceChanged} onSteer={canSteer ? steerQueuedEntry : undefined} />,
-  [existingId, threadPresented, store.pendingQueue, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
+  [existingId, threadPresented, store.pendingQueue, store.pendingInputs.length, store.pendingSends, store.pendingQueueOverflow, store.queueDisplayAccounting, store.sending, store.queueWriteOut,
     deleteQueuedEntry, editQueuedEntry, edit.canEditQueued, edit.queued?.entry.entry_id, edit.savedQueuedEntry, refocusQueuedComposer, pendingPresenceChanged, canSteer, steerQueuedEntry]);
   const hasSideConversation = options?.onSide !== undefined;
   const composerView = useMemo(() => ({
@@ -807,7 +808,7 @@ function useConversationPane(
                 {store.failedSend.delivery === 'unknown' ? <>
                   {/* Safe without asking: the retry reuses the send's key, so a message that did arrive is not queued twice.
                      No Edit here — an edited message is a new send under a new key, and the first may have arrived. */}
-                  <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                  <ChatFooterRemedy disabled={store.inputStalled || store.sending || !store.historyReady}
                     onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>
@@ -816,7 +817,7 @@ function useConversationPane(
                     Dismiss
                   </ChatFooterRemedy>
                 </> : <>
-                  <ChatFooterRemedy disabled={store.stalled || store.sending || !store.historyReady}
+                  <ChatFooterRemedy disabled={store.inputStalled || store.sending || !store.historyReady}
                     onClick={retrySend}>
                     Try again
                   </ChatFooterRemedy>
@@ -848,10 +849,13 @@ function useConversationPane(
                 onClick={store.restart.start}>{store.restart.strip.action}</ChatFooterRemedy>}</ChatFooterNotice>}
             {/* Not an `alert`: nothing just happened, the condition was already true when
                             this page opened. */}
-            {!store.stalled && store.blockedReason !== null && (
+            {!store.stalled && !store.executionHeld && store.blockedReason !== null && (
               <ChatFooterNotice>
                 <ChatFooterError message={store.blockedReason} />
               </ChatFooterNotice>
+            )}
+            {!store.stalled && !store.executionHeld && store.terminalTimeout !== null && (
+              <ChatFooterNotice tone="neutral">The previous response stopped after reaching its time limit. Send a message to continue.</ChatFooterNotice>
             )}
             {plannerRow !== null && <OperationFeedback feedback={plannerRow.role.feedback} />}
             {composerNode}
@@ -867,7 +871,7 @@ function useConversationPane(
         {draftOpen && (draft?.text == null
           ? <ChatEmpty />
           : <>
-            <OutgoingMessage text={draft.text} mobile={compactViewport} />
+            <OutgoingMessage speaker="you" text={draft.text} mobile={compactViewport} />
             {creating && <p role="status">Sending…</p>}
           </>)}
         {open !== null && (
@@ -882,7 +886,7 @@ function useConversationPane(
                           `ChatThread` draws its empty state (with the live dot) for an empty list.
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
-            {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage text={outgoingPreview.text} mobile={compactViewport} />}
+            {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage speaker={outgoingPreview.author} text={outgoingPreview.text} mobile={compactViewport} />}
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
               <ChatThread historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
@@ -896,7 +900,7 @@ function useConversationPane(
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.working}
                 cards={source.cards}
-                stalled={store.stalled}
+                stalled={store.stalled || store.executionHeld}
                 recovery={store.recovery}
                 statusUnconfirmed={threadStatusUnconfirmed}
                 statusLoading={store.runLoading}
@@ -904,7 +908,7 @@ function useConversationPane(
                 regenerateMessage={respondable
                   ? regenerateMessage
                   : undefined}
-                editMessage={respondable && store.historyReplacementSupported && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
+                editMessage={respondable && store.historyReplacementSupported && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0 && store.pendingInputs.length === 0
                   && composerEmpty && !attachments.busy ? editMessage : undefined}
                 canContinue={canContinue}
                 stalledReason={store.blockedReason}
@@ -928,9 +932,9 @@ function useConversationPane(
   const listProps = useMemo(() => ({
     conversations: store.conversations, cards: source.cards, unreadIds, activeId: existingId,
     awaitingInputIds: new Set(pendingInputCardId === null ? [] : [pendingInputCardId]),
-    local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled },
+    local: existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled || store.executionHeld },
     showTrack: options?.showTrack ?? true, onOpen: openConversation, onArchive: options?.onArchive,
-  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, options?.showTrack, options?.onArchive, openConversation]);
+  }), [store.conversations, source.cards, unreadIds, pendingInputCardId, existingId, store.working, store.stalled, store.executionHeld, options?.showTrack, options?.onArchive, openConversation]);
   const listNode = useMemo(() => <ChatList {...listProps} />, [listProps]);
   const contextList = useMemo(() => <ChatList {...listProps} context />, [listProps]);
 

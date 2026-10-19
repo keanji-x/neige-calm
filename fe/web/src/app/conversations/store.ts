@@ -1,8 +1,11 @@
+import { useCurrentUser } from '../auth/current-user.tsx';
+import { buildConversationTranscript, nativeDisplayRows, orderedPendingInputs, removedHumanIds } from '../../../../core/domain/conversation-display.ts';
+import type { ConversationPendingInput } from '../../../../core/api/generated/wire.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry, type PlannerQueueWriteOutcome } from '../../../../core/domain/conversation.ts';
+import { FOLLOW_INSTALLATION_DEFAULT, isOptimisticConversationTurn, isConversationMessage, isUserConversationTurn, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, transcriptRowToTurnOutcome, type PlannerQueueWriteOutcome, type PendingQueueEntry } from '../../../../core/domain/conversation.ts';
 import { describeConversation, pendingConversationIds, withRememberedConversation, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
 import { useTranscriptReads, useTranscriptHistory } from './history.ts';
 import { useInitialInputObservation } from './initial-input.ts';
@@ -12,7 +15,7 @@ import { PERMISSION_MODE_CHANGE_TEXT, PLANNER_PERMISSION_MODE_FAILURES } from '.
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
-import { harnessItemsQueryOptions, modelCatalogQueryOptions, plannerRunQueryOptions, usePlannerMutations } from '../providers/queries.ts';
+import { conversationHistoryQueryOptions, modelCatalogQueryOptions, plannerRunQueryOptions, usePlannerMutations } from '../providers/queries.ts';
 import { managedProvidersQueryOptions } from '../providers/managed-providers.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useConversationCommands, useConversationSendOps, useConversationQueueWriteOut, useConversationRememberedTurns, useRememberedConversations } from './public.tsx';
@@ -32,6 +35,7 @@ function forgottenKey(card: string, entryId: string): string {
 /* A stable identity for "no queue page", so the memo below is not recomputed on
    every render by a fresh array literal. */
 const EMPTY_PENDING_QUEUE: readonly PendingQueueEntry[] = Object.freeze([]);
+const EMPTY_PENDING_INPUTS: readonly ConversationPendingInput[] = Object.freeze([]);
 
 export function useConversationStore(
   transport: ApiTransportPort,
@@ -40,6 +44,7 @@ export function useConversationStore(
   routeIntent: ConversationRouteIntent,
 ): ConversationStore {
   const registry = useConversationCommands();
+  const currentUser = useCurrentUser();
   const { remember, rememberedTurnsOf } = registry;
   const rememberedConversations = useRememberedConversations();
   const cardId = scope?.cardId ?? '';
@@ -50,8 +55,6 @@ export function useConversationStore(
   const scopeUpdatedAt = scope?.updatedAt;
   const scopeKind = scope?.kind ?? 'shared-spec';
   const capabilities = useQuery({ ...managedProvidersQueryOptions(transport, unauthorized), enabled: scope?.kind === 'track-assistant' });
-  const historyReplacementSupported = scopeKind !== 'track-assistant' || (!capabilities.isError
-    && capabilities.data?.find(answer => answer.availability.provider === scope?.provider)?.capabilities.history_replacement === true);
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.rows;
   const rememberOn = routeIntent.rememberOn;
@@ -60,7 +63,7 @@ export function useConversationStore(
   /* Held across renders: the live replies read and re-read this query by its key, and number its reads. */
   const transcriptReads = useTranscriptReads(registry.nextRead);
   const transcriptQuery = useMemo(
-    () => transcriptReads.track(harnessItemsQueryOptions(transport, cardId, unauthorized)),
+    () => transcriptReads.track(conversationHistoryQueryOptions(transport, cardId, unauthorized)),
     [transcriptReads, transport, cardId, unauthorized],
   );
   const history = useTranscriptHistory(transcriptQuery, scope !== null, transcriptReads);
@@ -72,24 +75,22 @@ export function useConversationStore(
     () => runReads.track(plannerRunQueryOptions(transport, cardId, unauthorized)), [runReads, transport, cardId, unauthorized],
   );
   const run = useQuery({ ...runQuery, enabled: scope !== null });
+  const pendingInputs = useMemo(() => run.data === undefined ? EMPTY_PENDING_INPUTS : orderedPendingInputs(run.data.pending_inputs), [run.data]);
   /* The catalog rides alongside the run query: the trigger has to render the chosen
        model's name, and `planner-run` gives only its slug. */
   const modelCatalog = useQuery({
     ...modelCatalogQueryOptions(transport, { kind: 'card', cardId }, unauthorized), enabled: scope !== null,
   });
-  const items = history.loadedRows;
-  /* A remembered transcript is the reopen fallback while the first page is unknown;
-       once any query data exists the server wins, even when empty. */
-  /* Queued rows are supplied by the display projection, not twice from the server
-     transcript. Raw `serverTurns` still sees every row for delivery reconciliation. */
-  const rememberedSource = useConversationRememberedTurns(!historyKnown && scope !== null ? cardId : null);
-  const rememberedEntries = !historyKnown ? rememberedSource : null;
+  const historyReplacementSupported = run.data?.history_replacement_supported === true;
+  const displayItems = history.loadedRows;
+  const items = useMemo(() => nativeDisplayRows(displayItems), [displayItems]);
+  const removedMessages = useMemo(() => removedHumanIds(displayItems), [displayItems]);
+  const rememberedSource = useConversationRememberedTurns(history.data === undefined && scope !== null ? cardId : null);
+  const rememberedEntries = history.data === undefined ? rememberedSource : null;
   const queueWriteOut = useConversationQueueWriteOut(scope === null ? null : cardId);
   const serverTurns = useMemo(
-    () => !historyKnown
-      ? (rememberedEntries ?? []).filter(isConversationMessage)
-      : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
-    [historyKnown, items, rememberedEntries],
+    () => (rememberedEntries ?? buildConversationTranscript(displayItems, currentUser?.userId ?? null)).filter(isConversationMessage),
+    [displayItems, currentUser?.userId, rememberedEntries],
   );
   const landedRun = runReads.startOf(run.data);
   const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
@@ -113,6 +114,10 @@ export function useConversationStore(
   const phase = run.data?.phase ?? null;
   const recovery = run.data?.recovery ?? null;
   const stalled = offersFreshSession(recovery);
+  const canonical = run.data?.input_contract === 'canonical';
+  const inputStalled = stalled && !canonical;
+  const executionHeld = run.data?.runtime_state === 'failed' || run.data?.runtime_state === 'exited'
+    || run.data?.runtime_state === 'superseded';
   /* Anchored on the response's arrival (`dataUpdatedAt`); the fold keeps the earlier anchor for one turn. */
   const [runningAnchor, setRunningAnchor] = useState<RunningTurnAnchor | null>(null);
   const nextRunningAnchor = anchorRunningTurn(runningAnchor, run.data?.running_turn ?? null, run.dataUpdatedAt);
@@ -164,23 +169,21 @@ export function useConversationStore(
   /** The card shown now; a model write's answer is that of the card it was made in. */
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
-  const serverEntries = useMemo(
-    () => rememberedEntries !== null
-      ? rememberedEntries.filter((entry) => !isOptimisticConversationTurn(entry))
-      : buildTranscript(items.filter((row) => row.input_segments?.some((segment) => segment.origin?.queue_entry != null)
-        || row.item_uuid === null || !pendingQueueIds.has(row.item_uuid)))
-        .filter((entry) => entry.author !== 'you' || entry.queueEntryId == null || !pendingQueueIds.has(entry.queueEntryId)
-          || (entry.inputSource?.entryRev != null && entry.inputSource.entryRev !== pendingQueueIds.get(entry.queueEntryId))),
-    [items, pendingQueueIds, rememberedEntries],
-  );
+  const serverEntries = useMemo(() => {
+    if (rememberedEntries !== null) return rememberedEntries.filter(entry => !isOptimisticConversationTurn(entry));
+    return buildConversationTranscript(displayItems, currentUser?.userId ?? null)
+      .filter(entry => !isUserConversationTurn(entry) || entry.queueEntryId == null || !pendingQueueIds.has(entry.queueEntryId)
+        || (entry.inputSource?.entryRev != null && entry.inputSource.entryRev !== pendingQueueIds.get(entry.queueEntryId)));
+  }, [displayItems, currentUser?.userId, pendingQueueIds, rememberedEntries]);
   useEffect(() => { setActionError(null); }, [cardId]);
   /* The running turn's streamed replies: drawn at the tail, never remembered, never counted. */
   const liveReplies = useLiveReplies({
-    transport, unauthorized, cardId, enabled: scope !== null, phase,
-    runningTurnId: run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
+    canonical:run.data?.input_contract === 'canonical',
+    transport, unauthorized, cardId, enabled: scope !== null && run.data !== undefined && !executionHeld, phase,
+    runningTurnId: run.data?.native_turn_id ?? run.data?.running_turn?.turn_id ?? null, nextRead: registry.nextRead,
     transcriptKey: transcriptQuery.queryKey, transcriptReads, items,
   });
-  const working = phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running';
+  const working = !executionHeld && (phase === 'issuing_turn' || phase === 'compacting' || phase === 'turn_running');
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
     responseEnded: phase === 'idle' || phase === 'turn_completed',
@@ -190,13 +193,14 @@ export function useConversationStore(
       ? latest : Math.max(latest ?? 0, row.id), null),
     requestStop: mutations.interrupt,
   });
-  const restart = useConversationRestart({ cardId, recovery, restart: mutations.restart });
+  const restart = useConversationRestart({ cardId, enabled: run.data?.input_contract === 'historical', recovery, restart: mutations.restart });
   const landedTranscript = transcriptReads.startOf(history.data);
   /* A refetch keeping `run.data` restamps it; this re-renders only because `run.dataUpdatedAt` is read above (#2068). */
   const landed = useMemo(() => ({ transcript: landedTranscript, run: landedRun }), [landedTranscript, landedRun]);
   const outbox = useConversationOutbox({
+    removedMessages, viewerId:currentUser?.userId ?? null,
     cardId, transport, send: mutations.send, serverEntries, serverTurns, liveReplies, queuedEntries: pendingQueue,
-    stalled, landed, initialInput, reportedInput, queuesInput: kernelQueuesInput(phase), highWater: serverItemHighWater(items),
+    stalled: inputStalled, landed, initialInput, reportedInput, queuesInput: kernelQueuesInput(phase), highWater: displayItems.reduce((maximum,item) => Math.max(maximum,item.cursor.position),0),
     pressed: () => { setActionError(null); stop.clearFeedback(); restart.clearError(); },
   });
   const { view, accountQueueDisplay } = outbox;
@@ -220,14 +224,14 @@ export function useConversationStore(
   const confirmedTurns = useMemo(
     () => [...serverTurns, ...view.confirmed].sort((left, right) => left.atMs - right.atMs), [serverTurns, view.confirmed],
   );
-  const stopping = !stalled && (phase === 'issuing_interrupt' || (working && stop.pending));
+  const stopping = !stalled && !executionHeld && (phase === 'issuing_interrupt' || (working && stop.pending));
   const stopFeedback: ConversationStopFeedback | null = stalled ? null
     : phase === 'issuing_interrupt' ? { kind: 'stopping' }
     : stop.feedback?.kind === 'requesting' && !working ? null : stop.feedback;
   const facts = useMemo<ConversationFacts | null>(() => trackId === undefined || provider === undefined ? null : {
     sourceCardId, cardId, trackId, trackTitle, provider, cardTitle: cardTitle ?? null, kind: scopeKind,
-    state: scopeState, working, stalled, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
-  }, [sourceCardId, cardId, cardTitle, provider, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled]);
+    state: scopeState, working, stalled:stalled || executionHeld, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
+  }, [sourceCardId, cardId, cardTitle, provider, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled,executionHeld]);
   /** What the reader is looking at: every turn, echoes included. */
   const conversation = useMemo(
     () => facts === null ? null : describeConversation(facts, turns), [facts, turns],
@@ -301,6 +305,8 @@ export function useConversationStore(
     working,
     stalled,
     recovery,
+    inputStalled,
+    executionHeld,
     stopping,
     stopFeedback,
     sending: view.sending,
@@ -310,6 +316,7 @@ export function useConversationStore(
     retryInitialInput: () => { void initialObservation.refetch().catch(() => undefined); void history.refetch().catch(() => undefined); },
     awaitingConversationUpdate: view.awaitingReconciliation && history.error === null && run.error === null,
     pendingQueue: presentation.queue,
+    pendingInputs,
     pendingSends: presentation.sending,
     queueDisplayAccounting,
     pendingQueueOverflow,
@@ -368,6 +375,7 @@ export function useConversationStore(
     retryRun: () => { void run.refetch().catch(() => undefined); if (acceptedInitial !== undefined) void initialObservation.refetch().catch(() => undefined); },
     loadEarlier,
     blockedReason: run.data?.blocked_reason ?? null,
+    terminalTimeout: run.data?.terminal_timeout ?? null,
     /* Before the first answer the conversation is following the default, which is
            what a card with no selection really does. */
     model,

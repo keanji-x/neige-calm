@@ -34,7 +34,7 @@ async fn start_running(fx: &Fixture) {
 }
 
 async fn complete_running(fx: &Fixture) -> Result<()> {
-    let snapshot = fx.harness.snapshot().await;
+    let snapshot = fx.harness.snapshot().await.unwrap();
     let mut events = fx.harness.inner.backend.subscribe_events();
     fx.daemon
         .emit_notification_for_test(crate::codex_appserver::Notification::TurnCompleted {
@@ -80,7 +80,7 @@ async fn versioned_input_inspection_requires_confirmation_of_the_highest_restore
     let error = complete_running(&fx).await.unwrap_err();
     assert!(error.to_string().contains("retain old input"), "{error}");
     assert!(fx.stored().await.pending_entries().is_empty());
-    let restored = fx.harness.snapshot().await.pending_entries();
+    let restored = fx.harness.snapshot().await.unwrap().pending_entries();
     let actual = restored
         .iter()
         .find_map(|entry| entry.user_view().filter(|entry| entry.id == &id))

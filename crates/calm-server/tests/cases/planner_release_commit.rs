@@ -548,6 +548,7 @@ async fn cancelled_steer_terminal(fault: CheckpointFault) {
             .harness
             .snapshot()
             .await
+            .unwrap()
             .pending_entries()
             .first()
             .and_then(|e| e.user_view())

@@ -45,10 +45,36 @@ impl IssuanceRefusal {
 
 /// The provider-neutral reads a model resolution may need. The backend decides which it needs
 /// and when; the run loop answers them.
-pub(crate) trait SelectionSource {
+pub(crate) trait SelectionSource: Sync {
+    fn check_current(&self) -> crate::error::Result<()>;
+    /// Current admission after the native connection gate, before each new RPC.
+    /// Required for every source; canonical callers have no default approval.
+    fn admit_native_read(&self) -> futures_util::future::BoxFuture<'_, crate::error::Result<()>>;
     /// The card's payload as it stands NOW. A vanished card is an `Err`.
     async fn card_payload(&self) -> std::result::Result<Value, IssuanceRefusal>;
 
     /// The workspace whose config layers apply to this thread.
     async fn installation_cwd(&self) -> std::result::Result<String, IssuanceRefusal>;
+}
+
+impl SelectionSource for crate::conversation_inputs::SelectionReadAdmission {
+    fn check_current(&self) -> crate::error::Result<()> {
+        self.check_current()
+    }
+
+    fn admit_native_read(&self) -> futures_util::future::BoxFuture<'_, crate::error::Result<()>> {
+        Box::pin(self.revalidate())
+    }
+
+    async fn card_payload(&self) -> std::result::Result<Value, IssuanceRefusal> {
+        self.current_payload()
+            .await
+            .map_err(|error| IssuanceRefusal::retryable(error.to_string()))
+    }
+
+    async fn installation_cwd(&self) -> std::result::Result<String, IssuanceRefusal> {
+        // The admission owner captured this actual target and rechecks it at
+        // each native effect; callers cannot supply a separately-read cwd.
+        Ok(self.cwd().to_owned())
+    }
 }

@@ -55,6 +55,7 @@ pub(crate) async fn ensure_planner_session(
     cs: &CodexShellState,
     card_id: &CardId,
     actor: &Actor,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<(
     WorkerSessionProjection,
     PlannerHarness,
@@ -81,16 +82,27 @@ pub(crate) async fn ensure_planner_session(
         card_id,
     )
     .await;
+    let fence = match &source {
+        Some(source) => {
+            source
+                .require_card(s.repo.as_ref(), card_id.as_str())
+                .await?;
+            fence.with_historical_human(s.planner_start_adapter.clone(), source.clone())
+        }
+        None => fence,
+    };
+    crate::conversation_inputs::require_historical_storage(s.repo.as_ref(), card_id.as_str())
+        .await?;
     crate::conversation_archive::require_unarchived(s.repo.as_ref(), card_id.as_str()).await?;
     // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
     let Some(runtime) = planner_recovery::candidate(s, card_id, human_send).await? else {
         if !human_send {
             return Err(dormant());
         }
-        return start_fresh(s, cs, card_id, actor, fence).await;
+        return start_fresh(s, cs, card_id, actor, fence, source).await;
     };
     if runtime.status == WorkerSessionState::Failed {
-        let (runtime, harness) = restore_failed_session(s, w, cs, runtime).await?;
+        let (runtime, harness) = restore_failed_session_admitted(s, w, cs, runtime, source).await?;
         return Ok((runtime, harness, Some(fence)));
     }
     if let Some(harness) = s.harness.get(&runtime.id) {
@@ -122,7 +134,7 @@ pub(crate) async fn ensure_planner_session(
     .ready(&provider, ReadinessFor::RestoreOrSend)
     .await?;
     let runtime_id = runtime.id.clone();
-    let harness = install_preserved_session(s, w, cs, runtime.clone()).await?;
+    let harness = install_preserved_session(s, w, cs, runtime.clone(), source).await?;
     tracing::info!(
         card_id = %card_id,
         runtime_id = %runtime_id,
@@ -161,6 +173,7 @@ async fn start_fresh(
     card_id: &CardId,
     actor: &Actor,
     fence: CardStartFence,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<(
     WorkerSessionProjection,
     PlannerHarness,
@@ -188,6 +201,11 @@ async fn start_fresh(
     }
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;
+    if let Some(source) = &source {
+        source
+            .require_card(s.repo.as_ref(), card_id.as_str())
+            .await?;
+    }
     // The start adapter's own readiness refusal is a 500; this is the send's 503, as for recovery.
     PlannerFactory::new(
         std::sync::Arc::downgrade(&cs.shared_codex_appserver),
@@ -236,9 +254,25 @@ pub(super) async fn restore_failed_session(
     cs: &CodexShellState,
     runtime: WorkerSessionProjection,
 ) -> Result<(WorkerSessionProjection, PlannerHarness)> {
-    let runtime = planner_recovery::recover(s, w, cs, runtime).await?;
+    restore_failed_session_admitted(s, w, cs, runtime, None).await
+}
+
+async fn restore_failed_session_admitted(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    runtime: WorkerSessionProjection,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+) -> Result<(WorkerSessionProjection, PlannerHarness)> {
+    let runtime = match &source {
+        Some(source) => {
+            planner_recovery::recover_admitted(s, w, cs, runtime, Some(source.clone())).await?
+        }
+        None => planner_recovery::recover(s, w, cs, runtime).await?,
+    };
     let harness =
         crate::planner_hibernation::WakeContext::new(s.clone(), w.repo.clone(), cs.clone())
+            .with_historical_source(source)
             .install_resumed(runtime.clone())
             .await?;
     Ok((runtime, harness))
@@ -249,8 +283,10 @@ async fn install_preserved_session(
     w: &WorkerState,
     cs: &CodexShellState,
     runtime: WorkerSessionProjection,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<PlannerHarness> {
     crate::planner_hibernation::WakeContext::new(s.clone(), w.repo.clone(), cs.clone())
+        .with_historical_source(source)
         .install(runtime)
         .await
 }

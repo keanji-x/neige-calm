@@ -33,13 +33,19 @@ fn refused(reason: impl std::fmt::Display) -> CalmError {
 /// Check, prepare with the provider, queue `entry` in memory, commit the removal, the message and
 /// the key in one transaction, then adopt the committed values in memory so no later snapshot
 /// rebuild overwrites them. Any failure puts the queue back as it was.
-pub(super) async fn handle_replace(
+pub(super) async fn handle_replace_admitted(
     inner: &Arc<Inner>,
     turn_id: &str,
     entry: QueueEntry,
     key: &SendKey,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
 ) -> Result<DurableAck> {
     let _issuance = inner.issuance.lock().await;
+    if let Some(source) = &source {
+        source
+            .require_card(inner.repo.as_ref(), inner.card_id.as_str())
+            .await?;
+    }
     crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
         .await?;
     if let Some(reader) = inner.backend.issuance_hold() {
@@ -70,7 +76,7 @@ pub(super) async fn handle_replace(
         ));
     }
     // An empty queue is also what lets the message below be accepted whole: no fold, no eviction.
-    if !inner.pending_queue.lock().await.is_empty()
+    if !inner.historical_queue()?.lock().await.is_empty()
         || inner.projection_client_id.lock().await.is_some()
     {
         return Err(refused(
@@ -120,7 +126,7 @@ pub(super) async fn handle_replace(
         },
         None => HarnessState::Idle,
     };
-    let mut snapshot = snapshot_for(inner).await;
+    let mut snapshot = snapshot_for(inner).await?;
     snapshot.phase = HarnessPhaseTag::from(&state);
     snapshot.last_turn_id = plan.previous_turn_id.clone();
     snapshot.pending_rewind = Some(prepared.clone());
@@ -160,7 +166,11 @@ pub(super) async fn handle_replace(
                     planned_rows: plan.row_count,
                     snapshot_value,
                     status: run_status_for(&state),
-                    send: DurableSendBinding::new(inner, key, ack.entry_id.as_ref()),
+                    send: {
+                        let mut send = DurableSendBinding::new(inner, key, ack.entry_id.as_ref());
+                        send.source = source;
+                        send
+                    },
                 },
             )
             .await
@@ -168,7 +178,7 @@ pub(super) async fn handle_replace(
         Err(error) => Err(error.into()),
     };
     if let Err(error) = committed {
-        restore_durable_user_message(inner, checkpoint).await;
+        restore_durable_user_message(inner, checkpoint).await?;
         return Err(error);
     }
 
@@ -238,6 +248,9 @@ async fn commit(inner: &Arc<Inner>, commit: Commit) -> Result<()> {
         ),
         move |tx| {
             Box::pin(async move {
+                if let Some(source) = &send.source {
+                    source.require_card_tx(tx, card_id.as_str()).await?;
+                }
                 let removed_item_count = crate::db::sqlite::transcript_delete_thread_suffix_tx(
                     tx,
                     card_id.as_str(),

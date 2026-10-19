@@ -21,7 +21,6 @@ use calm_server::db::prelude::*;
 use calm_server::harness::PlannerHarness;
 use calm_server::model::{CardRole, NewArea};
 use calm_server::proc_identity::read_proc_start_time;
-use calm_server::routes;
 use calm_server::session_projection_repo::WorkerSessionProjection;
 use calm_server::state::AppState;
 use calm_types::worker::WorkerSessionId;
@@ -212,29 +211,14 @@ impl Stack {
     }
 
     pub async fn boot_config(config: &Config) -> Self {
-        let state = AppState::boot(config).await.expect("AppState::boot");
-        calm_server::recover_harnesses_after_daemon_boot(
-            &state,
-            Err(calm_server::error::CalmError::Internal(
-                "fixture: the shared codex daemon is down".into(),
-            )),
-        )
-        .await
-        .expect("boot recovery");
-        let app = routes::router()
-            .layer(axum::middleware::from_fn(
-                calm_server::actor::actor_middleware,
-            ))
-            .layer(axum::middleware::from_fn_with_state(
-                calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                    username: None,
-                    password: None,
-                    dev_autologin: true,
-                    display_name: "Owner".into(),
-                }),
-                calm_server::auth::require_session,
-            ))
-            .with_state(state.clone());
+        let mut config = config.clone();
+        config.auth_password = Some("fixture-password".into());
+        let state = AppState::boot(&config)
+            .await
+            .expect("AppState::boot")
+            .into_parts()
+            .0;
+        let app = crate::support::authenticated_router::application(state.clone()).await;
         Self { state, app }
     }
 
@@ -408,7 +392,7 @@ impl Stack {
     /// Wait for the current turn's phase to be committed, not just visible in memory.
     pub async fn wait_phase(&self, worker_session_id: &str, phase: &str) {
         for _ in 0..400 {
-            let snapshot = self.harness(worker_session_id).snapshot().await;
+            let snapshot = self.harness(worker_session_id).snapshot().await.unwrap();
             if serde_json::to_value(snapshot.phase).unwrap() == phase {
                 let persisted = self
                     .repo()

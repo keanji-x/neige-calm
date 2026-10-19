@@ -36,7 +36,7 @@ it.each([[390, false], [1280, false], [390, true], [1280, true]] as const)('read
       await expect.element(retry).toHaveAttribute('aria-busy', 'true');
       await retry.click({ force: true });
     }
-    expect(fixture.requests.slice(before).filter(request => request.path.endsWith('/planner/run'))).toHaveLength(1);
+    expect(fixture.requests.slice(before).filter(request => request.path.includes('/planner/run?contract=conversation_v1'))).toHaveLength(1);
     expect(screen.queryByText('Running', { exact: true })).toBeNull();
     await expect.element(page.getByText('Status unconfirmed', { exact: true })).toBeVisible();
     await expect.element(field).toHaveTextContent('Keep this draft.');

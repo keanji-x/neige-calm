@@ -211,10 +211,12 @@ async fn live_extra_stop_uses_harness_id_even_with_unreadable_row_and_swallows_f
             card_role_cache: stack.state.card_role_cache.clone(),
             track_area_cache: stack.state.track_area_cache.clone(),
             backend: PlannerBackend::claude_for_test(session),
-            live_replies: stack.state.harness.live_replies().clone(),
+            registry: stack.state.harness.clone(),
             config: HarnessConfig::default(),
-            snapshot: HarnessSnapshot::initial(0, vec![]),
-        });
+            snapshot: HarnessSnapshot::initial(0, vec![]).try_into().unwrap(),
+        })
+        .await
+        .unwrap();
         stack.state.harness.insert(harness_id.clone(), handle);
         if failed {
             root.spawn_marked_orphan(&harness_id);

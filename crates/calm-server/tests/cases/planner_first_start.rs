@@ -17,7 +17,6 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{new_id, now_ms};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionState};
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState, WriteContext};
@@ -52,12 +51,8 @@ fn today() -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
-pub(crate) fn router(state: &AppState) -> axum::Router {
-    routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone())
+pub(crate) async fn router(state: &AppState) -> axum::Router {
+    crate::support::authenticated_router::application(state.clone()).await
 }
 
 pub(crate) async fn app_state(app_server: AppServer) -> (TempDir, Arc<SqlxRepo>, AppState) {
@@ -111,7 +106,7 @@ async fn boot(app_server: AppServer) -> Boot {
             .await
             .expect("the daily Track has one Planner card");
     let boot = Boot {
-        app: router(&state),
+        app: router(&state).await,
         state,
         repo,
         planner_card_id,
@@ -190,7 +185,7 @@ impl Boot {
             .unwrap();
         let queued = match runtime.and_then(|runtime| self.state.harness.get(&runtime.id)) {
             Some(harness) => {
-                serde_json::to_string(&harness.snapshot().await.pending_observations())
+                serde_json::to_string(&harness.snapshot().await.unwrap().pending_observations())
                     .unwrap()
                     .contains(text)
             }
@@ -321,7 +316,7 @@ async fn a_never_started_card_with_the_app_server_down_is_503_and_starts_later()
     assert_eq!(boot.bindings().await, 0, "nor the message");
 
     boot.state = with_running_app_server(boot.state.clone(), &boot.repo);
-    boot.app = router(&boot.state);
+    boot.app = router(&boot.state).await;
     let (status, body) = post_input(
         boot.app.clone(),
         &boot.input_uri(),

@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
@@ -23,15 +24,15 @@ function renderRecovery(state: 'dormant' | 'paused' | 'unknown', initial = '/tra
       restarted = true;
       return ok({ card_id: 'daily-planner', terminal_id: '', new_thread_id: 'thread-2' });
     }
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: !restarted ? state === 'paused' ? 'wedged' : state === 'unknown' ? 'turn_completed' : 'idle' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never',
       blocked_reason: state === 'paused' && !restarted
-        ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null, manual_compact_supported: true, recovery: !restarted && fenced && state !== 'dormant' ? { cause: state === 'unknown' ? 'unknown_outcome' : 'wedged', action: 'restart_session' } : null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+        ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null, manual_compact_supported: true, recovery: !restarted && fenced && state !== 'dormant' ? { cause: state === 'unknown' ? 'unknown_outcome' : 'wedged', action: 'restart_session' } : null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     if (request.path.endsWith('/planner/input')) return restarted || state === 'paused'
       ? ok({ card_id: 'daily-planner', worker_session_id: 'runtime' })
       : { status: 409, statusText: 'Conflict', body: { code: 'planner_harness_dormant',
         error: "This conversation's session can't be resumed; start a fresh session (history is kept)" } };
-    if (request.path.includes('/harness/items')) return ok(HISTORY);
+    if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), HISTORY, null));
     return undefined;
   } });
   return { ...fixture, fence: async () => {

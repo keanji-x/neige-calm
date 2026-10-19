@@ -109,13 +109,9 @@ impl SharedCodexAppServer {
         thread_id: &str,
         turn_id: &str,
     ) -> provider::control::NativeInterruptOutcome<CalmError> {
-        match self.interrupt_control(thread_id, turn_id).await {
-            NativeInterruptOutcome::NativeAck => NativeInterruptOutcome::NativeAck,
-            NativeInterruptOutcome::NoTarget => NativeInterruptOutcome::NoTarget,
-            NativeInterruptOutcome::Unconfirmed { error } => NativeInterruptOutcome::Unconfirmed {
-                error: error.into(),
-            },
-        }
+        self.interrupt_control(thread_id, turn_id)
+            .await
+            .map_error(Into::into)
     }
 
     pub(super) async fn interrupt_control(
@@ -145,8 +141,8 @@ impl SharedCodexAppServer {
                     )),
                 };
             }
-            self.active_turns
-                .remove_if(thread_id, |_, active| active == turn_id);
+            self.native_turns
+                .acknowledge_control_for_fixture(thread_id, turn_id);
             return provider::control::NativeInterruptOutcome::NativeAck;
         }
         let client = match self.connected_client().await {
@@ -157,36 +153,158 @@ impl SharedCodexAppServer {
                 };
             }
         };
-        match client.interrupt_outcome(thread_id, turn_id).await {
-            NativeInterruptOutcome::NativeAck => NativeInterruptOutcome::NativeAck,
-            NativeInterruptOutcome::NoTarget => NativeInterruptOutcome::NoTarget,
-            NativeInterruptOutcome::Unconfirmed { error } => NativeInterruptOutcome::Unconfirmed {
-                error: error.into(),
-            },
+        let outcome = client
+            .interrupt_outcome(thread_id, turn_id)
+            .await
+            .map_error(Into::into);
+        if !matches!(
+            outcome,
+            provider::control::NativeInterruptOutcome::Unconfirmed { .. }
+        ) {
+            self.native_turns.acknowledge_control_from_source(
+                &Arc::downgrade(&client),
+                thread_id,
+                turn_id,
+            );
         }
+        outcome
+    }
+
+    /// Control one admitted canonical execution.
+    pub(crate) async fn interrupt_execution<'a>(
+        &self,
+        target: &crate::harness::backend::ExecutionEndTarget,
+        admission: &NativePromptAdmission<'a>,
+    ) -> Result<()> {
+        let client = self.connected_client().await?;
+        let ticket = self.native_turns.begin_control(client, target)?;
+        match ticket
+            .client
+            .interrupt_outcome_gated(&ticket.thread, &ticket.turn, admission.gate())
+            .await
+        {
+            NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
+            NativeInterruptOutcome::Unconfirmed { error } => {
+                return Err(admission.take_refusal().unwrap_or_else(|| error.into()));
+            }
+        }
+        self.native_turns.acknowledge_control_from_source(
+            &Arc::downgrade(&ticket.client),
+            &ticket.thread,
+            &ticket.turn,
+        );
+        Ok(())
     }
 
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
-        self.active_turns
-            .get(thread_id)
-            .map(|entry| entry.value().clone())
+        self.native_turns.active(thread_id)
     }
 
     pub async fn interrupt_active_outcome(
         &self,
         thread_id: &str,
     ) -> provider::control::NativeInterruptOutcome<CalmError> {
-        let Some(turn_id) = self.active_turn_id_for_thread(thread_id) else {
-            return provider::control::NativeInterruptOutcome::NoTarget;
-        };
-        let outcome = self.interrupt_outcome(thread_id, &turn_id).await;
-        match &outcome {
-            provider::control::NativeInterruptOutcome::Unconfirmed { .. } => {}
-            provider::control::NativeInterruptOutcome::NativeAck
-            | provider::control::NativeInterruptOutcome::NoTarget => {
-                self.active_turns
-                    .remove_if(thread_id, |_, active| active == &turn_id);
+        match self.interrupt_active_snapshot(thread_id).await {
+            Ok(true) => provider::control::NativeInterruptOutcome::NativeAck,
+            Ok(false) => provider::control::NativeInterruptOutcome::NoTarget,
+            Err(error) => provider::control::NativeInterruptOutcome::Unconfirmed { error },
+        }
+    }
+
+    async fn interrupt_active_snapshot(&self, thread_id: &str) -> Result<bool> {
+        // One bounded snapshot of the actual owner: at most known A and candidate B.
+        // Never reread a replacement connection to send an old target's control.
+        let snapshot = self.current_interrupt_snapshot(thread_id).await?;
+        let mut failure = None;
+        let mut acknowledged = false;
+        for turn_id in &snapshot.turns {
+            match self
+                .interrupt_native_source_outcome(snapshot.source.as_ref(), thread_id, turn_id)
+                .await
+            {
+                provider::control::NativeInterruptOutcome::NativeAck => acknowledged = true,
+                provider::control::NativeInterruptOutcome::NoTarget => {}
+                provider::control::NativeInterruptOutcome::Unconfirmed { error, .. } => {
+                    if failure.is_none() {
+                        failure = Some(error);
+                    }
+                }
             }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        let remaining =
+            self.interrupt_snapshot_from_original(snapshot.source.as_ref(), thread_id)?;
+        if remaining.unresolved || !remaining.turns.is_empty() {
+            return Err(CalmError::Conflict(
+                "Codex native activity remains unresolved after interrupt".into(),
+            ));
+        }
+        Ok(acknowledged)
+    }
+
+    async fn current_interrupt_snapshot(
+        &self,
+        thread_id: &str,
+    ) -> Result<native_turns::InterruptSnapshot> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return Ok(self.native_turns.interrupt_snapshot(thread_id));
+        }
+        // An empty in-process cache says nothing about a persisted thread on a
+        // daemon awaiting hot takeover. Require the actual Running connection.
+        let core = self.core.lock().await;
+        let SupervisorState::Running { client, .. } = &core.state else {
+            return Err(CalmError::Conflict(
+                "Codex native source is unavailable for interrupt".into(),
+            ));
+        };
+        self.native_turns.interrupt_snapshot_for(client, thread_id)
+    }
+
+    fn interrupt_snapshot_from_original(
+        &self,
+        source: Option<&Arc<CodexAppServer>>,
+        thread_id: &str,
+    ) -> Result<native_turns::InterruptSnapshot> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return Ok(self.native_turns.interrupt_snapshot(thread_id));
+        }
+        let source = source
+            .ok_or_else(|| CalmError::Conflict("Codex interrupt source is missing".into()))?;
+        self.native_turns.interrupt_snapshot_for(source, thread_id)
+    }
+
+    pub(super) async fn interrupt_native_source_outcome(
+        &self,
+        source: Option<&Arc<CodexAppServer>>,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> provider::control::NativeInterruptOutcome<CalmError> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return self.interrupt_outcome(thread_id, turn_id).await;
+        }
+        let Some(client) = source else {
+            return provider::control::NativeInterruptOutcome::Unconfirmed {
+                error: CalmError::Conflict("Codex native source is no longer connected".into()),
+            };
+        };
+        let outcome = client
+            .interrupt_outcome(thread_id, turn_id)
+            .await
+            .map_error(Into::into);
+        if !matches!(
+            outcome,
+            provider::control::NativeInterruptOutcome::Unconfirmed { .. }
+        ) {
+            self.native_turns.acknowledge_control_from_source(
+                &Arc::downgrade(client),
+                thread_id,
+                turn_id,
+            );
         }
         outcome
     }
@@ -255,49 +373,5 @@ pub(super) fn start_result(
             error,
             response_turn: None,
         } => Err(error),
-    }
-}
-
-impl SharedCodexAppServer {
-    /// Both real and fixture RPC responses use the same post-response fence.
-    pub(super) async fn finish_start_reply(
-        &self,
-        thread_id: &str,
-        turn_id: TurnId,
-        invalid_result: Option<StartError>,
-    ) -> provider::codex::delivery::StartDelivery<StartError> {
-        use provider::codex::delivery::StartDelivery;
-        if self.thread_seals.is_sealed(thread_id) {
-            let cleanup = match self.interrupt_control(thread_id, &turn_id).await {
-                NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {
-                    self.active_turns
-                        .remove_if(thread_id, |_, active| active == &turn_id);
-                    StartError::Host(CalmError::Conflict(format!(
-                        "thread {thread_id} was sealed while turn/start was in flight"
-                    )))
-                }
-                NativeInterruptOutcome::Unconfirmed { error } => error,
-            };
-            return match invalid_result {
-                None => StartDelivery::NativeAck {
-                    turn: turn_id,
-                    cleanup: Some(cleanup),
-                },
-                Some(_) => StartDelivery::Unknown {
-                    error: cleanup,
-                    response_turn: None,
-                },
-            };
-        }
-        match invalid_result {
-            None => StartDelivery::NativeAck {
-                turn: turn_id,
-                cleanup: None,
-            },
-            Some(error) => StartDelivery::Unknown {
-                error,
-                response_turn: Some(turn_id),
-            },
-        }
     }
 }

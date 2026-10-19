@@ -41,6 +41,8 @@ use provider::claude::protocol::{Base64Image, UserLine, UserLineContent, client_
 use provider::claude::translate::{ToolNames, TurnContext, TurnTranslator};
 use provider::events::PlannerEvent;
 
+mod execution_end;
+
 /// After an interrupt, the turn is stopped if the CLI has not ended it within this bound.
 pub const STOP_TIMER: Duration = Duration::from_secs(10);
 /// Once a stop is armed, the turn's `TurnCompleted` is emitted by `settle_by` = the stop deadline +
@@ -97,6 +99,7 @@ pub(crate) struct Shared {
     state: Mutex<State>,
     /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
     issue: tokio::sync::Mutex<()>,
+    driver: tokio::sync::Mutex<Option<execution_end::DriverSlot>>,
     /// Set once the harness holding this session is installed in the registry (§5.1 item 2), to
     /// the channel that harness reads its paused requests from (#2348); before that `turn_start`
     /// refuses, so an install-race loser never mints or spawns.
@@ -219,6 +222,7 @@ impl ClaudePlannerSession {
                 events,
                 state: Mutex::new(state),
                 issue: tokio::sync::Mutex::new(()),
+                driver: tokio::sync::Mutex::new(None),
                 installed: OnceLock::new(),
                 #[cfg(feature = "fixtures")]
                 hooks: Mutex::new(TestHooks::default()),
@@ -308,6 +312,7 @@ impl ClaudePlannerSession {
                 state.settle_after_stop,
             )
         };
+        execution_end::join_driver(shared).await?;
         if purpose == SpawnPurpose::Compaction && start == SessionStart::New {
             return Err(CalmError::BadRequest(
                 "this Claude conversation has no session to compact yet".into(),
@@ -521,7 +526,8 @@ impl ClaudePlannerSession {
                 .events
                 .send(translator.turn_started(crate::model::now_ms()));
         }
-        tokio::spawn(drive(
+        let mut driver_slot = shared.driver.lock().await;
+        let driver = tokio::spawn(drive(
             Arc::clone(shared),
             TurnRun {
                 child,
@@ -537,6 +543,7 @@ impl ClaudePlannerSession {
                 approvals: Approvals::for_spawn(mode, held, &turn_id),
             },
         ));
+        *driver_slot = Some(execution_end::DriverSlot::new(driver));
         Ok(turn_id)
     }
 
@@ -619,43 +626,6 @@ impl ClaudePlannerSession {
             Some(slot) => interrupt(&slot).await,
             None => provider::control::InterruptOutcome::NoTarget,
         }
-    }
-
-    /// Harness shutdown: refuse new turns, end the live one as `Interrupted`, and stop the marker
-    /// whether or not a turn runs. The `stop` result is returned for strict callers. A session that
-    /// was never installed (an install-race loser) minted and spawned nothing, so it signals nothing:
-    /// its id may belong to the winner's live turn.
-    pub async fn shutdown(&self) -> Result<()> {
-        let shared = &self.shared;
-        shared.state().shutting_down = true;
-        let _issue = shared.issue.lock().await;
-        if shared.installed.get().is_none() {
-            return Ok(());
-        }
-        let slot = shared
-            .state()
-            .active
-            .as_ref()
-            .map(|active| Arc::clone(&active.slot));
-        if let Some(slot) = &slot {
-            slot.record(TerminalCause::Interrupted);
-            slot.arm_stop(tokio::time::Instant::now());
-        }
-        let params = &shared.params;
-        let stopped = stop(&params.host.instance, &params.worker_session_id).await;
-        if let Some(slot) = slot {
-            let mut settled = slot.settled.subscribe();
-            if tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, settled.wait_for(|done| *done))
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    worker_session_id = %params.worker_session_id,
-                    "claude planner: the running turn did not settle during shutdown"
-                );
-            }
-        }
-        stopped
     }
 
     /// Fixtures only: how many user lines this session has tried to write, observed on the

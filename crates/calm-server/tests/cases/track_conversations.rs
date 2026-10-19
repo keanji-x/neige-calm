@@ -81,17 +81,7 @@ async fn boot() -> Boot {
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo_dyn, None,
     ));
-    let app = routes::router()
-        .layer(Extension(Principal {
-            user_id: LEGACY_OWNER_USER_ID.into(),
-            display_name: "owner".into(),
-            role: "owner".into(),
-            session_id: "test".into(),
-        }))
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = crate::support::authenticated_router::application(state.clone()).await;
     Boot {
         app,
         state,

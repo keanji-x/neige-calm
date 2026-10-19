@@ -98,14 +98,14 @@ async fn seed_harness_with_snapshot(
         repo.card_role_get(card.id.as_str()).await.unwrap(),
         Some(CardRole::Planner)
     );
-    let runtime_id = new_id();
+    let worker_session_id = new_id();
     let thread_id = SEED_THREAD_ID.to_string();
 
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -129,7 +129,14 @@ async fn seed_harness_with_snapshot(
     track_area_cache.insert(track.id.clone(), area.id);
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id,
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            daemon.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id,
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -137,15 +144,19 @@ async fn seed_harness_with_snapshot(
         events,
         card_role_cache: role_cache,
         track_area_cache,
-        backend: daemon.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
 
     (
         harness,
@@ -803,7 +814,7 @@ async fn turn_completed_failed_persists_outcome_row_readable_by_transcript() {
         "the transcript predicate must allow 'turn/completed'"
     );
 
-    let snapshot = harness.snapshot().await;
+    let snapshot = harness.snapshot().await.unwrap();
     assert_eq!(snapshot.phase, HarnessPhaseTag::TurnCompleted);
 
     harness.shutdown().await.unwrap();
@@ -954,7 +965,12 @@ async fn recovered_pending_timeout_retains_its_cause_until_the_exact_target_sett
     wait_for_notification_receiver(&daemon).await;
     harness.persist_snapshot().await.unwrap();
     assert!(
-        harness.snapshot().await.interruption_intent.is_some(),
+        harness
+            .snapshot()
+            .await
+            .unwrap()
+            .interruption_intent
+            .is_some(),
         "recovery persistence must retain the outstanding timeout intent"
     );
     daemon.emit_notification_for_test(Notification::TurnStarted {
@@ -978,7 +994,12 @@ async fn recovered_pending_timeout_retains_its_cause_until_the_exact_target_sett
         Some("This turn exceeded its execution time limit and was interrupted.")
     );
     assert!(
-        harness.snapshot().await.interruption_intent.is_none(),
+        harness
+            .snapshot()
+            .await
+            .unwrap()
+            .interruption_intent
+            .is_none(),
         "settled intent cannot leak into the next turn"
     );
     harness.shutdown().await.unwrap();
@@ -1143,7 +1164,7 @@ async fn interrupt_target_completion_writes_outcome_row() {
          event is written"
     );
     assert_eq!(
-        harness.snapshot().await.phase,
+        harness.snapshot().await.unwrap().phase,
         HarnessPhaseTag::TurnCompleted
     );
 
@@ -1181,7 +1202,7 @@ async fn turn_completed_without_id_writes_the_row_under_the_accepted_turn_id() {
         "params stay the frame as codex sent it; the id lives in the row's column"
     );
     assert_eq!(
-        harness.snapshot().await.phase,
+        harness.snapshot().await.unwrap().phase,
         HarnessPhaseTag::TurnCompleted
     );
 

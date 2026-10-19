@@ -10,7 +10,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use super::track_activity_fixture::fx;
-use super::track_notification_dismissals::app;
+use super::track_notification_dismissals::authenticated_app;
 use super::track_notifications::{codex_planner, turn};
 
 #[tokio::test]
@@ -26,7 +26,8 @@ async fn a_failed_turn_row_carries_its_readable_error_text() {
     let raw = r#"{"type":"error","status":400,"error":{"message":"Upgrade Codex."}}"#;
     turn(&f, &p, "turn-1", "completed", None).await;
     turn(&f, &p, "turn-2", "failed", Some(raw)).await;
-    let response = app(&f, ActivityWake::detached())
+    let response = authenticated_app(&f, ActivityWake::detached())
+        .await
         .oneshot(
             Request::builder()
                 .uri(format!(

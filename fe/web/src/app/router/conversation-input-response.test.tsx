@@ -2,6 +2,7 @@ import type { History } from '../conversations/history.ts';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { buildTranscript, harnessItemToTurns as toTranscriptTurns } from '../../../../core/domain/conversation.ts';
 import { groupTranscriptActivities } from '../../../../core/domain/conversation-groups.ts';
 import { currentResponseMessage } from '../../../../core/domain/conversation-actions.ts';
@@ -50,14 +51,14 @@ function mount({ phase = 'idle', input }: { phase?: string; input?: Promise<ApiT
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
       capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
     }]);
-    if (request.path === '/api/cards/second-planner/planner/run') return ok({ card_id: 'second-planner', worker_session_id: 'runtime',
+    if (request.path === '/api/cards/second-planner/planner/run?contract=conversation_v1') return ok(historicalConversationRun({ card_id: 'second-planner', worker_session_id: 'runtime',
       phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true,
-      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
-    if (request.path.includes('/second-planner/harness/items')) return ok(Array.from({ length: 120 }, (_, index) => ({
+      recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
+    if (request.path.includes('/second-planner/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), Array.from({ length: 120 }, (_, index) => ({
       id: index + 1, worker_session_id: 'runtime', card_id: 'second-planner', track_id: 'daily', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: JSON.stringify({ item: { text: `Stored reply ${index}. **Evidence** remains readable.` } }), created_at_ms: index + 1,
-    })));
+    })), null));
     if (input !== undefined && request.path.endsWith('/planner/input')) return input;
     if (input !== undefined && request.method === 'POST' && request.path.endsWith('/conversations')) return input;
     return undefined;
@@ -86,9 +87,9 @@ it('keeps unchanged stored history derivation and grouping out of composer updat
     expect(currentResponseMessage).not.toHaveBeenCalled();
     // Real new server content still invalidates the projection without touching the draft.
     await act(async () => {
-      view.client.setQueryData<History>(['harness-items', 'second-planner'], previous => previous === undefined ? previous : ({
-        ...previous, latest: { ...previous.latest, rows: previous.latest.rows.map(row => row.id === 120
-          ? { ...row, params: JSON.stringify({ item: { text: 'The server updated the last reply.' } }) } : row) },
+      view.client.setQueryData<History>(['harness-items', 'second-planner', 'conversation_v1'], previous => previous === undefined ? previous : ({
+        ...previous, latest: { ...previous.latest, rows: previous.latest.rows.map(row => row.source.kind === 'historical_raw' && row.source.item.id === 120
+          ? { ...row, source: { ...row.source, item: { ...row.source.item, params: JSON.stringify({ item: { text: 'The server updated the last reply.' } }) } } } : row) },
       }));
       await Promise.resolve();
     });

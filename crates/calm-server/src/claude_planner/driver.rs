@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use super::approvals::{Approvals, NO_APPROVAL_SURFACE, write_response};
+use super::outcome_record::record_outcome;
 use super::session::{FinishedTurn, Shared};
 use super::spawn::{InstructionsFile, SpawnPurpose};
 use super::stop::{STOP_BOUND, stop_by};
@@ -32,7 +33,6 @@ const DRAIN_WINDOW: Duration = Duration::from_secs(1);
 /// After a result or EOF, the direct child's own exit is awaited this long before `stop`.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
 /// Own bounds of the settlement's database writes; `settle_by` caps them further once a stop is armed.
-const RECORD_TIMEOUT: Duration = Duration::from_secs(5);
 const BIND_TIMEOUT: Duration = Duration::from_secs(5);
 /// After the final `start_kill`, the direct child is reaped for at most this long.
 const REAP_WAIT: Duration = Duration::from_secs(1);
@@ -186,7 +186,7 @@ enum Ending {
     Stopped,
 }
 
-pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
+pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) -> bool {
     let TurnRun {
         mut child,
         stdout,
@@ -218,6 +218,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         compacted: false,
         bound: false,
         row_bound: false,
+        validated_init: false,
         total_tokens: None,
     };
     let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
@@ -263,7 +264,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         row_bound: reading.row_bound,
         total_tokens: reading.total_tokens,
     };
-    settle(
+    let qualified = settle(
         &shared,
         SettleInput {
             child,
@@ -279,8 +280,10 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
     )
     .await;
     stderr_task.abort();
+    let _ = stderr_task.await;
     // Every line this spawn wrote has been read: its held requests can go.
     drop(approvals);
+    qualified
 }
 
 /// The per-line half of the read loop.
@@ -304,7 +307,23 @@ struct Reading<'a> {
     bound: bool,
     /// The bind of `agent_session_id` was persisted during this turn.
     row_bound: bool,
+    /// Only this process's checked session can supply native input/execution evidence.
+    validated_init: bool,
     total_tokens: Option<i64>,
+}
+
+/// Some CLI records omit session_id; once init qualifies the process they inherit that
+/// session. A present field must be a matching UUID, never null or an unrelated session.
+#[derive(serde::Deserialize)]
+struct DeclaredSession {
+    #[serde(default, deserialize_with = "declared_session_id")]
+    session_id: Option<Uuid>,
+}
+
+fn declared_session_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Uuid>, D::Error> {
+    <Uuid as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 
 impl Reading<'_> {
@@ -314,6 +333,25 @@ impl Reading<'_> {
             Ok(record) => record,
             Err(error) => return Some(self.protocol_failure(&error)),
         };
+        if !self.validated_init {
+            match &record {
+                Record::SystemInit(_) => {}
+                // Pre-init diagnostics cannot update transcript anchors or produce evidence.
+                Record::Ignored { .. } | Record::ControlResponseIn { .. } => return None,
+                _ => {
+                    return Some(
+                        self.protocol_failure(&"native event preceded validated session init"),
+                    );
+                }
+            }
+        }
+        let session = match serde_json::from_str::<DeclaredSession>(line) {
+            Ok(session) => session,
+            Err(error) => return Some(self.protocol_failure(&error)),
+        };
+        if session.session_id.is_some_and(|id| id != self.thread) {
+            return Some(self.protocol_failure(&"native event names another session"));
+        }
         match &record {
             Record::SystemInit(init) => {
                 // The CLI created (or resumed) this thread's session as soon as it names it, even
@@ -338,6 +376,7 @@ impl Reading<'_> {
                         .record(TerminalCause::Failed(format!("check: {check}")));
                     return Some(Ending::Stopped);
                 }
+                self.validated_init = true;
             }
             Record::CompactBoundary => self.compacted = true,
             Record::Ignored { kind } => {
@@ -558,7 +597,7 @@ struct SettleInput {
 /// `settle_by`, so `TurnCompleted` goes out by then whatever the CLI does. A bound that passes
 /// is logged and settlement moves on: an unrecorded outcome is left to boot recovery, and a stop
 /// that did not confirm is left to the next spawn's stop, which fails closed (§5.1).
-async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
+async fn settle(shared: &Shared, input: SettleInput, ending: Ending) -> bool {
     let SettleInput {
         mut child,
         slot,
@@ -621,7 +660,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
                 "claude planner settlement stop cut off at settle_by".into(),
             ))
         });
-    if purpose == SpawnPurpose::Turn {
+    let recorded = if purpose == SpawnPurpose::Turn {
         let confirmation = if stopped.is_ok() {
             crate::harness::turn_outcome::Confirmation::ProviderTerminal
         } else {
@@ -635,8 +674,12 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
             turn,
             confirmation,
         )
-        .await;
-    }
+        .await
+        .is_ok()
+    } else {
+        false
+    };
+    let qualified = stopped.is_ok() && recorded;
     if let Err(error) = stopped {
         tracing::warn!(
             worker_session_id = %params.worker_session_id,
@@ -647,6 +690,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     }
     let _ = child.start_kill();
     let _ = slot.bounded(REAP_WAIT, child.wait()).await;
+    let instructions_removed = instructions.remove().is_ok();
     drop(instructions);
     let closes = match purpose {
         SpawnPurpose::Turn => translator.close_open(crate::model::now_ms()),
@@ -669,45 +713,5 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     }
     shared.finish_turn(finished, closes.into_iter().chain([completed]));
     slot.settled.send_replace(true);
-}
-
-/// Record the turn's outcome durably, bounded like every settlement await.
-async fn record_outcome(
-    shared: &Shared,
-    slot: &TurnSlot,
-    thread: &str,
-    turn_id: &str,
-    turn: &serde_json::Value,
-    confirmation: crate::harness::turn_outcome::Confirmation,
-) {
-    let params = &shared.params;
-    let recorded = slot
-        .bounded(
-            RECORD_TIMEOUT,
-            crate::harness::turn_outcome::record(
-                params.repo.as_ref(),
-                &params.worker_session_id,
-                &params.card_id,
-                &params.track_id,
-                thread,
-                turn_id,
-                turn,
-                confirmation,
-            ),
-        )
-        .await;
-    match recorded {
-        Some(Ok(_)) => {}
-        Some(Err(error)) => tracing::warn!(
-            worker_session_id = %params.worker_session_id,
-            turn_id,
-            %error,
-            "claude planner: turn outcome not recorded"
-        ),
-        None => tracing::warn!(
-            worker_session_id = %params.worker_session_id,
-            turn_id,
-            "claude planner: turn outcome not recorded by its bound; boot recovery records it"
-        ),
-    }
+    qualified && instructions_removed
 }

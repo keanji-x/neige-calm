@@ -546,7 +546,7 @@ async fn every_refusal_changes_nothing_and_binds_nothing() {
             .all(|(bound, _)| *bound != key.idempotency_key)
     );
     assert_eq!(
-        boot.harness.snapshot().await.pending_len(),
+        boot.harness.snapshot().await.unwrap().pending_len(),
         0,
         "the queue is put back"
     );

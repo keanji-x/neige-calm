@@ -29,6 +29,13 @@ async fn planner(b: &Boot, track: &str, rewind: bool) -> (String, PlannerHarness
     sqlx::query("UPDATE worker_sessions SET state='idle', completed_at_ms=NULL, handle_state_json=? WHERE id=?")
         .bind(serde_json::to_string(&snapshot).unwrap()).bind(&runtime)
         .execute(b.repo.pool()).await.unwrap();
+    let backend = calm_server::harness::backend::PlannerBackend::codex(
+        b.state.shared_codex_appserver.clone(),
+        &card,
+        track,
+        &runtime,
+    )
+    .unwrap();
     let handle = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: b.state.operation_runtime.track_locks_for_test().clone(),
         worker_session_id: runtime.clone(),
@@ -39,15 +46,19 @@ async fn planner(b: &Boot, track: &str, rewind: bool) -> (String, PlannerHarness
         events: b.state.events.clone(),
         card_role_cache: b.state.card_role_cache.clone(),
         track_area_cache: b.state.track_area_cache.clone(),
-        backend: b.state.shared_codex_appserver.clone().into(),
-        live_replies: b.state.harness.live_replies().clone(),
+        backend,
+        registry: b.state.harness.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::ZERO,
             debounce_max_wait: Duration::ZERO,
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: snapshot
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     b.state.harness.insert(runtime.clone(), handle.clone());
     (runtime, handle)
 }
@@ -118,7 +129,10 @@ async fn clean_wins(automatic: bool, rewind: bool) {
         b.state.shared_codex_appserver.turn_start_count_for_test(),
         before
     );
-    assert_eq!(handle.snapshot().await.phase, HarnessPhaseTag::Idle);
+    assert_eq!(
+        handle.snapshot().await.unwrap().phase,
+        HarnessPhaseTag::Idle
+    );
     drop(arrival);
     drop(pause);
     assert_eq!(cleaning.await.unwrap().0, 1);
@@ -204,7 +218,7 @@ async fn c1_fence_planner_delete_while_waiting() {
         b.state.shared_codex_appserver.turn_start_count_for_test(),
         before
     );
-    assert_eq!(handle.snapshot().await.pending_entries().len(), 2);
+    assert_eq!(handle.snapshot().await.unwrap().pending_entries().len(), 2);
 }
 
 async fn compact_contention(shutdown: bool) {

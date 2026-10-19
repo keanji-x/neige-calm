@@ -1,5 +1,5 @@
 import type { PlannerAttachment } from '../api/generated/wire.js';
-import { isPlannerBudgetContext, MAX_ATTACHMENTS_PER_MESSAGE, type ConversationTurn, type TranscriptEntry } from './conversation.js';
+import { isUserConversationTurn, isPlannerBudgetContext, MAX_ATTACHMENTS_PER_MESSAGE, type ConversationTurn, type TranscriptEntry } from './conversation.js';
 
 /** What one conversation's composer holds: its words and the images already uploaded for it. */
 export type ComposerContent = Readonly<{ text: string; attachments: readonly PlannerAttachment[] }>;
@@ -17,15 +17,15 @@ export function isSameComposer(left: ComposerContent, right: ComposerContent): b
 }
 
 /**
- * The turn that ends at outcome `outcomeId`, as the transcript shows it: from its first message of yours after
+ * The turn that ends at outcome `outcomeId`, as the transcript shows it: from its first user-role message after
  * the previous outcome through that outcome, where the server's replace starts deleting (the turn's first input row).
- * `null` when the transcript has no such outcome or the turn holds no message of yours.
+ * `null` when the transcript has no such outcome or the turn holds no user-role message.
  */
 function editedTurnSpan(entries: readonly TranscriptEntry[], outcomeId: string): Readonly<{ start: number; end: number }> | null {
   const end = entries.findIndex((entry) => entry.author === 'turn' && entry.id === outcomeId);
   let start = -1;
   for (let index = end - 1; index >= 0 && entries[index].author !== 'turn'; index -= 1) {
-    if (entries[index].author === 'you') start = index;
+    if (isUserConversationTurn(entries[index])) start = index;
   }
   if (start < 0) return null;
   // Replacement rebuilds the initial budget in the same input row. Preserve all other System events.
@@ -34,22 +34,22 @@ function editedTurnSpan(entries: readonly TranscriptEntry[], outcomeId: string):
 }
 
 /**
- * What an Edit of that turn puts in the composer: its messages of yours a blank line apart, each image once in order.
+ * What an Edit of that turn puts in the composer: its user-role messages a blank line apart, each image once in order.
  * Prompt and accepted steers, read as the transcript shows them.
  */
 export function editedTurnRefill(entries: readonly TranscriptEntry[], outcomeId: string): ComposerContent | null {
   const span = editedTurnSpan(entries, outcomeId);
   if (span === null) return null;
-  const said = entries.slice(span.start, span.end).filter((entry): entry is ConversationTurn => entry.author === 'you');
+  const said = entries.slice(span.start, span.end).filter((entry): entry is ConversationTurn => isUserConversationTurn(entry));
   const images = new Map<string, PlannerAttachment>();
   for (const image of said.flatMap((turn) => turn.attachments ?? [])) if (!images.has(image.id)) images.set(image.id, image);
   return { text: said.map((turn) => turn.text).filter((text) => text !== '').join('\n\n'), attachments: [...images.values()] };
 }
 
-/** Your messages in that turn, which stay on screen and are marked while an Edit of the turn is open. */
+/** User-role messages in that turn, which stay on screen and are marked while an Edit of the turn is open. */
 export function editedTurnMessageIds(entries: readonly TranscriptEntry[], outcomeId: string): ReadonlySet<string> {
   const span = editedTurnSpan(entries, outcomeId);
-  return new Set(span === null ? [] : entries.slice(span.start, span.end).filter((entry) => entry.author === 'you').map((entry) => entry.id));
+  return new Set(span === null ? [] : entries.slice(span.start, span.end).filter((entry) => isUserConversationTurn(entry)).map((entry) => entry.id));
 }
 
 /** Whether that turn is still the conversation's latest: its outcome is the last thing the transcript shows. */

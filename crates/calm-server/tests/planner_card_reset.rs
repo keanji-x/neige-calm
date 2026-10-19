@@ -31,7 +31,6 @@ use calm_server::operation::{
 };
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::routes;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -209,11 +208,7 @@ async fn boot() -> Boot {
         Some(card_role_cache),
         Some(track_area_cache),
     );
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = crate::support::authenticated_router::application(state.clone()).await;
 
     Boot {
         app,
@@ -313,11 +308,7 @@ async fn boot_shared() -> Boot {
     let state = state
         .with_shared_codex_appserver(shared)
         .with_pending_codex_threads(pending);
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = crate::support::authenticated_router::application(state.clone()).await;
 
     Boot {
         app,
@@ -328,7 +319,7 @@ async fn boot_shared() -> Boot {
     }
 }
 
-fn install_failing_planner_start_runtime(boot: &mut Boot) {
+async fn install_failing_planner_start_runtime(boot: &mut Boot) {
     let route_repo: Arc<dyn RouteRepo> = boot.repo.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
     let start_adapter: Arc<dyn ProviderAdapter> =
@@ -362,11 +353,7 @@ fn install_failing_planner_start_runtime(boot: &mut Boot) {
         ),
     ));
     boot.state = boot.state.clone().with_operation_runtime(runtime);
-    boot.app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(boot.state.clone());
+    boot.app = crate::support::authenticated_router::application(boot.state.clone()).await;
 }
 
 async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -388,9 +375,8 @@ async fn post_empty(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 
 /// Exercise the same transcript read the conversation UI uses.
 async fn conversation_rows(boot: &Boot, card: &Card) -> Vec<Value> {
-    let response = boot
-        .app
-        .clone()
+    let response = support::authenticated_router::application(boot.state.clone())
+        .await
         .oneshot(
             Request::builder()
                 .uri(format!("/api/cards/{}/harness/items", card.id))
@@ -451,6 +437,9 @@ async fn post_planner_input_keyed(
         .header("idempotency-key", key);
     if let Some(actor) = actor {
         request = request.header("X-Calm-Actor", actor);
+        if actor.starts_with("ai:") {
+            request = request.header("cookie", "calm-session=unissued-machine-session");
+        }
     }
     let resp = app
         .oneshot(request.body(Body::from(body.to_string())).unwrap())
@@ -565,7 +554,7 @@ async fn request_lines_containing_panics_loudly_on_timeout() {
 async fn wait_for_harness_watermark(harness: &PlannerHarness, watermark: i64) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let snapshot = harness.snapshot().await;
+        let snapshot = harness.snapshot().await.unwrap();
         if snapshot.push_watermark == watermark {
             return;
         }
@@ -612,8 +601,8 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
 
 async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness) {
     let card = seed_codex_card_with_role(boot, CardRole::Planner).await;
-    let runtime_id = new_id();
-    let thread_id = format!("thread-{runtime_id}");
+    let worker_session_id = new_id();
+    let thread_id = format!("thread-{worker_session_id}");
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -621,7 +610,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -642,7 +631,14 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -650,19 +646,23 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
-        .insert(runtime_id.clone(), harness.clone());
-    (card, runtime_id, harness)
+        .insert(worker_session_id.clone(), harness.clone());
+    (card, worker_session_id, harness)
 }
 
 async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarness) {
@@ -682,8 +682,8 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
         CardRole::Worker,
         TrackId::from(boot.track_id.clone()),
     );
-    let runtime_id = new_id();
-    let thread_id = format!("thread-{runtime_id}");
+    let worker_session_id = new_id();
+    let thread_id = format!("thread-{worker_session_id}");
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -691,7 +691,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: runtime_id.clone(),
+            id: worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
@@ -711,7 +711,14 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -719,19 +726,23 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
-        .insert(runtime_id.clone(), harness.clone());
-    (card, runtime_id, harness)
+        .insert(worker_session_id.clone(), harness.clone());
+    (card, worker_session_id, harness)
 }
 
 #[tokio::test]
@@ -758,7 +769,8 @@ async fn planner_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let pending =
-            serde_json::to_string(&harness.snapshot().await.pending_observations()).unwrap();
+            serde_json::to_string(&harness.snapshot().await.unwrap().pending_observations())
+                .unwrap();
         let started = format!(
             "{:?}",
             boot.state.shared_codex_appserver.started_turns_for_test()
@@ -807,7 +819,7 @@ async fn seed_inactive_planner_runtime(boot: &Boot, card: &Card) -> String {
 async fn wait_for_user_message(harness: &PlannerHarness, text: &str) -> HarnessSnapshot {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let snapshot = harness.snapshot().await;
+        let snapshot = harness.snapshot().await.unwrap();
         if snapshot.pending_observations().iter().any(|obs| {
             matches!(
                 obs,
@@ -1026,44 +1038,28 @@ async fn send_planner_input_emits_audit_event() {
 }
 
 #[tokio::test]
-async fn send_planner_input_with_ai_codex_actor_emits_planner_session_audit_event() {
+async fn send_planner_input_with_ai_codex_actor_cannot_fabricate_a_human_source() {
     let boot = boot().await;
     let (card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
-
     let (status, body) = post_planner_input_with_actor(
         boot.app.clone(),
         &format!("/api/cards/{}/planner/input", card.id),
-        json!({ "text": "from codex" }),
+        json!({"text": "from codex"}),
         "ai:codex",
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
-
-    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
-    let found = events.iter().any(|(_id, _v, _scope, event)| {
-        matches!(
-            event,
-            calm_server::event::Event::HarnessUserMessageEnqueued { card_id, .. }
-                if card_id == &card.id
-        )
-    });
-    assert!(found, "expected harness.user_message.enqueued: {events:?}");
-
-    let actor_row: (String,) = sqlx::query_as(
-        "SELECT actor FROM events \
-         WHERE kind = 'harness.user_message.enqueued' \
-         ORDER BY id DESC LIMIT 1",
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events WHERE kind='harness.user_message.enqueued'",
     )
     .fetch_one(boot.repo.pool())
     .await
     .unwrap();
-    let actor_json: Value = serde_json::from_str(&actor_row.0).expect("events.actor is JSON");
     assert_eq!(
-        actor_json,
-        json!({"kind": "AiPlannerSession", "id": runtime_id.as_str()}),
-        "active planner harness input must be attributed to the worker session"
+        count, 0,
+        "machine header cannot authorize or audit human input"
     );
-
+    assert!(harness.pending_queue_for_test().await.is_empty());
     shutdown_seeded_harness(&boot, &runtime_id, harness).await;
 }
 
@@ -1098,8 +1094,11 @@ async fn send_planner_input_track_missing_returns_404() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(body["code"], "not_found");
     assert!(
-        body["error"].as_str().is_some_and(|e| e.contains("track")),
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains(card.id.as_str())),
         "body={body}"
     );
 
@@ -1350,11 +1349,7 @@ async fn boot_fake_running() -> Boot {
     let mut boot = boot().await;
     let shared = SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None);
     boot.state = boot.state.clone().with_shared_codex_appserver(shared);
-    boot.app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(boot.state.clone());
+    boot.app = crate::support::authenticated_router::application(boot.state.clone()).await;
     boot
 }
 
@@ -1631,12 +1626,16 @@ async fn send_planner_input_dormant_row_daemon_down_409_not_503() {
 async fn send_planner_input_corrupt_snapshot_409_dormant() {
     let boot = boot_fake_running().await;
     let card = seed_codex_card_with_role(&boot, CardRole::Planner).await;
+    // Unknown future frames belong to canonical retention. Exercise corruption
+    // of the explicitly historical V1 contract here, rather than a future format.
     let thread_id = format!("thread-{}", new_id());
     let runtime_id = seed_active_planner_runtime_row(
         &boot,
         &card,
         Some(thread_id),
-        Some(json!({ "mode": "harness", "schema_version": 999, "phase": "idle" })),
+        Some(
+            json!({ "mode": "harness", "schema_version": 1, "phase": "invalid-historical-phase" }),
+        ),
     )
     .await;
 
@@ -2142,6 +2141,15 @@ async fn reset_planner_card_restarts_terminal_less_harness_card() {
 
 #[tokio::test]
 async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
+    assert_corrupt_dormant_snapshot_reset(1, true).await;
+}
+
+#[tokio::test]
+async fn reset_planner_card_refuses_unknown_snapshot_format() {
+    assert_corrupt_dormant_snapshot_reset(999, false).await;
+}
+
+async fn assert_corrupt_dormant_snapshot_reset(schema_version: u32, recoverable: bool) {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_shared().await;
     let card = boot
@@ -2168,12 +2176,12 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
         CardRole::Planner,
         TrackId::from(boot.track_id.clone()),
     );
-    let old_runtime_id = new_id();
+    let old_session_id = new_id();
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: old_runtime_id.clone(),
+            id: old_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -2182,11 +2190,11 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
             thread_id: Some("thread-corrupt".into()),
             session_id: None,
             active_turn_id: None,
-            // Same corrupt shape that 409s /planner/input: harness mode but an
-            // unknown schema_version that `from_value_strict` would panic on.
+            // Version 1 is known historical storage with missing required
+            // fields; future formats must never be discarded as historical.
             handle_state_json: Some(json!({
                 "mode": "harness",
-                "schema_version": 999,
+                "schema_version": schema_version,
                 "phase": "idle"
             })),
             spawn_op_id: None,
@@ -2203,11 +2211,32 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
     )
     .await;
 
+    if !recoverable {
+        assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+        let active = boot
+            .repo
+            .session_projection_active_for_card(&card.id.to_string())
+            .await
+            .unwrap()
+            .expect("original runtime survives");
+        assert_eq!(active.id, old_session_id);
+        assert_eq!(active.status, WorkerSessionState::Idle);
+        assert_eq!(active.thread_id.as_deref(), Some("thread-corrupt"));
+        assert_eq!(
+            active.handle_state_json,
+            Some(json!({
+                "mode": "harness", "schema_version": schema_version, "phase": "idle"
+            }))
+        );
+        assert!(boot.state.harness.get(&old_session_id).is_none());
+        return;
+    }
+
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(body["card_id"], json!(card.id.as_str()));
     assert_eq!(body["new_thread_id"], json!("fake-thread-0001"));
     assert_eq!(
-        runtime_by_id_tx_snapshot(boot.repo.as_ref(), &old_runtime_id)
+        runtime_by_id_tx_snapshot(boot.repo.as_ref(), &old_session_id)
             .await
             .unwrap()
             .status,
@@ -2219,7 +2248,7 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
         .await
         .unwrap()
         .expect("new active runtime");
-    assert_ne!(active.id, old_runtime_id);
+    assert_ne!(active.id, old_session_id);
     assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
     let new_snapshot = HarnessSnapshot::from_value_strict(
         active
@@ -2272,7 +2301,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         CardRole::Planner,
         TrackId::from(boot.track_id.clone()),
     );
-    let old_runtime_id = new_id();
+    let old_worker_session_id = new_id();
     let thread_id = "thread-old-watermark".to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -2281,7 +2310,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: old_runtime_id.clone(),
+            id: old_worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -2302,7 +2331,14 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: old_runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            old_worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: old_worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(thread_id),
@@ -2310,18 +2346,22 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
-        .insert(old_runtime_id.clone(), harness.clone());
+        .insert(old_worker_session_id.clone(), harness.clone());
     for envelope_id in 1_i64..=3 {
         harness
             .observe_envelope(
@@ -2362,7 +2402,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
 
     let old_runtime = boot
         .repo
-        .session_projection_by_id(&old_runtime_id)
+        .session_projection_by_id(&old_worker_session_id)
         .await
         .unwrap()
         .unwrap();
@@ -2407,7 +2447,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         .await
         .unwrap()
         .expect("new active runtime");
-    assert_ne!(active.id, old_runtime_id);
+    assert_ne!(active.id, old_worker_session_id);
     let new_snapshot = HarnessSnapshot::from_value_strict(
         active
             .handle_state_json
@@ -2443,7 +2483,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
         },
         "…and the id must still be on the sentence it was minted for"
     );
-    assert!(boot.state.harness.get(&old_runtime_id).is_none());
+    assert!(boot.state.harness.get(&old_worker_session_id).is_none());
     if let Some(handle) = boot.state.harness.remove(&active.id) {
         handle.shutdown().await.unwrap();
     }
@@ -2453,7 +2493,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
 async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness_teardown() {
     let _guard = ENV_LOCK.lock().await;
     let mut boot = boot_shared().await;
-    install_failing_planner_start_runtime(&mut boot);
+    install_failing_planner_start_runtime(&mut boot).await;
     let card = boot
         .repo
         .card_create(NewCard {
@@ -2478,7 +2518,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
         CardRole::Planner,
         TrackId::from(boot.track_id.clone()),
     );
-    let old_runtime_id = new_id();
+    let old_worker_session_id = new_id();
     let old_thread_id = "thread-old-spawn-failure".to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -2487,7 +2527,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
-            id: old_runtime_id.clone(),
+            id: old_worker_session_id.clone(),
             card_id: card.id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
             agent_provider: Some(AgentProvider::Codex),
@@ -2508,7 +2548,14 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
     let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
     let old_harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
-        worker_session_id: old_runtime_id.clone(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            old_worker_session_id.as_ref(),
+        )
+        .unwrap(),
+        worker_session_id: old_worker_session_id.clone(),
         track_id: card.track_id.clone(),
         card_id: card.id.clone(),
         thread_id: Some(old_thread_id.clone()),
@@ -2516,18 +2563,22 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state
         .harness
-        .insert(old_runtime_id.clone(), old_harness);
+        .insert(old_worker_session_id.clone(), old_harness);
 
     let (status, body) = post_empty(
         boot.app.clone(),
@@ -2538,7 +2589,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
     let old_after = boot
         .repo
-        .session_projection_by_id(&old_runtime_id)
+        .session_projection_by_id(&old_worker_session_id)
         .await
         .unwrap()
         .expect("old runtime row remains");
@@ -2549,9 +2600,9 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
         .await
         .unwrap()
         .expect("old runtime remains active");
-    assert_eq!(active.id, old_runtime_id);
+    assert_eq!(active.id, old_worker_session_id);
     assert!(
-        boot.state.harness.get(&old_runtime_id).is_none(),
+        boot.state.harness.get(&old_worker_session_id).is_none(),
         "old harness is torn down before the replacement spawn can fail"
     );
 
@@ -2562,7 +2613,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
               AND id != ?2"#,
     )
     .bind(card.id.as_str())
-    .bind(&old_runtime_id)
+    .bind(&old_worker_session_id)
     .fetch_all(boot.repo.pool())
     .await
     .unwrap();
@@ -2570,7 +2621,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
     assert_eq!(new_rows[0].1, "failed");
     assert!(boot.state.harness.get(&new_rows[0].0).is_none());
 
-    if let Some(handle) = boot.state.harness.remove(&old_runtime_id) {
+    if let Some(handle) = boot.state.harness.remove(&old_worker_session_id) {
         handle.shutdown().await.unwrap();
     }
 }
@@ -2958,3 +3009,6 @@ mod planner_provider_auth_retry_recovery;
 
 #[path = "cases/planner_hibernation.rs"]
 mod planner_hibernation;
+
+#[path = "cases/planner_input_audit_identity.rs"]
+mod planner_input_audit_identity;

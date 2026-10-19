@@ -228,7 +228,8 @@ impl EventScope {
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
 // 29: provider-neutral managed Assistant session actors.
-pub const SYNC_EVENT_VERSION: u32 = 29;
+// 30: canonical presentation cursors; old raw item IDs retain their original meaning.
+pub const SYNC_EVENT_VERSION: u32 = 30;
 
 mod forge_checks;
 pub use forge_checks::{
@@ -883,6 +884,12 @@ pub enum Event {
         reserved_gate_attempt: i64,
         agent_message: String,
     },
+    #[serde(rename = "harness.presentation.changed")]
+    HarnessPresentationChanged {
+        card_id: CardId,
+        track_id: TrackId,
+        cursor: crate::conversation_display::ConversationCursor,
+    },
 }
 
 /// Bounded typed result-extraction contract: only a target event kind + named field reads, not a predicate DSL.
@@ -1010,7 +1017,8 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
-            Event::HarnessItemAdded { card_id, .. }
+            Event::HarnessPresentationChanged { card_id, .. }
+            | Event::HarnessItemAdded { card_id, .. }
             | Event::HarnessPhaseChanged { card_id, .. }
             | Event::HarnessTranscriptCleared { card_id, .. }
             | Event::HarnessTranscriptRewound { card_id, .. }
@@ -1195,6 +1203,7 @@ impl Event {
             Event::WorkerSessionStarted { .. } => "worker_session.started",
             Event::WorkerSessionStatusChanged { .. } => "worker_session.status_changed",
             Event::WorkerSessionSuperseded { .. } => "worker_session.superseded",
+            Event::HarnessPresentationChanged { .. } => "harness.presentation.changed",
             Event::HarnessItemAdded { .. } => "harness.item.added",
             Event::HarnessPhaseChanged { .. } => "harness.phase.changed",
             Event::HarnessTranscriptCleared { .. } => "harness.transcript.cleared",
@@ -1300,7 +1309,10 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::WorkerSessionSuperseded { card_id, .. } => {
             vec![format!("card:{}", card_id), "*".into()]
         }
-        Event::HarnessItemAdded {
+        Event::HarnessPresentationChanged {
+            track_id, card_id, ..
+        }
+        | Event::HarnessItemAdded {
             track_id, card_id, ..
         }
         | Event::HarnessPhaseChanged {

@@ -1,7 +1,7 @@
 //! #1822: the Claude CLI's model list is fetched by the #1817 availability check, through the
 //! production boot and routes with the fake `claude` (see `claude_planner_stack_fixture.rs`),
-//! whose `initialize` calls are counted. The list is fetched by the boot check, the first read and
-//! a Recheck, never by the 30 s TTL re-check; a list that cannot be read makes Claude unavailable
+//! whose `initialize` calls are counted. The boot check and a Recheck fetch the list; reads reuse
+//! that cache, including after the 30 s TTL re-check; an unreadable list makes Claude unavailable
 //! with neige's own reason, and the account the answer carries never leaves the server.
 
 use std::sync::{Arc, Mutex};
@@ -23,6 +23,19 @@ fn count(root: &Root, file: &str) -> usize {
     root.read_fake(file)
         .map(|calls| calls.lines().count())
         .unwrap_or(0)
+}
+
+async fn await_boot_check(root: &Root, stack: &Stack) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while count(root, "init-calls") == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("production boot checks Claude");
+    // Reading takes the availability lock, so initialize has finished before assertions.
+    claude_entry(stack, "").await;
+    assert_eq!(count(root, "init-calls"), 1, "one production boot check");
 }
 
 async fn claude_entry(stack: &Stack, query: &str) -> Value {
@@ -62,21 +75,21 @@ fn no_account(body: &Value) {
     }
 }
 
-/// The first read fetches; a read inside the TTL is the cache; the TTL re-check runs version and
+/// The first read uses the boot check; a read inside the TTL is cached; the TTL re-check runs version and
 /// login again but keeps the list, even though the CLI now lists less; a Recheck fetches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_first_read_and_a_recheck_fetch_the_list_and_the_ttl_recheck_does_not() {
     let root = root_with_catalog("ok");
     let stack = Stack::boot(&root).await;
-    assert_eq!(
-        count(&root, "init-calls"),
-        0,
-        "the fixture boot runs no check"
-    );
+    await_boot_check(&root, &stack).await;
 
     let first = claude_models(&stack).await;
     assert_eq!(first["source"], "live", "{first}");
-    assert_eq!(count(&root, "init-calls"), 1, "the first read fetched");
+    assert_eq!(
+        count(&root, "init-calls"),
+        1,
+        "the first read uses the boot check"
+    );
     assert_eq!(claude_models(&stack).await, first, "cached");
     assert_eq!(count(&root, "init-calls"), 1);
 
@@ -193,9 +206,7 @@ async fn the_list_is_asked_with_the_readiness_allowlist_only() {
 async fn the_boot_check_fetches_the_list() {
     let root = root_with_catalog("ok");
     let stack = Stack::boot(&root).await;
-    calm_server::agent_providers::spawn_boot_check(&stack.state)
-        .await
-        .expect("boot check");
+    await_boot_check(&root, &stack).await;
     assert_eq!(count(&root, "init-calls"), 1);
     assert_eq!(claude_models(&stack).await["source"], "live");
     let (_track, _card) = stack
@@ -339,9 +350,7 @@ async fn the_account_reaches_no_response_and_no_log_line() {
     for answer in ["ok", "malformed"] {
         let root = root_with_catalog(answer);
         let stack = Stack::boot(&root).await;
-        calm_server::agent_providers::spawn_boot_check(&stack.state)
-            .await
-            .expect("boot check");
+        await_boot_check(&root, &stack).await;
         let claude = claude_entry(&stack, "").await;
         let models = claude_models(&stack).await;
         if answer == "ok" {

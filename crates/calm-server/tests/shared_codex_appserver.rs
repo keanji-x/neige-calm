@@ -2560,7 +2560,7 @@ async fn dropped_supervisor_leaves_daemon_running_for_next_boot_takeover() {
 }
 
 #[tokio::test]
-async fn interrupt_active_turn_is_noop_when_no_active_turn() {
+async fn interrupt_active_turn_refuses_unknown_scope_without_a_connection() {
     let repo = repo().await;
     let daemon = SharedCodexAppServer::new_stub(repo);
 
@@ -2569,9 +2569,9 @@ async fn interrupt_active_turn_is_noop_when_no_active_turn() {
             daemon
                 .interrupt_active_outcome("thread-without-active-turn")
                 .await,
-            provider::control::NativeInterruptOutcome::NoTarget
+            provider::control::NativeInterruptOutcome::Unconfirmed { .. }
         ),
-        "missing active turn should be a no-op"
+        "an empty process cache cannot prove a native thread is quiescent",
     );
 }
 

@@ -149,7 +149,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::cards::list_cards_by_track,
         crate::routes::cards::create_card,
         crate::routes::cards::update_card,
-        crate::routes::cards::get_harness_items,
+        crate::routes::conversation_items::get_harness_items,
         crate::routes::harness_live::get_harness_live,
         crate::routes::planner_input_send::send_planner_input,
         crate::routes::planner_cards::interrupt_planner_card,

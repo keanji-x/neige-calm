@@ -1,8 +1,6 @@
 //! Per-start sampling and a bounded, identity-fenced warning. The watchdog never awaits steer.
 use super::{Inner, runtime_is_still_the_live_carrier, write_projection_row};
-use crate::harness::backend::PlannerBackend;
-use crate::harness::profile::HarnessProfile;
-use crate::harness::profile::HarnessProfileExt;
+use crate::harness::profile::{HarnessProfile, HarnessProfileExt};
 use crate::harness::state::HarnessState;
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 pub use crate::planner_turn_budget::FrozenBudget;
@@ -84,8 +82,7 @@ async fn current(inner: &Arc<Inner>, turn: &str) -> bool {
 }
 
 pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
-    if !PlannerBackend::metadata(&inner.backend.provider()).steer || !inner.held_requests.is_empty()
-    {
+    if !inner.backend.supports_budget_control() || !inner.held_requests.is_empty() {
         return Ok(());
     }
     let state = inner.state.lock().await.clone();
@@ -114,19 +111,28 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
         {
             return Ok(());
         }
-        *warning_attempted = true;
+        if inner.inputs.canonical().is_none() {
+            *warning_attempted = true;
+        }
         (*budget, start_attempt.clone())
     };
+    if inner.inputs.canonical().is_some() {
+        return super::canonical::control::warn(inner, &turn_id, budget, &attempt).await;
+    }
     // Record the one attempt before launching it; failure does not retry or wake another turn.
     super::persist_snapshot(inner).await?;
     let Some(thread) = inner.thread_id.read().await.clone() else {
         return Ok(());
     };
     let key = format!("{}:budget-warning", attempt.as_str());
-    let segments = vec![segment(format!(
-        "[Trusted Planner turn budget reminder]\nAt most {} seconds of execution remain. Wrap up now before the hard stop.",
-        budget.warning_remaining().as_secs()
-    ))];
+    let notice = crate::planner_turn_budget::BudgetControlNotice::for_turn(
+        budget,
+        &thread,
+        &turn_id,
+        attempt.as_str(),
+    )
+    .map_err(|error| crate::error::CalmError::Conflict(error.into()))?;
+    let segments = vec![segment(notice.text())];
     // Project BEFORE the RPC: an echo can arrive while the detached call awaits its answer.
     // The existing echo upgrade retains System presentation and never inserts a second row.
     if !current(inner, &turn_id).await {
@@ -139,15 +145,23 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
             if !current(&inner, &turn_id).await {
                 return false;
             }
-            let input = vec![super::InputItem::text(segments[0].text.clone())];
-            let invocation = super::IssueTurnHandle::from_reconciliation(&inner).await;
-            let send = invocation.turn_steer(super::SteerRequest {
-                turn: inner.backend.turn_identity(turn_id.clone()),
-                input: super::InputRequest {
-                    items: input,
-                    correlation: super::CorrelationKey(key.clone()),
+            let admit = crate::shared_codex_appserver::NativePromptAdmission::new(
+                || Ok(()),
+                || {
+                    Box::pin(async {
+                        if current(&inner, &turn_id).await {
+                            Ok(())
+                        } else {
+                            Err(crate::error::CalmError::Conflict(
+                                "budget target changed".into(),
+                            ))
+                        }
+                    })
+                        as futures_util::future::BoxFuture<'_, crate::error::Result<()>>
                 },
-            });
+            );
+            let invocation = super::IssueTurnHandle::from_reconciliation(&inner).await;
+            let send = invocation.send_budget_notice(&notice, &admit);
             tokio::pin!(send);
             let sent = loop {
                 tokio::select! {
@@ -157,7 +171,7 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
                     }
                 }
             };
-            matches!(sent, Ok(super::SteerOutcome::Taken { ref turn }) if turn.as_str() == turn_id)
+            sent.is_ok_and(|report| matches!(report.delivery(), crate::harness::backend::ControlDelivery::Accepted { native_turn_id } if native_turn_id == &turn_id))
                 && current(&inner, &turn_id).await
         };
         if !matches!(

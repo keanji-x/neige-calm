@@ -1,3 +1,4 @@
+import { historicalConversationPage } from '../web/src/app/router/conversation-read-data.ts';
 import { expect, test } from '@playwright/test';
 
 import { createArea, createTrack } from './helpers/seed.js';
@@ -60,7 +61,7 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
     let phase = 'turn_running';
     let sends = 0;
     await page.route('**/api/cards/*/planner/input', async (route) => { sends += 1; await route.continue(); });
-    await page.route('**/api/cards/*/planner/run', async (route) => {
+    await page.route((url) => /^\/api\/cards\/[^/]+\/planner\/run$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
       const response = await route.fetch();
       const body = await response.json() as Record<string, unknown>;
       await route.fulfill({ response, json: { ...body, phase, recovery: phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null } });
@@ -223,7 +224,7 @@ for (const failedFirst of [false, true]) {
       let sends = 0;
       // The real harness is idle. A stale working snapshot reproduces a click
       // racing the response's end; the real interrupt route returns stopped:false.
-      await page.route('**/api/cards/*/planner/run', async (route) => {
+      await page.route((url) => /^\/api\/cards\/[^/]+\/planner\/run$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
         const response = await route.fetch();
         const body = await response.json() as Record<string, unknown>;
         await route.fulfill({ response, json: { ...body, phase: 'turn_running' } });
@@ -280,14 +281,14 @@ for (const status of ['interrupted', 'failed'] as const) {
     try {
       const track = await createTrack(request, area.id);
       let sends = 0;
-      await page.route('**/api/cards/*/harness/items?**', async (route) => {
+      await page.route((url) => /^\/api\/cards\/[^/]+\/harness\/items$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
         const response = await route.fetch();
         const cardId = new URL(route.request().url()).pathname.split('/')[3];
-        await route.fulfill({ response, json: [{ id: 99, worker_session_id: 'fixture', card_id: cardId,
+        await route.fulfill({ response, json: historicalConversationPage(cardId, [{ id: 99, worker_session_id: 'fixture', card_id: cardId,
           track_id: track.id, thread_id: 'previous-thread', turn_id: 'previous-turn',
           item_uuid: null, item_type: null, method: 'turn/completed',
           params: JSON.stringify({ id: 'previous-turn', status, error: null }),
-          turn_error_text: null, created_at_ms: Date.now() }] });
+          turn_error_text: null, created_at_ms: Date.now() }], null) });
       });
       await page.route('**/api/cards/*/planner/input', async (route) => { sends += 1; await route.continue(); });
       await page.goto(`/next/track/${track.id}`);

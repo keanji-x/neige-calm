@@ -1,10 +1,12 @@
 //! Calm kernel: execution, persistence, and scoped capabilities. Compiled components and external plugins share the plugin lifecycle.
 
 pub mod actor;
+pub mod application_boot;
 pub mod auth;
 pub mod builtin_plugins;
 pub mod card_kind;
 mod conversation_archive;
+pub(crate) mod conversation_inputs;
 mod conversation_metadata;
 pub mod execution_boot;
 pub mod execution_quiesce;
@@ -722,7 +724,7 @@ mod boot_order_tests {
 
     #[test]
     fn main_boot_order_card_id_assert_harness_supervisor_operations() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         let card_id_assert = main_rs
             .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
             .expect("main boot asserts worker_sessions.card_id completeness");
@@ -742,7 +744,7 @@ mod boot_order_tests {
 
     #[test]
     fn boot_order_calls_card_id_assert_before_harness_reconcile_and_operations() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         let card_id_assert = main_rs
             .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
             .expect("main boot asserts worker_sessions.card_id completeness");
@@ -765,7 +767,7 @@ mod boot_order_tests {
     /// silently picking an arbitrary owner.
     #[test]
     fn boot_area_folders_fence_is_wired_and_fatal() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         assert!(
             main_rs.contains("assert_area_folders_disjoint_on_boot(&state).await?"),
             "area_folders overlap fence must ?-propagate so serving never starts on an \
@@ -813,7 +815,7 @@ mod boot_order_tests {
 
     #[test]
     fn boot_card_id_assertion_failure_is_fatal() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         assert!(
             main_rs.contains("assert_worker_sessions_card_id_complete_on_boot(&state).await?"),
             "worker_sessions.card_id boot assertion must ?-propagate so serving never starts with active NULL card_id rows"
@@ -824,7 +826,7 @@ mod boot_order_tests {
     /// already-recovered operation rows instead of racing the recovery's re-drive.
     #[test]
     fn boot_order_scheduler_sweep_after_operation_recovery() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         let recover = main_rs
             .find("recover_operations_on_boot(&state).await")
             .expect("main boot calls recover_operations_on_boot");
@@ -836,7 +838,7 @@ mod boot_order_tests {
 
     #[test]
     fn boot_order_context_sweep_before_operation_recovery() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         let context_sweep = main_rs
             .find("task_context_sweep_on_boot(&state).await")
             .expect("main boot calls task_context_sweep_on_boot");
@@ -857,7 +859,7 @@ mod boot_order_tests {
 
     #[test]
     fn boot_order_reaper_gate_after_card_id_assert_and_operation_recovery() {
-        let main_rs = include_str!("main.rs");
+        let main_rs = include_str!("application_boot.rs");
         let card_id_assert = main_rs
             .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
             .expect("main boot asserts worker_sessions.card_id completeness");
@@ -890,10 +892,18 @@ mod boot_order_tests {
         let state_built = main_rs
             .find("AppState::boot(&cfg).await")
             .expect("main builds the state");
-        let daemon_boot = main_rs
-            .find("boot_harnesses(&state).await")
-            .expect("main boots the daemon");
-        assert!(state_built < daemon_boot);
+        let router = main_rs
+            .find("routes::application_router(state, auth_state)")
+            .expect("main serves the recovered application");
+        assert!(state_built < router);
+        let boot = &state_rs[state_rs
+            .find("pub async fn boot(cfg:")
+            .expect("the sole production factory")..];
+        let prepared = boot.find("Self::prepare_boot(cfg).await?").unwrap();
+        let recovered = boot
+            .find("BootedApplication::recover(state, authentication).await")
+            .unwrap();
+        assert!(prepared < recovered);
     }
 }
 

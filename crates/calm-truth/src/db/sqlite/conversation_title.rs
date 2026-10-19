@@ -9,20 +9,27 @@ use sqlx::{Row, SqliteConnection};
 // A per-card batch size, never a cap on how far the first visible input can be found.
 const CANDIDATE_BATCH: i64 = 32;
 const SOURCES: &str = r#"
-SELECT c.id AS card_id, h.id AS item_id, h.params, h.input_segments
+SELECT c.id AS card_id, h.id AS item_id, h.params, h.input_segments, c.canonical
 FROM json_each(?1) request
-JOIN cards c ON c.id = json_extract(request.value, '$.card_id')
-LEFT JOIN harness_items h ON h.id IN (
+JOIN (SELECT c.id, c.role, {canonical_storage} AS canonical FROM cards c) c ON c.id = json_extract(request.value, '$.card_id')
+LEFT JOIN harness_items h ON NOT c.canonical AND h.id IN (
     SELECT candidate.id FROM harness_items candidate
     WHERE candidate.card_id = c.id
       AND candidate.id > json_extract(request.value, '$.after_id')
       AND candidate.method = 'item/completed'
       AND candidate.item_type IN ('userMessage', 'user_message')
-    ORDER BY candidate.id LIMIT ?2
+    ORDER BY candidate.id LIMIT ?4
 )
 WHERE c.role IN ('planner', 'assistant')
 ORDER BY c.id, h.id
 "#;
+
+fn source_query() -> String {
+    SOURCES.replace(
+        "{canonical_storage}",
+        super::conversation::CANONICAL_STORAGE_PREDICATE,
+    )
+}
 
 async fn sources_on_connection(
     connection: &mut SqliteConnection,
@@ -30,6 +37,7 @@ async fn sources_on_connection(
 ) -> Result<Vec<ConversationTitleSource>> {
     let mut active: BTreeMap<String, i64> = ids.iter().map(|id| (id.clone(), 0)).collect();
     let mut sources: BTreeMap<String, ConversationTitleSource> = BTreeMap::new();
+    let sql = source_query();
     while !active.is_empty() {
         let requests: Vec<_> = active
             .iter()
@@ -37,8 +45,13 @@ async fn sources_on_connection(
                 |(card_id, after_id)| serde_json::json!({"card_id": card_id, "after_id": after_id}),
             )
             .collect();
-        let rows = sqlx::query(SOURCES)
+        let rows = sqlx::query(&sql)
             .bind(serde_json::to_string(&requests)?)
+            .bind(calm_types::harness::HARNESS_MODE)
+            .bind(format!(
+                "{}%",
+                crate::db::sqlite::CANONICAL_PLANNER_INPUT_BINDING_PREFIX
+            ))
             .bind(CANDIDATE_BATCH)
             .fetch_all(&mut *connection)
             .await?;
@@ -52,6 +65,12 @@ async fn sources_on_connection(
                         card_id: card_id.clone(),
                         input: None,
                     });
+            if row.try_get::<bool, _>("canonical")? {
+                source.input = Some(ConversationTitleInput::Canonical(
+                    canonical_title(connection, &source.card_id).await?,
+                ));
+                continue;
+            }
             let Some(item_id) = row.try_get::<Option<i64>, _>("item_id")? else {
                 continue;
             };
@@ -79,6 +98,34 @@ async fn sources_on_connection(
             .collect();
     }
     Ok(sources.into_values().collect())
+}
+
+/// The finite presentation reader owns revision, withdrawal and private-erasure
+/// semantics. Advance bounded pages until its first Human, never a native echo.
+async fn canonical_title(connection: &mut SqliteConnection, card: &str) -> Result<Option<String>> {
+    let mut after = 0;
+    loop {
+        let page = super::conversation_read::page_on_connection(
+            connection,
+            card,
+            after,
+            CANDIDATE_BATCH,
+            false,
+        )
+        .await?;
+        for item in page.items {
+            if let calm_types::conversation_display::ConversationDisplaySource::Human {
+                text, ..
+            } = item.source
+            {
+                return Ok(crate::conversation_title::conversation_title(&text));
+            }
+        }
+        match page.next_cursor {
+            Some(cursor) => after = cursor.position,
+            None => return Ok(None),
+        }
+    }
 }
 
 pub(super) async fn context(
@@ -270,8 +317,10 @@ mod tests {
                 .unwrap(),
             0
         );
-        let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {SOURCES}"))
+        let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {}", source_query()))
             .bind(serde_json::json!([{ "card_id": a, "after_id": 0 }, { "card_id": b, "after_id": 0 }]).to_string())
+            .bind(calm_types::harness::HARNESS_MODE)
+            .bind(format!("{}%", crate::db::sqlite::CANONICAL_PLANNER_INPUT_BINDING_PREFIX))
             .bind(CANDIDATE_BATCH)
             .fetch_all(repo.db().read_pool())
             .await
@@ -361,8 +410,14 @@ mod tests {
         )
         .await;
         insert(&repo, &a, &track, None, "later row").await;
-        let batch = sqlx::query(SOURCES)
+        let sql = source_query();
+        let batch = sqlx::query(&sql)
             .bind(json!([{"card_id":a,"after_id":0}]).to_string())
+            .bind(calm_types::harness::HARNESS_MODE)
+            .bind(format!(
+                "{}%",
+                crate::db::sqlite::CANONICAL_PLANNER_INPUT_BINDING_PREFIX
+            ))
             .bind(CANDIDATE_BATCH)
             .fetch_all(repo.db().read_pool())
             .await

@@ -8,23 +8,38 @@ use crate::harness::PlannerHarness;
 use crate::harness::live_replies::LiveReplies;
 use crate::ids::TrackId;
 
-/// Registry-local monotonic reservation identity, never reused, so a stale
-/// [`HarnessReservation`] guard can be recognized by id equality alone.
+mod sources;
+pub(crate) use sources::CanonicalSourceIndex;
+
+/// Registry-local monotonic reservation identity, never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReservationId(u64);
 
-/// A slot is either a claim in flight (`Reserved`, exclusively owned by its guard) or an
-/// installed live harness (`Live`).
+/// Native ownership may sleep while the original worker and its input sources remain.
 pub enum Slot {
+    Dormant,
     Reserved(ReservationId),
     Live(PlannerHarness),
 }
 
+struct WorkerEntry {
+    slot: Slot,
+    track: Option<TrackId>,
+    sources: Arc<CanonicalSourceIndex>,
+}
+impl WorkerEntry {
+    fn new(slot: Slot) -> Self {
+        Self {
+            slot,
+            track: None,
+            sources: Arc::new(CanonicalSourceIndex::default()),
+        }
+    }
+}
+
 struct RegistryInner {
-    map: DashMap<String, Slot>,
+    map: DashMap<String, WorkerEntry>,
     next_reservation: AtomicU64,
-    /// The server's one live-reply registry: each harness this registry holds writes its card's
-    /// entry, and `GET harness/live` reads it.
     live_replies: Arc<LiveReplies>,
 }
 
@@ -41,31 +56,25 @@ impl Default for HarnessRegistry {
     }
 }
 
-/// RAII claim on a registry slot; `Drop` without install releases it. Both install and Drop
-/// mutate the slot ONLY if it still holds `Reserved` with this guard's id, so a superseded
-/// guard is inert and can never stomp a newer claim.
+/// An exclusive native installation claim. Cancelling it leaves the same original
+/// worker dormant; it cannot discard input sources accepted during restoration.
 pub struct HarnessReservation {
     registry: HarnessRegistry,
     worker_session_id: String,
     id: ReservationId,
-    /// Set by `install` so the consuming call suppresses the Drop release.
     done: bool,
 }
 
 impl HarnessReservation {
-    /// Swap the slot to `Live(handle)` iff it still holds `Reserved(self.id)`. On `false` the
-    /// caller MUST shut down the handle it just built. Mutates through the occupied entry's own
-    /// `insert` — never `DashMap::remove` while holding the entry guard.
     #[must_use = "a false install means the caller must shut down the handle it built"]
     pub fn install(mut self, handle: PlannerHarness) -> bool {
         self.done = true;
         match self.registry.0.map.entry(self.worker_session_id.clone()) {
             Entry::Occupied(mut occupied) => {
-                if matches!(occupied.get(), Slot::Reserved(id) if *id == self.id) {
-                    // The only production writer of `Slot::Live`: from here on a Claude session
-                    // may mint and spawn (#1791 §5.1 item 2).
+                if matches!(occupied.get().slot, Slot::Reserved(id) if id == self.id) {
                     handle.mark_installed();
-                    occupied.insert(Slot::Live(handle));
+                    occupied.get_mut().track = Some(handle.track_id().clone());
+                    occupied.get_mut().slot = Slot::Live(handle);
                     true
                 } else {
                     false
@@ -75,7 +84,6 @@ impl HarnessReservation {
         }
     }
 
-    /// Fixtures/test-only: forge a second guard with the same id, so a test can withhold a stale guard.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn duplicate_for_test(&self) -> HarnessReservation {
         HarnessReservation {
@@ -92,12 +100,17 @@ impl Drop for HarnessReservation {
         if self.done {
             return;
         }
-        if let Entry::Occupied(occupied) = self.registry.0.map.entry(self.worker_session_id.clone())
-            && matches!(occupied.get(), Slot::Reserved(id) if *id == self.id)
+        if let Entry::Occupied(mut occupied) =
+            self.registry.0.map.entry(self.worker_session_id.clone())
+            && matches!(occupied.get().slot, Slot::Reserved(id) if id == self.id)
         {
-            // Release through the occupied entry's own remove — never
-            // `DashMap::remove` while holding the entry guard.
-            occupied.remove();
+            if occupied.get().track.is_none() && occupied.get().sources.is_empty() {
+                // A cancelled pre-install historical claim has no accepted
+                // canonical association and no original bound worker to retain.
+                occupied.remove();
+            } else {
+                occupied.get_mut().slot = Slot::Dormant;
+            }
         }
     }
 }
@@ -107,7 +120,22 @@ impl HarnessRegistry {
         Self::default()
     }
 
-    /// Complete predecessor shutdown before transferring its discoverable slot.
+    /// The sole identity index belongs to the worker entry, independently of its
+    /// native slot. The loop borrows this same Arc and never retains the registry.
+    pub(crate) fn canonical_sources(
+        &self,
+        worker: &str,
+        track: &TrackId,
+    ) -> Arc<CanonicalSourceIndex> {
+        let mut entry = self
+            .0
+            .map
+            .entry(worker.to_owned())
+            .or_insert_with(|| WorkerEntry::new(Slot::Dormant));
+        entry.track = Some(track.clone());
+        entry.sources.clone()
+    }
+
     pub async fn reserve_after_shutdown(
         &self,
         worker_session_id: String,
@@ -120,17 +148,17 @@ impl HarnessRegistry {
             let id = self.next_reservation_id();
             match self.0.map.entry(worker_session_id.clone()) {
                 Entry::Occupied(mut occupied) => {
-                    if let Slot::Live(current) = occupied.get()
+                    if let Slot::Live(current) = &occupied.get().slot
                         && !previous
                             .as_ref()
                             .is_some_and(|previous| current.same_instance(previous))
                     {
                         continue;
                     }
-                    occupied.insert(Slot::Reserved(id));
+                    occupied.get_mut().slot = Slot::Reserved(id);
                 }
                 Entry::Vacant(vacant) => {
-                    vacant.insert(Slot::Reserved(id));
+                    vacant.insert(WorkerEntry::new(Slot::Reserved(id)));
                 }
             }
             return Ok(HarnessReservation {
@@ -142,7 +170,8 @@ impl HarnessRegistry {
         }
     }
 
-    /// Retain a discoverable owner throughout shutdown, including caller cancellation.
+    /// Explicit record retirement ends both native ownership and its input-source
+    /// associations. Ordinary hibernation must use remove_if_same instead.
     pub async fn shutdown_and_remove(
         &self,
         worker_session_id: &str,
@@ -150,10 +179,16 @@ impl HarnessRegistry {
         let mut stopped = None;
         loop {
             let Some(handle) = self.get(&worker_session_id.to_owned()) else {
+                if let Entry::Occupied(occupied) = self.0.map.entry(worker_session_id.to_owned())
+                    && matches!(occupied.get().slot, Slot::Dormant)
+                {
+                    occupied.get().sources.retire();
+                    occupied.remove();
+                }
                 return Ok(stopped);
             };
             handle.shutdown().await?;
-            let removed = self.remove_if_same(worker_session_id, &handle);
+            let removed = self.retire_if_same(worker_session_id, &handle);
             stopped = Some(handle);
             if removed {
                 return Ok(stopped);
@@ -161,22 +196,31 @@ impl HarnessRegistry {
         }
     }
 
-    /// Remove only the predecessor whose shutdown the caller confirmed.
-    pub(crate) fn remove_if_same(
-        &self,
-        worker_session_id: &str,
-        expected: &PlannerHarness,
-    ) -> bool {
-        if let Entry::Occupied(occupied) = self.0.map.entry(worker_session_id.to_owned())
-            && matches!(occupied.get(), Slot::Live(current) if current.same_instance(expected))
+    /// Detach only the confirmed predecessor's native slot. The original record
+    /// and its exact-input source associations survive hibernation and recovery.
+    pub(crate) fn remove_if_same(&self, worker: &str, expected: &PlannerHarness) -> bool {
+        if let Entry::Occupied(mut occupied) = self.0.map.entry(worker.to_owned())
+            && matches!(&occupied.get().slot, Slot::Live(current) if current.same_instance(expected))
         {
+            occupied.get_mut().slot = Slot::Dormant;
+            return true;
+        }
+        false
+    }
+
+    /// Consume an already retired record after its exact native owner stopped.
+    /// This is distinct from detaching a sleeping or recoverable original worker.
+    pub(crate) fn retire_if_same(&self, worker: &str, expected: &PlannerHarness) -> bool {
+        if let Entry::Occupied(occupied) = self.0.map.entry(worker.to_owned())
+            && matches!(&occupied.get().slot, Slot::Live(current) if current.same_instance(expected))
+        {
+            occupied.get().sources.retire();
             occupied.remove();
             return true;
         }
         false
     }
 
-    /// The shared live-reply registry used by installed harnesses and REST reads.
     pub fn live_replies(&self) -> &Arc<LiveReplies> {
         &self.0.live_replies
     }
@@ -190,51 +234,55 @@ impl HarnessRegistry {
         ReservationId(id)
     }
 
-    /// Direct Live install (test seams). Stomps whatever occupies the slot; production goes
-    /// through reserve → install.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn insert(&self, runtime_id: String, handle: PlannerHarness) -> Option<PlannerHarness> {
         handle.mark_installed();
-        match self.0.map.insert(runtime_id, Slot::Live(handle)) {
-            Some(Slot::Live(previous)) => Some(previous),
-            _ => None,
+        let mut entry = self
+            .0
+            .map
+            .entry(runtime_id)
+            .or_insert_with(|| WorkerEntry::new(Slot::Dormant));
+        entry.track = Some(handle.track_id().clone());
+        match std::mem::replace(&mut entry.slot, Slot::Live(handle)) {
+            Slot::Live(previous) => Some(previous),
+            Slot::Dormant | Slot::Reserved(_) => None,
         }
     }
 
-    /// Claim a vacant slot in a single `entry()` op; occupied (Reserved OR Live) ⇒ `None`.
+    /// Claim native ownership without replacing the worker entry or its sources.
     pub fn try_reserve(&self, runtime_id: String) -> Option<HarnessReservation> {
         let id = self.next_reservation_id();
-        match self.0.map.entry(runtime_id.clone()) {
-            Entry::Occupied(_) => None,
-            Entry::Vacant(vacant) => {
-                vacant.insert(Slot::Reserved(id));
-                Some(HarnessReservation {
-                    registry: self.clone(),
-                    worker_session_id: runtime_id,
-                    id,
-                    done: false,
-                })
-            }
+        let mut entry = self
+            .0
+            .map
+            .entry(runtime_id.clone())
+            .or_insert_with(|| WorkerEntry::new(Slot::Dormant));
+        if !matches!(entry.slot, Slot::Dormant) {
+            return None;
         }
+        entry.slot = Slot::Reserved(id);
+        Some(HarnessReservation {
+            registry: self.clone(),
+            worker_session_id: runtime_id,
+            id,
+            done: false,
+        })
     }
 
-    /// Atomic swap to `Reserved(fresh_id)` regardless of the prior slot, returning the previous
-    /// Live handle so the caller can shut it down outside the map lock; a prior guard becomes inert.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn reserve_replacing(
         &self,
         runtime_id: String,
     ) -> (HarnessReservation, Option<PlannerHarness>) {
         let id = self.next_reservation_id();
-        let previous_live = match self.0.map.entry(runtime_id.clone()) {
-            Entry::Occupied(mut occupied) => match occupied.insert(Slot::Reserved(id)) {
-                Slot::Live(handle) => Some(handle),
-                Slot::Reserved(_) => None,
-            },
-            Entry::Vacant(vacant) => {
-                vacant.insert(Slot::Reserved(id));
-                None
-            }
+        let mut entry = self
+            .0
+            .map
+            .entry(runtime_id.clone())
+            .or_insert_with(|| WorkerEntry::new(Slot::Dormant));
+        let previous = match std::mem::replace(&mut entry.slot, Slot::Reserved(id)) {
+            Slot::Live(handle) => Some(handle),
+            Slot::Dormant | Slot::Reserved(_) => None,
         };
         (
             HarnessReservation {
@@ -243,7 +291,7 @@ impl HarnessRegistry {
                 id,
                 done: false,
             },
-            previous_live,
+            previous,
         )
     }
 
@@ -251,38 +299,34 @@ impl HarnessRegistry {
         self.0
             .map
             .get(runtime_id)
-            .and_then(|entry| match entry.value() {
+            .and_then(|entry| match &entry.slot {
                 Slot::Live(handle) => Some(handle.clone()),
-                Slot::Reserved(_) => None,
+                Slot::Dormant | Slot::Reserved(_) => None,
             })
     }
 
-    /// Removes **Live entries only**; no-ops on `Reserved` (Drop is the owner's cancel).
+    /// Fixture detachment mirrors hibernation and preserves the original entry.
     #[cfg(any(test, feature = "fixtures"))]
     pub fn remove(&self, runtime_id: &str) -> Option<PlannerHarness> {
-        match self.0.map.entry(runtime_id.to_owned()) {
-            Entry::Occupied(occupied) => match occupied.get() {
-                Slot::Live(_) => match occupied.remove() {
-                    Slot::Live(handle) => Some(handle),
-                    Slot::Reserved(_) => unreachable!("checked Live under the entry guard"),
-                },
-                Slot::Reserved(_) => None,
-            },
-            Entry::Vacant(_) => None,
+        let mut entry = self.0.map.get_mut(runtime_id)?;
+        if !matches!(entry.slot, Slot::Live(_)) {
+            return None;
+        }
+        match std::mem::replace(&mut entry.slot, Slot::Dormant) {
+            Slot::Live(handle) => Some(handle),
+            _ => unreachable!("checked live under the entry guard"),
         }
     }
 
-    /// Snapshot every installed handle owned by a track. Registry membership, not DB status, is
-    /// the source of truth because a failed session can still have a live run loop.
     pub fn live_for_track(&self, track_id: &TrackId) -> Vec<(String, PlannerHarness)> {
         self.0
             .map
             .iter()
-            .filter_map(|entry| match entry.value() {
+            .filter_map(|entry| match &entry.slot {
                 Slot::Live(handle) if handle.track_id() == track_id => {
                     Some((entry.key().clone(), handle.clone()))
                 }
-                Slot::Live(_) | Slot::Reserved(_) => None,
+                _ => None,
             })
             .collect()
     }
@@ -290,36 +334,54 @@ impl HarnessRegistry {
     pub async fn shutdown_track(
         &self,
         track_id: &TrackId,
-        thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
+        thread_seals: Arc<crate::thread_seals::ThreadSeals>,
     ) -> crate::error::Result<Vec<String>> {
         let handles = self.live_for_track(track_id);
         let mut seals = crate::thread_seals::DeletionThreadSeals::new(thread_seals.clone());
-        for (worker_session_id, handle) in handles {
-            if let Some(thread_id) = handle.shutdown_for_deletion(thread_seals.clone()).await? {
-                seals.seal(thread_id);
+        for (worker, handle) in handles {
+            if let Some(thread) = handle.shutdown_for_deletion(thread_seals.clone()).await? {
+                seals.seal(thread);
             }
-            self.remove_if_same(&worker_session_id, &handle);
+            self.retire_if_same(&worker, &handle);
         }
+        self.0.map.retain(|_, entry| {
+            let retired =
+                entry.track.as_ref() == Some(track_id) && matches!(entry.slot, Slot::Dormant);
+            if retired {
+                entry.sources.retire();
+            }
+            !retired
+        });
         Ok(seals.retain())
     }
 
-    /// Remove and return every registered Live harness so `POST /dev/reset` can shut them down
-    /// before reseeding. Reserved slots stay untouched.
     #[cfg(feature = "fixtures")]
     pub fn drain_all_for_dev(&self) -> Vec<PlannerHarness> {
         let runtime_ids: Vec<String> = self.0.map.iter().map(|entry| entry.key().clone()).collect();
         runtime_ids
             .iter()
-            .filter_map(|runtime_id| self.remove(runtime_id))
+            .filter_map(|runtime_id| {
+                let Entry::Occupied(occupied) = self.0.map.entry(runtime_id.clone()) else {
+                    return None;
+                };
+                if matches!(occupied.get().slot, Slot::Reserved(_)) {
+                    return None;
+                }
+                occupied.get().sources.retire();
+                match occupied.remove().slot {
+                    Slot::Live(handle) => Some(handle),
+                    Slot::Dormant => None,
+                    Slot::Reserved(_) => unreachable!("reservation checked under the entry guard"),
+                }
+            })
             .collect()
     }
 
-    /// Number of installed Live harnesses (in-flight reservations excluded).
     pub fn len_active(&self) -> usize {
         self.0
             .map
             .iter()
-            .filter(|entry| matches!(entry.value(), Slot::Live(_)))
+            .filter(|entry| matches!(entry.slot, Slot::Live(_)))
             .count()
     }
 }
@@ -328,8 +390,8 @@ impl HarnessRegistry {
 mod tests {
     use super::*;
 
-    async fn unstarted_handle(runtime_id: &str) -> PlannerHarness {
-        crate::harness::run_loop::registry_handle_for_test(runtime_id).await
+    async fn unstarted_handle(worker_session_id: &str) -> PlannerHarness {
+        crate::harness::run_loop::registry_handle_for_test(worker_session_id).await
     }
 
     #[tokio::test]
@@ -416,6 +478,10 @@ mod tests {
             // Spawn failed: guard dropped without install.
         }
         assert!(registry.get(&runtime_id).is_none());
+        assert!(
+            !registry.0.map.contains_key(&runtime_id),
+            "an unbound source-free cancellation must not accumulate dormant entries"
+        );
         let (reservation, previous_live) = registry.reserve_replacing(runtime_id.clone());
         assert!(previous_live.is_none());
         let handle = unstarted_handle(&runtime_id).await;

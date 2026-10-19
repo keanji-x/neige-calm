@@ -161,6 +161,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::WorkerSessionStarted { .. }
         | Event::WorkerSessionStatusChanged { .. }
         | Event::WorkerSessionSuperseded { .. }
+        | Event::HarnessPresentationChanged { .. }
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }
@@ -190,68 +191,8 @@ pub(crate) fn event_warrants_planner_push_with_role(
     }
 }
 
-/// A worker self-report whose wake is deferred to a later kernel event is not pushed: a
-/// `task.completed` whose attempt has a `task_git_deliveries` row (the kernel delivery settles it,
-/// `task.git_delivery_settled` wakes the planner; the row is written in the report transaction and
-/// never deleted below a Track, so live push and replay agree), and a report for a tasks row with
-/// `gate_json` set (the planner hears `task.gate_result` instead). Not status-based: a fast gate can
-/// flip the row terminal before this read. A gated `task.failed` is pushed only when the failure
-/// landed pre-gate; lookup errors fail open.
-pub(crate) async fn is_deferred_self_report(repo: &dyn crate::db::Repo, event: &Event) -> bool {
-    let (idempotency_key, is_failure) = match event {
-        Event::TaskCompleted {
-            idempotency_key, ..
-        } => (idempotency_key, false),
-        Event::TaskFailed {
-            idempotency_key, ..
-        } => (idempotency_key, true),
-        _ => return false,
-    };
-    if !is_failure && let Some(pool) = repo.sqlite_db() {
-        match crate::git_candidate::delivery::attempt_has_delivery(
-            pool.read_pool(),
-            idempotency_key,
-        )
-        .await
-        {
-            Ok(true) => return true,
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(idempotency_key = %idempotency_key, error = %e, "dispatcher push: delivery-row lookup failed; consulting the gate rule (fail-open)")
-            }
-        }
-    }
-    match repo.task_get(idempotency_key).await {
-        Ok(Some(task)) => {
-            if task.gate_json.is_none() {
-                return false;
-            }
-            if !is_failure {
-                return true;
-            }
-            let failure_landed_pre_gate = task.status == crate::model::TaskStatus::Failed
-                && matches!(
-                    task.status_detail
-                        .as_deref()
-                        .map(crate::db::sqlite::status_detail_class),
-                    Some("worker-reported")
-                        | Some("spawn-failed")
-                        | Some("worker-timeout")
-                        | Some(crate::scheduler::WORKER_TURN_ENDED)
-                );
-            !failure_landed_pre_gate
-        }
-        Ok(None) => false,
-        Err(e) => {
-            tracing::warn!(
-                idempotency_key = %idempotency_key,
-                error = %e,
-                "dispatcher push: gated-self-report lookup failed; pushing self-report (fail-open)"
-            );
-            false
-        }
-    }
-}
+mod qualification;
+pub(crate) use qualification::{is_deferred_self_report, is_stale_worker_stop_hook};
 
 /// A task-outcome event pushes to the Planner when it warrants a push and is not a self-report
 /// whose wake a later kernel event carries.
@@ -274,31 +215,6 @@ pub async fn task_event_pushes_planner_for_test(
     actor: &ActorId,
 ) -> bool {
     task_event_pushes_planner(repo, write, event, actor).await
-}
-
-/// A worker stop hook is a wake only while its tasks row is still `dispatched | running`; past that
-/// the gate result / terminal event is the wake. Returns `true` when the push must be suppressed;
-/// no tasks row or a lookup error → push (fail-open).
-pub(crate) async fn is_stale_worker_stop_hook(repo: &dyn crate::db::Repo, event: &Event) -> bool {
-    let card_id = match event {
-        Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => card_id,
-        _ => return false,
-    };
-    match repo.task_for_worker_card(card_id.as_str()).await {
-        Ok(Some(task)) => !matches!(
-            task.status,
-            crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
-        ),
-        Ok(None) => false,
-        Err(e) => {
-            tracing::warn!(
-                card_id = %card_id,
-                error = %e,
-                "dispatcher push: stale-worker-stop lookup failed; pushing stop hook (fail-open)"
-            );
-            false
-        }
-    }
 }
 
 fn empty_plugin_host_for_dispatcher_runtime(
@@ -879,6 +795,7 @@ impl Dispatcher {
             scheduler: Arc::clone(&scheduler),
             context_monitor: Arc::clone(&context_monitor),
             planner_wake: std::sync::RwLock::new(None),
+            canonical_producer: std::sync::RwLock::new(None),
             // A push only fires when `envelope_id > cursor`, making pushes idempotent under
             // at-least-once delivery.
             push_cursor: EventCursorCache::new(),
@@ -1004,6 +921,7 @@ impl Dispatcher {
 
 struct Inner {
     planner_wake: std::sync::RwLock<Option<crate::planner_hibernation::WakeContext>>,
+    canonical_producer: std::sync::RwLock<Option<canonical_inputs::Producer>>,
     repo: Arc<dyn Repo>,
     write: WriteContext,
     harness: HarnessRegistry,
@@ -1023,7 +941,10 @@ struct Inner {
 
 impl Inner {
     /// The periodic loop and scheduler tests share this exact body.
-    async fn reconcile_once(&self) {
+    async fn reconcile_once(self: &Arc<Self>) {
+        if let Err(error) = self.reconcile_canonical_inputs().await {
+            tracing::warn!(%error, "canonical Dispatcher catch-up remains held");
+        }
         if let Err(error) = self.context_monitor.sweep().await {
             tracing::warn!(%error, "periodic task context sweep failed");
             self.scheduler.sweep_all().await;
@@ -1194,7 +1115,8 @@ impl Inner {
             | Event::WorkerSessionStarted { .. }
             | Event::WorkerSessionStatusChanged { .. }
             | Event::WorkerSessionSuperseded { .. }
-            | Event::HarnessItemAdded { .. }
+            | Event::HarnessPresentationChanged { .. }
+        | Event::HarnessItemAdded { .. }
             | Event::HarnessPhaseChanged { .. }
             | Event::HarnessTranscriptCleared { .. }
             | Event::HarnessTranscriptRewound { .. }
@@ -1276,6 +1198,28 @@ impl Inner {
             }
         };
 
+        match crate::conversation_inputs::has_canonical_storage(
+            self.repo.as_ref(),
+            planner_card_id.as_str(),
+        )
+        .await
+        {
+            Ok(true) => {
+                if let Err(error) = self
+                    .accept_canonical_events(&planner_card_id, Some((event, envelope_id)))
+                    .await
+                {
+                    tracing::warn!(%track_id, %error, "canonical Dispatcher input remains held; cursor preserved");
+                }
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%track_id, %error, "conversation contract unavailable; cursor preserved");
+                return;
+            }
+        }
+
         // A synthetic id-0 envelope (test `EventBus::emit`) is never above the initial 0 cursor, so it
         // is skipped; `bump` is monotonic, so a re-delivered id can't double-push.
         let cursor = self.push_cursor.get(&planner_card_id);
@@ -1346,7 +1290,10 @@ impl Inner {
         // including a failure arriving before or after its settlement replay.
         let cursor = self.push_cursor.bump(
             planner_card_id.clone(),
-            cursor.max(harness.snapshot().await.push_watermark),
+            cursor.max(match harness.runtime_header().await {
+                Ok(header) => header.push_watermark,
+                Err(_) => return,
+            }),
         );
         if envelope_id <= cursor {
             return;
@@ -1457,14 +1404,31 @@ pub(crate) async fn resolve_harness_observation(
     track_id: &TrackId,
     event: &Event,
 ) -> crate::error::Result<Option<HarnessObservation>> {
+    resolve_event_observation(repo, track_id, event, false).await
+}
+
+async fn resolve_event_observation(
+    repo: &dyn crate::db::RepoEventWrite,
+    track_id: &TrackId,
+    event: &Event,
+    strict: bool,
+) -> crate::error::Result<Option<HarnessObservation>> {
     if matches!(event, Event::TaskGitDeliverySettled { .. }) {
-        return git_delivery_settled::observation(repo, track_id, event).await;
+        return if strict {
+            git_delivery_settled::qualified_observation(repo, track_id, event, true).await
+        } else {
+            git_delivery_settled::observation(repo, track_id, event).await
+        };
     }
     if let Event::AskAnswered {
         ask_id, answers, ..
     } = event
     {
-        return ask_answered::observation(repo, track_id, *ask_id, answers).await;
+        return if strict {
+            ask_answered::qualified_observation(repo, track_id, *ask_id, answers, true).await
+        } else {
+            ask_answered::observation(repo, track_id, *ask_id, answers).await
+        };
     }
     let task_key = if let Event::TaskGateResult {
         task_id,
@@ -1732,6 +1696,7 @@ pub(crate) fn harness_observation_from_event(
         | Event::WorkerSessionStarted { .. }
         | Event::WorkerSessionStatusChanged { .. }
         | Event::WorkerSessionSuperseded { .. }
+        | Event::HarnessPresentationChanged { .. }
         | Event::HarnessItemAdded { .. }
         | Event::HarnessPhaseChanged { .. }
         | Event::HarnessTranscriptCleared { .. }
@@ -1769,6 +1734,7 @@ fn sha256_hex(text: &str) -> String {
 }
 
 mod ask_answered;
+pub(crate) mod canonical_inputs;
 mod git_delivery_settled;
 mod task_completed;
 

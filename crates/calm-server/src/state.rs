@@ -102,6 +102,7 @@ pub struct RouteState {
     pub database_id: Arc<String>,
     pub write: WriteContext,
     pub operation_runtime: Arc<OperationRuntime>,
+    pub planner_start_adapter: Arc<PlannerHarnessStartAdapter>,
     pub harness: HarnessRegistry,
     /// The context the kernel's MCP tools run in, shared with the HTTP layer.
     pub mcp_context: Arc<crate::mcp_server::registry::AppContext>,
@@ -225,6 +226,7 @@ pub struct BootState {
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
     pub operation_runtime: Arc<OperationRuntime>,
+    pub planner_start_adapter: Arc<PlannerHarnessStartAdapter>,
     pub worker_flow: Arc<WorkerFlowDriver>,
     pub claude_planner: Arc<ClaudePlannerHost>,
     pub acp_planner: Arc<AcpPlannerHost>,
@@ -251,6 +253,7 @@ impl BootState {
             database_id: self.database_id.clone(),
             write: write.clone(),
             operation_runtime: self.operation_runtime.clone(),
+            planner_start_adapter: self.planner_start_adapter.clone(),
             harness: self.harness.clone(),
             mcp_context: self.mcp_context.clone(),
             templates: self.templates,
@@ -433,7 +436,12 @@ fn terminal_hook_settings(codex: &CodexClient) -> crate::terminal_hooks::Termina
     }
 }
 
-fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn ProviderAdapter>> {
+fn build_operation_adapters(
+    input: OperationAdapterInputs,
+) -> (
+    Vec<Arc<dyn ProviderAdapter>>,
+    Arc<PlannerHarnessStartAdapter>,
+) {
     let hook_settings = Some(terminal_hook_settings(&input.codex));
     let terminal_adapter: Arc<dyn ProviderAdapter> =
         if let Some(spawn_hook) = input.terminal_spawn_hook.clone() {
@@ -516,22 +524,21 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
     ));
-    let planner_harness_start_adapter: Arc<dyn ProviderAdapter> =
-        Arc::new(PlannerHarnessStartAdapter::new(
-            input.repo.clone(),
-            input.shared_codex_appserver.clone(),
-            input.shared_codex_appserver.thread_seals().clone(),
-            input.harness.clone(),
-            input.plugin.clone(),
-            input.card_role_cache.clone(),
-            input.track_area_cache.clone(),
-            input
-                .mcp_server
-                .as_ref()
-                .map(|server| server.shim_config.socket_path.clone()),
-            input.claude_planner.clone(),
-            input.acp_planner.clone(),
-        ));
+    let planner_harness_start_adapter = Arc::new(PlannerHarnessStartAdapter::new(
+        input.repo.clone(),
+        input.shared_codex_appserver.clone(),
+        input.shared_codex_appserver.thread_seals().clone(),
+        input.harness.clone(),
+        input.plugin.clone(),
+        input.card_role_cache.clone(),
+        input.track_area_cache.clone(),
+        input
+            .mcp_server
+            .as_ref()
+            .map(|server| server.shim_config.socket_path.clone()),
+        input.claude_planner.clone(),
+        input.acp_planner.clone(),
+    ));
     let planner_harness_interrupt_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(PlannerHarnessInterruptAdapter::new(input.harness.clone()));
     let planner_harness_shutdown_adapter: Arc<dyn ProviderAdapter> =
@@ -567,25 +574,28 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
             input.execution,
         ),
     );
-    vec![
-        typed_terminal,
-        terminal_adapter,
-        terminal_worker_adapter,
-        codex_adapter,
-        codex_worker_adapter,
-        claude_adapter,
-        claude_worker_adapter,
-        claude_restart_adapter,
+    (
+        vec![
+            typed_terminal,
+            terminal_adapter,
+            terminal_worker_adapter,
+            codex_adapter,
+            codex_worker_adapter,
+            claude_adapter,
+            claude_worker_adapter,
+            claude_restart_adapter,
+            planner_harness_start_adapter.clone(),
+            planner_harness_interrupt_adapter,
+            planner_harness_shutdown_adapter,
+            task_verify_adapter,
+            task_gate_run_adapter,
+            forge_action_adapter,
+            child_track_adapter,
+            card_create_adapter,
+            Arc::new(TrackRecipeCreateAdapter),
+        ],
         planner_harness_start_adapter,
-        planner_harness_interrupt_adapter,
-        planner_harness_shutdown_adapter,
-        task_verify_adapter,
-        task_gate_run_adapter,
-        forge_action_adapter,
-        child_track_adapter,
-        card_create_adapter,
-        Arc::new(TrackRecipeCreateAdapter),
-    ]
+    )
 }
 
 impl AppState {
@@ -923,7 +933,7 @@ impl AppState {
         );
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         terminal_renderer.set_execution(execution.clone());
-        let adapters = build_operation_adapters(OperationAdapterInputs {
+        let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
             execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: repo.clone(),
@@ -1028,6 +1038,7 @@ impl AppState {
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             operation_runtime,
+            planner_start_adapter,
             worker_flow,
             claude_planner,
             acp_planner,
@@ -1135,7 +1146,7 @@ impl AppState {
                 "OperationRuntime rebuild requires a sqlite-backed Repo",
             )));
         let execution = self.operation_runtime.execution().clone();
-        let adapters = build_operation_adapters(OperationAdapterInputs {
+        let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
             execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: self.raw.clone(),
@@ -1175,6 +1186,7 @@ impl AppState {
         ));
         self.operation_runtime = runtime.clone();
         self.route.operation_runtime = runtime;
+        self.route.planner_start_adapter = planner_start_adapter;
         self.refresh_planner_wake();
     }
 
@@ -1188,9 +1200,27 @@ impl AppState {
 
     /// The production boot: template roster first (fail-closed, before storage exists),
     /// then storage, then [`Self::new`].
-    pub async fn boot(cfg: &Config) -> anyhow::Result<Self> {
+    pub async fn boot(cfg: &Config) -> anyhow::Result<crate::application_boot::BootedApplication> {
+        let (state, authentication) = Self::prepare_boot(cfg).await?;
+        crate::application_boot::BootedApplication::recover(state, authentication).await
+    }
+
+    #[cfg(all(test, feature = "fixtures"))]
+    pub(crate) async fn boot_with_native_peer(
+        cfg: &Config,
+        native: Arc<SharedCodexAppServer>,
+    ) -> anyhow::Result<crate::application_boot::BootedApplication> {
+        let (state, authentication) = Self::prepare_boot(cfg).await?;
+        let state = state.with_shared_codex_appserver(native);
+        crate::application_boot::BootedApplication::recover(state, authentication).await
+    }
+
+    async fn prepare_boot(
+        cfg: &Config,
+    ) -> anyhow::Result<(Self, crate::auth::ValidatedApplicationAuth)> {
         let templates = crate::templates::TemplateRoster::for_boot(cfg.templates_dir.as_deref())
             .map_err(|error| anyhow::anyhow!("template roster: {error}"))?;
+        let authentication = crate::auth::ValidatedApplicationAuth::from_config(cfg)?;
         let repo: Arc<dyn Repo> = if cfg.db_url == "mock" {
             tracing::warn!(
                 "calm-server starting with in-memory SqlxRepo (sqlite::memory:, non-durable)"
@@ -1199,13 +1229,14 @@ impl AppState {
         } else {
             Arc::new(crate::db::sqlite::SqlxRepo::open(&cfg.db_url).await?)
         };
-        Self::new(cfg, repo, templates).await
+        let state = Self::new(cfg, repo, templates).await?;
+        Ok((state, authentication))
     }
 
     /// Boot-time constructor. Per-plugin load failures are downgraded to warnings so one
     /// broken plugin can't block boot. `templates` is a parameter because the roster is
     /// validated before `repo` exists.
-    pub async fn new(
+    async fn new(
         cfg: &Config,
         repo: Arc<dyn Repo>,
         templates: &'static crate::templates::TemplateRoster,
@@ -1428,7 +1459,7 @@ impl AppState {
         ));
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         terminal_renderer.set_execution(execution.clone());
-        let adapters = build_operation_adapters(OperationAdapterInputs {
+        let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
             execution: execution.clone(),
             route_repo: route_repo.clone(),
             repo: repo.clone(),
@@ -1573,6 +1604,7 @@ impl AppState {
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
             operation_runtime,
+            planner_start_adapter,
             worker_flow,
             claude_planner,
             acp_planner,

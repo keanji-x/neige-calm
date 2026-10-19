@@ -14,6 +14,7 @@ import { prepareReportDocument } from '../../features/report/document/preparatio
 import { queryKeys } from '../providers/queries.ts';
 import { Profiler } from 'react';
 import { useConversationCommands, type ConversationRegistry } from '../conversations/public.tsx';
+import { conversationCardId, historicalConversationPage, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
@@ -25,7 +26,7 @@ async function setup({ streaming = false, historySuffix = '', narrow = false, fi
   const track = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/preview', frozen_at: null }, id: 'link-preview', area_id: 'examples', title: 'Chat preview', sort: 1,
     cwd: '/preview', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const card = { id: 'chat-card', track_id: track.id, kind: 'codex', title: 'Link chat', sort: 1,
-    payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
+    payload: { planner_harness: true, planner_provider: 'codex' }, deletable: true, created_at: 1, updated_at: 2 };
   const live = { text: 'Streaming reply starts.' };
   const text = '[**Chat source**](neige://source/src_0971fbde#q1) · [Chat report](' + trackReportLinkUrl('reference-demo') + ') · [Chat file](./notes.md) · [Chat website](https://example.com) · [Today](/next/) · [Legacy Today](/next/today) · [Outside](/etc/passwd) · [Escape](../../secret.txt) · [Email](mailto:reader@example.com) · [Phone](tel:+123) · [Section](#part)';
   function history(cardId = card.id) {
@@ -43,10 +44,11 @@ async function setup({ streaming = false, historySuffix = '', narrow = false, fi
     if (request.path === '/api/tracks/link-preview') body = { track, can_reopen: false, can_admin: false, can_close: true, cards: [card, { ...card, id: 'chat-b', title: 'Other chat', payload: { harness_profile: 'assistant', planner_provider: 'codex' } }], overlays: [] };
     if (request.path === '/api/tracks/link-preview/conversations') body = [{ id: 'chat-b', trackId: track.id, title: 'Other chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null }];
     if (request.path === '/api/settings') body = {};
-    if (request.path.endsWith('/planner/run')) body = { card_id: request.path.split('/')[3], worker_session_id: 'chat-runtime', phase: streaming ? 'issuing_turn' : 'idle',
+    if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: conversationCardId(request.path), worker_session_id: 'chat-runtime', phase: streaming ? 'issuing_turn' : 'idle',
       model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null,
-      manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null };
-    if (request.path.includes('/harness/items')) body = history(request.path.includes('/chat-b/') ? 'chat-b' : card.id);
+      manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false,
+      running_turn: streaming ? {turn_id:'live-turn',elapsed_ms:1} : null },streaming ? 'running' : 'idle',true);
+    if (request.path.includes('/harness/items?contract=conversation_v1')) body = historicalConversationPage(conversationCardId(request.path),history(conversationCardId(request.path)),null);
     if (request.path.endsWith('/harness/live')) body = { turn_id: 'live-turn', items: [{ item_id: 'live-reply', text: live.text }] };
     if (request.path.includes('/workspace/readfile')) body = { path: new URL(request.path, 'http://fixture').searchParams.get('path'), text: fileText, size: fileText.length, truncated: false };
     return { status: 200, statusText: 'OK', body };

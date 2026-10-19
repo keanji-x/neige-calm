@@ -11,6 +11,52 @@ use crate::mcp_server::wiring::mint_and_persist_card_token;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::shared_codex_appserver::ThreadConfig;
 use serde_json::Value;
+use std::sync::Arc;
+/// A recovery caller owns its current-source/snapshot rule. The transport owner
+/// invokes it in the same transaction as credential changes and after native gates.
+#[async_trait::async_trait]
+pub(crate) trait ActiveRecoveryAdmission: Send + Sync {
+    fn check_current(&self) -> Result<()>;
+    async fn validate_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()>;
+}
+
+struct HistoricalRecovery {
+    runtime: WorkerSessionProjection,
+    source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+}
+
+#[async_trait::async_trait]
+impl ActiveRecoveryAdmission for HistoricalRecovery {
+    fn check_current(&self) -> Result<()> {
+        match &self.source {
+            Some(source) => source.check_current(),
+            None => Ok(()), // Existing historical kernel recovery.
+        }
+    }
+
+    async fn validate_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
+        if let Some(source) = &self.source {
+            source.require_card_tx(tx, &self.runtime.card_id).await?;
+        }
+        crate::conversation_inputs::require_historical_storage_tx(tx, &self.runtime.card_id)
+            .await?;
+        let current = session_projection_active_for_card_tx(tx, &self.runtime.card_id).await?;
+        if !current.as_ref().is_some_and(|row| {
+            row.id == self.runtime.id && row.handle_state_json == self.runtime.handle_state_json
+        }) {
+            return Err(CalmError::Conflict(
+                "conversation changed during resume".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LoadedTurnPolicy {
+    PreserveHistoricalTurn,
+    RequireIdle,
+}
 
 /// Original carrier identity, constructed and consumed only within this recovery owner.
 /// The daemon can read this opaque target but cannot construct or retarget it.
@@ -48,12 +94,46 @@ impl PlannerFactory<'_> {
         &self,
         repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    ) -> Result<()> {
+        self.resume_active_conversation_admitted(
+            repo,
+            runtime,
+            Arc::new(HistoricalRecovery {
+                runtime: runtime.clone(),
+                source,
+            }),
+            LoadedTurnPolicy::PreserveHistoricalTurn,
+        )
+        .await
+    }
+
+    pub(crate) async fn resume_canonical_conversation(
+        &self,
+        repo: &dyn crate::db::Repo,
+        runtime: &WorkerSessionProjection,
+        admission: Arc<dyn ActiveRecoveryAdmission>,
+    ) -> Result<()> {
+        self.resume_active_conversation_admitted(
+            repo,
+            runtime,
+            admission,
+            LoadedTurnPolicy::RequireIdle,
+        )
+        .await
+    }
+
+    async fn resume_active_conversation_admitted(
+        &self,
+        repo: &dyn crate::db::Repo,
+        runtime: &WorkerSessionProjection,
+        admission: Arc<dyn ActiveRecoveryAdmission>,
+        loaded: LoadedTurnPolicy,
     ) -> Result<()> {
         let target = RecoveryTarget::active(runtime)?;
-        let daemon = self.daemon()?;
-        daemon
+        self.daemon()?
             .with_exact_thread(&target, async |native| {
-                Self::restore_active(native, repo, runtime).await
+                Self::restore_active(native, repo, runtime, admission, loaded).await
             })
             .await
     }
@@ -61,6 +141,7 @@ impl PlannerFactory<'_> {
         &self,
         repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
         settle: impl AsyncFnOnce() -> Result<()>,
     ) -> Result<Option<(i64, String)>> {
         // Refuse a missing original thread before quiescing the route-owned harness.
@@ -78,7 +159,7 @@ impl PlannerFactory<'_> {
         let daemon = self.daemon()?;
         daemon
             .with_exact_thread(&target, async |native| {
-                Self::restore_failed(native, repo, &runtime).await
+                Self::restore_failed(native, repo, &runtime, source).await
             })
             .await
     }
@@ -89,9 +170,22 @@ impl PlannerFactory<'_> {
         native: crate::shared_codex_appserver::exact_thread::RecoveryThread<'_>,
         repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
+        admission: Arc<dyn ActiveRecoveryAdmission>,
+        loaded: LoadedTurnPolicy,
     ) -> Result<()> {
         let thread_id = native.thread_id();
-        let before = native.read_active().await?;
+        let admit = crate::shared_codex_appserver::NativePromptAdmission::new(
+            || admission.check_current(),
+            || -> futures_util::future::BoxFuture<'_, Result<()>> {
+                Box::pin(validate_active_recovery(
+                    repo,
+                    runtime,
+                    thread_id,
+                    admission.clone(),
+                ))
+            },
+        );
+        let before = native.read_active(&admit).await?;
         if before.id.as_deref() != Some(thread_id) {
             return Err(CalmError::Conflict(
                 "provider returned a different conversation".into(),
@@ -99,13 +193,12 @@ impl PlannerFactory<'_> {
         }
         let cold = before.status.as_deref() == Some("notLoaded");
         if !cold
-            && !matches!(
-                before.status.as_deref(),
-                Some("idle" | "systemError" | "active")
-            )
+            && !matches!(before.status.as_deref(), Some("idle"))
+            && !(matches!(loaded, LoadedTurnPolicy::PreserveHistoricalTurn)
+                && matches!(before.status.as_deref(), Some("systemError" | "active")))
         {
             return Err(CalmError::ServiceUnavailable(
-                "Original conversation state is unknown; retry shortly".into(),
+                "Original conversation state is active or unknown; history retained".into(),
             ));
         }
         // A loaded thread still needs this connection's subscription restored.
@@ -114,20 +207,10 @@ impl PlannerFactory<'_> {
             let socket_path = native.socket_path().to_owned();
             let expected = runtime.clone();
             let thread = thread_id.to_owned();
+            let admission = admission.clone();
             write_in_tx_typed(repo, move |tx| {
                 Box::pin(async move {
-                    let current =
-                        session_projection_active_for_card_tx(tx, &expected.card_id).await?;
-                    if !current.as_ref().is_some_and(|current| {
-                        current.id == expected.id
-                            && crate::harness::effective_runtime_thread_id(current).as_deref()
-                                == Some(thread.as_str())
-                            && current.handle_state_json.eq(&expected.handle_state_json)
-                    }) {
-                        return Err(CalmError::Conflict(
-                            "conversation changed during resume".into(),
-                        ));
-                    }
+                    validate_active_recovery_tx(tx, &expected, &thread, admission.as_ref()).await?;
                     let shape =
                         crate::db::sqlite::card_execution_shape_tx(tx, &expected.card_id).await?;
                     let binding = crate::harness::profile::PlannerBinding::from_shape(
@@ -157,13 +240,15 @@ impl PlannerFactory<'_> {
         } else {
             ThreadConfig::NoMcp
         };
-        let resumed = native.resume(config).await?;
+        let resumed = native.resume(config, &admit).await?;
         if resumed.id.as_deref() != Some(thread_id)
             || !matches!(
                 resumed.status.as_deref(),
                 Some("idle" | "systemError" | "active")
             )
             || (cold && resumed.status.as_deref() == Some("active"))
+            || (matches!(loaded, LoadedTurnPolicy::RequireIdle)
+                && resumed.status.as_deref() != Some("idle"))
         {
             return Err(CalmError::ServiceUnavailable(
                 "Original conversation did not confirm resume; history retained".into(),
@@ -177,6 +262,7 @@ impl PlannerFactory<'_> {
         native: crate::shared_codex_appserver::exact_thread::RecoveryThread<'_>,
         repo: &dyn crate::db::Repo,
         runtime: &WorkerSessionProjection,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<Option<(i64, String)>> {
         // Same order as daemon replacement -> cached-thread resume. A daemon
         // cannot turn a hot read into a cold resume while credentials are chosen.
@@ -199,11 +285,25 @@ impl PlannerFactory<'_> {
             })
             .ok_or_else(|| CalmError::Conflict("card is not a Codex harness conversation".into()))?
             .profile;
-        Self::validate_recovery_carrier(repo, runtime, thread_id, &snapshot).await?;
+        let admit = crate::shared_codex_appserver::NativePromptAdmission::new(
+            || match &source {
+                Some(source) => source.check_current(),
+                None => Ok(()), // Historical kernel recovery.
+            },
+            || -> futures_util::future::BoxFuture<'_, Result<()>> {
+                Box::pin(Self::validate_recovery_carrier(
+                    repo,
+                    runtime,
+                    thread_id,
+                    &snapshot,
+                    source.clone(),
+                ))
+            },
+        );
         // thread/read and thread/resume share Codex's global exclusive thread queue, so after a
         // lost resume response this read waits for that resume to settle, across connections.
         let turn_id = snapshot.get("last_turn_id").and_then(Value::as_str);
-        let before = native.read(turn_id).await?;
+        let before = native.read(turn_id, &admit).await?;
         let cold = before.state.status.as_deref() == Some("notLoaded");
         if !cold && !matches!(before.state.status.as_deref(), Some("idle" | "systemError")) {
             return Err(CalmError::ServiceUnavailable(
@@ -219,11 +319,15 @@ impl PlannerFactory<'_> {
             let id = runtime.id.clone();
             let thread = thread_id.to_owned();
             let expected = snapshot.clone();
+            let admission = source.clone();
             // Persist before RPC: a lost response can leave a loaded thread.
             // Its token must already be known on retry, while Failed continues
             // to deny that token authority until the final restore commits.
             let raw = write_in_tx_typed(repo, move |tx| {
                 Box::pin(async move {
+                    if let Some(source) = admission {
+                        source.require_card_tx(tx, &card).await?;
+                    }
                     if !session_system_error_recovery_matches_tx(tx, &card, &id, &thread, &expected)
                         .await?
                     {
@@ -243,7 +347,7 @@ impl PlannerFactory<'_> {
         } else {
             ThreadConfig::NoMcp
         };
-        let resumed = native.resume(config).await?;
+        let resumed = native.resume(config, &admit).await?;
         if resumed.id.as_deref() != Some(thread_id)
             || !matches!(resumed.status.as_deref(), Some("idle" | "systemError"))
         {
@@ -264,8 +368,13 @@ impl PlannerFactory<'_> {
         let card = runtime.card_id.clone();
         let id = runtime.id.clone();
         let thread = thread_id.to_owned();
+        drop(admit);
+        let admission = source;
         let restored = write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
+                if let Some(source) = admission {
+                    source.require_card_tx(tx, &card).await?;
+                }
                 Ok(session_resume_system_error_tx(tx, &card, &id, &thread, &snapshot).await?)
             })
         })
@@ -312,6 +421,7 @@ impl PlannerFactory<'_> {
         runtime: &WorkerSessionProjection,
         thread_id: &str,
         snapshot: &Value,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<()> {
         let card = runtime.card_id.clone();
         let id = runtime.id.clone();
@@ -319,6 +429,9 @@ impl PlannerFactory<'_> {
         let expected = snapshot.clone();
         let valid = write_in_tx_typed(repo, move |tx| {
             Box::pin(async move {
+                if let Some(source) = source {
+                    source.require_card_tx(tx, &card).await?;
+                }
                 Ok(
                     session_system_error_recovery_matches_tx(tx, &card, &id, &thread, &expected)
                         .await?,
@@ -334,4 +447,38 @@ impl PlannerFactory<'_> {
             ))
         }
     }
+}
+
+async fn validate_active_recovery_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    expected: &WorkerSessionProjection,
+    thread: &str,
+    admission: &dyn ActiveRecoveryAdmission,
+) -> Result<()> {
+    let current = session_projection_active_for_card_tx(tx, &expected.card_id).await?;
+    if !current.as_ref().is_some_and(|row| {
+        row.id == expected.id
+            && crate::harness::effective_runtime_thread_id(row).as_deref() == Some(thread)
+    }) {
+        return Err(CalmError::Conflict(
+            "conversation changed during resume".into(),
+        ));
+    }
+    admission.validate_tx(tx).await
+}
+
+async fn validate_active_recovery(
+    repo: &dyn crate::db::Repo,
+    runtime: &WorkerSessionProjection,
+    thread: &str,
+    admission: Arc<dyn ActiveRecoveryAdmission>,
+) -> Result<()> {
+    let runtime = runtime.clone();
+    let thread = thread.to_owned();
+    write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            validate_active_recovery_tx(tx, &runtime, &thread, admission.as_ref()).await
+        })
+    })
+    .await
 }

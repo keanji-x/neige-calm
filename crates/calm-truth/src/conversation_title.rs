@@ -22,6 +22,9 @@ pub struct ConversationTitleContext {
 
 #[derive(Debug)]
 pub enum ConversationTitleInput {
+    /// The presentation owner resolved the canonical name, including its absence.
+    /// A canonical conversation never falls back to the historical body queue.
+    Canonical(Option<String>),
     Structured(Vec<HarnessInputSegment>),
     Legacy(String),
 }
@@ -87,6 +90,7 @@ impl ConversationTitleInput {
     /// are not decoded by the transcript UI, so only structured attachments count here.
     pub fn visible_title(&self) -> Option<Option<String>> {
         match self {
+            Self::Canonical(title) => Some(title.clone()),
             Self::Structured(segments) => first_user_title(segments),
             Self::Legacy(params) => {
                 let value: serde_json::Value = serde_json::from_str(params).ok()?;

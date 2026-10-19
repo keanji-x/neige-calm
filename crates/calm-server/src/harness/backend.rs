@@ -13,7 +13,9 @@ mod managed;
 pub(super) use managed::IssueTurnHandle;
 pub(crate) mod factory;
 mod start;
+use crate::planner_permission_mode::PlannerPermissionMode;
 use control::{compact_delivery, steer_delivery};
+use provider::InputItem;
 pub use start::StartDiagnostic;
 use start::{codex_start_delivery, revert_codex_thread};
 use std::sync::Arc;
@@ -36,6 +38,29 @@ use crate::session_projection_repo::{AgentProvider, WorkerSessionProjection};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
 use provider::TurnModelSelection;
 use provider::events::PlannerEvent;
+
+#[cfg(all(test, feature = "fixtures"))]
+mod acp_dispatch_tests;
+mod attempt;
+mod budget_control;
+#[cfg(all(test, feature = "fixtures"))]
+mod claude_dispatch_tests;
+#[cfg(all(test, feature = "fixtures"))]
+mod codex_execution_tests;
+mod dispatch;
+#[cfg(all(test, feature = "fixtures"))]
+mod dispatch_fixture;
+#[cfg(all(test, feature = "fixtures"))]
+mod dispatch_tests;
+mod execution_end;
+pub(crate) use attempt::{
+    AttemptCorrelation, InputAttemptReport, InputDelivery, NativeAcceptanceBasis,
+    NativeAcceptanceReceipt, NonDispatchBasis, NonDispatchEvidence,
+};
+pub(crate) use budget_control::{BudgetControlScope, ControlDelivery};
+pub(crate) use execution_end::{
+    ExecutionEndScope, ExecutionEndTarget, ExecutionInput, QualifiedExecutionEnd,
+};
 
 /// A provider's failure to start a turn, classified by the provider that raised it (#1981): the
 /// run loop paces its retry and tells the reader from this, never from the error's shape.
@@ -60,6 +85,16 @@ pub type InterruptDiagnostic = Box<dyn std::error::Error + Send + Sync>;
 #[serde(transparent)]
 pub struct BackendRewind(RewindArm);
 
+impl BackendRewind {
+    pub(crate) fn from_persisted(value: RewindArm) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn persisted(&self) -> &RewindArm {
+        &self.0
+    }
+}
+
 use calm_types::harness::snapshot::PersistedRewind as RewindArm;
 
 /// The provider a Planner harness runs on. Its arms are private to this module, so code outside it
@@ -75,16 +110,10 @@ enum Arm {
     Claude(Arc<ClaudePlannerSession>),
 }
 
-impl From<Arc<SharedCodexAppServer>> for PlannerBackend {
-    fn from(daemon: Arc<SharedCodexAppServer>) -> Self {
-        Self(Arm::Codex(daemon, Arc::default()))
-    }
-}
-
 /// What the Codex arm keeps for its one harness (#2348): the channel its thread's approval
 /// requests go to, handed over at install, and its claim on the thread its turns run on.
-#[derive(Default)]
 struct CodexApprovals {
+    binding: crate::shared_codex_appserver::CodexHarnessBinding,
     held: std::sync::OnceLock<HeldRequestSender>,
     route: std::sync::Mutex<Option<ApprovalRoute>>,
 }
@@ -145,6 +174,29 @@ impl PlannerBackend {
             cause,
             action: RunRecoveryAction::RestartSession,
         }))
+    }
+
+    /// Bind this harness to the persisted row used by its construction owner.
+    /// The association is required even before the first native turn starts.
+    pub fn codex(
+        daemon: Arc<SharedCodexAppServer>,
+        card_id: &str,
+        track_id: &str,
+        worker_session_id: &str,
+    ) -> Result<Self> {
+        let binding = crate::shared_codex_appserver::CodexHarnessBinding::new(
+            card_id,
+            track_id,
+            worker_session_id,
+        )?;
+        Ok(Self(Arm::Codex(
+            daemon,
+            Arc::new(CodexApprovals {
+                binding,
+                held: std::sync::OnceLock::new(),
+                route: std::sync::Mutex::new(None),
+            }),
+        )))
     }
 
     /// Codex reports provider terminal confirmation directly. Local-process adapters record

@@ -80,6 +80,15 @@
 # #2617 bounded exception: spec/crates 501 -> 503 comes solely from two struct literals of the
 # existing `event_spec` payload field (the event-free rerun payload and the approval gate's test
 # payload); no new domain term.
+# #2671 bounded compatibility references: spec/crates 503 -> 508 adds five uses of
+# the existing serialized HarnessProfile::Planner value `spec`: the conversation
+# schema CHECK, three SQL fixtures, and the serialization compatibility test.
+# Moving the existing serde rename from server to calm-types is net zero.
+# #2671 bounded transcript references: harness_item/crates 288 -> 298 adds six
+# references to the existing physical harness_items table (one FK, two storage
+# reads and three adapter test SQL statements), plus four calls to the existing
+# authoritative harness_item_insert API in real relationship fixtures. No new
+# protocol name, wrapper, scan rule or growing file/test inventory is introduced.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 
@@ -92,6 +101,27 @@
 # used to pin actual identity/version, acknowledgements and page handoff. No new domain name,
 # excluded file, pattern, count rule or executable policy is introduced; ordinary additional
 # contract references update this counted baseline without adding a file/test roster.
+
+# #2671 final compatibility delta: spec/crates 508 -> 509 is one negative
+# decoding fixture using the released start key spec_card_id. harness_item/crates
+# 298 -> 326 counts reads, foreign keys and fault assertions on the frozen
+# transcript table, existing row/repository types and APIs, and the historical
+# route/query contracts reused by the negotiated reader. harness_item/fe 135 ->
+# 145 counts those existing wire/schema/query APIs and generated historical-row
+# alternatives. New transport DTOs use Conversation names rather than adding
+# retired domain names. runtime_id/fe 32 -> 35 is one original receipt fixture
+# plus two generated copies of the existing receipt field's documentation.
+# runtime_id/crates 1243 -> 1129 tightens the removed duplicate orchestration.
+# These are bounded contract references, not excluded paths or a growing roster.
+# Ordinary later edits still use this same occurrence scan; no new check runs.
+# #2671 delayed-history browser verification: harness_item/fe 145 -> 146 is one
+# use of the existing authoritative transcript query key to prove that the real
+# cache still holds the earlier page while its response is delayed. No protocol,
+# domain identifier, assertion, scan pattern or excluded path changes.
+
+# PR #2843 catch-up composes the already-counted #2671 references with main's
+# independent title references: crates 323 + 311 - 300 = 334, FE 144 + 136 - 135 = 145.
+# No additional exception, scan exclusion, pattern or growing inventory is added.
 
 set -uo pipefail
 

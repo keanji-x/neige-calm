@@ -1,16 +1,16 @@
 import { useCallback, useMemo } from 'react';
 import { useMutation, useMutationState, useQuery, useQueryClient, type QueryState } from '@tanstack/react-query';
-import type { HarnessItem as Row } from '../../../../core/api/generated/wire.ts';
-import { HARNESS_ITEMS_PAGE_LIMIT as PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
+import type { ConversationDisplayItem as Row, ConversationPage, ConversationCursor } from '../../../../core/api/generated/wire.ts';
 import type { TranscriptPosition } from '../providers/queries.ts';
 import { numberReads } from './read-order.ts';
 import { useState } from '../../ui/state/public.ts';
 
 /** Coverage is an observation, never an inference from adjacent row ids.
- * Only an actual short/empty response supplies the start-of-history fact. */
-type LowerBound = Readonly<{ kind: 'start' } | { kind: 'from'; rowId: number }>;
+ * Only the server’s explicit terminal cursor supplies the start-of-history fact. */
+type LowerBound = Readonly<{ kind: 'start' } | { kind: 'from'; cursor: ConversationCursor }>;
 export type ObservedWindow<Upper extends TranscriptPosition = TranscriptPosition> = Readonly<{
   rows: Row[];
+  page: ConversationPage;
   coverage: Readonly<{ lower: LowerBound; upper: Upper }>;
 }>;
 
@@ -20,13 +20,13 @@ export type History = Readonly<{ latest: ObservedWindow<{ kind: 'latest' }>; ret
 
 /** The actual latest response is the ledger carrier, including for equal-content reads.
  * Retained reading rows may supply positive source facts, but never latest freshness. */
-export function latestObservation(data: History | undefined): Row[] | undefined {
-  return data?.latest.rows;
+export function latestObservation(data: History | undefined): ConversationPage | undefined {
+  return data?.latest.page;
 }
 
 type ReadOptions = {
   queryKey: readonly unknown[];
-  queryFn: (context: { position: TranscriptPosition }) => Promise<Row[]>;
+  queryFn: (context: { position: TranscriptPosition; signal?: AbortSignal }) => Promise<ConversationPage>;
   structuralSharing: (previous: unknown, next: unknown) => unknown;
 };
 export type TranscriptReads = Readonly<{
@@ -40,7 +40,7 @@ export type TranscriptReads = Readonly<{
 /** Each view knows only its own actual reads; injected/other-owner carriers remain unknown (0). */
 export function useTranscriptReads(nextRead: () => number): TranscriptReads {
   const [reads] = useState(() => {
-    const { queryFn, structuralSharing, startOf, latest } = numberReads<Row[], History>(nextRead, latestObservation);
+    const { queryFn, structuralSharing, startOf, latest } = numberReads<ConversationPage, History>(nextRead, latestObservation);
     return { track: <Options extends Omit<ReadOptions, 'structuralSharing'>>(options: Options) =>
       ({ ...options, queryFn: queryFn(options.queryFn), structuralSharing }), startOf, latest };
   });
@@ -48,9 +48,9 @@ export function useTranscriptReads(nextRead: () => number): TranscriptReads {
 }
 
 /** Construct coverage only at the HTTP response boundary, before any compaction. */
-export function observedWindow<Upper extends TranscriptPosition>(rows: Row[], upper: Upper): ObservedWindow<Upper> {
-  return { rows, coverage: { upper, lower: rows.length < PAGE_LIMIT
-    ? { kind: 'start' } : { kind: 'from', rowId: rows[0].id } } };
+export function observedWindow<Upper extends TranscriptPosition>(page: ConversationPage, upper: Upper): ObservedWindow<Upper> {
+  return { rows: page.items, page, coverage: { upper, lower: page.next_cursor === null
+    ? { kind: 'start' } : { kind: 'from', cursor: page.next_cursor } } };
 }
 
 type BeforePosition = Extract<TranscriptPosition, { kind: 'before' }>;
@@ -62,8 +62,8 @@ export function earlierReadingPosition(data: History | undefined): BeforePositio
     const { lower } = window.coverage;
     if (lower.kind === 'start') return undefined;
     const next = windows[index + 1];
-    if (next === undefined || ((next.rows.at(-1)?.id ?? 0) < lower.rowId
-      && !(next.coverage.upper.kind === 'before' && next.coverage.upper.rowId === lower.rowId))) return { kind: 'before', rowId: lower.rowId };
+    if (next === undefined || ((next.rows.at(-1)?.cursor.position ?? 0) < lower.cursor.position
+      && !(next.coverage.upper.kind === 'before' && next.coverage.upper.cursor.position === lower.cursor.position))) return { kind: 'before', cursor: lower.cursor };
   }
   return undefined;
 }
@@ -73,12 +73,12 @@ function rowsOfWindows(windows: readonly ObservedWindow[]): Row[] {
   const covered: ObservedWindow['coverage'][] = [];
   for (const window of windows) {
     for (const row of window.rows) {
-      if (!rows.has(row.id) && !covered.some(({ lower, upper }) =>
-        (lower.kind === 'start' || row.id >= lower.rowId) && (upper.kind === 'latest' || row.id < upper.rowId))) rows.set(row.id, row);
+      if (!rows.has(row.cursor.position) && !covered.some(({ lower, upper }) =>
+        (lower.kind === 'start' || row.cursor.position >= lower.cursor.position) && (upper.kind === 'latest' || row.cursor.position < upper.cursor.position))) rows.set(row.cursor.position, row);
     }
     covered.push(window.coverage);
   }
-  return [...rows.values()].sort((a, b) => a.id - b.id);
+  return [...rows.values()].sort((a, b) => a.cursor.position - b.cursor.position);
 }
 
 /** Loaded reading rows also remain explicit positive raw sources for reconciliation.
@@ -93,31 +93,31 @@ function compactWindows(windows: readonly ObservedWindow[]): ObservedWindow[] {
     const previous = compacted.at(-1);
     const lower = previous?.coverage.lower;
     if (previous !== undefined && lower?.kind === 'from' && window.coverage.lower.kind === 'from'
-      && ((window.rows.at(-1)?.id ?? 0) >= lower.rowId
-        || (window.coverage.upper.kind === 'before' && window.coverage.upper.rowId === lower.rowId))) {
-      compacted[compacted.length - 1] = { rows: rowsOfWindows([previous, window]),
+      && ((window.rows.at(-1)?.cursor.position ?? 0) >= lower.cursor.position
+        || (window.coverage.upper.kind === 'before' && window.coverage.upper.cursor.position === lower.cursor.position))) {
+      compacted[compacted.length - 1] = { rows: rowsOfWindows([previous, window]), page: previous.page,
         coverage: { upper: previous.coverage.upper, lower: window.coverage.lower } };
     } else compacted.push(window);
   }
   return compacted;
 }
 
-export function latestHistory(previous: History | undefined, rows: Row[]): History {
-  const latest = observedWindow(rows, { kind: 'latest' });
+export function latestHistory(previous: History | undefined, page: ConversationPage): History {
+  const latest = observedWindow(page, { kind: 'latest' });
   const lower = latest.coverage.lower;
-  const retained = previous === undefined || lower.kind === 'start' ? []
-    : compactWindows([previous.latest, ...previous.retained].filter(old => old.rows[0] !== undefined && old.rows[0].id < lower.rowId));
+  const retained = previous === undefined || lower.kind === 'start' || previous.latest.page.source !== page.source ? []
+    : compactWindows([previous.latest, ...previous.retained].filter(old => old.rows[0] !== undefined && old.rows[0].cursor.position < lower.cursor.position));
   return { latest, retained };
 }
 
-function earlierHistory(previous: History, cursor: number, rows: Row[]): History {
+function earlierHistory(previous: History, cursor: ConversationCursor, page: ConversationPage): History {
   const windows = [previous.latest, ...previous.retained];
-  const index = windows.findIndex(window => window.coverage.lower.kind === 'from' && window.coverage.lower.rowId === cursor);
+  const index = windows.findIndex(window => window.coverage.lower.kind === 'from' && window.coverage.lower.cursor.position === cursor.position);
   if (index < 0) return previous;
-  const window = observedWindow(rows, { kind: 'before', rowId: cursor });
+  const window = observedWindow(page, { kind: 'before', cursor });
   const lower = window.coverage.lower;
   const retained = lower.kind === 'start' ? [] : windows.slice(index + 1)
-    .filter(old => old.rows[0] !== undefined && old.rows[0].id < lower.rowId);
+    .filter(old => old.rows[0] !== undefined && old.rows[0].cursor.position < lower.cursor.position);
   return { latest: previous.latest, retained: [...windows.slice(1, index + 1), window, ...retained] };
 }
 
@@ -127,7 +127,7 @@ type EarlierIntent = { position: BeforePosition; snapshot: History; read: number
 function currentEarlier(intent: EarlierIntent | undefined, state: QueryState<History> | undefined): boolean {
   return intent !== undefined && state?.fetchStatus === 'idle' && state.status === 'success' && !state.isInvalidated
     && state.data === intent.snapshot && intent.reads.startOf(state.data) === intent.read
-    && earlierReadingPosition(state.data)?.rowId === intent.position.rowId;
+    && earlierReadingPosition(state.data)?.cursor.position === intent.position.cursor.position;
 }
 
 /** One transcript cache. Query owns automatic latest reads; explicit reader input owns older reads.
@@ -140,8 +140,8 @@ export function useTranscriptHistory(options: ReadOptions, enabled: boolean, rea
     // An unmounted owner's read ledger cannot observe a new owner's equal latest read.
     // Snapshot identity only rejects obsolete responses; it never supplies a read number.
     structuralSharing: (previous, next) => ({ ...(options.structuralSharing(previous, next) as History) }),
-    queryFn: async () => {
-      const page = await options.queryFn({ position: { kind: 'latest' } });
+    queryFn: async ({ signal }) => {
+      const page = await options.queryFn({ position: { kind: 'latest' }, signal });
       return latestHistory(client.getQueryData<History>(queryKey), page);
     },
   });
@@ -154,7 +154,7 @@ export function useTranscriptHistory(options: ReadOptions, enabled: boolean, rea
       const page = await options.queryFn({ position: intent.position });
       const state = client.getQueryState<History>(queryKey);
       if (!currentEarlier(intent, state)) return;
-      client.setQueryData<History>(queryKey, previous => previous === undefined ? previous : earlierHistory(previous, intent.position.rowId, page));
+      client.setQueryData<History>(queryKey, previous => previous === undefined ? previous : earlierHistory(previous, intent.position.cursor, page));
     },
   });
   // Keep the public mutation identity, not a structurally shared copy of its snapshot.
@@ -185,6 +185,6 @@ export function useTranscriptHistory(options: ReadOptions, enabled: boolean, rea
   const retained = history.data?.retained;
   const loadedRows = useMemo(() => latest === undefined || retained === undefined ? [] : rowsOfWindows([latest, ...retained]), [latest, retained]);
   return { ...history, loadedRows, isFetching: history.isFetching || earlierPending,
-    earlier: { cursor: position?.rowId ?? null, pending: earlierPending, failed: !earlierPending && earlierError !== null },
+    earlier: { cursor: position?.cursor.position ?? null, pending: earlierPending, failed: !earlierPending && earlierError !== null },
     error: history.error ?? (earlierPending ? null : earlierError), loadEarlier };
 }

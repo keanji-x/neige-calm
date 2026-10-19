@@ -251,11 +251,19 @@ async fn conversation_title_owner_release_cancelled_wait_finishes_observation_be
         events: inner.events.clone(),
         card_role_cache: inner.card_role_cache.clone(),
         track_area_cache: inner.track_area_cache.clone(),
-        backend: f.daemon.clone().into(),
-        live_replies: LiveReplies::for_test(),
+        backend: PlannerBackend::codex(
+            f.daemon.clone(),
+            inner.card_id.as_str(),
+            inner.track_id.as_str(),
+            &inner.worker_session_id,
+        )
+        .unwrap(),
+        registry: HarnessRegistry::new(),
         config: HarnessConfig::default(),
-        snapshot: f.stored().await,
-    });
+        snapshot: f.stored().await.try_into().unwrap(),
+    })
+    .await
+    .unwrap();
     let (event_id, _) = f
         .event_entry(&Event::TaskCompleted {
             idempotency_key: "release-observation".into(),
@@ -286,8 +294,8 @@ async fn conversation_title_owner_release_cancelled_wait_finishes_observation_be
     tokio::time::timeout(Duration::from_secs(3), entered.notified())
         .await
         .unwrap();
-    assert_eq!(owner.snapshot().await.push_watermark, event_id);
-    assert!(owner.snapshot().await.pending_entries().is_empty());
+    assert_eq!(owner.snapshot().await.unwrap().push_watermark, event_id);
+    assert!(owner.snapshot().await.unwrap().pending_entries().is_empty());
     let registry = HarnessRegistry::new();
     registry.insert(inner.worker_session_id.clone(), owner.clone());
     let registry_task = registry.clone();
@@ -345,7 +353,9 @@ async fn conversation_title_owner_release_active_requeue_keeps_source_until_comm
     let (f, id, turn) = first_visible_steer().await;
     f.reject_projection_retirement().await;
     assert_eq!(
-        restore_steered_entries_codex_dropped(&f.harness.inner, &turn).await,
+        restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
+            .await
+            .unwrap(),
         vec![id.clone()]
     );
     let registry = HarnessRegistry::new();

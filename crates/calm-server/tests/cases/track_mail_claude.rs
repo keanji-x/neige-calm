@@ -126,10 +126,14 @@ async fn mail_trace_reaches_a_claude_planner() {
         card_role_cache: w.role_cache.clone(),
         track_area_cache: w.area_cache.clone(),
         backend: PlannerBackend::claude_for_test(Arc::new(session)),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+        registry: w.registry.clone(),
         config: HarnessConfig::default(),
-        snapshot: idle_snapshot(&r.thread_id),
-    });
+        snapshot: (idle_snapshot(&r.thread_id))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     w.registry.insert(r.session_id.clone(), harness.clone());
     let ctx = w.app_context();
     let identity = r.identity(&w.area_id);

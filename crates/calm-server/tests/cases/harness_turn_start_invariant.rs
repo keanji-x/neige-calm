@@ -1,6 +1,7 @@
 //! Snapshot guard: planner harness turn issuance must stay behind the private owner-bound `IssueTurnHandle`.
 //! If this test starts failing, audit the new caller: non-reconciliation issuance bypasses the queue/guard invariant.
 
+use crate::support::source_scan::is_test_only_source;
 use std::path::{Path, PathBuf};
 use syn::visit::{self, Visit};
 
@@ -87,21 +88,6 @@ fn visit_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
-}
-
-/// Only a file-level unconditional `cfg(test)` proves that no caller in the file can
-/// enter a production build. File names, comments and attributes on individual items do not.
-fn is_test_only_source(source: &str) -> bool {
-    syn::parse_file(source)
-        .expect("parse source for file-level test configuration")
-        .attrs
-        .iter()
-        .any(|attr| {
-            attr.path().is_ident("cfg")
-                && attr
-                    .parse_args::<syn::Path>()
-                    .is_ok_and(|path| path.is_ident("test"))
-        })
 }
 
 #[test]

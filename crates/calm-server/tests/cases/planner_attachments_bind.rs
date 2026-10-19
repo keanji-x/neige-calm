@@ -362,7 +362,7 @@ async fn a_queued_attachment_survives_the_snapshot_round_trip() {
     )
     .await;
 
-    let persisted = serde_json::to_value(boot.harness.snapshot().await).unwrap();
+    let persisted = serde_json::to_value(boot.harness.snapshot().await.unwrap()).unwrap();
     let restored = HarnessSnapshot::from_value_strict(persisted);
     let entries = restored.pending_entries();
     assert_eq!(entries.len(), 1);
@@ -382,7 +382,7 @@ async fn a_snapshot_written_before_this_slice_keeps_its_entry_addressable() {
     let card_id = boot.planner_card.id.as_str().to_string();
     post_input(boot.app.clone(), &card_id, "queued before the upgrade").await;
 
-    let mut persisted = serde_json::to_value(boot.harness.snapshot().await).unwrap();
+    let mut persisted = serde_json::to_value(boot.harness.snapshot().await.unwrap()).unwrap();
     let metas = persisted["pending_entry_meta"]
         .as_array_mut()
         .expect("meta array");

@@ -24,7 +24,13 @@ async fn m1_mapping_steer_host_admission_and_native_requeue() {
         let inner = &f.harness.inner;
         let entry = QueueEntry::user_message("mapping input".into(), None, vec![]);
         let id = entry.id().unwrap().clone();
-        inner.pending_queue.lock().await.push_back(entry.clone());
+        inner
+            .inputs
+            .historical_queue()
+            .unwrap()
+            .lock()
+            .await
+            .push_back(entry.clone());
         *inner.state.lock().await = HarnessState::turn_running("running".into(), Instant::now());
         f.daemon
             .set_active_turn_for_test("thread-commit-wake", "running");
@@ -34,9 +40,9 @@ async fn m1_mapping_steer_host_admission_and_native_requeue() {
             "unknown" => f.daemon.fail_turn_steer_for_test(true),
             "idle" => *inner.state.lock().await = HarnessState::Idle,
             "missing-thread" => *inner.thread_id.write().await = None,
-            "missing-entry" => inner.pending_queue.lock().await.clear(),
+            "missing-entry" => inner.inputs.historical_queue().unwrap().lock().await.clear(),
             "stale" => rev = 1,
-            "duplicate" => inner.pending_queue.lock().await.push_back(entry.clone()),
+            "duplicate" => inner.inputs.historical_queue().unwrap().lock().await.push_back(entry.clone()),
             "hold" => f.daemon.emit_notification_for_test(crate::codex_appserver::Notification::Other {
                 method: "error".into(), params: serde_json::json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used.","codexErrorInfo":"unauthorized"}}),
             }),
@@ -74,7 +80,7 @@ async fn m1_mapping_steer_host_admission_and_native_requeue() {
             }
             other => panic!("wrong mapping: {other:?}"),
         }
-        let queue = inner.pending_queue.lock().await;
+        let queue = inner.inputs.historical_queue().unwrap().lock().await;
         match case {
             "taken" | "missing-entry" => assert!(queue.is_empty()),
             "duplicate" => assert_eq!(queue.len(), 2),
@@ -139,7 +145,9 @@ async fn m1_mapping_compact_host_admission_keeps_phase_and_never_calls_native() 
             }
             "queued" => {
                 inner
-                    .pending_queue
+                    .inputs
+                    .historical_queue()
+                    .unwrap()
                     .lock()
                     .await
                     .push_back(QueueEntry::user_message("pending".into(), None, vec![]));
@@ -443,9 +451,17 @@ async fn m1_mapping_interrupt_host_noops_never_issue_native_call() {
 async fn m2c_two_owner_decoy_is_untouched_by_managed_operations() {
     let f = Fixture::new().await;
     let mut decoy = Fixture::new().await;
-    Arc::get_mut(&mut decoy.harness.inner).unwrap().backend = f.daemon.clone().into();
+    let owner = &decoy.harness.inner;
+    let backend = PlannerBackend::codex(
+        f.daemon.clone(),
+        owner.card_id.as_str(),
+        owner.track_id.as_str(),
+        &owner.worker_session_id,
+    )
+    .unwrap();
+    Arc::get_mut(&mut decoy.harness.inner).unwrap().backend = backend;
     *decoy.harness.inner.thread_id.write().await = Some("decoy".into());
-    let before = serde_json::to_value(decoy.harness.snapshot().await).unwrap();
+    let before = serde_json::to_value(decoy.harness.snapshot().await.unwrap()).unwrap();
     let selected = "thread-commit-wake";
     let turn = "fake-turn-0001";
     f.daemon.set_active_turn_for_test("decoy", turn);
@@ -541,7 +557,7 @@ async fn m2c_two_owner_decoy_is_untouched_by_managed_operations() {
         Some(turn)
     );
     assert_eq!(
-        serde_json::to_value(decoy.harness.snapshot().await).unwrap(),
+        serde_json::to_value(decoy.harness.snapshot().await.unwrap()).unwrap(),
         before
     );
 }

@@ -176,6 +176,10 @@ function policies(): PolicyMap {
     // The row is already persisted; only user input can change the first-input title.
     ...(event.data.method === 'item/completed' && isUserMessage(event.data.item_type) ? conversationInputMetadata(event.data.track_id) : []),
   ])),
+  'harness.presentation.changed': plan((event) => result([
+    ['harness-items',event.data.card_id],['planner-run',event.data.card_id],
+    ...conversationInputMetadata(event.data.track_id),
+  ])),
   /* `harness-items` is here because the phase event IS the delivery signal for the per-turn
    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */
   'harness.phase.changed': plan((event) => result([

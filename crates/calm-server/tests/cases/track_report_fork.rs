@@ -381,7 +381,13 @@ async fn fork_source_and_area_checks_fail_with_four_hundred_and_roll_back_creati
     calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             sqlx::query("UPDATE areas SET kind='system' WHERE id=?1")
-                .bind(source_area_id)
+                .bind(&source_area_id)
+                .execute(&mut **tx)
+                .await?;
+            // System Areas have no membership rows; keep the fixture consistent
+            // with the production legacy execution contract.
+            sqlx::query("DELETE FROM area_members WHERE area_id=?1")
+                .bind(&source_area_id)
                 .execute(&mut **tx)
                 .await?;
             Ok(())

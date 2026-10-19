@@ -72,7 +72,9 @@ async fn conversation_title_restored_first_you_is_durable_before_projection_dele
         WHEN json_extract(OLD.params, '$._projection') = 1
         BEGIN INSERT INTO restore_title_audit SELECT handle_state_json FROM worker_sessions WHERE id=OLD.worker_session_id; END")
         .execute(f.repo.db().writer_pool()).await.unwrap();
-    let restored = restore_steered_entries_codex_dropped(&f.harness.inner, &turn).await;
+    let restored = restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
+        .await
+        .unwrap();
     assert_eq!(restored, vec![id.clone()]);
     let captured: String = sqlx::query_scalar("SELECT snapshot FROM restore_title_audit")
         .fetch_one(f.repo.db().read_pool())
@@ -121,7 +123,9 @@ async fn conversation_title_restored_first_you_keeps_projection_if_pending_persi
             .await
             .unwrap();
         }
-        restore_steered_entries_codex_dropped(&f.harness.inner, &turn).await;
+        restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
+            .await
+            .unwrap();
         assert!(f.stored().await.pending_entries().is_empty());
         assert!(
             f.repo
@@ -249,7 +253,9 @@ async fn conversation_title_restoration_delete_failure_rolls_back_pending_and_re
         .execute(f.repo.db().writer_pool())
         .await
         .unwrap();
-        restore_steered_entries_codex_dropped(&f.harness.inner, &turn).await;
+        restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
+            .await
+            .unwrap();
         assert!(
             f.stored().await.pending_entries().is_empty(),
             "the entire transfer must roll back"
@@ -324,8 +330,11 @@ async fn conversation_title_restoration_cancel_retains_unique_source_for_both_ow
             .await
             .unwrap();
         let inner = f.harness.inner.clone();
-        let task =
-            tokio::spawn(async move { restore_steered_entries_codex_dropped(&inner, &turn).await });
+        let task = tokio::spawn(async move {
+            restore_steered_entries_codex_dropped(&inner, &turn)
+                .await
+                .unwrap()
+        });
         tokio::time::timeout(Duration::from_secs(3), async {
             while f.harness.inner.restored_projections.lock().await.is_empty() {
                 tokio::task::yield_now().await;
@@ -373,7 +382,9 @@ async fn conversation_title_failed_restoration_unwritten_guard_keeps_projection(
         .execute(f.repo.db().writer_pool())
         .await
         .unwrap();
-    restore_steered_entries_codex_dropped(&f.harness.inner, &turn).await;
+    restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
+        .await
+        .unwrap();
     assert!(f.stored().await.pending_entries().is_empty());
     assert!(
         f.repo
@@ -390,10 +401,20 @@ async fn conversation_title_restoration_cancel_before_rebuffer_cannot_retire_a_s
     let (f, id, turn) = first_visible_steer().await;
     let debounce = f.harness.inner.debounce.lock().await;
     let inner = f.harness.inner.clone();
-    let task =
-        tokio::spawn(async move { restore_steered_entries_codex_dropped(&inner, &turn).await });
+    let task = tokio::spawn(async move {
+        restore_steered_entries_codex_dropped(&inner, &turn)
+            .await
+            .unwrap()
+    });
     tokio::time::timeout(Duration::from_secs(3), async {
-        while f.harness.inner.pending_queue.try_lock().is_ok() {
+        while f
+            .harness
+            .inner
+            .historical_queue()
+            .unwrap()
+            .try_lock()
+            .is_ok()
+        {
             tokio::task::yield_now().await;
         }
     })

@@ -205,7 +205,7 @@ async fn finish_turn(b: &Boot, card: &str) {
     let handle = b.state.harness.get(&runtime.id).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
-            let snapshot = handle.snapshot().await;
+            let snapshot = handle.snapshot().await.unwrap();
             if snapshot.phase == HarnessPhaseTag::TurnRunning {
                 let thread = runtime.thread_id.as_ref().unwrap();
                 let turn = snapshot.last_turn_id.as_ref().unwrap();
@@ -224,7 +224,7 @@ async fn finish_turn(b: &Boot, card: &str) {
         }
         loop {
             if matches!(
-                handle.snapshot().await.phase,
+                handle.snapshot().await.unwrap().phase,
                 HarnessPhaseTag::Idle | HarnessPhaseTag::TurnCompleted
             ) {
                 break;
@@ -402,7 +402,7 @@ async fn archive_refuses_an_unconfirmed_wedged_provider() {
         .unwrap()
         .unwrap();
     let handle = b.state.harness.remove(&runtime.id).unwrap();
-    let mut snapshot = handle.snapshot().await;
+    let mut snapshot = handle.snapshot().await.unwrap();
     handle.shutdown().await.unwrap();
     snapshot.phase = HarnessPhaseTag::Wedged;
     snapshot.wedged_reason = Some("provider stop did not confirm".into());
@@ -478,7 +478,7 @@ async fn cancelled_dequeued_command_cannot_cross_archive(action: &str) {
         .unwrap()
         .unwrap();
     let handle = b.state.harness.get(&runtime.id).unwrap();
-    let before = handle.snapshot().await;
+    let before = handle.snapshot().await.unwrap();
     let history_path = format!("/api/cards/{card}/harness/items");
     let history = b.request("GET", &history_path, None, None).await.1;
     let dequeued = PausePoint::default();
@@ -519,7 +519,7 @@ async fn cancelled_dequeued_command_cannot_cross_archive(action: &str) {
         "no provider compaction after archive"
     );
     assert_eq!(
-        handle.snapshot().await.pending_entries().len(),
+        handle.snapshot().await.unwrap().pending_entries().len(),
         0,
         "no replacement accepted"
     );
@@ -533,7 +533,10 @@ async fn cancelled_dequeued_command_cannot_cross_archive(action: &str) {
         bindings, 0,
         "no cancelled command receipt bound after archive"
     );
-    assert_eq!(handle.snapshot().await.last_turn_id, before.last_turn_id);
+    assert_eq!(
+        handle.snapshot().await.unwrap().last_turn_id,
+        before.last_turn_id
+    );
 }
 
 #[tokio::test]

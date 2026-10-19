@@ -7,6 +7,8 @@ use axum::{Router, routing::get};
 use utoipa::OpenApi;
 
 mod application;
+#[cfg(all(test, feature = "fixtures"))]
+mod canonical_flow_tests;
 pub use application::application_router;
 pub use application::public_mobile_router;
 
@@ -22,6 +24,9 @@ pub mod codex;
 pub mod codex_cards;
 pub mod conversation_archive;
 pub mod conversation_initial_input;
+pub(crate) mod conversation_items;
+mod conversation_read;
+pub(crate) mod conversation_run;
 pub mod conversations_shared;
 pub mod daily_planner;
 pub mod fs;

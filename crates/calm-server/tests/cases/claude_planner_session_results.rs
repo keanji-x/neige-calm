@@ -37,6 +37,7 @@ async fn result_turn(scenario: &str, status: &str, error: Option<&str>) {
             .harness(&runtime.id)
             .snapshot()
             .await
+            .unwrap()
             .last_turn_id
             .as_deref(),
         Some(turn)

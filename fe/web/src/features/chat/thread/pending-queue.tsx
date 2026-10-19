@@ -13,6 +13,8 @@ import styles from './pending-queue.module.css';
 
 export type PendingQueueProps = Readonly<{
   entries: readonly PendingQueueEntry[];
+  /** Canonical Human and System references, including bodies outside the loaded history page. */
+  pendingInputCount: number;
   /** Declared versioned carriers/suppression cover only departed rows; alive rows retain their controls. */
   queueDisplayAccounting: QueueDisplayAccounting;
   sending?: readonly PendingQueueSend[];
@@ -73,7 +75,7 @@ function noticeStatus(outcome: PlannerQueueWriteOutcome): 'warning' | 'info' | '
 }
 
 
-export function PendingQueue({ entries, queueDisplayAccounting, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onPresenceChange, onSteer }: PendingQueueProps) {
+export function PendingQueue({ entries, pendingInputCount, queueDisplayAccounting, sending = NO_SENDS, overflow, busy, onDelete, onEdit, canEdit, editingEntryId, savedEntry, onFocusComposer, onPresenceChange, onSteer }: PendingQueueProps) {
   const mobile = useCompactViewport();
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [writing, setWriting] = useState(false);
@@ -118,7 +120,7 @@ export function PendingQueue({ entries, queueDisplayAccounting, sending = NO_SEN
   }, [focus]);
   const blocked = busy || writing;
   const ids = new Set(entries.map(entry => entry.entry_id));
-  const count = entries.length + sending.length + overflow;
+  const count = entries.length + sending.length + overflow + pendingInputCount;
   const retained = snapshot.rows.length > 0;
   const visible = count > 0 || retained;
   useLayoutEffect(() => { onPresenceChange?.(visible); }, [onPresenceChange, visible]);
@@ -150,7 +152,7 @@ export function PendingQueue({ entries, queueDisplayAccounting, sending = NO_SEN
               <SizeMotion motionKey={isEditing}><div className={styles.rowSpace}><div className={styles.row} data-nc-pending-entry={alive || isEditing ? entry.entry_id : undefined}>
                 <div className={styles.content}>
                   <div className={styles.line}>
-                    <div data-nc-pending-entry-text=""><OutgoingMessage text={current.text} mobile={mobile} edited={isEditing} /></div>
+                    <div data-nc-pending-entry-text=""><OutgoingMessage speaker="unknown" text={current.text} mobile={mobile} edited={isEditing} /></div>
                     <div className={styles.actions}>
                       <MessageActions label="Queued message actions" actions={[
                         { id: 'edit', kind: 'edit', label: 'Edit queued message', tooltip: 'Edit this message in the composer.', disabled: blocked || !canEdit || !alive,
@@ -168,9 +170,12 @@ export function PendingQueue({ entries, queueDisplayAccounting, sending = NO_SEN
             </CollapsePresence>;
           })}
           {sending.map(message => <div key={message.id} className={styles.sending} data-nc-pending-send={message.id}>
-            <div data-nc-queued={message.delivery === 'waiting' ? '' : undefined}><OutgoingMessage text={message.text} mobile={mobile} /></div>
+            <div data-nc-queued={message.delivery === 'waiting' ? '' : undefined}><OutgoingMessage speaker={message.author === 'you' ? 'you' : message.author === 'human' ? 'human' : 'unknown'} text={message.text} mobile={mobile} /></div>
             <span className={styles.delivery} role="status" data-nc-queued-note={message.delivery === 'waiting' ? '' : undefined}>{message.delivery === 'failed' ? '发送未完成' : message.delivery === 'paused' ? '已暂停' : message.delivery === 'checking' ? '等待确认…' : message.delivery === 'waiting' ? '等待处理…' : '正在发送…'}</span>
           </div>)}
+          {pendingInputCount > 0 && <p className={styles.notice} role="status">
+            {`${pendingInputCount} ${pendingInputCount === 1 ? 'input is' : 'inputs are'} waiting for execution.`}
+          </p>}
           {overflow > 0 && <p className={styles.notice} role="status" data-nc-pending-overflow="">
             {`${overflow} ${entries.length > 0 ? 'more ' : ''}queued message` + `${overflow === 1 ? ' is' : 's are'} waiting but cannot be shown or edited here.`}
           </p>}

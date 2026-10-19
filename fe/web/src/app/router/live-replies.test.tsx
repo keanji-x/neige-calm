@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The Planner's reply as it streams (#1923 S2 P4), through the production router and a fake transport.
@@ -69,14 +70,15 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
           return { status: 503, statusText: 'Service Unavailable', body: null };
         }
         /* What the transcript says when the read is made, answered when the gate opens; a read
-           past the newest page gets the rows before it. */
-        const newest = request.path.includes('after_id=0&');
+           past the newest page (Load earlier) gets the rows before it. */
+        const newest = !new URL(request.path, 'http://fixture').searchParams.has('cursor');
         const limit = Number(new URL(request.path, 'http://localhost').searchParams.get('limit'));
         const filler = newest && server.earlier !== undefined
           ? Array.from({ length: limit - server.rows.length }, (_, index) => asked(index + 10, `filler ${index}`)) : [];
         const rows = [...filler, ...(newest ? server.rows : server.earlier ?? [])];
         if (gate.hold) await new Promise<void>((resolve) => { gate.waiting.push(resolve); });
-        return ok(rows);
+        return ok(historicalConversationPage(conversationCardId(request.path), rows, newest && server.earlier !== undefined
+          ? {contract:'conversation_v1',source:'historical_raw',card_id:card!,position:Math.min(...rows.map(row=>row.id))} : null));
       }
       if (server !== undefined && request.path.endsWith('/harness/live')) {
         const reply = server.live;
@@ -87,9 +89,9 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
         return (request.body as { replaces_turn?: string }).replaces_turn === undefined
           ? ok({ card_id: card, worker_session_id: 'runtime' }) : server.replace();
       }
-      if (server !== undefined && request.path.endsWith('/planner/run')) return ok({
+      if (server !== undefined && request.path.includes('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({
         card_id: card, worker_session_id: 'runtime', phase: server.phase, model: null, reasoning_effort: null, permission_mode: card === CARD.id ? 'never' : null, blocked_reason: null, manual_compact_supported: true, recovery: server.phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null, compact_outcome: null, context_usage_invalidated: false, running_turn: server.runningTurn,
-      });
+      }, 'idle', true));
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
@@ -129,7 +131,7 @@ function threadLines(): string[] {
 }
 
 /** The transcript's query, by the key the kernel's events are planned against. */
-const transcriptKey = (cardId: string) => ['harness-items', cardId] as const;
+const transcriptKey = (cardId: string) => [...queryKeys.harnessItems(cardId), 'conversation_v1'] as const;
 
 /** What the kernel's `harness.phase.changed` refreshes; `transcript: false` leaves the transcript to the client. */
 async function phaseChanged(client: QueryClient, cardId: string, { transcript = true } = {}) {

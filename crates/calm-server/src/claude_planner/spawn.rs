@@ -357,13 +357,18 @@ impl InstructionsFile {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+
+    pub(crate) fn remove(&self) -> std::io::Result<()> {
+        match std::fs::remove_file(&self.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
 }
 
 impl Drop for InstructionsFile {
     fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_file(&self.path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
+        if let Err(error) = self.remove() {
             tracing::warn!(
                 path = %self.path.display(),
                 %error,

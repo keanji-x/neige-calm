@@ -12,7 +12,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Most ticks find the queue empty; bail before any logging so the 50ms
     // tick cadence does not flood the log with one entry line per tick.
     let (queue_len, only_report_edits, report_edits_carry_diffs) = {
-        let queue = inner.pending_queue.lock().await;
+        let queue = inner.historical_queue()?.lock().await;
         (
             queue.len(),
             queue_is_only_report_edits(&queue),
@@ -263,7 +263,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // was still accepting results. Re-evaluate at delivery, after that turn
     // can have marked Done; enqueue-time filtering would miss this case.
     consume_completed_worktree_commits(inner).await?;
-    if inner.pending_queue.lock().await.is_empty() {
+    if inner.historical_queue()?.lock().await.is_empty() {
         return Ok(());
     }
 
@@ -317,7 +317,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // so the snapshot written next carries it and a restart re-drains the batch under the SAME key.
     let client_id = {
         let from_queue = inner
-            .pending_queue
+            .historical_queue()?
             .lock()
             .await
             .iter()
@@ -348,7 +348,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     drop(track_guard);
 
     let drained = {
-        let mut queue = inner.pending_queue.lock().await;
+        let mut queue = inner.historical_queue()?.lock().await;
         queue.drain(..).collect::<Vec<_>>()
     };
     if drained.is_empty() {
@@ -391,7 +391,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         .collect::<Vec<_>>()
         .join("\n");
     let Some(thread_id) = inner.thread_id.read().await.clone() else {
-        rebuffer_head(inner, drained).await;
+        rebuffer_head(inner, drained).await?;
         *inner.state.lock().await = HarnessState::PendingThreadStart;
         *inner.issued_turn_id.lock().await = None;
         persist_snapshot(inner).await?;
@@ -439,7 +439,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // The two arms differ in what waiting is worth, so they differ in how long we wait and in
             // whether the reader is told.
             apply_refusal(inner, &failure).await;
-            rebuffer_head(inner, drained).await;
+            rebuffer_head(inner, drained).await?;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             *inner.state.lock().await = prior_turn
@@ -601,7 +601,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             // Returning to editable input transfers authority with its next guarded snapshot.
             // A projection write can fail after insertion (during announcement), so even that
             // failure owes retirement of this batch key. The DELETE preserves confirmed history.
-            rebuffer_head_retiring(inner, drained, std::slice::from_ref(&client_id)).await;
+            rebuffer_head_retiring(inner, drained, std::slice::from_ref(&client_id)).await?;
             #[cfg(feature = "fixtures")]
             inner.refused_issuances.fetch_add(1, Ordering::SeqCst);
             *inner.state.lock().await = prior_turn

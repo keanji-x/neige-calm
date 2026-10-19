@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import '../../styles/entry.css';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
@@ -20,10 +21,10 @@ it('names unopened fresh conversations from metadata and keeps the name across h
   });
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true, reply: request => {
     if (!request.path.includes('/harness/items')) return undefined;
-    const cursor = new URL(request.path, 'http://fixture').searchParams.get('after_id');
-    return { status: 200, statusText: 'OK', body: cursor === '0'
+    const cursor = new URL(request.path, 'http://fixture').searchParams.get('cursor');
+    return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), cursor === null
       ? Array.from({ length: PAGE_LIMIT }, (_, i) => row(1000 + i, `Latest input ${i}`))
-      : [row(1, 'Original old page input')] };
+      : [row(1, 'Original old page input')], cursor === null ? { contract: 'conversation_v1', card_id: conversationCardId(request.path), source: 'historical_raw', position: 1000 } : null) };
   } });
   const planner = page.getByRole('button', { name: 'Conversation Daily Planner conversation', exact: true });
   await expect.element(planner).toBeVisible();
@@ -113,11 +114,11 @@ it('refreshes the first pending title after local edit and deletes without a pha
       cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title: pending[0]?.text ?? null, sort: 0,
         payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
     });
-    if (request.path.endsWith('/planner/run')) return ok({
+    if (request.path.endsWith('/planner/run?contract=conversation_v1')) return ok(historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null,
       permission_mode: 'never', blocked_reason: null, pending, pending_overflow: 0,
       manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-    });
+    }, 'idle', true));
     if (request.method === 'PATCH') {
       pending = [{ ...pending[0], text: 'Edited', rev: 1 }, pending[1]];
       return ok({ ...pending[0], card_id: 'daily-planner' });
@@ -134,7 +135,7 @@ it('refreshes the first pending title after local edit and deletes without a pha
   await page.getByRole('button', { name: 'Edit queued message', exact: true }).first().click();
   await page.getByRole('combobox', { name: 'Message', exact: true }).fill('Edited');
   await page.getByRole('button', { name: 'Save queued message', exact: true }).click();
-  await expect.poll(() => fixture.client.getQueryData<{ pending: { text: string }[] }>(['planner-run', 'daily-planner'])?.pending[0]?.text).toBe('Edited');
+  await expect.poll(() => fixture.client.getQueryData<{ pending: { text: string }[] }>(['planner-run', 'daily-planner', 'conversation_v1'])?.pending[0]?.text).toBe('Edited');
   await expect.element(page.getByRole('complementary', { name: 'Edited', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Delete this message', exact: true }).first().click();
   await expect.element(page.getByRole('complementary', { name: 'Next input', exact: true })).toBeVisible();
@@ -156,7 +157,7 @@ it.each(['agent-only pending', 'confirmed input', 'attachment-only'] as const)(
         cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title, sort: 0,
           payload: { planner_harness: true, planner_provider: 'codex' }, deletable: false, created_at: 1, updated_at: 2 }],
       });
-      if (request.path.includes('/harness/items')) return ok([{
+      if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [{
         id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 't',
         turn_id: null, turn_error_text: null, item_uuid: null, method: 'item/completed', created_at_ms: 1,
         item_type: source === 'agent-only pending' ? 'agentMessage' : 'userMessage',
@@ -164,7 +165,7 @@ it.each(['agent-only pending', 'confirmed input', 'attachment-only'] as const)(
         ...(source === 'attachment-only' ? { input_segments: [{ presentation: 'user', text: '', attachments: [
           { id: 'a.png', contentType: 'image/png', size: 3, url: '/api/cards/daily-planner/planner/attachments/a.png' },
         ] }] } : {}),
-      }]);
+      }], null));
       return undefined;
     } });
     const initial = source === 'attachment-only' ? 'Planner' : 'First input';

@@ -21,6 +21,12 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
         2,
         "the const's definition, and `retryable_operation_key`'s read-only lookup",
     ),
+    (
+        "src/routes/tracks/create/dormant.rs",
+        0,
+        1,
+        "read-only lookup refusing canonical adoption of a historical start attempt",
+    ),
     ("src/operation/mod.rs", 1, 0, "the operation registry"),
     (
         "src/operation/planner_harness_start_adapter.rs",
@@ -57,6 +63,10 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
 /// Each allowed mention, as it must read with all whitespace removed.
 const SHAPES: &[(&str, &str)] = &[
     (
+        "src/routes/tracks/create/dormant.rs",
+        "push_bind(crate::routes::conversations_shared::PLANNER_HARNESS_START)",
+    ),
+    (
         "src/routes/conversations_shared.rs",
         "find_by_kind_and_idempotency(PLANNER_HARNESS_START,",
     ),
@@ -86,6 +96,9 @@ fn planner_harness_start_is_submitted_only_through_the_card_start_fence() {
             .to_string_lossy()
             .replace('\\', "/");
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        if crate::support::source_scan::is_test_only_source(&src) {
+            continue;
+        }
         let code: Vec<&str> = src
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))

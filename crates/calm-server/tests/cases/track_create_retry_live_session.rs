@@ -6,7 +6,7 @@
 use axum::http::StatusCode;
 use calm_truth::db::sqlite::PLANNER_START_CARD_KEY;
 
-use super::{Boot, boot};
+use super::{Boot, historical_boot};
 
 impl Boot {
     /// `planner-harness-start` operations naming `card_id`, in any phase.
@@ -63,7 +63,7 @@ impl Boot {
 /// session keeps its id and its thread.
 #[tokio::test]
 async fn a_message_less_retry_keeps_the_live_session() {
-    let b = boot().await;
+    let b = historical_boot().await;
     let (first, track) = b.create_track(Some("idem-2212-live"), None).await;
     assert_eq!(first, StatusCode::CREATED, "body={track}");
     let card = b.planner_card_of(&track).await;
@@ -95,7 +95,7 @@ async fn a_message_less_retry_keeps_the_live_session() {
 /// The control: a first start that failed left nothing to preserve, so the retry starts it.
 #[tokio::test]
 async fn a_message_less_retry_after_a_failed_start_starts_it() {
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -130,7 +130,7 @@ async fn a_message_less_retry_after_a_failed_start_starts_it() {
 #[tokio::test]
 async fn a_keyed_retry_onto_a_card_started_since_is_a_conflict() {
     const SENTENCE: &str = "the sentence of a create whose start failed";
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -176,7 +176,7 @@ async fn a_keyed_retry_onto_a_card_started_since_is_a_conflict() {
 /// second start, which would supersede whatever that one leaves.
 #[tokio::test]
 async fn a_message_less_retry_while_a_start_is_in_flight_is_503() {
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
@@ -197,7 +197,7 @@ async fn a_message_less_retry_while_a_start_is_in_flight_is_503() {
 #[tokio::test]
 async fn a_keyed_retry_while_a_start_is_in_flight_is_503() {
     const SENTENCE: &str = "the sentence of a create retried during a start";
-    let b = boot().await;
+    let b = historical_boot().await;
     b.state
         .shared_codex_appserver
         .fail_next_thread_start_for_test();

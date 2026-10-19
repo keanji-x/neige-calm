@@ -24,10 +24,12 @@ export type RestartStrip = Readonly<{
  * that was answered leaves its notice in the registry for the card it was made in, whichever is shown by then; its
  * failure is said only while that card is shown.
  */
-export function useConversationRestart({ cardId, recovery, restart }: {
+export function useConversationRestart({ cardId, enabled, recovery, restart }: {
   cardId: string;
   /** Server-owned recovery for the current worker. */
   recovery: RunRecovery | null;
+  /** Only the historical contract offers fresh-session recovery. */
+  enabled: boolean;
   /** `POST …/planner/restart` for this card, settled once the run state read after it has landed. */
   restart: () => Promise<unknown>;
 }) {
@@ -40,12 +42,12 @@ export function useConversationRestart({ cardId, recovery, restart }: {
   const notice = useConversationEditNotice(cardId === '' ? null : cardId);
   const error = failure?.cardId === cardId ? failure.message : null;
   const errors = error === null ? [] : [error];
-  const offered = notice?.kind === 'dormant' || offersFreshSession(recovery);
+  const offered = enabled && (notice?.kind === 'dormant' || offersFreshSession(recovery));
   const strip: RestartStrip | null = notice?.kind === 'dormant' ? {
-    tone: 'error', errors, action: RESTART_ACTION,
+    tone: 'error', errors, action: enabled ? RESTART_ACTION : null,
     /* An Edit's replace was refused: a Send now adds a new message, as for any refused replace. */
     lines: notice.edit && !composerEmpty ? [DORMANT_NOTICE, REFILLED_NOTE] : [DORMANT_NOTICE],
-  } : recovery !== null && offersFreshSession(recovery) ? { tone: error === null ? 'neutral' : 'error', lines: [recoveryNotice(recovery)], errors, action: RESTART_ACTION }
+  } : recovery !== null && offersFreshSession(recovery) ? { tone: error === null ? 'neutral' : 'error', lines: [recoveryNotice(recovery)], errors, action: enabled ? RESTART_ACTION : null }
     : notice?.kind === 'restarted' ? { tone: 'neutral', lines: [RESTARTED_NOTICE], errors: [], action: null }
     : null;
 

@@ -119,7 +119,7 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
     tokio::time::timeout(Duration::from_secs(20), recovery)
         .await
         .unwrap();
-    let restored = stack.harness(&runtime.id).snapshot().await;
+    let restored = stack.harness(&runtime.id).snapshot().await.unwrap();
     assert_eq!(restored.pending_entries(), vec![later]);
     assert_eq!(restored.projection_client_id, None);
     assert_eq!(restored.push_watermark, checkpoint.push_watermark);

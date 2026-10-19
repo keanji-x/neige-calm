@@ -17,8 +17,16 @@ pub(crate) struct ServerWorkspacePorts;
 impl TrackBranch for ServerWorkspacePorts {
     type Error = CalmError;
 
-    async fn refresh_upstream(&self, repo_root: &Path) {
-        crate::operation::workspace_lease::upstream_fetch::refresh_upstream(repo_root).await;
+    async fn refresh_upstream<F, A>(&self, repo_root: &Path, admit: &F) -> Result<()>
+    where
+        F: Fn() -> A + Send + Sync,
+        A: std::future::Future<Output = Result<()>> + Send,
+    {
+        crate::operation::workspace_lease::upstream_fetch::refresh_upstream_admitted(
+            repo_root, admit,
+        )
+        .await?;
+        Ok(())
     }
 
     fn prepare_branch(&self, repo_root: &Path, branch: &str) -> Result<String> {

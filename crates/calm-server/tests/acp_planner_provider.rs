@@ -345,7 +345,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
     let outcome = turn(&stack, &card, "dispatched checkpoint", 1).await;
     let runtime = stack.runtime(&card).await;
     let pool = stack.repo().sqlite_db().unwrap();
-    let mut snapshot = stack.harness(&runtime.id).snapshot().await;
+    let mut snapshot = stack.harness(&runtime.id).snapshot().await.unwrap();
     stack.shutdown().await;
     // Restore the durable state at the real post-dispatch/pre-settlement crash checkpoint.
     snapshot.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
@@ -428,11 +428,26 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
         .await
         .unwrap();
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    // Boot can immediately issue the later input. Hold its real drain seam so the
+    // queue-ownership assertions and reset observe the intended pre-dispatch state.
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    calm_server::harness::run_loop::install_planner_harness_drain_race_hook_for_test(
+        calm_server::harness::run_loop::ANY_RUNTIME,
+        calm_server::harness::run_loop::PlannerHarnessDrainRaceHook {
+            entered: entered.clone(),
+            release: release.clone(),
+        },
+    );
     let stack = boot(&root).await;
+    tokio::time::timeout(Duration::from_secs(20), entered.notified())
+        .await
+        .expect("recovered later input reaches the drain seam");
     let queued = stack
         .harness(&runtime.id)
         .snapshot()
         .await
+        .unwrap()
         .pending_entries();
     assert!(queued.iter().all(|entry|!matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="original operational input")));
     assert!(queued.iter().any(|entry|matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="later input")));
@@ -444,6 +459,8 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
         )
         .await;
     assert!(status.is_success(), "{status}: {body}");
+    release.notify_one();
+    // Reset clears the old transcript; this is the later input's own terminal outcome.
     stack.wait_outcomes(&card, 1).await;
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 2);
@@ -531,7 +548,7 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
     let outcome = turn(&stack, &card, "retain this reply", 1).await;
     let runtime = stack.runtime(&card).await;
     let pool = stack.repo().sqlite_db().unwrap();
-    let mut checkpoint = stack.harness(&runtime.id).snapshot().await;
+    let mut checkpoint = stack.harness(&runtime.id).snapshot().await.unwrap();
     stack.shutdown().await;
     checkpoint.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
     let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
@@ -603,6 +620,7 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
         .harness(&runtime.id)
         .snapshot()
         .await
+        .unwrap()
         .last_turn_id
         .unwrap();
     // Crash replay uses the operation's original Idle snapshot while boot has
@@ -612,7 +630,7 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
     calm_server::recover_operations_on_boot(&stack.state)
         .await
         .unwrap();
-    let restored = stack.harness(&runtime.id).snapshot().await;
+    let restored = stack.harness(&runtime.id).snapshot().await.unwrap();
     assert_eq!(restored.last_turn_id.as_deref(), Some(issued.as_str()));
     assert!(restored.pending_entries().is_empty());
     assert_eq!(requests(&root, "session/prompt").len(), 1);
@@ -697,7 +715,7 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
     .unwrap();
     tx.commit().await.unwrap();
     let stack = boot(&root).await;
-    let recovered = stack.harness(&runtime.id).snapshot().await;
+    let recovered = stack.harness(&runtime.id).snapshot().await.unwrap();
     let entries = recovered.pending_entries();
     assert_eq!(
         entries.len(),

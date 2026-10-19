@@ -22,7 +22,7 @@ use super::track_notifications::{
 };
 
 /// The production router over the fixture's repo, bus and caches; the routes wake `wake`.
-pub(crate) fn app(f: &Fx, wake: ActivityWake) -> axum::Router {
+fn state(f: &Fx, wake: ActivityWake) -> AppState {
     let plugin = PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
         f.repo_dyn.clone(),
@@ -32,7 +32,7 @@ pub(crate) fn app(f: &Fx, wake: ActivityWake) -> axum::Router {
         EventBus::new(),
         f.write.clone(),
     );
-    let state = AppState::from_parts(
+    AppState::from_parts(
         f.repo_dyn.clone(),
         f.events.clone(),
         Arc::new(DaemonClient::new_stub()),
@@ -41,12 +41,19 @@ pub(crate) fn app(f: &Fx, wake: ActivityWake) -> axum::Router {
         Some(f.role_cache.clone()),
         Some(f.area_cache.clone()),
     )
-    .with_activity_wake(wake);
+    .with_activity_wake(wake)
+}
+
+pub(crate) async fn authenticated_app(f: &Fx, wake: ActivityWake) -> axum::Router {
+    crate::support::authenticated_router::application(state(f, wake)).await
+}
+
+pub(crate) fn app(f: &Fx, wake: ActivityWake) -> axum::Router {
     calm_server::routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
-        .with_state(state)
+        .with_state(state(f, wake))
 }
 
 async fn dismiss(app: &axum::Router, track: &str, key: &str, actor: &str) -> StatusCode {

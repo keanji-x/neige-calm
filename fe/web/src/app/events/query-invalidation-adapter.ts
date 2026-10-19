@@ -24,6 +24,7 @@ export interface QueryCachePort extends QueryRefreshPort {
 function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknown[]): void {
   const cancelFirst = queryKey[0] === 'track' || queryKey[0] === 'track-conversations'
     || queryKey[0] === 'track-report' || queryKey[0] === 'conversation-initial-input'
+    || queryKey[0] === 'harness-items' || queryKey[0] === 'planner-run'
     || (queryKey[0] === 'overlays' && queryKey[1] === 'track');
   if (!cancelFirst) {
     void client.invalidateQueries({ queryKey });

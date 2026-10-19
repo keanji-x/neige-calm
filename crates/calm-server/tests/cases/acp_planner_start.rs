@@ -46,6 +46,7 @@ async fn acp_pipe_failure_after_prepare_retires_original_batch_without_resend() 
             .harness(&runtime.id)
             .snapshot()
             .await
+            .unwrap()
             .pending_entries()
             .is_empty()
     );
@@ -70,6 +71,7 @@ async fn acp_pipe_failure_after_prepare_retires_original_batch_without_resend() 
         .harness(&runtime.id)
         .snapshot()
         .await
+        .unwrap()
         .pending_entries();
     assert_eq!(pending.len(), 1);
     assert!(format!("{:?}", pending[0]).contains("later batch"));
@@ -89,7 +91,7 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
     for runtime in [&ra, &rb] {
         let old = stack.state.harness.remove(&runtime.id).unwrap();
         old.shutdown().await.unwrap();
-        let mut snapshot = old.snapshot().await;
+        let mut snapshot = old.snapshot().await.unwrap();
         snapshot.projection_client_id = Some(calm_server::harness::queue::QueueEntryId::from_wire(
             "shared-key".into(),
         ));
@@ -112,7 +114,7 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
     .await
     .unwrap();
     let hb = stack.harness(&rb.id);
-    let before = serde_json::to_value(hb.snapshot().await).unwrap();
+    let before = serde_json::to_value(hb.snapshot().await.unwrap()).unwrap();
     let b_receipt = receipt(&stack, &rb.id).await;
     let b_native = stack.runtime(&b).await.session_id.unwrap();
     let b_pid = requests(&root, "session/prompt")
@@ -132,7 +134,10 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
     ha.interrupt("selected owner only".into()).await.unwrap();
     ha.shutdown().await.unwrap();
     assert_eq!(receipt(&stack, &rb.id).await, b_receipt);
-    assert_eq!(serde_json::to_value(hb.snapshot().await).unwrap(), before);
+    assert_eq!(
+        serde_json::to_value(hb.snapshot().await.unwrap()).unwrap(),
+        before
+    );
     assert!(
         requests(&root, "session/cancel")
             .iter()

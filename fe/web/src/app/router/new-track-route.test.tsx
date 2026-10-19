@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 // The new-track page: `/area/{id}/new`, reached from each Area group's `+`.
@@ -244,14 +245,14 @@ function harness(options: {
           ? options.heldDetail.then(() => detail)
           : Promise.resolve(detail);
       }
-      if (request.method === 'GET' && request.path === '/api/cards/card-planner/planner/run') {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: {
+      if (request.method === 'GET' && request.path === '/api/cards/card-planner/planner/run?contract=conversation_v1') {
+        return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationRun({
           card_id: 'card-planner', worker_session_id: 'runtime', phase: 'idle',
           model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
-        } });
+        }, 'idle', true) });
       }
       if (request.method === 'GET' && request.path.includes('/harness/items')) {
-        return Promise.resolve({ status: 200, statusText: 'OK', body: [...(options.plannerItems ?? [])] });
+        return Promise.resolve({ status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [...(options.plannerItems ?? [])], null) });
       }
       if (request.path === '/api/areas' && options.areasFail) {
         return Promise.resolve({ status: 500, statusText: 'Server Error', body: { error: 'areas are unreadable' } });
@@ -1238,7 +1239,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     const drawer = await screen.findByRole('complementary', { name: 'Planner' });
     await waitFor(() => expect(
-      [...drawer.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+      [...drawer.querySelectorAll('[data-nc-turn="unknown"]')].map((turn) => turn.textContent),
     ).toEqual(['Read it']));
     expect(drawer.querySelector('[data-nc-thread-empty]')).toBeNull();
     const items = sent.filter((request) => request.path.includes('/harness/items'));
@@ -1257,7 +1258,7 @@ describe('the sentence is delivered by the create, and the track opens on it', (
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/track/w-new`));
     const drawer = await screen.findByRole('complementary', { name: 'Planner' });
     await waitFor(() => expect(drawer.querySelector('[data-nc-thread-empty]')).not.toBeNull());
-    expect(drawer.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(0);
+    expect(drawer.querySelectorAll('[data-nc-turn="unknown"]')).toHaveLength(0);
   });
 
   it('navigates before the track detail lands, and opens the drawer when it does', async () => {

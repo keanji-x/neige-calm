@@ -28,6 +28,13 @@ async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
             .await;
     let handle = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -36,15 +43,19 @@ async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig {
             debounce_min_idle: Duration::from_secs(60),
             debounce_max_wait: Duration::from_secs(60),
             ..HarnessConfig::default()
         },
-        snapshot: HarnessSnapshot::from_value_strict(snapshot),
-    });
+        snapshot: (HarnessSnapshot::from_value_strict(snapshot))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), handle.clone());
     assert_eq!(
         boot.state
@@ -192,7 +203,7 @@ async fn planner_hibernat_closed_idle_session_sleeps_and_send_wakes_same_thread(
     assert_eq!(row.status, WorkerSessionState::Idle);
     assert_eq!(row.thread_id.as_deref(), Some(thread.as_str()));
     let (status, body) = post_planner_input(
-        boot.app.clone(),
+        crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"wake here"}),
     )
@@ -472,7 +483,7 @@ async fn dispatch_wake(settlement: bool) {
         .harness
         .get(&runtime)
         .expect("Dispatcher restored sleeping Planner");
-    assert!(awakened.snapshot().await.push_watermark >= id);
+    assert!(awakened.snapshot().await.unwrap().push_watermark >= id);
     assert_eq!(
         boot.state
             .shared_codex_appserver
@@ -577,7 +588,7 @@ async fn planner_hibernat_send_resubscribes_thread_kept_loaded_by_another_client
     std::fs::write(sock.with_extension("thread-read"), &loaded).unwrap();
     std::fs::write(sock.with_extension("thread-resume"), &loaded).unwrap();
     let (status, body) = post_planner_input(
-        boot.app.clone(),
+        crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
         json!({"text":"continue here"}),
     )

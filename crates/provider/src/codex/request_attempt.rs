@@ -17,14 +17,28 @@ pub enum RequestCrossing {
     AfterSend,
 }
 
-/// A provider-reported JSON-RPC error object (`-32600` etc.), retained without a
-/// serialization implementation. Debug omits message/data, which may contain request content.
+/// A provider-reported error, retained without a serialization implementation.
+/// Debug deliberately omits message/data, which may contain request content.
 #[derive(Clone, Deserialize)]
 pub struct RpcRemoteError {
     pub code: i64,
     pub message: String,
     #[serde(default)]
     pub data: Option<Value>,
+}
+
+impl RpcRemoteError {
+    pub fn code(&self) -> i64 {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn data(&self) -> Option<&Value> {
+        self.data.as_ref()
+    }
 }
 
 impl fmt::Debug for RpcRemoteError {
@@ -58,10 +72,6 @@ pub struct RpcAttemptFailure {
 }
 
 impl RpcAttemptFailure {
-    pub fn crossing(&self) -> RequestCrossing {
-        self.crossing
-    }
-
     /// Retain the structured response diagnostic across the adapter boundary.
     pub fn into_parts(self) -> (String, FailureCause) {
         (self.method, self.cause)
@@ -99,12 +109,31 @@ impl RpcAttemptFailure {
         }
     }
 
-    /// Compatibility for callers whose contract is only an RPC result. A JSON-RPC
-    /// `error` frame maps to [`Error::Refused`]; everything else keeps its local error.
-    pub(super) fn into_legacy_error(self) -> Error {
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+
+    /// Connection-local JSON-RPC correlation, never a durable submission ID.
+    pub fn request_id(&self) -> Option<u64> {
+        self.request_id
+    }
+
+    pub fn crossing(&self) -> RequestCrossing {
+        self.crossing
+    }
+
+    pub fn remote_error(&self) -> Option<&RpcRemoteError> {
+        match &self.cause {
+            FailureCause::Response(RpcResponseError::Remote(error)) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Compatibility for callers whose contract is only an RPC result. Prompt
+    /// ownership consumers must retain crossing/correlation before this mapping.
+    pub fn into_legacy_error(self) -> Error {
         match self.cause {
             FailureCause::Local(error) => error,
-            // The one place codex's own refusal is still distinguishable from everything else that can go wrong.
             FailureCause::Response(RpcResponseError::Remote(error)) => Error::Refused(format!(
                 "{} failed: {} (code {})",
                 self.method, error.message, error.code
@@ -128,7 +157,17 @@ impl fmt::Debug for RpcAttemptFailure {
 }
 
 impl CodexAppServer {
-    /// [`Self::request_attempt_until`] with the client's request timeout.
+    /// Hold the real outbound sink without issuing an RPC or starting its deadline.
+    #[cfg(feature = "fixtures")]
+    pub async fn lock_outbound_sink_for_test(&self) -> impl Drop + '_ {
+        self.sink.lock().await
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn pending_requests_for_test(&self) -> usize {
+        self.pending.lock().unwrap().len()
+    }
+
     pub(super) async fn request_attempt<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
@@ -138,20 +177,71 @@ impl CodexAppServer {
         self.request_attempt_until(method, params, deadline).await
     }
 
-    /// The one request implementation behind result-only and evidence-aware APIs.
+    /// One request implementation serves result-only and evidence-aware APIs.
     /// Entering `send` is the conservative crossing; neither timeout nor socket
     /// abort afterwards can produce a BeforeSend result for this request.
-    /// Cancellation removes the pending entry; if it interrupts an incomplete send
-    /// the owned socket is shut down unflushed and the outcome stays unknown.
     pub(super) async fn request_attempt_until<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Value,
         deadline: tokio::time::Instant,
     ) -> std::result::Result<T, RpcAttemptFailure> {
+        self.request_attempt_until_gated(
+            method,
+            params,
+            deadline,
+            &super::PreSendGate::new(super::gated_requests::allow_send),
+        )
+        .await
+    }
+
+    pub(super) async fn request_attempt_gated<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Value,
+        gate: &super::PreSendGate<'_>,
+    ) -> std::result::Result<T, RpcAttemptFailure> {
+        self.request_attempt_until_gated(
+            method,
+            params,
+            tokio::time::Instant::now() + self.request_timeout,
+            gate,
+        )
+        .await
+    }
+
+    pub(super) async fn request_gated<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Value,
+        gate: &super::PreSendGate<'_>,
+    ) -> super::error::Result<T> {
+        self.request_attempt_gated(method, params, gate)
+            .await
+            .map_err(RpcAttemptFailure::into_legacy_error)
+    }
+
+    pub(super) async fn request_until_gated<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: tokio::time::Instant,
+        gate: &super::PreSendGate<'_>,
+    ) -> super::error::Result<T> {
+        self.request_attempt_until_gated(method, params, deadline, gate)
+            .await
+            .map_err(RpcAttemptFailure::into_legacy_error)
+    }
+
+    async fn request_attempt_until_gated<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: tokio::time::Instant,
+        gate: &super::PreSendGate<'_>,
+    ) -> std::result::Result<T, RpcAttemptFailure> {
         let before =
             |id, error| RpcAttemptFailure::local(method, id, RequestCrossing::BeforeSend, error);
-        // An already-spent budget is answered without touching the wire: writing the frame would put a request on the daemon whose answer we already decided to ignore.
         if tokio::time::Instant::now() >= deadline {
             return Err(before(
                 None,
@@ -166,22 +256,41 @@ impl CodexAppServer {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        // Every return and cancellation below drops the now-unanswerable pending entry.
         let _pending = PendingRequest::new(self.pending.clone(), id);
         let text = serde_json::to_string(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
+            "jsonrpc": "2.0", "id": id, "method": method, "params": params,
         }))
         .map_err(|error| before(Some(id), Error::Serde(error)))?;
         let after =
             |error| RpcAttemptFailure::local(method, Some(id), RequestCrossing::AfterSend, error);
-
-        // Write under the sink lock so concurrent requests don't interleave WS frames.
         {
-            let mut sink = self.sink.lock().await;
-            // Created after the lock: cancellation closes the owned socket BEFORE releasing the sink.
+            // Budget the queue wait too: a backlog of blocked gates must not
+            // spend one full gate budget each ahead of an already queued reply.
+            let gate_deadline = deadline
+                .min(tokio::time::Instant::now() + super::server_requests::PRE_SEND_GATE_TIMEOUT);
+            let mut sink = tokio::time::timeout_at(gate_deadline, self.sink.lock())
+                .await
+                .map_err(|_| {
+                    before(
+                        Some(id),
+                        Error::Refused(format!(
+                            "request {method} sink wait timed out before send; retry"
+                        )),
+                    )
+                })?;
+            tokio::time::timeout_at(gate_deadline, gate.run())
+                .await
+                .map_err(|_| {
+                    before(
+                        Some(id),
+                        Error::Refused(format!(
+                            "request {method} admission timed out before send; retry"
+                        )),
+                    )
+                })?
+                .map_err(|error| before(Some(id), error))?;
+            // Guard creation is still pre-send. Cancellation after this point
+            // aborts the owned socket without flushing before releasing the lock.
             let mut sending = self
                 .transport
                 .sending()
@@ -191,10 +300,7 @@ impl CodexAppServer {
                 .map_err(|error| after(Error::Transport(format!("send {method}: {error}"))))?;
             sending.complete();
         }
-
         tracing::trace!(id, method, "codex app-server: request sent");
-
-        // This timer is not a turn lifecycle criterion.
         let outcome = tokio::time::timeout_at(deadline, rx)
             .await
             .map_err(|_| after(Error::Transport(format!("request {method} timed out"))))?;
@@ -203,7 +309,6 @@ impl CodexAppServer {
                 after(Error::Transport(format!("decode {method} result: {error}")))
             }),
             Ok(Err(error)) => Err(RpcAttemptFailure::response(method, id, error)),
-            // Sender dropped without sending: the reader task ended before our response arrived.
             Err(_) => Err(after(Error::Transport(format!(
                 "{method}: connection closed before response"
             )))),

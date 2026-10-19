@@ -101,7 +101,7 @@ it('keeps the closed report composer stable while its conversation is read', asy
     let commits = 0;
     const { requests } = renderDailyFixture({ emptyWorkspace: true, onCommit: () => { commits += 1; } });
     await page.getByRole('textbox', { name: 'Chat message', exact: true }).findElement();
-    await expect.poll(() => requests.some((request) => request.path.endsWith('/planner/run'))).toBe(true);
+    await expect.poll(() => requests.some((request) => request.path.includes('/planner/run?contract=conversation_v1'))).toBe(true);
     page.getByRole('textbox', { name: 'Chat message', exact: true }).element().focus();
     await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
     await page.getByRole('textbox', { name: 'Chat message', exact: true }).findElement();

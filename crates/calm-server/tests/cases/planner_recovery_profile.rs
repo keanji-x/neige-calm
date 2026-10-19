@@ -144,6 +144,13 @@ async fn duplicate_failed_completions_have_one_persisted_outcome() {
         .unwrap();
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime,
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -152,11 +159,15 @@ async fn duplicate_failed_completions_have_one_persisted_outcome() {
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: calm_server::harness::HarnessRegistry::new(),
         config: HarnessConfig::default(),
-        snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),
-    });
+        snapshot: (HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     let daemon = &boot.state.shared_codex_appserver;
     for _ in 0..2 {
         daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::TurnCompleted {

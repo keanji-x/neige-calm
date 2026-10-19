@@ -20,7 +20,7 @@ impl PlannerHarness {
             ObservationIngress::Unstarted(sender) => sender.capacity() == sender.max_capacity(),
         };
         if self.inner.shutting_down.load(Ordering::SeqCst)
-            || !idle_for_lifecycle(&self.inner, ingress_empty).await
+            || !idle_for_lifecycle(&self.inner, ingress_empty).await?
         {
             return Err(CalmError::Conflict("Wait for the reply and queued messages to finish before archiving this conversation.".into()));
         }
@@ -95,7 +95,7 @@ pub(super) async fn quiesce(
     reply: Option<&oneshot::Sender<Result<bool>>>,
 ) -> Result<bool> {
     let _issuance = inner.issuance.lock().await;
-    if !idle_for_lifecycle(inner, ingress_empty).await {
+    if !idle_for_lifecycle(inner, ingress_empty).await? {
         return Ok(false);
     }
     #[cfg(feature = "fixtures")]
@@ -104,11 +104,9 @@ pub(super) async fn quiesce(
         inner.card_id.as_str(),
     )
     .await;
-    settle_owner_input_before_release(inner).await?;
-    // Sleep hands restoration to the durable snapshot before unloading native
-    // context, even when no input transfer remains. Require the existing guarded
-    // writer to commit before closing ingress; Err/false keeps this owner live.
-    persist_owned_input_snapshot(inner).await?;
+    if !inner.inputs.checkpoint_for_lifecycle(inner).await? {
+        return Ok(false);
+    }
     // observe_delivery holds this mutex through enqueue. Recheck the ingress under
     // that gate so an enqueue cannot disappear behind the stop command.
     {
@@ -129,24 +127,24 @@ pub(super) async fn quiesce(
     Ok(true)
 }
 
-async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> bool {
+async fn idle_for_lifecycle(inner: &Arc<Inner>, ingress_empty: bool) -> Result<bool> {
     let state = inner.state.lock().await.clone();
     if !ingress_empty
         || !matches!(
             state,
             HarnessState::Idle | HarnessState::TurnCompleted { .. } | HarnessState::Resumed { .. }
         )
-        || !inner.pending_queue.lock().await.is_empty()
+        || !inner.inputs.idle_for_lifecycle(inner).await?
         || !inner.steered_into_running_turn.lock().await.is_empty()
     {
-        return false;
+        return Ok(false);
     }
     let thread = inner.thread_id.read().await.clone();
     if thread
         .as_deref()
         .is_some_and(|thread| inner.backend.active_turn_id_for_thread(thread).is_some())
     {
-        return false;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }

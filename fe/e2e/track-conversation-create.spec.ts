@@ -1,3 +1,4 @@
+import type { ConversationPage } from '../core/api/generated/wire.ts';
 /*
  * Starting a conversation from a track page, against the real kernel over real HTTP. 201 is
  * required, not tolerated: CI runs the `osc-probe-child` app-server fixture so the mint can succeed.
@@ -109,19 +110,25 @@ test('starts a conversation from a track page and sends the first message to tha
   await expect(page.getByRole('complementary', { name: message })).toBeVisible();
   await expect
     .poll(() => requests.some((pending) => pending.method() === 'GET'
-      && new URL(pending.url()).pathname === `/api/cards/${conversation.id}/harness/items`))
+      && new URL(pending.url()).pathname === `/api/cards/${conversation.id}/harness/items`
+      && new URL(pending.url()).searchParams.get('contract') === 'conversation_v1'))
     .toBe(true);
 
   /* The kernel writes the sentence to the transcript when the queue drains it, before `turn/start`;
    * the fixture emits no items, so the row read back is the kernel's own (`turn_id` still null). */
-  await expect(drawer.locator('[data-nc-turn="you"]')).toHaveText(message);
+  // Historical raw input proves visibility, not authenticated authorship. The canonical
+  // Track-create test independently checks Human.author against /api/auth/whoami.
+  await expect(drawer.locator('[data-nc-thread]').getByText(message, { exact: true })).toHaveCount(1);
+  await expect(drawer.locator('[data-nc-thread]').getByText(message, { exact: true })).toBeVisible();
   await expect(drawer.locator('[data-nc-thread-empty]')).toHaveCount(0);
-  const items = await request.get(`/api/cards/${conversation.id}/harness/items`);
+  const items = await request.get(`/api/cards/${conversation.id}/harness/items?contract=conversation_v1`);
   expect(items.ok()).toBe(true);
-  const rows = await items.json() as {
-    item_type: string | null; method: string; turn_id: string | null; params: string;
-    input_segments?: { presentation: string; text: string }[];
-  }[];
+  const conversationPage = await items.json() as ConversationPage;
+  expect(conversationPage).toMatchObject({ contract: 'conversation_v1', source: 'historical_raw' });
+  const rows = conversationPage.items.map(({ source }) => {
+    if (source.kind !== 'historical_raw') throw new Error('Expected explicit historical Assistant fixture');
+    return source.item;
+  });
   expect(
     rows.map((row) => [row.item_type, row.method, row.turn_id]),
     'the sentence is readable as the kernel\'s own row before any echo — that is the whole point (#1625 P2)',

@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import '../../styles/entry.css';
 // #2348 A4 in a real browser: a Planner conversation's approval setting beside the model picker, and a
@@ -57,14 +58,14 @@ function setup({ theme = 'light', mode = 'never', asks = [], putMode, answer }: 
     if (request.path === `/api/tracks/${TRACK.id}`) body = { track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
         payload: { schemaVersion: 4, working: false, attention: asks.length > 0 ? 'input' : 'none', activity_at_ms: 5, items: asks, cards: [] } }] };
-    if (request.path.endsWith('/planner/run')) body = { card_id: PLANNER.id, worker_session_id: 'session',
+    if (request.path.includes('/planner/run?contract=conversation_v1')) body = historicalConversationRun({ card_id: PLANNER.id, worker_session_id: 'session',
       phase: asks.length > 0 ? 'turn_running' : 'idle', model: null, reasoning_effort: null, permission_mode: stored,
-      blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: asks.length > 0 ? { turn_id: 'turn-1', elapsed_ms: 42_000 } : null, attachments_supported: true };
+      blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: asks.length > 0 ? { turn_id: 'turn-1', elapsed_ms: 42_000 } : null, attachments_supported: true }, 'idle', true);
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
-    if (request.path.includes('/harness/items')) body = [{ id: 1, worker_session_id: 'session', card_id: PLANNER.id,
+    if (request.path.includes('/harness/items')) body = historicalConversationPage(conversationCardId(request.path), [{ id: 1, worker_session_id: 'session', card_id: PLANNER.id,
       track_id: TRACK.id, thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage',
       method: 'item/completed', created_at_ms: 1,
-      params: JSON.stringify({ item: { id: 'reply', type: 'agentMessage', text: 'The release checklist is green. Running the server tests next.' } }) }];
+      params: JSON.stringify({ item: { id: 'reply', type: 'agentMessage', text: 'The release checklist is green. Running the server tests next.' } }) }], null);
     if (request.method === 'PUT' && request.path === `/api/cards/${PLANNER.id}/planner/permission-mode`) {
       const sent = request.body as { permission_mode: Mode };
       const response = putMode?.(sent) ?? answered(200, { card_id: PLANNER.id, permission_mode: sent.permission_mode });

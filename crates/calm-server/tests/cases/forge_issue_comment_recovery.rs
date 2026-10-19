@@ -21,6 +21,23 @@ async fn git_forge_issue_comment_crash_recovers_without_reposting() {
         assert_tool_succeeded(&response, "gh_issue_comment");
         let op_id = op_id_from_response(&response);
         wait_for_counter(&state.join("issue_comment_count"), 1).await;
+        // The counter records command entry, before the shim finishes writing the
+        // posted comment. Crash recovery here requires the actual landed record.
+        let comment = state.join("issues/810.comments/1.json");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if std::fs::read_to_string(&comment)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .is_some()
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the fake gh must publish the complete landed comment before the crash");
         wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
         let result_path = operation_result_path(&fx.repo, &op_id).await;
         assert_result_files_absent(&result_path);

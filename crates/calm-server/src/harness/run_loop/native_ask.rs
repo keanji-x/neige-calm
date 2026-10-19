@@ -2,14 +2,13 @@
 //! same `ask.requested` `neige_user_ask` writes, so the user sees it, answers it, and the answer
 //! wakes the Planner. The provider's arm has already read its wire shape into neutral questions.
 
-use crate::harness::profile::HarnessProfileExt;
 use calm_types::event::AskQuestion;
 use calm_types::worker::WorkerSessionId;
 
 use super::Inner;
 use crate::db::write_with_actor_events_typed;
 use crate::event::Event;
-use crate::harness::profile::HarnessProfile;
+use crate::harness::profile::{HarnessProfile, HarnessProfileExt};
 use crate::ids::ActorId;
 use crate::state::WriteContext;
 

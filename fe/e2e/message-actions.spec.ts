@@ -1,3 +1,4 @@
+import { historicalConversationPage } from '../web/src/app/router/conversation-read-data.ts';
 import { expect, test } from '@playwright/test';
 import { createArea, createTrack } from './helpers/seed.js';
 
@@ -9,19 +10,19 @@ test('copies Markdown and explicitly regenerates while preserving a separate dra
   try {
     const track = await createTrack(request, area.id);
     const answer = 'Original answer\n\n```ts\nconst value = 1;\n```';
-    await page.route('**/api/cards/*/harness/items?**', async (route) => {
+    await page.route((url) => /^\/api\/cards\/[^/]+\/harness\/items$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
       const response = await route.fetch();
       const cardId = new URL(route.request().url()).pathname.split('/')[3];
       const common = { worker_session_id: 'fixture', card_id: cardId, track_id: track.id, thread_id: 'thread',
         turn_id: 'turn', turn_error_text: null, item_uuid: null, created_at_ms: Date.now() };
-      await route.fulfill({ response, json: [
+      await route.fulfill({ response, json: historicalConversationPage(cardId, [
         { ...common, id: 1, item_type: 'userMessage', method: 'item/completed',
           params: JSON.stringify({ item: { content: [{ text: 'Original prompt' }] } }) },
         { ...common, id: 2, item_type: 'agentMessage', method: 'item/completed',
           params: JSON.stringify({ item: { text: answer } }) },
         { ...common, id: 3, item_type: null, method: 'turn/completed',
           params: JSON.stringify({ id: 'turn', status: 'completed', error: null }) },
-      ] });
+      ], null) });
     });
     const sent: unknown[] = [];
     const keys: (string | undefined)[] = [];
@@ -67,12 +68,12 @@ test('edits the latest message in the composer and replaces it on Send, in one k
       { presentation: 'user', text: 'User says:\nOriginal prompt',
       origin: { observation: 'user_message', event_id: null, queue_entry: null },
       attachments: [{ id: imageId, contentType: 'image/png', size: 68, url: `/api/cards/${cardId}/planner/attachments/${imageId}` }] }];
-    await page.route('**/api/cards/*/harness/items?**', async (route) => {
+    await page.route((url) => /^\/api\/cards\/[^/]+\/harness\/items$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
       const response = await route.fetch();
       const cardId = new URL(route.request().url()).pathname.split('/')[3];
       const common = { worker_session_id: 'fixture', card_id: cardId, track_id: track.id, thread_id: 'thread',
         turn_id: 'turn', turn_error_text: null, item_uuid: null, created_at_ms: Date.now() };
-      await route.fulfill({ response, json: removed ? [] : [
+      await route.fulfill({ response, json: historicalConversationPage(cardId, removed ? [] : [
         { ...common, id: 1, item_uuid: 'echo-1', item_type: 'userMessage', method: 'item/completed', input_segments: input(cardId),
           params: JSON.stringify({ item: { id: 'echo-1', clientId: 'input-1', type: 'userMessage',
             content: [{ type: 'text', text: input(cardId).map((segment) => segment.text).join('\n') }] } }) },
@@ -80,7 +81,7 @@ test('edits the latest message in the composer and replaces it on Send, in one k
           params: JSON.stringify({ item: { text: 'Original answer' } }) },
         { ...common, id: 3, item_type: null, method: 'turn/completed',
           params: JSON.stringify({ id: 'turn', status: 'completed', error: null }) },
-      ] });
+      ], null) });
     });
     await page.route(`**/planner/attachments/${imageId}`, (route) => route.fulfill({ contentType: 'image/png',
       body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64') }));
@@ -108,7 +109,7 @@ test('edits the latest message in the composer and replaces it on Send, in one k
     await expect(page.locator('[data-nc-edit-bar]')).toContainText('Editing message');
     await expect(page.locator('[data-nc-attachments] img')).toHaveAttribute('src', new RegExp(`${imageId}$`));
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toBeVisible();
-    await expect(page.locator('[data-nc-thread] [data-nc-turn="you"][data-nc-editing]')).toHaveText('Original prompt');
+    await expect(page.locator('[data-nc-thread] [data-nc-turn="unknown"][data-nc-editing]')).toHaveText('Original prompt');
     await expect(page.locator('[data-nc-thread] [data-nc-turn-attachments][data-nc-editing] img')).toHaveCount(1);
     expect(sent).toEqual([]);
     await composer.press('End');
@@ -121,7 +122,7 @@ test('edits the latest message in the composer and replaces it on Send, in one k
     expect(keys[0]).toBeTruthy();
     /* Until the answer the turn stays, marked, and there is no ✕ to drop the words. */
     await expect(page.locator('[data-nc-thread]').getByText('Original answer', { exact: true })).toBeVisible();
-    await expect(page.locator('[data-nc-thread] [data-nc-turn="you"][data-nc-editing]')).toHaveText('Original prompt');
+    await expect(page.locator('[data-nc-thread] [data-nc-turn="unknown"][data-nc-editing]')).toHaveText('Original prompt');
     await expect(page.locator('[data-nc-edit-bar]')).toHaveCount(0);
     releaseReplace();
     await expect(page.getByRole('group', { name: 'Message composer' })).not.toHaveAttribute('aria-busy', 'true');

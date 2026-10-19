@@ -204,7 +204,8 @@ async fn template_startup_recipe_snapshot_survives_source_edits_and_reset() {
         .harness
         .get(&sent["worker_session_id"].as_str().unwrap().to_owned())
         .expect("the reset harness is registered");
-    let pending = serde_json::to_string(&harness.snapshot().await.pending_observations()).unwrap();
+    let pending =
+        serde_json::to_string(&harness.snapshot().await.unwrap().pending_observations()).unwrap();
     assert!(
         pending.contains("Continue after reset")
             || b.started_turn_text("Continue after reset")
@@ -282,6 +283,11 @@ async fn template_startup_does_not_inject_into_blank_tracks_or_assistants() {
         .create_track(Some("blank-context"), Some("Discuss options only"))
         .await;
     assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        b.started_turn_text("Discuss options only")
+            .await
+            .contains("Discuss options only")
+    );
     let starts = b
         .state
         .shared_codex_appserver

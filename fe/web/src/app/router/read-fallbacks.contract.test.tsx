@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 // @vitest-environment jsdom
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -262,7 +263,7 @@ describe('degraded workspace reads stay usable', () => {
          it (#1625 P2). This is where the reader's words come from once the
          card is adopted — the client mints nothing for them. */
       if (request.path.includes('/harness/items') && revealLanding) {
-        return ok([{
+        return ok(historicalConversationPage(conversationCardId(request.path), [{
           id: 1, worker_session_id: 'r', track_id: 'w1', thread_id: 't',
           card_id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
           turn_id: null, turn_error_text: null, item_uuid: 'entry-0001', item_type: 'userMessage', method: 'item/completed',
@@ -273,7 +274,7 @@ describe('degraded workspace reads stay usable', () => {
           input_segments: [{ presentation: 'user', text: 'User says:\nOriginal uncertain intent', attachments: [],
             origin: { observation: 'user', event_id: null, queue_entry: { id: 'entry-0001', rev: 0 } } }],
           created_at_ms: 1,
-        }]);
+        }], null));
       }
       return ok([]);
     });
@@ -298,11 +299,11 @@ describe('degraded workspace reads stay usable', () => {
     await userEvent.click(within(drawer).getByRole('button', { name: 'Try again' }));
     /* The adopted conversation is the original create's: its row names the
        drawer (the conversation name is derived from the first confirmed
-       user turn) and is its one `you` line. The edited words were never
+       user turn) and is its one historical line with an unknown author. The edited words were never
        posted and are nowhere in it. */
     const adopted = await screen.findByRole('complementary', { name: 'Original uncertain intent' });
     await waitFor(() => expect(
-      [...adopted.querySelectorAll('[data-nc-turn="you"]')].map((turn) => turn.textContent),
+      [...adopted.querySelectorAll('[data-nc-turn="unknown"]')].map((turn) => turn.textContent),
     ).toEqual(['Original uncertain intent']));
     expect(within(adopted).queryByText('Edited offline intent')).toBeNull();
     expect(creates).toHaveLength(1);

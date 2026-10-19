@@ -148,6 +148,13 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
     snapshot.last_thread_id = Some(thread.clone());
     let harness = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -156,11 +163,15 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig::default(),
-        snapshot,
-    });
+        snapshot: (snapshot)
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     let daemon = &boot.state.shared_codex_appserver;
     daemon.emit_notification_for_test(
         calm_server::codex_appserver::Notification::ThreadStatusChanged {
@@ -294,6 +305,13 @@ async fn a_live_failed_loop_is_replaced_without_interrupting_or_resetting_its_th
         .unwrap();
     let old = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -302,11 +320,15 @@ async fn a_live_failed_loop_is_replaced_without_interrupting_or_resetting_its_th
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig::default(),
-        snapshot: HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()),
-    });
+        snapshot: (HarnessSnapshot::from_value_strict(row.handle_state_json.unwrap()))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), old.clone());
     let (status, body) = post_planner_input(
         boot.app.clone(),
@@ -402,7 +424,7 @@ async fn machine_authored_input_cannot_resume_a_failed_conversation() {
             actor,
         )
         .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{actor}: {body}");
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{actor}: {body}");
         assert_eq!(
             runtime_by_id_tx_snapshot(&boot.repo, &runtime)
                 .await
@@ -697,6 +719,13 @@ async fn recovery_backfills_the_matching_error_when_quiescence_precedes_completi
         .unwrap();
     let old = PlannerHarness::run(PlannerHarnessParams {
         track_delete_locks: Default::default(),
+        backend: calm_server::harness::backend::PlannerBackend::codex(
+            boot.state.shared_codex_appserver.clone(),
+            card.id.as_ref(),
+            card.track_id.as_ref(),
+            runtime.as_ref(),
+        )
+        .unwrap(),
         worker_session_id: runtime.clone(),
         card_id: card.id.clone(),
         track_id: card.track_id.clone(),
@@ -705,11 +734,15 @@ async fn recovery_backfills_the_matching_error_when_quiescence_precedes_completi
         events: boot.state.events.clone(),
         card_role_cache: boot.state.card_role_cache.clone(),
         track_area_cache: boot.state.track_area_cache.clone(),
-        backend: boot.state.shared_codex_appserver.clone().into(),
-        live_replies: calm_server::harness::LiveReplies::for_test(),
+
+        registry: boot.state.harness.clone(),
         config: HarnessConfig::default(),
-        snapshot: HarnessSnapshot::from_value_strict(before.handle_state_json.unwrap()),
-    });
+        snapshot: (HarnessSnapshot::from_value_strict(before.handle_state_json.unwrap()))
+            .try_into()
+            .expect("historical fixture snapshot contract"),
+    })
+    .await
+    .expect("historical fixture harness");
     boot.state.harness.insert(runtime.clone(), old);
     let sock = boot._tmp.path().join("run/codex-appserver.sock");
     std::fs::write(sock.with_extension("thread-read"),json!({"thread":{"id":thread,"status":{"type":"systemError"},"turns":[

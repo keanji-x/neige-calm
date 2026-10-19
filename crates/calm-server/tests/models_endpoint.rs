@@ -186,11 +186,7 @@ async fn boot(start_daemon: bool, scripted: impl FnOnce(&PathBuf)) -> Boot {
     state = state.with_shared_codex_appserver(shared);
     state = state.with_pending_codex_threads(pending);
 
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .with_state(state.clone());
+    let app = crate::support::authenticated_router::application(state.clone()).await;
 
     Boot {
         repo,

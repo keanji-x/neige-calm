@@ -1,3 +1,4 @@
+import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import '../../styles/entry.css';
 import { page } from 'vitest/browser';
@@ -68,9 +69,9 @@ function setup(reply?: Reply) {
     if (request.path.startsWith('/api/tracks/w1/sources/')) {
       return { status: 404, statusText: 'Not Found', body: { error: 'source not found', code: 'not_found' } };
     }
-    if (request.path.includes('/harness/items')) return ok([]);
-    if (request.path.endsWith('/planner/run')) {
-      return ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+    if (request.path.includes('/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [], null));
+    if (request.path.includes('/planner/run?contract=conversation_v1')) {
+      return ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
     }
     if (request.path === '/api/settings') return ok({});
     return ok([]);
@@ -387,14 +388,14 @@ describe('the source panel on the track page', () => {
 
   it('does not let an Escape inside the source card interrupt a running planner turn', async () => {
     const { requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) {
-        return ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        return ok(historicalConversationRun({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null }, 'idle', true));
       }
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Planner chat/ }));
     await screen.findByRole('complementary', { name: 'Planner chat' });
-    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/planner/run'))).toBe(true));
+    await waitFor(() => expect(requests.some((request) => request.path.includes('/planner/run?contract=conversation_v1'))).toBe(true));
     fireEvent.click(await screen.findByRole('button', { name: 'Mikko 日志' }, { timeout: 5_000 }));
     const source = await screen.findByRole('complementary', { name: 'Mikko 全球市场日志 9-13' });
     fireEvent.keyDown(source, { key: 'Escape' });
