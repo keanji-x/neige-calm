@@ -214,9 +214,7 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
     assert_eq!(recovered[0].kind, WorkerSessionKind::CodexCard);
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovery_daemon = SharedCodexAppServer::new_stub(repo.clone());
     let outcome = spawn_recovered_harness(
         repo.clone(),
@@ -322,9 +320,7 @@ async fn direct_recovery_boundary_rejects_area_chat_planner_runtime() {
         .unwrap();
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovery_daemon = SharedCodexAppServer::new_stub(repo.clone());
     let result = spawn_recovered_harness(
         repo.clone(),
@@ -433,9 +429,7 @@ async fn boot_recovery_skips_area_chat_planner_and_recovers_later_valid_runtime(
     let registry = HarnessRegistry::new();
 
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovery_daemon = SharedCodexAppServer::new_stub(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
@@ -475,9 +469,7 @@ async fn a_recovered_harness_streams_into_its_registrys_live_replies() {
     let registry = HarnessRegistry::new();
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
         EventBus::new(),
@@ -596,9 +588,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
@@ -648,9 +638,7 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
         .unwrap()
         .unwrap();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let user_handle = spawn_recovered_harness(
         repo.clone(),
         state.events.clone(),
@@ -768,9 +756,7 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
         seals: daemon.thread_seals().clone(),
-        claude: calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        ),
+        claude: calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone()),
         registry: registry.clone(),
         track_delete_locks: calm_server::harness::new_track_delete_locks(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -830,9 +816,7 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
         track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
         daemon: daemon.clone(),
         seals: daemon.thread_seals().clone(),
-        claude: calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        ),
+        claude: calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone()),
         registry: registry.clone(),
         track_delete_locks: calm_server::harness::new_track_delete_locks(),
         post_eligibility_hook: Some(post_eligibility_hook),
@@ -940,9 +924,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
 
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
@@ -1086,9 +1068,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
         EventBus::new(),
@@ -1191,9 +1171,7 @@ async fn boot_recovery_skips_terminal_tracks() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
@@ -1282,9 +1260,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo,
         EventBus::new(),
@@ -1489,9 +1465,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovered = recover_harnesses_on_boot(
         repo.clone(),
         EventBus::new(),
@@ -1808,9 +1782,7 @@ async fn assistant_provider_boot_recovery_registers_the_assistant_without_replay
 
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovery_daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let recovered = recover_harnesses_on_boot(
         repo.clone(),

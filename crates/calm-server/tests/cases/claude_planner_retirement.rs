@@ -9,7 +9,6 @@ use axum::http::StatusCode;
 use calm_server::claude_planner::stop::{
     clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
 };
-use calm_server::claude_planner::wiring::ClaudePlannerRow;
 use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::harness::{
@@ -251,25 +250,27 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
             .await
             .expect("repo"),
     );
-    let session = stack
-        .state
-        .claude_planner_wiring()
-        .open_session(
-            repo.clone(),
-            stack.state.thread_seals().clone(),
-            ClaudePlannerRow {
-                binding: calm_server::harness::profile::PlannerBinding {
-                    profile: calm_server::harness::profile::HarnessProfile::Planner,
-                    provider: calm_server::session_projection_repo::AgentProvider::Claude,
-                },
-                worker_session_id: &runtime.id,
-                card_id: &card_id,
-                track_id: &track_id,
+    let host = stack.state.planner_wiring().claude;
+    let track = repo.track_get(&track_id).await.unwrap().unwrap();
+    let session = Arc::new(
+        calm_server::claude_planner::session::ClaudePlannerSession::open(
+            calm_server::claude_planner::session::ClaudePlannerSessionParams {
+                host: host.clone(),
+                worker_session_id: runtime.id.clone(),
+                card_id: card_id.clone(),
+                track_id: track_id.clone(),
+                cwd: track.workspace.agent_cwd().into(),
+                instructions: String::new(),
+                calm_tools: host.calm_tools.clone(),
+                proxy: Vec::new(),
                 prior_total_tokens: 0,
+                repo: repo.clone(),
+                seals: stack.state.thread_seals().clone(),
             },
         )
         .await
-        .expect("loser session");
+        .expect("uninstalled loser session"),
+    );
     let mut snapshot = HarnessSnapshot::initial(0, Vec::new());
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = runtime.thread_id.clone();

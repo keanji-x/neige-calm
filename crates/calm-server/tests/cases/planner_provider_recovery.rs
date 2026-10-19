@@ -105,9 +105,7 @@ async fn recover_row(
         .unwrap();
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let recovery_daemon = SharedCodexAppServer::new_stub(repo.clone());
     let outcome = spawn_recovered_harness(
         repo.clone(),

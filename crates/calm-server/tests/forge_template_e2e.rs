@@ -1171,9 +1171,7 @@ async fn ask_answer_recovers_into_pending_queue() {
     let daemon = SharedCodexAppServer::new_stub(repo.clone());
     let registry = HarnessRegistry::new();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let handle = spawn_recovered_harness(
         repo,
         fx.events.clone(),

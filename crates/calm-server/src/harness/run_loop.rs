@@ -884,6 +884,14 @@ impl PlannerHarness {
         self.inner.live_claim.install();
     }
 
+    /// Operation shutdown's backend-owned, best-effort extra cleanup.
+    pub(crate) async fn post_registry_shutdown_cleanup(&self) {
+        self.inner
+            .backend
+            .post_registry_shutdown_cleanup(&self.inner.worker_session_id)
+            .await;
+    }
+
     /// Which provider runs this harness's turns.
     pub fn provider(&self) -> crate::session_projection_repo::AgentProvider {
         self.inner.backend.provider()

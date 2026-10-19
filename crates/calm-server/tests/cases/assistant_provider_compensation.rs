@@ -207,7 +207,7 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
         .find(|step| step.op == "restore_old_runtime")
         .unwrap();
     restore.completed = false;
-    let wiring = state.claude_planner_wiring();
+    let wiring = state.planner_wiring();
     let adapter = PlannerHarnessStartAdapter::new(
         repo.clone(),
         state.shared_codex_appserver.clone(),

@@ -72,3 +72,12 @@ pub async fn sweep_track(
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     sweep(&host.instance, &ids, SeamPolicy::Consult).await
 }
+
+/// Operation shutdown's extra marker sweep, for both a live return and registry-miss replay.
+/// Failure remains log-only; strict deletion uses the session's separate shutdown result.
+pub(crate) async fn shutdown_replay(host: &ClaudePlannerHost, worker_session_id: &str) {
+    if let Err(error) = super::stop::stop(&host.instance, worker_session_id).await {
+        tracing::warn!(%worker_session_id, %error,
+            "planner harness shutdown: the Claude Planner stop did not confirm");
+    }
+}

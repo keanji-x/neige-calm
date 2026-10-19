@@ -2555,9 +2555,7 @@ async fn settlement_wake_is_replay_stable() {
     let areas = calm_server::track_area_cache::TrackAreaCache::new();
     fx.boot.repo.seed_track_area_cache(&areas).await.unwrap();
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            fx.boot.repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(fx.boot.repo.clone());
     let recovery_daemon =
         SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
     let recovered = recover_harnesses_on_boot(

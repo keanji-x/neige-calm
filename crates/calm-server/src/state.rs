@@ -9,8 +9,8 @@ use crate::event::{Event, EventBus, EventScope};
 
 use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
 use crate::claude_planner::config::{ClaudePlannerConfig, ClaudePlannerHost};
-use crate::claude_planner::wiring::ClaudePlannerWiring;
 use crate::harness::HarnessRegistry;
+use crate::harness::wiring::PlannerWiring;
 use crate::ids::ActorId;
 use crate::mcp_server::McpServer;
 use crate::operation::card_create_adapter::CardCreateAdapter;
@@ -167,9 +167,9 @@ pub struct RouteState {
 }
 
 impl RouteState {
-    /// What recovery and the start adapter open a Claude Planner session with.
-    pub(crate) fn claude_planner_wiring(&self) -> ClaudePlannerWiring {
-        ClaudePlannerWiring {
+    /// Shared managed-backend wiring for recovery and the start adapter.
+    pub(crate) fn planner_wiring(&self) -> PlannerWiring {
+        PlannerWiring {
             claude: Arc::clone(&self.claude_planner),
             acp: Arc::clone(&self.acp_planner),
             plugin: Arc::clone(&self.plugin),
@@ -704,7 +704,7 @@ impl AppState {
             self.track_area_cache.clone(),
             self.shared_codex_appserver.clone(),
             self.route.thread_seals.clone(),
-            &self.claude_planner_wiring(),
+            &self.planner_wiring(),
             &self.harness,
             &self.route.track_delete_locks,
             rows,
@@ -712,9 +712,9 @@ impl AppState {
         .await
     }
 
-    /// What recovery and the start adapter open a Claude Planner session with.
-    pub fn claude_planner_wiring(&self) -> ClaudePlannerWiring {
-        self.route.claude_planner_wiring()
+    /// Shared managed-backend wiring for recovery and the start adapter.
+    pub fn planner_wiring(&self) -> PlannerWiring {
+        self.route.planner_wiring()
     }
 
     /// The server's one deletion-seal registry, the one the shared Codex daemon consults.
@@ -823,7 +823,7 @@ impl AppState {
                 track_area_cache: self.track_area_cache.clone(),
                 daemon: self.shared_codex_appserver.clone(),
                 seals: self.route.thread_seals.clone(),
-                claude: self.claude_planner_wiring(),
+                claude: self.planner_wiring(),
                 registry: self.harness.clone(),
                 track_delete_locks: self.route.track_delete_locks.clone(),
                 #[cfg(feature = "fixtures")]

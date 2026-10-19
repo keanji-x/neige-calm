@@ -126,3 +126,6 @@ mod planner_timeout;
 
 #[path = "cases/claude_planner_hibernation.rs"]
 mod claude_planner_hibernation;
+
+#[path = "cases/claude_planner_shutdown.rs"]
+mod claude_planner_shutdown;

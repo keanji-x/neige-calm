@@ -131,9 +131,8 @@ pub async fn recover(boot: &Boot) -> PlannerHarness {
         .await
         .unwrap()
         .unwrap();
-    let wiring = calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-        boot.repo.clone(),
-    );
+    let wiring =
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(boot.repo.clone());
     calm_server::harness::spawn_recovered_harness(
         boot.repo.clone(),
         calm_server::event::EventBus::new(),

@@ -128,7 +128,7 @@ impl PlannerHarnessStartAdapter {
         }
     }
 
-    fn claude_wiring(&self) -> PlannerWiring {
+    fn planner_wiring(&self) -> PlannerWiring {
         PlannerWiring {
             claude: Arc::clone(&self.claude_host),
             acp: Arc::clone(&self.acp_host),
@@ -1565,7 +1565,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let backend = factory
             .open(
                 self.seals.clone(),
-                &self.claude_wiring(),
+                &self.planner_wiring(),
                 self.repo.clone(),
                 PlannerRow {
                     binding: crate::harness::profile::PlannerBinding {

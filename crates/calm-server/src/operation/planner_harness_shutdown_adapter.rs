@@ -4,13 +4,11 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::claude_planner::config::ClaudePlannerHost;
-use crate::claude_planner::stop::stop;
 use crate::db::Repo;
 use crate::db::sqlite::{session_mark_superseded_runtime_tx, session_projection_by_id_tx};
 use crate::error::{CalmError, Result};
 use crate::harness::HarnessRegistry;
 use crate::harness::backend::factory::PlannerFactory;
-use crate::session_projection_repo::{AgentProvider, WorkerSessionKind};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 
 use super::{
@@ -57,21 +55,6 @@ pub struct PlannerHarnessShutdownOperationPayload {
     /// no default, so without the rename a parked operation would fail to deserialize on resume.
     #[serde(rename = "runtime_id")]
     pub worker_session_id: String,
-}
-
-impl PlannerHarnessShutdownAdapter {
-    /// #1791 §5.1: a Claude Planner is stopped by id, registered or not (a replay repeats it). A failure is logged
-    /// and left to the boot sweep or the next destructive step's scoped sweep; the superseded row's token no longer
-    /// authenticates.
-    async fn stop_claude_planner(&self, worker_session_id: &str) {
-        if let Err(error) = stop(&self.claude_host.instance, worker_session_id).await {
-            tracing::warn!(
-                %worker_session_id,
-                %error,
-                "planner harness shutdown: the Claude Planner stop did not confirm"
-            );
-        }
-    }
 }
 
 #[async_trait]
@@ -136,10 +119,7 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
             .shutdown_and_remove(&worker_session_id)
             .await?
         {
-            let claude = harness.provider() == AgentProvider::Claude;
-            if claude {
-                self.stop_claude_planner(&worker_session_id).await;
-            }
+            harness.post_registry_shutdown_cleanup().await;
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
         if let Some(runtime) = self
@@ -147,14 +127,6 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
             .session_projection_by_id(&worker_session_id)
             .await?
         {
-            let managed = matches!(
-                runtime.kind,
-                WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
-            );
-            if managed && runtime.agent_provider == Some(AgentProvider::Claude) {
-                self.stop_claude_planner(&worker_session_id).await;
-                return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
-            }
             PlannerFactory::new(
                 Arc::downgrade(&self.daemon),
                 &self.claude_host,

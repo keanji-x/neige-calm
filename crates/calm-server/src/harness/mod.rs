@@ -317,15 +317,20 @@ pub async fn spawn_recovered_harness(
             }
         }
     };
-    if provider == AgentProvider::Claude {
-        record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
-            .await?;
-    }
     let factory = backend::factory::PlannerFactory::new(
         std::sync::Arc::downgrade(&daemon),
         &claude.claude,
         &claude.acp,
     );
+    factory
+        .prepare_restore(
+            &provider,
+            repo.as_ref(),
+            &runtime,
+            card.track_id.as_str(),
+            &snapshot,
+        )
+        .await?;
     if let Some(checkpoint) = factory
         .prepare_checkpoint(
             &provider,
@@ -386,49 +391,6 @@ pub async fn spawn_recovered_harness(
         Some(handle) => RecoveryOutcome::Installed(handle),
         None => RecoveryOutcome::Skipped,
     })
-}
-
-/// #1791 §5.1 item 5: no Claude Planner process survives a restart (the boot sweep ends it), so
-/// the snapshot's last turn is `interrupted` unless it already settled; the write is idempotent.
-/// Only a snapshot whose phase says a turn may still have been running names such a turn: a
-/// settled phase means the outcome was recorded (a reset's transcript clear may since have removed
-/// it, which is no reason to invent one), and a turn whose id never reached the snapshot commit
-/// left the pre-drain snapshot, whose batch re-drains.
-async fn record_interrupted_claude_turn(
-    repo: &dyn Repo,
-    runtime: &WorkerSessionProjection,
-    track_id: &str,
-    snapshot: &HarnessSnapshot,
-) -> Result<()> {
-    if !matches!(
-        snapshot.phase,
-        HarnessPhaseTag::TurnRunning | HarnessPhaseTag::IssuingInterrupt | HarnessPhaseTag::Resumed
-    ) {
-        return Ok(());
-    }
-    let (Some(turn_id), Some(thread_id)) = (
-        snapshot.last_turn_id.as_deref(),
-        effective_runtime_thread_id(runtime),
-    ) else {
-        return Ok(());
-    };
-    let turn = serde_json::json!({
-        "id": turn_id,
-        "status": "interrupted",
-        "error": {"message": "neige restarted during this turn"},
-    });
-    turn_outcome::record(
-        repo,
-        &runtime.id,
-        &runtime.card_id,
-        track_id,
-        &thread_id,
-        turn_id,
-        &turn,
-        crate::harness::turn_outcome::Confirmation::Unconfirmed,
-    )
-    .await?;
-    Ok(())
 }
 
 async fn replay_harness_events_since(

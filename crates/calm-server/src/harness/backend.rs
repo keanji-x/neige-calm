@@ -271,6 +271,16 @@ impl PlannerBackend {
         }
     }
 
+    pub(crate) async fn post_registry_shutdown_cleanup(&self, worker_session_id: &str) {
+        match &self.0 {
+            Arm::Claude(session) => {
+                crate::claude_planner::lifecycle::shutdown_replay(session.host(), worker_session_id)
+                    .await
+            }
+            Arm::Codex(..) | Arm::Acp(_) => {}
+        }
+    }
+
     pub fn provider(&self) -> AgentProvider {
         match &self.0 {
             Arm::Acp(session) => session.provider(),

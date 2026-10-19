@@ -91,7 +91,7 @@ async fn closed_nonquiescent_automatic_install(work: &str) {
                 boot.state.track_area_cache.clone(),
                 boot.state.shared_codex_appserver.clone(),
                 boot.state.shared_codex_appserver.thread_seals().clone(),
-                &boot.state.claude_planner_wiring(),
+                &boot.state.planner_wiring(),
                 &boot.state.harness,
                 &calm_server::harness::new_track_delete_locks(),
                 runtime.clone(),

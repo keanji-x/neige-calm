@@ -452,7 +452,7 @@ async fn assistant_provider_shutdown_replay_stops_native_orphans_without_a_regis
             .shutdown()
             .await
             .unwrap();
-        let wiring = stack.state.claude_planner_wiring();
+        let wiring = stack.state.planner_wiring();
         let (key, marker) = match provider {
             AgentProvider::Claude => (
                 calm_server::claude_planner::stop::MARKER_KEY,

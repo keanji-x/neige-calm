@@ -173,7 +173,7 @@ impl WakeContext {
             harness: route.harness.clone(),
             daemon: std::sync::Arc::downgrade(&shell.shared_codex_appserver),
             thread_seals: route.thread_seals.clone(),
-            providers: route.claude_planner_wiring(),
+            providers: route.planner_wiring(),
         }
     }
 

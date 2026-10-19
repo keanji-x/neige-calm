@@ -3142,7 +3142,7 @@ async fn finish_prepared_track_deletion_owned(
                 route.write.area_cache().clone(),
                 codex.shared_codex_appserver.clone(),
                 route.thread_seals.clone(),
-                route.claude_planner_wiring(),
+                route.planner_wiring(),
                 worker.harness.clone(),
                 route.track_delete_locks.clone(),
             );

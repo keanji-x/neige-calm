@@ -82,10 +82,32 @@ impl<'a> PlannerFactory<'a> {
                 crate::acp_planner::wiring::open_session(self.acp, wiring, repo, seals, row)
                     .await?,
             )),
-            AgentProvider::Claude => {
-                PlannerBackend(Arm::Claude(wiring.open_session(repo, seals, row).await?))
-            }
+            AgentProvider::Claude => PlannerBackend(Arm::Claude(
+                crate::claude_planner::wiring::open_session(self.claude, wiring, repo, seals, row)
+                    .await?,
+            )),
         })
+    }
+
+    /// Restore-only policy, at the original post-reservation/pre-open point. Operation replay
+    /// deliberately uses prepare_checkpoint alone.
+    pub(crate) async fn prepare_restore(
+        &self,
+        provider: &AgentProvider,
+        repo: &dyn Repo,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+        track_id: &str,
+        snapshot: &crate::harness::HarnessSnapshot,
+    ) -> Result<()> {
+        match provider {
+            AgentProvider::Claude => {
+                crate::claude_planner::recovery::record_interrupted_turn(
+                    repo, runtime, track_id, snapshot,
+                )
+                .await
+            }
+            AgentProvider::Codex | AgentProvider::OpenCode => Ok(()),
+        }
     }
 
     /// Call only after the caller's predecessor reservation has settled. ACP owns full
@@ -121,6 +143,10 @@ impl<'a> PlannerFactory<'a> {
             runtime.kind,
             WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
         );
+        if managed && runtime.agent_provider == Some(AgentProvider::Claude) {
+            crate::claude_planner::lifecycle::shutdown_replay(self.claude, &runtime.id).await;
+            return Ok(());
+        }
         if managed && runtime.agent_provider == Some(AgentProvider::OpenCode) {
             return crate::planner_process::stop(&self.acp.instance, &runtime.id).await;
         }

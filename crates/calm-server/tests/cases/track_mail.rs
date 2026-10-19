@@ -592,9 +592,8 @@ async fn mail_to_a_down_planner_is_woken_on_its_next_harness_start() {
         .await
         .unwrap()
         .expect("the down Planner's runtime");
-    let claude = calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-        w.repo_dyn.clone(),
-    );
+    let claude =
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(w.repo_dyn.clone());
     let outcome = calm_server::harness::spawn_recovered_harness(
         w.repo_dyn.clone(),
         w.events.clone(),

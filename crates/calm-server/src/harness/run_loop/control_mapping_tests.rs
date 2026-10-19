@@ -248,14 +248,14 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
 
 #[tokio::test]
 async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
-    use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
     use crate::harness::backend::InterruptDiagnostic;
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
+    use crate::harness::wiring::{PlannerRow, PlannerWiring};
     use crate::session_projection_repo::AgentProvider;
     for provider in [AgentProvider::Claude, AgentProvider::OpenCode] {
         let mut f = Fixture::new().await;
         let inner = &f.harness.inner;
-        let wiring = ClaudePlannerWiring::unconfigured_for_test(f.repo.clone());
+        let wiring = PlannerWiring::unconfigured_for_test(f.repo.clone());
         let backend = crate::harness::backend::factory::PlannerFactory::new(
             std::sync::Arc::downgrade(&f.daemon),
             &wiring.claude,
@@ -265,7 +265,7 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
             f.daemon.thread_seals().clone(),
             &wiring,
             f.repo.clone(),
-            ClaudePlannerRow {
+            PlannerRow {
                 binding: PlannerBinding {
                     profile: HarnessProfile::Planner,
                     provider: provider.clone(),

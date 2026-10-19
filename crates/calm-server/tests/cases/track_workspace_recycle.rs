@@ -1410,9 +1410,7 @@ async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
     let repo: Arc<dyn Repo> = b.repo.clone();
     let reboot_daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let claude_wiring =
-        calm_server::claude_planner::wiring::ClaudePlannerWiring::unconfigured_for_test(
-            repo.clone(),
-        );
+        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
     let outcome = calm_server::harness::spawn_recovered_harness(
         repo,
         EventBus::new(),

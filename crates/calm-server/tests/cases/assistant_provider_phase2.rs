@@ -213,7 +213,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
             OperationOutcome::Succeeded { .. }
         ));
     }
-    let wiring = state.claude_planner_wiring();
+    let wiring = state.planner_wiring();
     let inner = PlannerHarnessStartAdapter::new(
         repo.clone(),
         state.shared_codex_appserver.clone(),
@@ -514,7 +514,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
         .find(|step| step.op == "restore_old_runtime")
         .unwrap();
     restore.completed = false;
-    let wiring = state.claude_planner_wiring();
+    let wiring = state.planner_wiring();
     let adapter = PlannerHarnessStartAdapter::new(
         repo.clone(),
         state.shared_codex_appserver.clone(),

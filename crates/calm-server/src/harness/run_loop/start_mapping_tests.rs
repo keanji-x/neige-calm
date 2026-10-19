@@ -280,23 +280,26 @@ async fn m1_mapping_codex_signin_fact_is_captured_at_authentication_owner() {
 
 #[tokio::test]
 async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
-    use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
+    use crate::harness::wiring::{PlannerRow, PlannerWiring};
     use crate::session_projection_repo::AgentProvider;
     for provider in [AgentProvider::Claude, AgentProvider::OpenCode] {
         let mut f = Fixture::new().await;
         let inner = &f.harness.inner;
-        let wiring = ClaudePlannerWiring::unconfigured_for_test(f.repo.clone());
+        let wiring = PlannerWiring::unconfigured_for_test(f.repo.clone());
+        let factory_host = Arc::new(
+            crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch().unwrap(),
+        );
         let backend = crate::harness::backend::factory::PlannerFactory::new(
             std::sync::Arc::downgrade(&f.daemon),
-            &wiring.claude,
+            &factory_host,
             &wiring.acp,
         )
         .open(
             f.daemon.thread_seals().clone(),
             &wiring,
             f.repo.clone(),
-            ClaudePlannerRow {
+            PlannerRow {
                 binding: PlannerBinding {
                     profile: HarnessProfile::Planner,
                     provider: provider.clone(),
@@ -309,6 +312,12 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
         )
         .await
         .unwrap();
+        if let Some(session) = backend.claude_session_for_test() {
+            assert!(
+                Arc::ptr_eq(session.host(), &factory_host),
+                "factory host is authoritative"
+            );
+        }
         Arc::get_mut(&mut f.harness.inner)
             .expect("exclusive fixture owner")
             .backend = backend;
@@ -356,14 +365,14 @@ async fn m1_mapping_local_start_admission_and_mismatched_rewind_table() {
 
 #[tokio::test]
 async fn ready_factory_construction_and_open_leave_first_turn_work_lazy() {
-    use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
     use crate::harness::backend::factory::PlannerFactory;
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
+    use crate::harness::wiring::{PlannerRow, PlannerWiring};
     use crate::session_projection_repo::AgentProvider;
 
     let f = Fixture::new().await;
     let inner = &f.harness.inner;
-    let wiring = ClaudePlannerWiring::unconfigured_for_test(f.repo.clone());
+    let wiring = PlannerWiring::unconfigured_for_test(f.repo.clone());
     let before: Vec<(String, Option<String>)> =
         sqlx::query_as("SELECT id, mcp_token_hash FROM worker_sessions ORDER BY id")
             .fetch_all(f.repo.pool())
@@ -388,7 +397,7 @@ async fn ready_factory_construction_and_open_leave_first_turn_work_lazy() {
                 f.daemon.thread_seals().clone(),
                 &wiring,
                 f.repo.clone(),
-                ClaudePlannerRow {
+                PlannerRow {
                     binding: PlannerBinding {
                         profile: HarnessProfile::Planner,
                         provider,

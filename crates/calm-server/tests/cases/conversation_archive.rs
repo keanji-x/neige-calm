@@ -365,7 +365,7 @@ async fn automatic_recovery_does_not_install_an_archived_assistant() {
         b.repo.track_area_cache().clone(),
         daemon.clone(),
         daemon.thread_seals().clone(),
-        &b.state.claude_planner_wiring(),
+        &b.state.planner_wiring(),
         &registry,
         &calm_server::harness::new_track_delete_locks(),
         runtime.clone(),
