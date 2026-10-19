@@ -60,6 +60,8 @@ use axum::{
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
 use utoipa::{IntoParams, ToSchema};
 use workspace_runtime::recycle as workspace_recycle;
 
@@ -72,6 +74,8 @@ use tokio::sync::Notify;
 
 mod add;
 mod create;
+mod deletion_observation;
+use deletion_observation::{DeletionObservation, Stage};
 mod fork_guard;
 mod preparation;
 use preparation::NamedSource;
@@ -130,6 +134,7 @@ struct TrackDeletePlan {
 }
 
 struct PreparedTrackDeletion {
+    observation: DeletionObservation,
     track: Track,
     area_kind: Option<AreaKind>,
     plan: TrackDeletePlan,
@@ -2661,52 +2666,82 @@ async fn teardown_track_deletion(
     w: &WorkerState,
     cs: &CodexShellState,
     plan: &TrackDeletePlan,
+    observation: &DeletionObservation,
 ) -> Result<Vec<String>> {
     wait_at_track_delete_teardown_hook(plan.track_id.as_str()).await;
-    crate::operation::terminal_disposal::require_safe(
-        s.repo.as_ref(),
-        crate::operation::terminal_disposal::Scope::Track(plan.track_id.to_string()),
-        w.daemon.proc_supervisor_sock.as_deref(),
-    )
-    .await?;
+    observation
+        .observe(
+            Stage::DisposalCheck,
+            crate::operation::terminal_disposal::require_safe(
+                s.repo.as_ref(),
+                crate::operation::terminal_disposal::Scope::Track(plan.track_id.to_string()),
+                w.daemon.proc_supervisor_sock.as_deref(),
+            ),
+        )
+        .await?;
     let mut seals = crate::thread_seals::DeletionThreadSeals::new(s.thread_seals.clone());
     for card in &plan.cards {
-        if let Some(thread_id) = quiesce_shared_card_active_turn(s, cs, card).await? {
+        if let Some(thread_id) = observation
+            .observe(
+                Stage::CodexQuiesce,
+                quiesce_shared_card_active_turn(s, cs, card),
+            )
+            .await?
+        {
             seals.seal(thread_id);
         }
     }
     // #1791 §5.1 item 4: once the threads are sealed, revoke then sweep every Claude Planner id of
     // the track in any state, before the harness shutdowns; `Err` aborts before anything moves or
     // is deleted, and the revocation stands for a harness the abort reinstalls.
-    crate::claude_planner::lifecycle::sweep_track(
-        s.repo.as_ref(),
-        &s.claude_planner,
-        plan.track_id.as_str(),
-    )
-    .await?;
-    crate::acp_planner::config::sweep_track(
-        s.repo.as_ref(),
-        &s.acp_planner,
-        plan.track_id.as_str(),
-    )
-    .await?;
-    crate::execution_quiesce::quiesce(
-        s.repo.as_ref(),
-        s.operation_runtime.execution().engine(),
-        crate::operation::terminal_disposal::Scope::Track(plan.track_id.to_string()),
-    )
-    .await?;
-    for terminal in &plan.terminals {
-        quiesce_terminal_artifacts_for_deletion(
-            Some(w.terminal_renderer.as_ref()),
-            w.daemon.proc_supervisor_sock.as_deref(),
-            terminal,
+    observation
+        .observe(
+            Stage::ClaudeSweep,
+            crate::claude_planner::lifecycle::sweep_track(
+                s.repo.as_ref(),
+                &s.claude_planner,
+                plan.track_id.as_str(),
+            ),
         )
         .await?;
+    observation
+        .observe(
+            Stage::AcpSweep,
+            crate::acp_planner::config::sweep_track(
+                s.repo.as_ref(),
+                &s.acp_planner,
+                plan.track_id.as_str(),
+            ),
+        )
+        .await?;
+    observation
+        .observe(
+            Stage::ExecutionQuiesce,
+            crate::execution_quiesce::quiesce(
+                s.repo.as_ref(),
+                s.operation_runtime.execution().engine(),
+                crate::operation::terminal_disposal::Scope::Track(plan.track_id.to_string()),
+            ),
+        )
+        .await?;
+    for terminal in &plan.terminals {
+        observation
+            .observe(
+                Stage::TerminalQuiesce,
+                quiesce_terminal_artifacts_for_deletion(
+                    Some(w.terminal_renderer.as_ref()),
+                    w.daemon.proc_supervisor_sock.as_deref(),
+                    terminal,
+                ),
+            )
+            .await?;
     }
-    for thread_id in w
-        .harness
-        .shutdown_track(&plan.track_id, s.thread_seals.clone())
+    for thread_id in observation
+        .observe(
+            Stage::HarnessShutdown,
+            w.harness
+                .shutdown_track(&plan.track_id, s.thread_seals.clone()),
+        )
         .await?
     {
         seals.seal(thread_id);
@@ -2844,15 +2879,20 @@ fn recycle_track_workspace_for_delete(
     s: &RouteState,
     track: &Track,
     area_kind: Option<AreaKind>,
+    observation: &DeletionObservation,
 ) -> Result<workspace_recycle::RecycleDecision> {
-    let decision = workspace_recycle::recycle_track_workspace(
-        &s.workspace_root,
-        area_kind,
-        track.id.as_str(),
-        &track.workspace,
-        crate::model::now_ms(),
-    )?;
+    let decision = observation.observe_sync(Stage::WorkspaceRecycle, || {
+        workspace_recycle::recycle_track_workspace(
+            &s.workspace_root,
+            area_kind,
+            track.id.as_str(),
+            &track.workspace,
+            crate::model::now_ms(),
+        )
+    })?;
+    let mut trash = observation.stage(Stage::TrashCollection);
     workspace_recycle::gc_trash_best_effort(&s.workspace_root, crate::model::now_ms());
+    trash.finish("finished_best_effort");
     Ok(decision)
 }
 
@@ -2863,7 +2903,13 @@ impl PreparedTrackDeletion {
         worker: &WorkerState,
         codex: &CodexShellState,
     ) -> Result<QuiescedTrackDeletion> {
-        let sealed_thread_ids = teardown_track_deletion(route, worker, codex, &self.plan).await?;
+        let sealed_thread_ids = self
+            .observation
+            .observe(
+                Stage::Teardown,
+                teardown_track_deletion(route, worker, codex, &self.plan, &self.observation),
+            )
+            .await?;
         Ok(QuiescedTrackDeletion {
             prepared: self,
             sealed_thread_ids,
@@ -2878,7 +2924,12 @@ impl QuiescedTrackDeletion {
             sealed_thread_ids,
         } = self;
         let recycled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            recycle_track_workspace_for_delete(route, &prepared.track, prepared.area_kind)
+            recycle_track_workspace_for_delete(
+                route,
+                &prepared.track,
+                prepared.area_kind,
+                &prepared.observation,
+            )
         }));
         match recycled {
             Ok(Ok(decision)) => Ok(RecycledTrackDeletion {
@@ -2936,7 +2987,14 @@ impl RecycledTrackDeletion {
             .iter()
             .map(|terminal| terminal.card_id.to_string())
             .collect();
-        let sweeps = match finish_track_deletion(route, prepared.plan, actor).await {
+        let sweeps = match prepared
+            .observation
+            .observe(
+                Stage::Commit,
+                finish_track_deletion(route, prepared.plan, actor),
+            )
+            .await
+        {
             Ok(sweeps) => sweeps,
             Err(error) => {
                 // Another deletion boundary may have won between teardown and this transaction. A
@@ -2947,7 +3005,10 @@ impl RecycledTrackDeletion {
                 }
                 // `track_delete_tx` updates the process-local cache before commit; a rollback cannot
                 // undo the cache or filesystem, so compensate here.
-                if let Err(restore_error) = workspace_recycle::restore_recycled_workspace(&decision)
+                if let Err(restore_error) =
+                    prepared.observation.observe_sync(Stage::Compensation, || {
+                        workspace_recycle::restore_recycled_workspace(&decision)
+                    })
                 {
                     return Err(CalmError::Internal(format!(
                         "track deletion rolled back ({error}), but workspace compensation failed: {restore_error}"
@@ -2962,6 +3023,7 @@ impl RecycledTrackDeletion {
                 return Err(error);
             }
         };
+        let mut post_commit = prepared.observation.stage(Stage::PostCommit);
         // The row delete has COMMITTED, so the daemon's in-memory `thread_id -> card_id`
         // attribution is stale. Post-commit and infallible.
         prepared
@@ -2989,12 +3051,15 @@ impl RecycledTrackDeletion {
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now
         // authoritative.
+        let mut worktrees = prepared.observation.stage(Stage::WorktreeSweep);
         sweep_workspace_worktrees_for_tracks(
             sweeps,
             crate::workspace_service::ports::ServerWorkspacePorts,
             crate::workspace_service::ports::observe,
         )
         .await;
+        worktrees.finish("finished_best_effort");
+        post_commit.finish("ok");
         Ok(())
     }
 }
@@ -3007,6 +3072,7 @@ async fn run_recycled_track_deletion(
     actor: ActorId,
     deletion: RecycledTrackDeletion,
 ) -> Result<()> {
+    let observation = deletion.prepared.observation.clone();
     let recovery_track = deletion.prepared.track.clone();
     let recovery_decision = deletion.decision.clone();
     let recovery_thread_ids = deletion.sealed_thread_ids.clone();
@@ -3023,7 +3089,9 @@ async fn run_recycled_track_deletion(
                 .await?
                 .is_some()
             {
-                workspace_recycle::restore_recycled_workspace(&recovery_decision)?;
+                observation.observe_sync(Stage::Compensation, || {
+                    workspace_recycle::restore_recycled_workspace(&recovery_decision)
+                })?;
                 route
                     .write
                     .remember_track(recovery_track.id.clone(), recovery_track.area_id.clone());
@@ -3050,45 +3118,61 @@ async fn finish_prepared_track_deletion_owned(
     let track_id = prepared.track.id.clone();
     let recovery_track_ids = HashSet::from([track_id.clone()]);
     let task_track_id = track_id.clone();
-    tokio::spawn(async move {
-        let workflow = std::panic::AssertUnwindSafe(async {
-            let recycled = prepared
-                .quiesce(&route, &worker, &codex)
-                .await?
-                .recycle(&route)?;
-            run_recycled_track_deletion(&route, actor, recycled).await
-        })
-        .catch_unwind()
-        .await;
-        let result = match workflow {
-            Ok(result) => result,
-            Err(_) => Err(CalmError::Internal(format!(
-                "track deletion saga for {task_track_id} panicked before recycle"
-            ))),
-        };
-        let recovery = crate::harness::HarnessRecoveryContext::new(
-            worker.repo.clone(),
-            route.events.clone(),
-            route.write.role_cache().clone(),
-            route.write.area_cache().clone(),
-            codex.shared_codex_appserver.clone(),
-            route.thread_seals.clone(),
-            route.claude_planner_wiring(),
-            worker.harness.clone(),
-            route.track_delete_locks.clone(),
-        );
-        if result.is_err()
-            && let Err(error) =
-                crate::harness::recover_harnesses_for_tracks(&recovery, &recovery_track_ids).await
-        {
-            tracing::error!(
-                track_id = %task_track_id,
-                error = %error,
-                "aborted track deletion could not recover its planner harness"
+    let observation = prepared.observation.clone();
+    let dispatch = observation.dispatch();
+    let span = observation.span();
+    tokio::spawn(
+        async move {
+            let mut owned = observation.stage(Stage::OwnedWorkflow);
+            let workflow = std::panic::AssertUnwindSafe(async {
+                let recycled = prepared
+                    .quiesce(&route, &worker, &codex)
+                    .await?
+                    .recycle(&route)?;
+                run_recycled_track_deletion(&route, actor, recycled).await
+            })
+            .catch_unwind()
+            .await;
+            let result = match workflow {
+                Ok(result) => result,
+                Err(_) => Err(CalmError::Internal(format!(
+                    "track deletion saga for {task_track_id} panicked before recycle"
+                ))),
+            };
+            let recovery = crate::harness::HarnessRecoveryContext::new(
+                worker.repo.clone(),
+                route.events.clone(),
+                route.write.role_cache().clone(),
+                route.write.area_cache().clone(),
+                codex.shared_codex_appserver.clone(),
+                route.thread_seals.clone(),
+                route.claude_planner_wiring(),
+                worker.harness.clone(),
+                route.track_delete_locks.clone(),
             );
+            if result.is_err()
+                && let Err(error) = observation
+                    .observe(
+                        Stage::Recovery,
+                        crate::harness::recover_harnesses_for_tracks(
+                            &recovery,
+                            &recovery_track_ids,
+                        ),
+                    )
+                    .await
+            {
+                tracing::error!(
+                    track_id = %task_track_id,
+                    error = %error,
+                    "aborted track deletion could not recover its planner harness"
+                );
+            }
+            owned.finish(if result.is_ok() { "ok" } else { "error" });
+            result
         }
-        result
-    })
+        .with_subscriber(dispatch)
+        .instrument(span),
+    )
     .await
     .map_err(|error| {
         CalmError::Internal(format!(
@@ -3119,11 +3203,18 @@ pub(crate) async fn delete_track(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    crate::managed_track::refuse_track_delete(s.mcp_context.sqlite_db.clone(), &id).await?;
+    let observation = DeletionObservation::new(&id);
+    observation.observe(Stage::Request, async {
+    observation.observe(Stage::ManagedGuard, crate::managed_track::refuse_track_delete(s.mcp_context.sqlite_db.clone(), &id)).await?;
     // One process owns this track's move + transaction + compensation at a time.
     // Lock order: operation drive → track delete.
+    let mut operation_wait = observation.stage(Stage::OperationLock);
     let operation_guard = s.operation_runtime.lock_for_track_delete().await;
+    operation_wait.finish("ok");
+    let mut track_wait = observation.stage(Stage::TrackLock);
     let delete_guard = crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await;
+    track_wait.finish("ok");
+    let (track, track_id, owning_area, pool) = observation.observe(Stage::Preflight, async {
     // Eager teardown for every terminal under the track: `terminals.card_id` is
     // `ON DELETE RESTRICT`, so a missed cleanup aborts the delete transaction.
     let track = s
@@ -3171,10 +3262,13 @@ pub(crate) async fn delete_track(
     }
 
     // Validate every surviving report source before teardown has any external effect.
-    preflight_track_deletion_reprojection(&pool, &track_id).await?;
+    Ok((track, track_id, owning_area, pool))
+    }).await?;
+    observation.observe(Stage::Reprojection, preflight_track_deletion_reprojection(&pool, &track_id)).await?;
 
     let prepared = PreparedTrackDeletion {
-        plan: snapshot_track_deletion(&s, &track).await?,
+        observation: observation.clone(),
+        plan: observation.observe(Stage::Snapshot, snapshot_track_deletion(&s, &track)).await?,
         turn_daemon: cs.shared_codex_appserver.clone(),
         thread_seals: s.thread_seals.clone(),
         track,
@@ -3184,6 +3278,7 @@ pub(crate) async fn delete_track(
     };
     finish_prepared_track_deletion_owned(s, w, cs, actor.to_actor_id(), prepared).await?;
     Ok(StatusCode::NO_CONTENT)
+    }.instrument(observation.span())).await
 }
 
 /// A report link from another track that targets this track.

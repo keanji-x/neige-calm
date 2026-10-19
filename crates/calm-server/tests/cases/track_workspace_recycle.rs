@@ -33,6 +33,7 @@ struct Boot {
     roles: CardRoleCache,
     tracks: TrackAreaCache,
     shared_codex: Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
+    operation_runtime: Arc<calm_server::operation::OperationRuntime>,
     tmp: TempDir,
 }
 
@@ -73,6 +74,7 @@ async fn boot() -> Boot {
     .with_shared_codex_appserver(shared_codex.clone())
     .with_workspace_root(workspace_root.clone());
     let harness = state.harness.clone();
+    let operation_runtime = state.operation_runtime.clone();
     let app = routes::router()
         .layer(axum::middleware::from_fn_with_state(
             calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
@@ -95,6 +97,7 @@ async fn boot() -> Boot {
         roles,
         tracks,
         shared_codex,
+        operation_runtime,
         tmp,
     }
 }
@@ -1636,3 +1639,6 @@ async fn deleting_a_track_takes_its_live_harness_out_of_the_registry() {
 
 #[path = "isolation_none.rs"]
 mod isolation_none;
+
+#[path = "track_workspace_recycle/deletion_observation.rs"]
+mod deletion_observation;
