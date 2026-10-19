@@ -437,8 +437,10 @@ async fn execution_attachment_lost_ack_recovers_by_frozen_registration_id() {
     let harness = Harness::start().await;
     let client = harness.connect().await;
     let root = harness.root("lost-ack", false);
+    let expected_cwd = root.path.clone();
     let held = HeldSourceObjects::open(&root.path, false).unwrap();
-    let (_, registration) = external(root, &authority());
+    let grant = authority();
+    let (scope, registration) = external(root, &grant);
     let frozen = transfer(&client, registration, &held);
     let socket = raw(&harness).await;
     rights::send(
@@ -451,6 +453,7 @@ async fn execution_attachment_lost_ack_recovers_by_frozen_registration_id() {
     // Simulate sender loss after effect submission and before it consumes any acknowledgement.
     drop(socket);
     drop(client);
+    drop(held);
     let path = harness
         .journal()
         .join(format!("{}.registration", frozen.registration_id.as_str()));
@@ -465,6 +468,41 @@ async fn execution_attachment_lost_ack_recovers_by_frozen_registration_id() {
     let original: ObjectRegistrationReceipt =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let mut recovered = harness.connect().await;
+    // No Attach replay or FD transfer may repair the original lease before this launch.
+    let request = PrepareExecution {
+        source: PreparedSource::Registered,
+        identity: ExecutionIdentity {
+            execution_id: ExecutionId::fresh().unwrap(),
+            executor_boot: frozen.executor_boot.clone(),
+            ticket_id: LaunchTicketId::fresh().unwrap(),
+            source_registration: frozen.registration_id.clone(),
+            source_incarnation: frozen.incarnation.clone(),
+            authority: grant,
+            scope,
+            operation_id: "explicit-test-operation".into(),
+            specification_id: SpecificationId::fresh().unwrap(),
+            process_alias: "lost-ack".into(),
+        },
+        ticket: CapabilityToken::fresh().unwrap(),
+        control_tokens: ExecutionControlTokens::fresh().unwrap(),
+        handoff: None,
+        specification: ExecutionSpecification {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "pwd".into()],
+            environment: vec![],
+            io_mode: IoMode::Pipe,
+            replay_bytes: 65536,
+        },
+    };
+    let native = launch(&mut recovered, &request).await;
+    let (_, output) = wait_for(&mut recovered, &request, &native, |state, _| {
+        matches!(state, ExecutionState::Drained { .. })
+    })
+    .await;
+    assert_eq!(output.trim_end(), expected_cwd.to_str().unwrap());
+
+    // Separately prove that exact Attach replay preserves the frozen receipt.
+    let held = HeldSourceObjects::open(&expected_cwd, false).unwrap();
     let receipt = recovered.attach(frozen.clone(), &held).await.unwrap();
     assert_eq!(receipt, original);
     assert_eq!(receipt.id, frozen.registration_id);
