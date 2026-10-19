@@ -183,6 +183,10 @@ describe('Unified mobile headers', () => {
     const areas = document.querySelector<HTMLElement>('[data-nc-workspace-page="areas"]')!;
     const tracks = document.querySelector<HTMLElement>('[data-nc-workspace-page="tracks"]')!;
     const folder = (await page.getByRole('button', { name: 'Product', exact: true }).findElement()).closest('li')!.querySelector('svg')!;
+    await Promise.all(document.querySelector('#mobile-workspace-navigation')!.getAnimations({ subtree: true })
+      .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+      .map((animation) => animation.finished.catch(() => undefined)));
+    await settlePaint();
     const folderSize = folder.getBoundingClientRect().width;
     const folderColor = getComputedStyle(folder).color;
     await page.getByRole('button', { name: 'Product', exact: true }).click();
