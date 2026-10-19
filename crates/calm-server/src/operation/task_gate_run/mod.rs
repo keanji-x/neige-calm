@@ -6,7 +6,7 @@
 //!
 //! The held wrapper's first step is the checkpoint (`checkpoint.rs`); its release waits for the
 //! park (the forge-action order), so before the park no checkpoint and no step has run, and a
-//! re-drive replaces a never-released wrapper. No run path reads the exit file: the worker is alive
+//! re-drive stops the same never-released execution. No run path reads the exit file: the worker is alive
 //! and same-user (D9).
 
 mod admission;

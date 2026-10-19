@@ -297,7 +297,7 @@ async fn a_retargeted_origin_head_runs_the_gate() {
 
 /// A `#g1` prepare through the production adapter whose transaction then rolls back, as a prepare
 /// that did not commit leaves it; returns whether it reused.
-async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
+pub(super) async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
     let adapter = TaskVerifyAdapter::new(fx.boot.ctx.gate_logs_dir.clone());
     let payload = serde_json::to_value(TaskVerifyOperationPayload {
         actor: ActorId::KernelDispatcher,

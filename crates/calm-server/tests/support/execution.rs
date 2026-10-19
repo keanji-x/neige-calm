@@ -37,21 +37,46 @@ pub struct Fixture {
     pub lifecycle: calm_server::execution_quiesce::ExecutionLifecycle,
     _socket: tempfile::TempDir,
     _root: tempfile::TempDir,
-    _stop: tokio::sync::oneshot::Sender<()>,
-    server: tokio::task::JoinHandle<anyhow::Result<()>>,
+    server: std::process::Child,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.server.abort();
+        let _ = self.server.kill();
+        let _ = self.server.wait();
     }
 }
 impl Fixture {
+    fn spawn(root: &Path, socket: &Path, key: &Path) -> std::process::Child {
+        std::process::Command::new(env!("CARGO_BIN_EXE_osc-probe-child"))
+            .arg("--execution-supervisor")
+            .arg(root.join("journal"))
+            .arg(socket)
+            .arg(key)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+    pub async fn restart(&mut self) {
+        self.server.kill().unwrap();
+        self.server.wait().unwrap();
+        while self.lifecycle.engine().unwrap().available() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        self.server = Self::spawn(self._root.path(), &self.socket, &self.key);
+        while !self.lifecycle.engine().unwrap().available() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
     pub async fn new(pool: calm_server::db::sqlite::SqliteDb) -> Self {
         use clap::Parser;
         let root = tempfile::tempdir().unwrap();
-        let (socket, path, secret, stop, server) = supervisor(root.path());
+        let socket = calm_test_sockets::socket_dir("typed-gate");
+        let path = socket.path().join("control.sock");
+        let secret = CapabilityToken::fresh().unwrap();
         let key = root.path().join("key.json");
         std::fs::write(&key, serde_json::to_vec(&secret).unwrap()).unwrap();
+        let server = Self::spawn(root.path(), &path, &key);
         let cfg = calm_server::config::Config::try_parse_from([
             "calm-server",
             "--kernel-client-key-file",
@@ -79,7 +104,6 @@ impl Fixture {
             lifecycle,
             _socket: socket,
             _root: root,
-            _stop: stop,
             server,
         }
     }

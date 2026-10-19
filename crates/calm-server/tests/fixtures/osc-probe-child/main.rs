@@ -378,6 +378,32 @@ fn main() {
         .unwrap();
         return;
     }
+    if helper_args.get(1).map(String::as_str) == Some("--execution-supervisor") {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let registry = calm_proc_supervisor::ProcRegistry::new()
+                    .with_executor(calm_proc_supervisor::execution::ExecutorConfig {
+                        journal_directory: helper_args[2].clone().into(),
+                        helper_program: std::env::current_exe().unwrap(),
+                        kernel_client_secret: serde_json::from_reader(
+                            File::open(&helper_args[4]).unwrap(),
+                        )
+                        .unwrap(),
+                    })
+                    .unwrap();
+                let socket = std::path::PathBuf::from(&helper_args[3]);
+                let listener = calm_proc_supervisor::bind_control_listener(&socket).unwrap();
+                let (_stop, stopped) = tokio::sync::oneshot::channel();
+                calm_proc_supervisor::serve_with_listener(listener, socket, registry, stopped)
+                    .await
+                    .unwrap();
+            });
+        return;
+    }
     // #293 cutover — when invoked as `codex app-server --listen unix://<sock>`
     // by the shared-daemon boot path, act as a minimal fake `codex app-server`:
     // bind the socket, answer the JSON-RPC handshake (initialize /

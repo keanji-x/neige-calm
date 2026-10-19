@@ -65,8 +65,7 @@ fn parked_op(key: &str, artifacts: &SpawnArtifacts) -> Operation {
 }
 
 /// R11 (D9): the worker is alive and same-user, so it can write the run's exit file; recovery of
-/// a run whose leader is gone never reads it. A forged `0` is still `gate-infra`, at boot and in
-/// the steady-state probe alike.
+/// a native run never reads it. A forged `0` cannot resolve it, at boot or in a probe.
 #[tokio::test]
 async fn run_recovery_never_reads_the_exit_file() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -87,15 +86,10 @@ async fn run_recovery_never_reads_the_exit_file() {
     let op = parked_op("t#r1", &artifacts);
     let ctx = spawn_ctx().await;
     for mode in [RecoveryMode::PreDeadlineProbe, RecoveryMode::Boot] {
-        let recovery = adapter
-            .recover_parked(&op, &artifacts, false, mode, &ctx)
+        let error = adapter
+            .recover_owned_parked(&op, mode, &ctx)
             .await
-            .expect("recovery decides");
-        match recovery {
-            ParkedRecovery::Fail { reason } => {
-                assert!(reason.starts_with("gate-infra"), "{mode:?}: {reason}");
-            }
-            other => panic!("{mode:?}: a dead leader must fail the run as infra, got {other:?}"),
-        }
+            .expect_err("a pre-C2b native run stays unresolved");
+        assert!(error.to_string().contains("pre-C2b gate unresolved"));
     }
 }

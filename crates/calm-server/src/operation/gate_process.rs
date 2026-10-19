@@ -343,7 +343,10 @@ pub(crate) struct GateObservation {
     pub verdict: GateVerdict,
     /// What the wait saw, and the step the wrapper last started: the classification inputs a
     /// caller with its own precedence reads (the gate run's `finalize_run`).
+    // Native task-verify keeps this observation until C2b.2; remove in C2b.3.
+    #[allow(dead_code)]
     pub wait: GateWait,
+    #[allow(dead_code)] // Native observation field retained for C2b.2/C2b.3.
     pub started_step: Option<usize>,
 }
 impl GateObservation {

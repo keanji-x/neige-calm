@@ -63,7 +63,7 @@ impl Drop for Release {
 /// A running attempt of `key`, claimed with its context closure (so the launched kernel's boot
 /// context sweep keeps it), in the track's checkout under a kernel-delivery lease, and its first
 /// run admitted, not driven.
-async fn admitted(world: &FileWorld, key: &str, steps: Value) -> (Attempt, String) {
+async fn attempt(world: &FileWorld, key: &str, steps: Value) -> Attempt {
     let fx = &world.fx;
     let worker = fx.codex_worker();
     let lease = fx.kernel_lease(&worker.card_id).await;
@@ -75,25 +75,28 @@ async fn admitted(world: &FileWorld, key: &str, steps: Value) -> (Attempt, Strin
     )
     .await;
     let task = claim_with_closure(fx, key, &worker.card_id).await;
+    Attempt {
+        worker,
+        lease,
+        task,
+    }
+}
+
+async fn admitted(world: &FileWorld, key: &str, steps: Value) -> (Attempt, String) {
+    let a = attempt(world, key, steps).await;
+    let fx = &world.fx;
     let run = calm_server::test_seams::admit_gate_run_for_test(
         &fx.db(),
-        &task.id,
-        &worker.card_id,
+        &a.task.id,
+        &a.worker.card_id,
         fx.track(),
         calm_server::decision_sink::CommitMessage::parse("test: checkpoint restarted worker")
             .unwrap(),
     )
     .await
     .unwrap();
-    assert_eq!(run, format!("{}#r1", task.id));
-    (
-        Attempt {
-            worker,
-            lease,
-            task,
-        },
-        run,
-    )
+    assert_eq!(run, format!("{}#r1", a.task.id));
+    (a, run)
 }
 
 async fn run_op(fx: &Fx, key: &str) -> Operation {
@@ -110,9 +113,11 @@ async fn wait_run_op(
     what: &str,
     ready: impl Fn(&Operation) -> bool,
 ) -> Operation {
+    let mut last = None;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let op = run_op(fx, key).await;
+            last = Some(op.clone());
             if ready(&op) {
                 break op;
             }
@@ -120,7 +125,7 @@ async fn wait_run_op(
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{key} never reached {what}"))
+    .unwrap_or_else(|_| panic!("{key} never reached {what}: {last:?}"))
 }
 
 fn log_of(world: &FileWorld, task_id: &str) -> String {
@@ -281,7 +286,7 @@ async fn a_restart_during_a_step_ends_it_as_infra() {
     let fx = &world.fx;
     let flag = world.tmp_path.join("r8c-never-released");
     let _release = Release(flag.clone());
-    let (a, key) = admitted(
+    let a = attempt(
         &world,
         "r8c",
         json!([{"name": "block", "cmd": wait_for(&flag)}]),
@@ -291,6 +296,28 @@ async fn a_restart_during_a_step_ends_it_as_infra() {
     let Some(mut boot1) = launch(&world, "boot-1") else {
         return; // SKIP was printed
     };
+    let key = format!("{}#r1", a.task.id);
+    let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+    let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
+        .await
+        .unwrap();
+    calm_server::db::sqlite::card_mcp_token_set_tx(&mut tx, &a.worker.card_id, &hash)
+        .await
+        .unwrap();
+    calm_server::db::sqlite::session_mcp_token_set_tx(&mut tx, &a.worker.session_id, &hash)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let _request = crate::support::mcp::send_tool_call_without_reply(
+        &world.tmp_path.join("data/mcp/kernel.sock"),
+        token.as_str(),
+        &a.worker.thread_id,
+        2,
+        GATE,
+        json!({"attempt_id":a.task.id,"commit_message":"test: checkpoint restarted worker"}),
+    )
+    .await;
     let op = wait_run_op(fx, &key, "parked", |op| {
         op.phase.tag() == PhaseTag::Parked && typed_record(op)["execution_id"].is_string()
     })
