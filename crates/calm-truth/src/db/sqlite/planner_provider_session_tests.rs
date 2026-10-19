@@ -26,7 +26,14 @@ async fn a_planner_mint_persists_the_provider_it_names() {
         ("planner-codex", AgentProvider::Codex, "codex"),
     ] {
         let mut tx = repo.pool().begin().await.expect("begin");
-        let card_id = create_card_in_tx(&repo, &mut tx, label, "codex").await;
+        let card_id = create_card_in_tx(
+            &repo,
+            &mut tx,
+            label,
+            "codex",
+            json!({"schemaVersion":1}),
+        )
+        .await;
         let id = format!("rt-{label}");
         session_start_runtime_tx(
             &mut tx,
@@ -71,7 +78,14 @@ async fn a_planner_mint_persists_the_provider_it_names() {
 async fn a_deferred_claude_placeholder_is_a_claude_row() {
     let repo = fresh_repo().await;
     let mut tx = repo.pool().begin().await.expect("begin");
-    let card_id = create_card_in_tx(&repo, &mut tx, "deferred-claude", "codex").await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        "deferred-claude",
+        "codex",
+        json!({"schemaVersion":1}),
+    )
+    .await;
     session_prepare_deferred_planner_tx(
         &mut tx,
         &WorkerSessionInit::shared_planner(
@@ -97,7 +111,14 @@ async fn a_deferred_claude_placeholder_is_a_claude_row() {
 async fn a_planner_init_without_a_provider_writes_nothing() {
     let repo = fresh_repo().await;
     let mut tx = repo.pool().begin().await.expect("begin");
-    let card_id = create_card_in_tx(&repo, &mut tx, "planner-unnamed", "codex").await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        "planner-unnamed",
+        "codex",
+        json!({"schemaVersion":1}),
+    )
+    .await;
     let mut init = WorkerSessionInit::shared_planner(
         "rt-planner-unnamed".into(),
         card_id.clone(),
@@ -141,7 +162,14 @@ async fn a_planner_init_without_a_provider_writes_nothing() {
 async fn assistant_provider_init_without_a_provider_writes_nothing() {
     let repo = fresh_repo().await;
     let mut tx = repo.pool().begin().await.expect("begin");
-    let card_id = create_card_in_tx(&repo, &mut tx, "assistant-unnamed", "codex").await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        "assistant-unnamed",
+        "codex",
+        json!({"schemaVersion":1}),
+    )
+    .await;
     let mut init = WorkerSessionInit::managed_assistant(
         "rt-assistant-unnamed".into(),
         card_id.clone(),

@@ -70,7 +70,7 @@ pub struct NewTerminalCardBody {
     responses(
         (status = 201, description = "Card + linked terminal created atomically; typed execution admitted or Legacy daemon spawned", body = Card),
         (status = 400, description = "An `Idempotency-Key` blank, non-ASCII or over 128 bytes (`idempotency_key_invalid`)", body = ErrorBody),
-        (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 404, description = "Track not found, or the keyed Terminal was deleted or changed kind", body = ErrorBody),
         (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused before its commit. Both final for the key", body = ErrorBody),
         (status = 422, description = "Body missing required fields (e.g. theme)", body = ErrorBody),
         (status = 503, description = "`execution_unavailable`: typed execution is unavailable; no rows written", body = ErrorBody),

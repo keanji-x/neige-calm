@@ -20,7 +20,7 @@ async fn worker_sessions_card_id_dual_write_on_runtime_start() {
         &mut tx,
         "card-id-start",
         "codex",
-        json!({"schemaVersion":1}),
+        serde_json::json!({"schemaVersion":1}),
     )
     .await;
     let init = projectable_runtime_init(
@@ -55,7 +55,7 @@ async fn worker_sessions_card_id_dual_write_on_deferred_planner_placeholder() {
         &mut tx,
         "card-id-placeholder",
         "codex",
-        json!({"schemaVersion":1}),
+        serde_json::json!({"schemaVersion":1}),
     )
     .await;
     let init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 10_000);
@@ -81,8 +81,14 @@ async fn card_delete_removes_placeholder_worker_session() {
         .begin()
         .await
         .expect("begin card delete placeholder tx");
-    let card_id =
-        create_card_in_tx(&repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        label,
+        "codex",
+        serde_json::json!({"schemaVersion":1}),
+    )
+    .await;
     let active = session_start_runtime_tx(
         &mut tx,
         projectable_runtime_init(
@@ -151,7 +157,7 @@ async fn assert_worker_sessions_card_id_complete_flags_active_null() {
         RuntimeReadCase {
             label: "card-id-assert-active-null",
             card_kind: "codex",
-            card_payload: json!({"schemaVersion":1}),
+            card_payload: serde_json::json!({"schemaVersion":1}),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Running,
@@ -258,8 +264,14 @@ async fn runtime_get_by_id_tx_returns_superseded_runtime_by_id() {
     let repo = fresh_repo().await;
     let label = "by-id-superseded";
     let mut tx = repo.pool().begin().await.expect("begin supersede tx");
-    let card_id =
-        create_card_in_tx(&repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        label,
+        "codex",
+        serde_json::json!({"schemaVersion":1}),
+    )
+    .await;
     let older = session_start_runtime_tx(
         &mut tx,
         projectable_runtime_init(
@@ -316,8 +328,14 @@ async fn runtime_get_active_for_card_tx_returns_placeholder_during_deferred_plan
     let label = "active-card-gap";
     let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
     let mut tx = repo.pool().begin().await.expect("begin deferred gap tx");
-    let card_id =
-        create_card_in_tx(&repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
+    let card_id = create_card_in_tx(
+        &repo,
+        &mut tx,
+        label,
+        "codex",
+        serde_json::json!({"schemaVersion":1}),
+    )
+    .await;
     let mut active_init = projectable_runtime_init(
         &card_id,
         label,
@@ -389,7 +407,7 @@ async fn runtime_get_active_by_thread_from_pool_uses_thread_key_and_isolates_pro
         KeyedRuntimeSeed {
             label: "thread-codex",
             card_kind: "codex",
-            card_payload: json!({"schemaVersion":1}),
+            card_payload: serde_json::json!({"schemaVersion":1}),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             thread_id: Some("cohort-b-thread"),
@@ -403,7 +421,7 @@ async fn runtime_get_active_by_thread_from_pool_uses_thread_key_and_isolates_pro
         KeyedRuntimeSeed {
             label: "thread-claude",
             card_kind: "claude",
-            card_payload: json!({"schemaVersion":1}),
+            card_payload: serde_json::json!({"schemaVersion":1}),
             kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             thread_id: Some("claude-real-thread"),
@@ -442,7 +460,7 @@ async fn runtime_get_active_by_session_from_pool_uses_agent_session_key_and_igno
         KeyedRuntimeSeed {
             label: "session-claude",
             card_kind: "claude",
-            card_payload: json!({"schemaVersion":1}),
+            card_payload: serde_json::json!({"schemaVersion":1}),
             kind: WorkerSessionKind::ClaudeCard,
             agent_provider: Some(AgentProvider::Claude),
             thread_id: Some("claude-thread-not-session"),
@@ -456,7 +474,7 @@ async fn runtime_get_active_by_session_from_pool_uses_agent_session_key_and_igno
         KeyedRuntimeSeed {
             label: "session-codex",
             card_kind: "codex",
-            card_payload: json!({"schemaVersion":1}),
+            card_payload: serde_json::json!({"schemaVersion":1}),
             kind: WorkerSessionKind::CodexCard,
             agent_provider: Some(AgentProvider::Codex),
             thread_id: Some("cohort-b-codex-thread"),

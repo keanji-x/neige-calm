@@ -266,7 +266,7 @@ pub struct ViaToolCall {
         (status = 201, description = "Card created", body = Card),
         (status = 400, description = "Missing `kind` and no `via_tool_call`, or a blank, non-ASCII or over-long `Idempotency-Key` (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 403, description = "Plugin lacks `permissions.cards_create`", body = ErrorBody),
-        (status = 404, description = "Track not found, or plugin not running / not in registry", body = ErrorBody),
+        (status = 404, description = "Track or keyed Terminal not found, or plugin not running / not in registry", body = ErrorBody),
         (status = 409, description = "`idempotency_key_reused`: the key names another request; `conflict`: refused, and the key binds nothing", body = ErrorBody),
         (status = 422, description = "Tool returned no `_meta.ui.resourceUri`", body = ErrorBody),
         (status = 502, description = "Plugin tool call failed", body = ErrorBody),

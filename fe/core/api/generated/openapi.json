@@ -11545,7 +11545,7 @@
             }
           },
           "404": {
-            "description": "Track not found, or plugin not running / not in registry",
+            "description": "Track or keyed Terminal not found, or plugin not running / not in registry",
             "content": {
               "application/json": {
                 "schema": {
@@ -12432,7 +12432,7 @@
             }
           },
           "404": {
-            "description": "Track not found",
+            "description": "Track not found, or the keyed Terminal was deleted or changed kind",
             "content": {
               "application/json": {
                 "schema": {
