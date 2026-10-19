@@ -175,6 +175,7 @@ impl GateEvidence {
 }
 
 /// The wrapper-written exit file is consulted ONLY for dead work (a same-user worker can forge it); `Err(())` = present but unparseable, a foreign artifact, fail loudly.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) fn read_exit_file(exit_path: &Path) -> std::result::Result<Option<i32>, ()> {
     match std::fs::read_to_string(exit_path) {
         Ok(content) => content.trim().parse::<i32>().map(Some).map_err(|_| ()),
@@ -264,6 +265,7 @@ pub(crate) struct GateFiles<'a> {
     pub step: &'a Path,
 }
 
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) async fn spawn_held(
     repo: &dyn crate::db::RouteRepo,
     cwd: &Path,
@@ -329,6 +331,7 @@ pub(crate) async fn spawn_held(
 
 /// How the live wait for the wrapper ended: the kernel-observed status, never file evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) enum GateWait {
     Exited(i32),
     Signaled,
@@ -338,6 +341,7 @@ pub(crate) enum GateWait {
 
 /// A kernel-observed verdict whose unreaped leader still fences recovery.
 /// Keep this value through candidate terminal settlement, then explicitly reap.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) struct GateObservation {
     child: tokio::process::Child,
     pub verdict: GateVerdict,
@@ -350,12 +354,14 @@ pub(crate) struct GateObservation {
     pub started_step: Option<usize>,
 }
 impl GateObservation {
+    #[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
     pub async fn reap(mut self) {
         let _ = self.child.wait().await;
     }
 }
 
 /// Observe actual kernel status without releasing the leader's identity.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) async fn observe_verdict(
     child: tokio::process::Child,
     artifacts: super::SpawnArtifacts,
@@ -433,10 +439,12 @@ pub(crate) async fn observe_verdict(
 }
 
 /// Never infer cleanup from a missing leader or signal an unauthenticated PGID; inability to inspect the group fails closed.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) fn group_stopped(artifacts: &super::SpawnArtifacts) -> Result<bool> {
     group_stopped_in(Path::new("/proc"), artifacts, |_| true)
 }
 
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) async fn wait_group_stopped(artifacts: &super::SpawnArtifacts) -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while !group_stopped(artifacts)? {
@@ -459,6 +467,7 @@ pub(crate) async fn wait_group_stopped(artifacts: &super::SpawnArtifacts) -> Res
 /// cleanup-uncertain, not proven foreign: it blocks the wait (fail closed → the group never counts
 /// as stopped → `gate-infra`) yet is never killed (the sweep signals only `Present`). An
 /// unparseable `stat` still returns `Err`.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) fn marked_group_stopped(
     artifacts: &super::SpawnArtifacts,
     op_marker: &str,
@@ -472,6 +481,7 @@ pub(crate) fn marked_group_stopped(
 /// environ hidden or empty mid-execve — cannot be proven foreign) both block the wait; only a
 /// proven-`Foreign` member (readable, non-empty and without the marker, or already gone) is passed
 /// over.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 fn marked_member_blocks(pid: i32, op_marker: &str) -> bool {
     match crate::proc_identity::proc_env_marker(pid, "NEIGE_GATE_OP", op_marker) {
         crate::proc_identity::MarkerAuth::Present
@@ -484,6 +494,7 @@ fn marked_member_blocks(pid: i32, op_marker: &str) -> bool {
 /// process in the recorded pgid for which `blocks` holds is listed. Another boot's group is
 /// stopped; an entry that vanished mid-scan (`ENOENT`/`ESRCH`) is skipped; an invalid pgid, an
 /// unreadable listing, any other `stat` read error or an unparseable `stat` is `Err`.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 fn group_stopped_in(
     proc_root: &Path,
     artifacts: &super::SpawnArtifacts,
@@ -523,6 +534,7 @@ fn group_stopped_in(
     Ok(true)
 }
 
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) async fn wait_marked_group_stopped(
     artifacts: &super::SpawnArtifacts,
     op_marker: &str,
@@ -537,6 +549,7 @@ pub(crate) async fn wait_marked_group_stopped(
     .map_err(|_| CalmError::Conflict("gate process-group cleanup remains unresolved".into()))?
 }
 
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) fn kill(artifacts: &super::SpawnArtifacts) {
     if crate::proc_identity::verify_owned_pid(
         artifacts.pid,

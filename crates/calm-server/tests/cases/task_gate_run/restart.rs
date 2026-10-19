@@ -13,14 +13,6 @@ use crate::support::kernel_proc::{
 };
 use calm_server::operation::{Operation, PhaseTag};
 
-fn execution_args(world: &FileWorld) -> Vec<OsString> {
-    vec![
-        "--kernel-client-key-file".into(),
-        world.fx.execution.key.clone().into(),
-        "--proc-supervisor-sock".into(),
-        world.fx.execution.socket.clone().into(),
-    ]
-}
 fn launch(world: &FileWorld, name: &str) -> Option<ChildGuard> {
     let port = free_port_or_skip(name)?;
     let mut child = ChildGuard {
@@ -30,7 +22,7 @@ fn launch(world: &FileWorld, name: &str) -> Option<ChildGuard> {
             port,
             &[],
             None,
-            &execution_args(world),
+            &world.fx.execution.kernel_args(),
         ),
         port,
     };
@@ -153,7 +145,7 @@ fn crash_at(world: &FileWorld, port: u16, seam: &str) {
             port,
             &[("CALM_TEST_CRASH_AT", OsString::from(seam))],
             Some(&log),
-            &execution_args(world),
+            &world.fx.execution.kernel_args(),
         ),
         port,
     };

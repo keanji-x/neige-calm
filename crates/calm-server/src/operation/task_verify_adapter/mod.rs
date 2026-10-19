@@ -1,49 +1,40 @@
 //! `task-verify` operation — the kernel gate runner. One operation per gate attempt (`"{task.id}#g{N}"`); the wrapper is held at a stdin
-//! handshake until its pid triple is recorded, the verdict comes from the WAIT STATUS (the exit file is only a dead-work recovery hint), and gate red / timeout / infra all land `failed`.
+//! handshake until park and durable authorization. Executor settlement supplies the verdict; exit files are informational.
 
 mod display;
+mod execution;
 mod preparation;
 pub(crate) mod regate;
 mod reuse;
 pub(crate) mod target;
 
-use super::gate_lifecycle::{
-    GatePaths, RELEASE_TIMEOUT, evidence_from_artifacts, exit_path_from_artifacts,
-    kill_recorded_group, spawn_held_identified,
-};
+use super::gate_lifecycle::GatePaths;
 use super::gate_process::*;
 use std::path::{Path, PathBuf};
 
 pub use super::gate_lifecycle::{GateSpec, GateStep, GateVerdict};
-use std::time::Duration;
 use target::FrozenTarget;
 pub use target::{SAMPLE_TIMEOUT, TaskGateResult};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
 
 use crate::db::sqlite::{
     append_decision_events_in_tx, begin_immediate_tx, task_apply_gate_result_tx,
     task_gate_attempt_bump_tx, task_get_tx,
 };
 use crate::error::{CalmError, Result};
-use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
+use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, AreaId, TrackId};
 use crate::model::{TaskStatus, now_ms};
-use crate::proc_identity::{signal_process_group, verify_owned_pid};
 
 use super::{
-    CompensationStateVersioned, CompensationStep, Operation, OperationCompletionBus, OperationKey,
-    ParkedCompletion, ParkedOutcome, ParkedRecovery, PhaseTag, ProviderAdapter, RecoveryMode,
-    SpawnArtifacts, SpawnCtx, SpawnOutcome, TxOutput, complete_parked_tx,
+    CompensationStateVersioned, CompensationStep, Operation, ParkedRecovery, PhaseTag,
+    ProviderAdapter, RecoveryMode, SpawnCtx, SpawnOutcome, TxOutput,
 };
 
 pub const TASK_VERIFY_KIND: &str = "task-verify";
-
-/// A non-child cannot be `waitpid`ed; polling + exit-file is the only cross-restart observation.
-const REATTACH_POLL: Duration = Duration::from_secs(2);
 
 const TASK_VERIFY_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -162,42 +153,6 @@ pub(crate) async fn apply_gate_result_with_guard_in_tx(
         .collect())
 }
 
-/// On `AlreadyResolved` nothing is written (rollback); the scheduler's reconcile copies the enforcement outcome to the row instead.
-pub(crate) async fn complete_gate_op_with_result(
-    pool: &crate::db::sqlite::SqliteDb,
-    completion: &OperationCompletionBus,
-    events: &EventBus,
-    op_id: &str,
-    rctx: &GateResultCtx,
-    verdict: &TaskGateResult,
-) -> Result<()> {
-    let outcome = ParkedOutcome::Succeeded {
-        result: serde_json::to_value(verdict)?,
-    };
-    let mut tx = begin_immediate_tx(pool).await?;
-    match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
-        ParkedCompletion::Completed(result) => {
-            let envelopes = apply_gate_result_in_tx(&mut tx, rctx, verdict).await?;
-            tx.commit().await?;
-            completion.complete(result);
-            for envelope in envelopes {
-                events.emit_envelope(envelope);
-            }
-            Ok(())
-        }
-        ParkedCompletion::AlreadyResolved { phase } => {
-            tx.rollback().await?;
-            tracing::debug!(
-                op_id,
-                task_id = %rctx.task_id,
-                phase = ?phase,
-                "gate observer: op already resolved; verdict discarded (enforcement won)"
-            );
-            Ok(())
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FrozenVerify {
     pub task_id: String,
@@ -241,6 +196,7 @@ pub fn gate_attempt_key(task_id: &str, attempt: i64) -> String {
     format!("{task_id}#g{attempt}")
 }
 
+#[derive(Clone)]
 pub struct TaskVerifyAdapter {
     /// `<data_dir>/gate-logs` — wrapper scripts, logs, exit files, step files.
     gate_logs_dir: PathBuf,
@@ -365,300 +321,50 @@ impl ProviderAdapter for TaskVerifyAdapter {
         Ok(super::AppServerInteractOutcome::NotApplicable)
     }
 
+    fn owns_parked_resource(&self) -> Option<&'static str> {
+        Some(super::gate_execution::KEY)
+    }
+
     async fn spawn_side_effect(
         &self,
         output: &TxOutput,
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::crash_point("task-verify-post-prepare");
-        let frozen = FrozenVerify::from_output(output)?;
-        if frozen.target.spawn_is_noop() {
-            // The verdict was written in the prepare transaction: nothing to kill, admit or spawn.
-            return Ok(SpawnOutcome::Ready(super::SpawnHandle::NoOp));
-        }
-        let pool = ctx.operation_repo.sqlite_db();
-
-        // Kill prior: this op's own artifacts (same-op re-drive), the previous attempt's, and the tasks-row pid triple.
-        // After a re-run (`regate`) `attempt - 1` is the reserved number with no op, so this finds
-        // nothing; no backup is lost: the regate admitted the re-run only after proving every earlier
-        // attempt's group stopped, and a terminal op never spawns again.
-        if let Some(artifacts) = &op.spawn_artifacts {
-            kill(artifacts);
-        }
-        if frozen.attempt > 1
-            && let Some(prev) = ctx
-                .operation_repo
-                .find_by_idempotency_key(
-                    TASK_VERIFY_KIND,
-                    &OperationKey {
-                        operation_key: String::new(),
-                        idempotency_key: Some(gate_attempt_key(
-                            &frozen.task_id,
-                            frozen.attempt - 1,
-                        )),
-                        payload_hash: String::new(),
-                    },
-                )
-                .await?
-            && let Some(artifacts) = &prev.spawn_artifacts
-        {
-            kill(artifacts);
-        }
-        let triple: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT gate_pid, gate_pid_starttime, gate_pid_boot_id FROM tasks WHERE id = ?1",
-        )
-        .bind(&frozen.task_id)
-        .fetch_optional(pool.read_pool())
-        .await?;
-        if let Some((Some(pid), Some(start_time), Some(boot_id))) = triple {
-            kill_recorded_group(pid, start_time, &boot_id, pid);
-        }
-
-        super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
-
-        let paths = self.paths(&frozen.task_id, frozen.attempt);
-        paths.unlink_stale(&self.gate_logs_dir).await?;
-        let (mut child, artifacts) = spawn_held_identified(
-            ctx.repo.as_ref(),
-            Path::new(&frozen.cwd),
-            &frozen.gate.steps,
-            &paths,
-            &gate_attempt_key(&frozen.task_id, frozen.attempt),
-        )
-        .await?;
-        let pgid = artifacts.pgid;
-
-        let record_release = async {
-            let rows = sqlx::query(
-                r#"UPDATE tasks
-                   SET gate_pid = ?1, gate_pid_starttime = ?2, gate_pid_boot_id = ?3,
-                       updated_at_ms = ?4
-                   WHERE id = ?5 AND status = 'verifying' AND gate_attempt = ?6"#,
-            )
-            .bind(pgid as i64)
-            .bind(artifacts.start_time as i64)
-            .bind(&artifacts.boot_id)
-            .bind(now_ms())
-            .bind(&frozen.task_id)
-            .bind(frozen.attempt)
-            .execute(pool.writer_pool())
-            .await?
-            .rows_affected();
-            if rows == 0 {
-                return Err(CalmError::Conflict(format!(
-                    "task {} moved on before gate attempt {} was recorded",
-                    frozen.task_id, frozen.attempt
-                )));
-            }
-            // Both records land BEFORE release, so every gate process that can execute a step is recorded.
-            ctx.record_spawn_artifacts(op, &artifacts).await?;
-            #[cfg(test)]
-            if let Some(hook) = &self.before_release {
-                hook().await;
-            }
-            // Newline-terminated — POSIX `read` returns non-zero on EOF-before-newline.
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| CalmError::Internal("gate wrapper stdin handle missing".into()))?;
-            super::task_launch::TaskLaunch::new(
-                &frozen.task_id,
-                op,
-                super::task_launch::TerminalLaunchRole::BusinessProcess,
-            )
-            .run(ctx.repo.as_ref(), async move {
-                stdin.write_all(b"go\n").await.map_err(|error| {
-                    CalmError::Internal(format!("gate release write failed: {error}"))
-                })?;
-                drop(stdin);
-                Ok(())
-            })
-            .await?;
-            Ok::<SpawnArtifacts, CalmError>(artifacts.clone())
-        };
-        let artifacts = match tokio::time::timeout(RELEASE_TIMEOUT, record_release).await {
-            Ok(Ok(artifacts)) => artifacts,
-            Ok(Err(e)) => {
-                signal_process_group(pgid, libc::SIGKILL);
-                return Err(e);
-            }
-            Err(_) => {
-                signal_process_group(pgid, libc::SIGKILL);
-                return Err(CalmError::Internal(
-                    "gate-infra: record/release did not complete within 60s".into(),
-                ));
-            }
-        };
-
-        // The runtime spawns the observer only AFTER the park commits.
-        let timeout_secs = frozen.gate.timeout_secs_clamped();
-        let rctx = frozen.result_ctx();
-        let attempt = frozen.attempt;
-        let op_id = op.id.clone();
-        let completion = ctx.completion.clone();
-        let events = ctx.events.clone();
-        let observer_pool = pool.clone();
-        let observer_evidence = GateEvidence {
-            log_path: paths.log.clone(),
-            step_path: Some(paths.step.clone()),
-            steps: frozen.gate.steps.clone(),
-        };
-        let observer_frozen = frozen.clone();
-        #[cfg(any(test, feature = "fixtures"))]
-        let before_completion = self.before_completion.clone();
-        let observer = Box::pin(async move {
-            let observation = super::gate_process::observe_verdict(
-                child,
-                artifacts.clone(),
-                observer_evidence,
-                attempt,
-                timeout_secs,
-            )
-            .await;
-            #[cfg(any(test, feature = "fixtures"))]
-            if let Some(hook) = before_completion {
-                hook().await;
-            }
-            // `observe_verdict` killed the group and waited for it to stop, but left the leader an
-            // unreaped zombie: its identity keeps a concurrent parked probe from reading this
-            // killed gate as dead-without-verdict until the verdict below commits. A cleanup it
-            // left unresolved is what `stop_group` reports, and `finalize` then samples nothing.
-            let op_marker = gate_attempt_key(&observer_frozen.task_id, observer_frozen.attempt);
-            let stopped = target::stop_group(&artifacts, &op_marker).await;
-            let verdict =
-                target::finalize(observation.verdict.clone(), &observer_frozen, stopped).await;
-            if let Err(e) = complete_gate_op_with_result(
-                &observer_pool,
-                &completion,
-                &events,
-                &op_id,
-                &rctx,
-                &verdict,
-            )
-            .await
-            {
-                tracing::error!(
-                    op_id = %op_id,
-                    task_id = %rctx.task_id,
-                    error = %e,
-                    "gate observer: completion tx failed; sweep/reconcile will recover"
-                );
-            }
-            observation.reap().await;
-        });
-
-        let deadline_ms = frozen.gate.parked_deadline_ms(now_ms());
-        Ok(SpawnOutcome::Parked {
-            deadline_ms,
-            observer,
-        })
+        self.spawn_execution(output, op, ctx).await
     }
 
-    /// Liveness first; the exit file is consulted only for DEAD work, never as a live gate's verdict source.
-    async fn recover_parked(
+    async fn recover_owned_parked(
         &self,
         op: &Operation,
-        artifacts: &SpawnArtifacts,
-        alive: bool,
         mode: RecoveryMode,
         ctx: &SpawnCtx,
     ) -> Result<ParkedRecovery> {
-        let frozen = op
-            .tx_output
-            .as_ref()
-            .ok_or_else(|| CalmError::Internal("task-verify op missing tx_output".into()))
-            .and_then(FrozenVerify::from_output)?;
-        let exit_path = exit_path_from_artifacts(artifacts)
-            .unwrap_or_else(|| self.paths(&frozen.task_id, frozen.attempt).exit);
-        let evidence = evidence_from_artifacts(artifacts, frozen.gate.steps.clone());
-        if !alive {
-            return Ok(match read_exit_file(&exit_path) {
-                Ok(Some(code)) => {
-                    let verdict = verdict_from_exit_code(code, &evidence, frozen.attempt);
-                    // The leader is dead; descendants that outlived it are stopped before the
-                    // after-sample (the driver's own kill skips a dead leader). The numeric pgid
-                    // may have been recycled, so members are authenticated by the inherited marker.
-                    let op_marker = gate_attempt_key(&frozen.task_id, frozen.attempt);
-                    let stopped = target::stop_group(artifacts, &op_marker).await;
-                    let verdict = target::finalize(verdict, &frozen, stopped).await;
-                    ParkedRecovery::Complete(ParkedOutcome::Succeeded {
-                        result: serde_json::to_value(&verdict)?,
-                    })
-                }
-                Err(()) => ParkedRecovery::Fail {
-                    reason: "gate exit file present but unparseable (foreign artifact); gate-infra"
-                        .into(),
-                },
-                Ok(None) => ParkedRecovery::Fail {
-                    reason: "gate process dead with no recorded verdict; gate-infra".into(),
-                },
-            });
-        }
-        match mode {
-            RecoveryMode::Boot => {
-                // Re-attach: a non-child cannot be waitpid'ed — poll the identity triple until it dies, then read the exit file.
-                let pool = ctx.operation_repo.sqlite_db();
-                let completion = ctx.completion.clone();
-                let events = ctx.events.clone();
-                let op_id = op.id.clone();
-                let rctx = frozen.result_ctx();
-                let attempt = frozen.attempt;
-                let artifacts = artifacts.clone();
-                let evidence = evidence.clone();
-                tokio::spawn(async move {
-                    loop {
-                        if !verify_owned_pid(
-                            artifacts.pid,
-                            artifacts.start_time,
-                            &artifacts.boot_id,
-                        ) {
-                            break;
-                        }
-                        tokio::time::sleep(REATTACH_POLL).await;
-                    }
-                    let verdict = match read_exit_file(&exit_path) {
-                        Ok(Some(code)) => verdict_from_exit_code(code, &evidence, attempt),
-                        Ok(None) => infra_verdict(
-                            "reattached gate exited with no exit file",
-                            &evidence,
-                            attempt,
-                        ),
-                        Err(()) => infra_verdict(
-                            "gate exit file present but unparseable (foreign artifact)",
-                            &evidence,
-                            attempt,
-                        ),
-                    };
-                    let op_marker = gate_attempt_key(&frozen.task_id, frozen.attempt);
-                    let stopped = target::stop_group(&artifacts, &op_marker).await;
-                    let verdict = target::finalize(verdict, &frozen, stopped).await;
-                    if let Err(e) = complete_gate_op_with_result(
-                        &pool,
-                        &completion,
-                        &events,
-                        &op_id,
-                        &rctx,
-                        &verdict,
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            op_id = %op_id,
-                            error = %e,
-                            "gate reattach observer: completion tx failed"
-                        );
-                    }
-                });
-                Ok(ParkedRecovery::LeaveParked)
-            }
-            // Only dead work is probed pre-deadline; defensive.
-            RecoveryMode::PreDeadlineProbe => Ok(ParkedRecovery::LeaveParked),
-            // The caller kills the group next; a reattach observer here would watch a corpse and double-report.
-            RecoveryMode::PastDeadline => Ok(ParkedRecovery::Fail {
-                reason: "gate timeout (parked deadline exceeded)".into(),
-            }),
+        self.recover_execution(op, mode, ctx).await
+    }
+
+    async fn complete_owned_parked_tx(
+        &self,
+        tx: &mut super::Tx<'_>,
+        op: &Operation,
+    ) -> Result<Vec<BroadcastEnvelope>> {
+        super::gate_execution::retire(tx, op).await?;
+        // The outcome is calculated from this same claim snapshot in recover_execution.
+        // complete_parked_tx has already persisted it in the completion transaction.
+        let output: String =
+            sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?1")
+                .bind(&op.id)
+                .fetch_one(&mut **tx)
+                .await?;
+        let output: TxOutput = serde_json::from_str(&output)?;
+        let verdict: TaskGateResult = serde_json::from_value(output.result)?;
+        let frozen = FrozenVerify::from_output(super::required_output(op)?)?;
+        apply_gate_result_in_tx(tx, &frozen.result_ctx(), &verdict).await
+    }
+
+    fn owned_parked_completed(&self, op: &Operation, ctx: &SpawnCtx) {
+        if let Ok(record) = super::gate_execution::record(op) {
+            ctx.execution.drive([record.execution_id]);
         }
     }
 
@@ -669,43 +375,31 @@ impl ProviderAdapter for TaskVerifyAdapter {
         output: &TxOutput,
         op: &Operation,
     ) -> Result<CompensationStateVersioned> {
+        if op.spawn_artifacts.is_some() && output.data.get(super::gate_execution::KEY).is_none() {
+            return Err(execution::legacy_error(op));
+        }
         let frozen = FrozenVerify::from_output(output)?;
-        let artifacts = op
-            .spawn_artifacts
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()?
-            .unwrap_or(Value::Null);
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase: _from_phase,
             reason: reason.to_string(),
-            steps: vec![
-                CompensationStep {
-                    op: "kill_gate_group".into(),
-                    args: json!({ "artifacts": artifacts, "task_id": frozen.task_id }),
-                    completed: false,
-                    attempts: 0,
-                    last_error: None,
-                },
-                CompensationStep {
-                    op: "fail_task_gate_infra".into(),
-                    args: json!({
-                        "task_id": frozen.task_id,
-                        "track_id": frozen.track_id,
-                        "area_id": frozen.area_id,
-                        "attempt": frozen.attempt,
-                        "reason": reason,
-                        "target": target::target_json(&target::compensation_target(
-                            &frozen.target,
-                            reason,
-                        )),
-                    }),
-                    completed: false,
-                    attempts: 0,
-                    last_error: None,
-                },
-            ],
+            steps: vec![CompensationStep {
+                op: "fail_task_gate_infra".into(),
+                args: json!({
+                    "task_id": frozen.task_id,
+                    "track_id": frozen.track_id,
+                    "area_id": frozen.area_id,
+                    "attempt": frozen.attempt,
+                    "reason": reason,
+                    "target": target::target_json(&target::compensation_target(
+                        &frozen.target,
+                        reason,
+                    )),
+                }),
+                completed: false,
+                attempts: 0,
+                last_error: None,
+            }],
         })
     }
 
@@ -716,29 +410,11 @@ impl ProviderAdapter for TaskVerifyAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<()> {
+        if _op.spawn_artifacts.is_some() && output.data.get(super::gate_execution::KEY).is_none() {
+            return Err(execution::legacy_error(_op));
+        }
         match step.op.as_str() {
-            "kill_gate_group" => {
-                if let Some(artifacts) = step.args.get("artifacts").filter(|v| !v.is_null()) {
-                    let artifacts: SpawnArtifacts = serde_json::from_value(artifacts.clone())?;
-                    kill(&artifacts);
-                }
-                // The tasks-row triple (recorded before release) covers the window where the op-row artifacts never committed.
-                if let Some(task_id) = step.args.get("task_id").and_then(Value::as_str) {
-                    let pool = ctx.operation_repo.sqlite_db();
-                    let triple: Option<(Option<i64>, Option<i64>, Option<String>)> =
-                        sqlx::query_as(
-                            "SELECT gate_pid, gate_pid_starttime, gate_pid_boot_id \
-                             FROM tasks WHERE id = ?1",
-                        )
-                        .bind(task_id)
-                        .fetch_optional(pool.read_pool())
-                        .await?;
-                    if let Some((Some(pid), Some(start_time), Some(boot_id))) = triple {
-                        kill_recorded_group(pid, start_time, &boot_id, pid);
-                    }
-                }
-                Ok(())
-            }
+            "kill_gate_group" => Err(execution::legacy_error(_op)),
             "fail_task_gate_infra" => {
                 let task_id = step
                     .args

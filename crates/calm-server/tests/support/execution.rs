@@ -46,6 +46,15 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    pub fn kernel_args(&self) -> Vec<std::ffi::OsString> {
+        vec![
+            "--kernel-client-key-file".into(),
+            self.key.clone().into(),
+            "--proc-supervisor-sock".into(),
+            self.socket.clone().into(),
+        ]
+    }
+
     fn spawn(root: &Path, socket: &Path, key: &Path) -> std::process::Child {
         std::process::Command::new(env!("CARGO_BIN_EXE_osc-probe-child"))
             .arg("--execution-supervisor")

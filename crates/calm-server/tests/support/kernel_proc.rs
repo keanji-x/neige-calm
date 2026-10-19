@@ -239,13 +239,24 @@ pub fn launch_kernel_to(
     extra_env: &[(&str, OsString)],
     log: Option<&Path>,
 ) -> Option<ChildGuard> {
+    launch_kernel_to_with_args(tmp, db_path, what, extra_env, log, &[])
+}
+
+pub fn launch_kernel_to_with_args(
+    tmp: &Path,
+    db_path: &Path,
+    what: &str,
+    extra_env: &[(&str, OsString)],
+    log: Option<&Path>,
+    args: &[OsString],
+) -> Option<ChildGuard> {
     for attempt in 0..5 {
         let port = free_port_or_skip(what)?;
         assert_ne!(port, 4040, "must never bind the prod calm-server port");
         // Wrap the child in its `ChildGuard` IMMEDIATELY: `wait_ready` can panic, and only the guard's
         // `Drop` SIGKILLs the (possibly hung) kernel — a bare `Child` would leak it.
         let mut guard = ChildGuard {
-            child: spawn_kernel_to(tmp, db_path, port, extra_env, log),
+            child: spawn_kernel_to_with_args(tmp, db_path, port, extra_env, log, args),
             port,
         };
         match wait_ready(&mut guard.child, port) {

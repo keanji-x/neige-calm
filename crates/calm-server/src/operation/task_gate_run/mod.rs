@@ -411,25 +411,8 @@ impl ProviderAdapter for TaskGateRunAdapter {
                 || matches!(record.release,Release::Releasing { authorized_at_ms } | Release::Released { authorized_at_ms } if now_ms() >= authorized_at_ms+frozen.gate.timeout_secs_clamped()*1000);
             if timed_out && record.decision == Decision::Observing {
                 execution::stop(ctx, op, StopReason::Timeout).await?;
-            } else if let Some(engine) = ctx.execution.engine()
-                && matches!(
-                    engine.output(&record.execution_id, None).await,
-                    Ok(ExecutionReply::Observation {
-                        state: ExecutionState::Exited { .. },
-                        ..
-                    })
-                )
-            {
-                // Stop descendants without replacing the observed decision.
-                let pool = ctx.operation_repo.sqlite_db();
-                let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-                let ticket = engine
-                    .request(&mut tx, &record.execution_id, Desired::Stop)
-                    .await
-                    .map_err(|e| CalmError::Internal(e.0))?;
-                tx.commit().await?;
-                engine.drive(ticket.committed());
+            } else {
+                execution::drain_exited(ctx, op, &record).await?;
             }
             return Ok(ParkedRecovery::LeaveParked);
         }

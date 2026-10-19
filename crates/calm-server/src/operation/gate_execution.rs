@@ -291,6 +291,30 @@ pub(crate) async fn settlement(ctx: &SpawnCtx, record: &Record) -> Result<Option
         .transpose()
 }
 
+/// Leader exit is not settlement: ask the executor to drain descendants before sampling.
+pub(crate) async fn drain_exited(ctx: &SpawnCtx, op: &Operation, record: &Record) -> Result<()> {
+    if let Some(engine) = ctx.execution.engine()
+        && matches!(
+            engine.output(&record.execution_id, None).await,
+            Ok(ExecutionReply::Observation {
+                state: ExecutionState::Exited { .. },
+                ..
+            })
+        )
+    {
+        let pool = ctx.operation_repo.sqlite_db();
+        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+        super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+        let ticket = engine
+            .request(&mut tx, &record.execution_id, Desired::Stop)
+            .await
+            .map_err(conflict)?;
+        tx.commit().await?;
+        engine.drive(ticket.committed());
+    }
+    Ok(())
+}
+
 /// Completion rechecks the decision in the same transaction as phase write and Retire.
 pub(crate) async fn retire(tx: &mut Tx<'_>, op: &Operation) -> Result<()> {
     let snapshot = record(op)?;

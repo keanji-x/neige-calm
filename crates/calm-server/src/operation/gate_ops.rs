@@ -3,7 +3,6 @@
 //! reading decides whether a gate process of the attempt may still be at work in its checkout:
 //! a new run, a regate and the delivery all ask it.
 
-use super::gate_process::marked_group_stopped;
 use super::task_gate_run::{TASK_GATE_RUN_KIND, parse_run_key};
 use super::task_verify_adapter::{TASK_VERIFY_KIND, parse_attempt_key};
 use super::{OperationOutcome, PhaseTag, SpawnArtifacts, Tx};
@@ -135,9 +134,7 @@ pub(crate) fn classify_gate_ops(ops: &[GateOp]) -> AttemptGateOps {
             PhaseTag::Succeeded | PhaseTag::Failed => {
                 let stopped = match &op.process {
                     GateProcess::Typed { settled } => *settled,
-                    GateProcess::Native(artifacts) => {
-                        matches!(marked_group_stopped(artifacts, &op.key), Ok(true))
-                    }
+                    GateProcess::Native(_) => false,
                     GateProcess::Absent => true,
                 };
                 if !stopped && unproven.is_none() {

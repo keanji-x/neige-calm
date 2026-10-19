@@ -190,7 +190,7 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
   （`supervisor/execution/scope_helper.rs:168-178`），drain 证据是 subreaper（`:84` 设置）的 ECHILD（`:176-178` 之后才报 Drained），
   不读 /proc 环境，不可读的子孙不再削弱 drain。observer 和 probe 都经 `owned_parked::reconcile` 的 claim 围栏完成
   （`server/operation/owned_parked.rs:11-53`），判决规则先要求权威结算：未结算一律 LeaveParked，Stopping 本身从不授权完成；
-  已结算时 decision 为 Stopping{r} 取 r，否则取 `Drained{status}` 的 status（NoChild 判 infra）。after-sample 只在 Drained 之后；
+  已结算时 decision 为 Stopping{r} 取 r，否则仅在 release == Released 时取 `Drained{status}` 的 status（NoChild 判 infra）；Held/Releasing 先持久化 ReleaseRefused。after-sample 只在 Drained 之后；
   没有结算证据时 op 保持 parked，检出保持 busy。reconcile 在完成事务之前算好 outcome（`owned_parked.rs:21`），事务内只验 claim
   （`:26-28`），`complete_parked_tx` 重读行只为保留字段、不复核判决（`writes.rs:318-372`）。所以适配器只从 claim 时 `op` 快照里的
   记录推导 outcome；gate 适配器在同一事务内既有的 `complete_owned_parked_tx`（`:29-30`）重读记录，`execution_id`、`release`、

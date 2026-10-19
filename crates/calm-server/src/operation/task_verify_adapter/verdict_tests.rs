@@ -1,6 +1,8 @@
 //! #2387 — the gate verdict and its log tail. A failure belongs to the step the wrapper last
 //! started, which the wrapper records in the step file; text a step prints never moves it.
 use super::*;
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 
 const LOG_TAIL_BYTES: usize = 8 * 1024;
 

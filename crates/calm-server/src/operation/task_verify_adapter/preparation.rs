@@ -217,6 +217,7 @@ async fn read_facts(tx: &mut Tx<'_>, input: &Value, op: &Operation) -> Result<(F
         ));
     }
     let attempt = payload.attempt;
+    super::execution::require_prior_settled(tx, &payload.task_id, attempt).await?;
 
     let task = task_get_tx(tx, &payload.task_id)
         .await?

@@ -1,5 +1,6 @@
 //! Production tool -> Engine -> typed supervisor -> held shell invariants.
 use super::*;
+use calm_server::model::now_ms;
 use calm_server::operation::{Operation, PhaseTag};
 
 async fn op(fx: &Fx, task: &str) -> Operation {
@@ -635,3 +636,50 @@ mod retention;
 
 #[path = "c2b/faults.rs"]
 mod faults;
+
+#[tokio::test]
+async fn c2b_native_terminal_gate_op_is_unproven() {
+    let fx = world(LONG_IDLE).await;
+    let a = running(&fx, "native-terminal", json!([{"name":"ok","cmd":"true"}])).await;
+    gate_run(&fx, &a, Some("test: native terminal evidence"))
+        .await
+        .unwrap();
+    let before = op(&fx, &a.task.id).await;
+    assert_eq!(before.phase.tag(), PhaseTag::Succeeded);
+    sqlx::query("UPDATE operations SET kind='task-verify',idempotency_key=?1, \
+         tx_output_json=json_remove(tx_output_json,'$.data.gate_execution'),spawn_artifacts_json=?2 WHERE id=?3")
+        .bind(format!("{}#g1",a.task.id))
+        .bind(json!({"pid":2147483000,"pgid":2147483000,"start_time":1,"boot_id":"old","log_path":null,"extra":{}}).to_string())
+        .bind(&before.id).execute(&fx.pool()).await.unwrap();
+    let error = gate_run(&fx, &a, Some("test: native must remain unproven"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("could not be proven stopped"),
+        "{error:?}"
+    );
+    sqlx::query(
+        "UPDATE operations SET phase='parked',parked_at_ms=?1,parked_deadline_ms=?2, \
+         lease_owner=NULL,lease_until_ms=NULL WHERE id=?3",
+    )
+    .bind(now_ms())
+    .bind(now_ms() + 600_000)
+    .bind(&before.id)
+    .execute(&fx.pool())
+    .await
+    .unwrap();
+    boot(&fx).await;
+    let native = fx
+        .runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{}#g1", a.task.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(native.phase.tag(), PhaseTag::Parked);
+    assert!(
+        native
+            .last_error
+            .unwrap()
+            .contains("manually stop pgid 2147483000")
+    );
+}

@@ -688,6 +688,7 @@ pub(super) async fn prepare_target(
 /// empty (a descendant inside execve) is unreadable in the same sense. Only a member whose environ
 /// is readable, non-empty AND lacks the marker is proven foreign and skipped. `Err` = a marked or
 /// unreadable descendant is still alive after the wait: the caller must not sample, see [`finalize`].
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) async fn stop_group(artifacts: &SpawnArtifacts, op_marker: &str) -> Result<()> {
     kill(artifacts);
     if read_boot_id().as_deref() == Some(artifacts.boot_id.as_str()) {

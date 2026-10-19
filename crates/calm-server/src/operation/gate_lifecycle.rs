@@ -121,6 +121,7 @@ impl GatePaths {
         Ok(())
     }
 
+    #[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
     fn files(&self) -> GateFiles<'_> {
         GateFiles {
             script: &self.script,
@@ -134,6 +135,7 @@ impl GatePaths {
 /// Spawn the held wrapper (`gate_process::spawn_held`) and read its identity triple back. The
 /// wrapper executes nothing until it is released; an identity that cannot be read kills its group.
 /// Platforms without gate descendant cleanup are rejected before creating a wrapper.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) async fn spawn_held_identified(
     repo: &dyn crate::db::RouteRepo,
     cwd: &Path,
@@ -184,6 +186,7 @@ pub(crate) async fn spawn_held_identified(
 
 /// Kill the recorded gate group iff the identity triple still matches (verify-fail → skip; ESRCH
 /// swallowed).
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) fn kill_recorded_group(pid: i64, start_time: i64, boot_id: &str, pgid: i64) {
     let (Ok(pid), Ok(pgid)) = (i32::try_from(pid), i32::try_from(pgid)) else {
         return;
@@ -201,6 +204,7 @@ pub(crate) fn kill_recorded_group(pid: i64, start_time: i64, boot_id: &str, pgid
     });
 }
 
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) fn exit_path_from_artifacts(artifacts: &SpawnArtifacts) -> Option<PathBuf> {
     artifacts
         .extra
@@ -211,6 +215,7 @@ pub(crate) fn exit_path_from_artifacts(artifacts: &SpawnArtifacts) -> Option<Pat
 
 /// The evidence a recovery reads for recorded work: its log, its step file and the steps the
 /// wrapper ran.
+#[allow(dead_code, reason = "Native gate machinery is retained until C2b.3")]
 pub(crate) fn evidence_from_artifacts(
     artifacts: &SpawnArtifacts,
     steps: Vec<GateStep>,

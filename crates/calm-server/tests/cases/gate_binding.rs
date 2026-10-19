@@ -32,9 +32,6 @@ use calm_types::verify_target::{
 };
 use serde_json::{Value, json};
 
-/// A machine boot id that can never match the host's, so a parked gate reads as dead.
-const STALE_BOOT_ID: &str = "00000000-0000-0000-0000-000000000000";
-
 fn gated(cmd: &str) -> Value {
     json!({"gate": {"steps": [{"name": "t", "cmd": cmd}], "timeout_secs": 60}, "no_gate_reason": null})
 }
@@ -278,27 +275,64 @@ fn spawn_drive(scheduler: Arc<Scheduler>, task: Task) -> tokio::task::JoinHandle
 /// `#g1` parked with its artifacts recorded (the wrapper is running).
 async fn wait_gate_parked(fx: &Fx, task_id: &str) -> Operation {
     wait_gate_op_until(fx, task_id, "parked", |op| {
-        op.phase.tag() == PhaseTag::Parked && op.spawn_artifacts.is_some()
+        op.phase.tag() == PhaseTag::Parked
+            && op.tx_output.as_ref().is_some_and(|o| {
+                o.data["gate_execution"]["release"]
+                    .get("Released")
+                    .is_some()
+            })
     })
     .await
 }
 
-fn exit_path_of(op: &Operation) -> PathBuf {
-    PathBuf::from(
-        op.spawn_artifacts.as_ref().unwrap().extra["exit_path"]
-            .as_str()
-            .unwrap(),
-    )
+async fn exit_path_of(fx: &Fx, op: &Operation) -> PathBuf {
+    let id = op.tx_output.as_ref().unwrap().data["gate_execution"]["execution_id"]
+        .as_str()
+        .unwrap();
+    let intent: String =
+        sqlx::query_scalar("SELECT intent_json FROM workspace_executions WHERE execution_id=?1")
+            .bind(id)
+            .fetch_one(&fx.pool())
+            .await
+            .unwrap();
+    let intent: Value = serde_json::from_str(&intent).unwrap();
+    let env: Vec<(String, String)> =
+        serde_json::from_value(intent["program"]["environment"].clone()).unwrap();
+    env.into_iter()
+        .find(|(key, _)| key == "NEIGE_GATE_EXIT_PATH")
+        .unwrap()
+        .1
+        .into()
 }
 
-/// The wrapper is alive but its recorded identity belongs to another boot: dead to recovery.
-async fn stale_artifacts(fx: &Fx, op_id: &str) {
-    sqlx::query(
-        "UPDATE operations SET spawn_artifacts_json = json_set(spawn_artifacts_json, '$.boot_id', ?1) WHERE id = ?2",
+/// Freeze live claim acquisition, then let the real executor settle before boot recovers.
+async fn settle_without_observer(fx: &Fx, op: &Operation, flag: &Path) {
+    sqlx::query("UPDATE operations SET lease_owner='test-restart',lease_until_ms=?1 WHERE id=?2")
+        .bind(now_ms() + 60_000)
+        .bind(&op.id)
+        .execute(&fx.pool())
+        .await
+        .unwrap();
+    std::fs::write(flag, b"").unwrap();
+    let id = serde_json::from_value(
+        op.tx_output.as_ref().unwrap().data["gate_execution"]["execution_id"].clone(),
     )
-    .bind(STALE_BOOT_ID)
-    .bind(op_id)
-    .execute(&fx.pool())
+    .unwrap();
+    let engine = fx.execution.lifecycle.engine().unwrap();
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if matches!(
+                engine.output(&id, None).await,
+                Ok(workspace_runtime::execution::ExecutionReply::Observation {
+                    state: workspace_runtime::execution::ExecutionState::Drained { .. },
+                    ..
+                })
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
     .unwrap();
 }
@@ -397,7 +431,15 @@ async fn gate_is_not_submitted_while_delivery_pending() {
     assert_eq!(wake_reason, DeliveryWakeReason::DeferredToGate);
     let op = gate_op(&fx, &task.id).await.expect("#g1 submitted");
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded, "{op:?}");
-    assert!(op.spawn_artifacts.is_some(), "the gate ran: {op:?}");
+    assert!(
+        op.tx_output
+            .as_ref()
+            .unwrap()
+            .data
+            .get("gate_execution")
+            .is_some(),
+        "the gate ran: {op:?}"
+    );
     let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
     assert!(gate.passed, "{gate:?}");
     assert_eq!(gate.status_detail, None);
@@ -516,7 +558,12 @@ async fn assert_refused_without_candidate(fx: &Fx, task: &Task, key: &str) -> Ga
     submit_gate_bypassing_admission(fx, task).await;
     let op = gate_op(fx, &task.id).await.expect("#g1");
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded, "{key}: {op:?}");
-    assert!(op.spawn_artifacts.is_none(), "{key}: no process ran");
+    assert!(
+        op.tx_output
+            .as_ref()
+            .is_none_or(|o| o.data.get("gate_execution").is_none()),
+        "{key}: no process ran"
+    );
     let frozen = &op.tx_output.as_ref().unwrap().data;
     assert_eq!(frozen["target"]["kind"], "no_candidate", "{key}: {frozen}");
     let events = gate_result_events(fx, &task.id).await;
@@ -680,7 +727,11 @@ async fn frozen_gate_cwd_on_agent_task_is_refused_in_prepare() {
     let op = gate_op(&fx, &task.id).await.expect("#g1");
     assert_eq!(op.phase.tag(), PhaseTag::Failed, "{op:?}");
     assert!(op.tx_output.is_none(), "prepare failed before its commit");
-    assert!(op.spawn_artifacts.is_none());
+    assert!(
+        op.tx_output
+            .as_ref()
+            .is_none_or(|o| o.data.get("gate_execution").is_none())
+    );
     let events = gate_result_events(&fx, &task.id).await;
     assert_eq!(events.len(), 1, "{events:?}");
     let gate = &events[0];
@@ -770,7 +821,12 @@ async fn gate_refuses_moved_head_in_prepare_without_spawning() {
 
     let op = gate_op(&fx, &task.id).await.expect("#g1");
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded, "{op:?}");
-    assert!(op.spawn_artifacts.is_none(), "nothing spawned: {op:?}");
+    assert!(
+        op.tx_output
+            .as_ref()
+            .is_none_or(|o| o.data.get("gate_execution").is_none()),
+        "nothing spawned: {op:?}"
+    );
     let output = op.tx_output.as_ref().unwrap();
     assert_eq!(output.data["target"]["refused"], true, "{}", output.data);
     let events = gate_result_events(&fx, &task.id).await;
@@ -849,7 +905,12 @@ async fn gate_refuses_symlinked_external_clone_as_provenance_mismatch() {
         .unwrap();
     let op = gate_op(&fx, &task.id).await.unwrap();
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
-    assert!(op.spawn_artifacts.is_none(), "no step ran");
+    assert!(
+        op.tx_output
+            .as_ref()
+            .is_none_or(|o| o.data.get("gate_execution").is_none()),
+        "no step ran"
+    );
     let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
     assert!(!gate.passed);
     assert_eq!(gate.status_detail.as_deref(), Some("gate-target-mismatch"));
@@ -1016,7 +1077,15 @@ async fn gate_result_discarded_when_tree_changed_during_steps() {
     assert_eq!(reasons, &[MismatchReason::Dirty]);
     let op = gate_op(&fx, &task.id).await.unwrap();
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
-    assert!(op.spawn_artifacts.is_some(), "the step ran");
+    assert!(
+        op.tx_output
+            .as_ref()
+            .unwrap()
+            .data
+            .get("gate_execution")
+            .is_some(),
+        "the step ran"
+    );
     let log = gate_log(&fx, &task.id).unwrap();
     assert!(log.contains("::gate-step t"), "{log}");
     assert!(log.contains("gate RESULT DISCARDED"), "{log}");
@@ -1122,8 +1191,8 @@ async fn reattached_gate_result_discarded_when_tree_changed() {
     wait_for_file(&lease.path.join("extra.txt"));
     // The kernel "died" after the wrapper finished: the recorded identity belongs to another
     // boot (so the group it names is not signalled either) and the exit file says 0.
-    stale_artifacts(&fx, &op.id).await;
-    std::fs::write(exit_path_of(&op), "0\n").unwrap();
+    settle_without_observer(&fx, &op, &flag).await;
+    std::fs::write(exit_path_of(&fx, &op).await, "0\n").unwrap();
 
     fx.reboot().await;
 
@@ -1194,7 +1263,15 @@ async fn gate_result_discarded_when_head_moved_during_steps() {
     assert_eq!(reasons, &[MismatchReason::Head]);
     let op = gate_op(&fx, &task.id).await.unwrap();
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
-    assert!(op.spawn_artifacts.is_some(), "the step ran");
+    assert!(
+        op.tx_output
+            .as_ref()
+            .unwrap()
+            .data
+            .get("gate_execution")
+            .is_some(),
+        "the step ran"
+    );
     assert!(gate_log(&fx, &task.id).unwrap().contains("::gate-step t"));
     assert_eq!(
         current(&fx.boot, "head-moved").await.status,
@@ -1241,7 +1318,15 @@ async fn after_sample_failure_is_gate_infra_unsampled_finalize() {
     );
     let op = gate_op(&fx, &task.id).await.unwrap();
     assert_eq!(op.phase.tag(), PhaseTag::Succeeded, "{op:?}");
-    assert!(op.spawn_artifacts.is_some(), "the step ran");
+    assert!(
+        op.tx_output
+            .as_ref()
+            .unwrap()
+            .data
+            .get("gate_execution")
+            .is_some(),
+        "the step ran"
+    );
     let log = gate_log(&fx, &task.id).unwrap();
     assert!(log.contains("::gate-step t"), "{log}");
     assert!(log.contains("unsampled after the gate"), "{log}");
@@ -1767,8 +1852,8 @@ async fn pre_upgrade_frozen_gate_boots_as_unbound() {
     .execute(&fx.pool())
     .await
     .unwrap();
-    stale_artifacts(&fx, &op.id).await;
-    std::fs::write(exit_path_of(&op), "0\n").unwrap();
+    settle_without_observer(&fx, &op, &flag).await;
+    std::fs::write(exit_path_of(&fx, &op).await, "0\n").unwrap();
 
     fx.reboot().await;
 
@@ -2286,8 +2371,38 @@ async fn wait_file_gate_op(
 }
 
 #[cfg(target_os = "linux")]
-fn parked_artifacts(op: &Operation) -> calm_server::operation::SpawnArtifacts {
-    op.spawn_artifacts.clone().expect("parked with artifacts")
+async fn parked_scope(fx: &Fx, op: &Operation) -> ScopeEvidence {
+    let id = serde_json::from_value(
+        op.tx_output.as_ref().unwrap().data["gate_execution"]["execution_id"].clone(),
+    )
+    .unwrap();
+    let workspace_runtime::execution::ExecutionReply::Observation {
+        receipt: Some(receipt),
+        ..
+    } = fx
+        .execution
+        .lifecycle
+        .engine()
+        .unwrap()
+        .output(&id, None)
+        .await
+        .unwrap()
+    else {
+        panic!("scope receipt")
+    };
+    ScopeEvidence {
+        pid: receipt.process.pid as i32,
+        pgid: receipt.process.pid as i32,
+        start_time: receipt.process.start_time_ticks,
+        boot_id: calm_server::proc_identity::read_boot_id().unwrap(),
+    }
+}
+#[cfg(target_os = "linux")]
+struct ScopeEvidence {
+    pid: i32,
+    pgid: i32,
+    start_time: u64,
+    boot_id: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -2419,7 +2534,9 @@ async fn refused_gate_survives_restart_between_prepare_and_spawn() {
     );
     let op = gate_op(fx, &task_id).await.unwrap();
     assert!(
-        op.spawn_artifacts.is_none(),
+        op.tx_output
+            .as_ref()
+            .is_none_or(|o| o.data.get("gate_execution").is_none()),
         "no process was ever spawned: {op:?}"
     );
     let task = current(&fx.boot, "gated").await;
@@ -2477,7 +2594,21 @@ impl Drop for GateGroupCleanup {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recovered_gate_stops_the_group_before_sampling() {
-    use crate::support::kernel_proc::{free_port_or_skip, launch_kernel};
+    after_sample_requires_drained().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c2b_after_sample_requires_drained() {
+    after_sample_requires_drained().await;
+}
+
+#[cfg(target_os = "linux")]
+async fn after_sample_requires_drained() {
+    use crate::support::kernel_proc::{
+        ChildGuard, free_port_or_skip, launch_kernel_to_with_args, spawn_kernel_to_with_args,
+        wait_exit_with_timeout,
+    };
     use calm_server::proc_identity::{
         parse_proc_stat_fields, read_proc_start_time, scan_process_group_members, verify_owned_pid,
     };
@@ -2506,14 +2637,26 @@ async fn recovered_gate_stops_the_group_before_sampling() {
     .await;
 
     // boot#1 admits and runs the gate: `#g1` parked, the straggler recorded.
-    let Some(mut boot1) = launch_kernel(&world.tmp_path, &world.db_path, "boot-1", &[]) else {
+    let Some(mut boot1) = launch_kernel_to_with_args(
+        &world.tmp_path,
+        &world.db_path,
+        "boot-1",
+        &[],
+        None,
+        &fx.execution.kernel_args(),
+    ) else {
         return; // SKIP was printed
     };
     let op = wait_file_gate_op(&world, &task.id, "parked", |op| {
-        op.phase.tag() == PhaseTag::Parked && op.spawn_artifacts.is_some()
+        op.phase.tag() == PhaseTag::Parked
+            && op.tx_output.as_ref().is_some_and(|o| {
+                o.data["gate_execution"]["release"]
+                    .get("Released")
+                    .is_some()
+            })
     })
     .await;
-    let artifacts = parked_artifacts(&op);
+    let artifacts = parked_scope(fx, &op).await;
     assert_eq!(artifacts.pgid, artifacts.pid, "the wrapper leads its group");
     // Installed the moment the group is observed: on panic or any early return this kills the
     // still-marked wrapper/straggler so their flag-poll loops cannot outlive the vanished tempdir.
@@ -2552,16 +2695,34 @@ async fn recovered_gate_stops_the_group_before_sampling() {
         &artifacts.boot_id
     ));
     std::fs::write(&leader_flag, b"").unwrap();
-    let exit_path = exit_path_of(&op);
+    let exit_path = exit_path_of(fx, &op).await;
     wait_for_file(&exit_path);
     assert_eq!(std::fs::read_to_string(&exit_path).unwrap().trim(), "0");
+    let execution_id = serde_json::from_value(
+        op.tx_output.as_ref().unwrap().data["gate_execution"]["execution_id"].clone(),
+    )
+    .unwrap();
     tokio::time::timeout(WAIT, async {
-        while verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
+        loop {
+            if matches!(
+                fx.execution
+                    .lifecycle
+                    .engine()
+                    .unwrap()
+                    .output(&execution_id, None)
+                    .await,
+                Ok(workspace_runtime::execution::ExecutionReply::Observation {
+                    state: workspace_runtime::execution::ExecutionState::Exited { .. },
+                    ..
+                })
+            ) {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("the wrapper's leader is reaped");
+    .expect("leader exited, scope still owns descendants");
     assert_eq!(
         read_proc_start_time(straggler),
         Some(straggler_start),
@@ -2569,8 +2730,53 @@ async fn recovered_gate_stops_the_group_before_sampling() {
     );
     assert!(!lease.path.join("late.txt").exists());
 
-    // boot#2: the dead-process recovery reads the exit file, stops the group, samples clean.
-    let Some(mut boot2) = launch_kernel(&world.tmp_path, &world.db_path, "boot-2", &[]) else {
+    // Crash immediately after the actual after-sample, before completion can request Retire.
+    // The executor must already have Drained; retirement cannot supply the missing proof later.
+    let port = free_port_or_skip("gate-after-sample").unwrap();
+    let mut sampling = ChildGuard {
+        child: spawn_kernel_to_with_args(
+            &world.tmp_path,
+            &world.db_path,
+            port,
+            &[(
+                "CALM_TEST_CRASH_AT",
+                OsString::from("task-verify-after-sample"),
+            )],
+            None,
+            &fx.execution.kernel_args(),
+        ),
+        port,
+    };
+    let status = wait_exit_with_timeout(&mut sampling, WAIT);
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(libc::SIGABRT)
+    );
+    assert!(matches!(
+        fx.execution
+            .lifecycle
+            .engine()
+            .unwrap()
+            .output(&execution_id, None)
+            .await,
+        Ok(workspace_runtime::execution::ExecutionReply::Observation {
+            state: workspace_runtime::execution::ExecutionState::Drained { .. },
+            ..
+        })
+    ));
+    let before_completion = gate_op(fx, &task.id).await.unwrap();
+    assert_eq!(before_completion.phase.tag(), PhaseTag::Parked);
+    assert!(!lease.path.join("late.txt").exists());
+
+    // Restart once more: settlement supplies the verdict, then completion retires the scope.
+    let Some(mut boot2) = launch_kernel_to_with_args(
+        &world.tmp_path,
+        &world.db_path,
+        "boot-2",
+        &[],
+        None,
+        &fx.execution.kernel_args(),
+    ) else {
         return; // SKIP was printed
     };
     let op = wait_file_gate_op(&world, &task.id, "succeeded", |op| {
@@ -2645,7 +2851,7 @@ async fn recovered_gate_stops_the_group_before_sampling() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_reattached_gate_result_discarded_when_tree_changed() {
-    use crate::support::kernel_proc::{free_port_or_skip, launch_kernel};
+    use crate::support::kernel_proc::{free_port_or_skip, launch_kernel_to_with_args};
     use calm_server::proc_identity::verify_owned_pid;
 
     if free_port_or_skip("gate-reattach").is_none() {
@@ -2666,14 +2872,26 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
     .await;
 
     // boot#1 runs the gate to parked; the step has left its file; the kernel dies.
-    let Some(mut boot1) = launch_kernel(&world.tmp_path, &world.db_path, "boot-1", &[]) else {
+    let Some(mut boot1) = launch_kernel_to_with_args(
+        &world.tmp_path,
+        &world.db_path,
+        "boot-1",
+        &[],
+        None,
+        &fx.execution.kernel_args(),
+    ) else {
         return; // SKIP was printed
     };
     let op = wait_file_gate_op(&world, &task.id, "parked", |op| {
-        op.phase.tag() == PhaseTag::Parked && op.spawn_artifacts.is_some()
+        op.phase.tag() == PhaseTag::Parked
+            && op.tx_output.as_ref().is_some_and(|o| {
+                o.data["gate_execution"]["release"]
+                    .get("Released")
+                    .is_some()
+            })
     })
     .await;
-    let artifacts = parked_artifacts(&op);
+    let artifacts = parked_scope(fx, &op).await;
     // Kills the still-marked wrapper on panic or early return (see `GateGroupCleanup`).
     let _gate_cleanup = GateGroupCleanup {
         pgid: artifacts.pgid,
@@ -2699,7 +2917,14 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
 
     // boot#2 finds the wrapper alive: the Boot arm leaves the op parked and re-attaches an
     // observer (the listener binds only after recovery, so readiness proves the arm ran).
-    let Some(mut boot2) = launch_kernel(&world.tmp_path, &world.db_path, "boot-2", &[]) else {
+    let Some(mut boot2) = launch_kernel_to_with_args(
+        &world.tmp_path,
+        &world.db_path,
+        "boot-2",
+        &[],
+        None,
+        &fx.execution.kernel_args(),
+    ) else {
         return; // SKIP was printed
     };
     let op = gate_op(fx, &task.id).await.unwrap();
