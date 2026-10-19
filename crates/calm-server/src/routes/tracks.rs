@@ -3119,7 +3119,7 @@ async fn finish_prepared_track_deletion_owned(
     let span = observation.span();
     tokio::spawn(
         async move {
-            let mut owned = observation.stage(Stage::OwnedWorkflow);
+            let mut owned = observation.stage(Stage::OwnedDeletion);
             let workflow = std::panic::AssertUnwindSafe(async {
                 let recycled = prepared
                     .quiesce(&route, &worker, &codex)

@@ -134,7 +134,7 @@ async fn track_delete_observation_distinguishes_operation_lock_from_writer_admis
             .unwrap()
             .contains(&json!("track_deletion"))
     }));
-    logs.one("owned_workflow", "ok");
+    logs.one("owned_deletion", "ok");
     logs.one("request", "ok");
     let stage_totals = logs
         .records()
@@ -176,11 +176,11 @@ async fn track_delete_observation_keeps_owned_completion_after_request_cancellat
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     logs.wait("request", "interrupted").await;
-    assert!(logs.find("owned_workflow", "interrupted").is_empty());
+    assert!(logs.find("owned_deletion", "interrupted").is_empty());
     hook.release.notify_one();
-    logs.wait("owned_workflow", "ok").await;
+    logs.wait("owned_deletion", "ok").await;
     let cancelled = logs.one("request", "interrupted");
-    let completed = logs.one("owned_workflow", "ok");
+    let completed = logs.one("owned_deletion", "ok");
     assert_eq!(cancelled["deletion_id"], completed["deletion_id"]);
     assert_eq!(completed["track_id"], track);
     assert!(logs.find("request", "ok").is_empty());
@@ -198,7 +198,7 @@ async fn track_delete_observation_reports_preflight_error_without_owned_work() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     logs.one("preflight", "error");
     logs.one("request", "error");
-    assert!(logs.find("owned_workflow", "begin").is_empty());
+    assert!(logs.find("owned_deletion", "begin").is_empty());
 }
 
 #[tokio::test]
@@ -227,7 +227,7 @@ async fn track_delete_observation_retains_compensation_after_caught_panic() {
     let (status, _) = tokio::time::timeout(LIMIT, task).await.unwrap().unwrap();
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     logs.one("compensation", "ok");
-    logs.one("owned_workflow", "error");
+    logs.one("owned_deletion", "error");
     logs.one("request", "error");
     assert!(b.repo.track_get(&track).await.unwrap().is_some());
     assert!(path.is_dir());
