@@ -122,3 +122,53 @@ fn m1_mapping_edit_plan_roundtrip_keeps_exact_storage_bytes() {
         );
     }
 }
+
+#[test]
+fn h2_start_delivery_projects_to_unchanged_host_decisions() {
+    use provider::codex::delivery::StartDelivery;
+    for written in [false, true] {
+        let input = if written {
+            StartDelivery::Unknown {
+                error: StartError::Unanswered(CalmError::CodexAppServer("timeout".into())),
+                response_turn: None,
+            }
+        } else {
+            StartDelivery::NotWritten {
+                error: StartError::Unanswered(CalmError::CodexAppServer("not connected".into())),
+            }
+        };
+        assert!(matches!(
+            codex_start_delivery(input),
+            Ok(TurnStartOutcome::Failed { .. })
+        ));
+    }
+    assert!(matches!(
+        codex_start_delivery(StartDelivery::Unknown {
+            error: StartError::Refused(CalmError::CodexRefused("remote error".into())),
+            response_turn: None
+        }),
+        Ok(TurnStartOutcome::Rejected { .. })
+    ));
+    assert!(matches!(
+        codex_start_delivery(StartDelivery::NativeAck {
+            turn: "turn".into(),
+            cleanup: Some(StartError::Host(CalmError::Conflict("sealed".into())))
+        }),
+        Err(TurnStartFailure::Transient(CalmError::Conflict(_)))
+    ));
+    assert!(matches!(
+        codex_start_delivery(StartDelivery::NativeAck {
+            turn: "turn".into(),
+            cleanup: Some(StartError::Unanswered(CalmError::CodexAppServer(
+                "interrupt failed".into()
+            )))
+        }),
+        Ok(TurnStartOutcome::Failed { .. })
+    ));
+    let empty_identity = StartDelivery::Unknown {
+        error: StartError::Unanswered(CalmError::CodexAppServer("invalid id".into())),
+        response_turn: Some(String::new()),
+    };
+    assert!(matches!(codex_start_delivery(empty_identity),
+        Ok(TurnStartOutcome::Started { turn: TurnIdentity::Native(turn) }) if turn.is_empty()));
+}

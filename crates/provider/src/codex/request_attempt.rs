@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RequestCrossing {
+pub enum RequestCrossing {
     /// This call returned before entering the socket send.
     BeforeSend,
     /// Sending was entered; an error does not establish whether input arrived.
@@ -20,11 +20,11 @@ pub(super) enum RequestCrossing {
 /// A provider-reported JSON-RPC error object (`-32600` etc.), retained without a
 /// serialization implementation. Debug omits message/data, which may contain request content.
 #[derive(Clone, Deserialize)]
-pub(super) struct RpcRemoteError {
-    pub(super) code: i64,
-    pub(super) message: String,
+pub struct RpcRemoteError {
+    pub code: i64,
+    pub message: String,
     #[serde(default)]
-    pub(super) data: Option<Value>,
+    pub data: Option<Value>,
 }
 
 impl fmt::Debug for RpcRemoteError {
@@ -37,19 +37,19 @@ impl fmt::Debug for RpcRemoteError {
 }
 
 /// What the reader routed to a pending request instead of a result.
-pub(super) enum RpcResponseError {
+pub enum RpcResponseError {
     Remote(RpcRemoteError),
     Malformed(Value),
 }
 
-pub(super) enum FailureCause {
+pub enum FailureCause {
     Local(Error),
     Response(RpcResponseError),
 }
 
 /// Only the request owner constructs crossing evidence. A cancelled future
 /// produces no value: its caller must keep any durable dispatch intent unknown.
-pub(super) struct RpcAttemptFailure {
+pub struct RpcAttemptFailure {
     pub(super) method: String,
     /// Connection-local JSON-RPC correlation, never a durable submission ID.
     pub(super) request_id: Option<u64>,
@@ -58,7 +58,30 @@ pub(super) struct RpcAttemptFailure {
 }
 
 impl RpcAttemptFailure {
-    fn local(method: &str, id: Option<u64>, crossing: RequestCrossing, error: Error) -> Self {
+    pub fn crossing(&self) -> RequestCrossing {
+        self.crossing
+    }
+
+    /// Retain the structured response diagnostic across the adapter boundary.
+    pub fn into_parts(self) -> (String, FailureCause) {
+        (self.method, self.cause)
+    }
+
+    pub(super) fn invalid_result(method: &str, diagnostic: &str) -> Self {
+        Self::local(
+            method,
+            None,
+            RequestCrossing::AfterSend,
+            Error::Transport(diagnostic.into()),
+        )
+    }
+
+    pub(super) fn local(
+        method: &str,
+        id: Option<u64>,
+        crossing: RequestCrossing,
+        error: Error,
+    ) -> Self {
         Self {
             method: method.into(),
             request_id: id,

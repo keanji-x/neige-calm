@@ -126,7 +126,7 @@ impl<'a> IssueTurnHandle<'a> {
                     }
                 }
                 approvals.route(daemon, thread_id);
-                codex_start_result(
+                codex_start_delivery(
                     daemon
                         .turn_start_control(
                             thread_id,
@@ -156,7 +156,7 @@ impl<'a> IssueTurnHandle<'a> {
     ) -> Result<SteerOutcome<CalmError>> {
         let thread_id = self.thread()?;
         match &self.owner.backend.0 {
-            Arm::Codex(daemon, _) => Ok(steer_outcome(
+            Arm::Codex(daemon, _) => Ok(steer_delivery(
                 daemon
                     .turn_steer(
                         thread_id,
@@ -178,8 +178,8 @@ impl<'a> IssueTurnHandle<'a> {
     ) -> Result<CompactSubmission<CalmError>> {
         let thread_id = self.thread()?;
         match &self.owner.backend.0 {
-            Arm::Codex(daemon, _) => Ok(codex_compact_submission(
-                daemon.thread_compact_start(thread_id).await,
+            Arm::Codex(daemon, _) => Ok(compact_delivery(
+                daemon.thread_compact_delivery(thread_id).await,
             )),
             Arm::Claude(session) => Ok(session.compact_start(thread_id, &request.selection).await),
             Arm::Acp(_) => Err(CalmError::BadRequest(

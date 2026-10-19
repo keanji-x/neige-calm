@@ -1,5 +1,6 @@
 //! Shared `codex app-server` supervisor: starts, supervises, and takes over a single
 //! daemon for the whole server.
+use provider::codex::delivery::{CompactDelivery, StartDelivery, SteerDelivery};
 use provider::control::NativeInterruptOutcome;
 
 #[cfg(target_os = "macos")]
@@ -1058,14 +1059,16 @@ impl SharedCodexAppServer {
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
-        self.turn_start_control(
-            thread_id,
-            items,
-            selection,
-            approvals,
-            client_user_message_id,
+        control::start_result(
+            self.turn_start_control(
+                thread_id,
+                items,
+                selection,
+                approvals,
+                client_user_message_id,
+            )
+            .await,
         )
-        .await
         .map_err(Into::into)
     }
 
@@ -1076,12 +1079,26 @@ impl SharedCodexAppServer {
         selection: &TurnModelSelection,
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
-    ) -> std::result::Result<TurnId, control::StartError> {
-        self.require_start_authentication()?;
+    ) -> StartDelivery<control::StartError> {
+        macro_rules! before {
+            ($result:expr) => {
+                match $result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return StartDelivery::NotWritten {
+                            error: error.into(),
+                        }
+                    }
+                }
+            };
+        }
+        before!(self.require_start_authentication());
         if self.thread_seals.is_sealed(thread_id) {
-            return Err(control::StartError::Host(CalmError::Conflict(format!(
-                "thread {thread_id} is sealed because its track is being deleted"
-            ))));
+            return StartDelivery::NotWritten {
+                error: control::StartError::Host(CalmError::Conflict(format!(
+                    "thread {thread_id} is sealed because its track is being deleted"
+                ))),
+            };
         }
         if !self.thread_cache.contains_key(thread_id) {
             tracing::warn!(
@@ -1094,14 +1111,20 @@ impl SharedCodexAppServer {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             if fake.reject_turn_start.load(Ordering::SeqCst) {
-                return Err(control::StartError::Refused(CalmError::CodexRefused(
-                    "turn/start failed: unknown model (code -32602)".into(),
-                )));
+                return StartDelivery::Unknown {
+                    response_turn: None,
+                    error: control::StartError::Refused(CalmError::CodexRefused(
+                        "turn/start failed: unknown model (code -32602)".into(),
+                    )),
+                };
             }
             if fake.fail_turn_start.load(Ordering::SeqCst) {
-                return Err(control::StartError::Unanswered(CalmError::CodexAppServer(
-                    "forced turn/start failure for test".into(),
-                )));
+                return StartDelivery::Unknown {
+                    response_turn: None,
+                    error: control::StartError::Unanswered(CalmError::CodexAppServer(
+                        "forced turn/start failure for test".into(),
+                    )),
+                };
             }
             fake.started_turns
                 .lock()
@@ -1137,49 +1160,56 @@ impl SharedCodexAppServer {
                 thread_id: thread_id.to_string(),
                 turn: serde_json::json!({ "id": turn_id, "input_len": items.len() }),
             });
-            if self.thread_seals.is_sealed(thread_id) {
-                match self.interrupt_control(thread_id, &turn_id).await {
-                    NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
-                    NativeInterruptOutcome::Unconfirmed { error } => return Err(error),
-                }
-                self.active_turns
-                    .remove_if(thread_id, |_, active| active == &turn_id);
-                return Err(control::StartError::Host(CalmError::Conflict(format!(
-                    "thread {thread_id} was sealed while turn/start was in flight"
-                ))));
-            }
-            return Ok(turn_id);
+            return self.finish_start_reply(thread_id, turn_id, None).await;
         }
-        let client = self.connected_client().await?;
-        self.require_start_authentication()?;
-        let turn = client
-            .turn_start_with_client_id(
+        let client = before!(self.connected_client().await);
+        before!(self.require_start_authentication());
+        let (turn_id, invalid_result) = match client
+            .turn_start_delivery(
                 thread_id,
                 items,
                 selection,
                 approvals,
                 client_user_message_id,
             )
-            .await?;
-        let turn_id = turn.turn_id().map(ToOwned::to_owned).ok_or_else(|| {
-            control::StartError::Unanswered(CalmError::CodexAppServer(
-                "turn/start returned no turn.id".into(),
-            ))
-        })?;
+            .await
+        {
+            StartDelivery::NativeAck {
+                turn,
+                cleanup: None,
+            } => (turn, None),
+            StartDelivery::NativeAck {
+                turn,
+                cleanup: Some(error),
+            } => {
+                return StartDelivery::NativeAck {
+                    turn,
+                    cleanup: Some(error.into()),
+                };
+            }
+            StartDelivery::NotWritten { error } => {
+                return StartDelivery::NotWritten {
+                    error: error.into(),
+                };
+            }
+            StartDelivery::Unknown {
+                error,
+                response_turn: Some(turn),
+            } => (turn, Some(control::StartError::from(error))),
+            StartDelivery::Unknown {
+                error,
+                response_turn: None,
+            } => {
+                return StartDelivery::Unknown {
+                    response_turn: None,
+                    error: error.into(),
+                };
+            }
+        };
         self.active_turns
             .insert(thread_id.to_string(), turn_id.clone());
-        if self.thread_seals.is_sealed(thread_id) {
-            match self.interrupt_control(thread_id, &turn_id).await {
-                NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {}
-                NativeInterruptOutcome::Unconfirmed { error } => return Err(error),
-            }
-            self.active_turns
-                .remove_if(thread_id, |_, active| active == &turn_id);
-            return Err(control::StartError::Host(CalmError::Conflict(format!(
-                "thread {thread_id} was sealed while turn/start was in flight"
-            ))));
-        }
-        Ok(turn_id)
+        self.finish_start_reply(thread_id, turn_id, invalid_result)
+            .await
     }
 
     /// Whether a live app-server connection exists right now. Awaits the core lock rather than
@@ -1407,8 +1437,10 @@ impl SharedCodexAppServer {
         expected_turn_id: &str,
         items: Vec<InputItem>,
         client_user_message_id: Option<&str>,
-    ) -> std::result::Result<TurnId, ControlError> {
-        self.require_authentication()?;
+    ) -> SteerDelivery<ControlError> {
+        if let Err(error) = self.require_authentication() {
+            return SteerDelivery::NotWritten { error };
+        }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
             fake.steered_turns
@@ -1435,14 +1467,20 @@ impl SharedCodexAppServer {
                 .expect("fake shared codex reject-steer mutex poisoned")
                 .clone();
             if let Some(message) = scripted {
-                return Err(ControlError::Refused(CalmError::CodexRefused(message)));
+                return SteerDelivery::Unknown {
+                    error: ControlError::Refused(CalmError::CodexRefused(message)),
+                    response_turn: None,
+                };
             }
             if fake.fail_turn_steer.load(Ordering::SeqCst) {
-                return Err(ControlError::Unanswered(CalmError::CodexAppServer(
-                    "request turn/steer timed out".into(),
-                )));
+                return SteerDelivery::Unknown {
+                    error: ControlError::Unanswered(CalmError::CodexAppServer(
+                        "request turn/steer timed out".into(),
+                    )),
+                    response_turn: None,
+                };
             }
-            return match self.active_turn_id_for_thread(thread_id) {
+            let result = match self.active_turn_id_for_thread(thread_id) {
                 None => Err(ControlError::Refused(CalmError::CodexRefused(
                     "turn/steer failed: no active turn to steer (code -32600)".into(),
                 ))),
@@ -1454,12 +1492,34 @@ impl SharedCodexAppServer {
                 }
                 Some(active) => Ok(active),
             };
+            return match result {
+                Ok(turn) => SteerDelivery::NativeAck { turn },
+                Err(error) => SteerDelivery::Unknown {
+                    error,
+                    response_turn: None,
+                },
+            };
         }
-        let client = self.authenticated_client().await?;
-        let steered = client
-            .turn_steer(thread_id, expected_turn_id, items, client_user_message_id)
-            .await?;
-        Ok(steered.turn_id)
+        let client = match self.authenticated_client().await {
+            Ok(client) => client,
+            Err(error) => return SteerDelivery::NotWritten { error },
+        };
+        match client
+            .turn_steer_delivery(thread_id, expected_turn_id, items, client_user_message_id)
+            .await
+        {
+            SteerDelivery::NativeAck { turn } => SteerDelivery::NativeAck { turn },
+            SteerDelivery::NotWritten { error } => SteerDelivery::NotWritten {
+                error: error.into(),
+            },
+            SteerDelivery::Unknown {
+                error,
+                response_turn,
+            } => SteerDelivery::Unknown {
+                error: error.into(),
+                response_turn,
+            },
+        }
     }
 
     /// `thread/revert` before the turn that follows a rewind (#1923). Refused on a sealed thread
@@ -1512,15 +1572,16 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
-    pub async fn thread_compact_start(
-        &self,
-        thread_id: &str,
-    ) -> std::result::Result<(), ControlError> {
-        self.require_authentication()?;
+    pub async fn thread_compact_delivery(&self, thread_id: &str) -> CompactDelivery<ControlError> {
+        if let Err(error) = self.require_authentication() {
+            return CompactDelivery::NotWritten { error };
+        }
         if self.thread_seals.is_sealed(thread_id) {
-            return Err(ControlError::Unanswered(CalmError::Conflict(
-                "the conversation is being deleted".into(),
-            )));
+            return CompactDelivery::NotWritten {
+                error: ControlError::Unanswered(CalmError::Conflict(
+                    "the conversation is being deleted".into(),
+                )),
+            };
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = &self.fake {
@@ -1528,13 +1589,44 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake compaction log")
                 .push(thread_id.into());
-            return Ok(());
+            return CompactDelivery::NativeAck;
         }
-        self.authenticated_client()
-            .await?
-            .thread_compact_start(thread_id)
-            .await?;
-        Ok(())
+        let client = match self.authenticated_client().await {
+            Ok(client) => client,
+            Err(error) => return CompactDelivery::NotWritten { error },
+        };
+        match client.compact_delivery(thread_id).await {
+            CompactDelivery::NativeAck => CompactDelivery::NativeAck,
+            CompactDelivery::NotWritten { error } => CompactDelivery::NotWritten {
+                error: error.into(),
+            },
+            CompactDelivery::Unknown {
+                error,
+                result_received,
+            } => CompactDelivery::Unknown {
+                error: error.into(),
+                result_received,
+            },
+        }
+    }
+
+    /// Historical result API for non-harness callers.
+    pub async fn thread_compact_start(
+        &self,
+        thread_id: &str,
+    ) -> std::result::Result<(), ControlError> {
+        match self.thread_compact_delivery(thread_id).await {
+            CompactDelivery::NativeAck
+            | CompactDelivery::Unknown {
+                result_received: true,
+                ..
+            } => Ok(()),
+            CompactDelivery::NotWritten { error }
+            | CompactDelivery::Unknown {
+                error,
+                result_received: false,
+            } => Err(error),
+        }
     }
 
     /// `config/mcpServer/reload` on the connected daemon; never spawns or heals one. Without a

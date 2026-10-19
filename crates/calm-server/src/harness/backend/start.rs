@@ -9,6 +9,33 @@ pub struct StartDiagnostic {
     pub reader: String,
 }
 
+pub(super) fn codex_start_delivery(
+    delivery: provider::codex::delivery::StartDelivery<StartError>,
+) -> std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {
+    use provider::codex::delivery::StartDelivery;
+    // C0 intentionally keeps the existing retry/rebuffer policy, including cleanup failure.
+    let result = match delivery {
+        StartDelivery::NativeAck {
+            turn,
+            cleanup: None,
+        }
+        | StartDelivery::Unknown {
+            response_turn: Some(turn),
+            ..
+        } => Ok(turn),
+        StartDelivery::NativeAck {
+            cleanup: Some(error),
+            ..
+        }
+        | StartDelivery::NotWritten { error }
+        | StartDelivery::Unknown {
+            error,
+            response_turn: None,
+        } => Err(error),
+    };
+    codex_start_result(result)
+}
+
 pub(super) fn codex_start_result(
     result: std::result::Result<TurnId, StartError>,
 ) -> std::result::Result<TurnStartOutcome<CalmError, StartDiagnostic>, TurnStartFailure> {

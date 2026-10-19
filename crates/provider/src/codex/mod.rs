@@ -14,8 +14,9 @@ pub use authentication::is_sign_in_failure;
 mod types;
 pub use types::*;
 mod client_transport;
+pub mod delivery;
 mod interrupt;
-mod request_attempt;
+pub mod request_attempt;
 #[cfg(test)]
 mod start_mapping_tests;
 use request_attempt::{RpcAttemptFailure, RpcRemoteError, RpcResponseError};

@@ -283,7 +283,7 @@ async fn m1_mapping_codex_signin_fact_is_captured_at_authentication_owner() {
         )
         .await;
     assert!(
-        matches!(result, Err(crate::shared_codex_appserver::control::StartError::RecoveryRequired(CalmError::CodexRefused(message))) if message == crate::codex_authentication::SIGN_IN_REFUSAL)
+        matches!(result, provider::codex::delivery::StartDelivery::NotWritten { error: crate::shared_codex_appserver::control::StartError::RecoveryRequired(CalmError::CodexRefused(message)) } if message == crate::codex_authentication::SIGN_IN_REFUSAL)
     );
     assert_eq!(f.daemon.turn_start_count_for_test(), 0);
 }
@@ -482,4 +482,111 @@ async fn m2c_mixed_legacy_and_versioned_input_uses_the_bound_start() {
             < text.find("versioned accepted sentence").unwrap()
     );
     assert!(f.stored().await.pending_entries().is_empty());
+}
+
+#[tokio::test]
+async fn h2_start_native_ack_survives_post_ack_seal_and_interrupt_cleanup() {
+    use crate::shared_codex_appserver::control::StartError;
+    use provider::codex::delivery::StartDelivery;
+    for interrupt_fails in [false, true] {
+        let f = Fixture::new().await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        f.daemon.install_turn_start_return_hook_for_test(
+            crate::shared_codex_appserver::TurnStartReturnHook {
+                entered: entered.clone(),
+                release: release.clone(),
+            },
+        );
+        f.daemon.fail_turn_interrupt_for_test(interrupt_fails);
+        let selection = TurnModelSelection::inherit();
+        let start = f.daemon.turn_start_control(
+            "thread-commit-wake",
+            vec![],
+            &selection,
+            crate::codex_appserver::TurnApprovals::Unchanged,
+            None,
+        );
+        let (delivery, ()) = tokio::join!(start, async {
+            entered.notified().await;
+            f.daemon
+                .thread_seals()
+                .seal_for_deletion("thread-commit-wake");
+            release.notify_one();
+        });
+        match (interrupt_fails, delivery) {
+            (
+                false,
+                StartDelivery::NativeAck {
+                    turn,
+                    cleanup: Some(StartError::Host(CalmError::Conflict(message))),
+                },
+            ) => {
+                assert_eq!(turn, "fake-turn-0001");
+                assert_eq!(
+                    message,
+                    "thread thread-commit-wake was sealed while turn/start was in flight"
+                );
+            }
+            (
+                true,
+                StartDelivery::NativeAck {
+                    turn,
+                    cleanup: Some(StartError::Unanswered(CalmError::CodexAppServer(message))),
+                },
+            ) => {
+                assert_eq!(turn, "fake-turn-0001");
+                assert_eq!(message, "fixture: turn/interrupt failed");
+            }
+            other => panic!("ack was lost during cleanup: {other:?}"),
+        }
+        assert_eq!(f.daemon.turn_start_count_for_test(), 1);
+        assert_eq!(
+            f.daemon.interrupted_turns_for_test(),
+            vec![("thread-commit-wake".into(), "fake-turn-0001".into())]
+        );
+    }
+}
+
+#[tokio::test]
+async fn h2_adapter_not_connected_and_local_seal_are_not_written() {
+    use provider::codex::delivery::{CompactDelivery, StartDelivery, SteerDelivery};
+    let f = Fixture::new().await;
+    let daemon = crate::shared_codex_appserver::SharedCodexAppServer::new_stub(f.repo.clone());
+    let selection = TurnModelSelection::inherit();
+    assert!(
+        matches!(daemon.turn_start_control("thread", vec![], &selection, crate::codex_appserver::TurnApprovals::Unchanged, None).await,
+        StartDelivery::NotWritten { error: crate::shared_codex_appserver::control::StartError::Unanswered(CalmError::CodexAppServer(message)) } if message == "shared app-server is not connected")
+    );
+    assert!(matches!(
+        daemon.turn_steer("thread", "turn", vec![], None).await,
+        SteerDelivery::NotWritten { .. }
+    ));
+    assert!(matches!(
+        daemon.thread_compact_delivery("thread").await,
+        CompactDelivery::NotWritten { .. }
+    ));
+    daemon.thread_seals().seal_for_deletion("thread");
+    assert!(matches!(
+        daemon
+            .turn_start_control(
+                "thread",
+                vec![],
+                &selection,
+                crate::codex_appserver::TurnApprovals::Unchanged,
+                None
+            )
+            .await,
+        StartDelivery::NotWritten {
+            error: crate::shared_codex_appserver::control::StartError::Host(CalmError::Conflict(_))
+        }
+    ));
+    assert!(matches!(
+        daemon.thread_compact_delivery("thread").await,
+        CompactDelivery::NotWritten {
+            error: crate::shared_codex_appserver::control::ControlError::Unanswered(
+                CalmError::Conflict(_)
+            )
+        }
+    ));
 }

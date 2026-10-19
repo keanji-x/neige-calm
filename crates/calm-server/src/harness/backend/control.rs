@@ -2,6 +2,45 @@
 use super::*;
 use crate::shared_codex_appserver::control::ControlError;
 
+pub(super) fn steer_delivery(
+    delivery: provider::codex::delivery::SteerDelivery<ControlError>,
+) -> SteerOutcome<CalmError> {
+    use provider::codex::delivery::SteerDelivery;
+    // C0 projects even invalid decoded identities to the historical Taken decision.
+    let result = match delivery {
+        SteerDelivery::NativeAck { turn } => Ok(turn),
+        SteerDelivery::Unknown {
+            response_turn: Some(turn),
+            ..
+        } => Ok(turn),
+        SteerDelivery::NotWritten { error }
+        | SteerDelivery::Unknown {
+            error,
+            response_turn: None,
+        } => Err(error),
+    };
+    steer_outcome(result)
+}
+
+pub(super) fn compact_delivery(
+    delivery: provider::codex::delivery::CompactDelivery<ControlError>,
+) -> CompactSubmission<CalmError> {
+    use provider::codex::delivery::CompactDelivery;
+    let result = match delivery {
+        CompactDelivery::NativeAck
+        | CompactDelivery::Unknown {
+            result_received: true,
+            ..
+        } => Ok(()),
+        CompactDelivery::NotWritten { error }
+        | CompactDelivery::Unknown {
+            error,
+            result_received: false,
+        } => Err(error),
+    };
+    codex_compact_submission(result)
+}
+
 pub(super) fn steer_outcome(
     result: std::result::Result<TurnId, ControlError>,
 ) -> SteerOutcome<CalmError> {
@@ -155,6 +194,100 @@ mod tests {
                 Some((std::mem::discriminant(&error), error.to_string())),
                 original
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod h2_tests {
+    use super::*;
+    use provider::codex::delivery::{CompactDelivery, SteerDelivery};
+
+    fn unanswered() -> ControlError {
+        ControlError::Unanswered(CalmError::CodexAppServer("unchanged diagnostic".into()))
+    }
+    fn remote() -> ControlError {
+        ControlError::Refused(CalmError::CodexRefused("remote error".into()))
+    }
+
+    #[test]
+    fn h2_steer_delivery_preserves_taken_not_taken_unknown_host_policy() {
+        for turn in ["", "different-turn"] {
+            assert!(
+                matches!(steer_delivery(SteerDelivery::Unknown { error: unanswered(), response_turn: Some(turn.into()) }), SteerOutcome::Taken { turn: TurnIdentity::Native(actual) } if actual == turn)
+            );
+        }
+        for input in [
+            SteerDelivery::NotWritten {
+                error: unanswered(),
+            },
+            SteerDelivery::Unknown {
+                error: unanswered(),
+                response_turn: None,
+            },
+        ] {
+            assert!(matches!(
+                steer_delivery(input),
+                SteerOutcome::Unknown {
+                    evidence: SubmissionEvidence::Unobserved,
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            steer_delivery(SteerDelivery::Unknown {
+                error: remote(),
+                response_turn: None
+            }),
+            SteerOutcome::NotTaken { .. }
+        ));
+        assert!(
+            matches!(steer_delivery(SteerDelivery::NativeAck { turn: "turn".into() }), SteerOutcome::Taken { turn: TurnIdentity::Native(turn) } if turn == "turn")
+        );
+    }
+
+    #[test]
+    fn h2_compact_delivery_preserves_not_submitted_unconfirmed_host_policy() {
+        for input in [
+            CompactDelivery::NotWritten {
+                error: unanswered(),
+            },
+            CompactDelivery::Unknown {
+                error: unanswered(),
+                result_received: false,
+            },
+        ] {
+            assert!(matches!(
+                compact_delivery(input),
+                CompactSubmission::Unconfirmed {
+                    evidence: SubmissionEvidence::Unobserved,
+                    ..
+                }
+            ));
+        }
+        assert!(matches!(
+            compact_delivery(CompactDelivery::Unknown {
+                error: remote(),
+                result_received: false
+            }),
+            CompactSubmission::NotSubmitted {
+                reason: CompactNotSubmitted::NativeRefusal,
+                ..
+            }
+        ));
+        for input in [
+            CompactDelivery::NativeAck,
+            CompactDelivery::Unknown {
+                error: unanswered(),
+                result_received: true,
+            },
+        ] {
+            assert!(matches!(
+                compact_delivery(input),
+                CompactSubmission::Submitted {
+                    basis: SubmissionBasis::NativeAck
+                }
+            ));
         }
     }
 }

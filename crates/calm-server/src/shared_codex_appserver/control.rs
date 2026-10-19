@@ -1,8 +1,8 @@
-//! Failure facts captured before native control errors enter the application error domain.
+//! Historical host diagnostics. Delivery facts travel separately in provider operation outcomes.
 use crate::error::CalmError;
 
-/// Only the shared daemon's control producers choose these operation facts. The payload is an
-/// opaque diagnostic; consumers must never reclassify it by inspecting `CalmError`.
+/// C0 preserves these host decision categories independently of NotWritten/Unknown delivery.
+/// Consumers must never reclassify the opaque payload by inspecting `CalmError`.
 #[derive(Debug)]
 pub enum ControlError {
     Refused(CalmError),
@@ -69,7 +69,7 @@ mod tests {
     }
 }
 
-/// Start facts captured at the daemon source, before widening to CalmError.
+/// Historical start diagnostics, including host preparation and authentication recovery.
 #[derive(Debug)]
 pub enum StartError {
     Host(CalmError),
@@ -200,5 +200,104 @@ impl SharedCodexAppServer {
             return Ok(NativeInterruptOutcome::NoTarget);
         };
         Ok(self.interrupt_active_outcome(&thread_id).await)
+    }
+}
+
+// RPC response facts are classified before entering the application diagnostic domain.
+// Remote errors remain Unknown delivery; their old refusal diagnostic is retained for C0 policy.
+impl From<provider::codex::request_attempt::RpcAttemptFailure> for ControlError {
+    fn from(failure: provider::codex::request_attempt::RpcAttemptFailure) -> Self {
+        use provider::codex::request_attempt::{FailureCause, RpcResponseError};
+        let (method, cause) = failure.into_parts();
+        match cause {
+            FailureCause::Local(error) => error.into(),
+            FailureCause::Response(RpcResponseError::Remote(error)) => {
+                Self::Refused(CalmError::CodexRefused(format!(
+                    "{} failed: {} (code {})",
+                    method, error.message, error.code
+                )))
+            }
+            FailureCause::Response(RpcResponseError::Malformed(raw)) => {
+                Self::Refused(CalmError::CodexRefused(format!(
+                    "{} failed: malformed error frame: {raw} (code 0)",
+                    method
+                )))
+            }
+        }
+    }
+}
+impl From<provider::codex::request_attempt::RpcAttemptFailure> for StartError {
+    fn from(failure: provider::codex::request_attempt::RpcAttemptFailure) -> Self {
+        ControlError::from(failure).into()
+    }
+}
+
+/// Historical result contract for unmanaged callers. Managed policy projects in harness/backend.
+pub(super) fn start_result(
+    delivery: provider::codex::delivery::StartDelivery<StartError>,
+) -> std::result::Result<String, StartError> {
+    use provider::codex::delivery::StartDelivery;
+    match delivery {
+        StartDelivery::NativeAck {
+            turn,
+            cleanup: None,
+        }
+        | StartDelivery::Unknown {
+            response_turn: Some(turn),
+            ..
+        } => Ok(turn),
+        StartDelivery::NativeAck {
+            cleanup: Some(error),
+            ..
+        }
+        | StartDelivery::NotWritten { error }
+        | StartDelivery::Unknown {
+            error,
+            response_turn: None,
+        } => Err(error),
+    }
+}
+
+impl SharedCodexAppServer {
+    /// Both real and fixture RPC responses use the same post-response fence.
+    pub(super) async fn finish_start_reply(
+        &self,
+        thread_id: &str,
+        turn_id: TurnId,
+        invalid_result: Option<StartError>,
+    ) -> provider::codex::delivery::StartDelivery<StartError> {
+        use provider::codex::delivery::StartDelivery;
+        if self.thread_seals.is_sealed(thread_id) {
+            let cleanup = match self.interrupt_control(thread_id, &turn_id).await {
+                NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => {
+                    self.active_turns
+                        .remove_if(thread_id, |_, active| active == &turn_id);
+                    StartError::Host(CalmError::Conflict(format!(
+                        "thread {thread_id} was sealed while turn/start was in flight"
+                    )))
+                }
+                NativeInterruptOutcome::Unconfirmed { error } => error,
+            };
+            return match invalid_result {
+                None => StartDelivery::NativeAck {
+                    turn: turn_id,
+                    cleanup: Some(cleanup),
+                },
+                Some(_) => StartDelivery::Unknown {
+                    error: cleanup,
+                    response_turn: None,
+                },
+            };
+        }
+        match invalid_result {
+            None => StartDelivery::NativeAck {
+                turn: turn_id,
+                cleanup: None,
+            },
+            Some(error) => StartDelivery::Unknown {
+                error,
+                response_turn: Some(turn_id),
+            },
+        }
     }
 }
