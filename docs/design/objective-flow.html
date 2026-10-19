@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>objective：架构与数据流</title>
+<style>
+  :root {
+    --bg:#fff; --fg:#1f2328; --muted:#656d76; --line:#d0d7de; --panel:#f6f8fa;
+    --new-core:#fff4e5; --new-core-l:#d4a72c;
+    --new-host:#ddf4ff; --new-host-l:#0969da;
+    --exist:#f6f8fa; --exist-l:#8c959f;
+    --ext:#fbefff; --ext-l:#8250df;
+    --data:#dafbe1; --data-l:#1a7f37;
+    --hi:#cf222e; --band:#f6f8fa80;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0d1117; --fg:#e6edf3; --muted:#8d96a0; --line:#30363d; --panel:#161b22;
+      --new-core:#2b2111; --new-core-l:#bb8009;
+      --new-host:#0c2d6b; --new-host-l:#388bfd;
+      --exist:#161b22; --exist-l:#6e7681;
+      --ext:#271052; --ext-l:#a371f7;
+      --data:#033a16; --data-l:#3fb950;
+      --hi:#ff7b72; --band:#161b2280;
+    }
+  }
+  body { margin:0; padding:10px; background:var(--bg); color:var(--fg);
+         font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .bar { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
+  button { font:inherit; padding:3px 12px; border-radius:14px; border:1px solid var(--line);
+           background:var(--panel); color:var(--fg); cursor:pointer; }
+  button.on { border-color:var(--hi); color:var(--hi); font-weight:600; }
+  .legend { margin-left:auto; display:flex; gap:10px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
+  .legend i { display:inline-block; width:11px; height:11px; border-radius:3px; border:1.5px solid; vertical-align:-1px; margin-right:3px; }
+  svg { width:100%; height:auto; display:block; }
+  text { fill:var(--fg); font-size:13px; }
+  .sub { font-size:10.5px; fill:var(--muted); }
+  .bt { font-weight:600; }
+  .bandlbl { font-size:12px; font-weight:700; fill:var(--muted); letter-spacing:.5px; }
+  .band { fill:var(--band); stroke:var(--line); stroke-dasharray:5 4; }
+  .node rect { stroke-width:1.6; rx:8; cursor:pointer; }
+  .node.core rect { fill:var(--new-core); stroke:var(--new-core-l); }
+  .node.host rect { fill:var(--new-host); stroke:var(--new-host-l); }
+  .node.exist rect { fill:var(--exist); stroke:var(--exist-l); stroke-dasharray:4 3; }
+  .node.ext rect { fill:var(--ext); stroke:var(--ext-l); }
+  .node.data rect { fill:var(--data); stroke:var(--data-l); }
+  .node.sel rect { stroke:var(--hi); stroke-width:3; }
+  .node.dim { opacity:.35; }
+  .edge path { fill:none; stroke:var(--line); stroke-width:1.3; }
+  .edge.dashed path { stroke-dasharray:5 4; }
+  .edge .badge, .edge .lbl, .edge .lblbg { display:none; }
+  .edge.on path { stroke:var(--hi); stroke-width:2.4; marker-end:url(#ah); }
+  .edge.on .badge, .edge.on .lbl, .edge.on .lblbg { display:inline; }
+  .badge circle { fill:var(--hi); }
+  .badge text { fill:#fff; font-size:11px; font-weight:700; }
+  .lbl { font-size:11.5px; font-weight:600; fill:var(--hi); }
+  .lblbg { fill:var(--bg); opacity:.88; }
+  .edge.all path { stroke:var(--exist-l); marker-end:url(#am); }
+  .edge.off { opacity:.07; }
+  .panel rect { fill:var(--panel); stroke:var(--line); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; }
+  .ptitle { font-weight:700; font-size:12.5px; fill:var(--hi); }
+</style>
+</head>
+<body>
+<div class="bar" id="bar">
+  <span class="legend">
+    <span><i style="background:var(--new-core);border-color:var(--new-core-l)"></i>新 · 纯判断</span>
+    <span><i style="background:var(--new-host);border-color:var(--new-host-l)"></i>新 · 宿主</span>
+    <span><i style="background:var(--exist);border-color:var(--exist-l);border-style:dashed"></i>已有</span>
+    <span><i style="background:var(--data);border-color:var(--data-l)"></i>表</span>
+    <span><i style="background:var(--ext);border-color:var(--ext-l)"></i>人 / 进程</span>
+  </span>
+</div>
+<svg id="g" viewBox="0 0 1200 930">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#cf222e"/></marker>
+    <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#8c959f"/></marker>
+  </defs>
+  <g id="bands"></g><g id="edges"></g><g id="nodes"></g><g id="labels"></g><g id="panel"></g>
+</svg>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const mk = (t, a, txt) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); if (txt !== undefined) e.textContent = txt; return e; };
+
+const BANDS = [
+  [12, 14, 1176, 92, "人 / 进程"],
+  [12, 128, 1176, 290, "calm-server"],
+  [12, 440, 1176, 210, "objective crate（纯函数 · 无 IO）"],
+  [12, 672, 1176, 120, "calm-truth"],
+];
+
+// id, x, y, w, h, kind, title, sub, tip
+const N = [
+  ["you", 40, 38, 150, 52, "ext", "你", "批准标准", "只批准标准，不批准路径。可随时改目标块；标准一改，指纹变，批准失效。"],
+  ["pl", 250, 38, 190, 52, "ext", "Planner 会话", "Claude / Codex", "选路径、派任务、请求评估、结算（保留/丢弃 + 一句话）。"],
+  ["cli", 480, 38, 170, 52, "ext", "Claude CLI", "/compact <说明>", "provider：Claude 发 /compact <说明>；Codex 由 backend 声明是否支持说明。"],
+  ["wk", 760, 38, 170, 52, "ext", "worker", "按任务改代码", "已有：codex / claude worker，按任务块改代码，kernel 交付提交。"],
+  ["ev", 990, 38, 170, 52, "ext", "evaluator", "只读 · 成对比较", "只拿到：细则、约束、基线..候选 diff、检查输出。拿不到 Planner 推理和 worker 自述。"],
+
+  ["guard", 40, 170, 190, 60, "exist", "Report 守卫 + 投影", "objective 块 = task 块同路", "已有写入守卫；新增 objective 块类型，校验委托 objective::spec，投影到 objectives 表。"],
+  ["mcp", 250, 170, 190, 60, "host", "MCP 工具", "evaluate · settle · close", "新：mcp_server/tools/objective.rs。Planner 专用、限本 track；只把调用变成事件。"],
+  ["harness", 40, 318, 190, 80, "exist", "harness", "issuance 注入 · compact_command", "已有：issuance.rs 每轮开头注入系统段（用量 / 目标快照 / 评估结果）；compact_command.rs 增加「说明」参数并接受内核登记的压缩。"],
+  ["host", 470, 250, 230, 84, "host", "宿主 dispatcher", "事件 → react → 意图 → 分发", "新：calm-server/objective_host。唯一调用 react 的地方：先写事件日志，再执行意图；执行结果再变成事件。"],
+  ["op", 760, 170, 180, 60, "host", "Operation「评估」", "冻结 head · 可恢复", "新 Operation adapter：一次评估 = 一组检查；重启不重跑、不丢结果。"],
+  ["sched", 990, 170, 170, 60, "exist", "scheduler", "派 worker", "已有 calm-server/scheduler。目标系统不另起调度器，只产出意图。"],
+  ["gate", 760, 318, 180, 60, "exist", "gate_process", "command · metric", "已有 gate 执行器：在冻结的 head 上跑命令，metric 读最后一行数字。"],
+  ["ro", 990, 318, 170, 60, "exist", "只读任务", "evaluation-v1 结果契约", "已有只读任务（head 固定）；新增 evaluation-v1 结果契约，仿 review-v1。"],
+
+  ["react", 470, 462, 230, 64, "core", "engine::react", "(状态, 事件) → (状态', 意图)", "objective::engine::react。纯函数、确定：同样的事件日志一定得到同样的状态。"],
+  ["spec", 30, 570, 150, 60, "core", "spec", "规格 · 角色 · 预算", "ObjectiveSpec · CheckSpec · Role(invariant/ratchet/goal) · Budget · StopRule · CompactPolicy"],
+  ["standard", 190, 570, 150, 60, "core", "standard", "指纹 · 批准", "standard_hash()：checks + constraints + stop + 细则文件内容。Approval 绑定指纹。"],
+  ["check", 350, 570, 150, 60, "core", "check", "trait CheckKind", "扩展口：command · metric · evaluator · fact；以后：基准、视觉、安全。"],
+  ["verdict", 510, 570, 150, 60, "core", "verdict", "keepable()", "可保留 = 不变量全过 + 无棘轮退步 +（循环型）至少一项改进。退步不能保留。"],
+  ["ledger", 670, 570, 150, 60, "core", "ledger", "台账 · 基线", "每次结算一行：提交、结论、指标变化、上下文增量、一句话。"],
+  ["command", 830, 570, 150, 60, "core", "command", "trait Command", "扩展口。Authority：本会话（直接做）/ 改代码（走任务）/ 对外（先问你）。第一版只有 Compact。"],
+  ["trigger", 990, 570, 170, 60, "core", "trigger", "事件 → 意图规则", "扩展口：手动、结算后压缩；以后：新提交即评估、用量超线、定时循环 —— 内部调度器的雏形。"],
+
+  ["t_obj", 90, 708, 220, 60, "data", "objectives", "规格 · 状态 · 指纹 · 基线", "目标块的投影 + 运行态。"],
+  ["t_eval", 360, 708, 220, 60, "data", "objective_evaluations", "每项检查的输出", "评估记录：用了哪个指纹、哪个 head、每项检查的结果。"],
+  ["t_ledger", 630, 708, 220, 60, "data", "objective_ledger", "台账行", "保留 / 丢弃的历史，就是最终的改动说明。"],
+  ["t_evt", 900, 708, 220, 60, "data", "objective_events", "事件日志 · 可重放", "react 的全部输入；重启时重放恢复状态。"],
+];
+const NODE = Object.fromEntries(N.map(n => [n[0], { id:n[0], x:n[1], y:n[2], w:n[3], h:n[4], kind:n[5], title:n[6], sub:n[7], tip:n[8] }]));
+
+// from, to, label, flows {flow: n}, bend, dashed
+const E = [
+  ["pl","guard","写 objective 块",{S:1},0],
+  ["guard","host","SpecChanged",{S:2},-30],
+  ["host","react","Event",{S:3,E:3,C:3},-24],
+  ["react","spec","校验",{S:4},20],
+  ["react","standard","指纹 h1",{S:5},10],
+  ["host","t_obj","待批准 → 进行中",{S:6},40,{lt:.88}],
+  ["you","host","ApprovalGranted(h1)",{S:7},60,{lt:.25}],
+
+  ["pl","mcp","evaluate",{E:1},0],
+  ["mcp","host","Requested",{E:2,C:2},0],
+  ["react","host","RunCheck ×3",{E:4},-24],
+  ["host","op","冻结 head a91f",{E:5},-10],
+  ["op","gate","tests · jank",{E:6},0],
+  ["op","ro","arch 评审",{E:7},0],
+  ["ro","ev","细则 + diff",{E:8},20],
+  ["gate","host","CheckFinished",{E:9},20],
+  ["ev","host","CheckFinished",{E:10},80],
+  ["react","check","比较",{E:11},0],
+  ["react","verdict","keepable()",{E:12},0],
+  ["host","t_eval","评估记录",{E:13},-150],
+  ["host","harness","Notify",{E:14},30],
+  ["harness","pl","注入结果",{E:15},-40],
+
+  ["pl","mcp","settle(keep, 一句话)",{C:1},0],
+  ["react","ledger","追加 #2",{C:4},0,{lt:.7}],
+  ["react","trigger","→ 待压缩",{C:5},-40,{lt:.75}],
+  ["host","t_ledger","台账 · 基线 a91f",{C:6},0,{lt:.85}],
+  ["harness","host","HostIdle",{C:7},-50],
+  ["react","command","Compact{说明}",{C:8},-20,{lt:.35}],
+  ["host","harness","Execute(Compact)",{C:9},30],
+  ["harness","cli","/compact 说明",{C:10},0,{via:[[24,358],[24,26],[565,26]],lt:.62}],
+
+  ["pl","guard","task 块",{W:1},40],
+  ["guard","sched","投影任务",{W:2},-60],
+  ["sched","wk","派发",{W:3},0],
+  ["wk","host","新提交（RevisionDelivered）",{W:4},-40,{dashed:true}],
+
+  ["host","t_evt","事件日志",{S:8,E:16,C:11},20,{lt:.85}],
+];
+
+const FLOWS = [
+  ["S","① 立目标 + 批准",[
+    "objective fe-smooth   mode = loop",
+    "  tests  command    invariant",
+    "  jank   metric     ratchet  越低越好",
+    "  arch   evaluator  ratchet  samples = 1",
+    "standard_hash = h1  →  ApprovalGranted(h1)",
+  ]],
+  ["W","② 改代码（已有流程）",[
+    "task fe-virtual-list   gate = 不变量",
+    "scheduler → worker → 提交 a91f",
+    "RevisionDelivered(a91f)",
+    "第一版：只记录",
+    "以后：trigger 自动发起评估",
+  ]],
+  ["E","③ 评估一个提交",[
+    "RunCheck{ev-2, a91f vs c0ffee} × 3",
+    "tests  pass",
+    "jank   1840 → 1520   better",
+    "arch   胜2 平1 负0   阻塞 2 → 1",
+    "keepable() = true  → Notify Planner",
+  ]],
+  ["C","④ 结算 + 压缩",[
+    "settle(ev-2, keep, \"board 改虚拟列表\")",
+    "ledger #2  a91f  keep   ctx +6%",
+    "baseline → a91f    pending_compact",
+    "HostIdle → Execute(Compact{保留: 标准+台账})",
+    "上下文 46% → 12%",
+  ]],
+];
+
+const svg = document.getElementById("g");
+const bands = document.getElementById("bands"), edgesG = document.getElementById("edges"),
+      nodesG = document.getElementById("nodes"), labelsG = document.getElementById("labels"),
+      panelG = document.getElementById("panel");
+
+BANDS.forEach(([x,y,w,h,t]) => {
+  bands.appendChild(mk("rect",{x,y,width:w,height:h,rx:12,class:"band"}));
+  bands.appendChild(mk("text",{x:x+10,y:y+16,class:"bandlbl"},t));
+});
+
+const nodeEls = {};
+Object.values(NODE).forEach(n => {
+  const g = mk("g",{class:"node "+n.kind});
+  g.appendChild(mk("rect",{x:n.x,y:n.y,width:n.w,height:n.h,rx:8}));
+  g.appendChild(mk("text",{x:n.x+n.w/2,y:n.y+n.h/2-3,"text-anchor":"middle",class:"bt"},n.title));
+  g.appendChild(mk("text",{x:n.x+n.w/2,y:n.y+n.h/2+14,"text-anchor":"middle",class:"sub"},n.sub));
+  g.appendChild(mk("title",{},n.tip));
+  g.addEventListener("click",()=>showNode(n.id));
+  nodesG.appendChild(g); nodeEls[n.id]=g;
+});
+
+function clip(n, px, py) {           // point on n's border toward (px,py)
+  const cx=n.x+n.w/2, cy=n.y+n.h/2, dx=px-cx, dy=py-cy;
+  const s = Math.min(Math.abs((n.w/2)/(dx||1e-9)), Math.abs((n.h/2)/(dy||1e-9)));
+  return [cx+dx*s, cy+dy*s];
+}
+const edgeEls = [];
+E.forEach(([f,t,label,flows,bend,opt]) => {
+  opt = opt || {};
+  const a=NODE[f], b=NODE[t], lt = opt.lt ?? .5;
+  let d, qx, qy;
+  if (opt.via) {
+    const v = opt.via, p0 = clip(a, v[0][0], v[0][1]), p1 = clip(b, v[v.length-1][0], v[v.length-1][1]);
+    const pts = [p0, ...v, p1];
+    d = "M" + pts.map(p => p.join(",")).join(" L");
+    // label point at fraction lt of polyline length
+    const seg = []; let tot = 0;
+    for (let i = 1; i < pts.length; i++) { const l = Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]); seg.push(l); tot += l; }
+    let want = tot * lt, i = 0; while (want > seg[i]) { want -= seg[i]; i++; }
+    const r = want / seg[i]; qx = pts[i][0] + (pts[i+1][0]-pts[i][0]) * r; qy = pts[i][1] + (pts[i+1][1]-pts[i][1]) * r;
+  } else {
+    const ac=[a.x+a.w/2,a.y+a.h/2], bc=[b.x+b.w/2,b.y+b.h/2];
+    const mx=(ac[0]+bc[0])/2, my=(ac[1]+bc[1])/2, len=Math.hypot(bc[0]-ac[0],bc[1]-ac[1])||1;
+    const nx=-(bc[1]-ac[1])/len, ny=(bc[0]-ac[0])/len;
+    const c=[mx+nx*bend, my+ny*bend];
+    const p0=clip(a,c[0],c[1]), p1=clip(b,c[0],c[1]);
+    d = `M${p0[0]},${p0[1]} Q${c[0]},${c[1]} ${p1[0]},${p1[1]}`;
+    const u = 1 - lt;
+    qx = u*u*p0[0] + 2*u*lt*c[0] + lt*lt*p1[0]; qy = u*u*p0[1] + 2*u*lt*c[1] + lt*lt*p1[1];
+  }
+  const dashed = opt.dashed;
+  const g=mk("g",{class:"edge"+(dashed?" dashed":"")});
+  g.appendChild(mk("path",{d}));
+  const lb=mk("g",{}); const bd=mk("g",{class:"badge"});
+  bd.appendChild(mk("circle",{cx:qx,cy:qy,r:9}));
+  const num=mk("text",{x:qx,y:qy+4,"text-anchor":"middle"},""); bd.appendChild(num);
+  const w=[...label].reduce((acc,ch)=>acc+(ch.charCodeAt(0)>255?12:7),0)+8;
+  const bg=mk("rect",{x:qx+12,y:qy-9,width:w,height:18,rx:4,class:"lblbg"});
+  const tx=mk("text",{x:qx+16,y:qy+4,class:"lbl"},label);
+  lb.appendChild(bg); lb.appendChild(tx); lb.appendChild(bd);
+  edgesG.appendChild(g);
+  const lg=mk("g",{class:"edge"+(dashed?" dashed":"")}); lg.appendChild(lb); labelsG.appendChild(lg);
+  edgeEls.push({g,lg,flows,num,f,t});
+});
+
+// panel
+const P = {x:12, y:806, w:1176, h:112};
+panelG.appendChild(mk("g",{class:"panel"})).appendChild(mk("rect",{x:P.x,y:P.y,width:P.w,height:P.h,rx:8}));
+const pTitle = mk("text",{x:P.x+12,y:P.y+18,class:"ptitle"},"");
+panelG.appendChild(pTitle);
+const pLines = [0,1,2,3,4].map(i => { const t=mk("text",{x:P.x+12,y:P.y+37+i*15,class:"mono"},""); panelG.appendChild(t); return t; });
+function setPanel(title, lines) {
+  pTitle.textContent = title;
+  pLines.forEach((t,i)=> t.textContent = lines[i] || "");
+}
+function wrap(s, n) { const out=[]; for (let i=0;i<s.length;i+=n) out.push(s.slice(i,i+n)); return out; }
+
+const bar = document.getElementById("bar");
+const btns = [];
+function addBtn(label, fn) { const b=document.createElement("button"); b.textContent=label; b.onclick=()=>{btns.forEach(x=>x.classList.remove("on")); b.classList.add("on"); fn();}; bar.insertBefore(b, bar.querySelector(".legend")); btns.push(b); return b; }
+
+function showFlow(key, title, lines) {
+  const used = new Set();
+  edgeEls.forEach(e => {
+    const n = e.flows[key];
+    const on = n !== undefined;
+    e.g.classList.toggle("on", on); e.lg.classList.toggle("on", on);
+    e.g.classList.remove("all"); e.g.classList.toggle("off", !on);
+    if (on) { e.num.textContent = n; used.add(e.f); used.add(e.t); }
+  });
+  Object.entries(nodeEls).forEach(([id,g]) => { g.classList.toggle("dim", !used.has(id)); g.classList.remove("sel"); });
+  setPanel(title, lines);
+}
+function showAll() {
+  edgeEls.forEach(e => { e.g.classList.remove("off"); e.g.classList.remove("on"); e.lg.classList.remove("on"); e.g.classList.add("all"); });
+  Object.values(nodeEls).forEach(g => { g.classList.remove("dim"); g.classList.remove("sel"); });
+  setPanel("全貌", ["点上方按钮看一条数据流；点任意方框看它的职责。","","闭环：事件 → react → 意图 → 宿主执行 → 结果又成事件","",""]);
+}
+function showNode(id) {
+  const n = NODE[id];
+  Object.entries(nodeEls).forEach(([k,g]) => g.classList.toggle("sel", k===id));
+  setPanel(n.title, wrap(n.tip, 80));
+}
+
+addBtn("全貌", showAll);
+FLOWS.forEach(([k,t,lines]) => addBtn(t, () => showFlow(k, t, lines)));
+const startIdx = FLOWS.findIndex(f => "#" + f[0] === location.hash);
+btns[startIdx + 1].click();
+</script>
+</body>
+</html>
