@@ -493,7 +493,7 @@ impl TestBoot {
             .await
             .unwrap();
         self.operation_repo
-            .set_parked(&op, deadline_ms)
+            .set_parked(&op, deadline_ms, None)
             .await
             .unwrap()
             .unwrap()

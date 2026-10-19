@@ -9299,7 +9299,7 @@ async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
         .await
         .unwrap();
     operation_repo
-        .set_parked(&op, now_ms() + 600_000)
+        .set_parked(&op, now_ms() + 600_000, None)
         .await
         .unwrap()
         .unwrap();
@@ -9395,7 +9395,7 @@ async fn seed_parked_gate_op(
         .await
         .unwrap();
     operation_repo
-        .set_parked(&op, now_ms() + 600_000)
+        .set_parked(&op, now_ms() + 600_000, None)
         .await
         .unwrap()
         .unwrap();
@@ -9718,7 +9718,7 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
         panic!("task-verify spawn must park");
     };
     operation_repo
-        .set_parked(&op, deadline_ms)
+        .set_parked(&op, deadline_ms, None)
         .await
         .unwrap()
         .expect("park commits");

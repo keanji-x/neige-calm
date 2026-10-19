@@ -145,6 +145,7 @@ pub(super) fn write_executable(path: &Path, body: &str) {
 // ---------------------------------------------------------------------------
 
 pub(super) struct Fx {
+    pub(super) execution: crate::support::execution::Fixture,
     pub(super) boot: Boot,
     pub(super) runtime: Arc<OperationRuntime>,
     pub(super) dispatcher: Dispatcher,
@@ -290,6 +291,7 @@ pub(super) async fn fixture_on_with_runtime(
     let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
     let completion = OperationCompletionBus::new();
     let daemon = Arc::new(DaemonClient::new_stub());
+    let execution = crate::support::execution::Fixture::new(pool.clone()).await;
     let mut spawn_ctx = SpawnCtx::new(
         route_repo,
         operation_repo.clone(),
@@ -297,7 +299,8 @@ pub(super) async fn fixture_on_with_runtime(
         terminal_renderer.clone(),
         events.clone(),
         completion.clone(),
-    );
+    )
+    .with_execution(execution.lifecycle.clone());
     if let Some(shared) = shared_codex {
         spawn_ctx = spawn_ctx.with_shared_codex_appserver(shared);
     }
@@ -329,6 +332,7 @@ pub(super) async fn fixture_on_with_runtime(
             .is_ok()
     );
     Fx {
+        execution,
         boot,
         runtime,
         dispatcher,

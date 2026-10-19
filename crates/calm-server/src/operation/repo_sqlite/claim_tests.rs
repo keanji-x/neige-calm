@@ -174,7 +174,7 @@ async fn expired_claim_rejects_spawn_artifacts_and_parking() {
             .is_err()
     );
     assert!(
-        repo.set_parked(&op, now_ms() + 10_000)
+        repo.set_parked(&op, now_ms() + 10_000, None)
             .await
             .unwrap()
             .is_none()

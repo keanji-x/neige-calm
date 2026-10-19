@@ -286,7 +286,10 @@ async fn set_parked_requires_lease_and_artifacts_record_rejects_stale_lease() {
     let deadline = now_ms() + 10_000;
 
     assert!(
-        repo.set_parked(&op, deadline).await.unwrap().is_none(),
+        repo.set_parked(&op, deadline, None)
+            .await
+            .unwrap()
+            .is_none(),
         "parking without recorded artifacts must miss"
     );
 
@@ -303,7 +306,7 @@ async fn set_parked_requires_lease_and_artifacts_record_rejects_stale_lease() {
         .await
         .unwrap();
     let parked = repo
-        .set_parked(&op, deadline)
+        .set_parked(&op, deadline, None)
         .await
         .unwrap()
         .expect("leased op with artifacts parks");
@@ -315,7 +318,10 @@ async fn set_parked_requires_lease_and_artifacts_record_rejects_stale_lease() {
     assert!(parked.parked_at_ms.is_some());
 
     assert!(
-        repo.set_parked(&op, deadline).await.unwrap().is_none(),
+        repo.set_parked(&op, deadline, None)
+            .await
+            .unwrap()
+            .is_none(),
         "old lease cannot park again after lease clear"
     );
 }
@@ -1802,7 +1808,7 @@ pub(super) async fn parked_operation(
     repo.record_spawn_artifacts(&op, &sample_spawn_artifacts())
         .await
         .unwrap();
-    repo.set_parked(&op, deadline_ms)
+    repo.set_parked(&op, deadline_ms, None)
         .await
         .unwrap()
         .expect("operation parks")

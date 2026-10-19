@@ -656,7 +656,7 @@ async fn seed_parked_forge_op_with_deadline(
         .await?;
     let parked = boot
         .operation_repo
-        .set_parked(&op, deadline_ms)
+        .set_parked(&op, deadline_ms, None)
         .await?
         .expect("operation parks");
     assert_eq!(parked.phase, Phase::Parked);
@@ -670,7 +670,7 @@ async fn spawn_observer_after_parking(
     observer: calm_server::operation::ParkedObserver,
 ) -> CalmResult<tokio::task::JoinHandle<()>> {
     boot.operation_repo
-        .set_parked(op, deadline_ms)
+        .set_parked(op, deadline_ms, None)
         .await?
         .expect("operation parks before observer");
     Ok(tokio::spawn(observer))

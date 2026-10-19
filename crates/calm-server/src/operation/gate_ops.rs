@@ -18,7 +18,15 @@ pub(crate) struct GateOp {
     /// The gate attempt (`#g<N>`) or the run (`#r<N>`) number.
     pub number: i64,
     pub phase: PhaseTag,
-    pub artifacts: Option<SpawnArtifacts>,
+    process: GateProcess,
+}
+
+/// Closed ownership source: typed records never fall back to native PID evidence.
+#[derive(Clone, Debug, PartialEq)]
+enum GateProcess {
+    Typed { settled: bool },
+    Native(SpawnArtifacts),
+    Absent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,8 +62,8 @@ pub(crate) enum AttemptGateOps {
 pub(crate) async fn gate_ops_of_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Result<Vec<GateOp>> {
     // Keys in [`<task>#g`, `<task>#h`) and [`<task>#r`, `<task>#s`) are exactly the keys of the
     // task's ops of each kind; the parsers re-check each.
-    let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT kind, idempotency_key, phase, spawn_artifacts_json FROM operations \
+    let rows: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT kind, idempotency_key, phase, spawn_artifacts_json, json_extract(tx_output_json, '$.data.gate_execution') FROM operations \
          WHERE (kind = ?1 AND idempotency_key >= ?2 AND idempotency_key < ?3) \
             OR (kind = ?4 AND idempotency_key >= ?5 AND idempotency_key < ?6)",
     )
@@ -68,7 +76,7 @@ pub(crate) async fn gate_ops_of_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Re
     .fetch_all(&mut **tx)
     .await?;
     let mut ops = Vec::new();
-    for (kind, key, phase, artifacts) in rows {
+    for (kind, key, phase, artifacts, record) in rows {
         let parsed = if kind == TASK_VERIFY_KIND {
             parse_attempt_key(&key).map(|(task, n)| (task, GateOpKind::Verify, n))
         } else {
@@ -84,12 +92,32 @@ pub(crate) async fn gate_ops_of_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Re
             .as_deref()
             .map(serde_json::from_str::<SpawnArtifacts>)
             .transpose()?;
+        let execution = if let Some(record) = record {
+            let record: serde_json::Value = serde_json::from_str(&record)?;
+            match record
+                .get("execution_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some(id) => Some(
+                    calm_truth::db::sqlite::gate_execution::settlement(tx, id)
+                        .await?
+                        .is_some(),
+                ),
+                None => Some(false),
+            }
+        } else {
+            None
+        };
         ops.push(GateOp {
             key: key.clone(),
             kind,
             number,
             phase: PhaseTag::from_db_str(&phase)?,
-            artifacts,
+            process: match (execution, artifacts) {
+                (Some(settled), _) => GateProcess::Typed { settled },
+                (None, Some(artifacts)) => GateProcess::Native(artifacts),
+                (None, None) => GateProcess::Absent,
+            },
         });
     }
     ops.sort_by_key(|op| (op.kind == GateOpKind::Run, op.number));
@@ -103,9 +131,13 @@ pub(crate) fn classify_gate_ops(ops: &[GateOp]) -> AttemptGateOps {
     for op in ops {
         match op.phase {
             PhaseTag::Succeeded | PhaseTag::Failed => {
-                let stopped = op.artifacts.as_ref().is_none_or(|artifacts| {
-                    matches!(marked_group_stopped(artifacts, &op.key), Ok(true))
-                });
+                let stopped = match &op.process {
+                    GateProcess::Typed { settled } => *settled,
+                    GateProcess::Native(artifacts) => {
+                        matches!(marked_group_stopped(artifacts, &op.key), Ok(true))
+                    }
+                    GateProcess::Absent => true,
+                };
                 if !stopped && unproven.is_none() {
                     unproven = Some(op.clone());
                 }

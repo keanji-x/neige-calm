@@ -15,10 +15,15 @@ pub async fn recover(
     let secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
     let executor = SessionExecutor::new(cfg.proc_supervisor_sock_resolved(), secret);
     let engine = Arc::new(Engine::new(
-        SqliteExecutionStore::new(pool).with_projection(
-            crate::operation::terminal_execution_create::CONSUMER.into(),
-            Arc::new(crate::operation::terminal_execution_create::TerminalProjection),
-        ),
+        SqliteExecutionStore::new(pool)
+            .with_projection(
+                crate::operation::gate_execution::CONSUMER.into(),
+                Arc::new(crate::operation::gate_execution::Projection),
+            )
+            .with_projection(
+                crate::operation::terminal_execution_create::CONSUMER.into(),
+                Arc::new(crate::operation::terminal_execution_create::TerminalProjection),
+            ),
         executor,
     ));
     let report = engine.recover().await;

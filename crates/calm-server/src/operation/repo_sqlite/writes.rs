@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Independently owned fields preserved across generic output checkpoints.
-const OWNER_STATE_KEYS: &[&str] = &["terminal_launch"];
+const OWNER_STATE_KEYS: &[&str] = &["terminal_launch", "gate_execution"];
 
 fn preserving_owner_sql(output: &str) -> String {
     OWNER_STATE_KEYS.iter().fold(output.to_owned(), |sql, key| {
@@ -143,6 +143,7 @@ pub(in crate::operation) async fn set_parked(
     pool: &crate::db::sqlite::SqliteDb,
     op: &Operation,
     deadline_ms: TimestampMs,
+    owner_key: Option<&'static str>,
 ) -> Result<Option<Operation>> {
     let mut tx = begin_immediate_tx(pool).await?;
     if !matches!(op.phase, Phase::SpawnStarted) || !has_live_claim_tx(&mut tx, op).await? {
@@ -152,11 +153,12 @@ pub(in crate::operation) async fn set_parked(
     let result = sqlx::query(
         "UPDATE operations SET phase='parked', phase_detail_json=NULL, parked_at_ms=?1, \
          parked_deadline_ms=?2, lease_owner=NULL, lease_until_ms=NULL, updated_at_ms=?1 \
-         WHERE id=?3 AND spawn_artifacts_json IS NOT NULL",
+         WHERE id=?3 AND (spawn_artifacts_json IS NOT NULL OR (?4 IS NOT NULL AND json_type(tx_output_json, ?4) IS NOT NULL))",
     )
     .bind(now)
     .bind(deadline_ms)
     .bind(&op.id)
+    .bind(owner_key.map(|key| format!("$.data.{key}")))
     .execute(&mut **tx)
     .await?;
     if result.rows_affected() == 0 {

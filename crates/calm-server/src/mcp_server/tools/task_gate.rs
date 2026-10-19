@@ -84,6 +84,7 @@ async fn task_gate(
         .get()
         .cloned()
         .ok_or_else(|| RpcError::internal("operation runtime not bound"))?;
+    runtime.require_gate_execution().map_err(calm_error)?;
     let (_, track) =
         crate::mcp_server::tools::track_file::resolve_track_for_identity(&ctx, &identity).await?;
     let card_id = identity.card_id.clone();

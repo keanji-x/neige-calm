@@ -54,6 +54,10 @@ impl TaskLaunch {
         &self.operation
     }
 
+    pub(crate) async fn authorize_tx(tx: &mut super::Tx<'_>, task_id: &str) -> Result<()> {
+        crate::task_recovery::require_attempt_startable_tx(tx, task_id).await
+    }
+
     pub(crate) async fn run<T, F>(self, repo: &dyn RepoEventWrite, effect: F) -> Result<T>
     where
         T: Send + 'static,
@@ -80,9 +84,7 @@ impl TaskLaunch {
     {
         let task_id = self.task_id.clone();
         write_in_tx_typed(repo, move |tx| {
-            Box::pin(async move {
-                crate::task_recovery::require_attempt_startable_tx(tx, &task_id).await
-            })
+            Box::pin(async move { Self::authorize_tx(tx, &task_id).await })
         })
         .await?;
         effect.await.map_err(|error| LaunchFailure {

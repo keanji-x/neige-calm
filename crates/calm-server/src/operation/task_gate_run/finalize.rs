@@ -11,16 +11,16 @@ use serde::{Deserialize, Serialize};
 
 use super::FrozenRun;
 use super::checkpoint::{CHECKPOINT_STEP, read_run_ref};
-use crate::db::sqlite::begin_immediate_tx;
-use crate::error::Result;
+
 use crate::git_candidate::delivery::{PROVENANCE_MISMATCH_EXIT_CODES, failure_sentence};
+use crate::operation::OperationOutcome;
+use crate::operation::gate_execution::StopReason;
 use crate::operation::gate_lifecycle::GateVerdict;
-use crate::operation::gate_process::{GateObservation, GateWait, read_log_tail};
+use crate::operation::gate_process::{
+    GateEvidence, infra_verdict, read_log_tail, timeout_verdict, verdict_from_exit_code,
+};
 use crate::operation::task_verify_adapter::target::{
     Expected, GATE_INFRA, GATE_TARGET_MISMATCH, GATE_TIMEOUT, append_log_line, reasons, sample,
-};
-use crate::operation::{
-    OperationOutcome, ParkedCompletion, ParkedOutcome, SpawnCtx, complete_parked_tx,
 };
 
 /// One run's result, the op's result. `commit` is the run's commit (its ref) when the checkpoint
@@ -87,11 +87,27 @@ fn checkpoint_sample(frozen: &FrozenRun, commit: &str) -> Sample {
 /// mismatch; then the observation as classified: P6 passed, P7 red, P8 timeout, P9 infra.
 pub(crate) async fn finalize_run(
     frozen: &FrozenRun,
-    observation: &GateObservation,
-    stopped: Result<()>,
+    evidence: &GateEvidence,
+    status: Option<i32>,
+    decision: Option<StopReason>,
     refs: Option<String>,
 ) -> GateRunResult {
-    let log_path = Path::new(&observation.verdict.log_path).to_path_buf();
+    let log_path = evidence.log_path.clone();
+    let verdict = match &decision {
+        Some(StopReason::Timeout) => {
+            timeout_verdict(evidence, frozen.run, frozen.gate.timeout_secs_clamped())
+        }
+        Some(_) => infra_verdict(super::RUN_KERNEL_RESTARTED, evidence, frozen.run),
+        None => status
+            .map(|s| verdict_from_exit_code(s, evidence, frozen.run))
+            .unwrap_or_else(|| {
+                infra_verdict(
+                    "gate-infra: execution has no child status",
+                    evidence,
+                    frozen.run,
+                )
+            }),
+    };
     let result = |verdict: GateVerdict, commit: Option<String>, evidence| GateRunResult {
         run: frozen.run,
         commit,
@@ -99,14 +115,13 @@ pub(crate) async fn finalize_run(
         verdict,
         evidence,
     };
-    // P1
-    if let Err(error) = stopped {
-        let line = format!("gate-infra: the run's processes could not be proven stopped: {error}");
-        return result(infra(frozen, &log_path, line).await, None, None);
+    // Stopping decisions and NoChild have no after-sample authority.
+    if decision.is_some() || status.is_none() {
+        return result(verdict, None, None);
     }
-    // P2, P3: step 1 is the checkpoint; no declared step ran.
-    if observation.started_step == Some(1)
-        && let GateWait::Exited(code) = observation.wait
+    // P2, P3: only the checkpoint started.
+    if evidence.started_step_number() == Some(1)
+        && let Some(code) = status
         && code != 0
     {
         if PROVENANCE_MISMATCH_EXIT_CODES.contains(&code) {
@@ -191,31 +206,7 @@ pub(crate) async fn finalize_run(
         return result(verdict, Some(commit), Some(evidence));
     }
     // P6–P9: the shared classification of the observation.
-    result(observation.verdict.clone(), Some(commit), Some(evidence))
-}
-
-/// Commit the live observer's result. A run already resolved by recovery keeps that resolution.
-pub(crate) async fn complete_run_op(
-    ctx: &SpawnCtx,
-    op_id: &str,
-    result: &GateRunResult,
-) -> Result<()> {
-    let outcome = ParkedOutcome::Succeeded {
-        result: serde_json::to_value(result)?,
-    };
-    let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = begin_immediate_tx(&pool).await?;
-    match complete_parked_tx(&mut tx, &op_id.to_string(), &outcome).await? {
-        ParkedCompletion::Completed(completed) => {
-            tx.commit().await?;
-            ctx.completion.complete(completed);
-        }
-        ParkedCompletion::AlreadyResolved { phase } => {
-            tx.rollback().await?;
-            tracing::debug!(op_id, phase = ?phase, "gate run observer: op already resolved; result discarded");
-        }
-    }
-    Ok(())
+    result(verdict, Some(commit), Some(evidence))
 }
 
 /// The result of a finished run op: its own result when the observer completed it, otherwise the

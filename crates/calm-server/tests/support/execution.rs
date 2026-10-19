@@ -30,3 +30,57 @@ pub fn supervisor(
     ));
     (socket_dir, socket, secret, stop, server)
 }
+
+pub struct Fixture {
+    pub key: PathBuf,
+    pub socket: PathBuf,
+    pub lifecycle: calm_server::execution_quiesce::ExecutionLifecycle,
+    _socket: tempfile::TempDir,
+    _root: tempfile::TempDir,
+    _stop: tokio::sync::oneshot::Sender<()>,
+    server: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+impl Fixture {
+    pub async fn new(pool: calm_server::db::sqlite::SqliteDb) -> Self {
+        use clap::Parser;
+        let root = tempfile::tempdir().unwrap();
+        let (socket, path, secret, stop, server) = supervisor(root.path());
+        let key = root.path().join("key.json");
+        std::fs::write(&key, serde_json::to_vec(&secret).unwrap()).unwrap();
+        let cfg = calm_server::config::Config::try_parse_from([
+            "calm-server",
+            "--kernel-client-key-file",
+            key.to_str().unwrap(),
+            "--proc-supervisor-sock",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let engine = calm_server::execution_boot::recover(&cfg, pool)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !engine.available() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let lifecycle = calm_server::execution_quiesce::ExecutionLifecycle::default();
+        lifecycle.bind(engine);
+        Self {
+            key,
+            socket: path,
+            lifecycle,
+            _socket: socket,
+            _root: root,
+            _stop: stop,
+            server,
+        }
+    }
+}

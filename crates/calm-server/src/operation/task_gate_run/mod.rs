@@ -23,14 +23,15 @@ pub use finalize::GateRunResult;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::gate_execution::{self as execution, Decision, Release, StopReason};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
+use workspace_runtime::execution::*;
 
-use super::gate_lifecycle::{GatePaths, GateSpec, RELEASE_TIMEOUT, spawn_held_identified};
-use super::gate_process::{GateEvidence, observe_verdict};
-use super::task_verify_adapter::target::stop_group;
+use super::gate_lifecycle::{GatePaths, GateSpec};
+use super::gate_process::{GateEvidence, GateFiles};
+
 use super::{
     CompensationStateVersioned, CompensationStep, Operation, ParkedRecovery, PhaseTag,
     ProviderAdapter, RecoveryMode, SpawnArtifacts, SpawnCtx, SpawnOutcome, TxOutput,
@@ -53,9 +54,8 @@ const TASK_GATE_RUN_PHASES: &[PhaseTag] = &[
 
 /// `recover_parked`'s reasons. A reason that names `gate-infra` is infra whatever class the driver
 /// files it under (P11 before P13); see [`finalize::terminal_result`].
-const RUN_ENDED_UNOBSERVED: &str = "gate-infra: the run ended without a kernel-observed verdict";
+
 const RUN_KERNEL_RESTARTED: &str = "gate-infra: the kernel restarted during the run";
-const RUN_PARKED_DEADLINE: &str = "gate timeout (parked deadline exceeded)";
 
 /// The key of run `run` of `task_id`; also its processes' `NEIGE_GATE_OP` marker.
 pub fn gate_run_key(task_id: &str, run: i64) -> String {
@@ -159,7 +159,9 @@ pub(crate) fn gate_run_ref_prefix(track_id: &str) -> String {
 #[cfg(any(test, feature = "fixtures"))]
 type Hook = std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct TaskGateRunAdapter {
+    refs: Option<String>,
     gate_logs_dir: PathBuf,
     #[cfg(any(test, feature = "fixtures"))]
     hooks: TestHooks,
@@ -178,6 +180,7 @@ impl TaskGateRunAdapter {
     pub fn new(gate_logs_dir: PathBuf) -> Self {
         Self {
             gate_logs_dir,
+            refs: None,
             #[cfg(any(test, feature = "fixtures"))]
             hooks: TestHooks::default(),
         }
@@ -297,8 +300,10 @@ impl ProviderAdapter for TaskGateRunAdapter {
         Ok(super::AppServerInteractOutcome::NotApplicable)
     }
 
-    /// Stop a recorded group (a re-drive), take the refs digest, spawn the held wrapper and record
-    /// it. Nothing is released here: the observer releases after the park commits.
+    fn owns_parked_resource(&self) -> Option<&'static str> {
+        Some(execution::KEY)
+    }
+
     async fn spawn_side_effect(
         &self,
         output: &TxOutput,
@@ -310,92 +315,138 @@ impl ProviderAdapter for TaskGateRunAdapter {
             hook().await;
         }
         let frozen = FrozenRun::from_output(output)?;
-        let marker = frozen.key();
-        // A re-drive: the earlier wrapper was never released; its group must be proven stopped
-        // before a second one exists, or the op does not go on.
-        if let Some(artifacts) = &op.spawn_artifacts {
-            stop_group(artifacts, &marker).await?;
-        }
-        super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
+        let redrive = output.data.get(execution::KEY).is_some();
         let refs = checkpoint::refs_digest(
             Path::new(&frozen.cwd),
             tokio::time::Instant::now() + super::task_verify_adapter::SAMPLE_TIMEOUT,
         )
         .await;
-        let paths = self.paths(&frozen.task_id, frozen.run);
-        paths.unlink_stale(&self.gate_logs_dir).await?;
-        let steps = checkpoint::run_steps(&frozen);
-        let (child, artifacts) = spawn_held_identified(
-            ctx.repo.as_ref(),
-            Path::new(&frozen.cwd),
-            &steps,
-            &paths,
-            &marker,
-        )
-        .await?;
-        if let Err(error) = ctx.record_spawn_artifacts(op, &artifacts).await {
-            super::gate_process::kill(&artifacts);
-            return Err(error);
+        if !redrive {
+            if op.spawn_artifacts.is_some() {
+                return Err(legacy_error(op));
+            }
+            execution::engine(ctx)?;
+            super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
+            let paths = self.paths(&frozen.task_id, frozen.run);
+            paths.unlink_stale(&self.gate_logs_dir).await?;
+            execution::admit(
+                op,
+                ctx,
+                &frozen.cwd,
+                &frozen.track_id,
+                GateFiles {
+                    script: &paths.script,
+                    log: &paths.log,
+                    exit: &paths.exit,
+                    step: &paths.step,
+                },
+                &checkpoint::run_steps(&frozen),
+                &frozen.key(),
+            )
+            .await?;
+        } else {
+            execution::record(op)?;
         }
         #[cfg(feature = "fixtures")]
         crate::test_seams::crash_point("task-gate-run-pre-park");
-
-        let deadline_ms = frozen.gate.parked_deadline_ms(now_ms());
-        let observer = Observer {
-            child,
-            artifacts,
-            evidence: GateEvidence {
-                log_path: paths.log.clone(),
-                step_path: Some(paths.step.clone()),
-                steps,
-            },
-            frozen,
-            refs,
-            op: op.clone(),
-            ctx: ctx.clone(),
-            #[cfg(any(test, feature = "fixtures"))]
-            hooks: self.hooks.clone(),
-        };
+        let mut adapter = self.clone();
+        adapter.refs = refs;
+        let (ctx, id) = (ctx.clone(), op.id.clone());
         Ok(SpawnOutcome::Parked {
-            deadline_ms,
-            observer: Box::pin(observer.run()),
+            deadline_ms: frozen.gate.parked_deadline_ms(now_ms()),
+            observer: Box::pin(async move {
+                adapter.observe(ctx, id, redrive).await;
+            }),
         })
     }
 
-    /// D9: never reads the exit file. A dead leader is infra (P11); an overdue live one is a
-    /// timeout (P13); a live one found at boot is stopped and infra (P12).
-    async fn recover_parked(
+    async fn recover_owned_parked(
         &self,
         op: &Operation,
-        artifacts: &SpawnArtifacts,
-        alive: bool,
         mode: RecoveryMode,
-        _ctx: &SpawnCtx,
+        ctx: &SpawnCtx,
     ) -> Result<ParkedRecovery> {
-        if !alive {
-            return Ok(ParkedRecovery::Fail {
-                reason: RUN_ENDED_UNOBSERVED.into(),
-            });
+        if op
+            .tx_output
+            .as_ref()
+            .is_none_or(|o| o.data.get(execution::KEY).is_none())
+        {
+            return Err(legacy_error(op));
         }
-        Ok(match mode {
-            RecoveryMode::PreDeadlineProbe => ParkedRecovery::LeaveParked,
-            RecoveryMode::PastDeadline => ParkedRecovery::Fail {
-                reason: RUN_PARKED_DEADLINE.into(),
-            },
-            RecoveryMode::Boot => {
-                let frozen = op
-                    .tx_output
-                    .as_ref()
-                    .ok_or_else(|| CalmError::Internal("task-gate-run op missing tx_output".into()))
-                    .and_then(FrozenRun::from_output)?;
-                if let Err(error) = stop_group(artifacts, &frozen.key()).await {
-                    tracing::warn!(op_id = %op.id, %error, "gate run: the restarted kernel could not prove the run's group stopped");
-                }
-                ParkedRecovery::Fail {
-                    reason: RUN_KERNEL_RESTARTED.into(),
+        let record = execution::record(op)?;
+        if matches!(mode, RecoveryMode::Boot) {
+            // The boot caller returns without waiting for executor availability or drain.
+            let (adapter, observer_ctx, id) = (self.clone(), ctx.clone(), op.id.clone());
+            tokio::spawn(async move {
+                adapter.observe(observer_ctx, id, true).await;
+            });
+            if record.decision == Decision::Observing {
+                execution::stop(ctx, op, StopReason::KernelRestarted).await?;
+                return Ok(ParkedRecovery::LeaveParked);
+            }
+        }
+        let settled = execution::settlement(ctx, &record).await?;
+        if settled.is_none() {
+            let frozen = FrozenRun::from_output(super::required_output(op)?)?;
+            let timed_out = op.parked_deadline_ms.is_some_and(|d| now_ms() > d)
+                || matches!(record.release,Release::Released { authorized_at_ms } if now_ms() >= authorized_at_ms+frozen.gate.timeout_secs_clamped()*1000);
+            if timed_out && record.decision == Decision::Observing {
+                execution::stop(ctx, op, StopReason::Timeout).await?;
+            } else if let Some(engine) = ctx.execution.engine() {
+                if matches!(
+                    engine.output(&record.execution_id, None).await,
+                    Ok(ExecutionReply::Observation {
+                        state: ExecutionState::Exited { .. },
+                        ..
+                    })
+                ) {
+                    // Stop descendants without replacing the observed decision.
+                    let pool = ctx.operation_repo.sqlite_db();
+                    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
+                    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                    let ticket = engine
+                        .request(&mut tx, &record.execution_id, Desired::Stop)
+                        .await
+                        .map_err(|e| CalmError::Internal(e.0))?;
+                    tx.commit().await?;
+                    engine.drive(ticket.committed());
                 }
             }
-        })
+            return Ok(ParkedRecovery::LeaveParked);
+        }
+        let frozen = FrozenRun::from_output(super::required_output(op)?)?;
+        let paths = self.paths(&frozen.task_id, frozen.run);
+        let evidence = GateEvidence {
+            log_path: paths.log,
+            step_path: Some(paths.step),
+            steps: checkpoint::run_steps(&frozen),
+        };
+        let status = match settled.unwrap() {
+            Settlement::Journal(ExecutionState::Drained { status, .. }) => status,
+            _ => None,
+        };
+        let reason = match &record.decision {
+            Decision::Stopping { reason } => Some(reason.clone()),
+            _ => None,
+        };
+        let result =
+            finalize::finalize_run(&frozen, &evidence, status, reason, self.refs.clone()).await;
+        #[cfg(any(test, feature = "fixtures"))]
+        if let Some(hook) = &self.hooks.before_completion {
+            hook().await;
+        }
+        Ok(ParkedRecovery::Complete(super::ParkedOutcome::Succeeded {
+            result: serde_json::to_value(result)?,
+        }))
+    }
+
+    async fn complete_owned_parked_tx(
+        &self,
+        tx: &mut super::Tx<'_>,
+        op: &Operation,
+    ) -> Result<Vec<crate::event::BroadcastEnvelope>> {
+        execution::retire(tx, op).await?;
+        Ok(Vec::new())
     }
 
     async fn plan_compensation(
@@ -434,8 +485,10 @@ impl ProviderAdapter for TaskGateRunAdapter {
                     return Ok(());
                 };
                 let artifacts: SpawnArtifacts = serde_json::from_value(artifacts.clone())?;
-                let marker = step.arg_string("marker", "task-gate-run")?;
-                stop_group(&artifacts, &marker).await
+                Err(CalmError::Conflict(format!(
+                    "drain under the old kernel or manually stop pgid {}",
+                    artifacts.pgid
+                )))
             }
             other => Err(CalmError::Internal(format!(
                 "task-gate-run unknown compensation step {other}"
@@ -444,84 +497,88 @@ impl ProviderAdapter for TaskGateRunAdapter {
     }
 }
 
-/// The post-park half of one run: release, observe, stop, finalize, complete, reap.
-struct Observer {
-    child: tokio::process::Child,
-    artifacts: SpawnArtifacts,
-    evidence: GateEvidence,
-    frozen: FrozenRun,
-    refs: Option<String>,
-    op: Operation,
-    ctx: SpawnCtx,
-    #[cfg(any(test, feature = "fixtures"))]
-    hooks: TestHooks,
+fn legacy_error(op: &Operation) -> CalmError {
+    CalmError::Conflict(format!(
+        "pre-C2b gate unresolved; drain under the old kernel or manually stop pgid {}",
+        op.spawn_artifacts.as_ref().map_or(0, |a| a.pgid)
+    ))
 }
 
-impl Observer {
-    async fn run(mut self) {
+impl TaskGateRunAdapter {
+    async fn observe(self, ctx: SpawnCtx, id: String, mut restart: bool) {
         #[cfg(feature = "fixtures")]
         crate::test_seams::crash_point("task-gate-run-post-park");
         #[cfg(any(test, feature = "fixtures"))]
         if let Some(hook) = &self.hooks.before_release {
             hook().await;
         }
-        // Released through `TaskLaunch`: an attempt no longer current, or terminal, is never
-        // released; dropping the stdin makes the held wrapper exit 75 having run nothing (P4).
-        if let Err(error) = self.release().await {
-            crate::operation::task_verify_adapter::target::append_log_line(
-                &self.evidence.log_path,
-                &format!("gate-infra: the run was not released: {error}"),
-            )
-            .await;
-        }
-        let observation = observe_verdict(
-            self.child,
-            self.artifacts.clone(),
-            self.evidence,
-            self.frozen.run,
-            self.frozen.gate.timeout_secs_clamped(),
-        )
-        .await;
-        #[cfg(any(test, feature = "fixtures"))]
-        if let Some(hook) = &self.hooks.before_completion {
-            hook().await;
-        }
-        // The leader stays an unreaped zombie until the completion below commits, so a concurrent
-        // parked probe never reads this run as dead without a verdict (H1).
-        let stopped = stop_group(&self.artifacts, &self.frozen.key()).await;
-        let result = finalize::finalize_run(&self.frozen, &observation, stopped, self.refs).await;
-        if let Err(error) = finalize::complete_run_op(&self.ctx, &self.op.id, &result).await {
-            tracing::error!(op_id = %self.op.id, %error, "gate run observer: completion tx failed; recovery will fail the run");
-        }
-        observation.reap().await;
-    }
-
-    async fn release(&mut self) -> Result<()> {
-        let mut stdin =
-            self.child.stdin.take().ok_or_else(|| {
-                CalmError::Internal("gate run wrapper stdin handle missing".into())
-            })?;
-        let launch = super::task_launch::TaskLaunch::new(
-            &self.frozen.task_id,
-            &self.op,
-            super::task_launch::TerminalLaunchRole::BusinessProcess,
-        );
-        let release = launch.run(self.ctx.repo.as_ref(), async move {
-            // Newline-terminated: POSIX `read` returns non-zero on EOF-before-newline.
-            stdin.write_all(b"go\n").await.map_err(|error| {
-                CalmError::Internal(format!("gate run release write failed: {error}"))
-            })?;
-            drop(stdin);
-            Ok(())
-        });
-        match tokio::time::timeout(RELEASE_TIMEOUT, release).await {
-            Ok(result) => result,
-            Err(_) => {
-                super::gate_process::kill(&self.artifacts);
-                Err(CalmError::Internal(
-                    "the release did not complete within 60s".into(),
-                ))
+        let mut refusal = false;
+        loop {
+            let Ok(Some(current)) = ctx.operation_repo.get_operation(&id).await else {
+                return;
+            };
+            if matches!(
+                current.phase.tag(),
+                PhaseTag::Succeeded | PhaseTag::Failed | PhaseTag::Stuck
+            ) {
+                if let Ok(record) = execution::record(&current) {
+                    ctx.execution.drive([record.execution_id]);
+                }
+                return;
             }
+            if let Ok(Some(op)) = ctx.operation_repo.claim_parked(&id).await {
+                let result = async {
+                    let action: Result<()> = async {
+                        let record = execution::record(&op)?;
+                        if record.decision == Decision::Observing {
+                            if restart || refusal {
+                                execution::stop(
+                                    &ctx,
+                                    &op,
+                                    if restart {
+                                        StopReason::KernelRestarted
+                                    } else {
+                                        StopReason::ReleaseRefused
+                                    },
+                                )
+                                .await?;
+                                restart = false;
+                                refusal = false;
+                            } else if record.release == Release::Held {
+                                let frozen = FrozenRun::from_output(super::required_output(&op)?)?;
+                                if op.parked_deadline_ms.is_some_and(|d| now_ms() > d) {
+                                    execution::stop(&ctx, &op, StopReason::Timeout).await?;
+                                } else if execution::release(&ctx, &op, &frozen.task_id)
+                                    .await
+                                    .is_err()
+                                {
+                                    refusal = true;
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    let latest = ctx
+                        .operation_repo
+                        .get_operation(&id)
+                        .await?
+                        .ok_or_else(|| CalmError::Conflict("gate op disappeared".into()))?;
+                    let reconciled = super::owned_parked::reconcile(
+                        &self,
+                        &latest,
+                        RecoveryMode::PreDeadlineProbe,
+                        &ctx,
+                    )
+                    .await;
+                    action.and(reconciled)
+                }
+                .await;
+                if let Err(error) = result {
+                    tracing::warn!(op_id=%id,%error,"gate execution retained");
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 }
