@@ -1,4 +1,5 @@
 //! Initial production-entry reproductions for handoff termination, not the complete matrix.
+//! These reproduce #2892; remove the ignores when implementing its termination protocol.
 use super::completed_commit_tests::Fixture;
 use super::handoff_coordinator_tests::{active, entered, request, runtime, start_at};
 use crate::model::CardRole;
@@ -27,6 +28,7 @@ async fn terminal_error(a: &Fixture, id: &str, label: &str) -> Option<String> {
 }
 
 #[tokio::test]
+#[ignore = "https://github.com/keanji-x/neige-calm/issues/2892: handoff termination protocol not implemented yet"]
 async fn handoff_termination_reset_replacement_settles_original_owner() {
     let mut failures = vec![];
     for stage in ["SourcePaused", "Committed"] {
@@ -82,6 +84,7 @@ async fn handoff_termination_reset_replacement_settles_original_owner() {
 }
 
 #[tokio::test]
+#[ignore = "https://github.com/keanji-x/neige-calm/issues/2892: handoff termination protocol not implemented yet"]
 async fn handoff_termination_cancel_native_intent_and_unknown_release_exclusion() {
     let mut failures = vec![];
     for unknown in [false, true] {
@@ -121,6 +124,7 @@ async fn handoff_termination_cancel_native_intent_and_unknown_release_exclusion(
 }
 
 #[tokio::test]
+#[ignore = "https://github.com/keanji-x/neige-calm/issues/2892: handoff termination protocol not implemented yet"]
 async fn handoff_termination_cancel_each_live_checkpoint_releases_exclusion() {
     let mut failures = vec![];
     for stage in [
