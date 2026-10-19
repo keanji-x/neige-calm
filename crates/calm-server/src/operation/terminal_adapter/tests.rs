@@ -539,7 +539,7 @@ async fn terminal_presentation_legacy_generic_pending_input_cannot_mint_provenan
     for kind in ["terminal", "note"] {
         let harness = terminal_worker_harness().await;
         let adapter = CardCreateAdapter::new(harness.repo.clone(), CardRoleCache::new());
-        let input = json!({"actor":"user","correlation":null,"track_id":harness.track_id,"kind":kind,
+        let input = json!({"actor":ActorId::User,"correlation":null,"track_id":harness.track_id,"kind":kind,
             "sort":null,"title":null,"payload":{"terminal_presentation":{"source":"manual","in_workbench":true}}});
         assert!(TxOnlyAdapter::validate(&adapter, &input).await.is_err());
         let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());

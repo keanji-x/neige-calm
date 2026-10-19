@@ -110,6 +110,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0170_workspace_executions.sql",
     "0171_track_vcs_gc_revision.sql",
     "0172_track_vcs_gc_frontier.sql",
+    "0173_terminal_presentation.sql",
 ];
 
 #[test]
