@@ -528,19 +528,16 @@ impl QuiescedAreaDeletion {
         }));
         drop(targets);
         match recycled {
-            Ok(Ok(recycle_report)) => {
-                workspace_recycle::gc_trash_best_effort(&route.workspace_root, now);
-                Ok(RecycledAreaDeletion {
-                    quiesced: QuiescedAreaDeletion {
-                        prepared,
-                        terminal_ids,
-                        terminal_card_ids,
-                        sealed_thread_ids,
-                        card_ids,
-                    },
-                    recycle_report,
-                })
-            }
+            Ok(Ok(recycle_report)) => Ok(RecycledAreaDeletion {
+                quiesced: QuiescedAreaDeletion {
+                    prepared,
+                    terminal_ids,
+                    terminal_card_ids,
+                    sealed_thread_ids,
+                    card_ids,
+                },
+                recycle_report,
+            }),
             Ok(Err(error)) => {
                 if prepared
                     .tracks

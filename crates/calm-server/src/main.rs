@@ -81,6 +81,9 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::reaper_on_boot();
 
+    // Unrelated expired directories must never hold an interactive deletion fence.
+    drop(calm_server::workspace_service::trash::spawn(&state));
+
     // Scheduler boot sweep. Must follow operation recovery.
     calm_server::scheduler_sweep_on_boot(&state).await;
     let daily_state =

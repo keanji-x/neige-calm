@@ -1552,3 +1552,28 @@ async fn a_non_user_actor_may_not_change_a_workspace() {
         "the user's repository must not have been touched"
     );
 }
+
+#[tokio::test]
+async fn workspace_repoint_keeps_unrelated_expired_trash_for_maintenance() {
+    let b = boot().await;
+    let area = create_area(&b, "maintenance").await;
+    let (track, old_path) = managed_track(&b, &area, "repoint").await;
+    let target = user_repo(&b.tmp.path().join("target"));
+    let before = fingerprint(&target);
+    let stamp =
+        calm_server::model::now_ms() - workspace_runtime::recycle::TRASH_RETENTION_MS - 60_000;
+    let stale = b
+        .workspace_root
+        .join(".trash")
+        .join(format!("old-track-{stamp}"));
+    std::fs::create_dir_all(&stale).unwrap();
+    let (status, body) = repoint_to(&b, &track, &target).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        stale.is_dir(),
+        "workspace repoint collected unrelated trash"
+    );
+    assert!(!old_path.exists());
+    assert!(diff(&before, &fingerprint(&target)).is_empty());
+    assert_eq!(workspace_row(&b, &track).await.0, "attached");
+}

@@ -2281,7 +2281,6 @@ async fn repoint_track_workspace(
             );
         }
     }
-    workspace_recycle::gc_trash_best_effort(&workspace_root, crate::model::now_ms());
 
     // `force_new_thread` is the only mechanism that re-reads `cwd`: a resumed codex thread
     // keeps the cwd it was minted with.
@@ -2890,9 +2889,6 @@ fn recycle_track_workspace_for_delete(
             crate::model::now_ms(),
         )
     })?;
-    let mut trash = observation.stage(Stage::TrashCollection);
-    workspace_recycle::gc_trash_best_effort(&s.workspace_root, crate::model::now_ms());
-    trash.finish("finished_best_effort");
     Ok(decision)
 }
 

@@ -1588,7 +1588,7 @@ async fn a_area_directory_with_an_unrecyclable_track_survives() {
 }
 
 #[tokio::test]
-async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
+async fn deleting_a_track_keeps_unrelated_expired_trash_for_maintenance() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
     let (first_id, _) = managed_track(&b, &area_id, "one").await;
@@ -1612,7 +1612,10 @@ async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
     let (status, _) = delete_track(&b, &second_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    assert!(!stale.exists(), "the expired trash entry was not swept");
+    assert!(
+        stale.exists(),
+        "deleting one track synchronously collected unrelated expired trash; its work belongs to maintenance"
+    );
     assert!(fresh.exists(), "a fresh trash entry was swept early");
     assert!(trash_entry_for(&b.workspace_root, &second_id).is_some());
 }
@@ -1642,3 +1645,6 @@ mod isolation_none;
 
 #[path = "track_workspace_recycle/deletion_observation.rs"]
 mod deletion_observation;
+
+#[path = "track_workspace_recycle/trash_maintenance.rs"]
+mod trash_maintenance;
