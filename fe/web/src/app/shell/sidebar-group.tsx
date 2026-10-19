@@ -1,3 +1,4 @@
+import { EmptyState, type EmptyStateSchema } from '../../ui/empty-state/public.tsx';
 // Shared disclosure and Track list for every desktop sidebar group.
 import { useEffect, useRef, type ReactNode } from 'react';
 import { DropdownMenu, DropdownMenuItem, DropdownMenuDivider } from '@astryxdesign/core/DropdownMenu';
@@ -90,7 +91,8 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
 }
 
 /** One list implementation: retain the active row, limit/reveal, navigate, pin and delete. */
-export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = true, onGo, nowMs, onSetPinned, onDelete, isUnread, trackActions, ...group }: GroupProps & RowProps & {
+export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, markCurrent = true, onGo, nowMs, onSetPinned, onDelete, isUnread, trackActions, ...group }: GroupProps & RowProps & {
+  emptyState: EmptyStateSchema | null;
   tracks: readonly Track[];
   activeTrackId: string | null;
   /** Cross-Area groups identify the Area on each row; Area groups omit this. */
@@ -112,6 +114,7 @@ export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = 
   }, [showAll]);
 
   return <SidebarGroup {...group}>
+    {tracks.length === 0 && emptyState !== null && <div className={styles.emptyArea}><EmptyState {...emptyState} variant="compact" /></div>}
     {tracks.length > 0 && <div className={styles.trackList}>
       {rows.map((track) => <TrackRow
         key={track.id}

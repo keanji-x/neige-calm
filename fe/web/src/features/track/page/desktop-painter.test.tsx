@@ -46,7 +46,7 @@ const untitled: PanelRow = {
 };
 
 const cardsModule: RowModuleView = {
-  key: 'cards', title: 'Tools', empty: 'No tools yet.', rows: [titled, untitled],
+  key: 'cards', title: 'Tools', empty: '还没有工具', rows: [titled, untitled],
 };
 const emptyCards: RowModuleView = { ...cardsModule, rows: [] };
 

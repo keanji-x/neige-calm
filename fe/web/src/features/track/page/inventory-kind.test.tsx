@@ -5,7 +5,7 @@ import { checkProjection } from '../../../../../tools/projection/public.ts';
 import { makeDesktopPainter, type DesktopLeaf } from './desktop-painter.tsx';
 
 it('preserves exact kind fields and accessible worker names when their text becomes an icon', () => {
-  const module: RowModuleView = { key: 'tasks', title: 'Tasks', empty: 'No tasks declared yet.', rows:
+  const module: RowModuleView = { key: 'tasks', title: 'Tasks', empty: '还没有任务', rows:
     ['codex', 'claude', 'future-provider', 'constructor', 'toString', '__proto__'].map(kind => ({
       id: kind, title: `${kind}-task`, kind, status: null, activity: null, badges: [],
       actions: [{ kind: 'open-card' as const, cardId: kind, label: null, hint: `Open ${kind}`, description: null }],

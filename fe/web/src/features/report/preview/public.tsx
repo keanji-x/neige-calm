@@ -1,3 +1,4 @@
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
 // The `preview` block (#1780): a live dev server, embedded from calm's preview gateway. The block
 // names a registration by `key`; `resolve`, injected by `app/router`, says whether that key is
 // registered, on which gateway port, and whether the dev server answers.
@@ -54,7 +55,7 @@ export function ReportPreviewBlock({ payload, resolve, viewports }: {
   const height = reportFrameHeight(payload.height, DEFAULT_HEIGHT);
 
   if (resolution === undefined) {
-    return <PreviewNotice title={title} height={height}
+    return <PreviewNotice title={title} height={height} normalEmpty
       text="This view does not carry previews." />;
   }
   if (window.location.protocol !== 'http:') {
@@ -99,11 +100,11 @@ function PreviewBar({ title, children }: { title: string; children?: ReactNode }
   );
 }
 
-function PreviewNotice({ title, height, text }: { title: string; height: number; text: string }) {
+function PreviewNotice({ title, height, text, normalEmpty = false }: { title: string; height: number; text: string; normalEmpty?: boolean }) {
   return (
     <figure className={styles.figure}>
       <PreviewBar title={title} />
-      <div className={styles.placeholder} style={{ blockSize: `${height}px` }} role="note">{text}</div>
+      <div className={styles.placeholder} style={{ blockSize: `${height}px` }} role="note">{normalEmpty ? <EmptyState variant="compact" align="center" icon={<Icon name="file" />} title="暂无预览内容" description={text} /> : text}</div>
     </figure>
   );
 }

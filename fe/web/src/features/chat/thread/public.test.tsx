@@ -105,15 +105,15 @@ describe('ChatThread', () => {
 
   it('renders the empty state before anything is said', () => {
     render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]} />);
-    expect(screen.getByText('Nothing said yet.')).toBeTruthy();
+    expect(screen.getByText('聊聊你想做什么')).toBeTruthy();
   });
 
   it('does not call a pending conversation empty while the agent is working', () => {
     render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]} pending />);
     expect(workingMarks()).toHaveLength(1);
-    expect(screen.getByText('The agent is working.')).toBeTruthy();
-    expect(screen.getByText('Messages will appear here.')).toBeTruthy();
-    expect(screen.queryByText('Nothing said yet.')).toBeNull();
+    expect(screen.getByText('正在整理你的想法')).toBeTruthy();
+    expect(screen.getByText('回复会显示在这里。')).toBeTruthy();
+    expect(screen.queryByText('聊聊你想做什么')).toBeNull();
   });
 
   it('renders an operable system disclosure, not either speaker', async () => {
@@ -258,7 +258,7 @@ describe('ChatThread', () => {
     rerender(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} statusUnconfirmed
       conversation={conversation()} turns={[]} />);
     expect(screen.getByText('Status unconfirmed', { exact: true })).toBeTruthy();
-    expect(screen.queryByText('Nothing said yet.')).toBeNull();
+    expect(screen.queryByText('聊聊你想做什么')).toBeNull();
   });
 
   it.each([
@@ -1404,7 +1404,7 @@ it('shows a paused runtime with the same disclosure and separator, even without 
   expect(screen.getByRole('button', { name: 'Paused', expanded: false })).toBeTruthy();
   expect(screen.getByRole('separator')).toBeTruthy();
   expect(screen.getByText(reason, { exact: true })).toBeTruthy();
-  expect(screen.queryByText('Nothing said yet.')).toBeNull();
+  expect(screen.queryByText('聊聊你想做什么')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Start a new conversation' })).toBeNull();
   expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
 });

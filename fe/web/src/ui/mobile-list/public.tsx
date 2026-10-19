@@ -1,3 +1,4 @@
+import { EmptyState, type EmptyStateSchema } from '../empty-state/public.tsx';
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 
@@ -49,19 +50,8 @@ export function MobileList({ title, children, className }: Readonly<{ title?: st
   );
 }
 
-export function MobileListEmpty({ children, fieldMarker }: Readonly<{
-  children: ReactNode;
-  /** The value of `data-nc-field` on the `<p>`, which holds the empty sentence and nothing else. */
-  fieldMarker?: string;
-}>) {
-  return (
-    <li>
-      <p
-        className={styles.empty}
-        {...(fieldMarker === undefined ? {} : { 'data-nc-field': fieldMarker })}
-      >{children}</p>
-    </li>
-  );
+export function MobileListEmpty({ fieldMarker, ...content }: EmptyStateSchema & Readonly<{ fieldMarker?: string }>) {
+  return <li className={styles.empty}><EmptyState {...content} variant="compact" titleFieldMarker={fieldMarker} /></li>;
 }
 
 export function MobileListItem({

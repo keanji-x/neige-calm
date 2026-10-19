@@ -1,3 +1,5 @@
+import { Icon } from '../../../ui/icon/public.tsx';
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 // The report document — the main column on a track and an area: a sequence of typed blocks.
 
@@ -38,6 +40,8 @@ export type ReportDocumentProps = Readonly<{
   preparation?: PreparedReport;
   /** What the empty state should offer, which differs per route. */
   empty: ReactNode;
+  /** Owning page presentation for a heading-only report. */
+  outlineEmpty?: ReactNode;
   /** The outline rail, which hangs in the document's leading gutter. */
   rail?: ReactNode;
   /** The byline row (`Planner Agent · 2h`), composed by `app/router`. */
@@ -75,7 +79,7 @@ export type ReportDocumentProps = Readonly<{
 
 /** Agent-authored destinations become admitted preview controls. Navigation stays behind typed callbacks or explicit external activation. */
 export function ReportDocument({
-  report, preparation, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
+  report, preparation, empty, outlineEmpty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
   resolveOverlay, resolveSeries, resolvePreview, previewViewports,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
@@ -89,11 +93,12 @@ export function ReportDocument({
   }, [arrivalAnchorId]);
 
   if (prepared.kind === 'empty') return <>{empty}</>;
+  if (prepared.outlineOnly && outlineEmpty !== undefined) return <>{outlineEmpty}</>;
   const outlineOnly = compactViewport && prepared.outlineOnly;
 
   return (
     <article className={`calm-prose ${styles.doc} ${outlineOnly ? styles.outlineOnly : ''}`} data-nc-report="" tabIndex={-1}>
-      {outlineOnly && <div className={styles.mobileEmpty}><h2>从一个想法开始</h2><p>计划、进展与重要结论会整理在这里。</p></div>}
+      {outlineOnly && <div className={styles.mobileEmpty}><EmptyState icon={<Icon name="file" />} title="进展会整理在这里" description="说说想做的事，计划与结论会随对话整理。" /></div>}
       {rail}
       {byline !== undefined && <div className={styles.byline}>{byline}</div>}
       {prepared.kind === 'legacy'

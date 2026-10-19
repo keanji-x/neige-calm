@@ -3,7 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ChartSeriesPayload } from '../../../../../core/domain/report.ts';
-import type { OkResolvedSeries, SeriesEntry, SeriesResolution } from '../../../../../core/domain/report-series.ts';
+import type { OkResolvedSeries, OkSeriesEntry, SeriesEntry, SeriesResolution } from '../../../../../core/domain/report-series.ts';
 import { ReportSeriesBlock } from './public.tsx';
 
 afterEach(cleanup);
@@ -15,7 +15,7 @@ function payload(overrides: Partial<ChartSeriesPayload> = {}): ChartSeriesPayloa
   return { source: SOURCE, series: ['US:NVDA', 'HK:9988'], range: '1Y', ...overrides };
 }
 
-function okEntry(asset: string, values: readonly number[], overrides: Partial<Extract<SeriesEntry, { status: 'ok' }>> = {}): SeriesEntry {
+function okEntry(asset: string, values: readonly number[], overrides: Partial<OkSeriesEntry> = {}): OkSeriesEntry {
   const first = values[0] ?? 0;
   const last = values[values.length - 1] ?? 0;
   return {
@@ -223,7 +223,8 @@ describe('ReportSeriesBlock', () => {
 
   it('says so when the surface carries no resolver', () => {
     render(<ReportSeriesBlock payload={payload({ caption: 'Big tech' })} blockId="b-1" rev={1} />);
-    expect(screen.getByRole('note').textContent).toContain('this view does not carry its data');
+    expect(screen.getByText(/this view does not carry its data/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '暂无图表数据' })).toBeTruthy();
     expect(screen.getByText('Big tech')).toBeTruthy();
   });
 
@@ -239,4 +240,42 @@ describe('ReportSeriesBlock', () => {
     expect(markup).not.toMatch(/style="/);
     expect(container.querySelectorAll('polyline[data-nc-series]').length).toBe(8);
   });
+});
+
+it.each(['line', 'normalized', 'bar', 'candles'] as const)('unifies resolved no-point %s charts without fabricated axes', view => {
+  const entry = okEntry('US:EXAMPLE', [], { high: 0, low: 0 });
+  const { container } = draw(ok([entry], { view }), { view, series: ['US:EXAMPLE'] });
+  expect(screen.getByRole('heading', { name: '暂无图表数据' })).toBeTruthy();
+  expect(container.querySelector('svg[role="img"]')).toBeNull();
+  expect(screen.getByText('Data through 2026-09-11')).toBeTruthy();
+  expect(screen.getAllByText('US:EXAMPLE').length).toBeGreaterThan(0);
+});
+
+it('uses the shared empty state for an ok response with no series', () => {
+  const { container } = draw(ok([]));
+  expect(screen.getByRole('heading', { name: '暂无图表数据' })).toBeTruthy();
+  expect(container.querySelector('svg[role="img"]')).toBeNull();
+  expect(screen.getByText('Data details')).toBeTruthy();
+});
+
+it('uses the shared empty state for metadata without plotted points', () => {
+  const entry = okEntry('US:EXAMPLE', [1, 2]);
+  delete entry.points;
+  draw(ok([entry]), { series: ['US:EXAMPLE'] });
+  expect(screen.getByRole('heading', { name: '暂无图表数据' })).toBeTruthy();
+  expect(screen.getAllByText('US:EXAMPLE').length).toBeGreaterThan(0);
+});
+
+it('keeps one-candle metadata while showing the shared insufficient-data state', () => {
+  const entry = okEntry('US:EXAMPLE', [2], { points: [[0, 1, 2, 1, 2, 3]] });
+  const { container } = draw(ok([entry], { view: 'candles' }), { view: 'candles', series: ['US:EXAMPLE'] });
+  expect(screen.getByRole('heading', { name: '暂无图表数据' })).toBeTruthy();
+  expect(screen.getByText('绘制 K 线至少需要两条完整数据。')).toBeTruthy();
+  expect(container.querySelector('svg[role="img"]')).toBeNull();
+});
+
+it('does not relabel a failed series as a normal empty state', () => {
+  draw(ok([{ asset: 'US:EXAMPLE', status: 'unavailable', reason: 'Source is unavailable.' }]));
+  expect(screen.queryByRole('heading', { name: '暂无图表数据' })).toBeNull();
+  expect(screen.getByText(/Source is unavailable\./)).toBeTruthy();
 });

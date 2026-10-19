@@ -1,3 +1,4 @@
+import { EmptyState } from '../../ui/empty-state/public.tsx';
 // Settings › Plugins — the installed list, and the one write it offers.
 // The state chip is keyed on `state`, not `enabled`: nothing enforces that `enabled === false` never coexists with `crashed`.
 
@@ -81,7 +82,7 @@ export function PluginsPane({
         : plugins.length === 0
           ? (
             <>
-              <AstryxText as="p" color="secondary">No plugins installed.</AstryxText>
+              <EmptyState variant="panel" icon={<Icon name="tools" />} title="还没有添加插件" description="连接需要的工具，为工作区扩展能力。" />
               <SettingsList>
                 <SettingRow title="Add a plugin" description={ADD_DESCRIPTION} onOpen={onAdd} />
               </SettingsList>

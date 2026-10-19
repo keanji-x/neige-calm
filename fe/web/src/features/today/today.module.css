@@ -1,0 +1,4 @@
+@layer features {
+  .empty { margin-inline-start: var(--document-start, 0px); max-inline-size: var(--document-measure, 40rem); padding-block: var(--space-6); }
+  @media (width < 60rem) { .empty { margin-inline-start: 0; } }
+}

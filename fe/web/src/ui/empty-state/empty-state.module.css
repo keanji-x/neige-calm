@@ -1,0 +1,30 @@
+@layer ui {
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+    min-inline-size: 0;
+    max-inline-size: min(100%, 22rem);
+    overflow-wrap: anywhere;
+    text-align: start;
+  }
+
+  .center { align-items: center; text-align: center; }
+  .heading { display: flex; align-items: center; gap: var(--space-2); max-inline-size: 100%; }
+  .visual {
+    display: grid;
+    place-items: center;
+    flex: none;
+    color: var(--text-2);
+  }
+
+  .title { margin: 0; font: var(--type-ui); font-size: var(--font-step-5-size); line-height: var(--font-step-3-line); font-weight: var(--weight-medium); color: var(--text); text-wrap: balance; }
+  .description { margin: 0; font: var(--type-ui); line-height: 1.65; color: var(--text-3); text-wrap: pretty; }
+  .panel { max-inline-size: min(100%, 18rem); }
+  .panel .title { font: var(--type-detail); line-height: 1.65; font-weight: var(--weight-medium); }
+  .compact { max-inline-size: 100%; gap: var(--space-1); padding-block: var(--space-2); }
+  .compact .heading { gap: calc(var(--space-3) / 2); }
+  .compact .title { font: var(--type-ui); font-weight: var(--weight-medium); }
+  .compact .description { font: var(--type-metadata); line-height: 1.5; }
+}

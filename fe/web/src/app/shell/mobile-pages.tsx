@@ -77,7 +77,7 @@ export function MobilePages({ areas, areaId, tracks, onOpenTrack, onBack, onNewT
           );
         })}
         {readError === null && !readLoading && shown.length === 0 && (
-          <MobileListEmpty>{group === 'pinned' ? 'No pinned Pages.' : 'No recent Pages.'}</MobileListEmpty>
+          <MobileListEmpty icon={<Icon name={group === 'pinned' ? 'pin' : 'file'} />} title={group === 'pinned' ? '还没有置顶的 Page' : '还没有最近浏览的 Page'} description={group === 'pinned' ? '置顶的 Page 会显示在这里。' : '浏览过的 Page 会显示在这里。'} />
         )}
       </MobileList>
       </div>

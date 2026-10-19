@@ -62,16 +62,3 @@ export function PanelAction({ label, onClick, children }: {
     </button>
   );
 }
-
-export function PanelEmpty({ children, fieldMarker }: {
-  children: string;
-  /** The value of `data-nc-field` on the `<p>`, which holds the empty sentence and nothing else. */
-  fieldMarker?: string;
-}) {
-  return (
-    <p
-      className={styles.empty}
-      {...(fieldMarker === undefined ? {} : { 'data-nc-field': fieldMarker })}
-    >{children}</p>
-  );
-}

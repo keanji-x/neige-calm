@@ -1,3 +1,4 @@
+import { EmptyState } from '../empty-state/public.tsx';
 import { useId } from 'react';
 import { Icon } from '../icon/public.tsx';
 import styles from './visualization.module.css';
@@ -55,7 +56,7 @@ export function DistributionChart({ label, unit, slices, emptyText, selected, on
 }) {
   const total = slices.reduce((sum, slice) => sum + slice.value, 0);
   const current = slices.find(slice => slice.id === selected);
-  if (slices.length === 0) return <p className={styles.empty}>{emptyText}</p>;
+  if (slices.length === 0) return <EmptyState variant="compact" icon={<Icon name="chart" />} title="暂无数据" description={emptyText} />;
   const percentage = (value: number) => total === 0 ? '—' : `${number(value / total * 100, 1)}%`;
   let cumulative = 0;
   const circumference = 2 * Math.PI * 50;
@@ -111,7 +112,7 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
   const readoutId = useId();
   const { datasetId, selected, sample, readoutOpen } = selection;
   const data = datasets.find(d => d.id === datasetId) ?? datasets[0];
-  if (!data) return <p className={styles.empty}>{emptyText}</p>;
+  if (!data) return <EmptyState variant="compact" icon={<Icon name="chart" />} title="暂无数据" description={emptyText} />;
   const points = data.points;
   const incompleteStack = data.style === 'stacked' && points.some(point => point.values.some(v => v === null || v < 0));
   if (incompleteStack) return <p className={styles.empty}>无法绘制不完整的堆叠数据。</p>;
@@ -146,7 +147,7 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
         {datasets.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
       </select>}
     </div></div>
-    {!hasData ? <p className={styles.empty}>{emptyText}</p> : <>
+    {!hasData ? <EmptyState variant="compact" icon={<Icon name="chart" />} title="暂无数据" description={emptyText} /> : <>
       <div className={styles.plot}>
         <div className={styles.yAxis} aria-hidden="true">{[maximum, (maximum + minimum) / 2, minimum].map((v, i) => <span key={i}>{axisNumber(v)}</span>)}</div>
         <div className={styles.plotFrame}>
@@ -230,7 +231,7 @@ export function BarChart({ label, unit, points, emptyText }: {
   const layout = signedBarLayout(points.map(point => point.value));
   return <figure className={styles.chart}>
     <figcaption className={styles.chartTitle}>{label}</figcaption>
-    {points.length === 0 ? <p className={styles.empty}>{emptyText}</p> : <div className={styles.bars} role="img"
+    {points.length === 0 ? <EmptyState variant="compact" icon={<Icon name="chart" />} title="暂无数据" description={emptyText} /> : <div className={styles.bars} role="img"
       aria-label={`${label}：${points.map(point => `${point.label} ${observationNumber(point.value)}`).join('；')} ${unit}`}>
       {points.map((point, index) => <div key={index} className={styles.barRow}>
         <div className={styles.barLabels}><span>{point.label}</span><strong className={styles[point.tone]}>
@@ -258,7 +259,7 @@ export function MeterChart({ label, unit, used, limit, usedLabel, limitLabel, de
       <meter className={styles.meter} aria-label={label} min={0} max={limit} value={Math.max(0, Math.min(used, limit))}
         aria-valuetext={`${observationNumber(used)} / ${observationNumber(limit)} ${unit}`} />
       <div className={styles.meterLabels}><span>{usedLabel} {observationNumber(used)}</span><span>{limitLabel} {observationNumber(limit)} {unit}</span></div>
-    </> : <p className={styles.empty}>{emptyText}</p>}
+    </> : <EmptyState variant="compact" icon={<Icon name="chart" />} title="暂无数据" description={emptyText} />}
     <p className={styles.detail}>{detail}</p>
   </figure>;
 }

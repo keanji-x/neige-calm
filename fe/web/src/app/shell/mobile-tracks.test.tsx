@@ -87,7 +87,7 @@ describe('MobileTracks', () => {
       onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
       isUnread={() => false} readError="Tracks are unavailable" readLoading={false} onRetryRead={onRetryRead} />);
     expect(screen.getByRole('alert').textContent).toContain('Tracks are unavailable');
-    expect(screen.queryByText('No tracks in this area yet.')).toBeNull();
+    expect(screen.queryByText('这个 Area 还没有 Track')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetryRead).toHaveBeenCalledOnce();
   });

@@ -1,5 +1,7 @@
 import { ConversationGroups } from '../../features/chat/list/groups.tsx';
 import { ConversationArchiveAction } from '../../features/chat/list/public.tsx';
+import { trackEmptyContent } from './track-empty-content.tsx';
+import { EmptyState } from '../../ui/empty-state/public.tsx';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { useCallback, useRef } from 'react';
 import { useState } from '../../ui/state/public.ts';
@@ -19,7 +21,6 @@ import styles from './mobile-history.module.css';
 type HistoryView = 'current' | 'pinned' | 'unread' | 'waiting';
 const VIEWS: readonly HistoryView[] = Object.freeze(['current', 'pinned', 'unread', 'waiting']);
 const VIEW_LABELS: Readonly<Record<HistoryView, string>> = Object.freeze({ current: '本 Track', pinned: '已置顶', unread: '未读', waiting: '未处理' });
-const EMPTY_TRACK_LABELS = Object.freeze({ pinned: '还没有已置顶的 Track。', unread: '没有未读的 Track。', waiting: '没有需要处理的 Track。' });
 
 function historyTitle(row: Conversation): string {
   const name = conversationName(row);
@@ -99,7 +100,7 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
         <p className={styles.scope}>{scopeLabel}</p>
         {failed && <ErrorBox message="部分历史对话未能加载。" actionLabel="重试" onRetry={onRetry} />}
         {loading && <p role="status">正在加载历史对话…</p>}
-        <ConversationGroups conversations={conversations} emptyActive={!loading && !failed ? <p className={styles.empty}>{conversations.length === 0 ? '当前 Track 还没有对话。' : '暂无活跃对话。'}</p> : null}>
+        <ConversationGroups conversations={conversations} emptyActive={!loading && !failed ? <EmptyState variant="compact" icon={<UiIcon name="chat" />} title={conversations.length === 0 ? '当前 Track 还没有对话。' : '暂无活跃对话。'} description="这里显示当前 Track 的活跃对话。" /> : null}>
           {rows => {
             const groups = new Map<string, Conversation[]>();
             for (const row of rows) {
@@ -127,7 +128,7 @@ export function MobileHistory({ open, onOpenChange, conversations, loading, fail
           {tracksLoading && <p role="status">正在加载 Tracks…</p>}
           <MobileTrackList tracks={trackGroups[view]} currentTrackId={currentTrackId} isUnread={isUnread}
             onOpenTrack={(trackId) => leave(() => onOpenTrack(trackId))}
-            emptyMessage={!tracksLoading && tracksError === null ? EMPTY_TRACK_LABELS[view] : undefined} />
+            emptyState={!tracksLoading && tracksError === null ? trackEmptyContent(view) : undefined} />
         </>}
       </div>
       <div className={styles.footer}>

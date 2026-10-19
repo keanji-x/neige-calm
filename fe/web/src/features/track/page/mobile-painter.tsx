@@ -1,3 +1,4 @@
+import { inventoryEmptyContent } from './empty-content.tsx';
 // The mobile track panel, painted from `core/view`'s panel view model.
 // Mobile does not call `paintPanel`: it drills into one module at a time, so each page calls `paintModule` once through `paintMobileModule`.
 
@@ -186,7 +187,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
       slot: 'empty',
       needsAttention: () => false,
       group: () => 'other',
-      paint: () => <MobileListEmpty key="empty" fieldMarker={FIELD.empty}>{text}</MobileListEmpty>,
+      paint: (key) => <MobileListEmpty key="empty" fieldMarker={FIELD.empty} {...inventoryEmptyContent(key, text)} />,
     }),
 
     module: (parts) => {

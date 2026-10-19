@@ -122,13 +122,5 @@
     white-space: nowrap;
   }
 
-  .empty {
-    font-size: var(--font-step-1-size);
-    line-height: var(--font-step-1-line);
-    display: flex;
-    min-block-size: calc(var(--rail-w-collapsed) + var(--space-2));
-    align-items: center;
-    padding-inline: var(--space-4);
-    color: var(--text-3);
-  }
+  .empty { padding-inline: var(--space-4); }
 }

@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ContextGroup } from './context.tsx';
-import { PanelEmpty, PanelModule } from './public.tsx';
+import { PanelModule } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -47,23 +47,6 @@ describe('PanelModule title field marker', () => {
     expect(container.querySelector('h2')?.hasAttribute('data-nc-field')).toBe(false);
   });
 });
-
-describe('PanelEmpty field marker', () => {
-  it('puts the value on the element that carries the sentence', () => {
-    const { container } = render(<PanelEmpty fieldMarker="empty">No cards yet.</PanelEmpty>);
-    const paragraph = container.querySelector('p');
-    expect(paragraph?.getAttribute('data-nc-field')).toBe('empty');
-    expect(paragraph?.textContent).toBe('No cards yet.');
-    expect(container.querySelectorAll('[data-nc-field]').length).toBe(1);
-  });
-
-  it('emits no attribute when the prop is omitted', () => {
-    const { container } = render(<PanelEmpty>No cards yet.</PanelEmpty>);
-    expect(container.querySelector('[data-nc-field]')).toBeNull();
-    expect(container.querySelector('p')?.hasAttribute('data-nc-field')).toBe(false);
-  });
-});
-
 
 describe('ContextGroup independent header controls', () => {
   it('honors controlled state without unmounting the body or nesting action buttons', () => {

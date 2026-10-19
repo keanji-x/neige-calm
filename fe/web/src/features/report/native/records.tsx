@@ -1,3 +1,4 @@
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import type { NativeComponent } from '../../../../../core/domain/report-view.ts';
 import { useId, useRef } from 'react';
 import { Icon } from '../../../ui/icon/public.tsx';
@@ -25,7 +26,7 @@ export function RecordBrowser({ component, selection, onSelection }: {
     </div>
     {data?.description && <p className={styles.datasetDescription}>{data.description}</p>}
     <div className={selected ? styles.reviewWorkspace : undefined}>
-    {!data?.items.length ? <p className={styles.muted}>{component.emptyText}</p> : <div className={mode === 'cards' ? styles.cards : styles.list}>
+    {!data?.items.length ? <EmptyState variant="compact" icon={<Icon name="file" />} title="暂无记录" description={component.emptyText} /> : <div className={mode === 'cards' ? styles.cards : styles.list}>
       {data.items.map(item => <article key={item.id} className={`${styles.record} ${selectedId === item.id ? styles.activeRecord : ''}`}>
         <div className={styles.recordTop}><span>{item.id} · {item.subtitle}</span></div>
         <h4>{item.title}</h4>

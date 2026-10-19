@@ -1,3 +1,5 @@
+import { EmptyState } from '../../ui/empty-state/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import styles from './daily-planner.module.css';
 // Reuse the Track route body; this composition only resolves dates and report evidence.
@@ -27,7 +29,7 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
   const detail = useQuery({ ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized), enabled: trackId !== undefined });
   if (daily.isError) return <ErrorBox message={readErrorText(daily.error, 'The daily Planner is unavailable.')} onRetry={() => { void daily.refetch(); }} />;
   if (daily.isPending) return <p role="status">Loading daily Planner…</p>;
-  if (daily.data === null) return <p role="status">{selectedDate === undefined ? 'Preparing today’s Track…' : 'No daily Track was created for this date.'}</p>;
+  if (daily.data === null) return selectedDate === undefined ? <p role="status">Preparing today’s Track…</p> : <EmptyState variant="panel" icon={<Icon name="file" />} title="No daily Track was created for this date." description="这一天还没有日报记录。" />;
   if (detail.isError) return <ErrorBox message={readErrorText(detail.error, 'The daily Track could not be loaded.')} onRetry={() => { void detail.refetch(); }} />;
   if (detail.data === undefined || detail.data.track.id !== trackId) return <p role="status">Loading daily Track…</p>;
   const date = daily.data.date;
@@ -61,7 +63,7 @@ function DailyReportChanges({ date, isToday, transport, unauthorized, onOpenTrac
   return <ReportDetails title={compactViewport ? (isToday ? '昨天的更新' : '前一天的更新') : 'Report changes'} meta={date} layout="appendix" onToggle={setOpen}>
     {changes.isPending && open && <p role="status">Loading report changes…</p>}
     {changes.isError && <ErrorBox message={readErrorText(changes.error, 'Report changes could not be loaded.')} onRetry={() => { void changes.refetch(); }} />}
-    {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <p>No report changes recorded for visible Tracks on this day.</p>}
+    {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <EmptyState variant="compact" icon={<Icon name="file" />} title="No report changes recorded for visible Tracks on this day." description="这一天的报告更新会显示在这里。" />}
     {changes.data?.pages.flatMap((page) => page.changes.map((change) => <ReportChangeItem key={change.track_id} change={change}
       date={date} timeZone={page.timezone} through={page.through_event_id} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />))}
     {changes.hasNextPage && <button type="button" disabled={changes.isFetchingNextPage} onClick={() => { void changes.fetchNextPage(); }}>Load more reports</button>}

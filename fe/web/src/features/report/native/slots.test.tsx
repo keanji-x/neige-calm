@@ -77,10 +77,11 @@ it('says a surface without live data carries none, and omits empty provenance', 
 it('gives empty titles fallback accessible names and omits their headings', async () => {
   const { container } = render(<NativeReportView payload={template} />);
   expect(container.querySelector('h2')).toBeNull();
-  expect(container.querySelectorAll('h3')).toHaveLength(1);
+  expect(container.querySelectorAll('h3')).toHaveLength(4);
+  expect(screen.getAllByRole('heading', { name: '暂无实时数据' })).toHaveLength(3);
   expect(screen.getAllByRole('region').map(region => region.getAttribute('aria-label'))).toEqual(['明细']);
   expect(container.querySelector('section:not([aria-label])')).toBeTruthy();
-  expect(container.querySelector('p[class*="description"]')).toBeNull();
+  expect(container.querySelector('section > p[class*="description"]')).toBeNull();
   await userEvent.click(screen.getByRole('button', { name: '放大查看' }));
   const dialog = screen.getByRole('dialog', { name: '视图' });
   expect(within(dialog).queryByRole('heading', { level: 2 })).toBeNull();

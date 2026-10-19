@@ -47,7 +47,7 @@ it('keeps day tasks and the live editor available while the actual grid module w
   const loading = deferred(); vi.mocked(loadCalendarGrid).mockReturnValue(loading.promise);
   const view = mount();
   try {
-    await screen.findByText('No tasks for this day.');
+    await screen.findByRole('heading', { name: '这一天没有安排任务' });
     expect(screen.getAllByText('Loading calendar…')).toHaveLength(1);
     expect(view.requests.filter(request => request.path.startsWith('/api/calendar/tasks'))).toHaveLength(1);
     await page.getByRole('radio', { name: 'Month', exact: true }).click();
@@ -99,7 +99,7 @@ it('keeps day tasks and editing usable after persistent failure and explains the
   vi.mocked(loadCalendarGrid).mockReturnValue(failed.promise);
   const view = mount();
   try {
-    await screen.findByText('No tasks for this day.');
+    await screen.findByRole('heading', { name: '这一天没有安排任务' });
     await act(async () => { failed.reject(new Error('Module unavailable')); await Promise.resolve(); });
     expect(screen.queryByText('Loading calendar…')).toBeNull();
     const reload = screen.getByRole<HTMLButtonElement>('button', { name: 'Reload page' });
@@ -128,7 +128,7 @@ it('ignores a late grid load after leaving without stealing focus', async () => 
   const loading = deferred(); vi.mocked(loadCalendarGrid).mockReturnValue(loading.promise);
   const view = mount();
   try {
-    await screen.findByText('No tasks for this day.');
+    await screen.findByRole('heading', { name: '这一天没有安排任务' });
     view.unmount();
     render(<button type="button">New surface</button>);
     const next = screen.getByRole('button', { name: 'New surface' }); next.focus();

@@ -141,6 +141,8 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
   const second = document.querySelector<HTMLElement>('[aria-label^="Track Second"]')!;
   const nextDisclosure = document.querySelector<HTMLElement>('[aria-label="Collapse area Next"]')!;
   const areaTopBeforeEmptyCollapse = areaRow.getBoundingClientRect().top;
+  const emptyGroup = page.getByRole('group', { name: 'area Empty', exact: true }).element();
+  const emptyGroupHeight = emptyGroup.getBoundingClientRect().height;
   await page.getByRole('button', { name: 'Collapse area Empty' }).click();
   await expect.element(page.getByRole('button', { name: 'Expand area Empty' })).toBeVisible();
   const areaRect = areaRow.getBoundingClientRect();
@@ -150,7 +152,9 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
   const restBackground = getComputedStyle(areaRow).backgroundColor;
 
   expect(areaName.closest('button')).toBe(areaRow);
-  expect(areaRect.top).toBeCloseTo(areaTopBeforeEmptyCollapse, 3);
+  const removedHeight = emptyGroupHeight - emptyGroup.getBoundingClientRect().height;
+  expect(removedHeight).toBeGreaterThan(0);
+  expect(areaRect.top).toBeCloseTo(areaTopBeforeEmptyCollapse - removedHeight, 3);
   expect(areaRect.height).toBe(firstRect.height);
   expect(firstRect.top - areaRect.top).toBeCloseTo(secondRect.top - firstRect.top, 3);
   expect(nextRect.top - secondRect.bottom).toBeCloseTo(8, 3);

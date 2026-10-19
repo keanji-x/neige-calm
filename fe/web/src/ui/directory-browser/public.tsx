@@ -1,3 +1,4 @@
+import { EmptyState } from '../empty-state/public.tsx';
 // The directory browser: an editable absolute path that is also a combobox over the listing it names. The listbox stays local markup: astryx's `List`/`Item` hard-code roles and cannot host an `aria-activedescendant` list driven from a focused input.
 
 import { useEffect, useId, useMemo, useRef, type KeyboardEvent } from 'react';
@@ -138,9 +139,9 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
           </li>
         ))}
         {/* `role="none"`: a listbox owns options, and neither placeholder row is one. */}
-        {listing !== null && !loading && visible.length === 0 && (
+        {listing !== null && !loading && error === null && visible.length === 0 && (
           <li className={styles.placeholder} role="none">
-            {empty ? 'Empty directory' : 'No matches'}
+            <EmptyState variant="compact" icon={<Icon name={empty ? 'folder' : 'search'} />} title={empty ? '这个文件夹是空的' : 'No matches'} description={empty ? '这里还没有文件或子文件夹。' : '试试其他文件夹名称。'} />
           </li>
         )}
       </ul>

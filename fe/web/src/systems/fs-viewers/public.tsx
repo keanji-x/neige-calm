@@ -1,3 +1,5 @@
+import { EmptyState } from '../../ui/empty-state/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 // The file card's body: a folder on the left, and one file — or one file's two sides — on the right.
 
 import { Suspense, lazy, useCallback, useEffect, useRef, type ReactNode } from 'react';
@@ -251,7 +253,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
             : listingError !== null
               ? <FileReadError failure={listingError.failure} resource="folder" onRetry={() => setListingRetry((value) => value + 1)} />
               : entries.length === 0
-                ? <p className="fv-state">Empty directory</p>
+                ? <div className="fv-state"><EmptyState variant="compact" icon={<Icon name="folder" />} title="这个文件夹是空的" description="这里还没有文件或子文件夹。" /></div>
                 : entries.map((entry) => {
                   const entryPath = joinDirectoryPath(listingPath, entry.name);
                   return (
@@ -344,7 +346,7 @@ function CodeTab({ state, selectedPath, theme, rawUrl, onRetry, onImageError }: 
   onRetry: () => void;
   onImageError: () => void;
 }): ReactNode {
-  if (selectedPath === null) return <p className="fv-empty">Select a file to view it.</p>;
+  if (selectedPath === null) return <div className="fv-empty"><EmptyState variant="compact" icon={<Icon name="file" />} title="选择一个文件以查看内容" description="文件内容会显示在这里。" /></div>;
   if (state.kind === 'idle' || state.kind === 'loading') {
     return <p className="fv-state">Loading file…</p>;
   }
@@ -486,7 +488,7 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
         {listLoading
           ? <p className="fv-state">Loading changes…</p>
           : files.length === 0
-            ? error === null && <p className="fv-state">No working-tree changes</p>
+            ? error === null && <div className="fv-state"><EmptyState variant="compact" icon={<Icon name="file" />} title="工作区没有未提交的更改" description="修改文件后，可在这里查看差异。" /></div>
             : files.map((file) => (
               <button
                 key={`${file.status}:${file.path}`}
@@ -505,8 +507,10 @@ function DiffTab({ files, selected, listLoading, error, diff, diffLoading, theme
       <div className="fv-diff-pane">
         {error !== null
           ? <FileReadError failure={error.failure} resource="changes" onRetry={onRetry} />
+          : selected === null
+            ? <div className="fv-state"><EmptyState variant="compact" icon={<Icon name="file" />} title="Select a changed file" description="选择更改过的文件以查看差异。" /></div>
           : diffLoading || diff === null
-            ? <p className="fv-state">{selected === null ? 'Select a changed file' : 'Loading diff…'}</p>
+            ? <p className="fv-state">Loading diff…</p>
             : (
               <>
                 {diff.truncated && <p className="fv-banner">Showing the first 2 MiB of this file.</p>}

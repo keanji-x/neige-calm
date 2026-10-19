@@ -38,7 +38,7 @@ it('keeps unchanged Track title observers and measurements out of a real row sel
   });
   function Scene() {
     const [active, setActive] = useState(tracks[0].id);
-    return <div style={{ inlineSize: 240 }}><SidebarTrackGroup title="Work" label="area Work" level="area" expanded onToggle={() => {}}
+    return <div style={{ inlineSize: 240 }}><SidebarTrackGroup emptyState={null} title="Work" label="area Work" level="area" expanded onToggle={() => {}}
       tracks={tracks} activeTrackId={active} onGo={target => { if (target.name === 'track') setActive(target.trackId); }}
       management={{ menuLabel: 'Group actions', canMoveUp: false, canMoveDown: false, onMove: () => {}, onHide: () => {} }}
       isUnread={() => false} onSetPinned={() => {}} onDelete={() => {}}

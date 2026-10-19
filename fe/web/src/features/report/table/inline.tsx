@@ -1,3 +1,5 @@
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 import type { ReactNode } from 'react';
 
 import { parseSourceCitationCell, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
@@ -42,7 +44,7 @@ export function InlineTable({ payload, fallbackCaption, onOpenSourceLink, linkPr
             {column.label}
           </th>
         ))}</tr></thead>
-        <tbody>{rows.map((row, index) => {
+        <tbody>{rows.length === 0 && <tr><td colSpan={columns.length} className={styles.cell}><EmptyState variant="compact" icon={<Icon name="file" />} title="暂无记录" description="这张表格还没有行数据。" /></td></tr>}{rows.map((row, index) => {
           const highlighted = highlight != null && highlight !== ''
             && keyColumn !== undefined && cellText(row[keyColumn]) === highlight;
           return (

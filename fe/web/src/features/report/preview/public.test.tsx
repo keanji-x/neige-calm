@@ -118,7 +118,8 @@ describe('ReportPreviewBlock', () => {
 
   it('says so when this view carries no previews, or the read is loading or failed', () => {
     const { rerender } = render(<ReportPreviewBlock payload={{ key: 'fe' }} />);
-    expect(screen.getByRole('note').textContent).toBe('This view does not carry previews.');
+    expect(screen.getByRole('heading', { name: '暂无预览内容' })).toBeTruthy();
+    expect(screen.getByText('This view does not carry previews.')).toBeTruthy();
     rerender(<ReportPreviewBlock payload={{ key: 'fe' }} resolve={() => ({ status: 'loading' })} />);
     expect(screen.getByRole('note').textContent).toBe('Loading …');
     /* A server fault says only the fixed sentence; a refusal adds the server's reason. */

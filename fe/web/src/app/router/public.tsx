@@ -1,3 +1,4 @@
+import { TodayReportEmpty } from '../../features/today/public.tsx';
 import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
 import { useConversationLinks } from './conversation-links.tsx';
 import { useTerminalWorkbench, TerminalWorkbenchView, type TerminalWorkbench } from '../../features/track/workbench/public.tsx';
@@ -62,7 +63,7 @@ import {
 import { ArchivedConversationNotice, ChatList } from '../../features/chat/list/public.tsx';
 import { OutgoingMessage } from '../../features/chat/thread/outgoing-message.tsx';
 import {
-  ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread, type ComposerFocusHandle,
+  ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread, ChatEmpty, type ComposerFocusHandle,
 } from '../../features/chat/thread/public.tsx';
 import { ModelPill, PermissionModePill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
 import { usePlannerRoleControl, type PlannerRoleControl } from './planner-role.ts';
@@ -204,7 +205,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody reportEmpty={<TodayReportEmpty />} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           adminGrantedAt={detail.track.admin_granted_at} canAdminTrack={detail.can_admin}
@@ -857,7 +858,7 @@ function useConversationPane(
         {/* Shown back because the composer clears its field on send; nothing here
                     claims they arrived. */}
         {draftOpen && (draft?.text == null
-          ? <p>Nothing said yet. What you write starts the conversation.</p>
+          ? <ChatEmpty />
           : <>
             <OutgoingMessage text={draft.text} mobile={compactViewport} />
             {creating && <p role="status">Sending…</p>}
@@ -1046,7 +1047,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro, prepareReport,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, reportEmpty, panelContent, mobileReportIntro, prepareReport,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -1063,6 +1064,7 @@ function TrackRouteBody({
   panelContent?: ReactNode;
   mobileReportIntro?: ReactNode;
   prepareReport: ReportPreparationPort;
+  reportEmpty?: ReactNode;
 }) {
   const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
   const progressDisclosure = useTrackViewState(track.id, reportPresentation.presentable);
@@ -1556,13 +1558,8 @@ function TrackRouteBody({
         onOpenSourceLink={openReportSource}
         fileRoot={track.agentCwd}
         linkPreview={linkPreview}
-        empty={<ReportEmpty
-          lead="This track has not taken shape yet."
-          hints={[
-            'Say what you want in the conversation — the agent works it out with you and writes it up here.',
-            'It stays with the track, so it is here the next time you open it.',
-          ]}
-        />}
+        outlineEmpty={reportEmpty}
+        empty={reportEmpty ?? <ReportEmpty />}
       >{reportEvidence}</TrackReportRegion>}
       backlinks={backlinks !== undefined && (backlinks.backlinks.length > 0 || backlinks.truncated || backlinks.skipped_sources > 0)
         ? (

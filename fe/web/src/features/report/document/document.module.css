@@ -625,8 +625,6 @@
   @media (width < 60rem) {
     .outlineOnly > .row { display: none; }
     .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-6); max-inline-size: 21rem; }
-    .mobileEmpty h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }
-    .mobileEmpty p { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); color: var(--text-3); margin-block-start: var(--space-3); }
     .doc { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line);
       grid-template-columns: minmax(0, min(100%, var(--document-measure, 40rem)));
       justify-content: center;
@@ -659,8 +657,6 @@
   @media (width < 60rem) {
     .outlineOnly > .row { display: none; }
     .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-6); max-inline-size: 21rem; }
-    .mobileEmpty h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }
-    .mobileEmpty p { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); color: var(--text-3); margin-block-start: var(--space-3); }
     .doc { font-family: var(--font-sans); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); row-gap: var(--space-5); }
     .h1, .referenceHead { font-size: var(--font-step-4-size); line-height: var(--font-step-4-line); margin-block-start: var(--space-5); margin-block-end: var(--space-2); }
     .list:has(> .item > .check) { padding-inline-start: 0; }

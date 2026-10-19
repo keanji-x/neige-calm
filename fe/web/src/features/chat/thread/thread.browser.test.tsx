@@ -1501,8 +1501,10 @@ describe('the exchange rail, as the engine lays it out', () => {
     render(<RailPane turns={railTurns(6, 0)} paneHeight={2000} />);
     await frame();
     /* The transcript's own box, not the pane's `scrollHeight`: a pane taller than its content reports its own height. */
-    const content = document.querySelector<HTMLElement>('[data-nc-rail-pane-inner]')!
-      .getBoundingClientRect().height;
+    const inner = document.querySelector<HTMLElement>('[data-nc-rail-pane-inner]')!;
+    const inset = getComputedStyle(inner);
+    const transcript = document.querySelector<HTMLElement>('[data-nc-thread]')!.parentElement!;
+    const content = transcript.getBoundingClientRect().height + parseFloat(inset.paddingTop) + parseFloat(inset.paddingBottom);
 
     cleanup(); document.body.replaceChildren();
     /* An overflow smaller than the second marker's distance below the first, so no scroll the pane can make brings it to the edge. */

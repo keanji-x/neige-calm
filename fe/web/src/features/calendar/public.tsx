@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { PanelModule } from '../../ui/panel-card/public.tsx';
+import { EmptyState } from '../../ui/empty-state/public.tsx';
 import { Button } from '@astryxdesign/core/Button';
 import { Banner } from '@astryxdesign/core/Banner';
 import { List, ListItem } from '@astryxdesign/core/List';
@@ -65,7 +66,7 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
       <div className={styles.taskScroll} role="region" aria-label="Task list">
       {enabled && (day.error ? <Banner status="error" title={day.error} endContent={<Button label="Retry" variant="ghost" onClick={onRetry} />} />
         : day.loading ? <p role="status" className={styles.empty}>Loading tasks…</p>
-        : day.entries?.length === 0 ? <p className={styles.empty}>No tasks for this day.</p>
+        : day.entries?.length === 0 ? <EmptyState variant="compact" icon={<Icon name="tasks" />} title="这一天没有安排任务" description="这一天的日程任务会显示在这里。" />
         : <List density="compact">
             {day.entries?.toSorted((a, b) => compareSchedule(a, b, date, timezone)).map((entry) => <ListItem key={entry.id} className={styles.taskItem} label={<span className={styles.detailRow}>
               <span aria-hidden="true" /><ListText tone="primary" className={styles.detailTitle}>{entry.task.title}</ListText>

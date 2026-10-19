@@ -166,14 +166,14 @@ it.each([
   expect(screen.getByTitle(cause)).toBeTruthy();
 });
 
-it('opens never-allocated task history without an alert and refreshes its first allocation', async () => {
+it('observes the first allocation through owner polling without an empty-state action', async () => {
   const { open, allocate, requests } = setup('empty');
   await open();
   expect(await screen.findByText('No attempts yet')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Refresh execution history' })).toBeNull();
   allocate();
-  await userEvent.click(screen.getByRole('button', { name: 'Refresh execution history' }));
-  expect(await screen.findByText('Current attempt 1 · Queued')).toBeTruthy();
+  expect(await screen.findByText('Current attempt 1 · Queued', {}, { timeout: 5000 })).toBeTruthy();
   expect(screen.queryByText('No attempts yet')).toBeNull();
   expect(screen.queryByRole('alert')).toBeNull();
   expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);

@@ -1,3 +1,5 @@
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 // Report change evidence uses the same disclosure and document renderer as Reference.
 import type { ReactNode } from 'react';
 import type { ReportChange, ReportEditEntry } from '../../../../../core/domain/daily-planner.ts';
@@ -20,7 +22,7 @@ export function ReportChangeDetails({ change, onOpenTrack, onToggleEdits, childr
         <dt>Current summary</dt><dd>{change.summary_after || '—'}</dd>
       </dl>}
       <ReportDetails title="Body changes" layout="grid" variant="entry">
-        {change.patch === '' ? <p className={styles.note}>No net body change; individual edits retain the history.</p>
+        {change.patch === '' ? <EmptyState variant="compact" icon={<Icon name="file" />} title="正文没有净变化" description="No net body change; individual edits retain the history." />
           : <pre className={styles.patch}><code>{change.patch}</code></pre>}
         {change.patch_truncated && <p className={styles.note}>Patch shortened. Read individual edits for the full content.</p>}
       </ReportDetails>

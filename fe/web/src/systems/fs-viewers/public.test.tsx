@@ -167,7 +167,7 @@ describe('FileViewer', () => {
       path: '/repo', size: 0, text: '', truncated: false,
     }));
     renderViewer(port({ readFile }));
-    expect(await screen.findByText('Select a file to view it.')).toBeTruthy();
+    expect(await screen.findByText('选择一个文件以查看内容')).toBeTruthy();
     expect(readFile).not.toHaveBeenCalled();
   });
 
@@ -334,7 +334,7 @@ describe('FileViewer', () => {
     it('says so when the tree is clean', async () => {
       renderViewer(port({ gitStatus: () => Promise.resolve({ repo_root: '/repo', files: [] }) }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
-      expect(await screen.findByText('No working-tree changes')).toBeTruthy();
+      expect(await screen.findByText('工作区没有未提交的更改')).toBeTruthy();
     });
   });
 

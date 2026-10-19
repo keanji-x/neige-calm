@@ -134,7 +134,8 @@ it('shares the module height across several expanded groups', async () => {
       Array.from({ length: 30 }, (_, index) => task(`${status} ${index}`, status, 'codex'))) }))}
     <div data-testid="next-module">Conversations</div></PanelCard></div>);
   for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="tasks"] details:not([open]) > summary')) summary.click();
-  await expect.poll(() => document.querySelector('[data-testid="next-module"]')!.getBoundingClientRect().top).toBeLessThan(440);
+  // The task module shares its own height budget; preceding empty modules have independent copy.
+  await expect.poll(() => document.querySelector('[data-nc-module="tasks"]')!.getBoundingClientRect().height).toBeLessThan(380);
   const groups = document.querySelectorAll<HTMLElement>('[data-nc-module="tasks"] details[open]');
   expect(groups).toHaveLength(3);
   for (const group of groups) {

@@ -1,3 +1,4 @@
+import { Icon } from '../icon/public.tsx';
 // @vitest-environment jsdom
 // Astryx's `Item` wraps the label in an invisible `<button>` only when `onClick != null`, so that button's presence is the observation of whether `onClick` reached Astryx.
 
@@ -419,16 +420,16 @@ describe('MobileListPage markers', () => {
 
 describe('MobileListEmpty field marker', () => {
   it('puts the value on the element that carries the sentence', () => {
-    const { container } = render(<MobileListEmpty fieldMarker="empty">No cards yet.</MobileListEmpty>);
-    const paragraph = container.querySelector('p');
+    const { container } = render(<MobileListEmpty fieldMarker="empty" icon={<Icon name="tools" />} title="No cards yet." description="Cards appear here." />);
+    const paragraph = container.querySelector('h3');
     expect(paragraph?.getAttribute('data-nc-field')).toBe('empty');
     expect(paragraph?.textContent).toBe('No cards yet.');
     expect(container.querySelectorAll('[data-nc-field]').length).toBe(1);
   });
 
   it('emits no attribute when the prop is omitted', () => {
-    const { container } = render(<MobileListEmpty>No cards yet.</MobileListEmpty>);
+    const { container } = render(<MobileListEmpty icon={<Icon name="tools" />} title="No cards yet." description="Cards appear here." />);
     expect(container.querySelector('[data-nc-field]')).toBeNull();
-    expect(container.querySelector('p')?.hasAttribute('data-nc-field')).toBe(false);
+    expect(container.querySelector('h3')?.hasAttribute('data-nc-field')).toBe(false);
   });
 });

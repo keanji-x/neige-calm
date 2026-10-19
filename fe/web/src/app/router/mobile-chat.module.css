@@ -16,7 +16,9 @@
   .panel > :last-child { overflow: hidden !important; }
   .content { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; background: var(--paper); box-sizing: border-box; }
   .messageViewport { position: relative; flex: 1; min-block-size: 0; }
-  .messages { block-size: 100%; overflow: auto; overscroll-behavior: contain; padding: var(--space-4); box-sizing: border-box; }
+  .messages { display: flex; flex-direction: column; block-size: 100%; overflow: auto; overscroll-behavior: contain; padding: var(--space-4); box-sizing: border-box; }
+  /* Leading history controls keep their intrinsic width in the flex host. */
+  .messages > button { align-self: flex-start; }
   .scrollOverlay { position: absolute; inset-inline: 0; inset-block-end: 0; pointer-events: none; z-index: var(--z-raised); }
 
   .footer { z-index: var(--z-raised); position: fixed; inset-inline: 0; inset-block-end: 0; background: transparent; pointer-events: none; }

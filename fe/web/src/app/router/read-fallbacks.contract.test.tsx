@@ -57,7 +57,7 @@ describe('degraded workspace reads stay usable', () => {
     renderRoute('/', () => ok([]));
     const rail = await screen.findByRole('navigation', { name: 'Workspace' });
     expect(within(rail).getByRole('button', { name: 'Go to Today' })).toBeTruthy();
-    expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
+    expect(within(rail).queryByRole('button', { name: '创建第一个 Area' })).toBeNull();
   });
 
   it.each(['areas', 'tracks'] as const)('provides recovery for the mobile %s read without claiming it is empty', async (resource) => {
@@ -79,7 +79,7 @@ describe('degraded workspace reads stay usable', () => {
     expect(alert.textContent).toContain(resource === 'areas' ? 'Areas are unavailable.' : 'Tracks are unavailable.');
     /* A 500's text is the server's internals: only the fixed sentence shows. */
     expect(alert.textContent).not.toMatch(/Area storage unavailable|Tracks temporarily unavailable/);
-    expect(within(sheet).queryByText('No tracks in this area yet.')).toBeNull();
+    expect(within(sheet).queryByText('这个 Area 还没有 Track')).toBeNull();
     broken = false;
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     if (resource === 'areas') await userEvent.click(await within(sheet).findByRole('button', { name: 'One' }));
@@ -102,7 +102,7 @@ describe('degraded workspace reads stay usable', () => {
     await userEvent.click(indicator);
     const details = screen.getByRole('dialog', { name: '连接详情' });
     expect(details.textContent).toContain('Areas');
-    expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
+    expect(within(rail).queryByRole('button', { name: '创建第一个 Area' })).toBeNull();
     expect(within(rail).getByRole('button', { name: 'Go to Today' })).toBeTruthy();
     broken = false;
     await userEvent.click(within(details).getByRole('button', { name: '重试读取' }));

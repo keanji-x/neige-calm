@@ -428,7 +428,8 @@ describe('ReportDocument', () => {
         source: 'neige://plugin/dev-neige-market/market.series', series: ['US:NVDA', 'HK:9988'], range: '6M', caption: 'Big tech',
       } };
       const { container } = render(<ReportDocument report={blocked(block)} empty={EMPTY} />);
-      expect(screen.getByRole('note').textContent).toContain('this view does not carry its data');
+      expect(screen.getByRole('heading', { name: '暂无图表数据' })).toBeTruthy();
+      expect(screen.getByText(/this view does not carry its data/)).toBeTruthy();
       expect(screen.getByText('Big tech')).toBeTruthy();
       expect(container.textContent).not.toContain('unsupported block kind');
       cleanup();

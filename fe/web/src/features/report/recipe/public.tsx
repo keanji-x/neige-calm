@@ -1,3 +1,5 @@
+import { Icon } from '../../../ui/icon/public.tsx';
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
 // Recipes: the user's own saved starting points for a new track.
 // After a save the view renders the server's response, never the local draft; a 409 keeps the draft.
 
@@ -128,10 +130,9 @@ export function RecipesPage({ recipes, loaded, error, refreshing, onRetry, theme
           </ul>
         )
         : loaded && (
-          <p className={styles.empty}>
-            You have no recipes yet. Anything you save here joins the built-in templates in the
-            New track picker.
-          </p>
+          <div className={styles.empty}>
+            <EmptyState icon={<Icon name="file" />} title="还没有保存的模板" description="保存常用计划，下次创建 Track 时直接使用。" />
+          </div>
         )}
     </section>
   );

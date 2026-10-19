@@ -219,13 +219,13 @@ export function deriveTrackPageView(input: Readonly<{
     title: 'Tools',
     rows: groupPanelRows(input.cards.map(card => cardRow(card, taskByCard.get(card.id) ?? null, input.activity, terminalNumbers.get(card.id) ?? null)), 'cards')
       .flatMap(group => group.rows),
-    empty: 'No tools yet.',
+    empty: '还没有工具',
   };
   const tasks: InventoryModuleView = {
     key: 'tasks',
     title: 'Tasks',
     rows: taskRows,
-    empty: 'No tasks declared yet.',
+    empty: '还没有任务',
   };
   // A desktop work item owns its current worker's entry and maintenance actions.
   // Only an existing, openable destination can be absorbed; unknown tools remain reachable.
@@ -289,9 +289,9 @@ export function deriveTrackPageView(input: Readonly<{
   return {
     rowModules: [tasks, { ...cards, rows: cards.rows.map(row => independentById.get(row.id) ?? row) }],
     desktop: { rowModules: [{
-      key: 'work', title: 'Progress', empty: 'No tasks declared yet.', rows: orderEntries(taskEntries).map(entry => entry.row),
+      key: 'work', title: 'Progress', empty: '还没有任务', rows: orderEntries(taskEntries).map(entry => entry.row),
     }, {
-      key: 'cards', title: 'Workbench', empty: 'No tools yet.', rows: orderEntries(resourceEntries.filter(entry => !entry.temporary)).map(entry => entry.row),
+      key: 'cards', title: 'Workbench', empty: '还没有工具', rows: orderEntries(resourceEntries.filter(entry => !entry.temporary)).map(entry => entry.row),
     }, ...(temporaryIds.size === 0 ? [] : [{
       key: 'temporary' as const, title: 'Temporary terminals', empty: 'No temporary terminals.',
       rows: orderEntries(resourceEntries.filter(entry => entry.temporary)).map(entry => entry.row),

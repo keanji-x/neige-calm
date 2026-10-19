@@ -164,7 +164,7 @@ describe('Plugins pane', () => {
 
   it('says the list is empty rather than looking like it is still loading', () => {
     render(<PluginsPane {...props({ plugins: [] })} />);
-    expect(screen.getByText('No plugins installed.')).toBeTruthy();
+    expect(screen.getByText('还没有添加插件')).toBeTruthy();
   });
 
   it('offers a configuration entry point only where the kernel says there is one', async () => {
@@ -251,7 +251,7 @@ describe('Plugins pane — add and remove', () => {
   it('keeps the way in when nothing is installed', async () => {
     const onAdd = vi.fn();
     render(<PluginsPane {...props({ plugins: [], onAdd })} />);
-    expect(screen.getByText('No plugins installed.')).toBeTruthy();
+    expect(screen.getByText('还没有添加插件')).toBeTruthy();
     await userEvent.click(screen.getByText('Add a plugin'));
     expect(onAdd.mock.calls.length).toBe(1);
   });

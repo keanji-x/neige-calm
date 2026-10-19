@@ -1,4 +1,5 @@
 import '../../styles/entry.css';
+import type { ReactNode } from 'react';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { commands, page } from 'vitest/browser';
@@ -11,11 +12,11 @@ const history: readonly TranscriptEntry[] = Array.from({ length: 12 }).flatMap((
   { id: `you-${i}`, author: 'you' as const, text: `Question ${i}`, atMs: i * 2000 },
   { id: `agent-${i}`, author: 'agent' as const, text: '这是一段用于验证手机滚动的回复。'.repeat(80), atMs: i * 2000 + 1 },
 ]);
-function surface() {
+function surface(leading: ReactNode = null) {
   const close = vi.fn();
   render(<ConversationSurface mobileSheet open title="Current conversation" contextTitle="Neige Calm" onClose={close}
     footer={<div style={{ height: 80, background: 'white' }}><input aria-label="Draft" /></div>}>
-    <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
+    {leading}<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
       conversation={{ provider: 'codex' as const, id: 'chat', trackId: 'track', title: 'Current conversation', kind: 'codex', state: 'idle', updatedAt: 0 }} turns={history} />
   </ConversationSurface>);
   return close;
@@ -134,4 +135,14 @@ it('leaves no decorative blur or empty composer dock above the mobile input', as
     expect(material.backdropFilter).toBe('none');
     expect(material.maskImage).toBe('none');
   }
+});
+
+it('keeps a leading history control at its intrinsic width', async () => {
+  await page.viewport(390, 844);
+  surface(<button type="button">Load earlier</button>);
+  await expect.element(page.getByRole('dialog', { name: 'Current conversation' })).toBeVisible();
+  const control = page.getByRole('button', { name: 'Load earlier', exact: true }).element();
+  const scroll = scroller();
+  expect(control.getBoundingClientRect().width).toBeLessThan(scroll.clientWidth / 2);
+  expect(Math.abs(control.getBoundingClientRect().left - scroll.getBoundingClientRect().left - parseFloat(getComputedStyle(scroll).paddingLeft))).toBeLessThan(1);
 });

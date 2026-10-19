@@ -86,9 +86,9 @@ function NavigationPage({
               <span className={styles.trackArrow}><Icon name="chevron-right" /></span>
             </button>
           </li>)}
-          {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty>No areas yet.</MobileListEmpty>}
+          {shown.length === 0 && !readLoading && readError === null && <MobileListEmpty icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />}
         </MobileList> : <MobileTrackList tracks={tracks} currentTrackId={currentTrackId} onOpenTrack={onOpenTrack}
-          isUnread={isUnread} trackActions={trackActions} emptyMessage={readError === null && !readLoading ? 'No tracks in this area yet.' : undefined} />}
+          isUnread={isUnread} trackActions={trackActions} emptyState={readError === null && !readLoading ? { icon: <Icon name="file" />, title: '这个 Area 还没有 Track', description: '在此 Area 创建的 Track 会显示在这里。' } : undefined} />}
       </MobileListGroup>
     </div>
   </div>;

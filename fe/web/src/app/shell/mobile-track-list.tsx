@@ -1,3 +1,4 @@
+import type { EmptyStateSchema } from '../../ui/empty-state/public.tsx';
 import { useId } from 'react';
 import type { Track } from '../../../../core/domain/track.ts';
 import { isClosed, trackActivityState, trackDisplayTitle } from '../../../../core/domain/track.ts';
@@ -10,13 +11,13 @@ import { MobileList, MobileListEmpty } from '../../ui/mobile-list/public.tsx';
 import styles from './mobile-navigation.module.css';
 
 /** The same Track row, actions and activity semantics in workspace navigation and sidebar shortcuts. */
-export function MobileTrackList({ tracks, currentTrackId, onOpenTrack, isUnread, trackActions, emptyMessage }: Readonly<{
+export function MobileTrackList({ tracks, currentTrackId, onOpenTrack, isUnread, trackActions, emptyState }: Readonly<{
   tracks: readonly Track[];
   currentTrackId: string | undefined;
   onOpenTrack: (trackId: string) => void;
   isUnread: (track: Track) => boolean;
   trackActions?: (track: Track) => Omit<TrackActionsProps, 'track' | 'className'>;
-  emptyMessage?: string;
+  emptyState?: EmptyStateSchema;
 }>) {
   const listId = useId();
   return <MobileList className={styles.navigationList}>
@@ -39,6 +40,6 @@ export function MobileTrackList({ tracks, currentTrackId, onOpenTrack, isUnread,
               {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
             </li>;
           })}
-    {tracks.length === 0 && emptyMessage !== undefined && <MobileListEmpty>{emptyMessage}</MobileListEmpty>}
+    {tracks.length === 0 && emptyState !== undefined && <MobileListEmpty {...emptyState} />}
   </MobileList>;
 }

@@ -1,3 +1,5 @@
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 import type { CurrentTaskExecution } from '../../../../../core/domain/task-execution.ts';
 import type { ReactNode } from 'react';
 import { attemptStatusLabel, type TaskAttempt, type TaskRecoveryView } from '../../../../../core/domain/task-recovery.ts';
@@ -18,21 +20,22 @@ export type TaskRecoveryProps = Readonly<{
 /** Rendering only: request ownership belongs to app/core. */
 export function TaskRecoveryDetails({ view, current, loading, loadError,
   onRefresh, openWorker, openableWorkerIds }: TaskRecoveryProps) {
+  const empty = !loading && loadError === null && view?.current === null && current === undefined;
   return <section className={styles.recovery} aria-label="Task execution">
     {loading && view === undefined && <p role="status">Loading execution history…</p>}
     {loadError !== null && <ErrorBox message={loadError}
       onRetry={onRefresh} actionLabel="Refresh execution history" pending={loading} />}
-    {view?.current === null && current === undefined && <p>No attempts yet</p>}
+    {empty && <EmptyState variant="compact" icon={<Icon name="tasks" />} title="No attempts yet" description="任务开始执行后，记录会显示在这里。" />}
     {current !== undefined && <>
       <p className={styles.current}>{`Current attempt ${current.generation} · ${current.label}`}</p>
       {current.statusDetail !== null && <p className={styles.detail}>{current.statusDetail}</p>}
       {current.blockingReason !== null && <p className={styles.detail}>{current.blockingReason}</p>}
     </>}
-    {loadError === null && <div className={styles.actions}>
+    {!empty && loadError === null && <div className={styles.actions}>
       <Button type="button" variant="secondary" size="sm" label="Refresh execution history"
         isLoading={loading} onClick={onRefresh} />
     </div>}
-    {view !== undefined && <details className={styles.history}>
+    {view !== undefined && !empty && <details className={styles.history}>
       <summary>Attempt history ({view.attempts.length})</summary>
       <ol className={styles.attempts}>
         {view.attempts.map((attempt) => <li key={attempt.attempt_id}>

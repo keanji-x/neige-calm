@@ -1,5 +1,7 @@
 import { terminalCommand, TERMINAL_ARGUMENTS_MESSAGE, TERMINAL_DESKTOP_MESSAGE } from '../../../../../core/domain/terminal-command.ts';
 import type { RunRecovery } from '../../../../../core/domain/conversation-restart.ts';
+import { withEmptyTrigger } from '../../../ui/empty-state/astryx-trigger.tsx';
+import { EmptyState, type EmptyStateSchema } from '../../../ui/empty-state/public.tsx';
 import { useThreadReadingView, type ThreadReadingView } from './reading-view.tsx';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 import { floatingControlClassName, floatingControlMaterialClassName } from '../../../ui/floating-control/public.ts';
@@ -52,6 +54,15 @@ import {
   toolCallGroupShowsRunning, untouchedToolCallGroup, useToolCallFocus,
 } from './activity-groups.tsx';
 import { ActivityRun, toolCallOf } from './activity-run.tsx';
+
+/** Shared by an unsent draft and a persisted conversation with no transcript. */
+export function ChatEmpty({ working = false, children }: Readonly<{ working?: boolean; children?: ReactNode }>) {
+  return <div className={styles.empty} data-nc-thread-empty=""><EmptyState variant="panel" align="center" {...emptyConversationContent(working)} />{children}</div>;
+}
+
+function emptyConversationContent(working: boolean): EmptyStateSchema {
+  return { icon: working ? <ActivityIndicator state="working" motion="thinking" /> : <Icon name="chat" />, title: working ? '正在整理你的想法' : '聊聊你想做什么', description: working ? '回复会显示在这里。' : '从一个问题或想法开始。' };
+}
 
 export type ChatThreadProps = Readonly<{
   readingView?: ThreadReadingView;
@@ -281,11 +292,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     <div className={`${styles.threadFrame} ${empty ? styles.emptyFrame : ''}`} ref={frameRef}>
       <ExchangeNavigation turns={turns} frameRef={frameRef} seam={railSeam} navigate={scrollFollower.navigate} />
       <div className={`${styles.thread} ${empty ? styles.empty : ''} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-link-reading="" data-nc-thread-empty={empty ? '' : undefined} ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
-        {empty && <>
-          <p className={styles.emptyLead}>{compactViewport ? (live ? '正在整理你的想法' : '聊聊你想做什么') : (live ? 'The agent is working.' : 'Nothing said yet.')}</p>
-          <p className={styles.emptyHint}>{compactViewport ? (live ? '回复会显示在这里。' : '从一个问题或想法开始。') : (live ? 'Messages will appear here.' : 'Write below and it starts here.')}</p>
-          {live && <ActivityIndicator state="working" motion="thinking" />}
-        </>}
+        {empty && <EmptyState variant="panel" align="center" {...emptyConversationContent(live)} />}
         {transcriptGroups.map(({ entry: turn, activities, key, body }) => {
           const block = body.quiet;
           if (block !== null) {
@@ -462,7 +469,7 @@ export function ChatComposer({
   const hasCompactCommand = onCompact !== undefined;
   const hasNewCommand = onNewConversation !== undefined;
   const hasSideCommand = onSideConversation !== undefined && showSideCommand;
-  const commandTrigger = useMemo<ChatComposerTrigger>(() => ({
+  const commandTrigger = useMemo<ChatComposerTrigger>(() => withEmptyTrigger({
     character: '/',
     searchSource: createStaticSource([
       ...(hasNewCommand ? [NEW_CONVERSATION_COMMAND] : []),
@@ -471,7 +478,6 @@ export function ChatComposer({
       ...(hasTerminalCommand ? [TERMINAL_COMMAND] : []),
     ]),
     menuLabel: 'Commands',
-    emptySearchResultsText: 'No command by that name',
     /* `item.label` is deliberately not rendered. */
     renderItem: (item) => (
       <span className={styles.commandItem}>
@@ -488,7 +494,7 @@ export function ChatComposer({
       else newConversationRef.current?.();
       return '';
     },
-  }), [hasNewCommand, hasSideCommand, hasCompactCommand, hasTerminalCommand]);
+  }, { icon: <Icon name="search" />, title: 'No command by that name', description: '试试其他命令名称。' }), [hasNewCommand, hasSideCommand, hasCompactCommand, hasTerminalCommand]);
   const hasCommands = hasNewCommand || hasSideCommand || hasCompactCommand || hasTerminalCommand;
   /* One array per combination: a new array per render would make `useTriggerMenu` drop an open menu. */
   const triggers = useMemo<ChatComposerTrigger[]>(() => [

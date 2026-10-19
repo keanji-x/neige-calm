@@ -141,16 +141,4 @@
   .fill > .grow { flex: 1 1 auto; min-block-size: 0; }
   .grow > .body { flex: 1 1 auto; min-block-size: 0; }
 
-  /* An empty state occupies a row. Without a row's height it has no half-leading
-     to stand on, so it landed 5 from the head where a real row lands ~11 — the
-     module read as if its label had slipped down onto it. */
-  .empty {
-    font-size: var(--font-step-1-size);
-    font-weight: var(--weight-normal);
-    line-height: var(--font-step-1-line);
-    display: flex;
-    align-items: center;
-    min-block-size: var(--row-h-sm);
-    color: var(--text-3);
-  }
 }

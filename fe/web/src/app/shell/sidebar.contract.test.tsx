@@ -142,7 +142,8 @@ describe('E2E-INV-SHELL-003 the kernel system area never reaches the rail', () =
     // When a region's emptiness has exactly one remedy, that remedy's own interface
     // renders where the content would have been.
     expect(screen.queryByText(/no areas/i)).toBeNull();
-    expect(screen.getByRole('button', { name: 'Create your first area' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '还没有 Area' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '创建第一个 Area' })).toBeNull();
   });
 });
 

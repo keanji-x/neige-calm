@@ -1,4 +1,6 @@
 import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
+import { trackEmptyContent } from './track-empty-content.tsx';
+import { EmptyState } from '../../ui/empty-state/public.tsx';
 // The workspace rail: shared groups with owner-defined membership and actions.
 
 import { useEffect, useRef } from 'react';
@@ -280,7 +282,7 @@ export function Sidebar({
               const group = groups.find((group) => group.id === id)!;
               return <SidebarTrackGroup key={id} title={group.title} label={group.title} level="section"
                 management={management(id, `Group actions for ${group.title}`)}
-                tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
+                emptyState={readError === null && !readLoading && (id === 'pinned' || activityError === null) ? trackEmptyContent(id) : null} tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
                 expanded={preferences.sidebarGroupExpanded(id)}
                 onToggle={(value) => preferences.setSidebarGroupExpanded(id, value)} {...rowProps} />;
             }
@@ -291,14 +293,9 @@ export function Sidebar({
             actions={<button type="button" data-nc-role="icon" className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}
               aria-label="New area" onClick={onRequestCreateArea}><Icon name="plus" /></button>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
-              <button
-                type="button"
-                data-nc-role="row"
-                className={`${styles.emptyAreaCreate} ${rowLayout('labelStart')}`}
-                onClick={onRequestCreateArea}
-              >
-                Create your first area
-              </button>
+              <div className={styles.emptyArea}>
+                <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
+              </div>
             )}
 
             {shownAreas.length > 0 && (
@@ -308,6 +305,7 @@ export function Sidebar({
                     key={area.id}
                     area={area}
                     management={management(`area:${area.id}`, `Area actions for ${area.name}`)}
+                    readReady={readError === null && !readLoading && activityError === null}
                     areaTracks={tracksByArea.get(area.id) ?? []}
                     activeTrackId={activeTrackId}
                     expanded={preferences.areaExpanded(area.id)}

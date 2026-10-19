@@ -204,7 +204,7 @@ describe('new area', () => {
     expect(onRequestCreateArea).toHaveBeenCalledTimes(1);
 
     view.update({ areas: [], tracksByArea: new Map() });
-    await userEvent.click(screen.getByRole('button', { name: 'Create your first area' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
     expect(onRequestCreateArea).toHaveBeenCalledTimes(2);
   });
 });
@@ -498,7 +498,7 @@ it('restores Area disclosure after the shell is remounted', async () => {
 
 
 describe('shared sidebar groups', () => {
-  const headings = () => screen.getAllByRole('heading').map((node) => node.textContent);
+  const headings = () => screen.getAllByRole('heading', { level: 2 }).map((node) => node.textContent);
   async function openOptions() {
     await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
   }
@@ -589,13 +589,14 @@ describe('shared sidebar groups', () => {
     renderSidebar({ areas: [area({ kind: 'system' })], tracks: [track({ activityAt: 10, working: true })] }, preferences, kernel);
     await waitFor(() => expect(kernel.requests).toHaveLength(1));
     expect(headings()).toEqual(['Unread', 'Running', 'Areas']);
+    expect(screen.getByRole('heading', { name: '还没有 Area' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Track / })).toBeNull();
   });
 });
 
 
 describe('sidebar group management', () => {
-  const headings = () => screen.getAllByRole('heading').map((node) => node.textContent);
+  const headings = () => screen.getAllByRole('heading', { level: 2 }).map((node) => node.textContent);
   async function action(menu: string, item: string) {
     await userEvent.click(screen.getByRole('button', { name: menu }));
     await userEvent.click(screen.getByRole('menuitem', { name: item }));
@@ -750,4 +751,15 @@ it('keeps manually unread until the selected Track view acknowledges it', async 
   await userEvent.click(screen.getByRole('button', { name: 'Track Task' }));
   expect(kernel.stored('track', 'w1')?.manualUnread).toBe(true);
   expect(kernel.posts().map((request) => request.path)).toEqual(['/api/read-receipts/track/w1/unread']);
+});
+
+it('does not claim an empty activity shortcut after its read fails', () => {
+  const preferences = createUiPreferences();
+  preferences.setSidebarGroupVisible('waiting', true);
+  preferences.setSidebarGroupVisible('running', true);
+  preferences.setSidebarGroupVisible('unread', true);
+  renderSidebar({ tracks: [], activityError: 'Activity is unavailable.' }, preferences);
+  for (const name of ['没有运行中的 Track。', '没有需要处理的 Track。', '没有未读的 Track。']) {
+    expect(screen.queryByRole('heading', { name })).toBeNull();
+  }
 });

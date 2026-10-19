@@ -240,7 +240,7 @@ it('completes a valid empty report through the same committed read boundary', as
   await act(() => fixture.client.setQueryData<TrackDetailWire>(queryKeys.trackDetail('daily'), detail => detail === undefined ? detail : ({ ...detail, cards: [] })));
   expect(fixture.kernel.posts()).toHaveLength(0);
   await frame.next(); await frame.next();
-  await screen.findByText('This track has not taken shape yet.');
+  await screen.findByRole('heading', { name: '进展会整理在这里' });
   expect(document.querySelector('[data-nc-report]')).toBeNull();
   await waitFor(() => expect(fixture.kernel.stored('track', 'daily')).toBeDefined());
 });

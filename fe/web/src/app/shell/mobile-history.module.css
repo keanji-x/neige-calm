@@ -34,7 +34,7 @@
   .dateGroup + .dateGroup .group { margin-block-start: var(--space-5); }
   .row:hover, .row:focus-visible { background: var(--overlay-hover); }
   .title { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); font-weight: var(--weight-medium); color: var(--text); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-  .meta, .empty { font-size: var(--font-step-2-size); line-height: var(--font-step-2-line); color: var(--text-3); }
+  .meta { font-size: var(--font-step-2-size); line-height: var(--font-step-2-line); color: var(--text-3); }
   .row[aria-current='true'] { background: var(--selection-bg); }
   .row[aria-current='true']:hover { background: var(--selection-hover-bg); }
   .conversationRow:has(.conversationActions) .row { padding-inline-end: var(--space-10); }

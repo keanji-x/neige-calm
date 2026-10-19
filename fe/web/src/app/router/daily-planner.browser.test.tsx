@@ -128,16 +128,16 @@ it.each(['light', 'dark'])('uses the sidebar text roles and surfaces in %s theme
     expect(month.fontSize).toBe('14px');
     expect(date.fontSize).toBe(month.fontSize);
     expect(date.lineHeight).toBe('20px');
-    await expect.element(page.getByText('No tasks for this day.')).toBeVisible();
-    const empty = getComputedStyle(page.getByText('No tasks for this day.').element());
+    await expect.element(page.getByText('这一天没有安排任务')).toBeVisible();
+    const empty = getComputedStyle(page.getByText('这一天没有安排任务').element());
     const reference = document.createElement('span');
-    reference.style.cssText = 'font:var(--type-metadata);color:var(--text-3)';
+    reference.style.cssText = 'font:var(--type-action);color:var(--text)';
     document.body.append(reference);
     try {
       const metadata = getComputedStyle(reference);
       expect(empty.fontFamily).toBe(metadata.fontFamily);
       expect(empty.fontSize).toBe(metadata.fontSize);
-      expect(empty.lineHeight).toBe('16px');
+      expect(empty.lineHeight).toBe('20px');
       expect(empty.color).toBe(metadata.color);
     } finally { reference.remove(); }
     const surface = document.querySelector('[data-nc-desktop-panel]')!.firstElementChild!;
@@ -224,7 +224,7 @@ it.each([1000, 768, 600])('keeps both conversation composers reachable with a si
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
   const main = page.getByRole('complementary', { name: 'Daily Planner conversation' });
-  await expect.element(main.getByText('Nothing said yet.', { exact: true })).toBeVisible();
+  await expect.element(main.getByText('聊聊你想做什么', { exact: true })).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
   await userEvent.keyboard('{Enter}');
   const side = page.getByRole('region', { name: 'Side conversation · Codex' });
@@ -265,7 +265,7 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
   const main = page.getByRole('complementary', { name: 'Daily Planner conversation' });
-  await expect.element(main.getByText('Nothing said yet.', { exact: true })).toBeVisible();
+  await expect.element(main.getByText('聊聊你想做什么', { exact: true })).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
   await userEvent.keyboard('{Enter}');
   const side = page.getByRole('region', { name: 'Side conversation · Codex' });
@@ -340,4 +340,11 @@ it('keeps conversations ahead of the Today calendar without changing the calenda
   const calendar = page.getByRole('heading', { name: 'Calendar', exact: true }).element();
   expect(conversations.getBoundingClientRect().top).toBeLessThan(calendar.getBoundingClientRect().top);
   expect(calendar.getBoundingClientRect().left).toBe(conversations.querySelector('h2')!.getBoundingClientRect().left);
+});
+
+it('uses the shared daily empty report for the heading-only skeleton', async () => {
+  await page.viewport(1440, 900);
+  renderDailyFixture({ reportBody: '# 概要\n\n# 今日计划' });
+  await expect.element(page.getByRole('heading', { name: '今天还没有记录' })).toBeVisible();
+  expect(page.getByRole('button', { name: '开始对话', exact: true }).elements()).toHaveLength(0);
 });

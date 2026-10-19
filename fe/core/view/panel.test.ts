@@ -166,7 +166,7 @@ describe('paintPanel', () => {
   const view: TrackPageView = {
     rowModules: [
       { key: 'cards', title: 'Cards', rows: [row('c1', 'One', [OPEN, DELETE])], empty: 'No cards yet.' },
-      { key: 'tasks', title: 'Tasks', rows: [], empty: 'No tasks declared yet.' },
+      { key: 'tasks', title: 'Tasks', rows: [], empty: '还没有任务' },
     ],
   };
 
@@ -177,7 +177,7 @@ describe('paintPanel', () => {
     expect(calls.modules.map((m) => m.key)).toEqual(['cards', 'tasks']);
     expect(painted).toEqual([
       'module:cards(row:c1)',
-      'module:tasks(empty:No tasks declared yet.)',
+      'module:tasks(empty:还没有任务)',
     ]);
   });
 

@@ -113,7 +113,7 @@ it.each([
   expect(screen.getByRole('separator')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
   expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
-  expect(screen.queryByText('Nothing said yet.')).toBeNull();
+  expect(screen.queryByText('聊聊你想做什么')).toBeNull();
   expect(getComputedStyle(screen.getByText(label, { exact: true })).fontWeight).toBe('400');
   disclosure.focus();
   await userEvent.keyboard('{Enter}');

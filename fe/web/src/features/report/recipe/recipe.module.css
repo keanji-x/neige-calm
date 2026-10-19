@@ -73,13 +73,7 @@
     white-space: nowrap;
   }
 
-  /* Same quiet rank the empty states elsewhere use: this is a fact about the
-     list, not a thing to act on. */
-  .empty {
-    font-size: var(--font-step-2-size);
-    margin: 0;
-    color: var(--text-3);
-  }
+  .empty { padding-block: var(--space-6); }
 
   .editor {
     display: flex;

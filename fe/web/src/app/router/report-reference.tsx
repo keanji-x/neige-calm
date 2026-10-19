@@ -1,3 +1,5 @@
+import { EmptyState } from '../../ui/empty-state/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
@@ -31,7 +33,7 @@ export function ReportReferencePreview({ transport, unauthorized, target, ...nav
   const query = useQuery(trackDetailQueryOptions(transport, target.trackId, unauthorized));
   if (query.data !== undefined) {
     const report = readTrackReport(query.data.cards);
-    if (report === null) return <p>这份报告暂无内容。</p>;
+    if (report === null) return <EmptyReportReference />;
     const block = target.blockId === null ? null : report.blocks?.find(candidate => candidate.id === target.blockId);
     if (target.blockId !== null && block === undefined) return <p>报告中没有这条引用指向的内容。</p>;
     return <ReferenceDocument transport={transport} unauthorized={unauthorized} target={target}
@@ -52,7 +54,7 @@ function ReferenceDocument({ transport, unauthorized, target, detail, report, on
   const files = useMemo(() => createTrackWorkspaceFilesPort(transport, unauthorized, target.trackId),
     [transport, unauthorized, target.trackId]);
   const resolveSeries = useReportSeriesResolver(transport, target.trackId, report.blocks, unauthorized);
-  return <ReportDocument report={report} empty={<p>这份报告暂无内容。</p>} fileRoot={toTrack(detail.track).agentCwd}
+  return <ReportDocument report={report} empty={<EmptyReportReference />} fileRoot={toTrack(detail.track).agentCwd}
     onOpenLink={onOpenLink} onOpenSourceLink={source => onOpenSource(target.trackId, source)}
     onOpenFileLink={file => onOpenFile(target.trackId, file)}
     resolveOverlay={source => trackOverlayPayload(target.trackId, detail.overlays, source)} resolveSeries={resolveSeries}
@@ -61,4 +63,8 @@ function ReferenceDocument({ transport, unauthorized, target, detail, report, on
       renderReference: reference => <ReportReferencePreview transport={transport} unauthorized={unauthorized} target={reference}
         onOpenLink={onOpenLink} onOpenSource={onOpenSource} onOpenFile={onOpenFile} />,
     }} />;
+}
+
+function EmptyReportReference() {
+  return <EmptyState variant="compact" icon={<Icon name="file" />} title="这份报告暂无内容。" description="报告有内容后，可以在这里预览。" />;
 }

@@ -10,9 +10,10 @@ import { navigationRowClass as rowLayout } from '../../ui/navigation-row/public.
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 export function AreaGroup({
-  area, areaTracks, activeTrackId, expanded, onToggle, showClosed, onSetShowClosed, disclosureRef, onEdit,
+  readReady, area, areaTracks, activeTrackId, expanded, onToggle, showClosed, onSetShowClosed, disclosureRef, onEdit,
   onRequestDelete, onNewTrack, management, ...rowProps
 }: RowProps & {
+  readReady: boolean;
   management: GroupManagement;
   area: Area;
   areaTracks: readonly Track[];
@@ -29,6 +30,7 @@ export function AreaGroup({
   const preferences = useUiPreferences();
   const ordered = areaPinnedTracks(areaTracks, (track) => preferences.areaTrackPinned(area.id, track.id));
   return <SidebarTrackGroup
+    emptyState={readReady ? { icon: <Icon name="file" />, title: '没有可显示的 Track', description: '此 Area 中符合当前筛选的 Track 会显示在这里。' } : null}
     title={area.name}
     label={`area ${area.name}`}
     level="area"

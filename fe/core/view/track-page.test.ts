@@ -75,7 +75,7 @@ describe('deriveTrackPageView modules', () => {
     expect(view.rowModules.map((module) => module.key)).toEqual(['tasks', 'cards']);
     expect(view.rowModules.map((module) => module.title)).toEqual(['Tasks', 'Tools']);
     expect(view.rowModules.map((module) => module.empty))
-      .toEqual(['No tasks declared yet.', 'No tools yet.']);
+      .toEqual(['还没有任务', '还没有工具']);
     expect(view.rowModules.every((module) => module.rows.length === 0)).toBe(true);
   });
 });

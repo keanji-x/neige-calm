@@ -45,7 +45,7 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
     await expect.element(page.getByRole('button', { name: 'Edit queued message', exact: true })).toBeVisible();
     await expect.poll(() => document.querySelector('[data-nc-thread]')).not.toBeNull();
     expect(document.querySelector('[data-nc-thread-empty]')).toBeNull();
-    expect(document.querySelector('[data-nc-thread]')?.textContent).not.toContain('Nothing said yet.');
+    expect(document.querySelector('[data-nc-thread]')?.textContent).not.toContain('聊聊你想做什么');
     const cardId = fixture.createdId(); if (cardId === null) throw new Error('No created conversation.');
     fixture.observe('unavailable');
     await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.initialInput('daily', cardId) }); });
@@ -119,7 +119,7 @@ it.each([1280, 390])('keeps the last ordinary deleted queue row in place until i
     expect(frames.some(sample => sample.height > 1 && sample.height < fullHeight - 1), JSON.stringify({ fullHeight, frames })).toBe(true);
     expect(frames.every(sample => !sample.empty && Math.abs(sample.top - before) <= 1)).toBe(true);
     await expect.poll(() => document.querySelector('[data-nc-thread-empty]')).not.toBeNull();
-    await expect.element(page.getByText(width === 390 ? '聊聊你想做什么' : 'Nothing said yet.', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('聊聊你想做什么', { exact: true })).toBeVisible();
     expect(document.querySelector('[data-nc-pending-queue]')).toBeNull();
     expect(fixture.requests.filter(request => request.method === 'DELETE')).toHaveLength(1);
   } finally { cleanup(); fixture.client.clear(); }

@@ -47,7 +47,7 @@ const untitled: PanelRow = {
 };
 
 const cardsModule: RowModuleView = {
-  key: 'cards', title: 'Tools', empty: 'No tools yet.', rows: [titled, untitled],
+  key: 'cards', title: 'Tools', empty: '还没有工具', rows: [titled, untitled],
 };
 const emptyCards: RowModuleView = { ...cardsModule, rows: [] };
 
@@ -154,7 +154,7 @@ const hintedReveal: PanelRow = {
 const tasksModule: RowModuleView = {
   key: 'tasks',
   title: 'Tasks',
-  empty: 'No tasks declared yet.',
+  empty: '还没有任务',
   rows: [ready, dispatched, withdrawn, unreadable, notReady],
 };
 const emptyTasks: RowModuleView = { ...tasksModule, rows: [] };

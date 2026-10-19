@@ -212,7 +212,7 @@ describe('Settings › Plugins › remove, end to end', () => {
     expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
     await userEvent.click(screen.getByRole('button', { name: 'Remove Todo' }));
 
-    await screen.findByText('No plugins installed.');
+    await screen.findByText('还没有添加插件');
     const deletes = calls.filter((call) => call.method === 'DELETE');
     expect(deletes.map((call) => call.path)).toEqual(['/api/plugins/todo']);
   });

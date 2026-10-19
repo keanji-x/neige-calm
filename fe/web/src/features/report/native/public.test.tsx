@@ -211,7 +211,8 @@ it.each([null, 'a', 'missing'])('keeps zero distribution totals distinct from un
 it('shows the empty state without a fabricated distribution total or share', () => {
   const { container } = render(<DistributionChart label="计数" unit="个" slices={[]} emptyText="未取得数据" selected="missing" onSelect={() => {}} />);
   expect(screen.getByText('未取得数据')).toBeTruthy();
-  expect(container.querySelector('svg')).toBeNull();
+  expect(container.querySelector('svg[role="img"]')).toBeNull();
+  expect(screen.getByRole('heading', { name: '暂无数据' })).toBeTruthy();
   expect(container.textContent).not.toMatch(/NaN|0%|100%/);
 });
 

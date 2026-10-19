@@ -457,7 +457,7 @@ describe('TrackPage task inventory', () => {
 
   it('says no tasks are declared yet when the report has none', () => {
     renderPage({ tasks: [] });
-    expect(screen.getByText('No tasks declared yet.')).toBeTruthy();
+    expect(screen.getByText('还没有任务')).toBeTruthy();
   });
 
   it('names only the states that are not the ordinary one', () => {
@@ -767,7 +767,7 @@ describe('TrackPage card inventory', () => {
 
   it('says the track has no cards yet when the list is empty', () => {
     renderPage({ cards: [] });
-    expect(screen.getByText('No tools yet.')).toBeTruthy();
+    expect(screen.getByText('还没有工具')).toBeTruthy();
   });
 
   it('labels a card by its title and keeps the kind beside it', () => {

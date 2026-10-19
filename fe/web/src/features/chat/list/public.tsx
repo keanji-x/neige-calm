@@ -11,7 +11,7 @@ import { conversationName, CONVERSATION_KIND_LABEL, PLANNER_CONVERSATION_KIND, t
 import { deriveConversationList } from '../../../../../core/view/conversation-list.ts';
 import { ContextIconSlot, ContextItem, ContextList } from '../../../ui/panel-card/context.tsx';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
-import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import styles from './list.module.css';
 
 /** The open conversation's own send: `working` is its in-flight turn, `stalled` the drawer's own wedge detection. Neither is read off `Conversation.state`. */
@@ -40,11 +40,11 @@ export function ChatList({
   conversations, cards, activeId = null, showTrack = true, onOpen, onArchive, unreadIds, awaitingInputIds, local = null, context = false,
 }: ChatListProps) {
   const descriptionPrefix = useId();
-  if (conversations.length === 0) return context ? null : <PanelEmpty>No conversations yet.</PanelEmpty>;
+  if (conversations.length === 0) return context ? null : <EmptyState variant="compact" icon={<Icon name="chat" />} title="还没有对话" description="在这里发起的对话会显示在列表中。" />;
 
   const List = context ? ContextList : 'ul';
   return (
-    <ConversationGroups enabled={onArchive !== undefined || conversations.some(row => row.archivedAt != null)} conversations={conversations} emptyActive={context ? null : <PanelEmpty>No active conversations.</PanelEmpty>}>
+    <ConversationGroups enabled={onArchive !== undefined || conversations.some(row => row.archivedAt != null)} conversations={conversations} emptyActive={context ? null : <EmptyState variant="compact" icon={<Icon name="chat" />} title="暂无活跃对话" description="活跃对话会显示在这里。" />}>
     {shown => <List className={context ? undefined : styles.list}>
       {deriveConversationList({ conversations: shown, cards, unreadIds, awaitingInputIds, local }).map(({ conversation, activity, unread, name }) => {
         const description = activity === 'working' ? null : activityLabelOf(activity);

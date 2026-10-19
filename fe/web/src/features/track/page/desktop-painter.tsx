@@ -1,3 +1,5 @@
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
+import { inventoryEmptyContent } from './empty-content.tsx';
 // The desktop track panel, painted from `core/view`'s panel view model.
 // A row or empty leaf is pending until its module says which module it lands in; a module leaf is finished.
 
@@ -15,7 +17,7 @@ import type {
 } from '../../../../../core/view/panel.ts';
 import { executionActivityLabelOf, progressStatusLabel } from '../../../../../core/view/track-page.ts';
 import { activityLabelOf } from '../../../../../core/domain/activity.ts';
-import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
+import { PanelModule } from '../../../ui/panel-card/public.tsx';
 import { InventoryIcon, InventoryKind } from './inventory-kind.tsx';
 import styles from './page.module.css';
 
@@ -199,7 +201,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
       slot: 'empty',
       needsAttention: () => false,
       group: () => 'other',
-      paint: () => <PanelEmpty key="empty" fieldMarker={FIELD.empty}>{text}</PanelEmpty>,
+      paint: (key) => <EmptyState key="empty" variant="compact" titleFieldMarker={FIELD.empty} {...inventoryEmptyContent(key, text)} />,
     }),
 
     module: (parts) => {

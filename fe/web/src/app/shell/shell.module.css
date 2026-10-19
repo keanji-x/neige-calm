@@ -527,31 +527,7 @@
     }
   }
 
-  /*
-   * §5.3's most important rule: when a region's emptiness has exactly one
-   * remedy, render that remedy's own interface in the content position. This
-   * button occupies the first Area slot but keeps the larger action-row height
-   * (`--row-h`) instead of imitating the compact disclosure (`--row-h-sm`).
-   */
-  .emptyAreaCreate {
-    font-size: var(--font-step-2-size);
-    line-height: var(--font-step-2-line);
-    min-block-size: var(--row-h);
-    padding-block: 0;
-
-    /* The one empty-state action deliberately *inset* rather than flush: it
-       occupies the Area list position, whose disclosure text starts 28px in. */
-    padding-inline-end: var(--space-2);
-    color: var(--text-3);
-    text-align: start;
-    cursor: pointer;
-  }
-
-  .emptyAreaCreate:hover,
-  .emptyAreaCreate:focus-visible {
-    color: var(--text);
-    background: var(--overlay-hover);
-  }
+  .emptyArea { padding-inline: var(--space-6); }
 
   /*
    * Pinned to the bottom of `.rail`'s scrollport, so a long Areas list scrolls

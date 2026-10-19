@@ -1,3 +1,5 @@
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 // The `chart.series` block: draws what the kernel resolved (line, normalized, bar, candles).
 // It fetches nothing itself; the data comes through `resolve`, injected by `app/router`.
 
@@ -34,8 +36,9 @@ export function ReportSeriesBlock({ payload, blockId, rev, resolve }: {
 }) {
   const caption = payload.caption;
   if (resolve === undefined) {
-    return <SeriesNotice caption={caption}
-      text="This chart is resolved by the kernel and this view does not carry its data." />;
+    return <div className={styles.wrap}>{caption != null && caption !== '' && <p className={styles.caption}>{caption}</p>}
+      <EmptyState variant="compact" icon={<Icon name="chart" />} title="暂无图表数据"
+        description="This chart is resolved by the kernel and this view does not carry its data." /></div>;
   }
   const resolution = resolve(blockId, rev);
   if (resolution === undefined || resolution.status === 'loading') {
@@ -74,6 +77,7 @@ function SeriesFigure({ payload, resolved }: { payload: ChartSeriesPayload; reso
   const currencies = seriesCurrencies(resolved.series);
   const through = minCompleteThrough(resolved.series) ?? SERIES_STATUS_COPY.throughUnknown;
   const overlays = payload.overlays ?? [];
+  const emptyDescription = emptySeriesDescription(resolved);
   return (
     <figure className={styles.figure}>
       <figcaption className={styles.head}>
@@ -95,7 +99,10 @@ function SeriesFigure({ payload, resolved }: { payload: ChartSeriesPayload; reso
         </details>
       </figcaption>
 
-      {resolved.view === 'candles'
+      {emptyDescription !== null
+        ? <><EmptyState variant="compact" icon={<Icon name="chart" />} title="暂无图表数据" description={emptyDescription} />
+          <Legend rows={classify(resolved.series, false)} overlays={[]} /></>
+        : resolved.view === 'candles'
         ? <CandlesView series={resolved.series} overlays={overlays} />
         : resolved.view === 'bar'
           ? <BarsFigure series={resolved.series} />
@@ -136,6 +143,17 @@ function classify(series: readonly SeriesEntry[], normalized: boolean): LegendRo
     const last = rebased.points[rebased.points.length - 1];
     return { kind: 'drawn', line: { index, entry, values: rebased.points, lastRebased: last?.[1] ?? null } };
   });
+}
+
+/** Confirmed absence only: failed/unnormalizable entries retain their own legend state. */
+function emptySeriesDescription(resolved: OkResolvedSeries): string | null {
+  const rows = classify(resolved.series, false);
+  if (rows.every(row => row.kind === 'no-points')) return '当前视图还没有可绘制的数据点。';
+  if (resolved.view !== 'candles' || rows.some(row => row.kind === 'failed')) return null;
+  const entry = resolved.series[0];
+  if (entry === undefined || !isOkSeriesEntry(entry)) return null;
+  const candles = toCandleRows(entry.points ?? []);
+  return candles !== null && candles.length < 2 ? '绘制 K 线至少需要两条完整数据。' : null;
 }
 
 function extent(values: readonly number[], fallback: readonly [number, number]): readonly [number, number] {

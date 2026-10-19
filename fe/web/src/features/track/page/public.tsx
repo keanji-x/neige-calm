@@ -1,6 +1,7 @@
 import { NO_ISOLATION_LABEL, NO_ISOLATION_EXPLANATION } from '../../../../../core/domain/workspace-isolation.ts';
 import { ExplanationBadge } from '../../../ui/explanation-badge/public.tsx';
 import { ContextAction, ContextFrame, ContextGroup } from '../../../ui/panel-card/context.tsx';
+import { EmptyState } from '../../../ui/empty-state/public.tsx';
 import { TrackTitle } from '../title/public.tsx';
 // The `/track/$trackId` surface. Presentational: every mutation and navigation leaves through a callback,
 // and there is no `<a href>` anywhere on this page.
@@ -540,7 +541,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                 onBack={closeMobilePanel}
               >
                 <div className={styles.mobileConversationList}>
-                  {conversationList ?? <p>No conversations yet.</p>}
+                  {conversationList ?? <EmptyState variant="compact" icon={<Icon name="chat" />} title="还没有对话" description="在这里发起的对话会显示在列表中。" />}
                 </div>
               </MobileListPage>
             ) : (

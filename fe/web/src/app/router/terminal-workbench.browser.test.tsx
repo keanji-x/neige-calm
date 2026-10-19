@@ -130,7 +130,7 @@ it('keeps the final conversation frame through exit, removes its DOM, and transf
   await waitFor(() => expect(drawer.getAnimations()).toHaveLength(0));
   fireEvent.click(screen.getByRole('button', { name: /^Close conversation$/u }));
   expect(drawer.hasAttribute('data-nc-drawer')).toBe(true);
-  expect(drawer.textContent).toContain('Nothing said yet.');
+  expect(drawer.textContent).toContain('聊聊你想做什么');
   expect(drawer.querySelector('h2')?.textContent).toBe('Untitled');
   await waitFor(() => expect(drawer.isConnected).toBe(false));
   expect(document.querySelector('[data-nc-drawer]')).toBeNull();
@@ -155,7 +155,7 @@ it.each([['light', false], ['dark', true]] as const)('keeps the empty Workbench 
   const fixture = setupWorkbench();
   const region = page.getByRole('region', { name: 'Workbench', exact: true });
   await expect.element(region).toBeVisible();
-  await expect.element(region.getByText('No tools yet.')).toBeVisible();
+  await expect.element(region.getByText('还没有工具')).toBeVisible();
   const entry = region.getByRole('button', { name: 'Tools' });
   expect(page.getByRole('region', { name: 'Conversations', exact: true }).element().contains(entry.element())).toBe(false);
   act(() => (entry.element() as HTMLButtonElement).focus());

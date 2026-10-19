@@ -70,6 +70,7 @@
 # colocated behavior/contract tests, render components, and *.module.css files.
 - { path: fe/web/src/features/track, type: directory, owner: features/track, readonly: false, basis: "architecture §2/§4; INV-DUP-009" }
 - { path: fe/web/src/features/area, type: directory, owner: features/area, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
+- { path: fe/web/src/features/today, type: directory, owner: features/today, readonly: false, basis: "#2912 daily empty-report presentation" }
 - { path: fe/web/src/features/report, type: directory, owner: features/report, readonly: false, basis: "architecture §4.8/§4.9" }
 - { path: fe/web/src/features/planner, type: directory, owner: features/planner, readonly: false, basis: "architecture §4 layer graph (authoritative over §5 abbreviated tree)" }
 - { path: fe/web/src/features/settings, type: directory, owner: features/settings, readonly: false, basis: "architecture §2/§4" }
@@ -121,6 +122,7 @@
 - { path: fe/web/src/ui/mobile-list, type: directory, owner: ui/mobile-list, readonly: false, basis: "shared compact/mobile list and list-detail navigation surface" }
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
 - { path: fe/web/src/ui/path-label, type: directory, owner: ui/path-label, readonly: false, basis: "User-requested long-task reliability: shared read-only wrapping label for worker and gate directories" }
+- { path: fe/web/src/ui/empty-state, type: directory, owner: ui/empty-state, readonly: false, basis: "#2912 unified normal empty-state presentation" }
 - { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }
 - { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }
 - { path: fe/web/src/ui/viewport, type: directory, owner: ui/viewport, readonly: false, basis: "#1191 §3.2 唯一的 compact viewport 判据；architecture/single-viewport-source 的豁免目录" }

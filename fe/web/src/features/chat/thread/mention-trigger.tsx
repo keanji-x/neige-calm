@@ -1,3 +1,5 @@
+import { withEmptyTrigger } from '../../../ui/empty-state/astryx-trigger.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 // Astryx's `@` menu over plugin guides and available Area tags, reports and blocks.
 // The caller owns the search scope; this feature owns rows, chips and answer freshness.
 
@@ -173,11 +175,10 @@ function MoreRow({ category }: { category: MentionCategory }) {
 }
 
 export function mentionTrigger(source: SearchSource<MentionItem>): ChatComposerTrigger {
-  return {
+  return withEmptyTrigger({
     character: '@',
     searchSource: source,
     menuLabel: 'Mention',
-    emptySearchResultsText: 'No matches',
     renderItem: (item) => {
       const data = (item as MentionItem).auxiliaryData!;
       if ('category' in data) return data.more ? <MoreRow category={data.category} /> : <CategoryRow category={data.category} />;
@@ -187,7 +188,7 @@ export function mentionTrigger(source: SearchSource<MentionItem>): ChatComposerT
       const data = (item as MentionItem).auxiliaryData!;
       return 'category' in data ? enterCategory(data.category) : mentionToken(data.suggestion);
     },
-  };
+  }, { icon: <Icon name="search" />, title: 'No matches', description: '换个关键词，或尝试其他引用类型。' });
 }
 
 /**

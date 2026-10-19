@@ -297,7 +297,7 @@ describe('creating a recipe', () => {
     expect(await screen.findByText('Canonicalised by the server.')).toBeTruthy();
     expect(screen.queryByText('What the author typed.')).toBeNull();
     // Not dropped back to the list — which, with this stub, is empty.
-    expect(screen.queryByText(/You have no recipes yet/)).toBeNull();
+    expect(screen.queryByText(/还没有保存的模板/)).toBeNull();
   });
 
   /* `trackRecipesQueryOptions` sets `retry: false`, so the cache keeps the previous
@@ -314,7 +314,7 @@ describe('creating a recipe', () => {
     // The create's invalidate has produced a second read, and it failed.
     await waitFor(() => expect(listReads()).toBeGreaterThan(1));
     expect(await screen.findByText('Canonicalised by the server.')).toBeTruthy();
-    expect(screen.queryByText(/You have no recipes yet/)).toBeNull();
+    expect(screen.queryByText(/还没有保存的模板/)).toBeNull();
   });
 });
 
@@ -417,7 +417,7 @@ describe('a recipe write whose answer was lost', () => {
   it('keeps Save off after a create whose answer was lost, offers Try again, and reads the list again', async () => {
     const user = userEvent.setup();
     const { sent, listReads } = atRecipes({ recipeList: () => OK([]), post: lost });
-    await screen.findByText(/You have no recipes yet/);
+    await screen.findByText(/还没有保存的模板/);
     const before = listReads();
     await composeAndSave(user);
 
@@ -565,7 +565,7 @@ describe('recipe list recovery', () => {
       ? { status: 500, statusText: 'Internal Server Error', body: { error: 'Storage is offline.' } }
       : OK([RECIPE]) });
     expect(await screen.findByText('Could not load your recipes.')).toBeTruthy();
-    expect(screen.queryByText(/You have no recipes yet/)).toBeNull();
+    expect(screen.queryByText(/还没有保存的模板/)).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('button', { name: 'Ship checklist' })).toBeTruthy();
     expect(screen.queryByText('Could not load your recipes.')).toBeNull();

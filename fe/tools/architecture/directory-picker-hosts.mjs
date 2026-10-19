@@ -17,6 +17,7 @@ export const DIRECTORY_PICKER_HOSTS = Object.freeze({
   'web/src/features/track/new-card/public.tsx': 'pushes-into-host-dialog',
   'web/src/features/area/editor/public.tsx': 'pushes-into-host-dialog',
   'web/src/features/area/new-track/public.tsx': 'owns-its-modal',
+  'web/src/app/router/normal-empty-fixtures.tsx': 'owns-its-modal',
 });
 
 /** The two components whose rendering makes a file a picker host. */

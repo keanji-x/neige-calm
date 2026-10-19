@@ -499,7 +499,7 @@ describe('Track mobile presentation', () => {
     expect(document.activeElement).not.toBe(document.body);
     expect(router.state.location.pathname).toBe('/track/w1');
     expect(page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).query()).toBeNull();
-    await page.getByText('No tracks in this area yet.').findElement();
+    await page.getByText('这个 Area 还没有 Track').findElement();
     await page.getByRole('button', { name: 'Area actions' }).click();
     await page.getByRole('menuitem', { name: 'Edit area Frontend' }).click();
     await page.getByRole('dialog', { name: 'Edit Frontend', exact: true }).findElement();
