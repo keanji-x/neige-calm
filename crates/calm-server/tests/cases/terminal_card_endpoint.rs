@@ -199,10 +199,16 @@ fn install_spawn_runtime_with_hook(
         state.track_area_cache.clone(),
         silent_spawn_hook(),
     ));
+    let card_adapter = Arc::new(
+        calm_server::operation::card_create_adapter::CardCreateAdapter::new(
+            route_repo.clone(),
+            state.card_role_cache.clone(),
+        ),
+    );
     let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
-        vec![terminal_adapter, codex_adapter],
+        vec![terminal_adapter, codex_adapter, card_adapter],
         events.clone(),
         completion.clone(),
         SpawnCtx::new(

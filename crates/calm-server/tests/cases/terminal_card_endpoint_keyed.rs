@@ -380,8 +380,8 @@ async fn terminal_presentation_retry_refreshes_live_membership_for_atomic_and_ge
 #[tokio::test]
 async fn terminal_presentation_replay_refuses_a_deleted_terminal_without_recreating_it() {
     let boot = boot_happy().await;
-    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
-    let request = body("/bin/sh");
+    let uri = format!("/api/tracks/{}/cards", boot.track_id);
+    let request = json!({"kind":"terminal","payload":null});
     let (status, card) = post_with_idempotency(
         boot.app.clone(),
         uri.clone(),

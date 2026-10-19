@@ -810,7 +810,7 @@ async fn snapshot_tree_hash_is_deterministic_for_same_state() {
         &area.id,
         "terminal",
         CardRole::Worker,
-        json!({"z": "last", "a": "first"}),
+        json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false},"z": "last", "a": "first"}),
     )
     .await;
 
@@ -845,7 +845,7 @@ async fn next_commit_after_legacy_card_lens_manifest_rewrites_dotfile_paths() {
         &area.id,
         "terminal",
         CardRole::Worker,
-        json!({"schemaVersion": 1, "idempotency_key": "legacy-paths"}),
+        json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false},"schemaVersion": 1, "idempotency_key": "legacy-paths"}),
     )
     .await;
     let legacy_head = seed_legacy_card_lens_manifest(&repo, &track.id, &worker.id).await;
@@ -958,7 +958,7 @@ async fn next_commit_after_legacy_eventless_card_lens_manifest_rewrites_dotfile_
         &track.id,
         "terminal",
         CardRole::Worker,
-        json!({"schemaVersion": 1, "idempotency_key": "eventless-legacy-paths"}),
+        json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false},"schemaVersion": 1, "idempotency_key": "eventless-legacy-paths"}),
     )
     .await;
     let backfilled = track_vcs::backfill_existing_tracks(repo.db())
@@ -1554,7 +1554,7 @@ async fn backfilled_eventless_cards_survive_incremental_index_rerenders() {
         &track.id,
         "terminal",
         CardRole::Worker,
-        json!({"schemaVersion": 1, "label": "legacy"}),
+        json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false},"schemaVersion": 1, "label": "legacy"}),
     )
     .await;
 
@@ -1873,7 +1873,7 @@ async fn card_added_commit_updates_index_markdown_card_count() {
         &area.id,
         "terminal",
         CardRole::Worker,
-        json!({"schemaVersion": 1}),
+        json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false},"schemaVersion": 1}),
     )
     .await;
     let after = track_vcs::head(repo.pool(), &track.id)
