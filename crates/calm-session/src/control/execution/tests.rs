@@ -192,9 +192,9 @@ fn retired_cleanup_does_not_move_stop_wire_ordinal() {
 }
 
 #[tokio::test]
-async fn c0_compat_registered_current_rejects_v7_typed_peer() {
+async fn c2a_registered_current_rejects_v8_typed_peer() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("typed-v7.sock");
+    let path = temp.path().join("typed-v8.sock");
     let listener = UnixListener::bind(&path).unwrap();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -206,7 +206,7 @@ async fn c0_compat_registered_current_rejects_v7_typed_peer() {
         write_frame(
             &mut stream,
             &ControlReply::Execution(Box::new(ExecutionReply::Handshake {
-                envelope_version: 7,
+                envelope_version: 8,
                 executor_boot: ExecutorBootId::fresh().unwrap(),
                 mode: ExecutionProtocolMode::RegisteredV3,
             })),
@@ -220,4 +220,15 @@ async fn c0_compat_registered_current_rejects_v7_typed_peer() {
             .is_err()
     );
     peer.await.unwrap();
+}
+
+#[test]
+fn c2a_close_stdin_appends_wire_ordinal_and_preserves_persisted_contract() {
+    assert_eq!(EXECUTION_ENVELOPE_VERSION, 9);
+    assert_eq!(PERSISTED_RECEIPT_CONTRACT_VERSION, 4);
+    assert_eq!(
+        bincode::serde::encode_to_vec(ProcessAction::CloseStdin, bincode::config::standard())
+            .unwrap(),
+        vec![6]
+    );
 }

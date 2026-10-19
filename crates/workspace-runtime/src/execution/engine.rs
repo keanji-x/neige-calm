@@ -265,6 +265,12 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         self.control(id, ProcessAction::Observe { from_cursor })
             .await
     }
+    pub async fn close_stdin(&self, id: &ExecutionId) -> Result<(), DriveError> {
+        match self.control(id, ProcessAction::CloseStdin).await? {
+            ExecutionReply::ActionComplete => Ok(()),
+            _ => Err(ExecError::Refused("unexpected close stdin response".into()).into()),
+        }
+    }
     pub async fn interact(
         &self,
         id: &ExecutionId,
@@ -273,6 +279,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         if !matches!(
             action,
             ProcessAction::WriteStdin { .. }
+                | ProcessAction::CloseStdin
                 | ProcessAction::Resize { .. }
                 | ProcessAction::Signal(_)
         ) {

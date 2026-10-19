@@ -104,7 +104,7 @@ D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新�
 
 ### 3.2 有序切片
 
-每片独立可合入、有真实生产消费者，按父合同 §6 的公共 gate G 验证（text ratchet、contract、
+每片独立可合入；除 C2a 协议前置片外有真实生产消费者，按父合同 §6 的公共 gate G 验证（text ratchet、contract、
 `scripts/local-rust-gates.sh --quick --base origin/main` 各一次，加一次拒绝空选择的聚焦 replay），等级 L2。**规模口径**（所有
 切片统一）：`git diff --numstat` 中手写文件的增删合计不超过约 800 行；OpenAPI 与 `fe/core/api/generated/*` 等生成产物不计入，
 在 PR 中单列。纯删除片（除删除外只有不超过约 60 行的兼容改动）按请求组切，不为凑预算把一个请求的处理与其测试拆到两片；
@@ -117,12 +117,18 @@ D1–D3 的前提是三条更窄的事实：(a) **准入时排除**：每个新�
 | C0c | 删除 `Export`/`ExportAck` 的请求、处理分支与测试 | 净删除；保留清单全绿 | C0a |
 | C0d | 删除作 Worktree registration 的共享 `Attach`、`RetireRegistration`（`execution/attachment.rs` 的 `attach_objects`、`retirement.rs`、session `attachment_client.rs` 与 `tests/execution_attachment.rs` 的对应部分），以及只服务共享 registration 的 `execution_registration*` 测试 | 净删除；覆盖保留不变量的测试断言改挂到 Private 路径而不是删除 | C0c |
 | C1 | 关闭后清理的围栏，复用既有两把锁、不加第二套 lifecycle 锁（持有区间见下） | 进程内围栏，不加表。验收：clean 在 SQL 采样后暂停 → reopen 并启动 → clean 拒绝且不写 cleaned；clean 先赢时，worker 准备、终端创建、typed admit、Planner 启动/恢复、boot 恢复项各自得到 Busy（可重试，不 Stuck）或等待且 clean 结束后正常启动（每个入口一个测试，不只测 reopen）。既有 idle Planner 双向：① issuance 先赢——clean 采样后、取 track 前暂停，向 idle Planner 投入排队消息使其持久化 Issuing，恢复 clean → 复查看到 `turn_pending`，拒绝且不写 cleaned；② clean 先赢——clean 持 track 停在 `git clean` 之前，分别投入排队消息、自动观察与 pending rewind → 不持久化 Issuing、不发送 turn/start，clean 结束后各自照常发出；③ 删除持 track 时有 issuance 在等待 → 删除完成且该 turn 不发出、无死锁。约 350 行 | 无 |
-| C2a | 直接 pipe 进程改为 Engine 消费者，同片定义 close-stdin/half-close（今天只有 `WriteStdin`，`calm-session/src/control/execution.rs`） | 一个 `ExecutionIntent` 构造点 + 真实入口测试；删除被替换的 Legacy spawn 分支 | E2b（已合入） |
-| C2b | gate shell（`server/operation/gate_process.rs:263` 的 `spawn_held`）改为 Engine 消费者；保留其持久恢复、stdin 释放与 leader reaping 合同 | 同上，一个构造点或一个恢复机制 | C2a |
+| C2a | typed Pipe `CloseStdin` 前置能力：Interactive 精确 capability，关闭 writer、保留输出与生命周期 | 真实 client→wire→executor→child EOF 与 Engine 入口；幂等 close、关闭后 write 拒绝；PTY/未授权/Unknown 拒绝；envelope 9，持久合同与 journal 仍为 4 | E2b（已合入） |
+| C2b | gate shell（`server/operation/gate_process.rs:263` 的 `spawn_held`）改为 Engine 消费者；保留其持久恢复、stdin 释放与 leader reaping 合同 | 一个构造点或一个恢复机制；writer 移入 executor 后 kernel 死亡不再自动关闭 gate stdin，须定义 released/not-released 的持久归属与 boot reconciliation，不能仅靠 CloseStdin | C2a |
 | C3a / C3b | forge action / probe 改为 Engine 消费者，各对应一个现有 spawn 点（`server/operation/forge_action_adapter/mod.rs:1009`、`:1296`） | 同上；`cwd_lease` 冻结语义不变；不按工具名单注册 | C2a |
 | C4 | Planner 本地 provider 进程（Claude session/rewind/readiness、ACP）与 worker 启动改为 Engine 消费者，每个 provider 的一个启动或恢复入口一片，沿最新 main 的 provider Factory 归属 | 同上；provider 外部协议仍由 provider 层拥有 | C2a |
 | C5 | 破坏性 effect 的正向静默：recycle、`remove_track_worktree`、sweep、area 补偿在 fence 下要求 `unsettled_executions(scope)` 为空，否则 Busy 并保留目录；已迁移类型的 Legacy 代理判断同片删除，未迁移类型的 Legacy 检查保留 | 删除路径保持“先 quiesce、后写者复查”的现有时序；scope 只在非重叠合同（含 O1）成立后才等于 owning track。验收：未结算执行时 Track/Area 删除返回 Conflict 且目录与 branch 保留 | C2a–C4、O1 |
 | C6（可选） | 释放作业：删除事务内写入待回收的 worktree/refs 描述，提交后 sweep 消费，启动时补跑 | 修复“提交后崩溃 → worktree 与 branch 永久泄漏”；不改 7 天 trash 与回收顺序。未消费的作业行同片并入 `none` 准入的自有位置集合（§4.2 进行中的 teardown 目标），验收加“作业未消费时准入其目标 → 400”。若接受泄漏只记 follow-up，则不做，也不声称已有 crash-safe release | C5 |
+
+**C2a 范围决定。** 只读盘点未发现 C2b/C3/C4 之外独立的双向 track pipe 消费者。有界短 Git/CLI 读取
+（checkpoint、sampling、lease reads）是 request-bounded，使用 deadline + process-group reap，并由 C1 fences/leases
+覆盖；它们不成为 Engine 消费者，也不在 C5 的 quiescence 范围内。迁移还需 Engine 当前没有的 stdout/stderr 分离与
+每次 sample 的归属，成本不值得；不为名义消费者而扩大本片。C2a 仅补齐后续迁移的 Pipe half-close。
+升级到 envelope 9 必须重启 supervisor；严格拒绝 envelope 8，不回退 Legacy；持久 receipt 合同和 journal 版本保持 4。
 
 **C0 保留清单。** 删除边界按私有路径的依赖划定，不按类型整块删：`stage_private`（`execution/preparation.rs:198-201`）、
 唯一的 `release_private`（`execution/private.rs:8-37`）与 transfer 身份/nonce/root 资格检查（同文件 65-132）、
@@ -374,7 +380,7 @@ effect 本身只限于其根，是否对 worktree 根放宽为只拒绝“位于
 | boundary B1 / adversarial B1：按行跳过不能阻止另一 owner 的回收、清理、删除到达 `none` 目录 | §4.2 定义自有位置与保证 G；`none` 准入拒绝位于、等于或包含自有位置的 cwd，复用 `AttachedInheritedPath` 的双检查；列出 G 之外的情形；I1b 加入 owner 关闭/删除的反例验收；§3.1 以非重叠合同重新论证 D1–D3，并把既有的自有/自有重叠列为 O1 |
 | adversarial B2：#1830 之前的行带历史 lease，删除时仍删 candidate refs | 保留为显式例外（只删 Neige 自有 refs）；I1a 审计历史未完成 operation/交付的重放；I1a 验收加入升级前 lease/refs 夹具 |
 | boundary B2 / adversarial N1：0166 盘点错误，I1a 的终端行为变化不存在 | §1 改正：`none` 形状今天就解成 `ExternalDir` 并跳过观察，无 checkout 的 worker 也跳过；owned worker 准备以观察 identity 作 Stale/CAS 围栏并保留。I1a 不再声称终端行为变化；旧的非 Git attached 行照旧启动终端，新的 Git 准入不作用于旧行与 keyed 重放 |
-| boundary B3 / adversarial N4：C0 规模低估，C2 合并两个消费者，规模口径不一 | C0 按请求组切为 C0a–C0d 并给出源文件盘点、保留清单与 envelope/持久合同兼容规则；C2 拆为 C2a（pipe + half-close）与 C2b（gate），C3 按 spawn 点拆分，C4 每个启动或恢复入口一片；§3.2 统一规模口径（手写行，生成产物单列） |
+| boundary B3 / adversarial N4：C0 规模低估，C2 合并两个消费者，规模口径不一 | C0 按请求组切为 C0a–C0d 并给出源文件盘点、保留清单与 envelope/持久合同兼容规则；C2 拆为 C2a（typed Pipe half-close 前置能力）与 C2b（gate），C3 按 spawn 点拆分，C4 每个启动或恢复入口一片；§3.2 统一规模口径（手写行，生成产物单列） |
 | boundary N3：入口只收字符串 | I1a 改为传递 typed 数据给 remove/sweep/clean，不从路径推断 |
 | boundary N1 / adversarial N3：省略 isolation 的幂等字节与历史 binding | 省略与显式 `worktree` 同形且不写字段，只有 `none` 写入；I1b 加升级前 binding 的重放矩阵 |
 | adversarial N5：`isolation()` 不会自动成为 wire 字段 | 单一 wire 投影点，不持久化，不改持久载荷形状 |

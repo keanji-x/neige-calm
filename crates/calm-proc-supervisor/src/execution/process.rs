@@ -22,7 +22,7 @@ pub(super) struct Process {
     pub started: std::sync::atomic::AtomicBool,
     pub reaped: std::sync::atomic::AtomicBool,
     pub child: Mutex<OwnedChild>,
-    pub input: Mutex<File>,
+    pub input: Mutex<Option<File>>,
     pub stop_deadline: Mutex<Option<tokio::time::Instant>>,
     pub pty: Option<Mutex<File>>,
     pidfd: File,
@@ -63,6 +63,9 @@ impl Process {
             .input
             .lock()
             .map_err(|_| anyhow::anyhow!("input poisoned"))?;
+        let input = input
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("execution stdin closed"))?;
         loop {
             match input.write(bytes) {
                 Ok(count) => return Ok(count),
@@ -71,6 +74,14 @@ impl Process {
                 Err(error) => return Err(error.into()),
             }
         }
+    }
+    pub fn close_stdin(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.pty.is_none(), "close stdin requires Pipe mode");
+        self.input
+            .lock()
+            .map_err(|_| anyhow::anyhow!("input poisoned"))?
+            .take();
+        Ok(())
     }
     pub fn resize(&self, cols: u16, rows: u16, pixel_w: u16, pixel_h: u16) -> anyhow::Result<()> {
         let master = self
@@ -243,7 +254,7 @@ fn spawn_with_pin(
         started: std::sync::atomic::AtomicBool::new(false),
         reaped: std::sync::atomic::AtomicBool::new(false),
         child: Mutex::new(child),
-        input: Mutex::new(input),
+        input: Mutex::new(Some(input)),
         stop_deadline: Mutex::new(None),
         pty,
         pidfd,

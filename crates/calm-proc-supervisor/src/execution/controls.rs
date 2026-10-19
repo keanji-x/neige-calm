@@ -1,4 +1,5 @@
 use super::*;
+use calm_session::control::IoMode;
 
 impl Executor {
     pub(super) async fn revoke(&self, request: ConsumeExecution) -> anyhow::Result<ExecutionReply> {
@@ -102,9 +103,9 @@ impl Executor {
         let required = match &control.action {
             ProcessAction::ReservedCleanup(never) => match *never {},
             ProcessAction::Observe { .. } => ExecutionControlPurpose::Observe,
-            ProcessAction::WriteStdin { .. } | ProcessAction::Resize { .. } => {
-                ExecutionControlPurpose::Interactive
-            }
+            ProcessAction::WriteStdin { .. }
+            | ProcessAction::CloseStdin
+            | ProcessAction::Resize { .. } => ExecutionControlPurpose::Interactive,
             ProcessAction::Signal(_) | ProcessAction::Stop => ExecutionControlPurpose::Lifecycle,
         };
         anyhow::ensure!(
@@ -116,6 +117,19 @@ impl Executor {
                 !record.interactive_revoked,
                 "exact execution interaction explicitly revoked"
             );
+            if matches!(control.action, ProcessAction::CloseStdin) {
+                anyhow::ensure!(
+                    matches!(record.request.specification.io_mode, IoMode::Pipe),
+                    "close stdin requires Pipe mode"
+                );
+                // Settlement released the private source. Authenticate the retained receipt above,
+                // but do not resolve that source again for an exact terminal retry.
+                if matches!(record.phase.state(), ExecutionState::Drained { .. })
+                    && record.durably_settled()
+                {
+                    return Ok(ExecutionReply::ActionComplete);
+                }
+            }
             self.resolve(&record.request.identity, true)?;
         }
         let process = self.processes.lock().map_err(poison)?.get(id).cloned();
@@ -154,6 +168,7 @@ impl Executor {
                             accepted_bytes: process.write(&bytes)?,
                         });
                     }
+                    ProcessAction::CloseStdin => process.close_stdin()?,
                     ProcessAction::Resize {
                         cols,
                         rows,

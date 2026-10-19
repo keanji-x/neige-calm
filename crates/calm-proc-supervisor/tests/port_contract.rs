@@ -65,3 +65,73 @@ async fn executor_handshake_refusal_is_transport() {
     shutdown.send(()).unwrap();
     server.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn c2a_engine_close_stdin_uses_inspected_receipt() {
+    let h = super::execution_support::Harness::start().await;
+    let executor = SessionExecutor::new(h.socket.clone(), h.secret.clone());
+    let store = test_support::MemoryStore::default();
+    let mut intent = test_support::intent(h.temp.path().to_owned());
+    intent.metadata.program.program = "/bin/sh".into();
+    intent.metadata.program.args = vec!["-c".into(), "cat; printf engine-eof".into()];
+    intent.metadata.program.io_mode = calm_session::control::IoMode::Pipe;
+    let id = intent.metadata.id.clone();
+    let engine = Engine::new(store.clone(), executor);
+    let mut tx = test_support::MemoryTx::default();
+    let pending = engine.admit(&mut tx, intent).await.unwrap();
+    store.commit(tx);
+    engine.drive(pending.committed());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                engine.output(&id, None).await,
+                Ok(ExecutionReply::Observation {
+                    receipt: Some(_),
+                    ..
+                })
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        engine
+            .interact(
+                &id,
+                ProcessAction::WriteStdin {
+                    bytes: b"engine-prefix".to_vec()
+                }
+            )
+            .await
+            .unwrap(),
+        ExecutionReply::StdinProgress { accepted_bytes: 13 }
+    ));
+    engine.close_stdin(&id).await.unwrap();
+    engine.close_stdin(&id).await.unwrap();
+    assert!(
+        engine
+            .interact(&id, ProcessAction::WriteStdin { bytes: vec![] })
+            .await
+            .is_err()
+    );
+    engine.wait_settled(&id).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let ExecutionReply::Observation {
+                output,
+                output_end: OutputEnd::Complete { .. },
+                ..
+            } = engine.output(&id, None).await.unwrap()
+            {
+                assert_eq!(output, b"engine-prefixengine-eof");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}

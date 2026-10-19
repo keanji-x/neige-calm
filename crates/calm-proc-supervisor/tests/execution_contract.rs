@@ -737,3 +737,6 @@ async fn execution_id_and_ticket_reservations_are_global_across_resources() {
         .await;
     }
 }
+
+#[path = "execution_contract/close_stdin.rs"]
+mod close_stdin;

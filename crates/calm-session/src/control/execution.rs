@@ -22,7 +22,7 @@ pub use watch::ExecutionWatcher;
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 8;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 9;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
@@ -181,6 +181,8 @@ pub enum ProcessAction {
     ReservedCleanup(RemovedCleanup),
     /// Idempotent scope TERM followed by KILL after the executor grace period.
     Stop,
+    /// Idempotently close only a Pipe execution's stdin writer; output remains open.
+    CloseStdin,
 }
 
 /// Uninhabited payload reserves the released Cleanup tag while rejecting it on decode.
@@ -395,6 +397,20 @@ impl RegisteredExecutorConnection {
             _ => Err(std::io::Error::other(
                 "registered executor negotiation refused",
             )),
+        }
+    }
+    pub async fn close_stdin(&mut self, capability: ExecutionCapability) -> std::io::Result<()> {
+        match self
+            .request(ExecutionRequest::Control(ExecutionControl {
+                capability,
+                action: ProcessAction::CloseStdin,
+            }))
+            .await?
+        {
+            ExecutionReply::ActionComplete => Ok(()),
+            reply => Err(std::io::Error::other(format!(
+                "close stdin refused: {reply:?}"
+            ))),
         }
     }
     pub fn executor_boot(&self) -> &ExecutorBootId {
