@@ -1,9 +1,6 @@
-#![cfg(test)]
 //! #1791 PR2b: how a Claude Planner turn stops and what it leaves on its worker-session row —
 //! the interrupt's stop timer, a stop that meets a ready result, a CLI that stops reading stdin or
 //! never stops writing, the `agent_session_id` bind and resume. Rig: `claude_planner_session_fixture.rs`.
-
-use super::{ordinary_start, request};
 
 use std::time::{Duration, Instant};
 
@@ -11,7 +8,7 @@ use calm_server::claude_planner::session::{SETTLE_AFTER_STOP, STOP_TIMER};
 use calm_server::planner_model::TurnModelSelection;
 
 use super::claude_planner_session_fixture::{
-    Rig, client_id, completed_turn, until_completed, wait_for_file,
+    Rig, client_id, completed_turn, request, until_completed, wait_for_file,
 };
 
 /// An interrupt's `TurnCompleted` is due by `settle_by` = the interrupt + [`STOP_TIMER`] +
@@ -26,7 +23,7 @@ async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -36,7 +33,6 @@ async fn an_ignored_interrupt_is_ended_by_the_stop_timer_within_budget() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let interrupted_at = Instant::now();
@@ -63,7 +59,7 @@ async fn stdout_that_is_not_utf8_fails_the_turn_as_protocol() {
     let rig = Rig::new("invalid-utf8").await;
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -73,7 +69,6 @@ async fn stdout_that_is_not_utf8_fails_the_turn_as_protocol() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
 
@@ -89,7 +84,7 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
     assert_eq!(rig.agent_session_id().await, None);
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -99,7 +94,6 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     until_completed(&mut rx).await;
     assert_eq!(
@@ -110,7 +104,7 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
     let reopened = rig.open_session().await;
     let mut rx = reopened.subscribe_events();
     reopened
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("after a restart"),
@@ -120,7 +114,6 @@ async fn the_first_init_binds_the_row_and_a_reopened_session_resumes() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     until_completed(&mut rx).await;
     let argv = rig.read_bin("argv").expect("argv");
@@ -138,7 +131,7 @@ async fn a_ready_result_wins_over_a_stop_that_fires_with_it() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -148,7 +141,6 @@ async fn a_ready_result_wins_over_a_stop_that_fires_with_it() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     rig.session().shutdown().await.expect("shutdown stops");
@@ -174,7 +166,7 @@ async fn the_mcp_token_is_minted_once_at_the_first_turn() {
     for text in ["one", "two"] {
         let mut rx = rig.session().subscribe_events();
         rig.session()
-            .start_turn(
+            .turn_start(
                 &rig.thread,
                 request(
                     rig.text(text),
@@ -184,7 +176,6 @@ async fn the_mcp_token_is_minted_once_at_the_first_turn() {
                 ),
             )
             .await
-            .and_then(ordinary_start)
             .expect("turn_start");
         until_completed(&mut rx).await;
         let env = rig.read_bin("env").expect("env");
@@ -208,7 +199,7 @@ async fn a_session_that_was_never_installed_refuses_without_minting() {
     let rig = Rig::new("exit").await;
     let loser = rig.open_session_uninstalled().await;
     let error = loser
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -218,7 +209,6 @@ async fn a_session_that_was_never_installed_refuses_without_minting() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect_err("not installed");
     assert!(error.to_string().contains("not installed"), "{error}");
     assert_eq!(rig.mcp_token_hash().await, None);
@@ -233,7 +223,7 @@ async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -243,7 +233,6 @@ async fn an_interrupted_cli_that_stopped_reading_stdin_settles_within_budget() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     let interrupted_at = Instant::now();
@@ -270,7 +259,7 @@ async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -280,7 +269,6 @@ async fn a_cli_that_never_stops_writing_is_stopped_within_budget() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let _outcome = rig.session().turn_interrupt(&rig.thread, &turn).await;
@@ -299,7 +287,7 @@ async fn a_failed_init_check_still_binds_the_session_it_named() {
     let rig = Rig::new("bad-init").await;
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -309,7 +297,6 @@ async fn a_failed_init_check_still_binds_the_session_it_named() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
     let message = completed["error"]["message"]
@@ -324,7 +311,7 @@ async fn a_failed_init_check_still_binds_the_session_it_named() {
 
     std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
     rig.session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("again"),
@@ -334,7 +321,6 @@ async fn a_failed_init_check_still_binds_the_session_it_named() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     until_completed(&mut rx).await;
     let argv = rig.read_bin("argv").expect("argv");
@@ -350,7 +336,7 @@ async fn the_bind_leaves_active_turn_id_to_the_harness() {
         .await;
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -360,7 +346,6 @@ async fn the_bind_leaves_active_turn_id_to_the_harness() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     until_completed(&mut rx).await;
 
@@ -383,7 +368,7 @@ async fn the_stop_timer_runs_from_the_interrupt_not_from_its_write() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -393,7 +378,6 @@ async fn the_stop_timer_runs_from_the_interrupt_not_from_its_write() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("emitted")).await;
     let interrupted_at = Instant::now();
@@ -419,7 +403,7 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -429,7 +413,6 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     wait_for_file(&rig.bin("stdin")).await;
     let interrupted_at = Instant::now();
@@ -465,7 +448,7 @@ async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
 
     let error = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -475,7 +458,6 @@ async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect_err("the guarded mint refuses a retired row");
     assert!(
         error
@@ -505,7 +487,7 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
     let rig = Rig::new("slow-bind").await;
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -515,7 +497,6 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     // Hold the database write lock across the bind (the CLI names the session a second in).
     let mut held = rig.repo.pool().begin().await.expect("tx");
@@ -533,7 +514,7 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
     std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
     let mut rx = rig.session().subscribe_events();
     rig.session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("again"),
@@ -543,7 +524,6 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     until_completed(&mut rx).await;
     let argv = rig.read_bin("argv").expect("argv");
@@ -566,7 +546,7 @@ async fn a_shutdown_or_seal_during_the_version_check_mints_nothing() {
         let text = rig.text("hello");
         let turn = tokio::spawn(async move {
             session
-                .start_turn(
+                .turn_start(
                     &thread,
                     request(
                         text,
@@ -576,7 +556,6 @@ async fn a_shutdown_or_seal_during_the_version_check_mints_nothing() {
                     ),
                 )
                 .await
-                .and_then(ordinary_start)
         });
         wait_for_file(&rig.bin("version-entered")).await;
         let shutdown = if seal {

@@ -428,3 +428,22 @@ pub async fn wait_for_file(path: &Path) {
     }
     panic!("{} never appeared", path.display());
 }
+
+/// Build an ordinary neutral turn for session fixtures.
+pub fn request(
+    items: Vec<InputItem>,
+    selection: &calm_server::planner_model::TurnModelSelection,
+    permission: calm_server::planner_permission_mode::PlannerPermissionMode,
+    client: &str,
+) -> provider::control::TurnRequest {
+    use provider::control::{CorrelationKey, InputRequest, TurnEdit, TurnRequest};
+    TurnRequest {
+        input: InputRequest {
+            items,
+            correlation: CorrelationKey(client.into()),
+        },
+        selection: selection.clone(),
+        permission,
+        edit: TurnEdit::NoEdit,
+    }
+}

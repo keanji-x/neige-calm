@@ -1,18 +1,17 @@
-#![cfg(test)]
 //! Drive result optionality through the real session, using only fake CLI output.
-
-use super::{ordinary_start, request};
 
 use calm_server::planner_model::TurnModelSelection;
 
-use super::claude_planner_session_fixture::{Rig, client_id, completed_turn, until_completed};
+use super::claude_planner_session_fixture::{
+    Rig, client_id, completed_turn, request, until_completed,
+};
 
 async fn result_turn(scenario: &str, status: &str, error: Option<&str>) {
     let rig = Rig::new(scenario).await;
     let mut rx = rig.session().subscribe_events();
     let turn = rig
         .session()
-        .start_turn(
+        .turn_start(
             &rig.thread,
             request(
                 rig.text("hello"),
@@ -22,7 +21,6 @@ async fn result_turn(scenario: &str, status: &str, error: Option<&str>) {
             ),
         )
         .await
-        .and_then(ordinary_start)
         .expect("turn_start");
     let completed = completed_turn(&until_completed(&mut rx).await);
     assert_eq!(completed["id"], turn);

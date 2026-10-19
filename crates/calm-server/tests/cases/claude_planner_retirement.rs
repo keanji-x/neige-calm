@@ -10,13 +10,16 @@ use calm_server::claude_planner::stop::{
     clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
 };
 use calm_server::claude_planner::wiring::ClaudePlannerRow;
+use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, PlannerBackend, PlannerHarness,
     PlannerHarnessParams, QueueEntry,
 };
+use calm_server::planner_model::TurnModelSelection;
 use serde_json::json;
 
+use super::claude_planner_session_fixture::request;
 use super::claude_planner_stack_fixture::{Root, Stack};
 use super::claude_planner_wiring::wait_file;
 
@@ -312,6 +315,54 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
         hash,
         "the loser minted nothing"
     );
+}
+
+/// §9.1 PR4: a harness shut down after its install but before its first mint, a replacer that
+/// installs and mints, then the stale harness's tick reaching its session: the replacer's token
+/// still authenticates and the card hash is unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_harness_tick_after_shutdown_never_mints_over_the_replacer() {
+    let root = Root::new("exit");
+    let stack = Stack::boot(&root).await;
+    let (_track, card_id) = stack.create_claude_track().await;
+    let runtime = stack.runtime(&card_id).await;
+    let stale = stack.state.harness.remove(&runtime.id).expect("installed");
+    let stale_session = stale.claude_session_for_test().expect("a Claude harness");
+    stale.shutdown().await.expect("shutdown before any mint");
+
+    // The replacer: the next input's registry miss respawns the harness, which mints.
+    let (_, token) = stack.run_turn(&root, &card_id, "exit", "replacer").await;
+    assert!(stack.token_authenticates(&token).await);
+    let card_hash = card_token_hash(&stack, &card_id).await;
+
+    let thread = runtime.thread_id.clone().expect("thread");
+    let refused = stale_session
+        .turn_start(
+            &thread,
+            request(
+                vec![InputItem::Text {
+                    text: "stale".into(),
+                }],
+                &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                &uuid::Uuid::new_v4().simple().to_string(),
+            ),
+        )
+        .await;
+    assert!(refused.is_err(), "a shut-down session never starts a turn");
+    assert!(
+        stack.token_authenticates(&token).await,
+        "the replacer's token stands"
+    );
+    assert_eq!(card_token_hash(&stack, &card_id).await, card_hash);
+}
+
+async fn card_token_hash(stack: &Stack, card_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1")
+        .bind(card_id)
+        .fetch_optional(stack.repo().sqlite_db().expect("pool").read_pool())
+        .await
+        .expect("card token read")
 }
 
 /// §9.1 PR4: a delete that arrives while a spawn is held (after it passed the seal check) does not

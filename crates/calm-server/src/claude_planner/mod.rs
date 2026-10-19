@@ -40,6 +40,3 @@ mod rewind_tests;
 mod spawn_tests;
 #[cfg(test)]
 mod stop_tests;
-
-#[cfg(test)]
-mod invocation_tests;
