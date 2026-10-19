@@ -54,8 +54,11 @@ const markConnected = (mark: ReadingMark) => (mark instanceof Range ? mark.start
 /** Put the reader back on `place` once the new width is laid out; reading a rect lays it out, so this runs synchronously after the width moves. */
 export function restoreReadingPlace(pane: HTMLElement | null, place: ReadingPlace | null): void {
   if (place === null || pane === null) return;
-  if (place.atEnd) pane.scrollTop = pane.scrollHeight;
+  if (place.atEnd) {
+    if (pane.scrollTop !== Math.max(0, pane.scrollHeight - pane.clientHeight)) pane.scrollTop = pane.scrollHeight;
+  }
   else if (place.mark !== null && markConnected(place.mark)) {
-    pane.scrollTop += scrollGeometry(pane).y(place.mark.getBoundingClientRect().top) - place.top;
+    const delta = scrollGeometry(pane).y(place.mark.getBoundingClientRect().top) - place.top;
+    if (delta !== 0) pane.scrollTop += delta;
   }
 }

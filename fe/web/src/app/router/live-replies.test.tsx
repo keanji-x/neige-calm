@@ -29,7 +29,7 @@ function ok(body: unknown): ApiTransportResponse {
 
 /** One card's server side: what each of the three reads answers right now. */
 type Row = Parameters<typeof buildTranscript>[0][number];
-/** With `earlier` rows, the newest page is full, so Load earlier has a page to read; with `itemsFail`, every transcript read fails. */
+/** With `earlier` rows, the newest page is full, so intent prefetch has a page to read; with `itemsFail`, every transcript read fails. */
 type CardServer = { runningTurn: PlannerRunningTurn | null; phase: HarnessPhaseTag; rows: Row[]; live: HarnessLiveReplies; earlier?: Row[]; itemsFail?: boolean;
   /** What a send that replaces a turn (#1923 Edit, #2043) does to this card and answers; with one, a send is accepted. */
   replace?: () => ApiTransportResponse };
@@ -69,7 +69,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
           return { status: 503, statusText: 'Service Unavailable', body: null };
         }
         /* What the transcript says when the read is made, answered when the gate opens; a read
-           past the newest page (Load earlier) gets the rows before it. */
+           past the newest page gets the rows before it. */
         const newest = request.path.includes('after_id=0&');
         const limit = Number(new URL(request.path, 'http://localhost').searchParams.get('limit'));
         const filler = newest && server.earlier !== undefined
@@ -283,7 +283,9 @@ describe('a streamed reply in the Planner conversation', () => {
     await waitFor(() => expect(threadLines()).toEqual(['question', 'Hello, world.', '[Completed]']));
   });
 
-  it('does not let Load earlier, pressed as the turn ends, retire the copy', async () => {
+  it('prioritizes newest settlement over upward prefetch and spends the retained input once', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
     const gate: Gate = { hold: false, waiting: [] };
     const server: CardServer = {
       runningTurn: null, phase: 'turn_running', rows: [asked(400, 'question'), replyStarted(401, 'm')],
@@ -298,19 +300,21 @@ describe('a streamed reply in the Planner conversation', () => {
     server.phase = 'turn_completed';
     await phaseChanged(client, CARD.id, { transcript: false });
     await waitFor(() => expect(gate.waiting).toHaveLength(1));
-    /* Load earlier reads only an older page; it says nothing about the turn that just ended. */
-    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
-    await waitFor(() => expect(gate.waiting).toHaveLength(2));
-    await act(async () => { gate.waiting[1]?.(); await new Promise((resolve) => { setTimeout(resolve, 20); }); });
-    await screen.findByText('long ago');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // The actual upward input waits for the newest-page reconciliation.
+    fireEvent.wheel(document.querySelector('[data-nc-drawer-scroll]')!, { deltaY: -40 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(80); });
+    expect(gate.waiting).toHaveLength(1);
     expect(screen.getByText('Hello, wor')).toBeTruthy();
     expect(screen.queryByText('Hello, world.')).toBeNull();
-    /* Load earlier cancelled the client's re-read, so with no further event the client starts it again. */
-    await waitFor(() => expect(gate.waiting).toHaveLength(3));
     gate.hold = false;
-    act(() => { gate.waiting.forEach((release) => { release(); }); });
-    await waitFor(() => expect(screen.queryByText('Hello, wor')).toBeNull());
+    act(() => { gate.waiting[0]?.(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(20); });
+    expect(screen.queryByText('Hello, wor')).toBeNull();
     expect(screen.getByText('Hello, world.')).toBeTruthy();
+    expect(screen.getByText('long ago')).toBeTruthy();
+    expect(gate.waiting).toHaveLength(1);
   });
 
   it('stops re-reading after a failed transcript read, and keeps the reply so far', async () => {

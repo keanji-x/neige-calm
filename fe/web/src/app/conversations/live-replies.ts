@@ -1,4 +1,4 @@
-import { hashKey, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { hashKey, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -11,45 +11,12 @@ import {
 } from '../../../../core/domain/conversation-live.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 import { harnessLiveQueryOptions } from '../providers/queries.ts';
-import { numberReads } from './read-order.ts';
+import { type History, type TranscriptReads } from './history.ts';
 import { useState } from '../../ui/state/public.ts';
 
 const NO_COPIES: readonly LiveReplyCopy[] = Object.freeze([]);
 
 type HeldCopies = Readonly<{ cardId: string; read: number; copies: readonly LiveReplyCopy[]; lastReply: HarnessLiveReplies | null }>;
-
-/** A page of transcript rows, as far as numbering its read needs it. */
-type TranscriptPage = readonly LiveReplyTranscriptRow[];
-type TranscriptResult = InfiniteData<TranscriptPage, number>;
-type TranscriptQueryOptions = Readonly<{ queryFn: (context: { pageParam: number }) => Promise<TranscriptPage> }>;
-
-/**
- * The order the transcript's reads started in (#1923 S2, rule b). Each page read is numbered as it
- * starts, from the tab's one read order, and a result carries the number of the read its newest page
- * came from. A result this view did not read carries 0, which no copy retires by.
- */
-export type TranscriptReads = Readonly<{
-  /** The transcript query, with its page reads numbered and its results stamped. */
-  track: <Options extends TranscriptQueryOptions>(options: Options) => Options & {
-    structuralSharing: (previous: unknown, next: unknown) => unknown;
-  };
-  startOf: (result: Readonly<{ pages: readonly TranscriptPage[] }> | undefined) => number;
-  /** The number of the latest read started so far. */
-  latest: () => number;
-}>;
-
-/** The transcript reads of one conversation view, held for its lifetime; `nextRead` numbers each as it starts. */
-export function useTranscriptReads(nextRead: () => number): TranscriptReads {
-  const [reads] = useState(() => createTranscriptReads(nextRead));
-  return reads;
-}
-
-function createTranscriptReads(nextRead: () => number): TranscriptReads {
-  /* Keyed by a result's newest page: Load earlier keeps that page, and so its number. */
-  const { queryFn, structuralSharing, startOf, latest } = numberReads<TranscriptPage, Readonly<{ pages: readonly TranscriptPage[] }>>(
-    nextRead, (result) => result.pages[0]);
-  return { track: (options) => ({ ...options, queryFn: queryFn(options.queryFn), structuralSharing }), startOf, latest };
-}
 
 /**
  * The open conversation's streamed replies (#1923 S2), as agent turns for the transcript's tail.
@@ -103,10 +70,10 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
           lastReply: current.cardId === cardId && current.read === scope.read ? current.lastReply : null };
     });
   }, [cardId, scope.read]);
-  /* Which read the stored transcript's newest page came from. Numbered rather than timed: a read
+  /* Which read the stored transcript's latest observation came from. Numbered rather than timed: a read
      started in the same millisecond as a phase observation would otherwise be ambiguous. */
   const readTranscriptStart = useCallback(
-    () => transcriptReads.startOf(client.getQueryData<TranscriptResult>(transcriptKey)),
+    () => transcriptReads.startOf(client.getQueryData<History>(transcriptKey)),
     [client, transcriptKey, transcriptReads],
   );
   const transcriptHash = useMemo(() => hashKey(transcriptKey), [transcriptKey]);
@@ -153,7 +120,7 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
     apply({ kind: 'phase', phase, latestReadStart: transcriptReads.latest() });
     reread();
   }, [apply, phase, reread, transcriptReads, visible]);
-  /* A read started after the re-read can cancel it (Load earlier does) and keep the stored newest page,
+  /* Another reader can supersede the re-read and keep the stored latest observation,
      so while a settled copy still shows, an idle transcript is read again until a later read lands.
      Not after a failed read: the query layer's retries are spent by then, and starting another here
      would retry it for as long as the conversation stays open. The next event or refetch resumes. */

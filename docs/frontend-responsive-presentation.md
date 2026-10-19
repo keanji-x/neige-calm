@@ -6,6 +6,49 @@ rendering opportunity; React scheduling does not make DOM commits interruptible 
 guarantee an uninterrupted frame rate. The current implementation retains all
 loaded history so native Find and cross-message selection keep their DOM.
 
+## Automatic conversation history
+
+The selected visible thread prefetches at most one earlier body page for an upward
+reader input within one viewport of its top. Wheel, touch, PageUp/Home/ArrowUp and
+scrollbar dragging reuse the follower's input provenance and nested-scroll routing.
+Idle, initial top, resize, restoration and short content alone never authorize reads.
+Downward input, explicit return, hiding, closing, switching and unmounting revoke
+unspent input. An already dispatched request may finish in its own Query cache.
+
+One current-cursor input is coalesced while a newest read is busy, with a 250ms
+inactivity lease; Query becoming idle resumes it without polling. Page completion,
+restored geometry and observer reentry never mint another input. Continued upward
+input can authorize a later cursor. Exhausted errors pause prefetch; Reload history
+retries the necessary failed read without restarting a completion loop. Only actual
+pending earlier reads display the loading notice.
+
+The shared page-size budget remains 60 rows for now and is reversible, not a
+business invariant or a verified optimal performance setting. A full page retains
+a possible next cursor, including an empty terminal page for exact multiples; that
+page also requires input. A nonadvancing cursor is a read error. Navigation and
+previews cover **loaded history only**, even when no request is pending. A complete
+lightweight directory and target windows remain a later backend-contract phase.
+All loaded DOM stays available to native Find and cross-message selection.
+
+The conversation history owner retains one explicit latest observation and older
+reading windows in the existing card Query. Rows and observed coverage share a
+record; short/empty HTTP responses alone establish read-to-start. Compacted
+windows may exceed the response budget and keep their original coverage facts.
+Automatic refresh reads latest only; earlier input fills an observed gap before
+continuing backward. Loaded rows, actual latest-read evidence, and eligible
+earlier-request status are separate owner selectors. Publication identity rejects
+obsolete responses, the actual read ledger fences ACK/phase reconciliation, and
+the before bound chooses the requested range; none substitutes for another.
+See [conversation assembly](../fe/web/src/app/conversations/README.md) for owners
+and the existing behavioral test anchors. This adds no gap UI or complete directory.
+
+
+The thread's before-mutation prepend snapshot reuses the drawer's character/block
+reading mark and `withScrollRestoration`; the restored position is synchronous.
+Tail growth and streaming retain the existing follower. Smaller page commits limit
+new DOM work but repeat projection/style work over retained history; idle scheduling
+does not eliminate synchronous commits or guarantee uninterrupted frames.
+
 ## Where a feature developer starts
 
 | Responsibility | Existing entry and owner | Extension rule |

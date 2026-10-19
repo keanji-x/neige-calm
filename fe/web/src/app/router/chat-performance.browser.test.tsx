@@ -1,9 +1,10 @@
+import { historyRows, type History } from '../conversations/history.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 /** Production router/component probe. Durations are diagnostic, never a CI speed threshold. */
 import { memo, Profiler, type ProfilerOnRenderCallback } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { commands, page } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -96,7 +97,7 @@ function mount(count: number) {
       const url = new URL(request.path, 'http://localhost');
       const cursor = Number(url.searchParams.get('after_id'));
       const before = cursor === 0 ? history : history.filter((row) => row.id < cursor);
-      body = before.slice(-PAGE_LIMIT);
+      body = before.slice(-Number(url.searchParams.get('limit')));
     }
     if (request.path.endsWith('/harness/live')) body = { turn_id: 'live-probe', items: [{ item_id: 'live-message', text: live.text }] };
     return { status: 200, statusText: 'OK', body };
@@ -135,10 +136,15 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
   try {
     await page.getByRole('button', { name: /^Conversation Measured chat/ }).click();
     await expect.element(page.getByText('LIVE performance probe.', { exact: true })).toBeVisible();
-    const loadedRows = () => view.client.getQueryData<{ pages: TranscriptRow[][] }>(['harness-items', 'perf-card'])?.pages.flat().length ?? 0;
+    const loadedRows = () => historyRows(view.client.getQueryData<History>(['harness-items', 'perf-card'])).length;
+    await expect.poll(loadedRows).toBe(Math.min(count, PAGE_LIMIT));
     while (loadedRows() < count) {
-      await page.getByRole('button', { name: 'Load earlier', exact: true }).click();
-      await frames();
+      const before = loadedRows();
+      const pane = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+      // Prepare geometry for this rendering probe; real input routing is covered
+      // by scroll-follow browser regressions and the production browser probe.
+      act(() => { pane.scrollTop = 0; fireEvent.wheel(pane, { deltaY: -40 }); });
+      await expect.poll(loadedRows).toBeGreaterThan(before);
     }
     await frames();
     expect(loadedRows()).toBe(count);

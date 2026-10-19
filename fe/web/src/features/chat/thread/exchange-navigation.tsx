@@ -72,7 +72,7 @@ export const ExchangeNavigation = memo(function ExchangeNavigation({ turns, fram
   }, [shown, exchangeKey, frameRef]);
 
   return !shown || seam === null ? null : createPortal(
-    <EdgeNavigator className={styles.edgeNavigation} label="Jump to an exchange" items={items} activeId={active}
+    <EdgeNavigator className={styles.edgeNavigation} label="Jump to a loaded exchange" items={items} activeId={active}
       onSelect={id => {
         // Resolve before releasing follow intent: a missing exchange is a no-op.
         const target = exchangePosition(frameRef.current, id);

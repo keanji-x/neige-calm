@@ -23,6 +23,10 @@ export function withScrollRestoration<T>(panes: readonly HTMLElement[], restore:
 
 type Direction = 'up' | 'down';
 
+/** Only input reaching this pane is reported. Null revokes pending input on return or detach. */
+export type ScrollInput = Readonly<{ direction: Direction | null; top: number; height: number }>
+  & Readonly<{ source: 'keyboard'; key: string } | { source: 'wheel' | 'touch' | 'scrollbar' | 'return' | 'detach' }>;
+
 /** A nested scrollport consumes its input before this pane, unless it has run
  * out of room and permits scroll chaining. Widgets may cancel keyboard defaults. */
 function reachesPane(event: Event, pane: HTMLElement, direction: Direction): boolean {
@@ -43,6 +47,7 @@ function reachesPane(event: Event, pane: HTMLElement, direction: Direction): boo
 export function createScrollFollower(options: Readonly<{
   bottomSlack: number;
   onAwayChange: (away: boolean) => void;
+  onInput?: (input: ScrollInput) => void;
 }>): ScrollFollower {
   let pane: HTMLElement | null = null;
   let attachedContent: HTMLElement | null = null;
@@ -75,6 +80,7 @@ export function createScrollFollower(options: Readonly<{
     followGrowth,
     followToEnd() {
       gesture = null;
+      options.onInput?.({ source: 'return', direction: null, top: pane?.scrollTop ?? 0, height: pane?.clientHeight ?? 0 });
       resumeFollowing();
       if (pane !== null && restoring === 0) pane.scrollTop = pane.scrollHeight;
       measure();
@@ -114,7 +120,10 @@ export function createScrollFollower(options: Readonly<{
         }));
       };
       const begin = (event: Event, direction: Direction) => {
-        if (!reachesPane(event, target, direction)) return;
+        if (!reachesPane(event, target, direction) || restoring !== 0) return;
+        options.onInput?.({ ...(event instanceof KeyboardEvent ? { source: 'keyboard', key: event.key } as const
+          : { source: event instanceof WheelEvent ? 'wheel' : 'touch' } as const),
+          direction, top: target.scrollTop, height: target.clientHeight });
         gesture = { top: gesture?.top ?? target.scrollTop, direction };
         const room = direction === 'up' ? target.scrollTop : distance();
         if (room > 0 || (direction === 'up' && distance() > options.bottomSlack)) following = false;
@@ -180,6 +189,7 @@ export function createScrollFollower(options: Readonly<{
           if (delta !== 0) {
             const direction = delta < 0 ? 'up' : 'down';
             if (pointer !== null || gesture.direction === undefined || gesture.direction === direction) {
+              if (pointer !== null) options.onInput?.({ source: 'scrollbar', direction, top: target.scrollTop, height: target.clientHeight });
               gesture.direction = direction;
               following = false;
             }
@@ -226,6 +236,7 @@ export function createScrollFollower(options: Readonly<{
       measure();
       return () => {
         attached = false;
+        options.onInput?.({ source: 'detach', direction: null, top: target.scrollTop, height: target.clientHeight });
         for (const id of frames) cancelAnimationFrame(id);
         observer.disconnect();
         target.removeEventListener('wheel', onWheel);

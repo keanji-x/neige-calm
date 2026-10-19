@@ -11,13 +11,14 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { trackDetailQueryOptions, trackConversationsQueryOptions, queryKeys } from '../providers/queries.ts';
 import { applyEventEffects, mapPlannedQueryKey, type QueryCachePort } from './query-invalidation-adapter.ts';
 
-type Call = Readonly<{ op: 'invalidate' | 'remove' | 'set' | 'clear'; queryKey?: readonly unknown[] }>;
+type Call = Readonly<{ op: 'reset' | 'invalidate' | 'remove' | 'set' | 'clear'; queryKey?: readonly unknown[] }>;
 
 function recordingClient(initialAreas?: readonly ReturnType<typeof import('../../../../core/domain/area.ts').toArea>[]) {
   const calls: Call[] = [];
   let areas = initialAreas;
   const client: QueryCachePort = {
     cancelQueries: () => Promise.resolve(),
+    resetQueries: filters => { calls.push({ op: 'reset', queryKey: filters.queryKey }); },
     invalidateQueries: (filters?: { queryKey?: readonly unknown[] }) => {
       calls.push({ op: 'invalidate', queryKey: filters?.queryKey });
     },
@@ -140,7 +141,7 @@ describe('query invalidation adapter', () => {
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: null }]);
     await Promise.resolve();
-    expect(calls).toEqual([{ op: 'invalidate', queryKey: undefined }]);
+    expect(calls).toEqual([{ op: 'reset', queryKey: queryKeys.transcriptPrefix() }, { op: 'invalidate', queryKey: undefined }]);
   });
 
   it.each([
@@ -219,7 +220,7 @@ describe('query invalidation adapter', () => {
   });
 
   it('write-through replaces one existing area and preserves every other row', () => {
-    expectTypeOf<CacheWrite['value']>().toEqualTypeOf<AreaWire>();
+    expectTypeOf<Extract<CacheWrite, { mode: 'replace-existing-area' }>['value']>().toEqualTypeOf<AreaWire>();
     const old = {
       id: 'c1', name: 'old', color: '#111', sort: 1, kind: 'user',
       defaultTemplateId: null, defaultCwd: null, createdAt: 10, updatedAt: 20,

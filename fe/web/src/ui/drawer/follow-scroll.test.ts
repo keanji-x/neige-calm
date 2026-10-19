@@ -15,9 +15,10 @@ function mounted() {
     scrollTop: { get: () => top, set: (value: number) => { top = Math.max(0, Math.min(value, height - 400)); } },
   });
   const away = vi.fn();
-  const follower = createScrollFollower({ bottomSlack: 64, onAwayChange: away });
+  const input = vi.fn();
+  const follower = createScrollFollower({ bottomSlack: 64, onAwayChange: away, onInput: input });
   const detach = follower.attach(pane, content);
-  return { pane, content, follower, away, detach, grow: () => { height += 100; } };
+  return { pane, content, follower, away, input, detach, grow: () => { height += 100; } };
 }
 
 afterEach(() => { document.body.replaceChildren(); vi.useRealTimers(); });
@@ -285,4 +286,46 @@ describe('drawer scroll intent', () => {
     x.detach();
   });
 
+});
+
+it('reports only pane-reaching input provenance, never bare scroll or restoration', () => {
+  const x = mounted();
+  x.pane.scrollTop = 0; fireEvent.scroll(x.pane);
+  withScrollRestoration([x.pane], () => fireEvent.wheel(x.pane, { deltaY: -20 }));
+  expect(x.input).not.toHaveBeenCalled();
+  x.pane.scrollTop = 0;
+  fireEvent.wheel(x.pane, { deltaY: -20 });
+  expect(x.input).toHaveBeenLastCalledWith({ source: 'wheel', direction: 'up', top: 0, height: 400 });
+  const nested = document.createElement('div'); nested.style.overflowY = 'auto';
+  Object.defineProperties(nested, { scrollTop: { value: 20 }, clientHeight: { value: 100 }, scrollHeight: { value: 300 } });
+  x.content.append(nested); x.input.mockClear();
+  fireEvent.wheel(nested, { deltaY: -20 });
+  fireEvent.keyDown(nested, { key: 'PageUp' });
+  const composer = document.createElement('textarea'); x.content.append(composer);
+  fireEvent.keyDown(composer, { key: 'PageUp' });
+  const rail = document.createElement('button'); document.body.append(rail);
+  fireEvent.keyDown(rail, { key: 'Home' });
+  expect(x.input).not.toHaveBeenCalled();
+  fireEvent.keyDown(x.content, { key: 'PageUp' });
+  expect(x.input).toHaveBeenLastCalledWith({ source: 'keyboard', key: 'PageUp', direction: 'up', top: 0, height: 400 });
+  fireEvent.wheel(x.pane, { deltaY: 20 });
+  expect(x.input).toHaveBeenLastCalledWith({ source: 'wheel', direction: 'down', top: 0, height: 400 });
+  x.follower.followToEnd();
+  expect(x.input).toHaveBeenLastCalledWith({ source: 'return', direction: null, top: 0, height: 400 });
+  x.detach();
+});
+
+it('reports touch direction and scrollbar movement through their existing input sources', () => {
+  const x = mounted();
+  fireEvent.touchStart(x.content, { touches: [{ clientY: 100 }] });
+  fireEvent.touchMove(x.content, { touches: [{ clientY: 130 }] });
+  expect(x.input).toHaveBeenLastCalledWith({ source: 'touch', direction: 'up', top: 600, height: 400 });
+  fireEvent.touchEnd(x.content, { touches: [] }); x.input.mockClear();
+  const press = new Event('pointerdown', { bubbles: true });
+  Object.assign(press, { button: 0, pointerId: 1, pointerType: 'mouse' });
+  x.pane.dispatchEvent(press);
+  expect(x.input).not.toHaveBeenCalled();
+  x.pane.scrollTop = 200; fireEvent.scroll(x.pane);
+  expect(x.input).toHaveBeenLastCalledWith({ source: 'scrollbar', direction: 'up', top: 200, height: 400 });
+  x.detach();
 });

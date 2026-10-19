@@ -5,7 +5,8 @@ export type EventKind = WireEvent['ev'];
 export type EventOf<K extends EventKind> = Extract<WireEvent, { ev: K }>;
 export type QueryKey = readonly unknown[];
 
-export type CacheWrite = Readonly<{ key: QueryKey; mode: 'replace-existing-area'; value: Area }>;
+export type CacheWrite = Readonly<{ key: QueryKey; mode: 'replace-existing-area'; value: Area }>
+  | Readonly<{ key: QueryKey; mode: 'reset-query' }>;
 export type InvalidationPlan = Readonly<{
   invalidate: readonly QueryKey[];
   remove: readonly QueryKey[];
@@ -185,12 +186,12 @@ function policies(): PolicyMap {
   'harness.transcript.cleared': plan((event) => result([
     ['conversation-initial-input', event.data.track_id, event.data.card_id], ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
     ...conversationInputMetadata(event.data.track_id),
-  ])),
+  ], [], [{ key: ['harness-items', event.data.card_id], mode: 'reset-query' }])),
   /* An Edit's replace deletes the turn's rows and may move the phase; it invalidates what a phase change does. */
   'harness.transcript.rewound': plan((event) => result([
     ['conversation-initial-input', event.data.track_id, event.data.card_id], ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationInputMetadata(event.data.track_id),
-  ])),
+  ], [], [{ key: ['harness-items', event.data.card_id], mode: 'reset-query' }])),
   'harness.user_message.enqueued': plan((event) => result([
     ['conversation-initial-input', event.data.track_id, event.data.card_id], ['harness-items', event.data.card_id], ['planner-run', event.data.card_id],
     ...conversationInputMetadata(event.data.track_id),
@@ -200,7 +201,8 @@ function policies(): PolicyMap {
   'harness.queue.changed': plan((event) => result([
     ['conversation-initial-input', event.data.track_id, event.data.card_id], ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
     ...conversationInputMetadata(event.data.track_id),
-  ])),
+  ], [], event.data.change === 'restored'
+    ? [{ key: ['harness-items', event.data.card_id], mode: 'reset-query' }] : [])),
   /* `['today-launchpad']` carries `report_has_noninitial_content` (Today's empty-state predicate) and
    * `['track', id]` is where the document is read from; nothing generated protects either line. */
   'track.report_edited': plan((event) => result([

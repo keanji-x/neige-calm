@@ -57,7 +57,7 @@ import {
   type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
 import {
-  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
+  harnessItemsOperation, compactPlannerOperation, interruptPlannerOperation, sendPlannerInputOperation,
   plannerRunOperation, createTrackConversationOperation, trackConversationsOperation, setConversationArchiveOperation,
   createSerialWriter, deletePlannerInputOperation, editPlannerInputOperation, steerPlannerInputOperation,
   modelCatalogOperation, plannerQueueWriteFailure, setPlannerModelOperation,
@@ -75,7 +75,7 @@ import { useState } from '../../ui/state/public.ts';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type {
-  AskAnswer, HarnessItem, PlannerPermissionMode, SetPlannerPermissionModeResponse, UploadAttachmentResponse,
+  AskAnswer, PlannerPermissionMode, SetPlannerPermissionModeResponse, UploadAttachmentResponse,
 } from '../../../../core/api/generated/wire.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 
@@ -151,6 +151,7 @@ export const queryKeys = Object.freeze({
   trackRecipes: () => ['track-recipes'] as const,
   /* The Today launchpad resolve. One entry, not keyed by track: `purpose = 'launchpad'` is a singleton. */
   todayLaunchpad: () => ['today-launchpad'] as const,
+  transcriptPrefix: () => ['harness-items'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   /** The running turn's streamed reply text (#1923). Polled while a reply may stream; no event reaches it. */
   harnessLive: (cardId: string) => ['harness-live', cardId] as const,
@@ -173,15 +174,19 @@ export const queryKeys = Object.freeze({
   trackConversationsPrefix: () => ['track-conversations'] as const,
 });
 
+export type TranscriptPosition = Readonly<{ kind: 'latest' } | { kind: 'before'; rowId: number }>;
+
 export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.harnessItems(cardId),
-    queryFn: ({ pageParam }: { pageParam: number }) => runOperation(
-      transport, harnessItemsOperation(cardId, pageParam, 'desc'), unauthorized,
-    ),
-    initialPageParam: 0,
-    getNextPageParam: (page: HarnessItem[]) =>
-      page.length === HARNESS_ITEMS_PAGE_LIMIT ? page[0]?.id : undefined,
+    queryFn: async ({ position }: { position: TranscriptPosition }) => {
+      const cursor = position.kind === 'latest' ? 0 : position.rowId;
+      const page = await runOperation(transport, harnessItemsOperation(cardId, cursor, 'desc'), unauthorized);
+      if (page.length > 0 && position.kind === 'before' && (page[0]?.id ?? cursor) >= cursor) {
+        throw new Error('Conversation history did not advance to an earlier page.');
+      }
+      return page;
+    },
   };
 }
 
@@ -263,13 +268,15 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   };
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
      flight from before the answer; input acceptance must reconcile against actual reads started after its ACK. */
-  const refreshAfterInput = <T,>(result: T): T => {
-    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId), queryKeys.initialInputPrefix()]) void cancelThenInvalidate(client, queryKey);
+  const refreshAfterInput = <T,>(result: T, resetTranscript: boolean): T => {
+    if (resetTranscript) void client.resetQueries({ queryKey: transcriptKey }).catch(() => undefined);
+    else void cancelThenInvalidate(client, transcriptKey);
+    for (const queryKey of [queryKeys.plannerRun(cardId), queryKeys.initialInputPrefix()]) void cancelThenInvalidate(client, queryKey);
     refreshInputMetadata();
     return result;
   };
   const refreshAfterQueueWrite = <T extends Readonly<{ kind: string }>>(result: T): T => {
-    if (result.kind === 'done') return refreshAfterInput(result);
+    if (result.kind === 'done') return refreshAfterInput(result, false);
     refreshInputMetadata();
     return refreshAfter(result);
   };
@@ -279,7 +286,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     send: (text: string, attachments: readonly string[], idempotencyKey: string, replacesTurn: string | null,
       admitted: ApiTransportPort, answered: () => void) =>
       runOperation(admitted, sendPlannerInputOperation(cardId, text, attachments, idempotencyKey, replacesTurn), unauthorized)
-        .then((sent) => { answered(); return refreshAfterInput(sent); }, (error: unknown) => {
+        .then((sent) => { answered(); return refreshAfterInput(sent, replacesTurn !== null); }, (error: unknown) => {
           // A refusal may expose a stale revision; a lost answer may follow a durable write.
           refreshInputMetadata(admitted, error);
           throw error;

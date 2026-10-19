@@ -314,7 +314,8 @@ const plannerRunTokenUsageSchema: z.ZodType<PlannerRunTokenUsage> = z.object({
   at_ms: z.number(),
 });
 
-export const HARNESS_ITEMS_PAGE_LIMIT = 300;
+/** Reversible retained-DOM commit budget, shared by requests and cursor termination. */
+export const HARNESS_ITEMS_PAGE_LIMIT = 60;
 
 export function harnessItemsOperation(cardId: string, afterId = 0, direction: 'asc' | 'desc' = 'desc'):
 ApiOperation<HarnessItem[]> {

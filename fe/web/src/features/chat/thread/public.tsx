@@ -1,3 +1,5 @@
+import { useHistoryPrefetch, type HistoryPrefetch } from './history-prefetch.ts';
+import { PrependReading } from './prepend-reading.tsx';
 import { terminalCommand, TERMINAL_ARGUMENTS_MESSAGE, TERMINAL_DESKTOP_MESSAGE } from '../../../../../core/domain/terminal-command.ts';
 import type { RunRecovery } from '../../../../../core/domain/conversation-restart.ts';
 import { withEmptyTrigger } from '../../../ui/empty-state/astryx-trigger.tsx';
@@ -66,6 +68,7 @@ function emptyConversationContent(working: boolean): EmptyStateSchema {
 
 export type ChatThreadProps = Readonly<{
   readingView?: ThreadReadingView;
+  historyPrefetch?: HistoryPrefetch;
   conversation: Conversation;
   /** Messages and the actions between them, in the order they happened. */
   turns: readonly TranscriptEntry[];
@@ -110,7 +113,7 @@ export type ChatThreadProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -192,8 +195,12 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   }, [hasTranscript, compactViewport]);
   /** Whether the reader is parked at the end of the transcript — the only state in which a newly appended turn may move the pane. */
   const [scrolledUp, setScrolledUp] = useState(false);
+  const prefetchInput = useHistoryPrefetch(historyPrefetch);
+  const inputRef = useRef(prefetchInput);
+  useLayoutEffect(() => { inputRef.current = prefetchInput; });
   const [scrollFollower] = useState(() => createScrollFollower({
     bottomSlack: FOLLOW_BOTTOM_SLACK_PX, onAwayChange: setScrolledUp,
+    onInput: input => inputRef.current(input),
   }));
   const observedSubmission = useRef({ conversationId: conversation.id, request: submissionRequest });
   useLayoutEffect(() => {
@@ -206,7 +213,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const newestId = lastTurn?.id;
   /** How much of the newest reply there is: a streamed reply grows in place under one id. */
   const newestLength = lastTurn?.author === 'agent' ? lastTurn.text.length : 0;
-  /** The newest turn as of the last run of the follow effect, so *Load earlier* is not mistaken for an arrival. Updated on every run, including runs that decline to scroll. */
+  /** The newest turn as of the last run of the follow effect, so earlier history is not mistaken for an arrival. Updated on every run, including runs that decline to scroll. */
   const followedTo = useRef<string | undefined>(undefined);
   const followedLength = useRef(0);
   const followedNotice = useRef<string | null>(null);
@@ -289,7 +296,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   </div>;
 
   return (
-    <div className={`${styles.threadFrame} ${empty ? styles.emptyFrame : ''}`} ref={frameRef}>
+    <PrependReading frame={frameRef} turns={turns}><div className={`${styles.threadFrame} ${empty ? styles.emptyFrame : ''}`} ref={frameRef}>
       <ExchangeNavigation turns={turns} frameRef={frameRef} seam={railSeam} navigate={scrollFollower.navigate} />
       <div className={`${styles.thread} ${empty ? styles.empty : ''} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-link-reading="" data-nc-thread-empty={empty ? '' : undefined} ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
         {empty && <EmptyState variant="panel" align="center" {...emptyConversationContent(live)} />}
@@ -321,7 +328,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
       </div>
       {scrolledUp && (scrollOverlay !== null ? createPortal(scrollControls, scrollOverlay)
         : <div className={styles.scrollDock}>{scrollControls}</div>)}
-    </div>
+    </div></PrependReading>
   );
 
 });

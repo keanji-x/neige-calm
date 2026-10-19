@@ -9,6 +9,7 @@ import { cancelThenInvalidate, type QueryRefreshPort } from './query-refresh.ts'
 
 /** The slice of `QueryClient` the adapter is allowed to use. */
 export interface QueryCachePort extends QueryRefreshPort {
+  resetQueries(filters: { queryKey: readonly unknown[] }): unknown;
   removeQueries(filters: { queryKey: readonly unknown[] }): unknown;
   getQueryData<T>(queryKey: readonly unknown[]): T | undefined;
   setQueryData<T>(queryKey: readonly unknown[], value: T): unknown;
@@ -75,6 +76,8 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
     if (effect.type === 'invalidate') {
       // A null key set is the reducer's "everything is suspect" signal after a replay.
       if (effect.keys === null) {
+        // A replay boundary cannot certify retained windows behind the latest page.
+        void client.resetQueries({ queryKey: queryKeys.transcriptPrefix() });
         void cancelThenInvalidate(client, queryKeys.overlaysByKind('track'), null);
         continue;
       }
@@ -86,7 +89,11 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
     }
     if (effect.type === 'write-through') {
       for (const write of effect.writes) {
-        if (write.mode !== 'replace-existing-area') continue;
+        if (write.mode === 'reset-query') {
+          const key = mapPlannedQueryKey(write.key);
+          if (key !== null) void client.resetQueries({ queryKey: key });
+          continue;
+        }
         const mapped = mapPlannedQueryKey(write.key);
         if (mapped === null) continue;
         const existing = client.getQueryData<readonly ReturnType<typeof toArea>[]>(mapped);

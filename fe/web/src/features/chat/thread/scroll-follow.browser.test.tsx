@@ -1,9 +1,9 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { commands, page, userEvent } from 'vitest/browser';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
-import { ChatThread } from './public.tsx';
+import { ChatThread, type ChatThreadProps } from './public.tsx';
 import type { Conversation, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import { useRef } from 'react';
@@ -21,11 +21,11 @@ const history: readonly TranscriptEntry[] = Array.from({ length: 8 }).flatMap((_
 ]);
 const later: TranscriptEntry = { id: 'later', author: 'agent', text: words.repeat(4), atMs: 20000 };
 
-function Pane({ height = 400, turns = history }: { height?: number; turns?: readonly TranscriptEntry[] }) {
+function Pane({ height = 400, turns = history, historyPrefetch }: { height?: number; turns?: readonly TranscriptEntry[]; historyPrefetch?: ChatThreadProps['historyPrefetch'] }) {
   return <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', position: 'relative', inlineSize: 396, blockSize: height + 48 }}>
     <div className={drawerStyles.scroll} data-nc-drawer-scroll="" style={{ blockSize: height, flex: 'none' }}>
       <div className={drawerStyles.bodyInner}>
-        <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />
+        <ChatThread historyPrefetch={historyPrefetch} hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation} turns={turns} />
       </div>
     </div>
   </div>;
@@ -40,6 +40,68 @@ async function frames() {
 afterEach(cleanup);
 
 describe('chat reading intent across layout changes', () => {
+  for (const offset of [0, 200]) for (const streaming of [false, true]) it(`holds the same message when older history is prepended at offset ${offset}, stream ${streaming}`, async () => {
+    await page.viewport(1400, 900);
+    const { rerender } = render(<Pane />);
+    await frames();
+    await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+    await expect.poll(() => pane().scrollTop).toBe(0);
+    if (offset > 0) {
+      await commands.wheelScroll('[data-nc-drawer-scroll]', offset);
+      await expect.poll(() => pane().scrollTop).toBe(offset);
+    }
+    await frames();
+    const anchor = document.querySelector<HTMLElement>('[data-nc-entry="agent-0"]')!;
+    const y = () => anchor.getBoundingClientRect().top - pane().getBoundingClientRect().top;
+    const before = y();
+    const older = history.map(entry => ({ ...entry, id: `old-${entry.id}`, atMs: entry.atMs - 20000 }));
+    rerender(<Pane turns={[...older, ...history, ...(streaming ? [later] : [])]} />);
+    expect(Math.abs(y() - before)).toBeLessThanOrEqual(1);
+    await frames();
+    expect(Math.abs(y() - before)).toBeLessThanOrEqual(1);
+  });
+
+  for (const atTail of [false, true]) it(`keeps a cross-message selection and its text position through prepend and streaming, tail ${atTail}`, async () => {
+    await page.viewport(1400, 900);
+    const { rerender } = render(<Pane />);
+    await frames();
+    if (!atTail) {
+      await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+      await expect.poll(() => pane().scrollTop).toBe(0);
+    }
+    const textOf = (id: string) => {
+      const walker = document.createTreeWalker([...document.querySelectorAll('[data-nc-entry]')].find(entry => entry.getAttribute('data-nc-entry') === id)!, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node !== null && !node.textContent?.includes('A reply')) node = walker.nextNode();
+      if (node === null) throw new Error('Reply text missing');
+      return node;
+    };
+    const first = textOf(atTail ? 'agent-6' : 'agent-0');
+    const second = textOf(atTail ? 'agent-7' : 'agent-1');
+    document.getSelection()!.setBaseAndExtent(first, 10, second, 20);
+    await frames();
+    const selection = document.getSelection()!;
+    const text = selection.toString();
+    const range = document.createRange();
+    range.setStart(first, 10); range.setEnd(first, 11);
+    const before = range.getBoundingClientRect().top;
+    rerender(<Pane turns={[{ id: 'older', author: 'agent', text: words.repeat(10), atMs: -1 }, ...history, later]} />);
+    await frames();
+    expect(selection.toString()).toBe(text);
+    expect(Math.abs(range.getBoundingClientRect().top - before)).toBeLessThanOrEqual(1);
+    expect(remaining()).toBeGreaterThan(100);
+    selection.removeAllRanges();
+  });
+
+  for (const streaming of [false, true]) it(`keeps the tail following during prepend, stream ${streaming}`, async () => {
+    await page.viewport(1400, 900);
+    const { rerender } = render(<Pane />);
+    await frames();
+    rerender(<Pane turns={[{ id: 'older', author: 'agent', text: words.repeat(10), atMs: -1 }, ...history, ...(streaming ? [later] : [])]} />);
+    await frames();
+    expect(remaining()).toBeLessThanOrEqual(1);
+  });
+
   it('keeps following after the viewport shrinks without reader navigation', async () => {
     await page.viewport(1400, 900);
     const { rerender } = render(<Pane />);
@@ -187,4 +249,56 @@ describe('chat intent through the real drawer resize path', () => {
     await frames();
     expect(pane().scrollTop).toBe(parked);
   });
+});
+
+it('prefetches only on real near-top upward input and keeps short content idle', async () => {
+  const load = vi.fn(() => true);
+  const historyPrefetch = { active: true, cursor: 100, busy: false, failed: false, load };
+  const view = render(<Pane turns={history.slice(0, 1)} historyPrefetch={historyPrefetch} />);
+  await frames();
+  pane().dispatchEvent(new Event('scroll')); window.dispatchEvent(new Event('resize'));
+  await frames(); expect(load).not.toHaveBeenCalled();
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -30);
+  await expect.poll(() => load.mock.calls.length).toBe(1);
+  await frames(); expect(load).toHaveBeenCalledTimes(1);
+  view.rerender(<Pane turns={history} historyPrefetch={{ ...historyPrefetch, cursor: 40 }} />);
+  await frames(); expect(load).toHaveBeenCalledTimes(1);
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+  await expect.poll(() => pane().scrollTop).toBe(0);
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -30);
+  await expect.poll(() => load.mock.calls.length).toBe(2);
+});
+
+it('retains expanded cross-page tool groups and an opened detail in the real browser', async () => {
+  const tool = (id: string): TranscriptEntry => ({ id, author: 'activity', verb: 'Ran', target: id,
+    state: 'failed', durationMs: null, detail: `Detail ${id}`, tool: null, atMs: 0 });
+  const view = render(<Pane turns={[tool('retained-a'), tool('retained-b'), ...history]} />);
+  await frames();
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+  await expect.poll(() => pane().scrollTop).toBe(0);
+  const group = page.getByRole('group', { name: '2 tool calls' }).element();
+  await userEvent.click(group.querySelector<HTMLElement>(':scope > [role="button"]')!);
+  await page.getByRole('button', { name: /retained-a/ }).click();
+  await expect.element(page.getByText('Detail retained-a', { exact: true })).toBeVisible();
+  const detail = document.querySelector('[data-nc-detail="retained-a"]');
+  view.rerender(<Pane turns={[tool('older'), tool('retained-a'), tool('retained-b'), ...history]} />);
+  await frames();
+  expect(page.getByRole('group', { name: '3 tool calls' }).element()).toBe(group);
+  expect(document.querySelector('[data-nc-detail="retained-a"]')).toBe(detail);
+});
+
+it('keeps the top reading mark when a prepended image arrives late', async () => {
+  await commands.mockChatPerformanceImage(true);
+  try {
+    const view = render(<Pane />); await frames();
+    await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+    await expect.poll(() => pane().scrollTop).toBe(0); await frames();
+    const anchor = document.querySelector('[data-nc-entry="agent-0"]')!;
+    const y = () => anchor.getBoundingClientRect().top - pane().getBoundingClientRect().top;
+    const before = y();
+    view.rerender(<Pane turns={[{ id: 'picture', author: 'agent', text: '![Probe image](https://chat-benchmark.invalid/image.svg)', atMs: -1 }, ...history]} />);
+    expect(Math.abs(y() - before)).toBeLessThanOrEqual(1);
+    await expect.poll(() => document.querySelector<HTMLImageElement>('img[alt="Probe image"]')?.naturalWidth).toBeGreaterThan(0);
+    await frames(); expect(Math.abs(y() - before)).toBeLessThanOrEqual(1);
+  } finally { await commands.mockChatPerformanceImage(false); }
 });

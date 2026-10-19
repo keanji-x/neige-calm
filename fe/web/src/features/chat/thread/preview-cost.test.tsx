@@ -31,7 +31,7 @@ function mount(turns: readonly ConversationTurn[]) {
   return { update: (rows: readonly ConversationTurn[]) => rendered.rerender(view(rows)) };
 }
 function dots(): HTMLButtonElement[] {
-  return [...screen.getByRole('group', { name: 'Jump to an exchange' }).querySelectorAll('button')];
+  return [...screen.getByRole('group', { name: 'Jump to a loaded exchange' }).querySelectorAll('button')];
 }
 
 it('does not parse hidden history previews while live text grows', () => {

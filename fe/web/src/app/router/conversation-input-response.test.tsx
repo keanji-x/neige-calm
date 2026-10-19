@@ -1,7 +1,7 @@
+import type { History } from '../conversations/history.ts';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
-import type { HarnessItem as TranscriptRow } from '../../../../core/api/generated/wire.ts';
 import { buildTranscript, harnessItemToTurns as toTranscriptTurns } from '../../../../core/domain/conversation.ts';
 import { groupTranscriptActivities } from '../../../../core/domain/conversation-groups.ts';
 import { currentResponseMessage } from '../../../../core/domain/conversation-actions.ts';
@@ -86,9 +86,9 @@ it('keeps unchanged stored history derivation and grouping out of composer updat
     expect(currentResponseMessage).not.toHaveBeenCalled();
     // Real new server content still invalidates the projection without touching the draft.
     await act(async () => {
-      view.client.setQueryData<{ pages: TranscriptRow[][] }>(['harness-items', 'second-planner'], previous => previous === undefined ? previous : ({
-        ...previous, pages: previous.pages.map(page => page.map(row => row.id === 120
-          ? { ...row, params: JSON.stringify({ item: { text: 'The server updated the last reply.' } }) } : row)),
+      view.client.setQueryData<History>(['harness-items', 'second-planner'], previous => previous === undefined ? previous : ({
+        ...previous, latest: { ...previous.latest, rows: previous.latest.rows.map(row => row.id === 120
+          ? { ...row, params: JSON.stringify({ item: { text: 'The server updated the last reply.' } }) } : row) },
       }));
       await Promise.resolve();
     });

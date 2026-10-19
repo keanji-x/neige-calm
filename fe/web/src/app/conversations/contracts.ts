@@ -40,6 +40,7 @@ export type ConversationStore = Readonly<{
   historyReady: boolean;
   historyLoading: boolean;
   hasEarlier: boolean;
+  earlierCursor: number | null;
   loadingEarlier: boolean;
   historyError: string | null;
   /** The run read failed: phase, queue and model may be stale, and a send answered after an unknown attempt waits on it. */
@@ -82,7 +83,8 @@ export type ConversationStore = Readonly<{
   contextUsageInvalidated: boolean;
   retryHistory: () => void;
   retryRun: () => void;
-  loadEarlier: () => void;
+  /** False means newest reconciliation still owns the query; no input was spent. */
+  loadEarlier: () => boolean;
   /** Why the queue is not draining, when the reader has to act; a standing condition of the conversation, unlike `actionError`. */
   blockedReason: string | null;
   /** What this conversation's turns run with. */

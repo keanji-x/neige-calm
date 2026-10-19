@@ -882,7 +882,7 @@ function drawerPane() {
 }
 
 function railDots(): HTMLElement[] {
-  const rail = screen.queryByRole('group', { name: 'Jump to an exchange' });
+  const rail = screen.queryByRole('group', { name: 'Jump to a loaded exchange' });
   return rail === null ? [] : [...rail.querySelectorAll('button')];
 }
 
@@ -896,7 +896,7 @@ describe('ChatThread’s exchange rail', () => {
   it('has no navigation target before the first exchange', () => {
     const { outer, pane } = drawerPane();
     render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[]} />, { container: pane });
-    expect(screen.queryByRole('group', { name: 'Jump to an exchange' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Jump to a loaded exchange' })).toBeNull();
     outer.remove();
   });
 
@@ -913,7 +913,7 @@ describe('ChatThread’s exchange rail', () => {
     const { container } = render(
       <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(RAIL_FIXTURE_EXCHANGES + 3)} />,
     );
-    expect(screen.queryByRole('group', { name: 'Jump to an exchange' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Jump to a loaded exchange' })).toBeNull();
     expect(container.querySelectorAll('[data-nc-exchange]')).toHaveLength(RAIL_FIXTURE_EXCHANGES + 3);
   });
 

@@ -150,10 +150,17 @@ async function openConversationWithTurns() {
   await screen.findByText('reply 0');
 }
 
+async function readEarlierWithInput() {
+  await waitFor(() => expect(drawerElement().querySelector('[data-nc-thread]')).not.toBeNull());
+  const scroller = drawerElement().querySelector('[data-nc-drawer-scroll]');
+  if (scroller === null) throw new Error('No reading pane');
+  await act(async () => { fireEvent.wheel(scroller, { deltaY: -40 }); await Promise.resolve(); });
+}
+
 beforeEach(() => {
   window.history.pushState({}, '', `${APP_BASEPATH}/track/w1`);
-  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
-  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
 });
 
 afterEach(() => {
@@ -480,7 +487,7 @@ describe('planner conversation regressions', () => {
 
   /* The page boundary is made here by the infinite query's cursor (`after_id` = the
      oldest id of the page before), and can fall inside a run of calls. */
-  it('extends a group cut by the page boundary when Load earlier brings the rest of its run', async () => {
+  it('extends a group cut by the page boundary when automatic history brings the rest of its run', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, uuid: string, method: string, item: Record<string, unknown>) => ({
       ...base, id, item_uuid: uuid, item_type: 'commandExecution', method, params: JSON.stringify({ item }), created_at_ms: id,
@@ -507,7 +514,7 @@ describe('planner conversation regressions', () => {
     fireEvent.click(within(group).getByRole('button', { name: /npm test/ }));
     const detail = within(group).getByText('error: no test specified');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    await readEarlierWithInput();
     expect(await screen.findByRole('group', { name: '4 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(within(group).getByText('error: no test specified')).toBe(detail);
@@ -519,9 +526,8 @@ describe('planner conversation regressions', () => {
       .map((request) => new URL(request.path, 'http://localhost').searchParams.get('after_id'))).toEqual(['0', '101']);
   });
 
-  /* A refetch re-reads the newest page from the top and can leave the open run with
-     one call in the window (a line, not a group); the vendor element does not survive that. */
-  it('keeps an open group and its opened failure detail through a refetch that leaves it one call', async () => {
+  /* A latest-only refresh retains loaded calls that roll out of its window. */
+  it('keeps an open group and its opened failure detail when one call rolls out of the latest window', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, uuid: string, item: Record<string, unknown>) => ({
       ...base, id, item_uuid: uuid, item_type: 'commandExecution', method: 'item/completed',
@@ -554,10 +560,10 @@ describe('planner conversation regressions', () => {
 
     refetched = true;
     await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
-    await waitFor(() => expect(screen.queryByRole('group', { name: '2 tool calls' })).toBeNull());
-    expect(screen.getByText('failure detail')).toBeTruthy();
+    expect(screen.getByRole('group', { name: '2 tool calls' })).toBe(group);
+    expect(within(group).getByText('failure detail')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    await readEarlierWithInput();
     const restored = await screen.findByRole('group', { name: '2 tool calls' });
     expect(restored.querySelector<HTMLElement>(':scope > [role="button"][aria-expanded="true"]')!.getAttribute('aria-expanded')).toBe('true');
     expect(within(restored).getByText('failure detail')).toBeTruthy();
@@ -566,8 +572,8 @@ describe('planner conversation regressions', () => {
     expect(within(restored).queryByText('failure detail')).toBeNull();
   });
 
-  /* One row wider: the vendor's element stays mounted while the row the reader had open is unmounted from inside it. */
-  it('restores an opened failed row after a multi-call refetch window shift', async () => {
+  /* One row wider: the open failure row and its containing group both stay mounted. */
+  it('retains an opened failed row after a multi-call latest-window shift', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, item: Record<string, unknown>) => ({
       ...base, id, item_uuid: `command-${id}`, item_type: 'commandExecution', method: 'item/completed',
@@ -593,18 +599,18 @@ describe('planner conversation regressions', () => {
 
     refetched = true;
     await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
-    expect(await screen.findByRole('group', { name: '2 tool calls' })).toBe(group);
+    expect(screen.getByRole('group', { name: '3 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
-    expect(within(group).queryByText('failure evidence')).toBeNull();
+    expect(within(group).getByText('failure evidence')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    await readEarlierWithInput();
     expect(await screen.findByRole('group', { name: '3 tool calls' })).toBe(group);
     expect(header.getAttribute('aria-expanded')).toBe('true');
     expect(within(group).getByText('failure evidence')).toBeTruthy();
   });
 
   /* The shift that takes the whole run: it is remembered by its calls' ids for as long as the conversation is open. */
-  it('restores the same group after it leaves the latest page whole', async () => {
+  it('retains the same group after it leaves the latest page whole', async () => {
     const base = harnessRows(1)[0];
     const command = (id: number, item: Record<string, unknown>) => ({
       ...base, id, item_uuid: `command-${id}`, item_type: 'commandExecution', method: 'item/completed',
@@ -631,8 +637,8 @@ describe('planner conversation regressions', () => {
 
     refetched = true;
     await act(async () => { await client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
-    await waitFor(() => expect(screen.queryByRole('group', { name: '2 tool calls' })).toBeNull());
-    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    expect(screen.getByRole('group', { name: '2 tool calls' })).toBe(group);
+    await readEarlierWithInput();
     const restored = await screen.findByRole('group', { name: '2 tool calls' });
     expect(restored.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true');
     expect(within(restored).getByText('whole-run failure evidence')).toBeTruthy();
@@ -653,14 +659,167 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByText('Thought')).toBeNull();
   });
 
-  it('loads only the first history page until the user asks for earlier rows', async () => {
-    const { requests } = setup((request) => request.path.includes('/harness/items')
+  it('does not read older bodies after initial presentation, idle, resize or initial top', async () => {
+    const { requests } = setup(request => request.path.includes('/harness/items')
       ? ok(harnessRows(TRANSCRIPT_PAGE_LIMIT)) : undefined);
+    await openConversationWithTurns();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+    const scroller = drawerElement().querySelector('[data-nc-drawer-scroll]')!;
+    fireEvent.scroll(scroller);
+    fireEvent(window, new Event('resize'));
+    expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(1);
+    expect(screen.queryByText('Loading earlier messages… Navigation covers loaded history.')).toBeNull();
+  });
+
+  it('consumes one upward input for at most one page without response chaining', async () => {
+    const rows = harnessRows(TRANSCRIPT_PAGE_LIMIT * 3);
+    const { requests } = setup(request => {
+      if (!request.path.includes('/harness/items')) return undefined;
+      const cursor = Number(new URL(request.path, 'http://localhost').searchParams.get('after_id'));
+      return ok(cursor === 0 ? rows.slice(-TRANSCRIPT_PAGE_LIMIT) : rows.filter(row => row.id < cursor).slice(-TRANSCRIPT_PAGE_LIMIT));
+    });
+    await openConversation();
+    await screen.findByText(`reply ${TRANSCRIPT_PAGE_LIMIT * 3 - 1}`);
+    fireEvent.wheel(drawerElement().querySelector('[data-nc-drawer-scroll]')!, { deltaY: -40 });
+    await waitFor(() => expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+    expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2);
+  });
+
+  it('presents the first page before upward input and stops after a full final page plus an empty page', async () => {
+    const { requests } = setup((request) => request.path.includes('/harness/items')
+      ? ok(request.path.includes('after_id=0&') ? harnessRows(TRANSCRIPT_PAGE_LIMIT) : []) : undefined);
     await openConversation();
     const historyRequests = () => requests.filter((request) => request.path.includes('/harness/items'));
     await waitFor(() => expect(historyRequests()).toHaveLength(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }));
+    await readEarlierWithInput();
     await waitFor(() => expect(historyRequests()).toHaveLength(2));
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull();
+    expect(historyRequests().map(request => new URL(request.path, 'http://localhost').searchParams.get('after_id'))).toEqual(['0', '1']);
+  });
+
+  it('requires fresh input for multiple full pages through the final empty protocol page', async () => {
+    let release!: (response: ApiTransportResponse) => void;
+    const rows = harnessRows(TRANSCRIPT_PAGE_LIMIT * 2);
+    const { requests } = setup(request => {
+      if (!request.path.includes('/harness/items')) return undefined;
+      if (request.path.includes('after_id=0&')) return ok(rows.slice(TRANSCRIPT_PAGE_LIMIT));
+      if (request.path.includes(`after_id=${TRANSCRIPT_PAGE_LIMIT + 1}&`)) return new Promise(resolve => { release = resolve; });
+      return ok([]);
+    });
+    await openConversation();
+    await readEarlierWithInput();
+    expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2);
+    await act(async () => { release(ok(rows.slice(0, TRANSCRIPT_PAGE_LIMIT))); await Promise.resolve(); });
+    await readEarlierWithInput();
+    expect(requests.filter(request => request.path.includes('/harness/items')).map(request =>
+      new URL(request.path, 'http://localhost').searchParams.get('after_id'))).toEqual(['0', String(TRANSCRIPT_PAGE_LIMIT + 1), '1']);
+    expect(screen.queryByText('Loading earlier messages… Navigation covers loaded history.')).toBeNull();
+  });
+
+  it('cancels pending busy history input on unmount', async () => {
+    let release!: (response: ApiTransportResponse) => void;
+    let hold = false;
+    const rows = harnessRows(TRANSCRIPT_PAGE_LIMIT);
+    const { client, requests } = setup(request => request.path.includes('/harness/items')
+      ? hold ? new Promise(resolve => { release = resolve; }) : ok(rows) : undefined);
+    await openConversationWithTurns();
+    hold = true;
+    act(() => { void client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
+    await waitFor(() => expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2));
+    await readEarlierWithInput();
+    cleanup();
+    await act(async () => { release(ok(rows)); await Promise.resolve(); });
+    expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2);
+  });
+
+  it('pauses on failure and explicitly retries only the failed page', async () => {
+    let fail = true;
+    const { requests } = setup(request => {
+      if (!request.path.includes('/harness/items')) return undefined;
+      if (request.path.includes('after_id=0&')) return ok(harnessRows(TRANSCRIPT_PAGE_LIMIT));
+      return fail ? { status: 503, statusText: 'Unavailable', body: null } : ok([]);
+    });
+    await openConversation();
+    await readEarlierWithInput();
+    await screen.findByRole('button', { name: 'Reload history' });
+    const reads = () => requests.filter(request => request.path.includes('/harness/items'));
+    expect(reads()).toHaveLength(2);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)); });
+    expect(reads()).toHaveLength(2);
+    fail = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Reload history' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload history' })).toBeNull());
+    expect(reads()).toHaveLength(3);
+  });
+
+  it('does not cancel a newest reread to fill earlier history', async () => {
+    let release!: (response: ApiTransportResponse) => void;
+    let hold = false;
+    const rows = harnessRows(TRANSCRIPT_PAGE_LIMIT);
+    const { client, requests } = setup(request => {
+      if (!request.path.includes('/harness/items')) return undefined;
+      if (!request.path.includes('after_id=0&')) return ok([]);
+      return hold ? new Promise(resolve => { release = resolve; }) : ok(rows);
+    });
+    await openConversation();
+    await waitFor(() => expect(drawerElement().querySelector('[data-nc-thread]')).not.toBeNull());
+    hold = true;
+    act(() => { void client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
+    await waitFor(() => expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2));
+    fireEvent.wheel(drawerElement().querySelector('[data-nc-drawer-scroll]')!, { deltaY: -40 });
+    hold = false;
+    await act(async () => { release(ok(rows)); await Promise.resolve(); });
+    await waitFor(() => expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(3));
+    expect(requests.filter(request => request.path.includes('/harness/items')).map(request =>
+      new URL(request.path, 'http://localhost').searchParams.get('after_id'))).toEqual(['0', '0', '1']);
+  });
+
+  it('cancels hidden visits and does not let A history schedule work for B or a later A visit', async () => {
+    const first = harnessRows(TRANSCRIPT_PAGE_LIMIT).map(row => ({ ...row, id: row.id + 120 }));
+    const middle = harnessRows(TRANSCRIPT_PAGE_LIMIT).map(row => ({ ...row, id: row.id + 60 }));
+    let holdEarlier = true;
+    let holdNewest = false;
+    let releaseNewest!: (response: ApiTransportResponse) => void;
+    let release!: (response: ApiTransportResponse) => void;
+    const { client, requests } = setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [] });
+      if (!request.path.includes('/harness/items')) return undefined;
+      if (request.path.includes(CARD_SAME_TRACK.id)) return ok([]);
+      if (request.path.includes('after_id=0&')) return holdNewest ? new Promise(resolve => { releaseNewest = resolve; }) : ok(first);
+      if (request.path.includes('after_id=121&')) return holdEarlier ? new Promise(resolve => { release = resolve; }) : ok(middle);
+      return ok([]);
+    });
+    await openConversation();
+    await waitFor(() => expect(drawerElement().querySelector('[data-nc-thread]')).not.toBeNull());
+    holdNewest = true;
+    act(() => { void client.invalidateQueries({ queryKey: transcriptQueryKey() }); });
+    await waitFor(() => expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2));
+    await readEarlierWithInput();
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    holdNewest = false;
+    await act(async () => { releaseNewest(ok(first)); await Promise.resolve(); });
+    expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2);
+    await openConversation();
+    await readEarlierWithInput();
+    act(() => { client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD_SAME_TRACK], overlays: [] }); });
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation Other chat/ }));
+    await screen.findByRole('complementary', { name: 'Other chat' });
+    await act(async () => { holdEarlier = false; release(ok(middle)); await Promise.resolve(); });
+    expect(requests.some(request => request.path.includes('after_id=61&'))).toBe(false);
+    act(() => { client.setQueryData(queryKeys.trackDetail(TRACK.id), { track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [] }); });
+    await openConversation();
+    await readEarlierWithInput();
+    await waitFor(() => expect(requests.some(request => request.path.includes('after_id=61&'))).toBe(true));
+  });
+
+  it('reports a nonadvancing history cursor instead of looping or claiming completion', async () => {
+    const { requests } = setup(request => request.path.includes('/harness/items') ? ok(harnessRows(TRANSCRIPT_PAGE_LIMIT)) : undefined);
+    await openConversation();
+    await readEarlierWithInput();
+    await screen.findByRole('button', { name: 'Reload history' });
+    expect(requests.filter(request => request.path.includes('/harness/items'))).toHaveLength(2);
+    expect(screen.getByText('Earlier history is incomplete. Navigation covers loaded messages.')).toBeTruthy();
   });
 
   it('surfaces send failures and prevents a second send while the first is pending', async () => {

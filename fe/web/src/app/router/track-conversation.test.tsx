@@ -1,3 +1,5 @@
+import { latestHistory, observedWindow } from '../conversations/history.ts';
+import { queryKeys } from '../providers/queries.ts';
 import { initialReceiptFor } from './initial-input-fixture.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
@@ -225,12 +227,8 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
 }
 
 function cachedHistoryKey(client: QueryClient, cardId: string): readonly unknown[] {
-  const key = client.getQueryCache().getAll().find((query) => {
-    const data = query.state.data;
-    return query.queryKey[1] === cardId
-      && typeof data === 'object' && data !== null && 'pages' in data;
-  })?.queryKey;
-  if (key === undefined) throw new Error('history query was not cached');
+  const key = queryKeys.harnessItems(cardId);
+  if (client.getQueryData(key) === undefined) throw new Error('history query was not cached');
   return key;
 }
 
@@ -465,7 +463,7 @@ describe('track conversations', () => {
         id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity',
         payload: {}, updated_at: 4,
       } });
-      applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+      applyEventEffects(client, [{ type: 'write-through', writes: plan.writeThrough }, { type: 'invalidate', keys: plan.invalidate }]);
       return Promise.resolve();
     });
     await waitFor(() => expect(within(screen.getByRole('region', { name: 'Notifications' }))
@@ -2868,14 +2866,14 @@ describe('track conversations', () => {
   });
 
   it.each(['load earlier', 'roll latest page'] as const)('keeps an accepted stop pending when history pages %s', async (change) => {
-    const current = harnessMessage(100, 'agentMessage', { content: [{ text: 'Still working' }] });
+    const current = Array.from({ length: 60 }, (_, index) => harnessMessage(100 + index, 'agentMessage', { content: [{ text: 'Still working' }] }));
     const historical = { ...harnessMessage(10, '', {}), item_type: null,
       turn_id: 'previous-turn', method: 'turn/completed',
       params: JSON.stringify({ id: 'previous-turn', status: 'completed', error: null }) };
     const { client, requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
         worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null });
-      if (request.path.includes(HISTORY_PATH)) return ok(change === 'load earlier' ? [current] : [current, historical]);
+      if (request.path.includes(HISTORY_PATH)) return ok(change === 'load earlier' ? current : [historical, ...current.slice(0, 59)]);
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: true });
       return undefined;
     });
@@ -2883,8 +2881,8 @@ describe('track conversations', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
     await screen.findByRole('button', { name: 'Stopping', expanded: false });
     const key = cachedHistoryKey(client, ASSISTANT_CARD.id);
-    await act(async () => { client.setQueryData(key, { pages: change === 'load earlier' ? [[current], [historical]] : [[current]],
-      pageParams: change === 'load earlier' ? [undefined, 100] : [undefined] }); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { client.setQueryData(key, { latest: observedWindow(current, { kind: 'latest' }),
+      retained: change === 'load earlier' ? [observedWindow([historical], { kind: 'before', rowId: 100 })] : [] }); await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(screen.getByRole('button', { name: 'Stopping', expanded: false })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
@@ -3599,11 +3597,11 @@ describe('registry write-through', () => {
         await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       },
       /** A history read landing, written where a landed history lives. */
-      deliverHistory: async (rows: readonly unknown[]) => {
+      deliverHistory: async (rows: Parameters<typeof latestHistory>[1]) => {
         await act(async () => {
           client.setQueryData(
             cachedHistoryKey(client, ASSISTANT_CARD.id),
-            { pages: [rows], pageParams: [0] },
+            latestHistory(undefined, rows),
           );
           await Promise.resolve();
         });
@@ -4174,7 +4172,7 @@ it('shows a closed Planner working and preserves unread completion until its his
       worker_session_id: 'planner-live', card_id: 'card-planner', track_id: 'w1',
       old_phase: 'turn_running', new_phase: 'turn_completed',
     } });
-    applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    applyEventEffects(client, [{ type: 'write-through', writes: plan.writeThrough }, { type: 'invalidate', keys: plan.invalidate }]);
     return Promise.resolve();
   });
   await waitFor(() => expect(indicator()).toBe('unread'));
@@ -4188,7 +4186,7 @@ it('shows a closed Planner working and preserves unread completion until its his
       worker_session_id: 'planner-live', card_id: 'card-planner', track_id: 'w1',
       old_phase: 'turn_running', new_phase: 'turn_completed',
     } });
-    applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    applyEventEffects(client, [{ type: 'write-through', writes: plan.writeThrough }, { type: 'invalidate', keys: plan.invalidate }]);
     return Promise.resolve();
   });
   // The session's `updated_at_ms` moving on its own (the reader queued a
@@ -4546,7 +4544,7 @@ it.each(['reset', 'replace'] as const)('honors null metadata after confirmed inp
   const plan = invalidationPlanFor(change === 'reset'
     ? { ev: 'harness.transcript.cleared', data: { ...data, cleared_item_count: 1, cleared_params_bytes: 20, card_age_ms_at_clear: 1 } }
     : { ev: 'harness.transcript.rewound', data: { ...data, turn_id: 'old-turn', removed_item_count: 1 } });
-  act(() => { applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]); });
+  act(() => { applyEventEffects(client, [{ type: 'write-through', writes: plan.writeThrough }, { type: 'invalidate', keys: plan.invalidate }]); });
   await screen.findByRole('complementary', { name: 'Assistant' });
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   await screen.findByRole('button', { name: 'Conversation Assistant' });

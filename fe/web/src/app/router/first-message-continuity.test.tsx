@@ -673,7 +673,9 @@ it('ends the creation observer on a positive unbound input fact while history an
   } finally { cleanup(); fixture.client.clear(); focusManager.setFocused(undefined); }
 });
 
-it('never reclaims first-input display after its real provider-bound source moves outside the later history window and reopens', async () => {
+it('retains one provider-bound first input after it leaves the latest window and reopens without reclaiming its outbox', async () => {
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
   const fixture = renderFirstMessageFixture();
   try {
     await sendFirst(); fixture.project(0); fixture.observe('unavailable');
@@ -682,19 +684,27 @@ it('never reclaims first-input display after its real provider-bound source move
     await waitFor(() => expect(words()).toHaveLength(1));
     const cardId = fixture.createdId();
     if (cardId === null) throw new Error('No actual created conversation');
+    const historyKey = queryKeys.harnessItems(cardId);
     fixture.advanceHistoryWindow();
-    await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }); });
+    await act(async () => { await fixture.client.invalidateQueries({ queryKey: historyKey }); });
     await screen.findByText(`Later page reply ${HARNESS_ITEMS_PAGE_LIMIT - 1}.`);
-    expect(words()).toHaveLength(0);
+    expect(words()).toHaveLength(1);
     const name = screen.getByRole('button', { name: 'Close conversation' }).closest('[role="complementary"]')?.querySelector('h2')?.textContent;
     if (name == null) throw new Error('No actual conversation title.');
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(await screen.findByRole('button', { name: `Conversation ${name}` }));
     await screen.findByRole('combobox', { name: 'Message' });
-    expect(words()).toHaveLength(0);
+    expect(words()).toHaveLength(1);
     expect(fixture.client.getQueriesData({ queryKey: queryKeys.initialInput('daily', cardId) })).toEqual([]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Load earlier' }));
+    await waitFor(() => expect(document.querySelector('[data-nc-thread]')).not.toBeNull());
+    await waitFor(() => expect(fixture.client.getQueryState(historyKey)?.fetchStatus).toBe('idle'));
+    const earlierReads = () => fixture.requests.filter(request => request.path.includes(`/${cardId}/harness/items`)
+      && Number(new URL(request.path, 'http://fixture.test').searchParams.get('after_id')) > 0);
+    expect(earlierReads()).toHaveLength(0);
+    fireEvent.wheel(document.querySelector('[data-nc-drawer-scroll]')!, { deltaY: -40 });
     await waitFor(() => expect(words()).toHaveLength(1));
+    await waitFor(() => expect(earlierReads()).toHaveLength(1));
+    expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: 'accepted-first-turn', entryRev: 0 } }]);
     expect(creates(fixture)).toHaveLength(1);
   } finally { cleanup(); fixture.client.clear(); }
 });

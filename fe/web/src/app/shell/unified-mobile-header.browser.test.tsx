@@ -493,8 +493,11 @@ describe('Unified mobile headers', () => {
     const trackPage = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement();
     const choice = await page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).findElement();
     const file = choice.querySelector('svg'); expect(file).not.toBeNull();
-    expect(file!.getBoundingClientRect().width).toBe(24);
+    // During the two page translations, native SVG viewport bounds can round
+    // independently. Check layout size now and the exact painted size at rest.
+    expect(getComputedStyle(file!).width).toBe('24px');
     await expect.poll(() => document.querySelector('#mobile-workspace-navigation')!.getAnimations({ subtree: true }).filter(animation => animation.effect?.getTiming().iterations !== Infinity).every(animation => animation.playState !== 'running')).toBe(true);
+    expect(file!.getBoundingClientRect().width).toBe(24);
     expect(trackPage.getBoundingClientRect().left).toBeGreaterThanOrEqual(0);
     expect(trackPage.getBoundingClientRect().right).toBeLessThanOrEqual(width);
     await userEvent.keyboard('{Escape}');

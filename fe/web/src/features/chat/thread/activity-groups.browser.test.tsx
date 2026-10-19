@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { userEvent } from 'vitest/browser';
+import { commands, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -439,7 +439,8 @@ describe('tool activity groups', () => {
     expect(fits()).toBe(true);
   });
 
-  it('prepends earlier history without moving the group or the exchange markers', () => {
+  it.each(['at end', 'reading'] as const)('prepends earlier history without moving the group or the exchange markers: %s', async (position) => {
+    const height = position === 'at end' ? 240 : 120;
     const recent: TranscriptEntry[] = [
       { id: 'you-1', author: 'you', text: 'Second ask', atMs: 10 },
       { id: 'agent-1', author: 'agent', text: 'Second answer', atMs: 11 },
@@ -451,28 +452,63 @@ describe('tool activity groups', () => {
       activity('e1'), activity('e2'), activity('e3'),
     ];
     const { container, rerender } = render(
-      <div data-nc-drawer-scroll="" style={{ height: 240, overflow: 'auto' }}>
+      <div data-nc-drawer-scroll="" style={{ height, overflow: 'auto' }}>
         <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={recent} />
       </div>,
     );
     const button = groupButton(container);
     act(() => { fireEvent.click(button); });
     const pane = container.firstElementChild as HTMLElement;
-    pane.scrollTop = 0;
+    const group = screen.getByRole('group', { name: '2 tool calls' });
+    const message = container.querySelector<HTMLElement>('[data-nc-entry="you-1"]')!;
+    const y = (element: Element) => element.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+    const remaining = () => pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+    if (position === 'reading') {
+      expect(pane.scrollHeight).toBeGreaterThan(pane.clientHeight);
+      await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+      await expect.poll(remaining).toBeGreaterThan(1);
+      await act(async () => {
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      });
+      expect(y(message)).toBeLessThanOrEqual(0);
+      expect(message.getBoundingClientRect().bottom).toBeGreaterThan(pane.getBoundingClientRect().top);
+    } else {
+      // The original short transcript cannot scroll: its top is also its end.
+      expect(pane.scrollHeight).toBe(pane.clientHeight);
+      expect(remaining()).toBe(0);
+    }
+    const messageTop = y(message);
+    const groupTop = y(group);
 
     rerender(
-      <div data-nc-drawer-scroll="" style={{ height: 240, overflow: 'auto' }}>
+      <div data-nc-drawer-scroll="" style={{ height, overflow: 'auto' }}>
         <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[...earlier, ...recent]} />
       </div>,
     );
     const groups = screen.getAllByRole('group');
     expect(groups.map((group) => group.getAttribute('aria-label'))).toEqual(['3 tool calls', '2 tool calls']);
+    expect(groups[1]).toBe(group);
     expect(groups[1].contains(button)).toBe(true);
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(groups[0].querySelector('[aria-expanded]')!.getAttribute('aria-expanded')).toBe('false');
     expect([...container.querySelectorAll('[data-nc-exchange]')].map((marker) => marker.getAttribute('data-nc-exchange')))
       .toEqual(['you-0', 'you-1']);
-    expect(pane.scrollTop).toBe(0);
+    const assertPosition = () => {
+      if (position === 'reading') {
+        expect(Math.abs(y(message) - messageTop)).toBeLessThanOrEqual(1);
+        expect(Math.abs(y(group) - groupTop)).toBeLessThanOrEqual(1);
+      } else {
+        expect(remaining()).toBe(0);
+        expect(y(message)).toBeGreaterThanOrEqual(0);
+        expect(group.getBoundingClientRect().bottom).toBeLessThanOrEqual(pane.getBoundingClientRect().bottom);
+      }
+    };
+    assertPosition();
+    // ResizeObserver/following must preserve the same contract after layout.
+    await act(async () => {
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+    assertPosition();
     expect(pane.scrollHeight).toBeGreaterThan(pane.clientHeight);
   });
 });

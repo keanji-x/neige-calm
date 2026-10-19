@@ -139,8 +139,8 @@
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 area，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: fe/web/src/app/events/query-invalidation-adapter.ts:88-98
-  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:283-308
+  source: fe/core/events/invalidation-plan.ts:8-9; fe/web/src/app/events/query-invalidation-adapter.ts:90-104
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:284-312
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
@@ -603,7 +603,7 @@
     若创建响应无条件替换 cache，编辑后的默认 template/cwd 会在 refetch 前回滚并被 New Track 快照。
   source: fe/core/domain/area.ts:52-57; fe/web/src/app/providers/queries.ts:845-874
   authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:249-281;
-    fe/web/src/app/providers/queries.contract.test.ts:411-456,481-520
+    fe/web/src/app/providers/queries.contract.test.ts:412-457,482-521
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -623,7 +623,7 @@
     template/cwd 回到 cache。创建重试另由已协商的服务器幂等能力与稳定操作键保护；
     refetch 不通过同名查找推断某次创建是否提交。
   source: fe/web/src/app/providers/queries.ts:830-874
-  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:364-409
+  authoritative_test: fe/web/src/app/providers/queries.contract.test.ts:365-410
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
@@ -655,7 +655,7 @@
     当「在动」、用 lifecycle ∨ `anyCardNeedsInput` 当「等你」，与内核从持久行算出的结论不一致；判定收敛到内核一处
     （`track_activity.rs`），FE 只解码 overlay。第二套推导必然再度分叉。
   source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:145-190,574-598;
-    fe/core/domain/conversation-summary.ts:19-39; fe/web/src/app/conversations/store.ts:59-69,173-246;
+    fe/core/domain/conversation-summary.ts:19-39; fe/web/src/app/conversations/store.ts:59-69,171-244;
     fe/web/src/app/router/public.tsx:759-775,826-843,970-987,1121-1130,1229-1246; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
     fe/web/src/app/providers/queries.ts:949-954,988-995;
     fe/core/domain/read-receipts.ts:41-50; fe/web/src/app/providers/read-receipts.tsx:65-106; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
@@ -663,12 +663,12 @@
     fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;
     fe/web/src/app/shell/mobile-tracks.tsx:73-89; fe/web/src/app/shell/public.tsx:361
   authoritative_test: fe/core/domain/activity.test.ts:10-40; fe/core/domain/track.test.ts:186-222,225-287;
-    fe/web/src/app/router/track-conversation.test.tsx:305-399;
+    fe/web/src/app/router/track-conversation.test.tsx:303-397;
     fe/web/src/features/track/row/public.test.tsx:124-175; fe/core/domain/read-receipts.test.ts:14-31;
     fe/web/src/app/providers/read-receipts.test.tsx:23-107; fe/web/src/app/providers/read-state-refresh.browser.test.tsx:67-120;
     fe/web/src/app/shell/mobile-tracks.test.tsx:95-146; fe/web/src/app/shell/responsive.contract.test.tsx:104-123;
     fe/web/src/ui/activity-indicator/activity-indicator.browser.test.tsx:56-77;
-    fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:3387-3472;
+    fe/web/src/features/chat/list/public.test.tsx:32-88; fe/web/src/app/router/track-conversation.test.tsx:3385-3470;
     fe/web/src/features/chat/thread/public.test.tsx:537-608;
     fe/web/src/features/track/page/public.test.tsx:180-270,349-419;
     fe/web/src/features/track/page/header-status.browser.test.tsx:82-193; fe/web/src/features/track/page/mobile-projection.test.tsx:255-283;
@@ -883,7 +883,7 @@
     与 #2128（连接状态只归全局指示器）矛盾；Recheck 与 Copy 也曾显示原始失败文本。
   source: fe/core/domain/conversation.ts:766-797; fe/web/src/app/conversations/draft-actions.ts:81-86,98-176,179-247;
     fe/core/domain/read-failure.ts:46-69; fe/core/domain/agent-providers.ts:34-35; fe/web/src/app/providers/agent-providers.ts:43
-  authoritative_test: fe/web/src/app/router/track-conversation.test.tsx:2884-2961;
+  authoritative_test: fe/web/src/app/router/track-conversation.test.tsx:2882-2959;
     fe/web/src/app/shell/settings-planners.test.tsx:101-117
   owner_slice: app/router
   runtime_layer: app

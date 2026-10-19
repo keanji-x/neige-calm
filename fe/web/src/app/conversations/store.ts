@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOptimisticConversationTurn, isConversationMessage, kernelQueuesInput, COMPACT_FAILURES, COMPACT_TEXT, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES, serverItemHighWater, transcriptRowToTurnOutcome, type PendingQueueEntry, type PlannerQueueWriteOutcome } from '../../../../core/domain/conversation.ts';
 import { describeConversation, pendingConversationIds, withRememberedConversation, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
+import { useTranscriptReads, useTranscriptHistory } from './history.ts';
 import { useInitialInputObservation } from './initial-input.ts';
 import { rememberQueuePlacements, presentPendingMessages, initialInputNeedsObservation, queueTombstoneHides as tombstoneHides, initialInputQueueView, withInitialInputFacts, reportedInputSource, type ReportedInput, type AcceptedInitialInput } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
@@ -19,7 +20,7 @@ import { NO_TURNS } from './registry-owner.ts';
 import { useConversationStop } from './stop.ts';
 import { useConversationRestart } from './restart.ts';
 import { offersFreshSession } from '../../../../core/domain/conversation-restart.ts';
-import { useLiveReplies, useTranscriptReads } from './live-replies.ts';
+import { useLiveReplies } from './live-replies.ts';
 import { useConversationOutbox, useRunReads } from './outbox.ts';
 import type { ConversationRouteIntent, ConversationStore, PlannerConversationScope } from './contracts.ts';
 
@@ -62,7 +63,9 @@ export function useConversationStore(
     () => transcriptReads.track(harnessItemsQueryOptions(transport, cardId, unauthorized)),
     [transcriptReads, transport, cardId, unauthorized],
   );
-  const history = useInfiniteQuery({ ...transcriptQuery, enabled: scope !== null });
+  const history = useTranscriptHistory(transcriptQuery, scope !== null, transcriptReads);
+  const { loadEarlier } = history;
+  const historyKnown = history.data !== undefined;
   /* Numbered as the transcript's are: a send answered after an unknown attempt waits for reads started after it. */
   const runReads = useRunReads(registry.nextRead);
   const runQuery = useMemo(
@@ -74,19 +77,19 @@ export function useConversationStore(
   const modelCatalog = useQuery({
     ...modelCatalogQueryOptions(transport, { kind: 'card', cardId }, unauthorized), enabled: scope !== null,
   });
-  const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
+  const items = history.loadedRows;
   /* A remembered transcript is the reopen fallback while the first page is unknown;
        once any query data exists the server wins, even when empty. */
   /* Queued rows are supplied by the display projection, not twice from the server
      transcript. Raw `serverTurns` still sees every row for delivery reconciliation. */
-  const rememberedSource = useConversationRememberedTurns(history.data === undefined && scope !== null ? cardId : null);
-  const rememberedEntries = history.data === undefined ? rememberedSource : null;
+  const rememberedSource = useConversationRememberedTurns(!historyKnown && scope !== null ? cardId : null);
+  const rememberedEntries = !historyKnown ? rememberedSource : null;
   const queueWriteOut = useConversationQueueWriteOut(scope === null ? null : cardId);
   const serverTurns = useMemo(
-    () => history.data === undefined
+    () => !historyKnown
       ? (rememberedEntries ?? []).filter(isConversationMessage)
       : [...items].sort((left, right) => left.id - right.id).flatMap(harnessItemToTurns),
-    [history.data, items, rememberedEntries],
+    [historyKnown, items, rememberedEntries],
   );
   const landedRun = runReads.startOf(run.data);
   const servedQueue = run.data?.pending ?? EMPTY_PENDING_QUEUE;
@@ -181,7 +184,7 @@ export function useConversationStore(
   const stop = useConversationStop({
     cardId, canStop: working && !stalled,
     responseEnded: phase === 'idle' || phase === 'turn_completed',
-    historyKnown: history.data !== undefined,
+    historyKnown: historyKnown,
     newestRowId: items.reduce((latest, row) => Math.max(latest, row.id), 0),
     completedRowId: items.reduce<number | null>((latest, row) => transcriptRowToTurnOutcome(row) === null
       ? latest : Math.max(latest ?? 0, row.id), null),
@@ -316,10 +319,11 @@ export function useConversationStore(
     deleteQueuedEntry,
     queueWriteOut,
     steerQueuedEntry,
-    historyReady: history.data !== undefined,
+    historyReady: historyKnown,
     historyLoading: history.isFetching,
-    hasEarlier: history.hasNextPage,
-    loadingEarlier: history.isFetchingNextPage,
+    hasEarlier: history.earlier.cursor !== null,
+    earlierCursor: history.earlier.cursor,
+    loadingEarlier: history.earlier.pending,
     historyError: history.error === null ? null : readErrorText(history.error, 'The conversation history could not be loaded.'),
     runError: run.error === null ? null : readErrorText(run.error, 'The conversation’s status could not be loaded.'),
     runLoading: run.isFetching,
@@ -360,9 +364,9 @@ export function useConversationStore(
     },
     interrupt: stop.interrupt,
     restart: { strip: restart.strip, pending: restart.pending, start: restart.start },
-    retryHistory: () => { void history.refetch().catch(() => undefined); if (acceptedInitial !== undefined) void initialObservation.refetch().catch(() => undefined); },
+    retryHistory: () => { void (history.earlier.failed ? Promise.resolve(history.loadEarlier()) : history.refetch()).catch(() => undefined); if (acceptedInitial !== undefined) void initialObservation.refetch().catch(() => undefined); },
     retryRun: () => { void run.refetch().catch(() => undefined); if (acceptedInitial !== undefined) void initialObservation.refetch().catch(() => undefined); },
-    loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
+    loadEarlier,
     blockedReason: run.data?.blocked_reason ?? null,
     /* Before the first answer the conversation is following the default, which is
            what a card with no selection really does. */

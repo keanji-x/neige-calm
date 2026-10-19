@@ -7,6 +7,9 @@
 # and one FE pagination import to main's 298/135 baseline, yielding 309/136.
 # Current #2858/#2859 composition: main's 300 crates occurrences plus the same
 # 11 title references yields 311; the FE composition remains 136.
+# Latest-only conversation refresh: harness_item/fe 136 -> 140 is the owner
+# row type and page-limit imports, a real page-options caller and replacement test key.
+# The switch test reuses its fixed row fixture; no scan rule changes.
 # Upstream receipt/version references retain their own bounded exception below.
 # Restored-input transfer test: harness_item/crates 298 -> 299 is one SQL trigger
 # on the existing transcript table; production DELETE is factored without a new reference.

@@ -1,7 +1,7 @@
 import '../../styles/entry.css';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
-import { page } from 'vitest/browser';
+import { commands, page } from 'vitest/browser';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { HARNESS_ITEMS_PAGE_LIMIT as PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
@@ -33,7 +33,13 @@ it('names unopened fresh conversations from metadata and keeps the name across h
   await expect.element(page.getByText(`Latest input ${PAGE_LIMIT - 1}`, { exact: true })).toBeVisible();
   const first = fixture.requests.find(request => request.path.includes('/harness/items'));
   expect(first?.path).toContain('direction=desc');
-  await page.getByRole('button', { name: 'Load earlier', exact: true }).click();
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+  const pane = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  await expect.poll(() => pane.scrollTop).toBeLessThanOrEqual(pane.clientHeight);
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
+  await expect.element(page.getByText('Original old page input', { exact: true })).toBeInTheDocument();
+  // Prepend preserves the current reading mark; scroll up to read the new page.
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -100000);
   await expect.element(page.getByText('Original old page input', { exact: true })).toBeVisible();
   await expect.element(page.getByRole('complementary', { name: 'Daily Planner conversation', exact: true })).toBeVisible();
 });

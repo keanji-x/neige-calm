@@ -26,12 +26,65 @@ clear the provider's drafts, inputs or dispatched sends; late results remain
 owned by the original card. Query collection, stop cleanup and live retirement
 stay with their declared owners.
 
+`history.ts` owns one transcript Query cache under the existing card key. Automatic
+mount/focus/event/retry refresh reads only the latest server window. `History`
+contains an explicit `latest` observation and precedence-ordered `retained` windows.
+Each record keeps rows with typed coverage: a latest or exclusive-before upper
+bound, and a from-row or read-to-start lower bound. Only an actual short/empty
+HTTP response establishes read-to-start. Compaction combines observed coverage;
+a retained window larger than the 60-row budget is not a network page or a new
+exhaustion proof. Row ids are sparse and imply no continuity or server snapshot version.
+New observations override edits and omissions inside their interval. Previously
+loaded older rows remain readable and keep their DOM identity when they roll out
+of latest. Overlapping retained windows compact without retaining duplicate snapshots.
+A short latest response proves the complete current matching transcript.
+
+The history owner exposes loaded reading rows (`historyRows` / `loadedRows`), the
+actual latest-read carrier (`latestObservation` / `TranscriptReads.startOf`), and
+the next exclusive-before reading position with derived pending/error state
+(`earlierReadingPosition` / `earlier`). Store and live consumers never reconstruct window
+layout. Loaded raw historical sources still provide positive delivery facts;
+reading misses do not establish absence. Latest freshness remains an actual HTTP
+read in the view's ledger, with unknown reads numbered 0. The provider maps typed
+latest/before positions to the existing wire cursor, including cursor 0 only at
+that transport boundary; it supplies no Infinite Query settings or continuation policy.
+
+Explicit earlier reads use a transient mutation lifecycle with no retained result;
+only the transcript Query stores rows. Reader input admits at most one page while
+latest reconciliation is idle. A gap after rollover is filled before continuing
+at the oldest cursor, using overlap or actual server bounds rather than assuming
+contiguous row ids. An invalid cursor remains an error until explicit retry or
+newest reconciliation. Earlier completion never advances the latest read fence;
+an actual newer latest read, even with equal content or a remounted owner,
+supersedes an older request. Earlier requests bind to their original cache snapshot;
+public structural sharing preserves window/row identities while each publication
+receives a new outer snapshot. This eligibility check never supplies a read number.
+Admission, loading, error and result acceptance share the same current-window
+snapshot/read/cursor check. Public mutation cache state serializes all observers
+of that window; obsolete HTTP may finish but cannot lock or contaminate its successor.
+Clear, rewind, restored-input deletion and replay boundaries reset retained windows;
+a successful local replacement resets them after its ACK. These invalidations
+read the latest window rather than replay old cursors. Unknown older edits require
+such an invalidation or an explicit read; a latest window cannot certify them.
+
+Scoped owner change request (PR #2900): the approved cached-history-return task
+requires latest-only refresh, preserved loaded bodies and correct rewrite
+invalidation. `core/events/invalidation-plan.ts` therefore extends the existing
+`CacheWrite` contract with `reset-query` for destructive transcript events; the
+app adapter invokes public Query reset and the existing typed callers consume
+the declared effect. The task's approved refresh/read-model and typed-caller
+scope authorizes this narrow extension. Event wire formats, backend and persistent
+storage remain unchanged. Preserve its exact-path ownership trailer in the PR
+and squash body. This adds no event roster or per-test CI inventory; ordinary
+new tests and file renames use existing discovery. Page-size boundary fixtures
+live in the history owner and real-router switch targets.
+
 Production contracts are exercised through `app/router/track-conversation`,
 `today-conversation`, `planner-conversation`, `live-replies`, the side-pane browser
 paths and `chat-performance` browser probe. Direct store consumers in tests
 import the assembly here; query/route integration remains covered by the router.
-The extraction preserves function bodies and contract types, with AST parity
-checked against the source snapshot before moving them.
+The history model is verified through these production consumers and the
+behavioral contracts below.
 
 `draft-actions.ts` assembles first-message commands from a required draft
 snapshot, the Registry edit/start/accept/discard port, recovery-admitted transport,
@@ -251,3 +304,21 @@ Suppression carries the initial-input owner's actual authoritative version, not 
 older cached row's version. The app threads this contract. PendingQueue asks the one
 core comparison about the effective saved departing revision; an older historical
 carrier cannot remove a newer ghost, while live rows always keep their controls.
+
+History model verification uses the real history hook's HTTP paths, sparse overlap,
+omission, short/empty response, compaction and request-lifecycle cases in
+`history.test.tsx`, plus the actual read ledger in `read-order.test.ts`. Router
+`live-replies`, `first-message-continuity`, `track-conversation` and
+`conversation-input-response` tests exercise source handoff, ACK/read fences,
+stop and unchanged derivation. `conversation-switch.browser.test.tsx` asserts zero
+implicit earlier HTTP, latest visibility and retained DOM through real routing;
+`chat-performance.browser.test.tsx` counts rows through the owner selector. These
+are behavioral oracles, not mirrored reducers or a permanent test inventory.
+
+Ordinary coverage/compaction changes now touch `history.ts` and its adjacent tests;
+transport changes belong in providers and source-evidence policy changes in the
+existing read/live/outbox owners. Changing the row budget still belongs to the
+core constant and boundary fixtures. No window change requires a parallel array
+migration in store/live, a second cache, or a new registry. Projection and DOM
+costs still grow with loaded content; arbitrary unseen old edits and a complete
+navigation directory remain outside the current wire contract.

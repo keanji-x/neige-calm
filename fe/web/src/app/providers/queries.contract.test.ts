@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // Invariants owned by the shared query layer.
+import { earlierReadingPosition, latestHistory, observedWindow, type History } from '../conversations/history.ts';
 import { onlineManager, QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -569,6 +570,31 @@ describe('delete mutation wiring', () => {
     expect(client.getQueryState(queryKeys.areas())?.status).toBe('error');
   });
 
+  it('expires loaded history only after a successful replacement ACK before its source refresh', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = queryKeys.harnessItems('card-1');
+    const rows: History['latest']['rows'] = Array.from({ length: 120 }, (_, index) => ({
+      id: index + 1, worker_session_id: 'runtime', card_id: 'card-1', track_id: 'track-1', thread_id: 'thread',
+      turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
+      params: '{}', created_at_ms: index,
+    }));
+    client.setQueryData<History>(key, { latest: observedWindow(rows.slice(60), { kind: 'latest' }),
+      retained: [observedWindow(rows.slice(0, 60), { kind: 'before', rowId: 61 })] });
+    const order: string[] = [];
+    const reset = vi.spyOn(client, 'resetQueries');
+    reset.mockImplementation(filters => {
+      order.push('reset');
+      expect(filters).toEqual({ queryKey: key });
+      return Promise.resolve();
+    });
+    const transport: ApiTransportPort = { send: () => Promise.resolve(ok({ card_id: 'card-1', worker_session_id: 'runtime-1' })) };
+    const { result } = renderHook(() => usePlannerMutations(transport, 'card-1', null, unauthorized), { wrapper: mutationWrapper(client) });
+    await result.current.send('replacement', [], 'replace-key', 'old-turn', transport, () => { order.push('answered'); });
+    expect(order).toEqual(['answered', 'reset']);
+    expect(reset).toHaveBeenCalledOnce();
+    client.clear();
+  });
+
   it('does not turn an acknowledged planner send into a send failure when refresh fails', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const order: string[] = [];
@@ -758,17 +784,20 @@ describe('track create folders cache', () => {
 
 describe('planner history pagination', () => {
   it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
-    const firstPage = Array.from({ length: 300 }, (_, index) => ({
+    const firstPage = (limit: number) => Array.from({ length: limit }, (_, index) => ({
       id: 701 + index, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
       turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: '{}', created_at_ms: index,
     }));
-    const { transport, paths } = recordingTransport(() => ok(firstPage));
+    const { transport, paths } = recordingTransport(request => {
+      const url = new URL(request.path, 'http://localhost');
+      return ok(url.searchParams.get('after_id') === '0' ? firstPage(Number(url.searchParams.get('limit'))) : []);
+    });
     const options = transcriptQueryOptions(transport, 'card', unauthorized);
-    const page = await options.queryFn({ pageParam: 0 });
-    const cursor = options.getNextPageParam(page);
-    expect(cursor).toBe(701);
-    await options.queryFn({ pageParam: cursor ?? 0 });
+    const page = await options.queryFn({ position: { kind: 'latest' } });
+    const position = earlierReadingPosition(latestHistory(undefined, page));
+    expect(position).toEqual({ kind: 'before', rowId: 701 });
+    await options.queryFn({ position: position! });
     expect(paths[1]).toContain('after_id=701');
   });
 });

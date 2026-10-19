@@ -484,8 +484,8 @@ function useConversationPane(
                 pending={(store.historyError !== null && store.historyLoading) || (store.runError !== null && store.runLoading)}
                 actionLabel={store.historyError !== null && store.runError !== null ? 'Reload conversation'
                   : store.runError !== null ? 'Reload status' : 'Reload history'}
-                description={store.runError === null ? undefined
-                  : 'The last known status may be out of date. Reloading does not restart the conversation.'}
+                description={[store.historyError !== null && store.historyReady ? 'Earlier history is incomplete. Navigation covers loaded messages.' : null,
+                  store.runError === null ? null : 'The last known status may be out of date. Reloading does not restart the conversation.'].filter(Boolean).join(' ') || undefined}
                 onRetry={() => {
                   if (store.historyError !== null) store.retryHistory();
                   if (store.runError !== null) store.retryRun();
@@ -575,6 +575,9 @@ function useConversationPane(
     if (open !== null && store.failedSend !== null && store.retrySend(store.failedSend.key)) focusComposer(open.id);
   });
   const threadReadingView = useThreadReadingView(composerId);
+  const historyPrefetch = useMemo(() => ({ active: panePresented, cursor: store.earlierCursor,
+    busy: store.historyLoading, failed: store.historyError !== null, load: store.loadEarlier }),
+  [panePresented, store.earlierCursor, store.historyLoading, store.historyError, store.loadEarlier]);
   const newConversation = useCommittedCallback(existingId, startAnother);
   const interrupt = useCommittedCallback(existingId, store.interrupt);
   const compact = useCommittedCallback(existingId, store.compact);
@@ -829,6 +832,7 @@ function useConversationPane(
             )}
             {store.compactOutcome?.status === 'completed' && <ChatFooterNotice tone="neutral">已压缩</ChatFooterNotice>}
             {store.contextUsageInvalidated && <ChatFooterNotice tone="neutral">用量待更新</ChatFooterNotice>}
+            {store.loadingEarlier && <ChatFooterNotice tone="neutral">Loading earlier messages… Navigation covers loaded history.</ChatFooterNotice>}
             {store.compacting && <ChatFooterNotice>Compacting conversation context…</ChatFooterNotice>}
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
@@ -868,11 +872,6 @@ function useConversationPane(
           </>)}
         {open !== null && (
           <>
-            {store.hasEarlier && (
-              <button type="button" disabled={store.loadingEarlier} onClick={store.loadEarlier}>
-                {store.loadingEarlier ? 'Loading…' : 'Load earlier'}
-              </button>
-            )}
             {!conversationBodyVisible && (!threadPresented || !store.historyReady) && store.historyError === null && (
               <p role="status">Loading conversation…</p>
             )}
@@ -886,7 +885,7 @@ function useConversationPane(
             {!threadPresented && outgoingPreview !== undefined && <OutgoingMessage text={outgoingPreview.text} mobile={compactViewport} />}
             {!threadPresented && hasPendingMessages && pendingMessages}
             {threadPresented && (
-              <ChatThread readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
+              <ChatThread historyPrefetch={historyPrefetch} readingView={threadReadingView} key={open.id} pendingMessages={pendingMessages}
                 hasPendingMessages={hasPendingMessages || (pendingPresentation?.conversationId === existingId && pendingPresentation.visible)}
                 conversation={open}
                 imageFiles={imageFiles}
