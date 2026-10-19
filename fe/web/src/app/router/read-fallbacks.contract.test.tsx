@@ -200,7 +200,7 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
-        capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+        capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
@@ -236,7 +236,7 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
-        capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+        capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
@@ -314,7 +314,7 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true, conversationInitialInput: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
-        capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+        capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);

@@ -269,3 +269,16 @@ fn card_patch_documents_every_server_owned_payload_key() {
         assert!(payload.contains(&format!("`{key}`")), "{key}: {payload}");
     }
 }
+
+#[test]
+fn steer_is_a_required_boolean_in_managed_capabilities() {
+    let document = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    let capabilities = &document["components"]["schemas"]["ManagedCapabilities"];
+    assert_eq!(capabilities["properties"]["steer"]["type"], "boolean");
+    assert!(
+        capabilities["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("steer"))
+    );
+}

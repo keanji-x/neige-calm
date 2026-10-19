@@ -2,7 +2,7 @@ import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pendi
 import { useConversationLinks } from './conversation-links.tsx';
 import { useTerminalWorkbench, TerminalWorkbenchView, type TerminalWorkbench } from '../../features/track/workbench/public.tsx';
 import { TerminalCompanion } from './terminal-companion.tsx';
-import { useManagedProviders } from '../providers/managed-providers.ts';
+import { managedProvidersQueryOptions, useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useContentAdmission } from '../../ui/content-presentation/public.ts';
 import { useConversationDraftRetention, useConversationPaneTarget, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
@@ -408,6 +408,8 @@ function useConversationPane(
   const dockRowId = compactComposer ? options?.reportComposer?.conversationId ?? null : null;
   const composerRowId = openRowId ?? dockRowId;
   const managed = useManagedProviders(transport, unauthorized, openTarget?.kind === 'draft');
+  // The app owns capability reads; unknown/error answers never inject a steer action.
+  const steerCapabilities = useQuery({ ...managedProvidersQueryOptions(transport, unauthorized), enabled: composerRowId !== null });
   const draftCapabilities = managed.version;
   const supportsDraftModel = draftCapabilities.data?.conversationCreateModel === true;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
@@ -617,7 +619,8 @@ function useConversationPane(
   const composerAttachments = useMemo(() => ({ items: attachmentItems, ids: attachmentIds, busy: attachmentBusy,
     error: attachmentError, atCapacity, attach, remove: removeAttachment }),
   [attachmentItems, attachmentIds, attachmentBusy, attachmentError, atCapacity, attach, removeAttachment]);
-  const canSteer = store.steerQueuedEntry !== undefined;
+  const canSteer = store.steerQueuedEntry !== undefined && !steerCapabilities.isError
+    && steerCapabilities.data?.find(answer => answer.availability.provider === scopeProvider)?.capabilities.steer === true;
   const refocusQueuedComposer = useCommittedCallback(existingId, () => { if (existingId !== null) focusComposer(existingId); });
   const [pendingPresentation, setPendingPresentation] = useState<Readonly<{ conversationId: string | null; visible: boolean }> | null>(null);
   const pendingPresenceChanged = useCallback((visible: boolean) => {

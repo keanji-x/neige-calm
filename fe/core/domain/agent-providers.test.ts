@@ -3,7 +3,7 @@ import { managedProviderProblem, managedProvidersOperation } from './agent-provi
 
 const READY = Object.freeze({
   availability: { provider: 'claude' as const, status: 'ready' as const, reason: null, checked_at_ms: 1, authentication_notice: null },
-  capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true },
+  capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true },
 });
 
 it('decodes registered managed capabilities and preserves availability notices', () => {
@@ -30,4 +30,13 @@ it('rejects unknown or incomplete capabilities without supplying a backend', () 
 it('uses backend-declared admission even when account status is unavailable', () => {
   const unavailable = { ...READY, capabilities: { ...READY.capabilities, requires_ready_availability: false }, availability: { ...READY.availability, provider: 'codex' as const, status: 'unavailable' as const, reason: 'Daemon is restarting' } };
   expect(managedProviderProblem(managedProvidersOperation(false).responseSchema.parse([unavailable]), 'codex')).toBeNull();
+});
+
+
+it('requires steer as a boolean without a default', () => {
+  const schema = managedProvidersOperation(false).responseSchema;
+  const missing: Partial<typeof READY.capabilities> = { ...READY.capabilities };
+  delete missing.steer;
+  expect(schema.safeParse([{ ...READY, capabilities: missing }]).success).toBe(false);
+  expect(schema.safeParse([{ ...READY, capabilities: { ...READY.capabilities, steer: 'true' } }]).success).toBe(false);
 });

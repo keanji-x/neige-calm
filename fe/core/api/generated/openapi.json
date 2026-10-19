@@ -15417,6 +15417,7 @@
         "type": "object",
         "required": [
           "managed_conversation",
+          "steer",
           "images",
           "manual_compact",
           "history_replacement",
@@ -15438,6 +15439,10 @@
           "requires_ready_availability": {
             "type": "boolean",
             "description": "Whether a failed availability/authentication probe refuses initial creation."
+          },
+          "steer": {
+            "type": "boolean",
+            "description": "Whether queued input can join a running turn."
           }
         }
       },

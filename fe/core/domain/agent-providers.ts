@@ -99,6 +99,7 @@ export const managedProviderAvailabilitySchema = z.object({
   availability: providerAvailabilitySchema,
   capabilities: z.object({
     managed_conversation: z.boolean(),
+    steer: z.boolean(),
     images: z.boolean(),
     manual_compact: z.boolean(),
     history_replacement: z.boolean(),

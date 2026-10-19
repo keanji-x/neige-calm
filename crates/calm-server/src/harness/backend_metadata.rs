@@ -6,6 +6,8 @@ use utoipa::ToSchema;
 #[derive(Clone, Copy, Debug, Serialize, ToSchema)]
 pub struct ManagedCapabilities {
     pub managed_conversation: bool,
+    /// Whether queued input can join a running turn.
+    pub steer: bool,
     pub images: bool,
     pub manual_compact: bool,
     pub history_replacement: bool,
@@ -69,6 +71,7 @@ impl super::backend::PlannerBackend {
             requires_codex_daemon,
             capabilities: ManagedCapabilities {
                 managed_conversation: true,
+                steer,
                 images,
                 manual_compact,
                 history_replacement,
@@ -93,5 +96,20 @@ impl ToolDiscovery {
         template
             .replace("{assistant_tool_discovery}", tools)
             .replace(include_str!("../../prompts/tool-discovery.md"), "")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steer_capability_projects_backend_metadata_for_each_provider() {
+        for provider in super::super::backend::PlannerBackend::registered_providers() {
+            let metadata = super::super::backend::PlannerBackend::metadata(&provider);
+            let serialized = serde_json::to_value(metadata.capabilities).unwrap();
+            assert_eq!(serialized["steer"], metadata.steer, "{provider:?}");
+            assert_eq!(metadata.steer, matches!(provider, AgentProvider::Codex));
+        }
     }
 }

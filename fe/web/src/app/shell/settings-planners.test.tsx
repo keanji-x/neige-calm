@@ -37,9 +37,9 @@ afterEach(() => {
 function answer(claude: Readonly<{ status: string; reason: string | null }>) {
   return [
     { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
-      capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
+      capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
     { availability: { provider: 'claude', ...claude, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
-      capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
+      capabilities: { managed_conversation: true, steer: false, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
   ];
 }
 

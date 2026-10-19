@@ -46,7 +46,7 @@ export function renderRecoveryFixture({ accepted = false, holdReads = false, sto
       if (holdCapabilities) await new Promise<void>(finish => { heldCapabilities.push(finish); });
       return ok([{
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
-      capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+      capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
     }
     if (request.method === 'POST' && (request.path.endsWith('/planner/input') || request.path.endsWith('/conversations'))) {

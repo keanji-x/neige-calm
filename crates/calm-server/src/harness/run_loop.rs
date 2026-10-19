@@ -1649,7 +1649,7 @@ async fn handle_steer(
     // runs as the next turn.
     if !PlannerBackend::metadata(&inner.backend.provider()).steer {
         return Ok(Err(SteerRefused::NotTaken {
-            message: "this Planner's provider (Claude) cannot take messages into a running \
+            message: "this Planner's provider cannot take messages into a running \
                       turn; it stays queued"
                 .into(),
             phase,
