@@ -130,8 +130,12 @@ async function verifyBuild() {
 }
 const area = { id: 'profile-area', name: 'Profile area', color: '#6574cd', sort: 0, kind: 'user', created_at: 1, updated_at: 1 };
 const tracks = [
-  { id: 'small', area_id: area.id, title: 'Small track', sort: 0, cwd: '/workspace', pinned_at: null, closed_at: null, admin_granted_at: null, created_at: 1, updated_at: 2 },
-  { id: 'large', area_id: area.id, title: 'Large track', sort: 1, cwd: '/workspace', pinned_at: null, closed_at: null, admin_granted_at: null, created_at: 1, updated_at: 2 },
+  { id: 'small', area_id: area.id, title: 'Small track', sort: 0, cwd: '/workspace',
+    workspace: { isolation: 'worktree', kind: 'attached', path: '/workspace', frozen_at: null, worktree: '/workspace/.worktrees/small' },
+    pinned_at: null, closed_at: null, admin_granted_at: null, created_at: 1, updated_at: 2 },
+  { id: 'large', area_id: area.id, title: 'Large track', sort: 1, cwd: '/workspace',
+    workspace: { isolation: 'worktree', kind: 'attached', path: '/workspace', frozen_at: null, worktree: '/workspace/.worktrees/large' },
+    pinned_at: null, closed_at: null, admin_granted_at: null, created_at: 1, updated_at: 2 },
 ];
 const fixture = tracks.map(track => ({ id: track.id, title: track.title, count: track.id === 'large' ? count : 2 }));
 /** @param {string} id @param {number} size */

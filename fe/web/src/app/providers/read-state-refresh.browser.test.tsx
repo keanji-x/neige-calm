@@ -21,6 +21,7 @@ afterEach(() => { cleanup(); });
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const area = { id: 'work', name: 'Work', color: '#6574cd', sort: 0, kind: 'user', created_at: 1, updated_at: 1 };
 const row = (id: string, title: string) => ({ id, area_id: area.id, title, sort: 0, cwd: '/tmp',
+  workspace: { isolation: 'worktree', kind: 'attached', path: '/tmp', frozen_at: null, worktree: `/tmp/.worktrees/${id}` },
   pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 });
 const tracks = [row('seen', 'Seen'), row('fresh', 'Fresh')];
 const activity = (id: string, at: number) => ({ id: `activity-${id}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: id,
