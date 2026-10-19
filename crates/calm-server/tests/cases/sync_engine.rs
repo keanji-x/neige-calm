@@ -311,7 +311,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                         title: None,
                         kind: "terminal".into(),
                         sort: None,
-                        payload: serde_json::json!({}),
+                        payload: serde_json::json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
                     },
                     &calm_server::card_role_cache::CardRoleCache::new(),
                 )
@@ -614,7 +614,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                                 title: None,
                                 kind: "terminal".into(),
                                 sort: None,
-                                payload: serde_json::json!({}),
+                                payload: serde_json::json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
                             },
                             &calm_server::card_role_cache::CardRoleCache::new(),
                         )

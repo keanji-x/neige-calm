@@ -1902,7 +1902,7 @@ async fn seed_terminal_worker(boot: &Boot, task_id: &str) -> (CardId, String) {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({ "idempotency_key": task_id }),
+            payload: json!({"terminal_presentation": {"source": "task", "in_workbench": false},  "idempotency_key": task_id }),
         })
         .await
         .expect("terminal worker card");

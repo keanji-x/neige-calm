@@ -872,7 +872,7 @@ mod tests {
                 title: None,
                 kind: "terminal".into(),
                 sort: None,
-                payload: json!({ "schemaVersion": 1, TERMINAL_SIGNALS_PAYLOAD_KEY: false }),
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false},  "schemaVersion": 1, TERMINAL_SIGNALS_PAYLOAD_KEY: false }),
             })
             .await
             .unwrap();
@@ -897,7 +897,7 @@ mod tests {
                 title: None,
                 kind: "terminal".into(),
                 sort: None,
-                payload: json!({ "schemaVersion": 1, TERMINAL_SIGNALS_PAYLOAD_KEY: false }),
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false},  "schemaVersion": 1, TERMINAL_SIGNALS_PAYLOAD_KEY: false }),
             })
             .await
             .unwrap();

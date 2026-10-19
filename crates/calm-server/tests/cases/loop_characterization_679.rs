@@ -625,7 +625,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"idempotency_key": task_id}),
+            payload: json!({"terminal_presentation": {"source": "task", "in_workbench": false}, "idempotency_key": task_id}),
         })
         .await
         .unwrap();

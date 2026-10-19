@@ -294,7 +294,7 @@ async fn public_card_create_writes_worker_role() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: serde_json::json!({}),
+            payload: serde_json::json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();

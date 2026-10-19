@@ -235,7 +235,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         },
         CardRole::Worker,
         true,
@@ -253,7 +253,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         },
         CardRole::Worker,
         false,
@@ -665,7 +665,7 @@ async fn track_delete_route_sweeps_card_track_and_view_overlays() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"title": "worker"}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}, "title": "worker"}),
         })
         .await
         .unwrap();

@@ -675,7 +675,7 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();

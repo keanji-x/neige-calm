@@ -146,7 +146,7 @@ async fn card_delete_reaps_terminal_process() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();
@@ -248,7 +248,7 @@ async fn track_delete_refuses_unowned_live_pid_only_terminals() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();
@@ -258,7 +258,7 @@ async fn track_delete_refuses_unowned_live_pid_only_terminals() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();
@@ -463,7 +463,7 @@ async fn area_delete_refuses_an_unowned_live_pid_only_terminal() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();

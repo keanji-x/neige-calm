@@ -3546,7 +3546,7 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "idempotency_key": "hidden-run"}),
+            payload: json!({"terminal_presentation": {"source": "task", "in_workbench": false}, "schemaVersion": 1, "idempotency_key": "hidden-run"}),
         },
         CardRole::Worker,
         true,

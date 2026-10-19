@@ -124,7 +124,7 @@ async fn boot_with_registry_and_daemon_hash(
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: Value::Null,
+            payload: serde_json::json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false}}),
         })
         .await
         .unwrap();

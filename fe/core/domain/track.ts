@@ -675,16 +675,16 @@ export type NewTerminalCardBody = Readonly<{
   env?: Readonly<Record<string, string>>;
 }>;
 
-/**
- * `POST /api/tracks/:id/terminal-cards`. Keyed per add-card intent, not per call: a retry under the key joins the card the
- * first attempt made, where an unkeyed one would make a second terminal.
- */
 /** Changes inventory membership only; source and terminal lifecycle remain server-owned. */
 export function setTerminalWorkbenchOperation(cardId: string, inWorkbench: boolean): ApiOperation<CardWire> {
   return { method: 'PATCH', path: `/api/cards/${encodeURIComponent(cardId)}/terminal-workbench`,
     body: { in_workbench: inWorkbench }, responseSchema: cardWireSchema };
 }
 
+/**
+ * `POST /api/tracks/:id/terminal-cards`. Keyed per add-card intent, not per call: a retry under the key joins the card the
+ * first attempt made, where an unkeyed one would make a second terminal.
+ */
 export function createTerminalCardOperation(
   trackId: string,
   body: NewTerminalCardBody,

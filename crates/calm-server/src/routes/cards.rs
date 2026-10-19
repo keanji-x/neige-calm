@@ -322,6 +322,7 @@ pub(crate) async fn create_card(
         .map_err(|error| CalmError::from(error).into_response())?;
     let card = CardCreateOperationPayload {
         actor: actor.to_actor_id(),
+        creation_source: calm_types::card_presentation::CardCreationSource::Manual,
         correlation: None,
         track_id,
         kind,
@@ -464,6 +465,7 @@ async fn create_via_tool_call(
         .map_err(|error| CalmError::from(error).into_response())?;
     let card = CardCreateOperationPayload {
         actor: ActorId::Plugin(via.plugin_id.clone()),
+        creation_source: calm_types::card_presentation::CardCreationSource::Plugin,
         correlation: Some(format!("user_tool_call:{}", via.tool_name)),
         track_id,
         kind: creation.resource_uri,

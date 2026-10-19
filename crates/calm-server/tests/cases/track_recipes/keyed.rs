@@ -152,6 +152,7 @@ async fn a_create_leaves_another_kinds_pending_operation_unclaimed() {
             },
             serde_json::to_value(CardCreateOperationPayload {
                 actor: calm_server::ids::ActorId::User,
+                creation_source: calm_types::card_presentation::CardCreationSource::Manual,
                 correlation: None,
                 track_id: "no-such-track".into(),
                 kind: "note".into(),

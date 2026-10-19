@@ -37,3 +37,9 @@ UPDATE cards SET payload=json_set(
     )
 ) WHERE kind='terminal';
 DROP TABLE terminal_presentation_upgrade;
+
+-- Before this reservation, clients could write the same key on any card kind.
+-- Remove that untrusted value so a later kind transition mints Unrecorded.
+UPDATE cards SET payload=json_remove(payload,'$.terminal_presentation')
+WHERE kind<>'terminal' AND json_type(payload)='object'
+  AND json_type(payload,'$.terminal_presentation') IS NOT NULL;

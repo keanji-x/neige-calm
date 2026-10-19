@@ -171,7 +171,7 @@ async fn seed_track_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                         title: None,
                         kind: "terminal".into(),
                         sort: None,
-                        payload: serde_json::json!({}),
+                        payload: serde_json::json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
                     },
                     &card_role_cache,
                 )

@@ -798,7 +798,7 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
         title: None,
         kind: "terminal".into(),
         sort: None,
-        payload: json!({"codex_source": "shared"}),
+        payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}, "codex_source": "shared"}),
     })
     .await
     .unwrap()

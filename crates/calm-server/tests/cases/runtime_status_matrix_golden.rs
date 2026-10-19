@@ -106,7 +106,7 @@ async fn probe(
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}, "schemaVersion": 1}),
         })
         .await
         .expect("create probe card");

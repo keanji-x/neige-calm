@@ -1870,7 +1870,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
             title: Some("live terminal".into()),
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}, "schemaVersion": 1}),
         })
         .await
         .unwrap();

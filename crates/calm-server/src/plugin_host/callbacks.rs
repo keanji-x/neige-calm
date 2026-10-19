@@ -1018,7 +1018,7 @@ mod tests {
                 title: None,
                 kind: "terminal".into(),
                 sort: None,
-                payload: json!({}),
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
             })
             .await
             .unwrap();
@@ -1299,7 +1299,7 @@ mod tests {
                 title: None,
                 kind: "terminal".into(),
                 sort: None,
-                payload: json!({}),
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
             })
             .await
             .unwrap();

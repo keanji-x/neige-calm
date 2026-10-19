@@ -85,7 +85,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();

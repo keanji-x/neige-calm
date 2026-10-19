@@ -1016,7 +1016,7 @@ async fn post_claude_restart_returns_403_for_non_claude_card() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}, "schemaVersion": 1}),
         })
         .await
         .unwrap();

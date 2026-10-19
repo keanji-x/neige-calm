@@ -164,7 +164,7 @@ impl Fixture {
                 kind: "terminal".into(),
                 title: None,
                 sort: None,
-                payload: json!({}),
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
             })
             .await
             .unwrap();

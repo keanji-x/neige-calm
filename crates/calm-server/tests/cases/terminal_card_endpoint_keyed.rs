@@ -340,7 +340,7 @@ async fn terminal_presentation_retry_refreshes_live_membership_for_atomic_and_ge
                 .unwrap();
         let mut old: Value = serde_json::from_str(&original).unwrap();
         old["result"]["payload"] = Value::Null;
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(pool)
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
             .unwrap();
         sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE idempotency_key=?2")

@@ -212,7 +212,7 @@ async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str)
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .expect("create card");

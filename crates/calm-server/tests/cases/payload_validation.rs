@@ -257,7 +257,7 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({ "terminal_id": "t1" }),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false},  "terminal_id": "t1" }),
         })
         .await
         .unwrap();
@@ -293,6 +293,7 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
         SERVER_OWNED_CARD_PAYLOAD_KEYS,
         [
             "terminal_signals",
+            "terminal_presentation",
             "template_context",
             "planner_provider",
             "assistant_provider",
@@ -354,7 +355,7 @@ async fn patch_card_with_a_server_owned_key_is_rejected() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({ "schemaVersion": 1, "terminal_id": "t1" }),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false},  "schemaVersion": 1, "terminal_id": "t1" }),
         })
         .await
         .unwrap();
@@ -400,7 +401,7 @@ async fn patch_replacing_payload_keeps_the_planner_terminal_marker() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({ "schemaVersion": 1, "terminal_signals": true }),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false},  "schemaVersion": 1, "terminal_signals": true }),
         })
         .await
         .unwrap();
@@ -410,7 +411,7 @@ async fn patch_replacing_payload_keeps_the_planner_terminal_marker() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({ "schemaVersion": 1 }),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false},  "schemaVersion": 1 }),
         })
         .await
         .unwrap();
@@ -637,7 +638,7 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
             title: None,
             kind: "terminal".into(),
             sort: None,
-            payload: json!({}),
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
         })
         .await
         .unwrap();

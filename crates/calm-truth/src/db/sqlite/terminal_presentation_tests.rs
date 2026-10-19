@@ -87,17 +87,25 @@ async fn terminal_presentation_migration_covers_all_cards_without_changing_opera
         } else {
             json!({"schemaVersion":1,"preserved":"yes", "terminal_presentation":{"source":"manual","in_workbench":true}})
         };
-        sqlx::query("INSERT INTO cards(id,track_id,kind,title,sort,payload,deletable,created_at,updated_at,role) VALUES(?1,'track','terminal',NULL,0,?2,?3,7,11,'worker')")
+        sqlx::query("INSERT INTO cards(id,track_id,kind,title,sort,payload,deletable,created_at,updated_at,role) \
+            VALUES(?1,'track','terminal',NULL,0,?2,?3,7,11,'worker')")
             .bind(id).bind(serde_json::to_string(&payload).unwrap()).bind(if *id=="system" {0} else {1})
             .execute(&pool).await.unwrap();
         if let Some(kind) = kind {
-            sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES(?1,?1,?2,'frozen-hash','unknown','{\"type\":\"unknown\",\"id\":null}',?3,?4,'succeeded',1,1)")
+            sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,\
+                payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) \
+                VALUES(?1,?1,?2,'frozen-hash','unknown','{\"type\":\"unknown\",\"id\":null}',?3,?4,'succeeded',1,1)")
                 .bind(id).bind(kind).bind(serde_json::to_string(input).unwrap())
                 .bind(serde_json::to_string(&json!({"result":{"id":id},"data":{"card_id":id}})).unwrap())
                 .execute(&pool).await.unwrap();
         }
     }
-    sqlx::query("INSERT INTO cards(id,track_id,kind,title,sort,payload,deletable,created_at,updated_at,role) VALUES('other','track','codex',NULL,0,'null',1,7,11,'worker')")
+    sqlx::query("INSERT INTO cards(id,track_id,kind,title,sort,payload,deletable,created_at,updated_at,role) \
+            VALUES('other','track','codex',NULL,0,'null',1,7,11,'worker')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO cards(id,track_id,kind,title,sort,payload,deletable,created_at,updated_at,role) \
+            VALUES('forged-other','track','codex',NULL,0,?1,1,7,11,'worker')")
+        .bind(json!({"preserved":"yes","terminal_presentation":{"source":"manual","in_workbench":true}}).to_string())
         .execute(&pool).await.unwrap();
     let before: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT id,payload_json,payload_hash,tx_output_json FROM operations ORDER BY id",
@@ -144,6 +152,24 @@ async fn terminal_presentation_migration_covers_all_cards_without_changing_opera
         .fetch_one(&pool)
         .await
         .unwrap();
+    let (forged, updated): (String, i64) =
+        sqlx::query_as("SELECT payload,updated_at FROM cards WHERE id='forged-other'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let forged: Value = serde_json::from_str(&forged).unwrap();
+    assert!(
+        forged.get(TERMINAL_PRESENTATION_PAYLOAD_KEY).is_none(),
+        "old client-authored provenance must not become sticky"
+    );
+    assert_eq!(forged["preserved"], "yes");
+    assert_eq!(updated, 11);
+    let converted =
+        crate::card_kind::prepare_card_transition_payload_global("terminal", forged).unwrap();
+    assert_eq!(
+        TerminalPresentation::from_payload(&converted).unwrap(),
+        TerminalPresentation::created(CardCreationSource::Unrecorded)
+    );
     assert_eq!(
         other, "null",
         "other PTY-backed card kinds must be untouched"

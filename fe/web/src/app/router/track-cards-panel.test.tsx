@@ -32,7 +32,7 @@ function card(overrides: Partial<CardWire> & Pick<CardWire, 'id' | 'kind'>): Car
 
 /* The headless pair is interleaved on purpose: dropping them must not shuffle what is left. */
 const PLANNER_CARD = card({ id: 'card-planner', kind: 'codex', title: 'Planner chat', payload: { planner_harness: true }, sort: 1 });
-const UNKNOWN_TERMINAL = card({ id: 'card-term', kind: 'terminal', title: 'Terminal one', sort: 2 });
+const UNKNOWN_TERMINAL = card({ id: 'card-term', kind: 'terminal', payload: { terminal_presentation: { source: 'manual', in_workbench: true } }, title: 'Terminal one', sort: 2 });
 const REPORT_CARD = card({ id: 'card-report', kind: 'track-report', title: 'Report card', sort: 3, payload: { body: '' } });
 const FILE_LINK_REPORT_CARD = card({
   id: 'card-report', kind: 'track-report', title: 'Report card', sort: 3, deletable: false,
@@ -332,7 +332,7 @@ describe('track route CARDS panel', () => {
   });
 
   it('preserves titled tools and gives anonymous terminals a distinct numbered name', async () => {
-    setup([...CARDS, card({ id: 'card-bare', kind: 'terminal', sort: 6 })]);
+    setup([...CARDS, card({ id: 'card-bare', kind: 'terminal', payload: { terminal_presentation: { source: 'manual', in_workbench: true } }, sort: 6 })]);
     const labels = await inventoryLabels();
     expect(labels).toEqual([
       'Terminal oneterminal', 'Terminal 01terminal', 'Codex chatcodex', 'Surfacepanel-surface', 'Unclaimed thingpanel-unclaimed',
@@ -546,7 +546,7 @@ describe('track route TASKS panel convergence', () => {
 /* #2526: the board tells a task worker whose attempt is no longer running that what is typed into it
  * serves no task. A display only — the terminal stays live — read from the same task rows the TASKS module draws. */
 describe('track route worker card notice', () => {
-  const PLAIN_TERMINAL = card({ id: 'card-plain', kind: 'terminal', title: 'Plain shell', sort: 7 });
+  const PLAIN_TERMINAL = card({ id: 'card-plain', kind: 'terminal', payload: { terminal_presentation: { source: 'manual', in_workbench: true } }, title: 'Plain shell', sort: 7 });
   const cell = (cardId: string) => [...document.querySelectorAll('[data-nc-card-cell]')]
     .find((element) => element.getAttribute('data-nc-card-id') === cardId) ?? null;
   const notice = (cardId: string) => cell(cardId)?.querySelector('[data-nc-terminal-notice]') ?? null;

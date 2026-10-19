@@ -183,7 +183,7 @@ impl TestFixture {
                 title: None,
                 kind: "terminal".into(),
                 sort: None,
-                payload: json!({}),
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
             })
             .await
             .expect("create card");
