@@ -414,8 +414,11 @@ impl OperationRuntime {
     }
 
     pub async fn cancel_parked(&self, op_id: &OperationId, reason: &str) -> Result<bool> {
-        if let Some(op) = self.repo.get_operation(op_id).await?
-            && self.adapter(&op.kind)?.owns_parked_resource().is_some()
+        let Some(op) = self.repo.get_operation(op_id).await? else {
+            return Ok(false);
+        };
+        if !matches!(op.phase, Phase::Parked)
+            || self.adapter(&op.kind)?.owns_parked_resource().is_some()
         {
             return Ok(false);
         }

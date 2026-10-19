@@ -396,6 +396,9 @@ async fn c2b_pre_c2b_native_op_is_never_advanced() {
 async fn c2b_phase_writes_preserve_gate_record() {
     use calm_server::operation::{OperationRepo, Phase, SqlxOperationRepo, TxOutput};
     let (fx, a, _) = held("phase-record").await;
+    // The release hook can run before the detached admission drive exits its claim loop.
+    // Keep that driver from reclaiming the row while this test exercises the repo write.
+    let _drive = fx.runtime.lock_for_track_delete_for_test().await;
     let before = op(&fx, &a.task.id).await;
     sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
         .bind(&before.id).execute(&fx.pool()).await.unwrap();
