@@ -527,9 +527,7 @@ async fn terminal_presentation_legacy_recovery_preserves_real_claim_cas_and_hash
         for value in [Value::Null, json!("true")] {
             let mut invalid = input.clone();
             invalid["planner_hooks"] = value;
-            let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-            assert!(adapter.prepare_tx(&mut tx, &invalid, &op).await.is_err());
-            tx.rollback().await.unwrap();
+            assert!(create_payload::decode_stored(&invalid, kind).is_err());
         }
     }
 }
@@ -543,7 +541,7 @@ async fn terminal_presentation_legacy_generic_pending_input_cannot_mint_provenan
         let adapter = CardCreateAdapter::new(harness.repo.clone(), CardRoleCache::new());
         let input = json!({"actor":"user","correlation":null,"track_id":harness.track_id,"kind":kind,
             "sort":null,"title":null,"payload":{"terminal_presentation":{"source":"manual","in_workbench":true}}});
-        assert!(adapter.validate(&input).await.is_err());
+        assert!(TxOnlyAdapter::validate(&adapter, &input).await.is_err());
         let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
         let id = op_repo
             .insert_operation(
@@ -570,7 +568,9 @@ async fn terminal_presentation_legacy_generic_pending_input_cannot_mint_provenan
             .find(|op| op.id == id)
             .unwrap();
         let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-        let output = adapter.prepare_tx(&mut tx, &op.payload, &op).await.unwrap();
+        let output = TxOnlyAdapter::prepare_tx(&adapter, &mut tx, &op.payload, &op)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         if kind == "terminal" {
             assert_eq!(

@@ -14,12 +14,10 @@ pub(super) fn decode_stored(
     }
     // Normalize only this local copy. The original persisted request remains the claim CAS oracle.
     let mut normalized = input.clone();
-    let hooks: Option<bool> = serde_json::from_value(
-        normalized
-            .get("planner_hooks")
-            .cloned()
-            .unwrap_or(Value::Null),
-    )?;
+    let hooks = normalized
+        .get("planner_hooks")
+        .map(|value| serde_json::from_value::<bool>(value.clone()))
+        .transpose()?;
     let source = match (operation_kind, hooks) {
         ("terminal-execution-create", _) => CardCreationSource::Manual,
         (_, Some(true)) => CardCreationSource::Agent,
