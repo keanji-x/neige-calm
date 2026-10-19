@@ -15,10 +15,9 @@ mod types;
 pub use types::*;
 mod client_transport;
 mod interrupt;
+mod request_attempt;
 #[cfg(test)]
 mod start_mapping_tests;
-pub use interrupt::legacy_result as interrupt_result;
-mod request_attempt;
 use request_attempt::{RpcAttemptFailure, RpcRemoteError, RpcResponseError};
 #[cfg(test)]
 mod server_request_tests;

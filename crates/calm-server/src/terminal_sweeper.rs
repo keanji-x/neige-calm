@@ -2,6 +2,7 @@
 //! has no active worker session; the settled-worker arm ends task-owned sessions after their attempts settle or their track closes;
 //! the Planner arm hibernates idle harnesses on closed tracks;
 //! the thread arm releases shared codex threads whose session ended (#1853).
+use provider::control::InterruptOutcome;
 
 use std::time::Duration;
 
@@ -282,19 +283,27 @@ where
 
     if session.provider == "codex"
         && let Some(thread_id) = session.thread_id.as_deref()
-        && let Err(e) = state
-            .shared_codex_appserver
-            .interrupt_active_turn(thread_id)
-            .await
     {
-        tracing::warn!(
-            target: "shared_codex_daemon::orphan_turn",
-            worker_session_id = %session.id,
-            card_id = %session.card_id,
-            thread_id = %thread_id,
-            error = %e,
-            "failed to interrupt active shared codex turn while ending a settled-worker session"
-        );
+        match state
+            .shared_codex_appserver
+            .interrupt_active_outcome(thread_id)
+            .await
+        {
+            InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
+            InterruptOutcome::LocalSignalDelivered => {
+                unreachable!("Codex does not deliver local signals")
+            }
+            InterruptOutcome::Unconfirmed { error: e, .. } => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::orphan_turn",
+                    worker_session_id = %session.id,
+                    card_id = %session.card_id,
+                    thread_id = %thread_id,
+                    error = %e,
+                    "failed to interrupt active shared codex turn while ending a settled-worker session"
+                );
+            }
+        }
     }
 
     let Some(term) = state.repo.terminal_get(&session.terminal_id).await? else {

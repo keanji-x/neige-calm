@@ -418,7 +418,7 @@ async fn thread_start_omits_developer_instructions_when_absent() {
 async fn turn_interrupt_treats_an_already_finished_turn_as_success() {
     let mut h = harness().await;
     let client = h.client.with_request_timeout(Duration::from_secs(5));
-    let interrupt = client.turn_interrupt("thread-1", "turn-1");
+    let interrupt = client.interrupt_outcome("thread-1", "turn-1");
 
     let server_task = tokio::spawn(async move {
         let req = server_recv_json(&mut h.server).await;
@@ -439,9 +439,10 @@ async fn turn_interrupt_treats_an_already_finished_turn_as_success() {
         h.server
     });
 
-    interrupt
-        .await
-        .expect("interrupt is idempotent when the named turn already finished");
+    assert!(
+        matches!(interrupt.await, crate::control::InterruptOutcome::NoTarget),
+        "interrupt is idempotent when the named turn already finished"
+    );
     let _server = server_task.await.unwrap();
 }
 
@@ -454,7 +455,7 @@ async fn turn_interrupt_propagates_other_rpc_errors() {
     for (code, message) in cases {
         let mut h = harness().await;
         let client = h.client.with_request_timeout(Duration::from_secs(5));
-        let interrupt = client.turn_interrupt("thread-1", "turn-1");
+        let interrupt = client.interrupt_outcome("thread-1", "turn-1");
 
         let server_task = tokio::spawn(async move {
             let req = server_recv_json(&mut h.server).await;
@@ -471,9 +472,11 @@ async fn turn_interrupt_propagates_other_rpc_errors() {
             h.server
         });
 
-        let error = interrupt
-            .await
-            .expect_err("only Codex's exact no-active-turn response may be ignored");
+        let crate::control::InterruptOutcome::Unconfirmed { error, evidence } = interrupt.await
+        else {
+            panic!("only Codex's exact no-active-turn response may be ignored");
+        };
+        assert_eq!(evidence, crate::control::SubmissionEvidence::Unobserved);
         let Error::Refused(actual) = error else {
             panic!("RPC refusals must retain their error type: {error}");
         };

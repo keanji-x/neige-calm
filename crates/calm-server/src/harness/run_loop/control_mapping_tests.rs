@@ -227,14 +227,6 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
             }
             other => panic!("wrong mapping: {other:?}"),
         }
-        assert_eq!(
-            f.harness
-                .inner
-                .backend
-                .legacy_interrupt_result(outcome)
-                .is_err(),
-            fail
-        );
     }
     // The existing coarse classifier includes this local pre-RPC conflict. It must still wedge.
     f.daemon
@@ -249,7 +241,6 @@ async fn m1_mapping_codex_live_interrupt_and_sealed_compact_boundaries() {
 
 #[tokio::test]
 async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
-    use crate::harness::backend::InterruptDiagnostic;
     use crate::harness::profile::{HarnessProfile, PlannerBinding};
     use crate::harness::wiring::{PlannerRow, PlannerWiring};
     use crate::session_projection_repo::AgentProvider;
@@ -338,21 +329,6 @@ async fn m1_mapping_local_backend_host_refusals_and_interrupt_old_projection() {
             .turn_interrupt(InterruptRequest { turn: identity })
             .await;
         assert!(matches!(outcome, InterruptOutcome::NoTarget));
-        assert!(backend.legacy_interrupt_result(outcome).is_ok());
-        // These source owners used to swallow failed local delivery. It must remain legacy Ok,
-        // even though the neutral fact now retains the owned error for other consumers.
-        for evidence in [
-            SubmissionEvidence::NotWritten,
-            SubmissionEvidence::WriteMayHaveReachedPeer,
-        ] {
-            let error: InterruptDiagnostic =
-                Box::new(CalmError::Io(std::io::Error::other("original")));
-            assert!(
-                backend
-                    .legacy_interrupt_result(InterruptOutcome::Unconfirmed { error, evidence })
-                    .is_ok()
-            );
-        }
         assert!(f.daemon.compacted_threads_for_test().is_empty());
     }
 }

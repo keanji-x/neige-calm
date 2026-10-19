@@ -1622,10 +1622,12 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
         "viewer failure must not cancel business"
     );
     // A later explicit cleanup can still address the exact acknowledged turn.
-    boot.shared
-        .interrupt_active_turn("fake-thread-0001")
-        .await
-        .unwrap();
+    assert!(matches!(
+        boot.shared
+            .interrupt_active_outcome("fake-thread-0001")
+            .await,
+        provider::control::InterruptOutcome::NativeAck
+    ));
     let requests = wait_for_requests(&capture_file, 4).await;
     assert!(requests.iter().any(|row| row["method"] == "turn/interrupt"
         && row.pointer("/params/threadId").and_then(Value::as_str) == Some("fake-thread-0001")

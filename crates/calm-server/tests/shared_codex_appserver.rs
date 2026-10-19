@@ -2564,10 +2564,15 @@ async fn interrupt_active_turn_is_noop_when_no_active_turn() {
     let repo = repo().await;
     let daemon = SharedCodexAppServer::new_stub(repo);
 
-    daemon
-        .interrupt_active_turn("thread-without-active-turn")
-        .await
-        .expect("missing active turn should be a no-op");
+    assert!(
+        matches!(
+            daemon
+                .interrupt_active_outcome("thread-without-active-turn")
+                .await,
+            provider::control::InterruptOutcome::NoTarget
+        ),
+        "missing active turn should be a no-op"
+    );
 }
 
 #[tokio::test]
@@ -2741,7 +2746,10 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
         )
         .await
         .unwrap();
-    daemon.interrupt_active_turn(&thread_id).await.unwrap();
+    assert!(matches!(
+        daemon.interrupt_active_outcome(&thread_id).await,
+        provider::control::InterruptOutcome::NativeAck
+    ));
 
     unsafe {
         std::env::remove_var("FAKE_CODEX_SKIP_TURN_STARTED");

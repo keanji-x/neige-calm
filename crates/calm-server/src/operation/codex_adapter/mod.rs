@@ -1,3 +1,4 @@
+use provider::control::InterruptOutcome;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -680,18 +681,25 @@ impl ProviderAdapter for CodexAdapter {
                                 TxOutput::non_empty_string(runtime.thread_id.as_deref())
                             })
                     };
-                if let Some(thread_id) = thread_id
-                    && let Err(e) = self
+                if let Some(thread_id) = thread_id {
+                    match self
                         .shared_codex_appserver
-                        .interrupt_active_turn(&thread_id)
+                        .interrupt_active_outcome(&thread_id)
                         .await
-                {
-                    tracing::warn!(
-                        card_id = %card_id,
-                        thread_id = %thread_id,
-                        error = %e,
-                        "prompted codex compensation could not interrupt active shared turn"
-                    );
+                    {
+                        InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
+                        InterruptOutcome::LocalSignalDelivered => {
+                            unreachable!("Codex does not deliver local signals")
+                        }
+                        InterruptOutcome::Unconfirmed { error: e, .. } => {
+                            tracing::warn!(
+                                card_id = %card_id,
+                                thread_id = %thread_id,
+                                error = %e,
+                                "prompted codex compensation could not interrupt active shared turn"
+                            );
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -984,11 +992,23 @@ impl ProviderAdapter for CodexWorkerAdapter {
             {
                 business_may_be_live = true;
                 // An interrupt request is not proof of stopped external writers.
-                let _ = tokio::time::timeout(
+                match tokio::time::timeout(
                     std::time::Duration::from_secs(2),
-                    self.shared_codex_appserver.interrupt_active_turn(thread_id),
+                    self.shared_codex_appserver
+                        .interrupt_active_outcome(thread_id),
                 )
-                .await;
+                .await
+                {
+                    Ok(
+                        InterruptOutcome::NativeAck
+                        | InterruptOutcome::NoTarget
+                        | InterruptOutcome::Unconfirmed { .. },
+                    )
+                    | Err(_) => {}
+                    Ok(InterruptOutcome::LocalSignalDelivered) => {
+                        unreachable!("Codex does not deliver local signals")
+                    }
+                }
             }
         }
         super::worker_cleanup::require_cleanup_safe(ctx, op, output, business_may_be_live).await?;
@@ -1040,37 +1060,51 @@ impl ProviderAdapter for CodexWorkerAdapter {
             let cached_turn = self
                 .shared_codex_appserver
                 .active_turn_id_for_thread(&thread_id);
-            if let Err(e) = self
+            match self
                 .shared_codex_appserver
-                .interrupt_active_turn(&thread_id)
+                .interrupt_active_outcome(&thread_id)
                 .await
             {
-                let turn_id = cached_turn
-                    .as_deref()
-                    .or(persisted_turn.as_deref())
-                    .unwrap_or("");
-                tracing::warn!(
-                    runtime_id = %runtime_id,
-                    thread_id = %thread_id,
-                    turn_id = %turn_id,
-                    error = %e,
-                    "worker compensation replay thread interrupt failed"
-                );
+                InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
+                InterruptOutcome::LocalSignalDelivered => {
+                    unreachable!("Codex does not deliver local signals")
+                }
+                InterruptOutcome::Unconfirmed { error: e, .. } => {
+                    let turn_id = cached_turn
+                        .as_deref()
+                        .or(persisted_turn.as_deref())
+                        .unwrap_or("");
+                    tracing::warn!(
+                        runtime_id = %runtime_id,
+                        thread_id = %thread_id,
+                        turn_id = %turn_id,
+                        error = %e,
+                        "worker compensation replay thread interrupt failed"
+                    );
+                }
             }
             if cached_turn.is_none()
                 && let Some(persisted_turn) = persisted_turn.as_deref()
-                && let Err(e) = self
-                    .shared_codex_appserver
-                    .turn_interrupt(&thread_id, persisted_turn)
-                    .await
             {
-                tracing::warn!(
-                    runtime_id = %runtime_id,
-                    thread_id = %thread_id,
-                    turn_id = persisted_turn,
-                    error = %e,
-                    "worker compensation replay persisted-turn interrupt failed"
-                );
+                match self
+                    .shared_codex_appserver
+                    .interrupt_outcome(&thread_id, persisted_turn)
+                    .await
+                {
+                    InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
+                    InterruptOutcome::LocalSignalDelivered => {
+                        unreachable!("Codex does not deliver local signals")
+                    }
+                    InterruptOutcome::Unconfirmed { error: e, .. } => {
+                        tracing::warn!(
+                            runtime_id = %runtime_id,
+                            thread_id = %thread_id,
+                            turn_id = persisted_turn,
+                            error = %e,
+                            "worker compensation replay persisted-turn interrupt failed"
+                        );
+                    }
+                }
             }
         }
         Ok(())

@@ -1,4 +1,5 @@
 use crate::harness::profile::HarnessProfileExt;
+use provider::control::InterruptOutcome;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1737,10 +1738,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 {
                     tracing::warn!(worker_session_id, error = %e, "planner harness compensation stop failed");
                 }
-                if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str)
-                    && let Err(e) = self.daemon.interrupt_active_turn(thread_id).await
-                {
-                    tracing::warn!(thread_id, error = %e, "planner harness compensation interrupt failed");
+                if let Some(thread_id) = step.args.get("thread_id").and_then(Value::as_str) {
+                    match self.daemon.interrupt_active_outcome(thread_id).await {
+                        InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
+                        InterruptOutcome::LocalSignalDelivered => {
+                            unreachable!("Codex does not deliver local signals")
+                        }
+                        InterruptOutcome::Unconfirmed { error: e, .. } => {
+                            tracing::warn!(thread_id, error = %e, "planner harness compensation interrupt failed");
+                        }
+                    }
                 }
                 let card_id = step.arg_string("card_id", "planner harness")?;
                 clear_card_runtime_fields(ctx, &card_id).await?;

@@ -1,12 +1,8 @@
-//! Native interrupt evidence and the legacy projection.
+//! Native interrupt response evidence.
 use super::*;
 
 impl CodexAppServer {
-    pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
-        legacy_result(self.interrupt_outcome(thread_id, turn_id).await)
-    }
-
-    /// Capture the native response before the legacy no-target success projection erases it.
+    /// Capture the native response without erasing no-target evidence.
     pub async fn interrupt_outcome(
         &self,
         thread_id: &str,
@@ -39,49 +35,30 @@ fn interrupt_response(response: Result<Value>) -> crate::control::InterruptOutco
         }
     }
 }
-
-/// The old Codex contract folds only ack and no-target to success; it propagates the same error.
-pub fn legacy_result<E>(
-    outcome: crate::control::InterruptOutcome<E>,
-) -> std::result::Result<(), E> {
-    match outcome {
-        crate::control::InterruptOutcome::Unconfirmed { error, .. } => Err(error),
-        crate::control::InterruptOutcome::NativeAck
-        | crate::control::InterruptOutcome::NoTarget
-        | crate::control::InterruptOutcome::LocalSignalDelivered => Ok(()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::control::{InterruptOutcome, SubmissionEvidence};
 
     #[test]
-    fn m1_mapping_interrupt_response_and_old_projection() {
+    fn m1_mapping_interrupt_response() {
         let cases = [
-            (Ok(json!({})), "ack", true),
+            (Ok(json!({})), "ack"),
             (
                 Err(Error::Refused(
                     "turn/interrupt failed: no active turn to interrupt (code -32600)".into(),
                 )),
                 "none",
-                true,
             ),
             (
                 Err(Error::Refused(
                     "turn/interrupt failed: no active turn to interrupt (code -32601)".into(),
                 )),
                 "unknown",
-                false,
             ),
-            (
-                Err(Error::Transport("connection lost".into())),
-                "unknown",
-                false,
-            ),
+            (Err(Error::Transport("connection lost".into())), "unknown"),
         ];
-        for (input, fact, old_ok) in cases {
+        for (input, fact) in cases {
             let original = input.as_ref().err().map(ToString::to_string);
             let outcome = interrupt_response(input);
             match (&outcome, fact) {
@@ -92,7 +69,6 @@ mod tests {
                 }
                 other => panic!("wrong mapping: {other:?}"),
             }
-            assert_eq!(legacy_result(outcome).is_ok(), old_ok);
         }
     }
 }

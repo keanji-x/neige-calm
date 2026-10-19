@@ -100,3 +100,103 @@ impl From<StartError> for CalmError {
         }
     }
 }
+
+use super::*;
+
+impl SharedCodexAppServer {
+    pub async fn interrupt_outcome(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> provider::control::InterruptOutcome<CalmError> {
+        self.interrupt_control(thread_id, turn_id)
+            .await
+            .map_error(Into::into)
+    }
+
+    pub(super) async fn interrupt_control(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> provider::control::InterruptOutcome<control::StartError> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.interrupted_turns
+                .lock()
+                .expect("fake shared codex interrupted turns mutex poisoned")
+                .push((thread_id.to_string(), turn_id.to_string()));
+            let hold = fake
+                .interrupt_hold
+                .lock()
+                .expect("interrupt hold poisoned")
+                .clone();
+            if let Some((entered, release)) = hold {
+                entered.notify_one();
+                release.notified().await;
+            }
+            if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
+                return provider::control::InterruptOutcome::Unconfirmed {
+                    error: control::StartError::Unanswered(CalmError::CodexAppServer(
+                        "fixture: turn/interrupt failed".into(),
+                    )),
+                    evidence: provider::control::SubmissionEvidence::Unobserved,
+                };
+            }
+            self.active_turns
+                .remove_if(thread_id, |_, active| active == turn_id);
+            return provider::control::InterruptOutcome::NativeAck;
+        }
+        let client = match self.connected_client().await {
+            Ok(client) => client,
+            Err(error @ (ControlError::Refused(_) | ControlError::Unanswered(_))) => {
+                return provider::control::InterruptOutcome::Unconfirmed {
+                    error: error.into(),
+                    evidence: provider::control::SubmissionEvidence::Unobserved,
+                };
+            }
+        };
+        client
+            .interrupt_outcome(thread_id, turn_id)
+            .await
+            .map_error(Into::into)
+    }
+
+    pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
+        self.active_turns
+            .get(thread_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    pub async fn interrupt_active_outcome(
+        &self,
+        thread_id: &str,
+    ) -> provider::control::InterruptOutcome<CalmError> {
+        let Some(turn_id) = self.active_turn_id_for_thread(thread_id) else {
+            return provider::control::InterruptOutcome::NoTarget;
+        };
+        let outcome = self.interrupt_outcome(thread_id, &turn_id).await;
+        match &outcome {
+            provider::control::InterruptOutcome::LocalSignalDelivered => {
+                unreachable!("Codex does not deliver local signals")
+            }
+            provider::control::InterruptOutcome::Unconfirmed { .. } => {}
+            provider::control::InterruptOutcome::NativeAck
+            | provider::control::InterruptOutcome::NoTarget => {
+                self.active_turns
+                    .remove_if(thread_id, |_, active| active == &turn_id);
+            }
+        }
+        outcome
+    }
+
+    pub async fn interrupt_active_outcome_for_card(
+        &self,
+        card_id: &str,
+    ) -> Result<InterruptOutcome<CalmError>> {
+        let Some(thread_id) = resolve_active_thread_for_card(self.repo.as_ref(), card_id).await?
+        else {
+            return Ok(InterruptOutcome::NoTarget);
+        };
+        Ok(self.interrupt_active_outcome(&thread_id).await)
+    }
+}

@@ -232,22 +232,6 @@ impl PlannerBackend {
         }
     }
 
-    /// Local signal owners historically log/ignore failed delivery; only Codex propagated it.
-    pub(crate) fn legacy_interrupt_result(
-        &self,
-        outcome: InterruptOutcome<InterruptDiagnostic>,
-    ) -> std::result::Result<(), InterruptDiagnostic> {
-        match &self.0 {
-            Arm::Codex(..) => provider::codex::interrupt_result(outcome),
-            Arm::Acp(_) | Arm::Claude(_) => match outcome {
-                InterruptOutcome::NativeAck
-                | InterruptOutcome::LocalSignalDelivered
-                | InterruptOutcome::NoTarget
-                | InterruptOutcome::Unconfirmed { .. } => Ok(()),
-            },
-        }
-    }
-
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
         match &self.0 {
             Arm::Acp(session) => session.active_turn_id_for_thread(thread_id),
@@ -396,14 +380,27 @@ async fn interrupt_codex_thread(
     mut on_error: impl FnMut(CodexInterruptStep<'_>, CalmError),
 ) {
     let active_turn_id = daemon.active_turn_id_for_thread(thread_id);
-    if let Err(e) = daemon.interrupt_active_turn(thread_id).await {
-        on_error(CodexInterruptStep::ActiveTurn, e);
+    match daemon.interrupt_active_outcome(thread_id).await {
+        InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
+        InterruptOutcome::Unconfirmed { error, .. } => {
+            on_error(CodexInterruptStep::ActiveTurn, error)
+        }
+        InterruptOutcome::LocalSignalDelivered => {
+            unreachable!("Codex does not deliver local signals")
+        }
     }
     if active_turn_id.is_none()
         && let Some(turn_id) = fallback_turn_id
-        && let Err(e) = daemon.turn_interrupt(thread_id, turn_id).await
     {
-        on_error(CodexInterruptStep::FallbackTurn(turn_id), e);
+        match daemon.interrupt_outcome(thread_id, turn_id).await {
+            InterruptOutcome::NativeAck | InterruptOutcome::NoTarget => {}
+            InterruptOutcome::Unconfirmed { error, .. } => {
+                on_error(CodexInterruptStep::FallbackTurn(turn_id), error)
+            }
+            InterruptOutcome::LocalSignalDelivered => {
+                unreachable!("Codex does not deliver local signals")
+            }
+        }
     }
 }
 

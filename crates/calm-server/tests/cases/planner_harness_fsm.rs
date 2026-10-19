@@ -919,3 +919,6 @@ async fn interrupt_target_aborted_notification_clears_watchdog() {
     assert!(matches!(state, HarnessState::TurnCompleted { .. }));
     harness.shutdown().await.unwrap();
 }
+
+#[path = "planner_interrupt_outcome.rs"]
+mod interrupt_outcome;
