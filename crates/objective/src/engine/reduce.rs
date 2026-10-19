@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 use std::collections::btree_map::Entry;
 
 use super::{Evaluation, Event, IgnoreReason, Notice, ObjectiveState, State, Status};
-use crate::check::CheckOutput;
+use crate::check::SampleOutput;
 use crate::definition::ObjectiveSpec;
-use crate::ids::{CheckId, ObjectiveKey, Revision};
+use crate::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use crate::ledger::{Decision, LedgerEntry};
 use crate::standard::{Approval, standard_hash};
 use crate::trigger::Occurrence;
@@ -25,17 +25,27 @@ pub(super) fn apply(state: &mut State, event: &Event) -> Vec<Occurrence> {
         } => request(state, objective, revision),
         Event::CheckFinished {
             objective,
+            evaluation,
             check,
             revision,
             sample,
             output,
-        } => finish(state, objective, check, revision, *sample, output),
+        } => finish(
+            state,
+            objective,
+            *evaluation,
+            check,
+            revision,
+            *sample,
+            output,
+        ),
         Event::RevisionDelivered { revision } => deliver(state, revision),
         Event::Settled {
             objective,
+            evaluation,
             decision,
             note,
-        } => settle(state, objective, *decision, note),
+        } => settle(state, objective, *evaluation, *decision, note),
         Event::Closed { objective } => close(state, objective),
         Event::HostIdle { queue_len } => vec![Occurrence::HostIdle {
             queue_len: *queue_len,
@@ -86,6 +96,7 @@ fn define(state: &mut State, definition: &ObjectiveSpec) -> Vec<Occurrence> {
             approval: None,
             ledger: Default::default(),
             evaluation: None,
+            evaluations: 0,
             latest_verdict: None,
             status: Status::Open,
             usage_at_start: usage,
@@ -98,7 +109,7 @@ fn define(state: &mut State, definition: &ObjectiveSpec) -> Vec<Occurrence> {
         Err(ignored) => return ignored,
     };
     let standard_changed = standard_hash(&objective.definition) != standard_hash(definition);
-    objective.definition = definition.clone();
+    let previous = std::mem::replace(&mut objective.definition, definition.clone());
     let still_exhausted = definition
         .budget
         .exhausted(&usage.since(&objective.usage_at_start));
@@ -111,6 +122,7 @@ fn define(state: &mut State, definition: &ObjectiveSpec) -> Vec<Occurrence> {
     let was_approved = objective.approval.take().is_some();
     objective.evaluation = None;
     objective.latest_verdict = None;
+    objective.ledger.retain_comparable(&previous, definition);
     let mut out = Vec::new();
     if was_approved {
         out.push(Occurrence::Notice(Notice::ApprovalInvalidated {
@@ -142,7 +154,10 @@ fn start(objective: &mut ObjectiveState, revision: &Revision) -> Vec<Occurrence>
     {
         return Vec::new();
     }
+    let id = EvaluationId::new(objective.evaluations);
+    objective.evaluations += 1;
     objective.evaluation = Some(Evaluation::Running {
+        id,
         revision: revision.clone(),
         samples: Default::default(),
     });
@@ -174,23 +189,26 @@ fn deliver(state: &mut State, revision: &Revision) -> Vec<Occurrence> {
 fn finish(
     state: &mut State,
     key: &ObjectiveKey,
+    evaluation: EvaluationId,
     check: &CheckId,
     revision: &Revision,
     sample: u32,
-    output: &CheckOutput,
+    output: &SampleOutput,
 ) -> Vec<Occurrence> {
     let objective = match open(state, key) {
         Ok(objective) => objective,
         Err(ignored) => return ignored,
     };
     let Some(Evaluation::Running {
+        id,
         revision: running,
         samples,
     }) = &mut objective.evaluation
     else {
         return ignored(IgnoreReason::StaleResult);
     };
-    if running != revision {
+    let id = *id;
+    if id != evaluation || running != revision {
         return ignored(IgnoreReason::StaleResult);
     }
     let Some(config) = objective.definition.check(check).map(|c| &c.config) else {
@@ -228,11 +246,13 @@ fn finish(
     let verdict = keepable(&objective.definition, baseline, &results);
     let notice = Notice::EvaluationReady {
         objective: key.clone(),
+        evaluation: id,
         revision: revision.clone(),
         verdict: verdict.kind,
     };
     objective.latest_verdict = Some(verdict.clone());
     objective.evaluation = Some(Evaluation::Ready {
+        id,
         revision: revision.clone(),
         results,
         verdict,
@@ -243,6 +263,7 @@ fn finish(
 fn settle(
     state: &mut State,
     key: &ObjectiveKey,
+    evaluation: EvaluationId,
     decision: Decision,
     note: &str,
 ) -> Vec<Occurrence> {
@@ -251,6 +272,7 @@ fn settle(
         Err(ignored) => return ignored,
     };
     let Some(Evaluation::Ready {
+        id,
         revision,
         results,
         verdict,
@@ -258,6 +280,9 @@ fn settle(
     else {
         return ignored(IgnoreReason::NothingToSettle);
     };
+    if *id != evaluation {
+        return ignored(IgnoreReason::NothingToSettle);
+    }
     let entry = LedgerEntry {
         revision: revision.clone(),
         results: results.clone(),

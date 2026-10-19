@@ -2,11 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::definition::Mode;
+use crate::definition::{Mode, ObjectiveSpec};
 use crate::ids::Revision;
 use crate::verdict::{Results, Verdict, VerdictKind};
 
-/// The kept revision later candidates are compared with.
+/// The kept revision later candidates are compared with. Each result was produced under the
+/// objective's current configuration of its check; see [`Ledger::retain_comparable`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Baseline {
     pub revision: Revision,
@@ -53,6 +54,24 @@ pub struct Ledger {
 impl Ledger {
     pub fn baseline_results(&self) -> Option<&Results> {
         self.baseline.as_ref().map(|b| &b.results)
+    }
+
+    /// Keeps only the baseline results that `next` can still compare with: those of checks
+    /// whose kind and parameters are the same in `previous` and `next`. A result produced under
+    /// another configuration, such as another command or a kind change under the same id, says
+    /// nothing about the new check, so that check is judged on its own until a revision is kept
+    /// under its new definition. A role change keeps the result: the role decides what a
+    /// comparison means, not whether one is possible. Ledger entries keep their results.
+    pub fn retain_comparable(&mut self, previous: &ObjectiveSpec, next: &ObjectiveSpec) {
+        let Some(baseline) = &mut self.baseline else {
+            return;
+        };
+        baseline
+            .results
+            .retain(|id, _| match (previous.check(id), next.check(id)) {
+                (Some(before), Some(after)) => before.config == after.config,
+                _ => false,
+            });
     }
 
     /// Records a settled candidate. Keep and done move the baseline; discard does not.

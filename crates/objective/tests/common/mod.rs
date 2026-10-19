@@ -5,7 +5,7 @@
 use objective::check::{
     Aggregate, CheckConfig, CheckOutput, CommandOutput, CommandParams, Direction, EvaluatorOutput,
     EvaluatorParams, EvaluatorSample, Evidence, Findings, Judgement, MetricOutput, MetricParams,
-    RubricItem, Trend,
+    RubricItem, SampleOutput, Trend,
 };
 use objective::definition::{Budget, CheckSpec, CompactPolicy, Mode, ObjectiveSpec, Role};
 use objective::ids::{CheckId, ObjectiveKey};
@@ -72,24 +72,44 @@ pub fn value(value: f64) -> CheckOutput {
     CheckOutput::Metric(MetricOutput { value })
 }
 
+fn vote(trend: Trend, blocking: u32) -> EvaluatorSample {
+    EvaluatorSample {
+        judgements: vec![Judgement {
+            item: "clarity".into(),
+            trend,
+            evidence: vec![Evidence {
+                path: "src/lib.rs".into(),
+                line: 12,
+            }],
+        }],
+        findings: Findings {
+            blocking,
+            major: 1,
+            minor: 2,
+        },
+    }
+}
+
+/// The combined result of one evaluator sample.
 pub fn judged(trend: Trend, blocking: u32) -> CheckOutput {
     CheckOutput::Evaluator(EvaluatorOutput {
-        samples: vec![EvaluatorSample {
-            judgements: vec![Judgement {
-                item: "clarity".into(),
-                trend,
-                evidence: vec![Evidence {
-                    path: "src/lib.rs".into(),
-                    line: 12,
-                }],
-            }],
-            findings: Findings {
-                blocking,
-                major: 1,
-                minor: 2,
-            },
-        }],
+        samples: vec![vote(trend, blocking)],
     })
+}
+
+/// What one command run reports.
+pub fn exit_run(code: i32) -> SampleOutput {
+    SampleOutput::Command(CommandOutput { exit_code: code })
+}
+
+/// What one metric run reports.
+pub fn value_run(value: f64) -> SampleOutput {
+    SampleOutput::Metric(MetricOutput { value })
+}
+
+/// What one evaluator run reports.
+pub fn judged_run(trend: Trend, blocking: u32) -> SampleOutput {
+    SampleOutput::Evaluator(vote(trend, blocking))
 }
 
 pub fn results(pairs: Vec<(&str, CheckOutput)>) -> Results {

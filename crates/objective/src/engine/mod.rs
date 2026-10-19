@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::check::CheckOutput;
+use crate::check::SampleOutput;
 use crate::definition::{BudgetLimit, ObjectiveSpec, Usage};
-use crate::ids::{CheckId, ObjectiveKey, Revision};
+use crate::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use crate::ledger::Ledger;
 use crate::standard::Approval;
 use crate::trigger;
@@ -47,6 +47,9 @@ pub struct ObjectiveState {
     pub approval: Option<Approval>,
     pub ledger: Ledger,
     pub evaluation: Option<Evaluation>,
+    /// Evaluations started so far; the next one's sequence number. It never goes back, so
+    /// an [`EvaluationId`] names one evaluation for the objective's whole life.
+    pub evaluations: u64,
     /// The verdict of the latest finished evaluation of the current standard.
     pub latest_verdict: Option<Verdict>,
     pub status: Status,
@@ -71,11 +74,13 @@ impl ObjectiveState {
 pub enum Evaluation {
     /// Waiting for check samples, collected by check and sample index.
     Running {
+        id: EvaluationId,
         revision: Revision,
-        samples: BTreeMap<CheckId, BTreeMap<u32, CheckOutput>>,
+        samples: BTreeMap<CheckId, BTreeMap<u32, SampleOutput>>,
     },
     /// Every sample arrived and the verdict is known; waiting to be settled.
     Ready {
+        id: EvaluationId,
         revision: Revision,
         results: Results,
         verdict: Verdict,
@@ -83,6 +88,12 @@ pub enum Evaluation {
 }
 
 impl Evaluation {
+    pub fn id(&self) -> EvaluationId {
+        match self {
+            Self::Running { id, .. } | Self::Ready { id, .. } => *id,
+        }
+    }
+
     pub fn revision(&self) -> &Revision {
         match self {
             Self::Running { revision, .. } | Self::Ready { revision, .. } => revision,

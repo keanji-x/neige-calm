@@ -2,11 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::check::CheckOutput;
+use crate::check::SampleOutput;
 use crate::command::CommandCall;
 use crate::definition::{BudgetLimit, ObjectiveSpec, Usage};
 use crate::diagnostic::Diagnostic;
-use crate::ids::{CheckId, ObjectiveKey, Revision};
+use crate::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use crate::ledger::{Decision, SettleError};
 use crate::standard::{Approval, StandardHash};
 use crate::verdict::VerdictKind;
@@ -29,21 +29,23 @@ pub enum Event {
         objective: ObjectiveKey,
         revision: Revision,
     },
-    /// One sample of one check finished on `revision`.
+    /// One sample of one check of `evaluation` finished on `revision`.
     CheckFinished {
         objective: ObjectiveKey,
+        evaluation: EvaluationId,
         check: CheckId,
         revision: Revision,
         sample: u32,
-        output: CheckOutput,
+        output: SampleOutput,
     },
     /// A new revision was delivered; every open, approved objective evaluates it.
     RevisionDelivered {
         revision: Revision,
     },
-    /// The planner settles an objective's ready evaluation.
+    /// The planner settles an objective's ready `evaluation`.
     Settled {
         objective: ObjectiveKey,
+        evaluation: EvaluationId,
         decision: Decision,
         note: String,
     },
@@ -64,9 +66,11 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "intent")]
 pub enum Intent {
-    /// Run one sample of one check on `revision` and report it as [`Event::CheckFinished`].
+    /// Run one sample of one check on `revision` and report it as [`Event::CheckFinished`]
+    /// of the same `evaluation`.
     RunCheck {
         objective: ObjectiveKey,
+        evaluation: EvaluationId,
         check: CheckId,
         revision: Revision,
         sample: u32,
@@ -99,6 +103,7 @@ pub enum Notice {
     /// Every check finished; the planner can settle.
     EvaluationReady {
         objective: ObjectiveKey,
+        evaluation: EvaluationId,
         revision: Revision,
         verdict: VerdictKind,
     },
@@ -132,11 +137,11 @@ pub enum IgnoreReason {
     /// The approval is for a different standard than the current one.
     StaleApproval,
     UnknownCheck,
-    /// The result is for a revision that is not being evaluated.
+    /// The result is for an evaluation or revision that is not running.
     StaleResult,
     SampleOutOfRange,
     DuplicateSample,
     KindMismatch,
-    /// No evaluation is ready to settle.
+    /// The named evaluation is not ready to settle.
     NothingToSettle,
 }

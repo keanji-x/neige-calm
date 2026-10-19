@@ -43,6 +43,29 @@ name_type!(
     Revision
 );
 
+/// Identity of one evaluation within its objective: its position among the evaluations the
+/// objective has started. Results and settles name the evaluation they belong to, so one from a
+/// superseded evaluation cannot be taken for the current one, even on the same revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EvaluationId(u64);
+
+impl EvaluationId {
+    pub fn new(sequence: u64) -> Self {
+        Self(sequence)
+    }
+
+    pub fn sequence(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for EvaluationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

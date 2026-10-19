@@ -3,12 +3,12 @@
 
 mod common;
 
-use common::{command, evaluator, exit, judged, metric, objective, value};
-use objective::check::{CheckOutput, Direction, Trend};
+use common::{command, evaluator, exit_run, judged_run, metric, objective, value_run};
+use objective::check::{Direction, SampleOutput, Trend};
 use objective::command::CommandCall;
 use objective::definition::{BudgetLimit, CompactPolicy, Mode, ObjectiveSpec, Role, Usage};
 use objective::engine::{Event, IgnoreReason, Intent, Notice, State, Status, react};
-use objective::ids::{CheckId, ObjectiveKey, Revision};
+use objective::ids::{CheckId, EvaluationId, ObjectiveKey, Revision};
 use objective::ledger::{Decision, SettleError};
 use objective::standard::{Approval, standard_hash};
 use objective::verdict::VerdictKind;
@@ -57,13 +57,15 @@ fn approve(objective: &ObjectiveSpec) -> Event {
 
 fn finished(
     objective: &str,
+    evaluation: u64,
     check: &str,
     revision: &str,
     sample: u32,
-    output: CheckOutput,
+    output: SampleOutput,
 ) -> Event {
     Event::CheckFinished {
         objective: key(objective),
+        evaluation: EvaluationId::new(evaluation),
         check: CheckId::new(check),
         revision: rev(revision),
         sample,
@@ -71,19 +73,37 @@ fn finished(
     }
 }
 
-/// All four samples of one evaluation of `speed`.
-fn speed_results(revision: &str, latency: f64) -> Vec<Event> {
+/// All four samples of evaluation `evaluation` of `speed`.
+fn speed_results(evaluation: u64, revision: &str, latency: f64) -> Vec<Event> {
+    let review = |sample| {
+        finished(
+            "speed",
+            evaluation,
+            "review",
+            revision,
+            sample,
+            judged_run(Trend::Same, 0),
+        )
+    };
     vec![
-        finished("speed", "build", revision, 0, exit(0)),
-        finished("speed", "latency", revision, 0, value(latency)),
-        finished("speed", "review", revision, 0, judged(Trend::Same, 0)),
-        finished("speed", "review", revision, 1, judged(Trend::Same, 0)),
+        finished("speed", evaluation, "build", revision, 0, exit_run(0)),
+        finished(
+            "speed",
+            evaluation,
+            "latency",
+            revision,
+            0,
+            value_run(latency),
+        ),
+        review(0),
+        review(1),
     ]
 }
 
-fn settled(objective: &str, decision: Decision, note: &str) -> Event {
+fn settled(objective: &str, evaluation: u64, decision: Decision, note: &str) -> Event {
     Event::Settled {
         objective: key(objective),
+        evaluation: EvaluationId::new(evaluation),
         decision,
         note: note.into(),
     }
@@ -117,12 +137,12 @@ fn scenario() -> Vec<Event> {
             revision: rev("r0"),
         },
     ];
-    log.extend(speed_results("r0", 100.0));
+    log.extend(speed_results(0, "r0", 100.0));
     log.extend([
-        finished("docs", "docs", "r0", 0, exit(1)),
-        finished("speed", "build", "r9", 0, exit(0)),
-        settled("speed", Decision::Keep, "baseline"),
-        settled("docs", Decision::Keep, "baseline"),
+        finished("docs", 0, "docs", "r0", 0, exit_run(1)),
+        finished("speed", 0, "build", "r9", 0, exit_run(0)),
+        settled("speed", 0, Decision::Keep, "baseline"),
+        settled("docs", 0, Decision::Keep, "baseline"),
         Event::HostIdle { queue_len: 1 },
         Event::HostIdle { queue_len: 0 },
         Event::Requested {
@@ -130,26 +150,26 @@ fn scenario() -> Vec<Event> {
             revision: rev("r1"),
         },
     ]);
-    log.extend(speed_results("r1", 120.0));
+    log.extend(speed_results(1, "r1", 120.0));
     log.extend([
-        settled("speed", Decision::Keep, "slower"),
-        settled("speed", Decision::Discard, "slower"),
+        settled("speed", 1, Decision::Keep, "slower"),
+        settled("speed", 1, Decision::Discard, "slower"),
         Event::Requested {
             objective: key("speed"),
             revision: rev("r2"),
         },
     ]);
-    log.extend(speed_results("r2", 100.0));
+    log.extend(speed_results(2, "r2", 100.0));
     log.extend([
-        settled("speed", Decision::Discard, "no gain"),
+        settled("speed", 2, Decision::Discard, "no gain"),
         usage(60_000),
         usage(70_000),
         Event::Requested {
             objective: key("docs"),
             revision: rev("r3"),
         },
-        finished("docs", "docs", "r3", 0, exit(0)),
-        settled("docs", Decision::Done, "documented"),
+        finished("docs", 1, "docs", "r3", 0, exit_run(0)),
+        settled("docs", 1, Decision::Done, "documented"),
         Event::Closed {
             objective: key("docs"),
         },
@@ -248,8 +268,9 @@ fn the_scenario_notifies_the_planner_in_order() {
         objective: objective.key.clone(),
         standard_hash: standard_hash(objective),
     };
-    let ready = |objective: &str, revision: &str, verdict| Notice::EvaluationReady {
+    let ready = |objective: &str, evaluation, revision: &str, verdict| Notice::EvaluationReady {
         objective: key(objective),
+        evaluation: EvaluationId::new(evaluation),
         revision: rev(revision),
         verdict,
     };
@@ -265,21 +286,21 @@ fn the_scenario_notifies_the_planner_in_order() {
             required(&docs()),
             required(&speed()),
             ignored(IgnoreReason::StaleApproval),
-            ready("speed", "r0", VerdictKind::Keepable),
-            ready("docs", "r0", VerdictKind::Keepable),
+            ready("speed", 0, "r0", VerdictKind::Keepable),
+            ready("docs", 0, "r0", VerdictKind::Keepable),
             ignored(IgnoreReason::StaleResult),
-            ready("speed", "r1", VerdictKind::Regression),
+            ready("speed", 1, "r1", VerdictKind::Regression),
             Notice::SettleRefused {
                 objective: key("speed"),
                 error: SettleError::RegressionRefused,
             },
-            ready("speed", "r2", VerdictKind::Discard),
+            ready("speed", 2, "r2", VerdictKind::Discard),
             Notice::PlateauReached {
                 objective: key("speed"),
             },
             exhausted("docs"),
             exhausted("speed"),
-            ready("docs", "r3", VerdictKind::Done),
+            ready("docs", 1, "r3", VerdictKind::Done),
             Notice::ObjectiveDone {
                 objective: key("docs"),
             },
@@ -297,16 +318,18 @@ fn the_scenario_runs_every_sample_and_compacts_when_idle() {
     let log = scenario();
     let steps = replay(State::default(), &log);
     let intents = all_intents(&steps);
-    let runs: Vec<(String, String, String, u32)> = intents
+    let runs: Vec<(String, u64, String, String, u32)> = intents
         .iter()
         .filter_map(|intent| match intent {
             Intent::RunCheck {
                 objective,
+                evaluation,
                 check,
                 revision,
                 sample,
             } => Some((
                 objective.to_string(),
+                evaluation.sequence(),
                 check.to_string(),
                 revision.to_string(),
                 *sample,
@@ -314,17 +337,24 @@ fn the_scenario_runs_every_sample_and_compacts_when_idle() {
             _ => None,
         })
         .collect();
-    let speed_runs = |revision: &str| {
-        [("build", 0), ("latency", 0), ("review", 0), ("review", 1)]
-            .map(|(check, sample)| ("speed".into(), check.into(), revision.into(), sample))
+    let speed_runs = |evaluation, revision: &str| {
+        [("build", 0), ("latency", 0), ("review", 0), ("review", 1)].map(|(check, sample)| {
+            (
+                "speed".into(),
+                evaluation,
+                check.into(),
+                revision.into(),
+                sample,
+            )
+        })
     };
-    let mut expected: Vec<(String, String, String, u32)> = Vec::new();
+    let mut expected: Vec<(String, u64, String, String, u32)> = Vec::new();
     // A delivered revision starts every open, approved objective in key order.
-    expected.push(("docs".into(), "docs".into(), "r0".into(), 0));
-    expected.extend(speed_runs("r0"));
-    expected.extend(speed_runs("r1"));
-    expected.extend(speed_runs("r2"));
-    expected.push(("docs".into(), "docs".into(), "r3".into(), 0));
+    expected.push(("docs".into(), 0, "docs".into(), "r0".into(), 0));
+    expected.extend(speed_runs(0, "r0"));
+    expected.extend(speed_runs(1, "r1"));
+    expected.extend(speed_runs(2, "r2"));
+    expected.push(("docs".into(), 1, "docs".into(), "r3".into(), 0));
     assert_eq!(runs, expected);
 
     let compactions: Vec<(String, Vec<String>)> = intents

@@ -69,13 +69,14 @@ fn run_checks(state: &State, key: &ObjectiveKey, intents: &mut Vec<Intent>) {
     let Some(objective) = state.objectives.get(key) else {
         return;
     };
-    let Some(Evaluation::Running { revision, .. }) = &objective.evaluation else {
+    let Some(Evaluation::Running { id, revision, .. }) = &objective.evaluation else {
         return;
     };
     for check in &objective.definition.checks {
         for sample in 0..check.config.samples() {
             intents.push(Intent::RunCheck {
                 objective: key.clone(),
+                evaluation: *id,
                 check: check.id.clone(),
                 revision: revision.clone(),
                 sample,

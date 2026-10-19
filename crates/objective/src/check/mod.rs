@@ -1,8 +1,8 @@
 //! Check kinds and their registry.
 //!
 //! A kind owns its parameters, its output and how a candidate output compares with a
-//! baseline output. [`CheckConfig`] and [`CheckOutput`] are the registry: the only place
-//! that dispatches on the kind, so no other module names a kind.
+//! baseline output. [`CheckConfig`], [`SampleOutput`] and [`CheckOutput`] are the registry:
+//! the only place that dispatches on the kind, so no other module names a kind.
 
 mod command;
 mod evaluator;
@@ -95,7 +95,20 @@ pub enum CheckConfig {
     Fact(FactParams),
 }
 
-/// The output of one check run, tagged like [`CheckConfig`].
+/// What one run of a check reports: exactly one sample, tagged like [`CheckConfig`]. An
+/// evaluator run is one [`EvaluatorSample`], so one run can neither cast several votes nor
+/// erase itself.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "output", rename_all = "snake_case")]
+pub enum SampleOutput {
+    Command(CommandOutput),
+    Metric(MetricOutput),
+    Evaluator(EvaluatorSample),
+    Fact(FactOutput),
+}
+
+/// The result of one check in one evaluation, combined from its samples and tagged like
+/// [`CheckConfig`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "output", rename_all = "snake_case")]
 pub enum CheckOutput {
@@ -132,14 +145,14 @@ impl CheckConfig {
         }
     }
 
-    /// Whether `output` was produced by this check's kind.
-    pub fn accepts(&self, output: &CheckOutput) -> bool {
+    /// Whether `sample` was produced by this check's kind.
+    pub fn accepts(&self, sample: &SampleOutput) -> bool {
         matches!(
-            (self, output),
-            (Self::Command(_), CheckOutput::Command(_))
-                | (Self::Metric(_), CheckOutput::Metric(_))
-                | (Self::Evaluator(_), CheckOutput::Evaluator(_))
-                | (Self::Fact(_), CheckOutput::Fact(_))
+            (self, sample),
+            (Self::Command(_), SampleOutput::Command(_))
+                | (Self::Metric(_), SampleOutput::Metric(_))
+                | (Self::Evaluator(_), SampleOutput::Evaluator(_))
+                | (Self::Fact(_), SampleOutput::Fact(_))
         )
     }
 
@@ -165,24 +178,29 @@ impl CheckConfig {
         }
     }
 
-    /// Combines the outputs of every sample of one evaluation, in sample order, into the
-    /// check's result. Only evaluator checks take more than one sample.
-    pub fn combine(&self, samples: Vec<CheckOutput>) -> Result<CheckOutput, KindMismatch> {
-        if samples.len() != self.samples() as usize || !samples.iter().all(|s| self.accepts(s)) {
+    /// Combines every sample of one evaluation, in sample order, into the check's result.
+    /// Only evaluator checks take more than one sample; each counts once.
+    pub fn combine(&self, samples: Vec<SampleOutput>) -> Result<CheckOutput, KindMismatch> {
+        if samples.len() != self.samples() as usize {
             return Err(KindMismatch);
         }
-        if !matches!(self, Self::Evaluator(_)) {
-            return samples.into_iter().next().ok_or(KindMismatch);
+        if let Self::Evaluator(_) = self {
+            let runs = samples
+                .into_iter()
+                .map(|sample| match sample {
+                    SampleOutput::Evaluator(run) => Ok(run),
+                    _ => Err(KindMismatch),
+                })
+                .collect::<Result<_, _>>()?;
+            return Ok(CheckOutput::Evaluator(EvaluatorOutput { samples: runs }));
         }
-        let mut combined = Vec::new();
-        for sample in samples {
-            if let CheckOutput::Evaluator(output) = sample {
-                combined.extend(output.samples);
-            }
+        let [sample] = <[SampleOutput; 1]>::try_from(samples).map_err(|_| KindMismatch)?;
+        match (self, sample) {
+            (Self::Command(_), SampleOutput::Command(output)) => Ok(CheckOutput::Command(output)),
+            (Self::Metric(_), SampleOutput::Metric(output)) => Ok(CheckOutput::Metric(output)),
+            (Self::Fact(_), SampleOutput::Fact(output)) => Ok(CheckOutput::Fact(output)),
+            _ => Err(KindMismatch),
         }
-        Ok(CheckOutput::Evaluator(EvaluatorOutput {
-            samples: combined,
-        }))
     }
 }
 
@@ -190,13 +208,13 @@ impl CheckConfig {
 mod tests {
     use super::*;
 
-    fn every_kind() -> Vec<(CheckConfig, CheckOutput)> {
+    fn every_kind() -> Vec<(CheckConfig, SampleOutput)> {
         vec![
             (
                 CheckConfig::Command(CommandParams {
                     command: "cargo test".into(),
                 }),
-                CheckOutput::Command(CommandOutput { exit_code: 0 }),
+                SampleOutput::Command(CommandOutput { exit_code: 0 }),
             ),
             (
                 CheckConfig::Metric(MetricParams {
@@ -204,7 +222,7 @@ mod tests {
                     direction: Direction::Lower,
                     tolerance: None,
                 }),
-                CheckOutput::Metric(MetricOutput { value: 1.0 }),
+                SampleOutput::Metric(MetricOutput { value: 1.0 }),
             ),
             (
                 CheckConfig::Evaluator(EvaluatorParams {
@@ -215,8 +233,9 @@ mod tests {
                     samples: 1,
                     aggregate: Aggregate::Majority,
                 }),
-                CheckOutput::Evaluator(EvaluatorOutput {
-                    samples: Vec::new(),
+                SampleOutput::Evaluator(EvaluatorSample {
+                    judgements: Vec::new(),
+                    findings: Findings::default(),
                 }),
             ),
             (
@@ -224,16 +243,30 @@ mod tests {
                     fact: Fact::PrMerged,
                     subject: "#1".into(),
                 }),
-                CheckOutput::Fact(FactOutput { holds: true }),
+                SampleOutput::Fact(FactOutput { holds: true }),
             ),
         ]
     }
 
+    fn evaluator(samples: u32, aggregate: Aggregate) -> CheckConfig {
+        CheckConfig::Evaluator(EvaluatorParams {
+            rubric: vec![RubricItem {
+                id: "a".into(),
+                criterion: "c".into(),
+            }],
+            samples,
+            aggregate,
+        })
+    }
+
     #[test]
     fn serialized_kind_tag_is_the_registered_name() {
-        for (config, output) in every_kind() {
+        for (config, sample) in every_kind() {
             let config_json = serde_json::to_value(&config).unwrap();
             assert_eq!(config_json["kind"], config.kind_name());
+            let sample_json = serde_json::to_value(&sample).unwrap();
+            assert_eq!(sample_json["kind"], config.kind_name());
+            let output = config.combine(vec![sample]).unwrap();
             let output_json = serde_json::to_value(&output).unwrap();
             assert_eq!(output_json["kind"], config.kind_name());
         }
@@ -243,34 +276,27 @@ mod tests {
     fn outputs_of_another_kind_are_refused() {
         let kinds = every_kind();
         for (config, _) in &kinds {
-            for (other, output) in &kinds {
+            for (other, sample) in &kinds {
                 let same = config.kind_name() == other.kind_name();
-                assert_eq!(config.accepts(output), same);
-                assert_eq!(config.compare(output, output).is_ok(), same);
+                assert_eq!(config.accepts(sample), same);
+                assert_eq!(config.combine(vec![sample.clone()]).is_ok(), same);
+                let output = other.combine(vec![sample.clone()]).unwrap();
+                assert_eq!(config.compare(&output, &output).is_ok(), same);
             }
         }
     }
 
     #[test]
-    fn combine_concatenates_evaluator_samples_in_order() {
-        let config = CheckConfig::Evaluator(EvaluatorParams {
-            rubric: vec![RubricItem {
-                id: "a".into(),
-                criterion: "c".into(),
-            }],
-            samples: 2,
-            aggregate: Aggregate::Median,
-        });
+    fn combine_keeps_evaluator_samples_in_order() {
+        let config = evaluator(2, Aggregate::Median);
         let sample = |minor| {
-            CheckOutput::Evaluator(EvaluatorOutput {
-                samples: vec![EvaluatorSample {
-                    judgements: Vec::new(),
-                    findings: Findings {
-                        blocking: 0,
-                        major: 0,
-                        minor,
-                    },
-                }],
+            SampleOutput::Evaluator(EvaluatorSample {
+                judgements: Vec::new(),
+                findings: Findings {
+                    blocking: 0,
+                    major: 0,
+                    minor,
+                },
             })
         };
         let CheckOutput::Evaluator(combined) = config.combine(vec![sample(1), sample(2)]).unwrap()
@@ -283,19 +309,62 @@ mod tests {
     }
 
     #[test]
+    fn one_completion_counts_as_exactly_one_sample() {
+        let vote = |trend| EvaluatorSample {
+            judgements: vec![Judgement {
+                item: "a".into(),
+                trend,
+                evidence: vec![Evidence {
+                    path: "src/lib.rs".into(),
+                    line: 1,
+                }],
+            }],
+            findings: Findings::default(),
+        };
+        // A completion is one sample: one that carries several votes, or none, is not a
+        // sample output at all, so it can neither outvote nor erase the other runs.
+        let better = serde_json::to_value(vote(Trend::Better)).unwrap();
+        for samples in [vec![better.clone(); 3], Vec::new()] {
+            let completion = serde_json::json!({
+                "kind": "evaluator",
+                "output": { "samples": samples },
+            });
+            assert!(serde_json::from_value::<SampleOutput>(completion).is_err());
+        }
+        // Three completions are three votes: two runs that got worse outvote one that improved.
+        let config = evaluator(3, Aggregate::Majority);
+        let runs = [Trend::Better, Trend::Worse, Trend::Worse]
+            .map(|trend| SampleOutput::Evaluator(vote(trend)))
+            .to_vec();
+        let combined = config.combine(runs).unwrap();
+        let baseline = CheckOutput::Evaluator(EvaluatorOutput {
+            samples: Vec::new(),
+        });
+        let comparison = config.compare(&baseline, &combined).unwrap();
+        assert_eq!(comparison.trend, Trend::Worse);
+    }
+
+    #[test]
     fn combine_refuses_a_wrong_sample_count_or_kind() {
         let config = CheckConfig::Fact(FactParams {
             fact: Fact::TaskAccepted,
             subject: "t".into(),
         });
-        let holds = CheckOutput::Fact(FactOutput { holds: true });
-        assert_eq!(config.combine(vec![holds.clone()]), Ok(holds.clone()));
+        let holds = SampleOutput::Fact(FactOutput { holds: true });
+        assert_eq!(
+            config.combine(vec![holds.clone()]),
+            Ok(CheckOutput::Fact(FactOutput { holds: true }))
+        );
         assert_eq!(
             config.combine(vec![holds.clone(), holds]),
             Err(KindMismatch)
         );
-        let command = CheckOutput::Command(CommandOutput { exit_code: 0 });
-        assert_eq!(config.combine(vec![command]), Err(KindMismatch));
+        let command = SampleOutput::Command(CommandOutput { exit_code: 0 });
+        assert_eq!(config.combine(vec![command.clone()]), Err(KindMismatch));
+        assert_eq!(
+            evaluator(1, Aggregate::Majority).combine(vec![command]),
+            Err(KindMismatch)
+        );
     }
 
     #[test]

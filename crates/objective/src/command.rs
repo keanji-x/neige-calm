@@ -2,8 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::check::CheckConfig;
-use crate::definition::{Mode, ObjectiveSpec, Role};
+use crate::definition::{CheckSpec, Mode, ObjectiveSpec};
 use crate::ids::{CheckId, ObjectiveKey, Revision};
 use crate::ledger::{Decision, Ledger};
 use crate::standard::{StandardHash, standard_hash};
@@ -142,13 +141,6 @@ pub struct CompactBrief {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CheckBrief {
-    pub id: CheckId,
-    pub role: Role,
-    pub kind: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryBrief {
     pub revision: Revision,
     pub decision: Decision,
@@ -161,7 +153,9 @@ pub struct ObjectiveBrief {
     pub title: String,
     pub standard_hash: StandardHash,
     pub mode: Mode,
-    pub checks: Vec<CheckBrief>,
+    /// The standard's check definitions: id, role, kind and parameters, such as commands,
+    /// metric directions and tolerances, rubrics and fact subjects.
+    pub checks: Vec<CheckSpec>,
     pub constraints: Vec<String>,
     pub baseline: Option<Revision>,
     pub ledger: Vec<EntryBrief>,
@@ -176,15 +170,7 @@ impl ObjectiveBrief {
             title: objective.title.clone(),
             standard_hash: standard_hash(objective),
             mode: objective.mode,
-            checks: objective
-                .checks
-                .iter()
-                .map(|c| CheckBrief {
-                    id: c.id.clone(),
-                    role: c.role,
-                    kind: CheckConfig::kind_name(&c.config).to_owned(),
-                })
-                .collect(),
+            checks: objective.checks.clone(),
             constraints: objective.constraints.clone(),
             baseline: ledger.baseline.as_ref().map(|b| b.revision.clone()),
             ledger: ledger
@@ -206,8 +192,11 @@ impl ObjectiveBrief {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::{CheckOutput, CommandOutput, CommandParams};
-    use crate::definition::{Budget, CheckSpec, CompactPolicy};
+    use crate::check::{
+        Aggregate, CheckConfig, CheckOutput, CommandOutput, CommandParams, Direction,
+        EvaluatorParams, Fact, FactParams, MetricOutput, MetricParams, RubricItem,
+    };
+    use crate::definition::{Budget, CompactPolicy, Role};
     use crate::ledger::LedgerEntry;
     use crate::verdict::{Results, keepable};
 
@@ -318,9 +307,100 @@ mod tests {
         assert_eq!(brief.standard_hash, standard_hash(&objective));
         assert_eq!(brief.baseline, Some(Revision::new("r1")));
         assert_eq!(brief.ledger[0].note, "starting point");
-        assert_eq!(brief.checks[0].kind, "command");
+        assert_eq!(brief.checks, objective.checks);
         assert_eq!(brief.open_blockers, vec![CheckId::new("tests")]);
         let without = ObjectiveBrief::new(&objective, &ledger, None);
         assert!(without.open_blockers.is_empty());
+    }
+
+    #[test]
+    fn brief_carries_every_check_definition_but_no_outputs() {
+        let check = |id: &str, config| CheckSpec {
+            id: CheckId::new(id),
+            role: Role::Ratchet,
+            config,
+        };
+        let objective = ObjectiveSpec {
+            key: ObjectiveKey::new("quality"),
+            title: "Better code".into(),
+            mode: Mode::Loop { plateau: 2 },
+            checks: vec![
+                check(
+                    "tests",
+                    CheckConfig::Command(CommandParams {
+                        command: "cargo test".into(),
+                    }),
+                ),
+                check(
+                    "latency",
+                    CheckConfig::Metric(MetricParams {
+                        command: "bench".into(),
+                        direction: Direction::Lower,
+                        tolerance: Some(0.5),
+                    }),
+                ),
+                check(
+                    "review",
+                    CheckConfig::Evaluator(EvaluatorParams {
+                        rubric: vec![RubricItem {
+                            id: "clarity".into(),
+                            criterion: "reads clearly".into(),
+                        }],
+                        samples: 3,
+                        aggregate: Aggregate::Median,
+                    }),
+                ),
+                check(
+                    "merged",
+                    CheckConfig::Fact(FactParams {
+                        fact: Fact::PrMerged,
+                        subject: "#42".into(),
+                    }),
+                ),
+            ],
+            constraints: Vec::new(),
+            budget: Budget {
+                turns: 1,
+                tokens: 1,
+                wall_secs: 1,
+            },
+            compact: CompactPolicy::EverySettle,
+        };
+        let results: Results = [
+            (
+                CheckId::new("tests"),
+                CheckOutput::Command(CommandOutput { exit_code: 0 }),
+            ),
+            (
+                CheckId::new("latency"),
+                CheckOutput::Metric(MetricOutput { value: 7.0 }),
+            ),
+        ]
+        .into();
+        let verdict = keepable(&objective, &Results::new(), &results);
+        let mut ledger = Ledger::default();
+        let entry = LedgerEntry {
+            revision: Revision::new("r1"),
+            results,
+            decision: Decision::Discard,
+            note: "measured".into(),
+        };
+        ledger.settle(entry, &verdict).unwrap();
+        let brief = ObjectiveBrief::new(&objective, &ledger, Some(&verdict));
+        let json = serde_json::to_value(&brief).unwrap();
+        let params = |index: usize| json["checks"][index]["config"]["params"].clone();
+        assert_eq!(params(0)["command"], "cargo test");
+        assert_eq!(params(1)["command"], "bench");
+        assert_eq!(params(1)["direction"], "lower");
+        assert_eq!(params(1)["tolerance"], 0.5);
+        assert_eq!(params(2)["rubric"][0]["criterion"], "reads clearly");
+        assert_eq!(params(2)["samples"], 3);
+        assert_eq!(params(2)["aggregate"], "median");
+        assert_eq!(params(3)["fact"], "pr_merged");
+        assert_eq!(params(3)["subject"], "#42");
+        let text = json.to_string();
+        for leaked in ["results", "output", "exit_code", "value", "finding"] {
+            assert!(!text.contains(leaked), "the brief carries {leaked}: {text}");
+        }
     }
 }
