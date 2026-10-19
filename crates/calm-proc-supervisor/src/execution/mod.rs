@@ -16,7 +16,6 @@ mod process;
 mod protocol;
 #[cfg(test)]
 mod protocol_tests;
-mod retirement;
 mod scope_helper;
 mod shutdown;
 #[cfg(test)]
@@ -75,7 +74,6 @@ pub struct Executor {
     registration_facts: StdMutex<HashMap<String, AttachRegistration>>,
     transfers: StdMutex<HashMap<TransferNonce, ObjectRegistrationReceipt>>,
     live_objects: StdMutex<HashMap<ObjectRegistrationId, Arc<RegisteredRoot>>>,
-    retired: StdMutex<HashMap<ObjectRegistrationId, ObjectRegistrationReceipt>>,
     preparations: preparation::PreparationReservations,
     records: StdMutex<HashMap<ExecutionId, Journal>>,
     aliases: StdMutex<HashMap<String, AliasSlot>>,
@@ -275,17 +273,6 @@ impl Executor {
                 "duplicate persisted attachment nonce"
             );
         }
-        let mut retired = HashMap::new();
-        for receipt in store.retirements()? {
-            anyhow::ensure!(
-                transfers.get(&receipt.transfer.nonce) == Some(&receipt),
-                "retired lease does not match immutable registration history"
-            );
-            anyhow::ensure!(
-                retired.insert(receipt.id.clone(), receipt).is_none(),
-                "duplicate retired registration identity"
-            );
-        }
         let executor = Arc::new(Self {
             closing: std::sync::atomic::AtomicBool::new(false),
             store,
@@ -303,7 +290,6 @@ impl Executor {
             registration_facts: StdMutex::new(registration_facts),
             transfers: StdMutex::new(transfers),
             live_objects: Default::default(),
-            retired: StdMutex::new(retired),
             preparations: preparation::PreparationReservations::from_records(&records)?,
             records: StdMutex::new(records),
             aliases: StdMutex::new(aliases),
@@ -355,12 +341,6 @@ impl Executor {
                 executor_boot: self.boot.clone(),
                 mode: hello.mode,
             }),
-            ExecutionRequest::Attach(_) => {
-                anyhow::bail!("object attachment requires the controlled ancillary transport")
-            }
-            ExecutionRequest::RetireRegistration(receipt) => {
-                self.retire_registration(receipt).await
-            }
             ExecutionRequest::Prepare(request) => self.prepare(request).await,
             ExecutionRequest::Inspect(id) => self.inspect(&id),
             ExecutionRequest::Watch => Ok(self.watch()?.0),

@@ -205,9 +205,7 @@ impl Store {
     pub fn registrations(&self) -> anyhow::Result<Vec<ObjectRegistrationReceipt>> {
         self.load_extension("registration")
     }
-    pub fn retirements(&self) -> anyhow::Result<Vec<ObjectRegistrationReceipt>> {
-        self.load_extension("retired")
-    }
+
     fn load_extension<T: serde::de::DeserializeOwned>(
         &self,
         extension: &str,

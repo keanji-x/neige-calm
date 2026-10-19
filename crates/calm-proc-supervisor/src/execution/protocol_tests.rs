@@ -368,15 +368,6 @@ async fn private_attach_refuses_directory_of_other_execution() {
             .await
             .is_err()
     );
-    let PreparedSource::Private(transfer) = &request.source else {
-        unreachable!()
-    };
-    assert!(
-        executor
-            .attach_objects(transfer.as_ref().clone(), descriptors(&held))
-            .await
-            .is_err()
-    );
     executor.revoke(consume(&request)).await.unwrap();
     executor
         .retire_execution(
@@ -388,12 +379,6 @@ async fn private_attach_refuses_directory_of_other_execution() {
     assert!(
         executor
             .prepare_objects(other, descriptors(&held))
-            .await
-            .is_err()
-    );
-    assert!(
-        executor
-            .attach_objects(transfer.as_ref().clone(), descriptors(&held))
             .await
             .is_err()
     );

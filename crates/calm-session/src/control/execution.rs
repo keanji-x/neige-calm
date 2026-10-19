@@ -22,7 +22,7 @@ pub use watch::ExecutionWatcher;
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 7;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 8;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;
@@ -142,13 +142,10 @@ pub struct ConsumeExecution {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ExecutionRequest {
     Handshake(ExecutionHandshake),
-    Attach(AttachRegistration),
     Prepare(PrepareExecution),
     Launch(ConsumeExecution),
     Revoke(ConsumeExecution),
     Control(ExecutionControl),
-    /// Release this exact immutable lease after its executor references settle.
-    RetireRegistration(ObjectRegistrationReceipt),
     Inspect(ExecutionId),
     Watch,
     Retire {
@@ -226,10 +223,6 @@ pub enum ExecutionReply {
         envelope_version: u32,
         executor_boot: ExecutorBootId,
         mode: ExecutionProtocolMode,
-    },
-    Registered(ObjectRegistrationReceipt),
-    RegistrationRetired {
-        registration: ObjectRegistrationId,
     },
     Prepared,
     Receipt {
@@ -360,7 +353,6 @@ async fn legacy_negotiation(
 pub struct RegisteredExecutorConnection {
     stream: tokio::net::UnixStream,
     executor_boot: ExecutorBootId,
-    registrations: Vec<ObjectRegistrationReceipt>,
     in_flight: bool,
 }
 
@@ -398,7 +390,6 @@ impl RegisteredExecutorConnection {
             } => Ok(Self {
                 stream,
                 executor_boot,
-                registrations: Vec::new(),
                 in_flight: false,
             }),
             _ => Err(std::io::Error::other(
@@ -408,9 +399,6 @@ impl RegisteredExecutorConnection {
     }
     pub fn executor_boot(&self) -> &ExecutorBootId {
         &self.executor_boot
-    }
-    pub fn registrations(&self) -> &[ObjectRegistrationReceipt] {
-        &self.registrations
     }
     fn begin(&mut self) -> std::io::Result<()> {
         if self.in_flight {

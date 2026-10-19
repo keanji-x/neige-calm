@@ -227,30 +227,6 @@ pub(super) fn registration_version(registration: &ExecutionRegistration) -> u64 
         } => *registration_version,
     }
 }
-pub(super) fn same_runtime(scope: &ExecutionScope, registration: &ExecutionRegistration) -> bool {
-    match (scope, registration) {
-        (
-            ExecutionScope::Worktree {
-                generation,
-                install_epoch,
-                ..
-            },
-            ExecutionRegistration::Worktree {
-                generation: actual,
-                install_epoch: epoch,
-                ..
-            },
-        ) => generation == actual && install_epoch == epoch,
-        (
-            ExecutionScope::ExternalDir { directory_id, .. },
-            ExecutionRegistration::ExternalDir {
-                directory_id: actual,
-                ..
-            },
-        ) => directory_id == actual,
-        _ => false,
-    }
-}
 pub(super) fn registration_matches(
     registration: &ExecutionRegistration,
     identity: &ExecutionIdentity,

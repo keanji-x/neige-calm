@@ -66,6 +66,19 @@ impl Executor {
         transfer: &AttachRegistration,
         descriptors: Vec<OwnedFd>,
     ) -> anyhow::Result<Arc<RegisteredRoot>> {
+        // Pre-upgrade shared executions have no recoverable native handles. Until the existing
+        // boot/settlement rules prove them settled, do not admit any source reuse by inference.
+        anyhow::ensure!(
+            self.records
+                .lock()
+                .map_err(poison)?
+                .values()
+                .all(
+                    |record| !matches!(record.request.source, PreparedSource::Registered)
+                        || record.durably_settled()
+                ),
+            "unsettled pre-upgrade shared execution requires positive settlement"
+        );
         let ExecutionRegistration::ExternalDir {
             directory_id,
             registration_version: 1,

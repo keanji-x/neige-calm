@@ -7,22 +7,28 @@ async fn execution_launch_recovers_exact_reservation_after_journal_failure() {
     let root = harness.root("retry", false);
     let grant = authority();
     let (scope, registration) = external(root, &grant);
-    register(&mut client, registration).await;
-    let request = prepare(&client, scope, grant, "retry", IoMode::Pipe, "printf once");
+    let request = prepare(
+        &client,
+        scope,
+        &registration,
+        grant,
+        "retry",
+        IoMode::Pipe,
+        "printf once",
+    );
     assert!(matches!(
-        client
-            .request(ExecutionRequest::Prepare(request.clone()))
-            .await
-            .unwrap(),
+        submit(&mut client, request.clone()).await,
         ExecutionReply::Prepared
     ));
-    let receipt = client.registrations()[0].clone();
     assert!(matches!(
         client
-            .request(ExecutionRequest::RetireRegistration(receipt))
+            .request(ExecutionRequest::Retire {
+                execution_id: request.identity.execution_id.clone(),
+                lifecycle: request.control_tokens.lifecycle.clone(),
+            })
             .await
             .unwrap(),
-        ExecutionReply::Refused { .. }
+        ExecutionReply::Busy(BusyReason::OutputOpen)
     ));
     let journal = harness.journal();
     let moved = harness.temp.path().join("moved-journal");
@@ -56,10 +62,10 @@ async fn execution_stdin_backpressure_reports_exact_accepted_prefix() {
     let path = root.path.clone();
     let grant = authority();
     let (scope, registration) = external(root, &grant);
-    register(&mut client, registration).await;
     let request = prepare(
         &client,
         scope,
+        &registration,
         grant,
         "input",
         IoMode::Pipe,
@@ -105,82 +111,4 @@ async fn execution_stdin_backpressure_reports_exact_accepted_prefix() {
     })
     .await;
     assert_eq!(std::fs::read(path.join("received")).unwrap(), bytes);
-}
-
-#[tokio::test]
-async fn execution_retirement_releases_only_exact_settled_lease_and_preserves_history() {
-    let mut pair = pair().await;
-    let first = pair.left.registrations()[0].clone();
-    let second = pair.right.registrations()[0].clone();
-    assert!(matches!(
-        pair.right
-            .request(ExecutionRequest::RetireRegistration(second.clone()))
-            .await
-            .unwrap(),
-        ExecutionReply::Refused { .. }
-    ));
-    stop(&mut pair.right, &pair.second, &pair.second_receipt).await;
-    assert!(
-        matches!(pair.right.request(ExecutionRequest::RetireRegistration(second.clone())).await.unwrap(), ExecutionReply::RegistrationRetired { registration } if registration == second.id)
-    );
-    assert!(matches!(
-        input(&mut pair.left, &pair.first, &pair.first_receipt, b"peer\n").await,
-        ExecutionReply::StdinProgress { accepted_bytes: 5 }
-    ));
-    assert!(
-        matches!(pair.right.request(ExecutionRequest::Launch(consume(&pair.second))).await.unwrap(), ExecutionReply::Receipt { receipt: Some(receipt), state: ExecutionState::Drained { .. } } if receipt == pair.second_receipt)
-    );
-    assert!(
-        pair.right
-            .attach(second.transfer.clone(), &pair.held)
-            .await
-            .is_err()
-    );
-    assert!(
-        matches!(pair.right.request(ExecutionRequest::RetireRegistration(second.clone())).await.unwrap(), ExecutionReply::RegistrationRetired { registration } if registration == second.id)
-    );
-    let historical: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(
-            pair.harness
-                .journal()
-                .join(format!("{}.registration", second.id.as_str())),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(historical["id"], second.id.as_str());
-    stop(&mut pair.left, &pair.first, &pair.first_receipt).await;
-    assert!(matches!(
-        pair.left
-            .request(ExecutionRequest::RetireRegistration(first.clone()))
-            .await
-            .unwrap(),
-        ExecutionReply::RegistrationRetired { .. }
-    ));
-    let root = pair.held.root().metadata().unwrap();
-    use std::os::unix::fs::MetadataExt;
-    let held_count = std::fs::read_dir(format!("/proc/{}/fd", pair.harness.child.id()))
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter_map(|entry| std::fs::metadata(entry.path()).ok())
-        .filter(|metadata| metadata.dev() == root.dev() && metadata.ino() == root.ino())
-        .count();
-    assert_eq!(
-        held_count, 0,
-        "retirement left supervisor source descriptions pinned"
-    );
-    // New immutable operation grants can be admitted and retired repeatedly without descriptor growth.
-    for _ in 0..24 {
-        let mut transfer = second.transfer.clone();
-        transfer.registration_id = ObjectRegistrationId::fresh().unwrap();
-        transfer.nonce = TransferNonce::fresh().unwrap();
-        let receipt = pair.left.attach(transfer, &pair.held).await.unwrap();
-        assert!(matches!(
-            pair.left
-                .request(ExecutionRequest::RetireRegistration(receipt))
-                .await
-                .unwrap(),
-            ExecutionReply::RegistrationRetired { .. }
-        ));
-    }
 }

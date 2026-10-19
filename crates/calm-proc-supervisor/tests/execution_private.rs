@@ -300,3 +300,6 @@ async fn legacy_handshake_server_wire_stable_and_typed_v3_refused() {
 
 #[path = "execution_private/c0_compat.rs"]
 mod c0_compat;
+
+#[path = "execution_private/qualification.rs"]
+mod qualification;

@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     time::Duration,
 };
-use workspace::identity::{WorkspaceCwd, WorkspaceId};
+use workspace::identity::WorkspaceCwd;
 
 pub(super) struct Harness {
     pub(super) temp: tempfile::TempDir,
@@ -108,34 +108,6 @@ pub(super) fn authority() -> ExecutionAuthority {
     }
 }
 
-pub(super) fn worktree(
-    root: DirectoryRegistration,
-    authority: &ExecutionAuthority,
-) -> (ExecutionScope, ExecutionRegistration) {
-    let workspace_id =
-        WorkspaceId::try_from(ExecutionId::fresh().unwrap().as_str().to_owned()).unwrap();
-    let binding_id = WorkspaceBindingId::fresh().unwrap();
-    let scope = ExecutionScope::Worktree {
-        workspace_id: workspace_id.clone(),
-        binding_id: binding_id.clone(),
-        binding_version: 4,
-        generation: 7,
-        install_epoch: 11,
-        cwd: WorkspaceCwd::root(),
-    };
-    let registration = ExecutionRegistration::Worktree {
-        workspace_id,
-        root,
-        binding_id,
-        binding_version: 4,
-        generation: 7,
-        install_epoch: 11,
-        admission_open: true,
-        authority: authority.clone(),
-    };
-    (scope, registration)
-}
-
 pub(super) fn external(
     root: DirectoryRegistration,
     authority: &ExecutionAuthority,
@@ -144,13 +116,13 @@ pub(super) fn external(
     (
         ExecutionScope::ExternalDir {
             directory_id: directory_id.clone(),
-            registration_version: 9,
+            registration_version: 1,
             cwd: WorkspaceCwd::root(),
         },
         ExecutionRegistration::ExternalDir {
             directory_id,
             root,
-            registration_version: 9,
+            registration_version: 1,
             admission_open: true,
             authority: authority.clone(),
         },
@@ -159,47 +131,46 @@ pub(super) fn external(
 
 pub(super) fn prepare(
     client: &RegisteredExecutorConnection,
-    scope: ExecutionScope,
+    mut scope: ExecutionScope,
+    registration: &ExecutionRegistration,
     authority: ExecutionAuthority,
     alias: &str,
     io_mode: IoMode,
     script: &str,
 ) -> PrepareExecution {
-    let receipt = client
-        .registrations()
-        .iter()
-        .rev()
-        .find(|receipt| match (&scope, &receipt.transfer.registration) {
-            (
-                ExecutionScope::Worktree {
-                    workspace_id,
-                    binding_id,
-                    ..
-                },
-                ExecutionRegistration::Worktree {
-                    workspace_id: registered,
-                    binding_id: binding,
-                    ..
-                },
-            ) => workspace_id == registered && binding_id == binding,
-            (
-                ExecutionScope::ExternalDir { directory_id, .. },
-                ExecutionRegistration::ExternalDir {
-                    directory_id: registered,
-                    ..
-                },
-            ) => directory_id == registered,
-            _ => false,
-        })
-        .expect("test launch requires a real attachment receipt");
+    let ExecutionRegistration::ExternalDir { root, .. } = registration else {
+        panic!("private fixture requires ExternalDir");
+    };
+    let held = workspace::execution::objects::HeldSourceObjects::open(&root.path, false).unwrap();
+    let directory = ExternalDirectoryId::fresh().unwrap();
+    let ExecutionScope::ExternalDir { directory_id, .. } = &mut scope else {
+        panic!("private fixture requires ExternalDir scope");
+    };
+    *directory_id = directory.clone();
+    let transfer = AttachRegistration {
+        registration_id: ObjectRegistrationId::fresh().unwrap(),
+        executor_boot: client.executor_boot().clone(),
+        nonce: TransferNonce::fresh().unwrap(),
+        incarnation: SourceObjectIncarnation::ExternalDir(
+            ExternalDirectoryIncarnationId::fresh().unwrap(),
+        ),
+        registration: ExecutionRegistration::ExternalDir {
+            directory_id: directory,
+            root: root.clone(),
+            registration_version: 1,
+            admission_open: true,
+            authority: authority.clone(),
+        },
+        shape: held.shape().clone(),
+    };
     PrepareExecution {
-        source: PreparedSource::Registered,
+        source: PreparedSource::Private(Box::new(transfer.clone())),
         identity: ExecutionIdentity {
             execution_id: ExecutionId::fresh().unwrap(),
             executor_boot: client.executor_boot().clone(),
             ticket_id: LaunchTicketId::fresh().unwrap(),
-            source_registration: receipt.id.clone(),
-            source_incarnation: receipt.transfer.incarnation.clone(),
+            source_registration: transfer.registration_id,
+            source_incarnation: transfer.incarnation,
             authority,
             scope,
             operation_id: "explicit-test-operation".into(),
@@ -248,59 +219,16 @@ pub(super) fn capability(
     }
 }
 
-pub(super) async fn register(
+pub(super) async fn submit(
     client: &mut RegisteredExecutorConnection,
-    registration: ExecutionRegistration,
-) {
-    use workspace::execution::objects::HeldSourceObjects;
-    let (root, worktree) = match &registration {
-        ExecutionRegistration::Worktree { root, .. } => (root, true),
-        ExecutionRegistration::ExternalDir { root, .. } => (root, false),
+    request: PrepareExecution,
+) -> ExecutionReply {
+    let PreparedSource::Private(transfer) = &request.source else {
+        panic!("private fixture required")
     };
-    let held = HeldSourceObjects::open(&root.path, worktree).unwrap();
-    let incarnation = client
-        .registrations()
-        .iter()
-        .find(
-            |receipt| match (&receipt.transfer.registration, &registration) {
-                (
-                    ExecutionRegistration::Worktree {
-                        workspace_id: a, ..
-                    },
-                    ExecutionRegistration::Worktree {
-                        workspace_id: b, ..
-                    },
-                ) => a == b,
-                (
-                    ExecutionRegistration::ExternalDir {
-                        directory_id: a, ..
-                    },
-                    ExecutionRegistration::ExternalDir {
-                        directory_id: b, ..
-                    },
-                ) => a == b,
-                _ => false,
-            },
-        )
-        .map(|receipt| receipt.transfer.incarnation.clone())
-        .unwrap_or_else(|| {
-            if worktree {
-                SourceObjectIncarnation::Worktree(SourceIncarnationId::fresh().unwrap())
-            } else {
-                SourceObjectIncarnation::ExternalDir(
-                    ExternalDirectoryIncarnationId::fresh().unwrap(),
-                )
-            }
-        });
-    let transfer = AttachRegistration {
-        registration_id: ObjectRegistrationId::fresh().unwrap(),
-        executor_boot: client.executor_boot().clone(),
-        nonce: TransferNonce::fresh().unwrap(),
-        incarnation,
-        registration,
-        shape: held.shape().clone(),
-    };
-    client.attach(transfer, &held).await.unwrap();
+    let held = workspace::execution::objects::HeldSourceObjects::open(&transfer.shape.root, false)
+        .unwrap();
+    client.prepare_private(request, &held).await.unwrap()
 }
 
 pub(super) async fn launch(
@@ -308,10 +236,7 @@ pub(super) async fn launch(
     request: &PrepareExecution,
 ) -> ExecutionReceipt {
     assert!(matches!(
-        client
-            .request(ExecutionRequest::Prepare(request.clone()))
-            .await
-            .unwrap(),
+        submit(client, request.clone()).await,
         ExecutionReply::Prepared
     ));
     match client

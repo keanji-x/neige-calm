@@ -248,16 +248,8 @@ mod tests {
             .into_iter()
             .map(|fd| fd.as_fd().try_clone_to_owned().unwrap())
             .collect();
-        let registered = match executor
-            .attach_objects(transfer.clone(), files)
-            .await
-            .unwrap()
-        {
-            ExecutionReply::Registered(receipt) => receipt,
-            other => panic!("attachment failed: {other:?}"),
-        };
         let request = PrepareExecution {
-            source: PreparedSource::Registered,
+            source: PreparedSource::Private(Box::new(transfer.clone())),
             identity: ExecutionIdentity {
                 execution_id: ExecutionId::fresh().unwrap(),
                 executor_boot: executor.boot.clone(),
@@ -286,19 +278,10 @@ mod tests {
             },
         };
         assert!(matches!(
-            executor.prepare(request.clone()).await.unwrap(),
-            ExecutionReply::Prepared
-        ));
-        let mut next = request.clone();
-        next.identity.execution_id = ExecutionId::fresh().unwrap();
-        next.identity.ticket_id = LaunchTicketId::fresh().unwrap();
-        next.ticket = CapabilityToken::fresh().unwrap();
-        next.handoff = Some(AliasHandoff {
-            previous_execution: request.identity.execution_id.clone(),
-            expected_slot_version: 1,
-        });
-        assert!(matches!(
-            executor.prepare(next.clone()).await.unwrap(),
+            executor
+                .prepare_objects(request.clone(), files)
+                .await
+                .unwrap(),
             ExecutionReply::Prepared
         ));
         let consume = ConsumeExecution {
@@ -321,22 +304,13 @@ mod tests {
         std::fs::rename(&moved_source, &path).unwrap();
         std::fs::rename(&moved_journal, &journal).unwrap();
         assert!(failed.is_err());
-        let next_consume = ConsumeExecution {
-            execution_id: next.identity.execution_id.clone(),
-            ticket_id: next.identity.ticket_id.clone(),
-            ticket: next.ticket.clone(),
-        };
-        assert!(
-            executor.launch(next_consume.clone()).await.is_err(),
-            "handoff consumed a nondurable predecessor"
-        );
-        executor.revoke(next_consume).await.unwrap();
         assert!(
             executor
-                .retire_registration(registered.clone())
-                .await
-                .is_err(),
-            "retirement consumed a nondurable terminal ticket"
+                .live_objects
+                .lock()
+                .unwrap()
+                .contains_key(&transfer.registration_id),
+            "failed settlement released the private lease"
         );
         let original = executor.record(&consume.execution_id).unwrap();
         assert!(matches!(original.phase, Phase::NoChild { .. }));
@@ -360,10 +334,7 @@ mod tests {
             serde_json::to_value(&original.phase).unwrap()
         );
         assert!(!path.join("created").exists());
-        assert!(matches!(
-            executor.retire_registration(registered).await.unwrap(),
-            ExecutionReply::RegistrationRetired { .. }
-        ));
+        assert!(executor.live_objects.lock().unwrap().is_empty());
         assert!(matches!(
             executor.launch(consume).await.unwrap(),
             ExecutionReply::Receipt {

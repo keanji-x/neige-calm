@@ -13,11 +13,12 @@ async fn execution_pipe_and_pty_use_registered_cwd_and_explicit_environment() {
         let root = harness.root(&format!("worktree-{index}"), true);
         let expected = root.path.display().to_string();
         let authority = authority();
-        let (scope, registration) = worktree(root, &authority);
-        register(&mut client, registration).await;
+        let (scope, registration) = external(root, &authority);
+
         let request = prepare(
             &client,
             scope,
+            &registration,
             authority,
             &format!("cwd-{index}"),
             mode,
@@ -55,20 +56,18 @@ async fn execution_wrong_ticket_and_revoke_create_no_target() {
     let marker = root.path.join("created");
     let authority = authority();
     let (scope, registration) = external(root, &authority);
-    register(&mut client, registration).await;
+
     let request = prepare(
         &client,
         scope,
+        &registration,
         authority,
         "revoked",
         IoMode::Pipe,
         "printf target > created",
     );
     assert!(matches!(
-        client
-            .request(ExecutionRequest::Prepare(request.clone()))
-            .await
-            .unwrap(),
+        submit(&mut client, request.clone()).await,
         ExecutionReply::Prepared
     ));
     let mut wrong = consume(&request);
@@ -109,11 +108,12 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
     let mut client = harness.connect().await;
     let root = harness.root("worktree", true);
     let authority = authority();
-    let (scope, registration) = worktree(root, &authority);
-    register(&mut client, registration).await;
+    let (scope, registration) = external(root, &authority);
+
     let old = prepare(
         &client,
         scope.clone(),
+        &registration,
         authority.clone(),
         "stable-alias",
         IoMode::Pipe,
@@ -127,6 +127,7 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
     let mut next = prepare(
         &client,
         scope,
+        &registration,
         authority,
         "stable-alias",
         IoMode::Pipe,
@@ -247,13 +248,13 @@ async fn execution_worktree_external_alias_race_reserves_only_one_scope() {
     let left_marker = left.path.join("created");
     let right_marker = right.path.join("created");
     let authority = authority();
-    let (left_scope, left_registration) = worktree(left, &authority);
+    let (left_scope, left_registration) = external(left, &authority);
     let (right_scope, right_registration) = external(right, &authority);
-    register(&mut left_client, left_registration).await;
-    register(&mut right_client, right_registration).await;
+
     let left = prepare(
         &left_client,
         left_scope,
+        &left_registration,
         authority.clone(),
         "contended-alias",
         IoMode::Pipe,
@@ -262,23 +263,18 @@ async fn execution_worktree_external_alias_race_reserves_only_one_scope() {
     let right = prepare(
         &right_client,
         right_scope,
+        &right_registration,
         authority,
         "contended-alias",
         IoMode::Pty { cols: 80, rows: 24 },
         "printf right > created; sleep 0.1",
     );
     assert!(matches!(
-        left_client
-            .request(ExecutionRequest::Prepare(left.clone()))
-            .await
-            .unwrap(),
+        submit(&mut left_client, left.clone()).await,
         ExecutionReply::Prepared
     ));
     assert!(matches!(
-        right_client
-            .request(ExecutionRequest::Prepare(right.clone()))
-            .await
-            .unwrap(),
+        submit(&mut right_client, right.clone()).await,
         ExecutionReply::Prepared
     ));
     let (a, b) = tokio::join!(
@@ -323,24 +319,26 @@ async fn execution_source_replacement_and_stale_epoch_refuse_before_fork() {
     let root = harness.root("original", true);
     let path = root.path.clone();
     let authority = authority();
-    let (scope, registration) = worktree(root, &authority);
-    register(&mut client, registration).await;
+    let (scope, registration) = external(root, &authority);
+
     let mut stale = prepare(
         &client,
         scope.clone(),
+        &registration,
         authority.clone(),
         "stale",
         IoMode::Pipe,
         "printf created > target",
     );
-    if let ExecutionScope::Worktree { install_epoch, .. } = &mut stale.identity.scope {
+    if let ExecutionScope::ExternalDir {
+        registration_version: install_epoch,
+        ..
+    } = &mut stale.identity.scope
+    {
         *install_epoch += 1;
     }
     assert!(matches!(
-        client
-            .request(ExecutionRequest::Prepare(stale))
-            .await
-            .unwrap(),
+        submit(&mut client, stale).await,
         ExecutionReply::Refused { .. }
     ));
     std::fs::rename(&path, harness.temp.path().join("moved")).unwrap();
@@ -348,16 +346,14 @@ async fn execution_source_replacement_and_stale_epoch_refuse_before_fork() {
     let replaced = prepare(
         &client,
         scope,
+        &registration,
         authority,
         "replaced",
         IoMode::Pipe,
         "printf created > target",
     );
     assert!(matches!(
-        client
-            .request(ExecutionRequest::Prepare(replaced))
-            .await
-            .unwrap(),
+        submit(&mut client, replaced).await,
         ExecutionReply::Refused { .. }
     ));
     assert!(!path.join("target").exists());
@@ -370,10 +366,11 @@ async fn execution_leader_exit_does_not_drain_setsiding_descendant() {
     let root = harness.root("scope", false);
     let authority = authority();
     let (scope, registration) = external(root, &authority);
-    register(&mut client, registration).await;
+
     let first = prepare(
         &client,
         scope.clone(),
+        &registration,
         authority.clone(),
         "descendant-alias",
         IoMode::Pipe,
@@ -387,6 +384,7 @@ async fn execution_leader_exit_does_not_drain_setsiding_descendant() {
     let mut next = prepare(
         &client,
         scope,
+        &registration,
         authority,
         "descendant-alias",
         IoMode::Pipe,
@@ -397,10 +395,7 @@ async fn execution_leader_exit_does_not_drain_setsiding_descendant() {
         expected_slot_version: receipt.slot_version,
     });
     assert!(matches!(
-        client
-            .request(ExecutionRequest::Prepare(next.clone()))
-            .await
-            .unwrap(),
+        submit(&mut client, next.clone()).await,
         ExecutionReply::Prepared
     ));
     assert!(matches!(
@@ -438,11 +433,12 @@ async fn execution_completed_journal_replays_original_receipt_after_supervisor_r
     let root = harness.root("worktree", true);
     let counter = root.path.join("counter");
     let authority = authority();
-    let (scope, registration) = worktree(root, &authority);
-    register(&mut client, registration).await;
+    let (scope, registration) = external(root, &authority);
+
     let request = prepare(
         &client,
         scope,
+        &registration,
         authority,
         "persisted-alias",
         IoMode::Pipe,
@@ -484,19 +480,18 @@ async fn execution_launch_revoke_share_gate_and_ticket_is_single_use() {
     let marker = root.path.join("created");
     let authority = authority();
     let (scope, registration) = external(root, &authority);
-    register(&mut a, registration).await;
+
     let request = prepare(
         &a,
         scope,
+        &registration,
         authority,
         "launch-revoke-race",
         IoMode::Pipe,
         "printf x >> created; sleep 0.1",
     );
     assert!(matches!(
-        a.request(ExecutionRequest::Prepare(request.clone()))
-            .await
-            .unwrap(),
+        submit(&mut a, request.clone()).await,
         ExecutionReply::Prepared
     ));
     let (launched, revoked) = tokio::join!(
@@ -536,16 +531,17 @@ async fn execution_launch_revoke_share_gate_and_ticket_is_single_use() {
 }
 
 #[tokio::test]
-async fn execution_closed_binding_blocks_input_but_lifecycle_drains_exact_scope() {
+async fn execution_revocation_blocks_input_but_lifecycle_drains_exact_scope() {
     let harness = Harness::start().await;
     let mut client = harness.connect().await;
     let root = harness.root("closed-binding", true);
     let authority = authority();
-    let (scope, mut registration) = worktree(root, &authority);
-    register(&mut client, registration.clone()).await;
+    let (scope, registration) = external(root, &authority);
+
     let request = prepare(
         &client,
         scope,
+        &registration,
         authority,
         "closing-execution",
         IoMode::Pty { cols: 80, rows: 24 },
@@ -556,16 +552,10 @@ async fn execution_closed_binding_blocks_input_but_lifecycle_drains_exact_scope(
         output.contains("ready")
     })
     .await;
-    if let ExecutionRegistration::Worktree {
-        binding_version,
-        admission_open,
-        ..
-    } = &mut registration
-    {
-        *binding_version += 1;
-        *admission_open = false;
-    }
-    register(&mut client, registration).await;
+    client
+        .request(ExecutionRequest::Revoke(consume(&request)))
+        .await
+        .unwrap();
     assert!(matches!(
         client
             .request(ExecutionRequest::Control(ExecutionControl {
@@ -606,10 +596,11 @@ async fn execution_legacy_alias_control_and_unregistered_client_are_refused() {
     let root = harness.root("typed", false);
     let authority = authority();
     let (scope, registration) = external(root, &authority);
-    register(&mut client, registration).await;
+
     let request = prepare(
         &client,
         scope,
+        &registration,
         authority,
         "typed-only",
         IoMode::Pipe,
@@ -665,14 +656,14 @@ async fn execution_id_and_ticket_reservations_are_global_across_resources() {
     let mut first_client = harness.connect().await;
     let mut second_client = harness.connect().await;
     let grant = authority();
-    let (first_scope, first_registration) = worktree(harness.root("registered", true), &grant);
+    let (first_scope, first_registration) = external(harness.root("registered", true), &grant);
     let (second_scope, second_registration) = external(harness.root("external", false), &grant);
-    register(&mut first_client, first_registration).await;
-    register(&mut second_client, second_registration).await;
+
     for duplicate_execution in [true, false] {
         let first = prepare(
             &first_client,
             first_scope.clone(),
+            &first_registration,
             grant.clone(),
             &format!("first-{duplicate_execution}"),
             IoMode::Pipe,
@@ -681,6 +672,7 @@ async fn execution_id_and_ticket_reservations_are_global_across_resources() {
         let mut second = prepare(
             &second_client,
             second_scope.clone(),
+            &second_registration,
             grant.clone(),
             &format!("second-{duplicate_execution}"),
             IoMode::Pipe,
@@ -692,8 +684,8 @@ async fn execution_id_and_ticket_reservations_are_global_across_resources() {
             second.identity.ticket_id = first.identity.ticket_id.clone();
         }
         let (first_reply, second_reply) = tokio::join!(
-            first_client.request(ExecutionRequest::Prepare(first.clone())),
-            second_client.request(ExecutionRequest::Prepare(second.clone()))
+            async { Ok::<_, std::io::Error>(submit(&mut first_client, first.clone()).await) },
+            async { Ok::<_, std::io::Error>(submit(&mut second_client, second.clone()).await) }
         );
         let (winner, loser) = match (first_reply.unwrap(), second_reply.unwrap()) {
             (ExecutionReply::Prepared, ExecutionReply::Refused { .. }) => (&first, &second),

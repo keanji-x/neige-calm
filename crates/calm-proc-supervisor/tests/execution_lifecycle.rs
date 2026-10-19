@@ -25,8 +25,8 @@ async fn setup(
     let mut c = h.connect().await;
     let a = authority();
     let (scope, registration) = external(h.root("scope", false), &a);
-    register(&mut c, registration).await;
-    let r = prepare(&c, scope, a, "lifecycle", mode, script);
+
+    let r = prepare(&c, scope, &registration, a, "lifecycle", mode, script);
     let receipt = launch(&mut c, &r).await;
     wait_for(&mut c, &r, &receipt, |_, out| out.contains("ready")).await;
     (c, r, receipt)
@@ -284,11 +284,17 @@ async fn never_spawned_output_revoke_survives_restart() {
     let mut c = h.connect().await;
     let a = authority();
     let (scope, registration) = external(h.root("never-spawned", false), &a);
-    register(&mut c, registration).await;
-    let r = prepare(&c, scope, a, "never-spawned", IoMode::Pipe, "exit 1");
-    c.request(ExecutionRequest::Prepare(r.clone()))
-        .await
-        .unwrap();
+
+    let r = prepare(
+        &c,
+        scope,
+        &registration,
+        a,
+        "never-spawned",
+        IoMode::Pipe,
+        "exit 1",
+    );
+    submit(&mut c, r.clone()).await;
     c.request(ExecutionRequest::Revoke(consume(&r)))
         .await
         .unwrap();
@@ -314,11 +320,17 @@ async fn never_spawned_output_recovery_and_shutdown_paths() {
         let mut c = h.connect().await;
         let a = authority();
         let (scope, registration) = external(h.root("no-child", false), &a);
-        register(&mut c, registration).await;
-        let r = prepare(&c, scope, a, "no-child", IoMode::Pipe, "exit 1");
-        c.request(ExecutionRequest::Prepare(r.clone()))
-            .await
-            .unwrap();
+
+        let r = prepare(
+            &c,
+            scope,
+            &registration,
+            a,
+            "no-child",
+            IoMode::Pipe,
+            "exit 1",
+        );
+        submit(&mut c, r.clone()).await;
         let mut before = journal(&h, &r);
         unsafe {
             libc::kill(h.child.id() as i32, libc::SIGTERM);

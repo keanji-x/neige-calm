@@ -14,36 +14,22 @@ fn journal(h: &Harness, r: &PrepareExecution) -> Value {
 
 #[tokio::test]
 async fn c0_compat_v4_same_host_spawned_stays_unknown() {
-    recover(false, false).await;
+    recover(false, false, false).await;
 }
 
 #[tokio::test]
 async fn c0_compat_v4_changed_boot_settles_releases_and_retires() {
-    recover(true, false).await;
+    recover(true, false, false).await;
 }
 
 #[tokio::test]
 async fn c0_compat_v4_durably_settled_replays_releases_and_retires() {
-    recover(false, true).await;
+    recover(false, true, false).await;
 }
 
-async fn recover(changed_boot: bool, settled: bool) {
+async fn recover(changed_boot: bool, settled: bool, shared: bool) {
     let mut h = Harness::start().await;
     let mut c = h.connect().await;
-    // A real shared attachment provides the v4 receipt read by startup independently of
-    // Private journals, whose receipt facts live in the execution journal itself.
-    let (_, registration) = external(h.root("upgrade-registration", false), &authority());
-    register(&mut c, registration).await;
-    let registration_id = &c.registrations().last().unwrap().id;
-    let saved: Value = serde_json::from_slice(
-        &std::fs::read(
-            h.journal()
-                .join(format!("{}.registration", registration_id.as_str())),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(saved["contract"], 4);
     let (mut r, held) = private_request(&c, h.root("upgrade-private", false));
     r.specification.program = "/bin/sh".into();
     r.specification.args = vec!["-c".into(), "printf ready; read -r release".into()];
@@ -99,13 +85,42 @@ async fn recover(changed_boot: bool, settled: bool) {
         serde_json::to_vec(&old).unwrap(),
     )
     .unwrap();
-    let PreparedSource::Private(transfer) = &r.source else {
+    let PreparedSource::Private(transfer) = r.source.clone() else {
         unreachable!()
     };
+    // Re-source historical receipts from the actual Private journal's frozen transfer facts.
+    // The upgrade fixture then freezes the released v4 shared source tag, without wire Attach.
+    let receipt_fact = ObjectRegistrationReceipt {
+        contract: 4,
+        id: transfer.registration_id.clone(),
+        transfer: transfer.as_ref().clone(),
+    };
+    std::fs::write(
+        h.journal()
+            .join(format!("{}.registration", receipt_fact.id.as_str())),
+        serde_json::to_vec(&receipt_fact).unwrap(),
+    )
+    .unwrap();
+    if shared {
+        old["request"]["source"] = "Registered".into();
+        std::fs::write(
+            h.journal()
+                .join(format!("{}.execution", r.identity.execution_id.as_str())),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        r.source = PreparedSource::Registered;
+    }
     h.child = Harness::spawn(h.temp.path(), &h.socket);
     let mut c = h.connect().await;
     assert_ne!(c.executor_boot(), &r.identity.executor_boot);
-    let replay = c.prepare_private(r.clone(), &held).await.unwrap();
+    let replay = if shared {
+        c.request(ExecutionRequest::Prepare(r.clone()))
+            .await
+            .unwrap()
+    } else {
+        c.prepare_private(r.clone(), &held).await.unwrap()
+    };
     if !changed_boot && !settled {
         assert!(
             matches!(replay, ExecutionReply::Receipt { state: ExecutionState::Unknown { .. }, receipt: Some(ref original) } if original == &receipt)
@@ -154,6 +169,15 @@ async fn recover(changed_boot: bool, settled: bool) {
             c.prepare_private(other, &held).await.unwrap(),
             ExecutionReply::Refused { .. }
         ));
+        if shared {
+            let (unrelated, unrelated_held) =
+                private_request(&c, h.root("unrelated-upgrade", false));
+            assert!(matches!(
+                c.prepare_private(unrelated, &unrelated_held).await.unwrap(),
+                ExecutionReply::Refused { .. }
+            ));
+            assert_eq!(journal(&h, &r)["request"]["source"], "Registered");
+        }
         return;
     }
     if changed_boot {
@@ -200,4 +224,17 @@ async fn recover(changed_boot: bool, settled: bool) {
     assert!(
         matches!(c.request(ExecutionRequest::Inspect(r.identity.execution_id.clone())).await.unwrap(), ExecutionReply::Retired(t) if t == tombstone)
     );
+}
+
+#[tokio::test]
+async fn c0_compat_v4_shared_same_boot_unsettled_fails_closed() {
+    recover(false, false, true).await;
+}
+#[tokio::test]
+async fn c0_compat_v4_shared_changed_boot_settles_and_retires() {
+    recover(true, false, true).await;
+}
+#[tokio::test]
+async fn c0_compat_v4_shared_settled_replays_and_retires() {
+    recover(false, true, true).await;
 }

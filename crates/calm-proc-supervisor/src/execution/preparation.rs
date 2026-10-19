@@ -51,11 +51,6 @@ impl PreparationReservations {
         Ok(())
     }
 
-    pub(super) fn reserve_attachment(&self, transfer: &AttachRegistration) -> anyhow::Result<()> {
-        let mut state = self.0.lock().map_err(poison)?;
-        Self::reserve_transfer(&mut state, transfer, None)
-    }
-
     fn reserve_transfer(
         state: &mut State,
         transfer: &AttachRegistration,
@@ -200,16 +195,7 @@ impl Executor {
                 Some(self.stage_private(&request, transfer, descriptors)?)
             }
             PreparedSource::Registered => {
-                anyhow::ensure!(descriptors.is_empty(), "descriptors require private source");
-                if let ExecutionScope::ExternalDir { directory_id, .. } = &request.identity.scope {
-                    self.private_directory_available(
-                        directory_id,
-                        Some(&request.identity.execution_id),
-                    )?;
-                }
-                let root = self.resolve(&request.identity, true)?;
-                let _cwd = root.launch_cwd(scope_cwd(&request.identity.scope))?;
-                None
+                anyhow::bail!("shared registration preparation is no longer supported");
             }
         };
         if let Some(existing) = existing {
