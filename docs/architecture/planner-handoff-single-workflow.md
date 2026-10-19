@@ -7,6 +7,10 @@ retry generation and absorbing business terminal. There is no new executor, publ
 API, UI, provider protocol or approval queue. OperationRuntime retains leases,
 checkpoint CAS, exact drive and generation-fenced explicit retry.
 
+The proposed [termination protocol](planner-handoff-termination.md) adds a failed-closed
+Abandoned terminal and bounded lifecycle settlement. It identifies which unresolved
+reservation and migration assumptions below it would supersede; it is not implemented.
+
 ## Authoritative facts
 
 | Fact | Authority and owning entry point | Retained evidence; copies to remove |
