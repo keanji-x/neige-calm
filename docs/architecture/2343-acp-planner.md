@@ -73,30 +73,54 @@ Pass `--acp-planner-config /absolute/path/acp-planner.json`:
   "agents": [{
     "provider": "opencode",
     "command": "/absolute/path/opencode",
-    "args": ["acp"],
+    "args": [],
+    "subcommand": ["acp"],
     "env": {
       "HOME": "/private/opencode-profile",
       "XDG_CONFIG_HOME": "/private/opencode-profile/config",
       "XDG_DATA_HOME": "/private/opencode-profile/data",
       "XDG_CACHE_HOME": "/private/opencode-profile/cache"
     },
-    "expected_agent_name": "OpenCode",
-    "expected_agent_version": "1.18.34"
+    "min_agent_version": "1.18.34"
   }]
 }
 ```
 
-Use an operator-owned private profile and authenticate through the native CLI outside Neige. All launch fields are required, unknown keys are refused, and the agent's initialize identity/version must match before session operations. The child inherits no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration.
+Use an operator-owned private profile and authenticate through the native CLI outside Neige. All launch fields are required and unknown keys are refused. The child inherits no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration.
+
+The argument vector is `args`, then the agent options the provider's profile adds for the turn's
+permission mode, then `subcommand`. The registration names the split explicitly; Neige never
+guesses where an agent's subcommand starts. OpenCode's profile adds no option, so for it the split
+does not change the launch.
+
+Each provider's ACP profile (`acp_planner/profile/`) fixes where the agent's `initialize` answer
+reports who it is: ACP's `agentInfo` with the profile's name (OpenCode: `OpenCode`), or only a
+version at `_meta.agentVersion`. The reported version must be semver and at least
+`min_agent_version`, itself semver; anything else stops the process before a session operation.
+A file still naming `expected_agent_name` (now fixed by the profile) or `expected_agent_version`
+(renamed `min_agent_version`) is refused with that change; the two forms are never read together.
+Changing a registration changes its digest, so a conversation bound under the old file is reset
+explicitly, as for any registration change.
+
+A profile may name the `authMethods` id every launch authenticates with after `initialize` and
+before any session operation. OpenCode's names none and sends no `authenticate`. When one is
+named, it must be among the methods the agent reports, and `authenticate` must succeed within its
+bound; otherwise the process stops and the launch fails. Readiness takes this same path, so the
+provider reads unavailable with the advice to sign the agent in with its own CLI under the
+environment its registration declares. Neige judges sign-in only from the agent's ACP answers,
+never from its private credential files.
 
 Operational launches explicitly receive their active Planner card's
 `NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN`, using the same per-turn context as the
 MCP shim (#2413). This enables the kernel-served `neige` CLI without inheriting
 user or daemon credentials. Readiness launches receive neither. Managed ownership
 and active-carrier checks precede token issuance; launch/negotiation failures
-revoke it, as do setup failure, settlement and shutdown. The operator-registered
+revoke it, as do setup failure, settlement and shutdown; an authentication
+failure is a negotiation failure. The operator-registered
 native binary is trusted to hold the same card credential already delivered in
-its MCP descriptors; the advertised agent name/version remains a compatibility
-check, not cryptographic authentication of the executable. CLI commands still
+its MCP descriptors; the advertised agent identity and version remain a compatibility
+check, not cryptographic authentication of the executable, and ACP `authenticate`
+signs the agent into its own service, not into Neige. CLI commands still
 use the authoritative kernel parser and role checks; native permission requests
 follow the card's permission mode.
 

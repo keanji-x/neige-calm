@@ -47,7 +47,7 @@ impl AcpPlannerHost {
         cwd: Option<&Path>,
     ) -> Option<Catalog> {
         // Check registration even before consulting the cache.
-        let config = self.configured(provider).ok()?;
+        let registration = self.registration(provider).ok()?;
         let key = cwd.map(Path::to_path_buf);
         let mut cache = self.discovery.lock().await;
         if let Some(entry) = cache.as_ref()
@@ -63,7 +63,7 @@ impl AcpPlannerHost {
                 .tempdir()?;
             let cwd = cwd.unwrap_or(scratch.path());
             let mut process =
-                Process::spawn(self, config, WORKER, cwd, LaunchContext::Readiness).await?;
+                Process::spawn(self, registration, WORKER, cwd, LaunchContext::Readiness).await?;
             let discovered = async {
                 let result = setup_request(
                     &mut process,

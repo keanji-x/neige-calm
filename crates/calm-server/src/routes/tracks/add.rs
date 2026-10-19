@@ -14,7 +14,6 @@ use crate::model::{NewTrack, RequestTheme, Track};
 use crate::routes::codex_cards::default_cwd;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::RouteState;
-use calm_types::runtime::AgentProtocol;
 
 use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, SendPath, TRACK_ADD_KEY_PREFIX};
 use super::{CreateTrackOptions, preparation};
@@ -127,19 +126,14 @@ impl TrackCreator for RouteTrackCreator {
         } else {
             None
         };
-        let acp_availability = if planner_provider.protocol() == AgentProtocol::Acp {
-            Some(
-                s.provider_availability
-                    .acp(
-                        &planner_provider,
-                        crate::agent_providers::Freshness::Cached,
-                        &s.acp_planner,
-                    )
-                    .await,
+        let acp_availability = s
+            .provider_availability
+            .acp_create_gate(
+                &planner_provider,
+                crate::agent_providers::Freshness::Cached,
+                &s.acp_planner,
             )
-        } else {
-            None
-        };
+            .await;
         let _area_delete_guard =
             crate::per_card_lock::lock_key(&s.area_delete_locks, area_id.as_str()).await;
         let plan = create::plan_keyed_create(

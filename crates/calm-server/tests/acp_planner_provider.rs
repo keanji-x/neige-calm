@@ -44,9 +44,15 @@ fn requests(root: &Root, method: &str) -> Vec<Value> {
         .collect()
 }
 async fn boot(root: &Root) -> Stack {
+    boot_with(root, json!({}), "1.0.0").await
+}
+/// Boot with `env` added to the fixture's registered environment and `min_agent_version`.
+async fn boot_with(root: &Root, env: Value, min_agent_version: &str) -> Stack {
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
     let config_path = root.path().join("acp.json");
-    std::fs::write(&config_path,json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3","args":["-u",PEER],"env":{"ACP_FIXTURE_ROOT":root.path()},"expected_agent_name":"Fixture ACP","expected_agent_version":"1"}]}).to_string()).unwrap();
+    let mut env = env;
+    env["ACP_FIXTURE_ROOT"] = json!(root.path());
+    std::fs::write(&config_path,json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3","args":["-u",PEER],"subcommand":[],"env":env,"min_agent_version":min_agent_version}]}).to_string()).unwrap();
     let mut config = root.config(false);
     config.acp_planner_config = Some(config_path);
     // Use this build's production shim, never a host installation found on PATH.

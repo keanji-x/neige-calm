@@ -58,7 +58,7 @@ async fn acp_same_key_replay_checks_exact_claim_without_spawn_setup_or_prompt() 
                 "provider":"opencode", "command":"/usr/bin/python3",
                 "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
                 "env":{"ACP_FIXTURE_ROOT":root.path()},
-                "expected_agent_name":"Fixture ACP", "expected_agent_version":"1"
+                "subcommand":[], "min_agent_version":"1.0.0"
             }]})).unwrap()), root.path(), root.path().join("unused-shim"), root.path().join("mcp.sock")
         ).unwrap());
         let session = AcpPlannerSession::open(SessionParams {

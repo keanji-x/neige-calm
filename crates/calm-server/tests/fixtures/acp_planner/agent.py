@@ -1,4 +1,10 @@
-"""ACP spy peer. No shell tools run; logs contain no environment or credential values."""
+"""ACP spy peer. No shell tools run; logs contain no environment or credential values.
+
+Its registration's env shapes `initialize`: ACP_FIXTURE_IDENTITY `agent_info` (default: agentInfo
+named OpenCode) or `meta` (no agentInfo; `_meta.agentVersion`, as Grok Build 1.0.62 reports),
+ACP_FIXTURE_VERSION (default 1.18.35), ACP_FIXTURE_AUTH_METHODS (comma-separated `authMethods`
+ids; default none), and ACP_FIXTURE_AUTHENTICATE `ok` (default), `error` or `silent` (never
+answers, as signed-out Grok Build 1.0.62)."""
 import json
 import os
 import pathlib
@@ -16,6 +22,8 @@ with (root / 'environment.jsonl').open('a') as output:
     presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
     presence['opencode_permission'] = os.environ.get('OPENCODE_PERMISSION')
     output.write(json.dumps(presence) + '\n')
+with (root / 'argv.jsonl').open('a') as output:
+    output.write(json.dumps(sys.argv[1:]) + '\n')
 current, pending, permission, cancel_seen = None, None, None, False
 model, effort = 'fixture/model-a', 'normal'
 
@@ -135,12 +143,26 @@ for line in sys.stdin:
         capabilities = {'loadSession': True}
         if (root / 'scenario').read_text().strip() != 'catalog_no_close':
             capabilities['sessionCapabilities'] = {'close': {}}
-        result(request, {'protocolVersion': 1, 'agentCapabilities': capabilities,
-                         'agentInfo': {'name': 'Fixture ACP', 'version': 'wrong' if wrong else '1'}})
+        version = 'wrong' if wrong else os.environ.get('ACP_FIXTURE_VERSION', '1.18.35')
+        initialized = {'protocolVersion': 1, 'agentCapabilities': capabilities}
+        if os.environ.get('ACP_FIXTURE_IDENTITY', 'agent_info') == 'meta':
+            initialized['_meta'] = {'agentVersion': version}
+        else:
+            initialized['agentInfo'] = {'name': 'OpenCode', 'version': version}
+        methods = [m for m in os.environ.get('ACP_FIXTURE_AUTH_METHODS', '').split(',') if m]
+        if methods:
+            initialized['authMethods'] = [{'id': m, 'name': m} for m in methods]
+        result(request, initialized)
         if (root / 'scenario').read_text().strip() == 'checkpoint' and not os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness'):
             (root / 'setup-checkpoint').touch()
             while not (root / 'release-setup').exists():
                 time.sleep(0.01)
+    elif method == 'authenticate':
+        behaviour = os.environ.get('ACP_FIXTURE_AUTHENTICATE', 'ok')
+        if behaviour == 'ok':
+            result(request, {})
+        elif behaviour == 'error':
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32000, 'message': 'Authentication required'}})
     elif method == 'session/new':
         if (root / 'scenario').read_text().strip() == 'catalog_cancel':
             hold_catalog()

@@ -1,5 +1,5 @@
+use super::profile::AcpAgentProfile;
 use crate::error::{CalmError, Result};
-use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::planner_process::MarkerInstance;
 use calm_types::runtime::{AgentProtocol, AgentProvider};
 use serde::{Deserialize, Serialize};
@@ -17,15 +17,57 @@ pub struct AcpPlannerConfig {
 pub struct AcpAgentConfig {
     pub provider: AgentProvider,
     pub command: PathBuf,
+    /// The arguments before the agent options a Planner turn's permission mode adds.
     pub args: Vec<String>,
+    /// The arguments after those agent options: the ACP subcommand and its own arguments.
+    pub subcommand: Vec<String>,
     /// Complete operator-declared environment additions. Nothing is inherited implicitly.
     pub env: BTreeMap<String, String>,
-    pub expected_agent_name: String,
-    pub expected_agent_version: String,
+    /// The lowest agent version a launch accepts; the agent's profile says where it reports it.
+    #[serde(with = "semver_text")]
+    pub min_agent_version: semver::Version,
 }
+
+/// A semver version as its text, as the registration writes it and its digest records it.
+mod semver_text {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(version: &semver::Version, out: S) -> Result<S::Ok, S::Error> {
+        out.collect_str(version)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<semver::Version, D::Error> {
+        let text = String::deserialize(input)?;
+        semver::Version::parse(&text)
+            .map_err(|error| D::Error::custom(format!("`min_agent_version` {text:?}: {error}")))
+    }
+}
+
+/// Registration fields this version no longer reads, and what replaced each. Named apart from
+/// the generic unknown-field refusal so an operator's older file says what to change.
+const REPLACED_FIELDS: [(&str, &str); 2] = [
+    (
+        "expected_agent_name",
+        "remove it: the provider's profile fixes the agent name it accepts",
+    ),
+    (
+        "expected_agent_version",
+        "rename it to `min_agent_version`: the lowest semver version accepted",
+    ),
+];
+
 impl AcpPlannerConfig {
     pub fn read(path: &Path) -> Result<Self> {
-        let config: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+        if let Some(agents) = raw.get("agents").and_then(serde_json::Value::as_array) {
+            for (field, change) in REPLACED_FIELDS {
+                if agents.iter().any(|agent| agent.get(field).is_some()) {
+                    return Err(CalmError::BadRequest(format!(
+                        "ACP registration field `{field}` was replaced; {change}"
+                    )));
+                }
+            }
+        }
+        let config: Self = serde_json::from_value(raw)?;
         config.validate()?;
         Ok(config)
     }
@@ -39,11 +81,10 @@ impl AcpPlannerConfig {
                     "ACP registration names an unsupported or duplicate agent".into(),
                 ));
             }
-            if !agent.command.is_absolute()
-                || agent.expected_agent_name.is_empty()
-                || agent.expected_agent_version.is_empty()
-            {
-                return Err(CalmError::BadRequest("ACP registration requires an absolute command and pinned agent identity/version".into()));
+            if !agent.command.is_absolute() {
+                return Err(CalmError::BadRequest(
+                    "ACP registration requires an absolute command".into(),
+                ));
             }
             if agent
                 .env
@@ -58,18 +99,19 @@ impl AcpPlannerConfig {
         Ok(())
     }
 }
-impl AcpAgentConfig {
-    /// The environment one Planner turn's process adds under `mode`, set explicitly, never
-    /// inherited. `never` adds nothing: the agent's own configuration stands, as before.
-    pub fn permission_env(&self, mode: PlannerPermissionMode) -> Vec<(&'static str, &'static str)> {
-        super::profile::AcpAgentProfile::of(&self.provider)
-            .map_or_else(Vec::new, |profile| profile.permission_env(mode))
-    }
+
+/// One registered agent and its provider's profile: everything one launch reads.
+#[derive(Clone, Copy)]
+pub(super) struct Registration<'a> {
+    pub config: &'a AcpAgentConfig,
+    pub profile: &'static AcpAgentProfile,
 }
 
 #[derive(Debug)]
 pub struct AcpPlannerHost {
     config: Option<AcpPlannerConfig>,
+    /// [`AcpAgentProfile::of`]; a unit test substitutes a profile no provider registers yet.
+    profiles: fn(&AgentProvider) -> Option<&'static AcpAgentProfile>,
     pub instance: MarkerInstance,
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
@@ -92,6 +134,7 @@ impl AcpPlannerHost {
         }
         Ok(Self {
             config,
+            profiles: AcpAgentProfile::of,
             instance: MarkerInstance::for_data_dir(data_dir, MARKER_KEY)?,
             mcp_shim,
             mcp_socket,
@@ -129,6 +172,23 @@ impl AcpPlannerHost {
             })
     }
 
+    /// The registration of `provider` with its profile.
+    pub(super) fn registration(&self, provider: &AgentProvider) -> Result<Registration<'_>> {
+        let config = self.configured(provider)?;
+        let profile = (self.profiles)(provider).ok_or_else(|| {
+            CalmError::Internal(format!("{} has no ACP profile", provider.wire_name()))
+        })?;
+        Ok(Registration { config, profile })
+    }
+    #[cfg(test)]
+    pub(super) fn with_profiles(
+        mut self,
+        profiles: fn(&AgentProvider) -> Option<&'static AcpAgentProfile>,
+    ) -> Self {
+        self.profiles = profiles;
+        self
+    }
+
     pub fn record_configuration(
         &self,
         card: &str,
@@ -152,10 +212,10 @@ impl AcpPlannerHost {
 
     pub async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
         let _probe = self.readiness.lock().await;
-        let config = self.configured(provider)?;
+        let registration = self.registration(provider)?;
         let process = super::process::Process::spawn(
             self,
-            config,
+            registration,
             "readiness",
             &std::env::temp_dir(),
             super::process::LaunchContext::Readiness,
@@ -215,56 +275,76 @@ async fn revoke_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn opencode() -> AcpAgentConfig {
-        AcpAgentConfig {
-            provider: AgentProvider::OpenCode,
-            command: "/opt/opencode".into(),
-            args: vec!["acp".into()],
-            env: BTreeMap::new(),
-            expected_agent_name: "OpenCode".into(),
-            expected_agent_version: "1.18.35".into(),
+    fn read(agent: serde_json::Value) -> Result<AcpPlannerConfig> {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), json!({"agents":[agent]}).to_string()).unwrap();
+        AcpPlannerConfig::read(file.path())
+    }
+    fn opencode() -> serde_json::Value {
+        json!({"provider":"opencode","command":"/opt/opencode","args":[],"subcommand":["acp"],
+            "env":{},"min_agent_version":"1.18.35"})
+    }
+
+    #[test]
+    fn a_registration_reads_its_minimum_version_as_semver() {
+        let config = read(opencode()).unwrap();
+        assert_eq!(
+            config.agents[0].min_agent_version,
+            semver::Version::new(1, 18, 35)
+        );
+        for version in ["1.18", "v1.18.35", "latest", ""] {
+            let mut agent = opencode();
+            agent["min_agent_version"] = json!(version);
+            assert!(read(agent).is_err(), "{version}");
+        }
+        for field in ["min_agent_version", "subcommand"] {
+            let mut agent = opencode();
+            agent.as_object_mut().unwrap().remove(field);
+            assert!(read(agent).is_err(), "{field} is required");
         }
     }
 
-    /// `ask` makes OpenCode ask before bash, edits and fetches; `never` adds nothing, so its launch
-    /// is today's.
+    /// An older file names what replaced its fields instead of failing as an unknown key, and the
+    /// old and new forms are never accepted together.
     #[test]
-    fn only_ask_overrides_opencodes_permission_config() {
-        assert_eq!(
-            opencode().permission_env(PlannerPermissionMode::Ask),
-            vec![(
-                "OPENCODE_PERMISSION",
-                r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#
-            )]
-        );
-        assert_eq!(
-            opencode().permission_env(PlannerPermissionMode::Never),
-            Vec::<(&str, &str)>::new()
-        );
+    fn replaced_identity_fields_are_refused_with_their_replacement() {
+        for (field, value, hint) in [
+            (
+                "expected_agent_version",
+                "1.18.35",
+                "rename it to `min_agent_version`",
+            ),
+            (
+                "expected_agent_name",
+                "OpenCode",
+                "the provider's profile fixes",
+            ),
+        ] {
+            // Alone, as an older file has it, and beside its replacement.
+            for keep_new_form in [false, true] {
+                let mut agent = opencode();
+                if !keep_new_form {
+                    agent.as_object_mut().unwrap().remove("min_agent_version");
+                }
+                agent[field] = json!(value);
+                let message = read(agent).unwrap_err().to_string();
+                assert!(
+                    message.contains(field) && message.contains(hint),
+                    "{message}"
+                );
+            }
+        }
     }
 
-    /// #2441: `full` allows each acting tool by name, outside the workspace too, and never with a
-    /// `*` rule, which would also allow the tools OpenCode denies a Planner.
+    /// The digest of a registration records its minimum version as written.
     #[test]
-    fn full_allows_each_acting_tool_by_name() {
-        let env = opencode().permission_env(PlannerPermissionMode::Full);
-        let [(key, value)] = env.as_slice() else {
-            panic!("one override: {env:?}");
-        };
-        assert_eq!(*key, "OPENCODE_PERMISSION");
-        let permission: serde_json::Value = serde_json::from_str(value).unwrap();
+    fn a_registration_serializes_its_minimum_version_as_text() {
+        let config = read(opencode()).unwrap();
         assert_eq!(
-            permission,
-            serde_json::json!({
-                "bash": "allow",
-                "edit": "allow",
-                "webfetch": "allow",
-                "external_directory": "allow",
-                "doom_loop": "allow",
-                "read": "allow",
-            })
+            serde_json::to_value(&config.agents[0]).unwrap()["min_agent_version"],
+            "1.18.35"
         );
-        assert!(permission.get("*").is_none(), "{permission}");
     }
 }

@@ -6,6 +6,8 @@ use std::time::Duration;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// An agent that never answers `authenticate` (Grok Build 1.0.62 signed out) fails within this.
+const AUTHENTICATE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +39,16 @@ pub struct InitializeResponse {
     pub protocol_version: u32,
     pub agent_capabilities: AgentCapabilities,
     pub agent_info: Option<AgentInfo>,
+    /// The methods `authenticate` accepts; ACP's default is none.
+    #[serde(default)]
+    pub auth_methods: Vec<AuthMethod>,
+    /// The agent's extension metadata, uninterpreted here.
+    #[serde(rename = "_meta")]
+    pub meta: Option<serde_json::Map<String, Value>>,
+}
+#[derive(Debug, Deserialize)]
+pub struct AuthMethod {
+    pub id: String,
 }
 #[derive(Debug, Deserialize)]
 pub struct AgentInfo {
@@ -125,6 +137,17 @@ pub async fn initialize(
         return Err(Error::Protocol("unsupported negotiated protocol version"));
     }
     Ok(response)
+}
+/// Authenticate with `method`, one of the `authMethods` the agent reported. The caller chooses it.
+pub async fn authenticate(client: &Client, method: &str) -> Result<(), Error> {
+    client
+        .request(
+            "authenticate",
+            json!({"methodId":method}),
+            AUTHENTICATE_TIMEOUT,
+        )
+        .await
+        .map(drop)
 }
 /// Encode native setup only. The host owns validation, authority and response pumping.
 pub fn encode_new_session(cwd: &std::path::Path, mcp: &[McpServer]) -> Value {

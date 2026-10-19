@@ -761,19 +761,14 @@ pub(crate) async fn create_track(
     } else {
         None
     };
-    let acp_availability = if request.planner_provider.protocol() == AgentProtocol::Acp {
-        Some(
-            s.provider_availability
-                .acp(
-                    &request.planner_provider,
-                    crate::agent_providers::Freshness::Cached,
-                    &s.acp_planner,
-                )
-                .await,
+    let acp_availability = s
+        .provider_availability
+        .acp_create_gate(
+            &request.planner_provider,
+            crate::agent_providers::Freshness::Cached,
+            &s.acp_planner,
         )
-    } else {
-        None
-    };
+        .await;
     // Common area lifecycle fence for legacy mint, first-message mint, and
     // idempotent replay. Holding it through workspace materialization and
     // operation submission makes area deletion snapshot a closed member set.

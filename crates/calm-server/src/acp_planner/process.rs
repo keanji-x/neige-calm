@@ -1,4 +1,4 @@
-use super::config::{AcpAgentConfig, AcpPlannerHost, MARKER_KEY};
+use super::config::{AcpPlannerHost, MARKER_KEY, Registration};
 use crate::error::{CalmError, Result};
 use crate::planner_permission_mode::PlannerPermissionMode;
 use plugin::child_process::{GroupChild, set_process_group_leader, spawn_within};
@@ -26,27 +26,37 @@ pub(super) enum LaunchContext<'a> {
 impl Process {
     pub async fn spawn(
         host: &AcpPlannerHost,
-        config: &AcpAgentConfig,
+        registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
         context: LaunchContext<'_>,
     ) -> Result<Self> {
-        Self::spawn_control(host, config, worker, cwd, context)
+        Self::spawn_control(host, registration, worker, cwd, context)
             .await
             .map_err(Into::into)
     }
 
+    /// Spawn the registered agent, `initialize` it, admit its reported identity, and
+    /// authenticate it when its profile names a method. Any refusal stops the process before a
+    /// session operation.
     pub async fn spawn_control(
         host: &AcpPlannerHost,
-        config: &AcpAgentConfig,
+        registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
         context: LaunchContext<'_>,
     ) -> std::result::Result<Self, StartFailure> {
+        let Registration { config, profile } = registration;
         crate::planner_process::stop(&host.instance, worker).await?;
+        let launch = match context {
+            LaunchContext::Planner { permission, .. } => Some(profile.launch(permission)),
+            LaunchContext::Readiness => None,
+        };
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
+            .args(launch.map_or(&[][..], |launch| launch.agent_options))
+            .args(&config.subcommand)
             .current_dir(cwd)
             .env_clear()
             .envs(&config.env)
@@ -61,16 +71,14 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        if let LaunchContext::Planner {
-            mcp_token,
-            permission,
-        } = context
-        {
+        if let LaunchContext::Planner { mcp_token, .. } = context {
             command.envs(crate::mcp_server::wiring::card_mcp_env(
                 &host.mcp_socket,
                 mcp_token,
             ));
-            command.envs(config.permission_env(permission));
+        }
+        if let Some(launch) = launch {
+            command.envs(launch.env.iter().copied());
         }
         set_process_group_leader(&mut command);
         let mut child = spawn_within(
@@ -90,29 +98,18 @@ impl Process {
                 .stdin()
                 .ok_or_else(|| CalmError::Internal("ACP stdin missing".into()))?,
         );
-        let setup =
-            protocol::initialize(&connection.client, "neige", env!("CARGO_PKG_VERSION")).await;
-        match setup {
-            Ok(response)
-                if response.agent_info.as_ref().is_some_and(|info| {
-                    info.name == config.expected_agent_name
-                        && info.version == config.expected_agent_version
-                }) =>
-            {
-                Ok(Self {
-                    child,
-                    connection,
-                    capabilities: response.agent_capabilities,
-                })
-            }
-            _ => {
+        match negotiate(&connection.client, registration).await {
+            Ok(capabilities) => Ok(Self {
+                child,
+                connection,
+                capabilities,
+            }),
+            Err(refusal) => {
                 connection.client.close();
                 let _ = child.start_kill();
                 reap(&mut child).await;
                 crate::planner_process::stop(&host.instance, worker).await?;
-                Err(StartFailure::Failed(CalmError::Conflict(
-                    "ACP agent did not negotiate the registered protocol identity/version".into(),
-                )))
+                Err(StartFailure::Failed(CalmError::Conflict(refusal)))
             }
         }
     }
@@ -123,6 +120,51 @@ impl Process {
         reap(&mut self.child).await;
         result
     }
+}
+
+/// `initialize`, then the profile's identity at the registered minimum version, then its
+/// authentication: the agent's capabilities, or why the launch is refused.
+async fn negotiate(
+    client: &provider::acp::Client,
+    Registration { config, profile }: Registration<'_>,
+) -> std::result::Result<protocol::AgentCapabilities, String> {
+    let response = protocol::initialize(client, "neige", env!("CARGO_PKG_VERSION"))
+        .await
+        .ok()
+        .filter(|response| {
+            profile
+                .identity
+                .admits(response, &config.min_agent_version)
+        })
+        .ok_or_else(|| {
+            format!(
+                "ACP agent did not negotiate the registered protocol identity at version {} or later",
+                config.min_agent_version
+            )
+        })?;
+    if let Some(method) = profile.authentication {
+        // Only the agent's own report: never its private credential files.
+        let signed_out = |cause: String| {
+            format!(
+                "{} did not authenticate ({cause}); sign it in with its own CLI under the environment \
+                 its ACP registration declares, then retry",
+                config.provider.wire_name()
+            )
+        };
+        if !response
+            .auth_methods
+            .iter()
+            .any(|offered| offered.id == method)
+        {
+            return Err(signed_out(format!(
+                "it does not offer authentication method `{method}`"
+            )));
+        }
+        protocol::authenticate(client, method)
+            .await
+            .map_err(|error| signed_out(format!("authenticate `{method}`: {error}")))?;
+    }
+    Ok(response.agent_capabilities)
 }
 
 async fn reap(child: &mut GroupChild) {

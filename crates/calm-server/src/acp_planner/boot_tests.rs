@@ -93,7 +93,7 @@ fn config(root: &Path, configured: bool) -> Config {
             json!({"agents":[{
                 "provider":"opencode", "command":"/bin/sh", "args":[script],
                 "env":{"ACP_SPAWN_LOG":root.join("spawned")},
-                "expected_agent_name":"Fake ACP", "expected_agent_version":"1"
+                "subcommand":[], "min_agent_version":"1.0.0"
             }]})
             .to_string(),
         )
@@ -525,6 +525,9 @@ async fn acp_boot_track_sweep_still_propagates_cleanup_error() {
     boot(&repo, &host).await.unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[cfg(test)]
+mod authentication_tests;
 #[cfg(all(target_os = "linux", feature = "fixtures"))]
 #[cfg(test)]
 mod receipt_tests;

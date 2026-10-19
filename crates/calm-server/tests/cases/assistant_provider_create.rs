@@ -92,9 +92,14 @@ async fn assistant_provider_claude_first_turn_model_prompt_and_restart() {
 async fn boot_acp(root: &Root) -> Stack {
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
     let path = root.path().join("acp.json");
-    std::fs::write(&path, json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3",
+    std::fs::write(
+        &path,
+        json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3",
         "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
-        "env":{"ACP_FIXTURE_ROOT":root.path()},"expected_agent_name":"Fixture ACP","expected_agent_version":"1"}]}).to_string()).unwrap();
+        "subcommand":[],"env":{"ACP_FIXTURE_ROOT":root.path()},"min_agent_version":"1.0.0"}]})
+        .to_string(),
+    )
+    .unwrap();
     let mut config = root.config(false);
     config.acp_planner_config = Some(path);
     let exe = std::env::current_exe().unwrap();

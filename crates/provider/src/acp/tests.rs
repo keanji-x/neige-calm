@@ -206,6 +206,90 @@ async fn initialize_requires_supported_version_and_required_capabilities_shape()
     }
 }
 #[tokio::test]
+async fn initialize_reports_auth_method_ids_and_extension_metadata_uninterpreted() {
+    for (result, methods, meta) in [
+        (
+            json!({"protocolVersion":1,"agentCapabilities":{}}),
+            vec![],
+            None,
+        ),
+        (
+            json!({"protocolVersion":1,"agentCapabilities":{},
+                "authMethods":[{"id":"cached_token","name":"Cached"},{"id":"browser","description":"x"}],
+                "_meta":{"agentVersion":"1.0.62"}}),
+            vec!["cached_token", "browser"],
+            Some(json!({"agentVersion":"1.0.62"})),
+        ),
+    ] {
+        let (connection, mut reader, mut writer) = peer();
+        let agent = tokio::spawn(async move {
+            let request = read(&mut reader).await;
+            send(
+                &mut writer,
+                json!({"jsonrpc":"2.0","id":request["id"],"result":result}),
+            )
+            .await;
+        });
+        let response = protocol::initialize(&connection.client, "client", "1")
+            .await
+            .unwrap();
+        agent.await.unwrap();
+        let ids: Vec<&str> = response
+            .auth_methods
+            .iter()
+            .map(|method| method.id.as_str())
+            .collect();
+        assert_eq!(ids, methods);
+        assert_eq!(response.meta.map(Value::Object), meta);
+    }
+}
+#[tokio::test]
+async fn authenticate_sends_the_chosen_method_and_reports_refusal() {
+    let (connection, mut reader, mut writer) = peer();
+    let agent = tokio::spawn(async move {
+        for answer in [
+            json!({"result":{}}),
+            json!({"error":{"code":-32000,"message":"Authentication required"}}),
+        ] {
+            let request = read(&mut reader).await;
+            assert_eq!(request["method"], "authenticate");
+            assert_eq!(request["params"], json!({"methodId":"cached_token"}));
+            let mut reply = json!({"jsonrpc":"2.0","id":request["id"]});
+            reply
+                .as_object_mut()
+                .unwrap()
+                .extend(answer.as_object().unwrap().clone());
+            send(&mut writer, reply).await;
+        }
+    });
+    assert_eq!(
+        protocol::authenticate(&connection.client, "cached_token").await,
+        Ok(())
+    );
+    assert!(matches!(
+        protocol::authenticate(&connection.client, "cached_token").await,
+        Err(Error::Remote { code: -32000, .. })
+    ));
+    agent.await.unwrap();
+}
+/// Grok Build 1.0.62 signed out never answers `authenticate`.
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_authenticate_times_out_and_closes_the_connection() {
+    let (connection, mut reader, _writer) = peer();
+    let authenticate = protocol::authenticate(&connection.client, "cached_token");
+    let (outcome, request) = tokio::join!(authenticate, read(&mut reader));
+    assert_eq!(request["method"], "authenticate");
+    assert_eq!(outcome, Err(Error::Timeout));
+    assert_eq!(
+        connection
+            .client
+            .submit("session/new", json!({}))
+            .await
+            .err(),
+        Some(Error::Closed)
+    );
+}
+#[tokio::test]
 async fn new_load_and_cancel_use_native_identity_without_creating_a_prompt() {
     let (connection, mut reader, mut writer) = peer();
     let agent = tokio::spawn(async move {
