@@ -640,3 +640,47 @@ async fn compact_codex_fresh_recv_keeps_ordinary_boundary_item_and_billing() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].turn_id.as_deref(), Some("old-turn"));
 }
+
+#[tokio::test]
+async fn c1_fence_cancelled_compact_system_error_recovery_under_track() {
+    let mut f = ready().await;
+    let (sender, receiver) = mpsc::channel(8);
+    Arc::get_mut(&mut f.harness.inner).unwrap().observations = ObservationIngress::Running(sender);
+    // Enqueue while active, then cancel the caller. Its Compact remains owned by the loop.
+    *f.harness.inner.state.lock().await =
+        HarnessState::turn_running("old-turn".into(), Instant::now());
+    {
+        let compact = f.harness.compact();
+        tokio::pin!(compact);
+        tokio::select! {
+            biased;
+            result = &mut compact => panic!("not queued: {result:?}"),
+            _ = std::future::ready(()) => {}
+        }
+    }
+    deliver(&f, PlannerEventKind::ThreadSystemError).await;
+    let inner = &f.harness.inner;
+    let track =
+        crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()).await;
+    let (_, held) = held_requests::channel();
+    let owner = tokio::spawn(run_loop(
+        inner.clone(),
+        receiver,
+        held,
+        inner.shutdown.subscribe(),
+        inner.backend.subscribe_events(),
+        inner.live_claim.writer(),
+        false,
+    ));
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        f.harness.quiesce_system_error_for_recovery(),
+    )
+    .await
+    .expect("recovery Release must pass the retained Compact under track")
+    .unwrap();
+    owner.await.unwrap();
+    assert!(f.daemon.compacted_threads_for_test().is_empty());
+    assert_eq!(f.harness.snapshot().await.phase, HarnessPhaseTag::Wedged);
+    drop(track);
+}

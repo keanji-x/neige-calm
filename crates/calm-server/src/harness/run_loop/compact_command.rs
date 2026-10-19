@@ -3,9 +3,25 @@ use super::*;
 use provider::control::CompactSubmission;
 
 pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
-    let track_guard = super::issuance::lock_track_for_issuance(inner)
-        .await
-        .ok_or_else(|| CalmError::Conflict("the conversation is shutting down".into()))?;
+    use super::issuance::TrackIssuance;
+    let track_guard = match super::issuance::lock_track_for_issuance(inner).await? {
+        TrackIssuance::Acquired(guard) => guard,
+        TrackIssuance::ShuttingDown => {
+            return Err(CalmError::Conflict(
+                "the conversation is shutting down".into(),
+            ));
+        }
+        TrackIssuance::Busy => {
+            return Err(CalmError::Conflict(
+                "Wait for the current turn to finish before compacting.".into(),
+            ));
+        }
+        TrackIssuance::Superseded => {
+            return Err(CalmError::PlannerHarnessRuntimeSuperseded(
+                "The conversation changed; compaction was not submitted.".into(),
+            ));
+        }
+    };
     let _issuance = inner.issuance.lock().await;
     crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
         .await?;

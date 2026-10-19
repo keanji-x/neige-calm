@@ -16,6 +16,7 @@ async fn planner(b: &Boot, track: &str, rewind: bool) -> (String, PlannerHarness
     .unwrap();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_turn_id = Some("old-turn".into());
     snapshot.last_thread_id = Some(thread.clone());
     if rewind {
         snapshot.pending_rewind = Some(
@@ -204,4 +205,62 @@ async fn c1_fence_planner_delete_while_waiting() {
         before
     );
     assert_eq!(handle.snapshot().await.pending_entries().len(), 2);
+}
+
+async fn compact_contention(shutdown: bool) {
+    let (b, track, path) = fixture().await;
+    let (runtime, handle) = planner(&b, &track, false).await;
+    let pause = Pause::arm("c1-clean-fenced", &track);
+    let cleaning = clean(b.clone());
+    pause.entered().await;
+    let arrival = Pause::arm("key-lock-waiting", &track);
+    let mut compact = Some(tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.compact().await }
+    }));
+    arrival.entered().await;
+    assert_eq!(status(&b, &runtime).await, "idle");
+    assert!(
+        b.state
+            .shared_codex_appserver
+            .compacted_threads_for_test()
+            .is_empty()
+    );
+    drop(arrival);
+    if shutdown {
+        tokio::time::timeout(Duration::from_secs(5), handle.shutdown())
+            .await
+            .expect("shutdown must cancel Compact's track wait")
+            .unwrap();
+        assert!(compact.take().unwrap().await.unwrap().is_err());
+        assert!(
+            b.state
+                .shared_codex_appserver
+                .compacted_threads_for_test()
+                .is_empty()
+        );
+    }
+    drop(pause);
+    assert_eq!(cleaning.await.unwrap().0, 1);
+    assert!(!path.join("target/ignored").exists());
+    if !shutdown {
+        compact.take().unwrap().await.unwrap().unwrap();
+        assert_eq!(status(&b, &runtime).await, "turn_pending");
+        assert_eq!(
+            b.state
+                .shared_codex_appserver
+                .compacted_threads_for_test()
+                .len(),
+            1
+        );
+    }
+    b.shutdown_harnesses().await;
+}
+#[tokio::test]
+async fn c1_fence_compact_clean_wins() {
+    compact_contention(false).await;
+}
+#[tokio::test]
+async fn c1_fence_compact_shutdown_while_waiting() {
+    compact_contention(true).await;
 }

@@ -217,7 +217,7 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     // Deterministic drain-vs-supersede window. No-op in production.
     wait_at_planner_harness_drain_race_hook(inner).await;
-    let Some(track_guard) = lock_track_for_issuance(inner).await else {
+    let TrackIssuance::Acquired(track_guard) = lock_track_for_issuance(inner).await? else {
         return Ok(());
     };
     let _issuance_guard = inner.issuance.lock().await;
@@ -625,18 +625,35 @@ pub(super) async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     Ok(())
 }
 
+pub(super) enum TrackIssuance {
+    Acquired(crate::per_card_lock::KeyedLockGuard),
+    ShuttingDown,
+    Busy,
+    Superseded,
+}
+
 /// No card, drive or issuance lock may be held while waiting here. Idle remains
 /// cleanable; only the transition to durable turn_pending excludes clean.
-pub(super) async fn lock_track_for_issuance(
-    inner: &Arc<Inner>,
-) -> Option<crate::per_card_lock::KeyedLockGuard> {
+pub(super) async fn lock_track_for_issuance(inner: &Arc<Inner>) -> Result<TrackIssuance> {
     let mut shutdown = inner.shutdown.subscribe();
+    // Recovery holds track while awaiting this owner's Release acknowledgement.
+    // A retained Compact must refuse a failed owner before waiting on that lock.
+    // The loop also calls this from ticks; keep one precheck for both entries.
+    // These are advisory reads: callers retain authoritative checks under issuance.
     if inner.shutting_down.load(Ordering::SeqCst) {
-        return None;
+        return Ok(TrackIssuance::ShuttingDown);
     }
-    tokio::select! {
+    if !inner.state.lock().await.can_issue_turn() {
+        return Ok(TrackIssuance::Busy);
+    }
+    crate::conversation_archive::require_unarchived(inner.repo.as_ref(), inner.card_id.as_str())
+        .await?;
+    if !runtime_is_still_the_live_carrier(inner).await? {
+        return Ok(TrackIssuance::Superseded);
+    }
+    Ok(tokio::select! {
         biased;
-        _ = shutdown.recv() => None,
-        guard = crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()) => Some(guard),
-    }
+        _ = shutdown.recv() => TrackIssuance::ShuttingDown,
+        guard = crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()) => TrackIssuance::Acquired(guard),
+    })
 }
