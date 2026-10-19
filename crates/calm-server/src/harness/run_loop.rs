@@ -4902,3 +4902,5 @@ mod handoff_legacy_evidence_tests;
 mod handoff_coordinator_recovery_tests;
 #[cfg(test)]
 mod handoff_coordinator_revocation_tests;
+#[cfg(test)]
+mod handoff_termination_tests;

@@ -65,6 +65,8 @@
 # #2617 bounded exception: spec/crates 501 -> 503 comes solely from two struct literals of the
 # existing `event_spec` payload field (the event-free rerun payload and the approval gate's test
 # payload); no new domain term.
+# Handoff termination reproduction: harness_item/crates 311 -> 312 is one use of
+# the existing frozen start payload field in the reset regression. No new domain name.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 
