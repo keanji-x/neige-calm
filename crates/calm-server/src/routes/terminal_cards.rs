@@ -223,6 +223,9 @@ pub(crate) async fn project_live_terminal_presentation<R: crate::db::RepoRead + 
         .card_get(card.id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("terminal card {}", card.id)))?;
+    if current.kind != "terminal" {
+        return Err(CalmError::NotFound(format!("terminal card {}", card.id)));
+    }
     let presentation =
         calm_types::card_presentation::TerminalPresentation::from_payload(&current.payload)
             .map_err(|error| CalmError::Internal(format!("terminal card {}: {error}", card.id)))?;

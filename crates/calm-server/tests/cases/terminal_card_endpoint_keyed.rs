@@ -416,3 +416,54 @@ async fn terminal_presentation_generic_create_rejects_client_provenance() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
     assert_eq!(operations_under(&boot, "spoofed-placement").await, 0);
 }
+
+#[tokio::test]
+async fn terminal_presentation_replay_refuses_a_card_retargeted_out_of_terminal() {
+    for generic in [false, true] {
+        let boot = boot_happy().await;
+        let uri = format!(
+            "/api/tracks/{}/{}",
+            boot.track_id,
+            if generic { "cards" } else { "terminal-cards" }
+        );
+        let request = if generic {
+            json!({"kind":"terminal","payload":null})
+        } else {
+            body("/bin/sh")
+        };
+        let (status, card) = post_with_idempotency(
+            boot.app.clone(),
+            uri.clone(),
+            request.clone(),
+            Some("retargeted-placement"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{card}");
+        let pool = boot.repo.sqlite_db().unwrap();
+        for payload in [
+            json!({"terminal_presentation":{"source":"manual","in_workbench":true}}),
+            json!({}),
+        ] {
+            // Both post-upgrade sticky metadata and an old retargeted card with no new metadata.
+            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE cards SET kind='codex',payload=?1 WHERE id=?2")
+                .bind(payload.to_string())
+                .bind(card["id"].as_str().unwrap())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            let (status, replay) = post_with_idempotency(
+                boot.app.clone(),
+                uri.clone(),
+                request.clone(),
+                Some("retargeted-placement"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{replay}");
+        }
+        assert_eq!(operations_under(&boot, "retargeted-placement").await, 1);
+    }
+}
