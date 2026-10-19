@@ -1,7 +1,7 @@
-//! OpenCode's ACP agent profile. It reports ACP's standard `agentInfo` and authenticates nothing:
+//! OpenCode's ACP agent profile. It serves ACP as `opencode acp`, reports ACP's standard `agentInfo` and authenticates nothing:
 //! the operator signs it in outside Neige. Its permission policy is OpenCode's own `permission`
 //! configuration, overridden through the environment, since ACP has no method for it.
-use super::{AcpAgentProfile, AgentIdentity, ModeLaunch};
+use super::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch};
 
 /// What OpenCode's own `permission` configuration is overridden with under `ask` (#2348): the
 /// tools that act without asking under its defaults ask instead. OpenCode 1.18.35 merges this
@@ -24,6 +24,10 @@ const FULL_PERMISSION: (&str, &str) = (
 );
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
+    entry: AgentEntry {
+        before_options: &[],
+        after_options: &["acp"],
+    },
     identity: AgentIdentity::AgentInfo { name: "OpenCode" },
     authentication: None,
     ask: ModeLaunch {
@@ -41,8 +45,26 @@ mod tests {
     use super::*;
     use crate::planner_permission_mode::PlannerPermissionMode;
 
+    /// Every OpenCode launch, under any mode or none, runs `<command> acp` after the registration's
+    /// `args`: no mode adds an agent option.
+    #[test]
+    fn opencode_always_serves_acp_as_its_acp_subcommand() {
+        assert_eq!(PROFILE.argv(None).collect::<Vec<_>>(), ["acp"]);
+        for mode in [
+            PlannerPermissionMode::Never,
+            PlannerPermissionMode::Ask,
+            PlannerPermissionMode::Full,
+        ] {
+            assert_eq!(
+                PROFILE.argv(Some(PROFILE.launch(mode))).collect::<Vec<_>>(),
+                ["acp"],
+                "{mode:?}"
+            );
+        }
+    }
+
     /// `ask` makes OpenCode ask before bash, edits and fetches; `never` adds nothing, so its launch
-    /// is today's. No mode adds an agent option.
+    /// is today's.
     #[test]
     fn only_ask_overrides_opencodes_permission_config() {
         assert_eq!(
@@ -53,13 +75,6 @@ mod tests {
             )]
         );
         assert!(PROFILE.launch(PlannerPermissionMode::Never).env.is_empty());
-        for mode in [
-            PlannerPermissionMode::Never,
-            PlannerPermissionMode::Ask,
-            PlannerPermissionMode::Full,
-        ] {
-            assert!(PROFILE.launch(mode).agent_options.is_empty());
-        }
     }
 
     /// #2441: `full` allows each acting tool by name, outside the workspace too, and never with a

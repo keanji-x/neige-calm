@@ -244,10 +244,7 @@ impl AcpPlannerSession {
             .host
             .registration(&params.provider)
             .map_err(|error| refused(&error.to_string()))?;
-        use sha2::Digest as _;
-        let digest = hex::encode(sha2::Sha256::digest(
-            serde_json::to_vec(&(registration.config, &params.cwd)).map_err(CalmError::from)?,
-        ));
+        let digest = registration.config.native_session_digest(&params.cwd)?;
         crate::db::sqlite::acp_registration_claim(
             &pool,
             &params.worker_session_id,

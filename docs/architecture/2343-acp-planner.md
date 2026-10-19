@@ -74,7 +74,6 @@ Pass `--acp-planner-config /absolute/path/acp-planner.json`:
     "provider": "opencode",
     "command": "/absolute/path/opencode",
     "args": [],
-    "subcommand": ["acp"],
     "env": {
       "HOME": "/private/opencode-profile",
       "XDG_CONFIG_HOME": "/private/opencode-profile/config",
@@ -88,19 +87,30 @@ Pass `--acp-planner-config /absolute/path/acp-planner.json`:
 
 Use an operator-owned private profile and authenticate through the native CLI outside Neige. All launch fields are required and unknown keys are refused. The child inherits no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration.
 
-The argument vector is `args`, then the agent options the provider's profile adds for the turn's
-permission mode, then `subcommand`. The registration names the split explicitly; Neige never
-guesses where an agent's subcommand starts. OpenCode's profile adds no option, so for it the split
-does not change the launch.
+The argument vector is the registration's `args`, then the provider profile's ACP entry with the
+agent options of the turn's permission mode inside it: the entry's arguments before the options,
+the options, then its arguments after them. Where an agent CLI accepts options is that CLI's own
+fact, so its profile states it and the operator does not; `args` only prefix the entry, such as a
+wrapper's or interpreter's own arguments, and never hold the ACP subcommand. OpenCode's entry is
+`acp` with no options, so it always launches as `<command> <args> acp`; a Grok-shaped entry is
+`agent <options> --no-leader stdio`.
 
 Each provider's ACP profile (`acp_planner/profile/`) fixes where the agent's `initialize` answer
 reports who it is: ACP's `agentInfo` with the profile's name (OpenCode: `OpenCode`), or only a
 version at `_meta.agentVersion`. The reported version must be semver and at least
 `min_agent_version`, itself semver; anything else stops the process before a session operation.
+Precedence is semver's: build metadata never ranks, and a pre-release ranks below its own
+release only, so with minimum `1.18.35` an agent reporting `1.18.36-beta.1` is accepted and one
+reporting `1.18.35-beta.1` is not.
 A file still naming `expected_agent_name` (now fixed by the profile) or `expected_agent_version`
-(renamed `min_agent_version`) is refused with that change; the two forms are never read together.
-Changing a registration changes its digest, so a conversation bound under the old file is reset
-explicitly, as for any registration change.
+(renamed `min_agent_version`) fails to parse, and the error adds that change and that `args` no
+longer holds the ACP subcommand; the two forms are never read together.
+
+A conversation bound to a native session is claimed under a digest of what that session depends
+on: the provider, `command`, `args`, `env` and the working directory. Changing one of them makes
+the conversation refuse to resume until it is reset explicitly. `min_agent_version` is admission
+policy checked on every launch and is not part of the digest, so raising it resets nothing. A new
+registration field is placed in or out of the digest explicitly where the digest is built.
 
 A profile may name the `authMethods` id every launch authenticates with after `initialize` and
 before any session operation. OpenCode's names none and sends no `authenticate`. When one is

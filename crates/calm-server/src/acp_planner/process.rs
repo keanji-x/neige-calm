@@ -55,8 +55,7 @@ impl Process {
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
-            .args(launch.map_or(&[][..], |launch| launch.agent_options))
-            .args(&config.subcommand)
+            .args(profile.argv(launch))
             .current_dir(cwd)
             .env_clear()
             .envs(&config.env)

@@ -393,18 +393,19 @@ mod tests {
     async fn only_a_provider_speaking_acp_meets_the_create_gate() {
         let cache = ProviderAvailabilityCache::default();
         let host = crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap();
-        for provider in AgentProvider::ALL {
+        let gate = cache
+            .acp_create_gate(&AgentProvider::OpenCode, Freshness::Cached, &host)
+            .await;
+        assert!(
+            matches!(&gate, Some(checked) if checked.provider == AgentProvider::OpenCode
+                && matches!(checked.verdict, Verdict::NotConfigured(_))),
+            "{gate:?}"
+        );
+        for provider in [AgentProvider::Codex, AgentProvider::Claude] {
             let gate = cache
                 .acp_create_gate(&provider, Freshness::Cached, &host)
                 .await;
-            match provider.protocol() {
-                AgentProtocol::Acp => assert!(
-                    matches!(&gate, Some(checked) if checked.provider == provider
-                        && matches!(checked.verdict, Verdict::NotConfigured(_))),
-                    "{gate:?}"
-                ),
-                AgentProtocol::Codex | AgentProtocol::Claude => assert!(gate.is_none()),
-            }
+            assert!(gate.is_none(), "{provider:?}: {gate:?}");
         }
     }
 }

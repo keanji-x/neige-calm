@@ -96,7 +96,7 @@ async fn boot_acp(root: &Root) -> Stack {
         &path,
         json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3",
         "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
-        "subcommand":[],"env":{"ACP_FIXTURE_ROOT":root.path()},"min_agent_version":"1.0.0"}]})
+        "env":{"ACP_FIXTURE_ROOT":root.path()},"min_agent_version":"1.0.0"}]})
         .to_string(),
     )
     .unwrap();

@@ -93,7 +93,7 @@ fn config(root: &Path, configured: bool) -> Config {
             json!({"agents":[{
                 "provider":"opencode", "command":"/bin/sh", "args":[script],
                 "env":{"ACP_SPAWN_LOG":root.join("spawned")},
-                "subcommand":[], "min_agent_version":"1.0.0"
+                "min_agent_version":"1.0.0"
             }]})
             .to_string(),
         )

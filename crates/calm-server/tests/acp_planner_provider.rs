@@ -52,7 +52,7 @@ async fn boot_with(root: &Root, env: Value, min_agent_version: &str) -> Stack {
     let config_path = root.path().join("acp.json");
     let mut env = env;
     env["ACP_FIXTURE_ROOT"] = json!(root.path());
-    std::fs::write(&config_path,json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3","args":["-u",PEER],"subcommand":[],"env":env,"min_agent_version":min_agent_version}]}).to_string()).unwrap();
+    std::fs::write(&config_path,json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3","args":["-u",PEER],"env":env,"min_agent_version":min_agent_version}]}).to_string()).unwrap();
     let mut config = root.config(false);
     config.acp_planner_config = Some(config_path);
     // Use this build's production shim, never a host installation found on PATH.

@@ -5,7 +5,7 @@
 use super::*;
 use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
 use crate::acp_planner::process::{LaunchContext, Process};
-use crate::acp_planner::profile::{AcpAgentProfile, AgentIdentity, ModeLaunch};
+use crate::acp_planner::profile::{AcpAgentProfile, AgentEntry, AgentIdentity, ModeLaunch};
 use crate::acp_planner::session::{AcpPlannerSession, SessionParams};
 use crate::agent_providers::{Freshness, ProviderAvailabilityCache, Verdict};
 use crate::planner_permission_mode::PlannerPermissionMode;
@@ -19,7 +19,12 @@ const PEER: &str = concat!(
 );
 type Profiles = fn(&AgentProvider) -> Option<&'static AcpAgentProfile>;
 
+/// Grok Build's entry shape: `agent <options> --no-leader stdio`.
 static AUTHENTICATING: AcpAgentProfile = AcpAgentProfile {
+    entry: AgentEntry {
+        before_options: &["agent"],
+        after_options: &["--no-leader", "stdio"],
+    },
     identity: AgentIdentity::AgentInfo { name: "OpenCode" },
     authentication: Some("cached_token"),
     ask: ModeLaunch {
@@ -32,6 +37,10 @@ static AUTHENTICATING: AcpAgentProfile = AcpAgentProfile {
     },
 };
 static META_VERSION: AcpAgentProfile = AcpAgentProfile {
+    entry: AgentEntry {
+        before_options: &[],
+        after_options: &[],
+    },
     identity: AgentIdentity::MetaAgentVersion,
     authentication: None,
     ask: ModeLaunch {
@@ -60,7 +69,7 @@ fn host(root: &Path, env: Value, min: &str, profiles: Option<Profiles>) -> AcpPl
     std::fs::write(
         &path,
         json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3",
-            "args":["-u",PEER,"lead"],"subcommand":["stdio"],"env":env,"min_agent_version":min}]})
+            "args":["-u",PEER,"prefix"],"env":env,"min_agent_version":min}]})
         .to_string(),
     )
     .unwrap();
@@ -156,21 +165,26 @@ async fn opencode_sends_no_authenticate_even_when_the_agent_offers_methods() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unoffered_refused_or_unanswered_authentication_leaves_the_provider_unavailable() {
-    for (env, cause, sent) in [
+    // The catalog launch takes the same path; it is driven once, so the silent case waits out
+    // the authentication bound once.
+    for (env, cause, sent, catalog) in [
         (
             json!({"ACP_FIXTURE_AUTH_METHODS":"browser"}),
             "does not offer authentication method `cached_token`",
             vec!["initialize"],
+            false,
         ),
         (
             json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_AUTHENTICATE":"error"}),
             "RPC error -32000",
             vec!["initialize", "authenticate"],
+            true,
         ),
         (
             json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_AUTHENTICATE":"silent"}),
             "timed out",
             vec!["initialize", "authenticate"],
+            false,
         ),
     ] {
         let root = tempfile::tempdir().unwrap();
@@ -191,11 +205,12 @@ async fn an_unoffered_refused_or_unanswered_authentication_leaves_the_provider_u
             environment[0]["NEIGE_MCP_TOKEN"], false,
             "readiness holds no token"
         );
-        // The catalog launch takes the same path and lists nothing.
-        let catalog = host.discover_catalog(&AgentProvider::OpenCode, None).await;
-        assert!(catalog.models.is_empty(), "{catalog:?}");
-        assert!(!methods(root.path()).contains(&"session/new".to_owned()));
-        assert!(all_stopped(root.path()), "{cause}");
+        if catalog {
+            let catalog = host.discover_catalog(&AgentProvider::OpenCode, None).await;
+            assert!(catalog.models.is_empty(), "{catalog:?}");
+            assert!(!methods(root.path()).contains(&"session/new".to_owned()));
+            assert!(all_stopped(root.path()), "{cause}");
+        }
     }
 }
 
@@ -261,45 +276,72 @@ async fn a_failed_authentication_revokes_the_turns_issued_context() {
     session.shutdown().await.unwrap();
 }
 
+/// argv is the registration's `args`, then the profile's entry with the turn mode's agent options
+/// inside it. OpenCode's is `acp` under every mode and outside a turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_options_sit_between_args_and_subcommand_for_the_turns_mode() {
-    let root = tempfile::tempdir().unwrap();
-    let host = host(
-        root.path(),
-        json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token"}),
-        "1.0.0",
-        Some(authenticating),
-    );
-    let registration = host.registration(&AgentProvider::OpenCode).unwrap();
-    for (context, argv) in [
-        (LaunchContext::Readiness, vec!["lead", "stdio"]),
+async fn the_profiles_entry_wraps_the_turns_agent_options_after_the_registered_args() {
+    let planner = |permission| LaunchContext::Planner {
+        mcp_token: "card-context",
+        permission,
+    };
+    for (profiles, context, argv) in [
         (
-            LaunchContext::Planner {
-                mcp_token: "card-context",
-                permission: PlannerPermissionMode::Never,
-            },
-            vec!["lead", "stdio"],
+            Some(authenticating as Profiles),
+            LaunchContext::Readiness,
+            vec!["prefix", "agent", "--no-leader", "stdio"],
         ),
         (
-            LaunchContext::Planner {
-                mcp_token: "card-context",
-                permission: PlannerPermissionMode::Ask,
-            },
-            vec!["lead", "--ask-first", "stdio"],
+            Some(authenticating),
+            planner(PlannerPermissionMode::Never),
+            vec!["prefix", "agent", "--no-leader", "stdio"],
         ),
         (
-            LaunchContext::Planner {
-                mcp_token: "card-context",
-                permission: PlannerPermissionMode::Full,
-            },
-            vec!["lead", "--always-approve", "--quiet", "stdio"],
+            Some(authenticating),
+            planner(PlannerPermissionMode::Ask),
+            vec!["prefix", "agent", "--ask-first", "--no-leader", "stdio"],
+        ),
+        (
+            Some(authenticating),
+            planner(PlannerPermissionMode::Full),
+            vec![
+                "prefix",
+                "agent",
+                "--always-approve",
+                "--quiet",
+                "--no-leader",
+                "stdio",
+            ],
+        ),
+        (None, LaunchContext::Readiness, vec!["prefix", "acp"]),
+        (
+            None,
+            planner(PlannerPermissionMode::Never),
+            vec!["prefix", "acp"],
+        ),
+        (
+            None,
+            planner(PlannerPermissionMode::Ask),
+            vec!["prefix", "acp"],
+        ),
+        (
+            None,
+            planner(PlannerPermissionMode::Full),
+            vec!["prefix", "acp"],
         ),
     ] {
+        let root = tempfile::tempdir().unwrap();
+        let host = host(
+            root.path(),
+            json!({"ACP_FIXTURE_AUTH_METHODS":"cached_token"}),
+            "1.0.0",
+            profiles,
+        );
+        let registration = host.registration(&AgentProvider::OpenCode).unwrap();
         let process = Process::spawn(&host, registration, "options", root.path(), context)
             .await
             .unwrap();
         process.stop(&host, "options").await.unwrap();
-        assert_eq!(lines(root.path(), "argv.jsonl").last(), Some(&json!(argv)));
+        assert_eq!(lines(root.path(), "argv.jsonl"), [json!(argv)]);
     }
 }
 

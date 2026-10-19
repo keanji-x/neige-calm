@@ -1,6 +1,6 @@
-//! Per-provider ACP agent profiles: what one agent needs beyond the ACP contract, such as where
-//! its `initialize` answer reports its identity, the method it authenticates with, and the agent's
-//! own configuration surface its launch sets. Within the ACP planner, a provider's policy is
+//! Per-provider ACP agent profiles: what one agent needs beyond the ACP contract, such as the
+//! argv its CLI serves ACP under, where its `initialize` answer reports its identity, the method
+//! it authenticates with, and the agent's own configuration surface its launch sets. Within the ACP planner, a provider's policy is
 //! reached only through [`AcpAgentProfile::of`], so inside this module tree a provider speaking
 //! ACP adds one module here and one arm in [`AcpAgentProfile::of`]. That is the ACP planner's
 //! share only: the provider itself is still declared where each owner keeps it (its variant and
@@ -13,6 +13,8 @@ use provider::acp::protocol::InitializeResponse;
 mod opencode;
 
 pub(crate) struct AcpAgentProfile {
+    /// The agent CLI's ACP entry: the arguments around a Planner turn's agent options.
+    pub(crate) entry: AgentEntry,
     /// Where the agent's `initialize` answer reports who it is.
     pub(crate) identity: AgentIdentity,
     /// The reported `authMethods` id every launch authenticates with after `initialize`, before
@@ -22,6 +24,15 @@ pub(crate) struct AcpAgentProfile {
     pub(crate) ask: ModeLaunch,
     /// What one Planner turn's process adds under `full`.
     pub(crate) full: ModeLaunch,
+}
+
+/// The argv an agent CLI serves ACP under, after the registration's `args` (which only prefix
+/// it, such as a wrapper's or interpreter's own arguments): `before_options`, then the agent
+/// options of the turn's permission mode, then `after_options`. Where the options go is the
+/// CLI's own parsing rule, so its profile states it rather than the operator.
+pub(crate) struct AgentEntry {
+    pub(crate) before_options: &'static [&'static str],
+    pub(crate) after_options: &'static [&'static str],
 }
 
 /// Where one agent's `initialize` answer reports its name and version: a closed set of the forms
@@ -40,7 +51,7 @@ pub(crate) enum AgentIdentity {
 /// What one Planner turn's launch adds under one permission mode, set explicitly, never inherited.
 pub(crate) struct ModeLaunch {
     pub(crate) env: &'static [(&'static str, &'static str)],
-    /// Agent options, inserted between the registration's `args` and its `subcommand`.
+    /// Agent options, inserted inside the profile's [`AgentEntry`].
     pub(crate) agent_options: &'static [&'static str],
 }
 
@@ -67,11 +78,28 @@ impl AcpAgentProfile {
             PlannerPermissionMode::Full => &self.full,
         }
     }
+
+    /// The argv after the registration's `args`: the entry with `launch`'s agent options inside;
+    /// a launch outside a Planner turn passes `None` and adds none.
+    pub(crate) fn argv<'a>(
+        &'a self,
+        launch: Option<&'a ModeLaunch>,
+    ) -> impl Iterator<Item = &'static str> + 'a {
+        let options = launch.map_or(&[][..], |launch| launch.agent_options);
+        self.entry
+            .before_options
+            .iter()
+            .chain(options)
+            .chain(self.entry.after_options)
+            .copied()
+    }
 }
 
 impl AgentIdentity {
-    /// Whether `response` reports this identity at a version of at least `minimum`. A version
-    /// that is not semver is never accepted.
+    /// Whether `response` reports this identity at a version of at least `minimum` by semver
+    /// precedence: build metadata is ignored, and a pre-release ranks below its release, so with
+    /// minimum 1.18.35 `1.18.36-beta.1` is admitted and `1.18.35-beta.1` is not. A version that
+    /// is not semver is never admitted.
     pub(crate) fn admits(&self, response: &InitializeResponse, minimum: &semver::Version) -> bool {
         let reported = match self {
             Self::AgentInfo { name } => response
@@ -87,7 +115,7 @@ impl AgentIdentity {
         };
         reported
             .and_then(|version| semver::Version::parse(version).ok())
-            .is_some_and(|version| version >= *minimum)
+            .is_some_and(|version| version.cmp_precedence(minimum).is_ge())
     }
 }
 
@@ -126,10 +154,32 @@ mod tests {
             ("1.18.36", true),
             ("2.0.0", true),
             ("1.18.34", false),
+            // Precedence ranks a pre-release below its own release only.
+            ("1.18.36-beta.1", true),
             ("1.18.35-beta.1", false),
+            // Build metadata never ranks.
+            ("1.18.35+vendor.2", true),
+            ("1.18.34+vendor.2", false),
             ("1.18", false),
             ("v1.18.35", false),
             ("wrong", false),
+        ] {
+            let response = initialize(json!({"agentInfo":{"name":"OpenCode","version":version}}));
+            assert_eq!(identity.admits(&response, &minimum), admitted, "{version}");
+        }
+    }
+
+    /// A minimum carrying build metadata ranks as its version alone, against a reported version
+    /// with no, the same or other build metadata.
+    #[test]
+    fn a_minimums_build_metadata_never_ranks() {
+        let identity = AgentIdentity::AgentInfo { name: "OpenCode" };
+        let minimum = semver::Version::parse("1.18.35+vendor.2").unwrap();
+        for (version, admitted) in [
+            ("1.18.35", true),
+            ("1.18.35+vendor.1", true),
+            ("1.18.35+vendor.2", true),
+            ("1.18.34+vendor.3", false),
         ] {
             let response = initialize(json!({"agentInfo":{"name":"OpenCode","version":version}}));
             assert_eq!(identity.admits(&response, &minimum), admitted, "{version}");
