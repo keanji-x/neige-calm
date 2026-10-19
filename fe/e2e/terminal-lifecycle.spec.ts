@@ -29,7 +29,7 @@ test('refreshing an exited terminal shows its final state while secondary reads 
       case '/api/tracks/track-1':
         body = { track, can_reopen: false, can_admin: false, can_close: true, overlays: [], cards: [{
           id: 'card-1', track_id: track.id, kind: 'terminal', title: 'Terminal', sort: 1,
-          payload: {}, deletable: true, created_at: 1, updated_at: 1,
+          payload: { terminal_presentation: { source: 'manual', in_workbench: true } }, deletable: true, created_at: 1, updated_at: 1,
           runtime: { worker_session_id: 'run-1', kind: 'terminal', status },
         }] };
         break;
