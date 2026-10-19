@@ -63,6 +63,21 @@ fn object_qualification_real_ext4_roles_and_received_fds_keep_live_context() {
     )
     .unwrap();
     assert_eq!(
+        received
+            .shape()
+            .objects
+            .iter()
+            .map(|fact| fact.role.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            ObjectRole::Root,
+            ObjectRole::GitDirectory,
+            ObjectRole::GitEntry,
+            ObjectRole::CommonDirectory,
+            ObjectRole::CommonLink,
+        ]
+    );
+    assert_eq!(
         held.live_identity()
             .unwrap()
             .compare(&received.live_identity().unwrap()),
