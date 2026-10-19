@@ -74,39 +74,55 @@ function board() { return document.querySelector<HTMLElement>('[data-nc-card-boa
 it('resumes independent report and grid positions through real sidebar navigation', async () => {
   await page.viewport(1440, 900);
   const { router } = setup();
-  await expect.element(page.getByRole('button', { name: 'Rename track', exact: true })).toBeVisible();
-  await expect.element(page.getByText('Paragraph 49. A long report to read and return to.', { exact: true })).toBeVisible();
-  await settle();
+  async function reportReady(trackId: string) {
+    // Cached preparation and a mounted shell do not imply current report admission.
+    // Page restoration runs synchronously in the report commit's layout effects.
+    await expect.poll(() => {
+      const body = reportPage();
+      const region = body?.querySelector('section[aria-label="Track report"]');
+      return {
+        path: router.state.location.pathname,
+        bodyMatches: body?.querySelector('button[aria-label^="Track actions for "]')?.getAttribute('aria-label') === `Track actions for Track ${trackId}`,
+        busy: region?.getAttribute('aria-busy'),
+        committed: region?.querySelector('[data-nc-report]') != null,
+      };
+    }).toEqual({ path: `/track/${trackId}`, bodyMatches: true, busy: 'false', committed: true });
+  }
+  await reportReady('a');
   reportPage().scrollTop = 700;
   await settle();
   expect(reportPage().scrollTop).toBe(700);
   await page.getByRole('button', { name: /^Track Track b\b/ }).click();
-  await expect.element(page.getByRole('button', { name: 'Rename track', exact: true })).toBeVisible();
-  await settle();
+  await reportReady('b');
   expect(reportPage().scrollTop).toBe(0);
   reportPage().scrollTop = 350;
   await settle();
   await page.getByRole('button', { name: /^Track Track a\b/ }).click();
-  await settle();
+  await reportReady('a');
   expect(reportPage().scrollTop).toBe(700);
 
   await act(() => router.navigate({ to: '/track/a', search: { card: 'a-card-7' } }));
+  await reportReady('a');
   await settle();
   expect(board().scrollHeight).toBeGreaterThan(board().clientHeight);
   board().scrollTop = 240;
   await settle();
   await page.getByRole('button', { name: /^Track Track b\b/ }).click();
+  await reportReady('b');
   await settle();
   expect(reportPage().scrollTop).toBe(350);
   await page.getByRole('button', { name: /^Track Track a\b/ }).click();
+  await reportReady('a');
   await settle();
   expect(router.state.location.search).toMatchObject({ card: 'a-card-7' });
   expect(board().scrollTop).toBe(240);
   expect(reportPage().scrollTop).toBe(700);
 
   await page.getByRole('button', { name: /^Track Track b\b/ }).click();
+  await reportReady('b');
   await settle();
   await act(() => router.navigate({ to: '/track/a', search: { card: 'a-card-7' } }));
+  await reportReady('a');
   await settle();
   expect(board().scrollTop).toBeGreaterThan(240);
 
