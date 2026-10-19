@@ -109,7 +109,7 @@ export type CardId = string;
 /**
  * Authorization role persisted on each card and enforced by `role_gate`.
  */
-export type CardRole = "worker" | "planner" | "reportcard" | "assistant";
+export type CardRole = "worker" | "planner" | "reportcard" | "assistant" | "planner_history";
 
 /**
  * Live runtime projection read from `worker_sessions` when a card is fetched or serialized. Not
@@ -1033,4 +1033,4 @@ last_turn_completed_ms?: number, };
 /**
  * Session state machine column (`worker_sessions.state`).
  */
-export type WorkerSessionState = "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";
+export type WorkerSessionState = "pending_activation" | "starting" | "running" | "idle" | "turn_pending" | "exited" | "failed" | "superseded";

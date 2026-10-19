@@ -375,7 +375,7 @@ fn report_op_attribution(role: CardRole) -> Result<EditAuthor, CalmError> {
     Ok(match role {
         CardRole::Assistant => EditAuthor::Assistant,
         CardRole::Planner => EditAuthor::Planner,
-        role @ (CardRole::Worker | CardRole::ReportCard) => {
+        role @ (CardRole::Worker | CardRole::ReportCard | CardRole::PlannerHistory) => {
             return Err(CalmError::Forbidden(format!(
                 "card role {role:?} may not write the track report"
             )));
@@ -604,6 +604,7 @@ mod tests {
         session_id: &WorkerSessionId,
     ) {
         let root_session = worker_session(session_id.as_str(), track_id.clone(), card_id.clone());
+        let current_card = card_id.clone();
         let track_id = track_id.clone();
         let session_id = session_id.clone();
         crate::db::write_in_tx_typed(repo, move |tx| {
@@ -611,6 +612,11 @@ mod tests {
                 session_insert_tx(tx, root_session)
                     .await
                     .map_err(CalmError::from)?;
+                sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                    .bind(session_id.as_str())
+                    .bind(current_card.as_str())
+                    .execute(&mut **tx)
+                    .await?;
                 session_mark_track_root_tx(tx, &track_id, &session_id)
                     .await
                     .map_err(CalmError::from)?;

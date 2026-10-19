@@ -1,7 +1,8 @@
 //! Explicit human recovery of a current, uncompleted conversation after a
 //! provider system error. This exception does not widen worker transitions.
 use calm_types::harness::{
-    HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION, HARNESS_SYSTEM_ERROR_REASON, HarnessPhaseTag,
+    HARNESS_MODE, HARNESS_RECOVERY_HEALTH_UNCONFIRMED_REASON, HARNESS_SNAPSHOT_SCHEMA_VERSION,
+    HARNESS_SYSTEM_ERROR_REASON, HarnessPhaseTag,
 };
 use serde_json::Value;
 use sqlx::{Executor, Sqlite, SqlitePool, Transaction};
@@ -56,11 +57,11 @@ async fn matches<'e>(
              AND json_extract(ws.handle_state_json, '$.mode') = ?4
              AND json_extract(ws.handle_state_json, '$.schema_version') = ?5
              AND json_extract(ws.handle_state_json, '$.phase') = json_extract(?6,'$')
-             AND json_extract(ws.handle_state_json, '$.wedged_reason') = ?7
+             AND json_extract(ws.handle_state_json, '$.wedged_reason') IN (?7, ?8)
              AND COALESCE(NULLIF(trim(ws.thread_id), ''), json_extract(ws.handle_state_json, '$.last_thread_id')) = ?3
              AND (json_extract(ws.handle_state_json, '$.last_thread_id') IS NULL
                   OR json_extract(ws.handle_state_json, '$.last_thread_id') = ?3)"#,
-    ).bind(card_id).bind(worker_session_id).bind(thread_id).bind(HARNESS_MODE).bind(HARNESS_SNAPSHOT_SCHEMA_VERSION).bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?).bind(HARNESS_SYSTEM_ERROR_REASON).fetch_optional(executor).await?;
+    ).bind(card_id).bind(worker_session_id).bind(thread_id).bind(HARNESS_MODE).bind(HARNESS_SNAPSHOT_SCHEMA_VERSION).bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?).bind(HARNESS_SYSTEM_ERROR_REASON).bind(HARNESS_RECOVERY_HEALTH_UNCONFIRMED_REASON).fetch_optional(executor).await?;
     Ok(raw
         .map(|raw| serde_json::from_str::<Value>(&raw))
         .transpose()?
@@ -109,7 +110,7 @@ pub async fn session_set_failed_harness_snapshot_tx(
           AND EXISTS(SELECT 1 FROM cards WHERE id=?1 AND session_id=?2)
           AND json_extract(handle_state_json,'$.mode')=?5
           AND json_extract(handle_state_json,'$.phase')=json_extract(?6,'$')
-          AND json_extract(handle_state_json,'$.wedged_reason')=?7"#,
+          AND json_extract(handle_state_json,'$.wedged_reason') IN (?7, ?8)"#,
     )
     .bind(card_id)
     .bind(worker_session_id)
@@ -118,6 +119,7 @@ pub async fn session_set_failed_harness_snapshot_tx(
     .bind(HARNESS_MODE)
     .bind(serde_json::to_string(&HarnessPhaseTag::Wedged)?)
     .bind(HARNESS_SYSTEM_ERROR_REASON)
+    .bind(HARNESS_RECOVERY_HEALTH_UNCONFIRMED_REASON)
     .execute(&mut **tx)
     .await?;
     Ok(result.rows_affected() == 1)

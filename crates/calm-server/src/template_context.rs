@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::error::{CalmError, Result};
 use crate::validation::PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TemplateContext {
     version: u32,

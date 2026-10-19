@@ -351,6 +351,15 @@ pub async fn force_planner_phase(
             let runtime_id_for_tx = runtime.id.clone();
             write_in_tx_typed(repo.as_ref(), move |tx| {
                 Box::pin(async move {
+                    // Eligibility was read before this transaction. A live ACK may since have
+                    // repaired the row; never replace that complete checkpoint with the dev seed.
+                    if crate::db::sqlite::session_handle_state_by_id_tx(tx, &runtime_id_for_tx)
+                        .await?
+                        .as_ref()
+                        .is_some_and(is_harness_snapshot_value)
+                    {
+                        return Ok(());
+                    }
                     crate::db::sqlite::session_set_handle_state_tx(
                         tx,
                         &runtime_id_for_tx,

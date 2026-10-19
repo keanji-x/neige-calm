@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+use calm_server::session_projection_repo::WorkerSessionProjectionRepo;
+
 use std::{path::PathBuf, sync::Arc};
 
 use axum::{
@@ -245,7 +247,14 @@ async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
     assert_eq!(first_status, StatusCode::CREATED);
     b.repo
         .harness_item_insert(
-            "runtime",
+            &b.repo
+                .session_projection_active_for_card(
+                    &first["planner_card_id"].as_str().unwrap().to_string(),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
             first["planner_card_id"].as_str().unwrap(),
             first["track_id"].as_str().unwrap(),
             "thread",
@@ -286,7 +295,14 @@ async fn legacy_today_adoption_resets_planner_transcript_and_preserves_terminal(
         .unwrap();
     b.repo
         .harness_item_insert(
-            "legacy-runtime",
+            &b.repo
+                .session_projection_active_for_card(
+                    &original["planner_card_id"].as_str().unwrap().to_string(),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
             original["planner_card_id"].as_str().unwrap(),
             original["track_id"].as_str().unwrap(),
             "legacy-thread",

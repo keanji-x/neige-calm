@@ -309,6 +309,28 @@ pub async fn session_clear_terminal_run_id_tx(
     Ok(())
 }
 
+/// Authorize durable Planner system ingress against SQL, in the snapshot write transaction.
+/// Caches and an active historical session alone do not establish current ownership.
+pub async fn session_is_current_planner_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    session_id: &str,
+    card_id: &str,
+    track_id: &str,
+) -> WorkerSessionProjectionResult<bool> {
+    let current: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM worker_sessions ws JOIN cards c ON c.session_id = ws.id
+         WHERE ws.id = ?1 AND c.id = ?2 AND c.track_id = ?3 AND ws.track_id = c.track_id
+           AND ws.card_id = c.id AND c.role = 'planner' AND ws.contract = 'planner'
+           AND ws.state IN ('starting','running','idle','turn_pending'))",
+    )
+    .bind(session_id)
+    .bind(card_id)
+    .bind(track_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(current)
+}
+
 /// Returns whether the row was written; a caller promising durability must check.
 pub async fn session_set_handle_state_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,

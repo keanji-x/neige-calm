@@ -142,6 +142,12 @@ async fn reset_planner_card_clears_persisted_harness_items() {
         .await
         .unwrap();
     // The reset hard-deletes these rows, so the emitted event is the only surviving record; keep the seeded payloads for the expected byte total.
+    crate::support::transcript_fixture::start(
+        &boot.repo,
+        boot.planner_card.id.as_str(),
+        "runtime-before-reset",
+    )
+    .await;
     let mut seeded_params: Vec<String> = Vec::new();
     for index in 1..=3 {
         let item_uuid = format!("item-before-reset-{index}");

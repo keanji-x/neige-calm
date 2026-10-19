@@ -26,7 +26,7 @@ mod area_ownership_tests;
 mod card;
 mod card_composite;
 mod conversation_archive;
-pub use conversation_archive::conversation_archive_set_tx;
+pub use conversation_archive::{conversation_archive_set_tx, conversation_archived_at};
 mod database_identity;
 mod events;
 mod infra;
@@ -120,8 +120,8 @@ pub use planner_input_idempotency::{
     PlannerInputBinding, planner_input_bind_tx, planner_input_binding_get,
 };
 pub use session_mirror::{
-    session_delete_tx, session_prepare_deferred_planner_tx, session_start_runtime_tx,
-    session_supersede_active_tx, session_supersede_and_start_tx,
+    session_delete_tx, session_prepare_deferred_planner_tx, session_prepare_pending_activation_tx,
+    session_start_runtime_tx, session_supersede_active_tx, session_supersede_and_start_tx,
 };
 pub use session_projection::{
     HarvestOutcome, HarvestedFrom, HarvestedMessage, HarvestedQueues,
@@ -129,15 +129,15 @@ pub use session_projection::{
     session_clear_queue_harvested_tx, session_clear_terminal_run_id_tx,
     session_complete_for_card_tx, session_complete_for_terminal_tx, session_complete_tx,
     session_fail_if_active_runtime_tx, session_handle_state_by_id_tx,
-    session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx,
-    session_projection_active_by_session_tx, session_projection_active_for_card_tx,
-    session_projection_active_for_terminal_tx, session_projection_by_id_tx,
-    session_projection_failed_carrier_for_card_tx, session_projection_projectable_for_card_tx,
-    session_restore_failed_carrier_runtime_tx, session_restore_from_superseded_runtime_tx,
-    session_set_active_turn_tx, session_set_handle_state_of_any_runtime_tx,
-    session_set_handle_state_of_retired_runtime_tx, session_set_handle_state_tx,
-    session_set_harness_observation_runtime_tx, session_set_status_for_card_tx,
-    session_set_status_tx,
+    session_is_current_planner_tx, session_mark_queue_harvested_tx,
+    session_mark_superseded_runtime_tx, session_projection_active_by_session_tx,
+    session_projection_active_for_card_tx, session_projection_active_for_terminal_tx,
+    session_projection_by_id_tx, session_projection_failed_carrier_for_card_tx,
+    session_projection_projectable_for_card_tx, session_restore_failed_carrier_runtime_tx,
+    session_restore_from_superseded_runtime_tx, session_set_active_turn_tx,
+    session_set_handle_state_of_any_runtime_tx, session_set_handle_state_of_retired_runtime_tx,
+    session_set_handle_state_tx, session_set_harness_observation_runtime_tx,
+    session_set_status_for_card_tx, session_set_status_tx,
 };
 pub use session_row::{
     ClaudePlannerScope, claude_planner_revoke_tx, session_commit_exit_tx,

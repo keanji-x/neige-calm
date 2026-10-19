@@ -22,6 +22,24 @@ pub enum OperationReceipt {
     Settled(OperationResult),
 }
 
+/// Project one captured row without mixing metadata from a later read.
+pub(super) fn receipt_from_operation(op: Operation) -> Result<OperationReceipt> {
+    if let Some(result) = operation_result_from(&op)? {
+        return Ok(OperationReceipt::Settled(result));
+    }
+    if matches!(op.phase, Phase::AwaitingRetry { .. }) {
+        return Ok(OperationReceipt::AwaitingRetry {
+            operation_id: op.id.clone(),
+            attempt: op.attempt,
+            output: required_output(&op)?.clone(),
+        });
+    }
+    Ok(OperationReceipt::Running {
+        operation_id: op.id,
+        attempt: op.attempt,
+    })
+}
+
 impl OperationRuntime {
     pub(super) async fn refuse_deferred_wait(&self, operation_id: &str) -> Result<()> {
         if matches!(
@@ -42,20 +60,7 @@ impl OperationRuntime {
             .get_operation(operation_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("operation {operation_id}")))?;
-        if let Some(result) = operation_result_from(&op)? {
-            return Ok(OperationReceipt::Settled(result));
-        }
-        if matches!(op.phase, Phase::AwaitingRetry { .. }) {
-            return Ok(OperationReceipt::AwaitingRetry {
-                operation_id: op.id.clone(),
-                attempt: op.attempt,
-                output: required_output(&op)?.clone(),
-            });
-        }
-        Ok(OperationReceipt::Running {
-            operation_id: op.id,
-            attempt: op.attempt,
-        })
+        receipt_from_operation(op)
     }
 
     /// A bounded read-back; a running receipt at the deadline is unconfirmed.
@@ -110,7 +115,11 @@ impl OperationRuntime {
         let _guard = self.drive_mutex.lock().await;
         let claimed = self
             .repo
-            .claim_interaction_retry(&op, expected_attempt)
+            .claim_interaction_retry(
+                &op,
+                expected_attempt,
+                adapter.interrupted_interaction_retry(&op),
+            )
             .await?;
         let won = claimed.is_some();
         if let Some(claimed) = claimed {
@@ -157,6 +166,54 @@ pub(super) async fn claim_retry(
     .bind(expected_attempt)
     .fetch_optional(pool.writer_pool())
     .await?;
+    row.as_ref()
+        .map(super::repo_sqlite::operation_from_row)
+        .transpose()
+}
+
+/// Only an adapter-declared interrupted interaction may resume a terminal storage failure.
+/// No generic recovery sweep calls this; the caller must supply the original generation.
+pub(super) async fn claim_interrupted_retry(
+    pool: &crate::db::sqlite::SqliteDb,
+    op: &Operation,
+    attempt: i32,
+    continuation: super::ExplicitRetryContinuation,
+) -> Result<Option<Operation>> {
+    if !matches!(op.phase, Phase::Stuck { .. }) {
+        return Ok(None);
+    }
+    let from = op
+        .phase_detail
+        .as_ref()
+        .and_then(|d| d.get("from_phase"))
+        .and_then(|v| v.as_str());
+    let phase = match continuation {
+        super::ExplicitRetryContinuation::Prepare
+            if from == Some("pending") && op.tx_output.is_none() =>
+        {
+            Phase::Pending
+        }
+        super::ExplicitRetryContinuation::Interact(kind)
+            if matches!(from, Some("app_server_interact" | "tx_committed"))
+                && op.tx_output.is_some() =>
+        {
+            Phase::AppServerInteract { kind }
+        }
+        _ => return Ok(None),
+    };
+    let (tag, detail) = phase.serialize_split();
+    let now = now_ms();
+    let row=sqlx::query(r#"
+            UPDATE operations SET
+            phase=?1,phase_detail_json=?2,attempt=attempt+1,lease_owner=?3,lease_until_ms=?4,updated_at_ms=?5,completed_at_ms=NULL,last_error=NULL
+            WHERE id=?6 AND kind=?7 AND idempotency_key=?8 AND payload_hash=?9 AND phase='stuck' AND
+            attempt=?10 AND phase_detail_json=?11 AND tx_output_json IS ?12 AND lease_owner IS NULL
+            RETURNING *
+        "#)
+        .bind(tag.as_str()).bind(detail.map(|v|v.to_string())).bind(new_id()).bind(now+OPERATION_LEASE_MS).bind(now)
+        .bind(&op.id).bind(&op.kind).bind(&op.idempotency_key).bind(&op.payload_hash).bind(attempt)
+        .bind(op.phase_detail.as_ref().map(|v|v.to_string())).bind(op.tx_output.as_ref().map(serde_json::to_string).transpose()?)
+        .fetch_optional(pool.writer_pool()).await?;
     row.as_ref()
         .map(super::repo_sqlite::operation_from_row)
         .transpose()

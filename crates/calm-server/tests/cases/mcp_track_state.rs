@@ -77,6 +77,7 @@ async fn seed_track_root_session(
     session_id: &str,
 ) {
     let session = planner_session(session_id, track_id.clone(), card_id.clone());
+    let current_card_id = card_id.clone();
     let root_session_id = session.id.clone();
     let track_id = track_id.clone();
     calm_server::db::write_in_tx_typed(repo, move |tx| {
@@ -84,6 +85,11 @@ async fn seed_track_root_session(
             session_insert_tx(tx, session)
                 .await
                 .map_err(CalmError::from)?;
+            sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                .bind(root_session_id.as_str())
+                .bind(current_card_id.as_str())
+                .execute(&mut **tx)
+                .await?;
             session_mark_track_root_tx(tx, &track_id, &root_session_id)
                 .await
                 .map_err(CalmError::from)?;
@@ -283,7 +289,13 @@ async fn get_track_state_returns_track_and_cards_for_planner() {
     );
     let planner_runtime: Option<CardRuntimeView> =
         serde_json::from_value(planner["runtime"].clone()).expect("runtime field is typed");
-    assert!(planner_runtime.is_none(), "planner card has no runtime row");
+    let planner_runtime = planner_runtime.expect("the seeded current Planner session is projected");
+    assert_eq!(planner_runtime.worker_session_id, PLANNER_SESSION_ID);
+    assert_eq!(
+        planner_runtime.kind,
+        calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner
+    );
+    assert_eq!(planner_runtime.status, WorkerSessionState::Starting);
 
     let worker = cards
         .iter()

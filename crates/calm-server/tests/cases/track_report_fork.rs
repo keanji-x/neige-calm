@@ -1465,6 +1465,7 @@ async fn planner_tool_channel(
         TrackId::from(track_id.to_string()),
         planner_card.id.clone(),
     );
+    let current_card_id = planner_card.id.clone();
     let root_session_id = session.id.clone();
     let root_track_id = TrackId::from(track_id.to_string());
     calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
@@ -1472,6 +1473,11 @@ async fn planner_tool_channel(
             session_insert_tx(tx, session)
                 .await
                 .map_err(CalmError::from)?;
+            sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                .bind(root_session_id.as_str())
+                .bind(current_card_id.as_str())
+                .execute(&mut **tx)
+                .await?;
             session_mark_track_root_tx(tx, &root_track_id, &root_session_id)
                 .await
                 .map_err(CalmError::from)?;

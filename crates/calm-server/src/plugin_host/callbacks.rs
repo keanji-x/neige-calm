@@ -1179,6 +1179,9 @@ mod tests {
         assert_eq!(
             SERVER_OWNED_CARD_PAYLOAD_KEYS,
             [
+                "planner_harness",
+                "planner_history",
+                "handoff_pending_activation",
                 "terminal_signals",
                 "template_context",
                 "planner_provider",

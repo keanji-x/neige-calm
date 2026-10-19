@@ -29,7 +29,7 @@ export type ConversationKind =
 
 /** Mirrors `WorkerSessionState`. */
 export type ConversationState =
-  | 'starting' | 'running' | 'idle' | 'turn_pending' | 'exited' | 'failed' | 'superseded';
+  | 'pending_activation' | 'starting' | 'running' | 'idle' | 'turn_pending' | 'exited' | 'failed' | 'superseded';
 
 export type Conversation = Readonly<{
   id: string;
@@ -729,6 +729,7 @@ export function interruptPlannerOperation(cardId: string): ApiOperation<{ stoppe
 }
 
 const conversationStateSchema = z.enum([
+  'pending_activation',
   'starting', 'running', 'idle', 'turn_pending', 'exited', 'failed', 'superseded',
 ]);
 

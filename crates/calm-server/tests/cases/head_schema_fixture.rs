@@ -110,6 +110,12 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0170_workspace_executions.sql",
     "0171_track_vcs_gc_revision.sql",
     "0172_track_vcs_gc_frontier.sql",
+    "0173_planner_handoff.sql",
+    "0174_planner_handoff_activation.sql",
+    "0175_planner_handoff_coordinator.sql",
+    "0176_planner_handoff_owner.sql",
+    "0177_planner_handoff_legacy_settlement.sql",
+    "0178_planner_handoff_revocation.sql",
 ];
 
 #[test]

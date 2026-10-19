@@ -18,8 +18,6 @@ use crate::support::planner_queue_fixture::{
 };
 
 const TURN: &str = "turn-live-1";
-/// The transcript's table, renamed away to make an item row fail to store.
-pub(crate) const ITEM_TABLE: &str = "harness_items";
 
 async fn boot() -> Boot {
     boot_issuing(Issuance::Paused).await
@@ -437,13 +435,6 @@ async fn a_delta_writes_no_row_no_event_and_no_snapshot() {
     boot.harness.shutdown().await.unwrap();
 }
 
-async fn rename_table(boot: &Boot, from: &str, to: &str) {
-    sqlx::query(&format!("ALTER TABLE {from} RENAME TO {to}"))
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
-}
-
 /// The text is always live or durable: a completion whose row did not land leaves the reply open, and
 /// an interrupt then stores it.
 #[tokio::test]
@@ -454,11 +445,11 @@ async fn a_reply_whose_completion_fails_to_store_stays_live() {
     delta(&boot, TURN, "reply-1", "Hel");
     wait_live(&boot, live_turn(&[("reply-1", "Hel")])).await;
 
-    rename_table(&boot, ITEM_TABLE, "hidden_rows").await;
+    crate::support::transcript_fixture::fail_inserts(&boot.repo, true).await;
     reply_completed(&boot, "reply-1", "Hel");
     delta(&boot, TURN, "reply-1", "lo");
     wait_live(&boot, live_turn(&[("reply-1", "Hello")])).await;
-    rename_table(&boot, "hidden_rows", ITEM_TABLE).await;
+    crate::support::transcript_fixture::fail_inserts(&boot.repo, false).await;
 
     interrupt(&boot).await;
     let rows = wait_rows(&boot, 3).await;
@@ -514,11 +505,11 @@ async fn a_partial_reply_that_fails_to_store_stays_live() {
     delta(&boot, TURN, "reply-1", "Half");
     wait_live(&boot, live_turn(&[("reply-1", "Half")])).await;
 
-    rename_table(&boot, ITEM_TABLE, "hidden_rows").await;
+    crate::support::transcript_fixture::fail_inserts(&boot.repo, true).await;
     interrupt(&boot).await;
     wait_stored_phase(&boot, "turn_completed").await;
     assert_eq!(live(&boot).await, live_turn(&[("reply-1", "Half")]));
-    rename_table(&boot, "hidden_rows", ITEM_TABLE).await;
+    crate::support::transcript_fixture::fail_inserts(&boot.repo, false).await;
     assert_eq!(shape(&rows(&boot).await), ["item/started"]);
     boot.harness.shutdown().await.unwrap();
 }

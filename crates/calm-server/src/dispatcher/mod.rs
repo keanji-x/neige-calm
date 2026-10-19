@@ -416,7 +416,7 @@ fn dispatcher_operation_runtime(
     let planner_harness_interrupt_adapter =
         Arc::new(PlannerHarnessInterruptAdapter::new(harness.clone()));
     let planner_harness_shutdown_adapter = Arc::new(PlannerHarnessShutdownAdapter::new(
-        harness,
+        harness.clone(),
         shared_codex_appserver.clone(),
         repo,
         claude_planner,
@@ -454,7 +454,7 @@ fn dispatcher_operation_runtime(
             claude_adapter,
             claude_worker_adapter,
             claude_restart_adapter,
-            planner_harness_start_adapter,
+            planner_harness_start_adapter.clone(),
             planner_harness_interrupt_adapter,
             planner_harness_shutdown_adapter,
             task_verify_adapter,
@@ -463,6 +463,13 @@ fn dispatcher_operation_runtime(
             child_track_adapter,
             card_create_adapter,
             Arc::new(TrackRecipeCreateAdapter),
+            Arc::new(
+                crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                    start: planner_harness_start_adapter.clone(),
+                    registry: harness.clone(),
+                    cache: write.role_cache().clone(),
+                },
+            ),
         ],
         events.clone(),
         completion.clone(),
@@ -1245,7 +1252,7 @@ impl Inner {
             .await;
     }
 
-    /// Per-track push lock so same-track replay and live pushes serialize around `(get → compare → bump)`.
+    /// Per-track push lock serializes SQL-floor lookup, prefix ACKs and cache publication.
     async fn acquire_push_lock(self: &Arc<Self>, track_id: &TrackId) -> PushLockGuard {
         // IMPORTANT: do NOT bind the DashMap Entry to a `let` — the shard
         // guard must drop at this statement's `;` before we `.await` below.
@@ -1265,139 +1272,131 @@ impl Inner {
         envelope_id: i64,
     ) {
         let track_id = guard.track_id().clone();
-        let planner_card_id = match self.resolve_planner_card(&track_id).await {
-            Some(id) => id,
-            None => {
+        let mut previous_owner = None;
+        'owner: for _ in 0..2 {
+            let planner_card_id = match self.resolve_planner_card(&track_id).await {
+                Some(id) => id,
+                None => {
+                    tracing::debug!(
+                        track_id = %track_id,
+                        "dispatcher push: no planner card found for track; skipping"
+                    );
+                    return;
+                }
+            };
+
+            // Synthetic bus envelopes have no persisted event to acknowledge.
+            if envelope_id <= 0 {
+                return;
+            }
+
+            let Some(worker_session_id) = self
+                .harness_runtime_id_for_planner_card(&planner_card_id)
+                .await
+            else {
                 tracing::debug!(
                     track_id = %track_id,
-                    "dispatcher push: no planner card found for track; skipping"
+                    planner_card_id = %planner_card_id,
+                    envelope_id,
+                    kind = event.kind_tag(),
+                    "dispatcher push: planner card has no harness runtime; skipping observation"
                 );
                 return;
-            }
-        };
-
-        // A synthetic id-0 envelope (test `EventBus::emit`) is never above the initial 0 cursor, so it
-        // is skipped; `bump` is monotonic, so a re-delivered id can't double-push.
-        let cursor = self.push_cursor.get(&planner_card_id);
-        if envelope_id <= cursor {
-            tracing::debug!(
-                track_id = %track_id,
-                planner_card_id = %planner_card_id,
-                envelope_id,
-                cursor,
-                "dispatcher push: envelope id not above watermark; deduped"
-            );
-            return;
-        }
-
-        let Some(runtime_id) = self
-            .harness_runtime_id_for_planner_card(&planner_card_id)
-            .await
-        else {
-            tracing::debug!(
-                track_id = %track_id,
-                planner_card_id = %planner_card_id,
-                envelope_id,
-                kind = event.kind_tag(),
-                "dispatcher push: planner card has no harness runtime; skipping observation"
-            );
-            return;
-        };
-        let observation = match resolve_harness_observation(self.repo.as_ref(), &track_id, event)
-            .await
-        {
-            Ok(observation) => observation,
-            Err(error) => {
-                tracing::warn!(%track_id, %error, "planner observation lookup failed; preserving cursor for replay");
+            };
+            let owner = (planner_card_id.clone(), worker_session_id.clone());
+            if previous_owner.as_ref() == Some(&owner) {
                 return;
             }
-        };
-        let Some(observation) = observation else {
-            tracing::debug!(
-                track_id = %track_id,
-                planner_card_id = %planner_card_id,
-                envelope_id,
-                kind = event.kind_tag(),
-                "dispatcher push: harness runtime found but event did not map to a harness observation"
-            );
-            return;
-        };
-        let wake = self
-            .planner_wake
-            .read()
-            .expect("Planner wake context")
-            .clone();
-        let (_wake_fence, harness) = if let Some(wake) = wake {
-            match wake.ensure(&planner_card_id).await {
-                Ok(Some((handle, fence))) => (Some(fence), handle),
+            previous_owner = Some(owner);
+            // Preserve the existing no-wake boundary for unmapped events (for example a
+            // hold ask answer). The shared prefix resolver below remains delivery authority.
+            match resolve_harness_observation(self.repo.as_ref(), &track_id, event).await {
+                Ok(Some(_)) => {}
                 Ok(None) => return,
                 Err(error) => {
-                    tracing::warn!(%runtime_id, %error, "Planner wake failed; retaining replay cursor");
+                    tracing::warn!(%track_id, %error, "planner observation lookup failed; preserving replay floor");
                     return;
                 }
             }
-        } else if let Some(handle) = self.harness.get(&runtime_id) {
-            (None, handle)
-        } else {
-            return;
-        };
-        // Recovery may have already accepted this prefix while the Dispatcher
-        // cache is cold. Share that trusted floor with every mapped observation,
-        // including a failure arriving before or after its settlement replay.
-        let cursor = self.push_cursor.bump(
-            planner_card_id.clone(),
-            cursor.max(harness.snapshot().await.push_watermark),
-        );
-        if envelope_id <= cursor {
-            return;
-        }
-        if matches!(event, Event::TaskGitDeliverySettled { .. }) {
-            let preceding = match crate::harness::catch_up::observations_since(
+            let wake = self
+                .planner_wake
+                .read()
+                .expect("Planner wake context")
+                .clone();
+            let (_wake_fence, harness) = if let Some(wake) = wake {
+                match wake.ensure(&planner_card_id).await {
+                    Ok(Some((handle, fence))) => (Some(fence), handle),
+                    Ok(None) => return,
+                    Err(error) => {
+                        tracing::warn!(runtime_id = %worker_session_id, %error, "Planner wake failed; retaining replay cursor");
+                        return;
+                    }
+                }
+            } else if let Some(handle) = self.harness.get(&worker_session_id) {
+                (None, handle)
+            } else {
+                return;
+            };
+            // Recovery may have already accepted this prefix while the Dispatcher
+            // cache is cold. Share that trusted floor with every mapped observation,
+            // including a failure arriving before or after its settlement replay.
+            // Only SQL snapshot state is a replay floor. Staged in-memory state has no authority.
+            let stored = match self
+                .repo
+                .session_projection_active_for_card(&planner_card_id.to_string())
+                .await
+            {
+                Ok(Some(row)) if row.id == worker_session_id => row,
+                Ok(_) => continue 'owner,
+                Err(error) => {
+                    tracing::warn!(%error, "Planner snapshot lookup failed; retaining replay cursor");
+                    return;
+                }
+            };
+            let floor = stored
+                .handle_state_json
+                .as_ref()
+                .and_then(|value| value.get("push_watermark"))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            // The cache is diagnostic only: a reset/replacement can have a lower SQL floor.
+            // Never let a cached higher cursor hide a failed or newly owned prefix.
+            self.push_cursor.set(planner_card_id.clone(), floor);
+            if envelope_id <= floor {
+                return;
+            }
+            let prefix = match crate::harness::catch_up::observations_since(
                 self.repo.as_ref(),
                 &track_id,
-                cursor,
-                Some(envelope_id - 1),
+                floor,
+                Some(envelope_id),
             )
             .await
             {
                 Ok(observations) => observations,
                 Err(error) => {
-                    tracing::warn!(%track_id, %error, "settlement prefix lookup failed; preserving cursor for replay");
+                    tracing::warn!(%track_id, %error, "Planner prefix lookup failed; preserving replay floor");
                     return;
                 }
             };
-            for (id, observation) in preceding {
-                if let Err(error) = harness.observe_envelope(observation, id) {
-                    tracing::warn!(%track_id, %error, "settlement prefix enqueue failed; preserving cursor for replay");
+            for (id, observation) in prefix {
+                if let Err(error) = harness.observe_envelope(observation, id).await {
+                    if matches!(
+                        error,
+                        crate::error::CalmError::PlannerHarnessRuntimeSuperseded(_)
+                    ) {
+                        continue 'owner;
+                    }
+                    tracing::warn!(%track_id, %error, "Planner prefix enqueue failed; preserving replay floor");
                     return;
                 }
                 self.push_cursor.bump(planner_card_id.clone(), id);
             }
-        }
-        tracing::info!(
-            track_id = %track_id,
-            planner_card_id = %planner_card_id,
-            runtime_id = %runtime_id,
-            envelope_id,
-            kind = event.kind_tag(),
-            "dispatcher push: delivering observation to planner harness"
-        );
-        if let Err(e) = harness.observe_envelope(observation, envelope_id) {
-            tracing::warn!(
-                track_id = %track_id,
-                planner_card_id = %planner_card_id,
-                runtime_id = %runtime_id,
-                envelope_id,
-                kind = event.kind_tag(),
-                error = %e,
-                "dispatcher push: PlannerHarness observation enqueue failed; cursor NOT bumped so snapshot recovery will replay on boot"
-            );
             return;
         }
-        self.push_cursor.bump(planner_card_id.clone(), envelope_id);
     }
 
-    /// Find the planner card for a track via `card_role_cache`; `None` if the track has none or the lookup errors.
+    /// Resolve persisted Planner role; the cache is not routing authority.
     async fn resolve_planner_card(self: &Arc<Self>, track_id: &TrackId) -> Option<CardId> {
         let cards = match self.repo.cards_by_track(track_id.as_str()).await {
             Ok(c) => c,
@@ -1410,13 +1409,17 @@ impl Inner {
                 return None;
             }
         };
-        cards.into_iter().find_map(|c| {
-            if self.write.verify_role(&c.id) == Some(CardRole::Planner) {
-                Some(c.id)
-            } else {
-                None
+        for card in cards {
+            match self.repo.card_role_get(card.id.as_str()).await {
+                Ok(Some(CardRole::Planner)) => return Some(card.id),
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "Planner role lookup failed; retaining replay cursor");
+                    return None;
+                }
             }
-        })
+        }
+        None
     }
 
     async fn harness_runtime_id_for_planner_card(

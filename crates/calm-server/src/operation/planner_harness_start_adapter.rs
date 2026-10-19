@@ -83,6 +83,15 @@ pub fn fixture_socket_path() -> std::path::PathBuf {
     ))
 }
 
+/// Ordinary start applies its capture decisions; activation restores the same session's row.
+pub(crate) enum HarnessInstallation {
+    StartCapture {
+        profile: HarnessProfile,
+        snapshot: Box<HarnessSnapshot>,
+    },
+    ActivationRecovery,
+}
+
 #[derive(Clone)]
 pub struct PlannerHarnessStartAdapter {
     repo: Arc<dyn Repo>,
@@ -126,6 +135,292 @@ impl PlannerHarnessStartAdapter {
             claude_host,
             acp_host,
         }
+    }
+
+    pub(crate) async fn apply_activation_transport(
+        &self,
+        tx: &mut Tx<'_>,
+        card_id: &str,
+        thread_id: &str,
+    ) -> Result<()> {
+        card_apply_harness_start_payload_tx(tx, card_id, thread_id, &self.daemon.remote_uri())
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) fn activation_repo(&self) -> &dyn Repo {
+        self.repo.as_ref()
+    }
+
+    async fn activation_catch_up(
+        &self,
+        output: &TxOutput,
+        binding: &crate::harness::profile::PlannerBinding,
+    ) -> Result<HarnessSnapshot> {
+        let session_id = output.output_string("runtime_id", "activation")?;
+        let row = self
+            .repo
+            .session_projection_by_id(&session_id)
+            .await?
+            .ok_or_else(|| CalmError::Conflict("activation session missing".into()))?;
+        let thread = output.output_optional_string("codex_thread_id", "activation")?;
+        if row.card_id != output.output_string("card_id", "activation")?
+            || row.kind != binding.profile.session_kind()
+            || row.agent_provider.as_ref() != Some(&binding.provider)
+            || row.thread_id != thread
+        {
+            return Err(CalmError::Conflict(
+                "activation resource binding changed".into(),
+            ));
+        }
+        let track_id = TrackId::from(output.output_string("track_id", "activation")?);
+        let (source, snapshot) =
+            crate::harness::recovery::prepare_quiesced(self.repo.clone(), &row, &track_id, binding)
+                .await?;
+        if snapshot.last_thread_id != thread {
+            return Err(CalmError::Conflict(
+                "activation checkpoint thread changed".into(),
+            ));
+        }
+        if !crate::harness::persist_recovered_snapshot(
+            self.repo.clone(),
+            &row,
+            &track_id,
+            source,
+            &snapshot,
+        )
+        .await?
+        {
+            return Err(CalmError::Conflict(
+                "activation source checkpoint changed".into(),
+            ));
+        }
+        // This exact complete CAS candidate is the only activation installation input.
+        Ok(snapshot)
+    }
+
+    pub(crate) async fn install_harness(
+        &self,
+        output: &TxOutput,
+        ctx: &SpawnCtx,
+        installation: HarnessInstallation,
+    ) -> Result<SpawnOutcome> {
+        let profile = match &installation {
+            HarnessInstallation::StartCapture { profile, .. } => *profile,
+            HarnessInstallation::ActivationRecovery => HarnessProfile::Planner,
+        };
+        let worker_session_id = output.output_string("runtime_id", "planner harness")?;
+        let card_id = output.output_string("card_id", "planner harness")?;
+        let track_id = output.output_string("track_id", "planner harness")?;
+        let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
+        let provider = {
+            let card = self
+                .repo
+                .card_get(&card_id)
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+            startable_provider(profile, &card)?
+        };
+        #[cfg(feature = "fixtures")]
+        if provider == AgentProvider::Claude {
+            claude_spawn_failure::fire(&card_id).await?;
+        }
+        let reservation = self
+            .harness_registry
+            .reserve_after_shutdown(worker_session_id.clone())
+            .await?;
+        // Keep the claim through complete recovery CAS and installation. Shutdown only
+        // quiesces the local writer; state_from_snapshot still owns unknown live turns.
+        let binding = crate::harness::profile::PlannerBinding {
+            profile,
+            provider: provider.clone(),
+        };
+        let factory = PlannerFactory::new(
+            std::sync::Arc::downgrade(&self.daemon),
+            &self.claude_host,
+            &self.acp_host,
+        );
+        let snapshot = match installation {
+            HarnessInstallation::ActivationRecovery => {
+                self.activation_catch_up(output, &binding).await?
+            }
+            HarnessInstallation::StartCapture { snapshot, .. } => {
+                let mut snapshot = *snapshot;
+                if let Some(checkpoint) = factory
+                    .prepare_checkpoint(
+                        &provider,
+                        self.repo.as_ref(),
+                        &worker_session_id,
+                        &card_id,
+                        &track_id,
+                    )
+                    .await?
+                {
+                    snapshot = checkpoint;
+                } else {
+                    overwrite_queue_from_the_runtimes_own_row(
+                        self.repo.as_ref(),
+                        &worker_session_id,
+                        &mut snapshot,
+                    )
+                    .await?;
+                }
+                // Start replay is also an owner reconstruction. Persist conservative health before
+                // backend installation, using the same complete source CAS as boot/replacement.
+                if matches!(
+                    snapshot.handoff_pause,
+                    crate::harness::handoff_pause::PauseState::Paused { .. }
+                ) {
+                    let row = self
+                        .repo
+                        .session_projection_by_id(&worker_session_id)
+                        .await?
+                        .ok_or_else(|| {
+                            CalmError::Conflict("replayed pause session missing".into())
+                        })?;
+                    let source = row.handle_state_json.clone().ok_or_else(|| {
+                        CalmError::Conflict("replayed pause checkpoint missing".into())
+                    })?;
+                    if HarnessSnapshot::parse_known(source.clone()).as_ref() != Some(&snapshot) {
+                        return Err(CalmError::Conflict(
+                            "replayed pause checkpoint changed".into(),
+                        ));
+                    }
+                    snapshot.handoff_pause.unconfirm_recovered_health();
+                    if !crate::harness::persist_recovered_snapshot(
+                        self.repo.clone(),
+                        &row,
+                        &TrackId::from(track_id.clone()),
+                        source,
+                        &snapshot,
+                    )
+                    .await?
+                    {
+                        return Err(CalmError::Conflict(
+                            "replayed pause checkpoint changed".into(),
+                        ));
+                    }
+                }
+                snapshot
+            }
+        };
+        let backend = factory
+            .open(
+                self.seals.clone(),
+                &self.claude_wiring(),
+                self.repo.clone(),
+                PlannerRow {
+                    binding: crate::harness::profile::PlannerBinding { profile, provider },
+                    worker_session_id: &worker_session_id,
+                    card_id: &card_id,
+                    track_id: &track_id,
+                    prior_total_tokens: snapshot
+                        .token_usage
+                        .as_ref()
+                        .map_or(0, |usage| usage.total_tokens),
+                },
+            )
+            .await?;
+        let handle = PlannerHarness::run(PlannerHarnessParams {
+            worker_session_id: worker_session_id.clone(),
+            track_id: TrackId::from(track_id),
+            card_id: CardId::from(card_id),
+            thread_id,
+            repo: self.repo.clone(),
+            events: ctx.events.clone(),
+            card_role_cache: self.card_role_cache.clone(),
+            track_area_cache: self.track_area_cache.clone(),
+            backend,
+            live_replies: self.harness_registry.live_replies().clone(),
+            config: HarnessConfig::default(),
+            snapshot,
+        });
+        if !reservation.install(handle.clone()) {
+            // Superseded by a concurrent `reserve_replacing`: shut down the handle we just built (never leak its run loop) and fail the op.
+            handle.shutdown().await?;
+            return Err(crate::error::CalmError::Internal(format!(
+                "planner harness registration for runtime {worker_session_id} superseded during start"
+            )));
+        }
+        handle.persist_snapshot().await?;
+        Ok(SpawnOutcome::Ready(SpawnHandle::Harness {
+            worker_session_id,
+        }))
+    }
+
+    pub(crate) async fn mint_harness_resources(
+        &self,
+        profile: HarnessProfile,
+        provider: &AgentProvider,
+        card_id: &str,
+        track_id: &str,
+        cwd: String,
+        runtime_deferred: bool,
+    ) -> Result<(String, Option<String>)> {
+        let card_role = match profile {
+            HarnessProfile::Planner => CardRole::Planner,
+            HarnessProfile::PlainChat => CardRole::Worker,
+            HarnessProfile::Assistant => CardRole::Assistant,
+        };
+        let mut new_mcp_token_hash = None;
+        let thread_id = if *provider != AgentProvider::Codex {
+            // #1791 §4.4: a fresh UUID names the Claude session, with no RPC; the MCP credential is minted at the first turn.
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            let developer_instructions = match profile {
+                HarnessProfile::PlainChat => None,
+                _ => Some(
+                    crate::harness::instructions::profile_instructions(
+                        self.repo.as_ref(),
+                        &self.plugin,
+                        track_id,
+                        card_id,
+                        &crate::harness::profile::PlannerBinding {
+                            profile,
+                            provider: provider.clone(),
+                        },
+                    )
+                    .await?,
+                ),
+            };
+            let (raw, hashed) = mint_card_mcp_token_pair();
+            new_mcp_token_hash = Some(hashed);
+            let socket_path = self.mcp_socket_path_for_thread()?;
+            PlannerFactory::new(
+                std::sync::Arc::downgrade(&self.daemon),
+                &self.claude_host,
+                &self.acp_host,
+            )
+            .prepare_codex_thread(
+                card_id,
+                card_role,
+                track_id,
+                cwd,
+                developer_instructions,
+                profile.mcp_role(),
+                PathBuf::from(socket_path),
+                raw,
+                runtime_deferred,
+            )
+            .await?
+        };
+        Ok((thread_id, new_mcp_token_hash))
+    }
+
+    pub(crate) async fn activation_readiness(&self, provider: &AgentProvider) -> Result<()> {
+        PlannerFactory::new(
+            std::sync::Arc::downgrade(&self.daemon),
+            &self.claude_host,
+            &self.acp_host,
+        )
+        .ready(provider, ReadinessFor::StartOperation)
+        .await?;
+        if *provider == AgentProvider::Codex
+            && let Some(reader) = self.daemon.authentication_hold()
+        {
+            return Err(CalmError::Conflict(reader));
+        }
+        Ok(())
     }
 
     fn claude_wiring(&self) -> PlannerWiring {
@@ -1139,12 +1434,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         .await;
         let reset_transcript = payload.reset_harness_items;
         let profile = payload.profile;
-        // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).
-        let card_role = match profile {
-            HarnessProfile::Planner => CardRole::Planner,
-            HarnessProfile::PlainChat => CardRole::Worker,
-            HarnessProfile::Assistant => CardRole::Assistant,
-        };
         let card_id = output.output_string("card_id", "planner harness")?;
         let track_id = output.output_string("track_id", "planner harness")?;
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
@@ -1201,48 +1490,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // The fence is the caller's, though: a cancelled caller, or boot recovery re-driving an unfinished
         // start, can overlap a second start. Even then this start mints its own thread, prompt, cwd and
         // credential rather than taking a thread a competing operation owns.
-        let mut new_mcp_token_hash = None;
-        let thread_id = if provider != AgentProvider::Codex {
-            // #1791 §4.4: a fresh UUID names the Claude session, with no RPC; the MCP credential is minted at the first turn.
-            uuid::Uuid::new_v4().to_string()
-        } else {
-            let developer_instructions = match profile {
-                HarnessProfile::PlainChat => None,
-                _ => Some(
-                    crate::harness::instructions::profile_instructions(
-                        self.repo.as_ref(),
-                        &self.plugin,
-                        &track_id,
-                        &card_id,
-                        &crate::harness::profile::PlannerBinding {
-                            profile,
-                            provider: provider.clone(),
-                        },
-                    )
-                    .await?,
-                ),
-            };
-            let (raw, hashed) = mint_card_mcp_token_pair();
-            new_mcp_token_hash = Some(hashed);
-            let socket_path = self.mcp_socket_path_for_thread()?;
-            PlannerFactory::new(
-                std::sync::Arc::downgrade(&self.daemon),
-                &self.claude_host,
-                &self.acp_host,
-            )
-            .prepare_codex_thread(
+        let (thread_id, new_mcp_token_hash) = self
+            .mint_harness_resources(
+                profile,
+                &provider,
                 &card_id,
-                card_role,
                 &track_id,
                 cwd,
-                developer_instructions,
-                profile.mcp_role(),
-                PathBuf::from(socket_path),
-                raw,
                 runtime_deferred,
             )
-            .await?
-        };
+            .await?;
         output.set_output_data(
             "codex_thread_id",
             json!(thread_id.clone()),
@@ -1517,96 +1774,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         _op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
-        let worker_session_id = output.output_string("runtime_id", "planner harness")?;
-        let card_id = output.output_string("card_id", "planner harness")?;
-        let track_id = output.output_string("track_id", "planner harness")?;
-        let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
-        let mut snapshot = output_snapshot(output)?;
-        let provider = {
-            let card = self
-                .repo
-                .card_get(&card_id)
-                .await?
-                .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-            startable_provider(op_profile(_op)?, &card)?
-        };
-        #[cfg(feature = "fixtures")]
-        if provider == AgentProvider::Claude {
-            claude_spawn_failure::fire(&card_id).await?;
-        }
-        let reservation = self
-            .harness_registry
-            .reserve_after_shutdown(worker_session_id.clone())
-            .await?;
-        let factory = PlannerFactory::new(
-            std::sync::Arc::downgrade(&self.daemon),
-            &self.claude_host,
-            &self.acp_host,
-        );
-        if let Some(checkpoint) = factory
-            .prepare_checkpoint(
-                &provider,
-                self.repo.as_ref(),
-                &worker_session_id,
-                &card_id,
-                &track_id,
-            )
-            .await?
-        {
-            snapshot = checkpoint;
-        } else {
-            overwrite_queue_from_the_runtimes_own_row(
-                self.repo.as_ref(),
-                &worker_session_id,
-                &mut snapshot,
-            )
-            .await?;
-        }
-        let backend = factory
-            .open(
-                self.seals.clone(),
-                &self.claude_wiring(),
-                self.repo.clone(),
-                PlannerRow {
-                    binding: crate::harness::profile::PlannerBinding {
-                        profile: op_profile(_op)?,
-                        provider,
-                    },
-                    worker_session_id: &worker_session_id,
-                    card_id: &card_id,
-                    track_id: &track_id,
-                    prior_total_tokens: snapshot
-                        .token_usage
-                        .as_ref()
-                        .map_or(0, |usage| usage.total_tokens),
-                },
-            )
-            .await?;
-        let handle = PlannerHarness::run(PlannerHarnessParams {
-            worker_session_id: worker_session_id.clone(),
-            track_id: TrackId::from(track_id),
-            card_id: CardId::from(card_id),
-            thread_id,
-            repo: self.repo.clone(),
-            events: ctx.events.clone(),
-            card_role_cache: self.card_role_cache.clone(),
-            track_area_cache: self.track_area_cache.clone(),
-            backend,
-            live_replies: self.harness_registry.live_replies().clone(),
-            config: HarnessConfig::default(),
-            snapshot,
-        });
-        if !reservation.install(handle.clone()) {
-            // Superseded by a concurrent `reserve_replacing`: shut down the handle we just built (never leak its run loop) and fail the op.
-            handle.shutdown().await?;
-            return Err(crate::error::CalmError::Internal(format!(
-                "planner harness registration for runtime {worker_session_id} superseded during start"
-            )));
-        }
-        handle.persist_snapshot().await?;
-        Ok(SpawnOutcome::Ready(SpawnHandle::Harness {
-            worker_session_id,
-        }))
+        self.install_harness(
+            output,
+            ctx,
+            HarnessInstallation::StartCapture {
+                profile: op_profile(_op)?,
+                snapshot: Box::new(output_snapshot(output)?),
+            },
+        )
+        .await
     }
 
     /// `Driver::apply_compensation` marks the operation `Stuck` on the FIRST step error and it is never re-driven; if `delete_card` fails, the lazily minted card stays with `deletable: false`.
@@ -1892,18 +2068,31 @@ pub mod claude_spawn_failure {
     }
 }
 
-/// Replace a snapshot's pending queue with the one persisted on the runtime's own row, leaving every other field alone.
-fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>) {
+/// Adopt the row-owned queue AND its observation progress together. The operation owns start
+/// decisions (phase/thread), but a replayed output cannot roll back a durable observation ACK.
+fn adopt_queue_from_row(snapshot: &mut HarnessSnapshot, row_state: Option<Value>) -> Result<()> {
     let Some(state) = row_state else {
-        return;
+        return Ok(());
     };
-    if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE)
-        || !is_harness_snapshot_value(&state)
-    {
-        return;
+    let Some(row) = HarnessSnapshot::parse_known(state.clone()) else {
+        if state.get("handoff_pause").is_some() {
+            return Err(CalmError::Conflict(
+                "invalid persisted handoff pause checkpoint".into(),
+            ));
+        }
+        return Ok(());
+    };
+    if row.handoff_pause.receipt().is_some() {
+        // Replay cannot revive an older start phase over the row's active claim or terminal
+        // result. The same session row owns these facts, including its subsequent phase.
+        *snapshot = row;
+        return Ok(());
     }
-    let row = HarnessSnapshot::from_value_strict(state);
+    snapshot.handoff_pause = row.handoff_pause.clone();
     snapshot.set_pending_entries(row.pending_entries());
+    snapshot.push_watermark = row.push_watermark;
+    snapshot.last_report_body_sha256 = row.last_report_body_sha256;
+    Ok(())
 }
 
 async fn overwrite_queue_from_the_runtimes_own_row(
@@ -1914,8 +2103,7 @@ async fn overwrite_queue_from_the_runtimes_own_row(
     let state = repo
         .session_projection_handle_state_by_id(worker_session_id)
         .await?;
-    adopt_queue_from_row(snapshot, state);
-    Ok(())
+    adopt_queue_from_row(snapshot, state)
 }
 
 /// The same rule inside a transaction, for the writers that run there.
@@ -1927,8 +2115,7 @@ async fn overwrite_queue_from_the_runtimes_own_row_tx(
     let state = session_handle_state_by_id_tx(tx, worker_session_id)
         .await
         .map_err(CalmError::from)?;
-    adopt_queue_from_row(snapshot, state);
-    Ok(())
+    adopt_queue_from_row(snapshot, state)
 }
 
 /// Fail the runtime and return what it harvested, in one transaction: either it commits or none of it happened.
@@ -2336,13 +2523,32 @@ fn output_existing_thread_id(output: &TxOutput) -> Result<Option<String>> {
 
 /// Merge this adapter's payload keys into the payload **as it stands inside `tx`**: a snapshot from the previous phase can be hours old on a recovery replay,
 /// and writing it back wholesale drops every key another writer put in since. The key set is deliberately NOT `clear_card_runtime_fields`'.
+/// Strip only the transport facts this owner's `card_apply_harness_start_payload_tx` replaces.
+/// Creation configuration and all application fields remain comparable across installation.
+pub(super) fn creation_configuration(mut payload: Value) -> Result<Value> {
+    let map = payload
+        .as_object_mut()
+        .ok_or_else(|| CalmError::Conflict("invalid harness payload".into()))?;
+    for key in [
+        "codex_thread_id",
+        "appserver_sock",
+        "appserver_pgid",
+        "appserver_start_time",
+        "appserver_boot_id",
+        "appserver_needs_initial_prompt",
+    ] {
+        map.remove(key);
+    }
+    Ok(payload)
+}
+
 async fn card_apply_harness_start_payload_tx(
     tx: &mut Tx<'_>,
     card_id: &str,
     thread_id: &str,
     appserver_sock: &str,
 ) -> Result<Card> {
-    let mut payload = card_payload_get_tx(tx, card_id).await?;
+    let mut payload = creation_configuration(card_payload_get_tx(tx, card_id).await?)?;
     let Some(map) = payload.as_object_mut() else {
         return Err(CalmError::Internal(format!(
             "planner harness card {card_id} payload is not a JSON object"
@@ -2356,10 +2562,6 @@ async fn card_apply_harness_start_payload_tx(
         "appserver_sock".into(),
         Value::String(appserver_sock.to_string()),
     );
-    map.remove("appserver_pgid");
-    map.remove("appserver_start_time");
-    map.remove("appserver_boot_id");
-    map.remove("appserver_needs_initial_prompt");
     card_update_tx(
         tx,
         card_id,
@@ -2475,6 +2677,39 @@ fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessi
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn durable_observation_start_replay_preserves_row_progress() {
+        use super::*;
+        let mut durable = HarnessSnapshot::initial(
+            42,
+            vec![
+                QueueEntry::system(
+                    Observation::TrackGoal {
+                        text: "already ACKed".into(),
+                    },
+                    Some(42),
+                )
+                .unwrap(),
+            ],
+        );
+        durable.last_report_body_sha256 = Some("accepted-report".into());
+        durable.phase = HarnessPhaseTag::TurnRunning;
+        durable.last_turn_id = Some("row-owned-turn".into());
+        let mut replay = HarnessSnapshot::initial(0, vec![]);
+        adopt_queue_from_row(&mut replay, Some(serde_json::to_value(&durable).unwrap())).unwrap();
+        assert_eq!(replay.phase, HarnessPhaseTag::PendingThreadStart);
+        assert!(
+            replay.last_turn_id.is_none(),
+            "ordinary start retains its capture decisions"
+        );
+        assert_eq!(replay.pending_entries(), durable.pending_entries());
+        assert_eq!(replay.push_watermark, durable.push_watermark);
+        assert_eq!(
+            replay.last_report_body_sha256,
+            durable.last_report_body_sha256
+        );
+    }
 
     /// `handle_state_json` is free-form TEXT (terminal/Claude runtimes write other dialects, older binaries other shapes); every bad input must yield nothing rather than fail the mint.
     #[test]
@@ -3375,3 +3610,63 @@ mod versioned_input_tests;
 
 #[cfg(test)]
 mod compensation_revision_tests;
+
+#[cfg(test)]
+mod handoff_pause_replay_tests {
+    use super::*;
+
+    #[test]
+    fn handoff_pause_start_replay_preserves_the_owning_rows_claim() {
+        let mut durable = HarnessSnapshot::initial(10, vec![]);
+        durable.phase = HarnessPhaseTag::Idle;
+        let receipt = crate::harness::handoff_pause::PauseRequest::new(
+            "card".into(),
+            "session".into(),
+            "track".into(),
+        );
+        use crate::harness::handoff_pause::{
+            BackendFault, PauseReceipt, PauseState, ReleaseOutcome,
+        };
+        let receipt = PauseReceipt::from_request(receipt);
+        for state in [
+            PauseState::Paused {
+                receipt: receipt.clone(),
+            },
+            PauseState::FaultedPaused {
+                receipt: receipt.clone(),
+                fault: BackendFault::ThreadSystemError,
+            },
+            PauseState::RecoveryHealthUnconfirmed {
+                receipt: receipt.clone(),
+            },
+            PauseState::Released {
+                receipt: receipt.clone(),
+                outcome: ReleaseOutcome::HealthyReleased,
+            },
+            PauseState::Released {
+                receipt: receipt.clone(),
+                outcome: ReleaseOutcome::ReleasedWithBackendFault {
+                    fault: BackendFault::ThreadSystemError,
+                },
+            },
+            PauseState::Released {
+                receipt,
+                outcome: ReleaseOutcome::HealthUnconfirmedAfterRecovery,
+            },
+        ] {
+            durable.handoff_pause = state;
+            let mut replay = HarnessSnapshot::initial(0, vec![]);
+            adopt_queue_from_row(&mut replay, Some(serde_json::to_value(&durable).unwrap()))
+                .unwrap();
+            assert_eq!(replay, durable);
+            assert_eq!(replay.push_watermark, 10);
+        }
+    }
+    #[test]
+    fn handoff_pause_start_replay_rejects_invalid_existing_marker() {
+        let mut row = serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap();
+        row["handoff_pause"] = Value::Null;
+        let mut replay = HarnessSnapshot::initial(0, vec![]);
+        assert!(adopt_queue_from_row(&mut replay, Some(row)).is_err());
+    }
+}

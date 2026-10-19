@@ -62,8 +62,11 @@ pub async fn acp_submission_get(
 ) -> Result<Option<AcpSubmission>> {
     Ok(sqlx::query_as(concat!("SELECT ","worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_j","son FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")).bind(worker).bind(client).fetch_optional(pool).await?)
 }
-pub async fn acp_submission_unresolved(pool: &SqlitePool, worker: &str) -> Result<bool> {
-    Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND state IN ('sending','unknown'))").bind(worker).fetch_one(pool).await? != 0)
+pub async fn acp_submission_unresolved<'e, E: sqlx::SqliteExecutor<'e>>(
+    executor: E,
+    worker: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_,i64>("SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1 AND state IN ('sending','unknown'))").bind(worker).fetch_one(executor).await? != 0)
 }
 pub async fn acp_submission_prepare(
     pool: &crate::db::sqlite::SqliteDb,

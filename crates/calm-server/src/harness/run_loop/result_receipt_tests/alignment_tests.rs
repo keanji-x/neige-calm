@@ -42,13 +42,9 @@ async fn mixed_batch(with_timeout: bool) {
         {
             *watchdog_from = Instant::now() - Duration::from_secs(1801);
         }
-        issue_interrupt_for_turn(
-            &fx.harness.inner,
-            turn_id.clone(),
-            "max_turn_duration".into(),
-        )
-        .await
-        .unwrap();
+        interrupt_command::watchdog(&fx.harness.inner, turn_id.clone())
+            .await
+            .unwrap();
         let inner = &fx.harness.inner;
         let thread = inner.thread_id.read().await.clone().unwrap();
         let outcome = json!({"id":turn_id,"status":"interrupted"});

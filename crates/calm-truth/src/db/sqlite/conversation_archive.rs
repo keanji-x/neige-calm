@@ -2,6 +2,19 @@
 use crate::error::Result;
 use sqlx::{Sqlite, Transaction};
 
+/// The archive owner's query, usable on a read pool or the caller's writer transaction.
+pub async fn conversation_archived_at<'e, E: sqlx::SqliteExecutor<'e>>(
+    executor: E,
+    card_id: &str,
+) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT archived_at_ms FROM assistant_conversation_archives WHERE card_id=?1",
+    )
+    .bind(card_id)
+    .fetch_optional(executor)
+    .await?)
+}
+
 pub async fn conversation_archive_set_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,

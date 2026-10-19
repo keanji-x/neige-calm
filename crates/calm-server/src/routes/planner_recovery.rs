@@ -6,7 +6,7 @@ use crate::ids::CardId;
 use crate::per_card_lock::lock_key;
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{CodexShellState, RouteState, WorkerState};
-use calm_types::harness::HARNESS_SYSTEM_ERROR_REASON;
+use calm_types::harness::requires_failed_conversation_recovery;
 
 pub(super) const RECOVERY_NOTICE: &str = "Conversation paused after a Codex error. Resolve the error shown in the conversation, then send \
     a message to resume. Your history and queued messages are retained.";
@@ -117,7 +117,11 @@ pub(super) async fn recoverable_snapshot(
     let Some(snapshot) = failed_wedged_snapshot(runtime) else {
         return Ok(None);
     };
-    if snapshot.wedged_reason.as_deref() != Some(HARNESS_SYSTEM_ERROR_REASON) {
+    if !snapshot
+        .wedged_reason
+        .as_deref()
+        .is_some_and(requires_failed_conversation_recovery)
+    {
         return Ok(None);
     }
     let Some(thread) = crate::harness::effective_runtime_thread_id(runtime) else {

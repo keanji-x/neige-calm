@@ -292,6 +292,9 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
     assert_eq!(
         SERVER_OWNED_CARD_PAYLOAD_KEYS,
         [
+            "planner_harness",
+            "planner_history",
+            "handoff_pending_activation",
             "terminal_signals",
             "template_context",
             "planner_provider",

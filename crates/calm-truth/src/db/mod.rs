@@ -457,6 +457,15 @@ pub trait RepoEventWrite: RepoRead {
         since_id: Option<i64>,
     ) -> Result<Vec<TrackEvent>>;
 
+    /// The same track/kind slice, with an inclusive committed-event upper bound.
+    async fn events_for_track_through(
+        &self,
+        track_id: &str,
+        kinds: &[&str],
+        since_id: Option<i64>,
+        through_id: Option<i64>,
+    ) -> Result<Vec<TrackEvent>>;
+
     /// Whether `card_id` has a persisted `event_kind` row whose payload `kind` is `hook_kind` and
     /// whose actor is `actor`: a seek on `idx_events_kind_scope_card` over that card's rows.
     async fn card_hook_seen(

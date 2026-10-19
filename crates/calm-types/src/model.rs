@@ -23,6 +23,9 @@ pub enum CardRole {
     ReportCard,
     /// A track-scoped assistant conversation with no lifecycle / plan / review / admin authority.
     Assistant,
+    /// Retired Planner conversation; no mutation or runtime authority.
+    #[serde(rename = "planner_history")]
+    PlannerHistory,
 }
 
 impl CardRole {
@@ -32,6 +35,7 @@ impl CardRole {
             CardRole::Planner => "planner",
             CardRole::ReportCard => "reportcard",
             CardRole::Assistant => "assistant",
+            CardRole::PlannerHistory => "planner_history",
         }
     }
 }
@@ -45,6 +49,7 @@ impl TryFrom<String> for CardRole {
             "planner" => Ok(CardRole::Planner),
             "reportcard" => Ok(CardRole::ReportCard),
             "assistant" => Ok(CardRole::Assistant),
+            "planner_history" => Ok(CardRole::PlannerHistory),
             other => Err(format!("unknown cards.role value `{other}`")),
         }
     }

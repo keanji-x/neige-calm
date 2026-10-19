@@ -17,7 +17,7 @@ pub const PAYLOAD_EFFORT: &str = "reasoning_effort";
 pub const PAYLOAD_EFFORT_EVER_SET: &str = "reasoning_effort_ever_set";
 
 /// What a card's payload says about the model its turns run with.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CardModelSelection {
     /// The chosen slug, or `None` for "follow the default".
     pub model: Option<String>,

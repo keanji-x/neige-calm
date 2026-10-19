@@ -549,12 +549,7 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn conversation_archived_at(&self, card_id: &str) -> Result<Option<i64>> {
-        Ok(sqlx::query_scalar(
-            "SELECT archived_at_ms FROM assistant_conversation_archives WHERE card_id=?1",
-        )
-        .bind(card_id)
-        .fetch_optional(self.db.read_pool())
-        .await?)
+        super::conversation_archived_at(self.db.read_pool(), card_id).await
     }
 
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {

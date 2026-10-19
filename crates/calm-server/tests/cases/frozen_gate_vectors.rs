@@ -84,6 +84,7 @@ impl Fixture {
             WorkerSessionState::Running,
             Some(worker.clone()),
             WorkerContract::Executor,
+            vec![],
         )
         .await;
         let planner_session = seed_worker_session(
@@ -93,6 +94,10 @@ impl Fixture {
             WorkerSessionState::Running,
             Some(planner.clone()),
             WorkerContract::Planner,
+            vec![(
+                planner.clone(),
+                WorkerSessionId::from("session-planner-vector-0001"),
+            )],
         )
         .await;
         let terminal_session = seed_worker_session(
@@ -102,6 +107,7 @@ impl Fixture {
             WorkerSessionState::Exited,
             Some(worker.clone()),
             WorkerContract::Executor,
+            vec![],
         )
         .await;
         let cardless_session = seed_worker_session(
@@ -111,6 +117,7 @@ impl Fixture {
             WorkerSessionState::Running,
             None,
             WorkerContract::Executor,
+            vec![],
         )
         .await;
 
@@ -222,6 +229,7 @@ async fn seed_worker_session(
     state: WorkerSessionState,
     card_id: Option<CardId>,
     contract: WorkerContract,
+    current_bindings: Vec<(CardId, WorkerSessionId)>,
 ) -> WorkerSessionId {
     let session = WorkerSession {
         id: WorkerSessionId::from(session_id),
@@ -256,6 +264,13 @@ async fn seed_worker_session(
             session_insert_tx(tx, session)
                 .await
                 .map_err(CalmError::from)?;
+            for (card, current) in current_bindings {
+                sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                    .bind(current.as_str())
+                    .bind(card.as_str())
+                    .execute(&mut **tx)
+                    .await?;
+            }
             Ok(())
         })
     })

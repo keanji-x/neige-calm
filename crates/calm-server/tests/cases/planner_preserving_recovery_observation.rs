@@ -67,15 +67,19 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
             release: release.clone(),
         },
     );
-    old.observe_envelope(
-        Observation::TaskCompleted {
-            idempotency_key: task_key,
-            result_contract: None,
-            result,
-        },
-        event_id,
-    )
-    .unwrap();
+    let accepting = old.clone();
+    let delivery = tokio::spawn(async move {
+        accepting
+            .observe_envelope_for_test(
+                Observation::TaskCompleted {
+                    idempotency_key: task_key,
+                    result_contract: None,
+                    result,
+                },
+                event_id,
+            )
+            .await
+    });
     tokio::time::timeout(Duration::from_secs(3), entered.notified())
         .await
         .unwrap();
@@ -106,6 +110,10 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
     // negative observation and check the actual durable result in both cases.
     let early = tokio::time::timeout(Duration::from_secs(2), &mut recovery).await;
     release.notify_one();
+    assert!(
+        delivery.await.unwrap().is_err(),
+        "failed sessions cannot ACK durable delivery"
+    );
     let (status, body) = match early {
         Ok(result) => result.unwrap(),
         Err(_) => tokio::time::timeout(Duration::from_secs(5), recovery)

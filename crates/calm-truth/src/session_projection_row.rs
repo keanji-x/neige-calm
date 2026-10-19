@@ -171,6 +171,7 @@ fn agent_provider_from_session_provider(provider: WorkerProviderKind) -> Option<
 
 pub(crate) fn run_status_from_db(value: &str) -> Result<WorkerSessionState> {
     match value {
+        "pending_activation" => Ok(WorkerSessionState::PendingActivation),
         "starting" => Ok(WorkerSessionState::Starting),
         "running" => Ok(WorkerSessionState::Running),
         "idle" => Ok(WorkerSessionState::Idle),

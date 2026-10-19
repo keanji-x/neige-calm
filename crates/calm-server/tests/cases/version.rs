@@ -126,8 +126,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "34",
-        "Assistant archive metadata, template descriptions and authoritative availability are required"
+        "35",
+        "Planner handoff history and pending activation require the new conversation contract"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),

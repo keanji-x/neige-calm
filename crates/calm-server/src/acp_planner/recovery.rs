@@ -108,6 +108,19 @@ pub(crate) async fn recover(
     let Some(receipt) = checkpoint_receipt(pool.read_pool(), worker, snapshot).await? else {
         return Ok(());
     };
+    let paused = snapshot.handoff_pause.is_paused();
+    if paused {
+        // Pause admission excludes unresolved native ownership. A completed old receipt is
+        // already settled; replay must not replace the paused owner's thread/phase/fault.
+        if !matches!(receipt.state, AcpSubmissionState::Completed)
+            || snapshot.last_thread_id.as_deref() != Some(receipt.thread_id.as_str())
+            || snapshot.last_turn_id.as_deref() != Some(receipt.turn_id.as_str())
+        {
+            return Err(CalmError::Conflict(
+                "native receipt conflicts with paused checkpoint".into(),
+            ));
+        }
+    }
     retire(snapshot, &receipt)?;
     let mut outcome = match receipt.state {
         AcpSubmissionState::Completed => {
@@ -147,11 +160,13 @@ pub(crate) async fn recover(
         crate::harness::turn_outcome::Confirmation::ProviderTerminal,
     )
     .await?;
-    snapshot.phase = HarnessPhaseTag::TurnCompleted;
-    snapshot.last_thread_id = Some(receipt.thread_id);
-    snapshot.last_turn_id = Some(receipt.turn_id);
-    snapshot.projection_client_id = None;
-    snapshot.issued_input_segments = None;
+    if !paused {
+        snapshot.phase = HarnessPhaseTag::TurnCompleted;
+        snapshot.last_thread_id = Some(receipt.thread_id);
+        snapshot.last_turn_id = Some(receipt.turn_id);
+        snapshot.projection_client_id = None;
+        snapshot.issued_input_segments = None;
+    }
     Ok(())
 }
 

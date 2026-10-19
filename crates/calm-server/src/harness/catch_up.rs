@@ -1,4 +1,4 @@
-//! Persisted Planner push observations shared by boot replay and settlement catch-up.
+//! Persisted Planner push observations shared by boot replay and live prefix delivery.
 use super::Observation;
 use crate::db::Repo;
 use crate::dispatcher;
@@ -16,17 +16,15 @@ pub(crate) async fn observations_since(
     through: Option<i64>,
 ) -> Result<Vec<(i64, Observation)>> {
     let rows = repo
-        .events_for_track(
+        .events_for_track_through(
             track_id.as_str(),
             dispatcher::PLANNER_CATCH_UP_KINDS,
             Some(watermark),
+            through,
         )
         .await?;
     let mut observations = Vec::new();
     for row in rows {
-        if through.is_some_and(|last| row.id > last) {
-            break;
-        }
         let role = role_needed_for_planner_push_filter(repo, &row.event).await?;
         if !dispatcher::event_warrants_planner_push_with_role(&row.event, &row.actor, |_| role) {
             continue;

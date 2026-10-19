@@ -499,11 +499,35 @@ async fn a_superseded_session_asks_nothing() {
         .unwrap();
     assert_eq!(old.state, WorkerSessionState::Superseded);
 
+    let handled = calm_server::test_seams::PausePoint::default();
+    calm_server::test_seams::install_pause_for_test(
+        "harness-notification-completed",
+        rig.card.as_str(),
+        handled.clone(),
+    );
     rig.emit("item/completed", captured_params());
-    rig.settle().await;
-    assert!(rig.item_added(ITEM_ID).await, "the reply is stored");
+    tokio::time::timeout(Duration::from_secs(5), handled.entered.notified())
+        .await
+        .unwrap();
+    // Retirement now fences transcript writes as well as native asks. Observe the
+    // actual handler completion, since a stored sentinel would itself violate that fence.
+    assert!(
+        !rig.item_added(ITEM_ID).await,
+        "a retired reply is never announced"
+    );
+    let rows = rig
+        .repo
+        .transcript_rows_of_thread(rig.card.as_str(), THREAD)
+        .await
+        .unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row.item_uuid.as_deref() != Some(ITEM_ID)),
+        "a retired reply is never stored"
+    );
     let asks = rig.asks().await;
     assert!(asks.is_empty(), "{asks:?}");
+    handled.release.notify_one();
     rig.harness.shutdown().await.unwrap();
 }
 

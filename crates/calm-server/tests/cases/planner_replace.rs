@@ -10,7 +10,6 @@ use calm_server::db::prelude::*;
 use calm_server::harness::{HarnessState, Observation, SendKey};
 use serde_json::{Value, json};
 
-use super::planner_harness_live_replies::ITEM_TABLE;
 use crate::support::planner_queue_fixture::{
     Boot, Issuance, SEED_THREAD_ID, boot_with_issuance, get, idle_snapshot, post_input_keyed,
     post_input_keyed_as, post_input_with_attachments, send_json, upload_png,
@@ -817,13 +816,6 @@ async fn an_agent_actor_or_a_blank_turn_replaces_nothing() {
     );
 }
 
-async fn rename_table(boot: &Boot, from: &str, to: &str) {
-    sqlx::query(&format!("ALTER TABLE {from} RENAME TO {to}"))
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
-}
-
 async fn live(boot: &Boot) -> Value {
     let (status, body) = get(
         boot.app.clone(),
@@ -857,7 +849,7 @@ async fn a_replace_clears_the_live_text_of_the_removed_turn() {
     })
     .await;
 
-    rename_table(&boot, ITEM_TABLE, "hidden_rows").await;
+    crate::support::transcript_fixture::fail_inserts(&boot.repo, true).await;
     boot.harness.interrupt("test stop".into()).await.unwrap();
     wait_for("the interrupt to go out", || async {
         !boot.daemon.interrupted_turns_for_test().is_empty()
@@ -875,7 +867,7 @@ async fn a_replace_clears_the_live_text_of_the_removed_turn() {
             }
     })
     .await;
-    rename_table(&boot, "hidden_rows", ITEM_TABLE).await;
+    crate::support::transcript_fixture::fail_inserts(&boot.repo, false).await;
     assert_eq!(
         live(&boot).await,
         streaming,

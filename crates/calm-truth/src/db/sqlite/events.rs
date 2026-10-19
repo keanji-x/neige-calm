@@ -777,6 +777,17 @@ impl RepoEventWrite for SqlxRepo {
         kinds: &[&str],
         since_id: Option<i64>,
     ) -> Result<Vec<TrackEvent>> {
+        self.events_for_track_through(track_id, kinds, since_id, None)
+            .await
+    }
+
+    async fn events_for_track_through(
+        &self,
+        track_id: &str,
+        kinds: &[&str],
+        since_id: Option<i64>,
+        through_id: Option<i64>,
+    ) -> Result<Vec<TrackEvent>> {
         if kinds.is_empty() {
             return Ok(Vec::new());
         }
@@ -803,6 +814,10 @@ impl RepoEventWrite for SqlxRepo {
         if let Some(since_id) = since_id {
             query.push(" AND id > ");
             query.push_bind(since_id);
+        }
+        if let Some(through_id) = through_id {
+            query.push(" AND id <= ");
+            query.push_bind(through_id);
         }
         query.push(" AND kind IN (");
         let mut separated = query.separated(", ");

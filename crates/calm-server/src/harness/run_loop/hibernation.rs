@@ -89,6 +89,9 @@ pub(super) async fn quiesce(
     ingress_empty: bool,
     reply: Option<&oneshot::Sender<Result<bool>>>,
 ) -> Result<bool> {
+    if handoff_pause::require_unpaused(inner).await.is_err() {
+        return Ok(false);
+    }
     if !idle_for_lifecycle(inner, ingress_empty).await {
         return Ok(false);
     }

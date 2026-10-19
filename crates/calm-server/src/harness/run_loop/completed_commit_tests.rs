@@ -38,7 +38,11 @@ impl Fixture {
     }
 
     pub(super) async fn for_role(role: CardRole) -> Self {
-        let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        Self::for_role_at(role, "sqlite::memory:").await
+    }
+
+    pub(super) async fn for_role_at(role: CardRole, url: &str) -> Self {
+        let repo = Arc::new(SqlxRepo::open(url).await.unwrap());
         let area = repo
             .area_create(
                 calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -67,12 +71,33 @@ impl Fixture {
         let roles = CardRoleCache::new();
         let areas = TrackAreaCache::new();
         areas.insert(track.id.clone(), area.id);
+        Self::on_track(repo, track.id, roles, areas, role).await
+    }
+
+    pub(super) async fn sibling(&self, role: CardRole) -> Self {
+        Self::on_track(
+            self.repo.clone(),
+            self.harness.inner.track_id.clone(),
+            self.harness.inner.card_role_cache.clone(),
+            self.harness.inner.track_area_cache.clone(),
+            role,
+        )
+        .await
+    }
+
+    async fn on_track(
+        repo: Arc<SqlxRepo>,
+        track_id: TrackId,
+        roles: CardRoleCache,
+        areas: TrackAreaCache,
+        role: CardRole,
+    ) -> Self {
         let mut tx = repo.pool().begin().await.unwrap();
         let card = card_create_with_id_tx(
             &mut tx,
             new_id(),
             NewCard {
-                track_id: track.id.clone(),
+                track_id: track_id.clone(),
                 title: None,
                 kind: "codex".into(),
                 sort: None,
@@ -120,7 +145,7 @@ impl Fixture {
         let (harness, ingress) = PlannerHarness::run_unstarted_for_test(
             PlannerHarnessParams {
                 worker_session_id,
-                track_id: track.id,
+                track_id,
                 card_id: card.id,
                 thread_id: snapshot.last_thread_id.clone(),
                 repo: repo.clone(),

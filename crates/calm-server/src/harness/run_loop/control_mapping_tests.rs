@@ -440,13 +440,7 @@ async fn m1_mapping_interrupt_host_noops_never_issue_native_call() {
             other => panic!("unknown case {other}"),
         }
         let before = HarnessPhaseTag::from(&*inner.state.lock().await);
-        if case == "wedged" {
-            issue_interrupt_for_turn(inner, "running".into(), "stop".into())
-                .await
-                .unwrap();
-        } else {
-            issue_interrupt(inner, "stop".into()).await.unwrap();
-        }
+        f.harness.interrupt("stop".into()).await.unwrap();
         assert_eq!(HarnessPhaseTag::from(&*inner.state.lock().await), before);
         assert!(inner.interrupt_deadline.lock().await.is_none());
         assert!(f.daemon.interrupted_turns_for_test().is_empty());

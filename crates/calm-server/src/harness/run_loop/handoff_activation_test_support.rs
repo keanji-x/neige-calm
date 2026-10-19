@@ -1,0 +1,158 @@
+//! Shared setup for the actual activation operation and its real snapshot owner.
+use super::completed_commit_tests::Fixture;
+use super::*;
+use crate::db::prelude::*;
+use crate::harness::HarnessRegistry;
+use crate::operation::handoff_activation::ActivationResult;
+use crate::operation::{OperationReceipt, OperationRuntime};
+
+pub(super) fn runtime(a: &Fixture) -> (OperationRuntime, HarnessRegistry) {
+    let registry = HarnessRegistry::new();
+    (
+        runtime_with_repo(a, a.repo.clone(), registry.clone()),
+        registry,
+    )
+}
+
+pub(super) fn runtime_with_repo(
+    a: &Fixture,
+    repo: Arc<dyn crate::db::Repo>,
+    registry: HarnessRegistry,
+) -> OperationRuntime {
+    let start = start_adapter(a, repo.clone(), registry.clone());
+    let operations: Arc<dyn crate::operation::OperationRepo> = Arc::new(
+        crate::operation::SqlxOperationRepo::new(repo.sqlite_db().unwrap()),
+    );
+    let events = EventBus::new();
+    let completion = crate::operation::OperationCompletionBus::new();
+    let ctx = crate::operation::SpawnCtx::new(
+        repo,
+        operations.clone(),
+        Arc::new(crate::state::DaemonClient::new_stub()),
+        crate::terminal_renderer::TerminalRendererRegistry::new(),
+        events.clone(),
+        completion.clone(),
+    );
+    OperationRuntime::new_unchecked(
+        operations,
+        vec![Arc::new(
+            crate::operation::handoff_coordinator_adapter::HandoffCoordinatorAdapter {
+                start: start.clone(),
+                registry: registry.clone(),
+                cache: a.harness.inner.card_role_cache.clone(),
+            },
+        )],
+        events,
+        completion,
+        ctx,
+    )
+}
+
+pub(super) fn original(result: crate::operation::handoff_cutover::CutoverResult) -> String {
+    let crate::operation::handoff_cutover::CutoverResult::CutoverCommittedPendingActivation {
+        operation_id,
+        ..
+    } = result;
+    operation_id
+}
+
+pub(super) fn result(receipt: &OperationReceipt) -> ActivationResult {
+    let value = match receipt {
+        OperationReceipt::AwaitingRetry { output, .. } => output.result.clone(),
+        OperationReceipt::Settled(crate::operation::OperationResult {
+            outcome: crate::operation::OperationOutcome::Succeeded { result },
+            ..
+        }) => result.clone(),
+        other => panic!("expected durable activation result, got {other:?}"),
+    };
+    serde_json::from_value(value).unwrap()
+}
+
+pub(super) async fn stored(a: &Fixture, session: &str) -> HarnessSnapshot {
+    let row = a
+        .repo
+        .session_get_by_id(&session.into())
+        .await
+        .unwrap()
+        .unwrap();
+    HarnessSnapshot::parse_known(row.handle_state_json.unwrap()).unwrap()
+}
+
+pub(super) async fn wait_for_resource_intent(a: &Fixture) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let count: i64 = sqlx::query_scalar(concat!("SELECT count(*) FROM operations WHERE kind='handoff-workflow' AND json_extract(tx_output_json,","'$.result.resources.state')='native_intent'"))
+                .fetch_one(a.repo.pool()).await.unwrap();
+            if count == 1 { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("real operation must persist resource intent before the native RPC");
+}
+
+pub(super) async fn coordinator_request(
+    a: &Fixture,
+    b: &Fixture,
+) -> crate::operation::handoff_coordinator::UserHandoffRequest {
+    let (source_generation, target_generation, track_generation): (i64, i64, i64) = sqlx::query_as(
+        r#"
+            SELECT s.generation,t.generation,r.generation FROM planner_handoff_card_generations
+            s,planner_handoff_card_generations t,planner_handoff_track_generations r WHERE
+            s.card_id=?1 AND t.card_id=?2 AND r.track_id=?3
+        "#,
+    )
+    .bind(a.harness.inner.card_id.as_str())
+    .bind(b.harness.inner.card_id.as_str())
+    .bind(a.harness.inner.track_id.as_str())
+    .fetch_one(a.repo.pool())
+    .await
+    .unwrap();
+    crate::operation::handoff_coordinator::UserHandoffRequest {
+        track_id: a.harness.inner.track_id.clone(),
+        source_card_id: a.harness.inner.card_id.clone(),
+        source_session_id: a.harness.inner.worker_session_id.clone(),
+        target_card_id: b.harness.inner.card_id.clone(),
+        target_session_id: b.harness.inner.worker_session_id.clone(),
+        source_generation,
+        target_generation,
+        track_generation,
+        user_audit_id: "original-user-authorized-exact-handoff".into(),
+        actor: ActorId::User,
+        key: crate::model::new_id(),
+    }
+}
+
+pub(super) fn start_adapter(
+    a: &Fixture,
+    repo: Arc<dyn crate::db::Repo>,
+    registry: HarnessRegistry,
+) -> Arc<crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter> {
+    let wiring = crate::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
+    Arc::new(
+        crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter::new(
+            repo.clone(),
+            a.daemon.clone(),
+            a.daemon.thread_seals().clone(),
+            registry.clone(),
+            wiring.plugin,
+            a.harness.inner.card_role_cache.clone(),
+            a.harness.inner.track_area_cache.clone(),
+            Some("/tmp/activation-stub.sock".into()),
+            wiring.claude,
+            wiring.acp,
+        ),
+    )
+}
+
+/// Inspect the neutral inputs recorded by the native stub without assuming a wire encoding.
+pub(super) fn issued_text(a: &Fixture) -> String {
+    a.daemon
+        .started_turns_for_test()
+        .into_iter()
+        .flat_map(|(_, items)| items)
+        .filter_map(|item| match item {
+            InputItem::Text { text } => Some(text),
+            InputItem::LocalImage { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

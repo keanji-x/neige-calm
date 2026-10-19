@@ -1,3 +1,4 @@
+pub mod handoff_pause;
 pub use calm_truth::db::{
     Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
     SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, TrackAreaMembership,
@@ -519,6 +520,13 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         kinds: &[&str],
         since_id: Option<i64>,
     ) -> Result<Vec<TrackEvent>>;
+    async fn events_for_track_through(
+        &self,
+        track_id: &str,
+        kinds: &[&str],
+        since_id: Option<i64>,
+        through_id: Option<i64>,
+    ) -> Result<Vec<TrackEvent>>;
     async fn card_hook_seen(
         &self,
         event_kind: &str,
@@ -635,6 +643,19 @@ where
         calm_truth::db::RepoEventWrite::events_for_track(self, track_id, kinds, since_id)
             .await
             .map_err(Into::into)
+    }
+    async fn events_for_track_through(
+        &self,
+        track_id: &str,
+        kinds: &[&str],
+        since_id: Option<i64>,
+        through_id: Option<i64>,
+    ) -> Result<Vec<TrackEvent>> {
+        calm_truth::db::RepoEventWrite::events_for_track_through(
+            self, track_id, kinds, since_id, through_id,
+        )
+        .await
+        .map_err(Into::into)
     }
     async fn card_hook_seen(
         &self,

@@ -78,6 +78,16 @@
 # excluded file, pattern, count rule or executable policy is introduced; ordinary additional
 # contract references update this counted baseline without adding a file/test roster.
 
+# Internal Planner handoff bounded contract exception: harness_item/crates 300 -> 311
+# covers three SQL guards on the frozen transcript table and eight test-only references
+# to that table/its existing repository method. New domain names use transcript; no
+# count rule, exclusion, provider/test roster or additional CI pass is introduced.
+
+# Legacy handoff evidence bounded wire-contract exception: runtime_id/crates
+# 1237 -> 1238 is the one serde rename for the frozen V1 transport key. The
+# required Rust field is named session_id. No new domain identifier, scan rule,
+# provider/test roster or CI pass is added; ordinary tests need no new entry.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

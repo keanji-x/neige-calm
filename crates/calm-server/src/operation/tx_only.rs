@@ -135,6 +135,15 @@ pub(super) async fn commit_tx_only(
     key: OperationKey,
     payload: Value,
 ) -> Result<KeyedCommit> {
+    commit_tx_only_inner(pool, adapter, key, payload).await
+}
+
+async fn commit_tx_only_inner(
+    pool: &crate::db::sqlite::SqliteDb,
+    adapter: &dyn TxOnlyAdapter,
+    key: OperationKey,
+    payload: Value,
+) -> Result<KeyedCommit> {
     // Before BEGIN: a request paused inside the IMMEDIATE transaction would hold the write lock the
     // concurrent request it waits for needs.
     #[cfg(feature = "fixtures")]

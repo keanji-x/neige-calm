@@ -80,6 +80,7 @@ async fn seed_track_root_session(
     session_id: &str,
 ) {
     let session = planner_session(session_id, track_id.clone(), card_id.clone());
+    let current_card_id = card_id.clone();
     let root_session_id = session.id.clone();
     let track_id = track_id.clone();
     calm_server::db::write_in_tx_typed(repo, move |tx| {
@@ -87,6 +88,11 @@ async fn seed_track_root_session(
             session_insert_tx(tx, session)
                 .await
                 .map_err(CalmError::from)?;
+            sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                .bind(root_session_id.as_str())
+                .bind(current_card_id.as_str())
+                .execute(&mut **tx)
+                .await?;
             session_mark_track_root_tx(tx, &track_id, &root_session_id)
                 .await
                 .map_err(CalmError::from)?;

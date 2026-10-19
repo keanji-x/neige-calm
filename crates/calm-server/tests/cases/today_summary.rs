@@ -3,6 +3,8 @@
 
 #![cfg(unix)]
 
+use calm_server::session_projection_repo::WorkerSessionProjectionRepo;
+
 use std::{path::PathBuf, sync::Arc};
 
 use axum::{
@@ -928,7 +930,12 @@ async fn a_summary_conversation_with_a_thread_to_preserve_is_dormant_and_keeps_i
     let sentinel = b
         .repo
         .harness_item_insert(
-            "runtime-x",
+            &b.repo
+                .session_projection_active_for_card(&card_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
             &card_id,
             &launchpad,
             "thread-x",

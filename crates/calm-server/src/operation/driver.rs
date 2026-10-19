@@ -399,6 +399,12 @@ impl OperationRuntime {
 
     pub async fn drive(&self) -> Result<()> {
         let _g = self.drive_mutex.lock().await;
+        self.drive_locked().await
+    }
+
+    /// The caller holds this runtime's drive mutex. Internal admission uses try_lock so
+    /// an audited request never waits in a driver queue for a busy owner to become idle.
+    async fn drive_locked(&self) -> Result<()> {
         loop {
             let batch = self.repo.claim_drive_batch(32).await?;
             if batch.is_empty() {
@@ -408,6 +414,15 @@ impl OperationRuntime {
                 self.drive_claimed(self.adapter(&op.kind)?, op).await?;
             }
         }
+    }
+
+    /// Exact selection uses the same phase runner and lease query as background drive.
+    /// The caller owns this runtime's drive mutex; it never queues behind other work.
+    pub(super) async fn drive_target_locked(&self, id: &str) -> Result<()> {
+        while let Some(op) = self.repo.claim_drive_target(id).await? {
+            self.drive_claimed(self.adapter(&op.kind)?, op).await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn drive_claimed(

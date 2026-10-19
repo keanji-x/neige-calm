@@ -146,6 +146,11 @@ async fn boot_with(plan: BootPlan) -> Boot {
     track_area_cache.insert(track.id.clone(), area.id);
 
     let worker_session_id = new_id();
+    let has_predecessor = !seeded.is_empty();
+    if has_predecessor {
+        crate::support::transcript_fixture::start(&repo, card.id.as_str(), "predecessor-session")
+            .await;
+    }
     for row in seeded {
         let params = json!({
             "item": {
@@ -184,6 +189,15 @@ async fn boot_with(plan: BootPlan) -> Boot {
     };
     let snapshot = HarnessSnapshot::from_value_strict(stored.clone());
     let mut tx = repo.pool().begin().await.unwrap();
+    if has_predecessor {
+        calm_server::db::sqlite::session_supersede_active_tx(
+            &mut tx,
+            &"predecessor-session".to_string(),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    }
     session_start_runtime_tx(
         &mut tx,
         WorkerSessionInit {
@@ -806,9 +820,11 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     let client_id = "shared-client-id";
     let mut row_ids = Vec::new();
     for card in [&card_a, &card_b] {
+        let session = format!("session-{card}");
+        crate::support::transcript_fixture::start(&repo, card, &session).await;
         let id = repo
             .harness_item_insert(
-                "session",
+                &session,
                 card,
                 track.id.as_str(),
                 SEED_THREAD_ID,

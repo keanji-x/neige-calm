@@ -3643,7 +3643,7 @@ async fn settled_event_for_a_row_on_another_track_maps_to_nothing() {
 /// catch-up after the gate flipped the row to `done`; an `ungated_candidate` settlement wakes the
 /// Planner exactly once live and exactly once on replay.
 #[tokio::test]
-async fn deferred_settlement_is_silent_live_and_on_replay() {
+async fn durable_observation_deferred_settlement_and_prefix_replay() {
     use crate::db::prelude::*;
     use crate::db::sqlite::{
         SqlxRepo, append_decision_event_in_tx, card_create_with_id_tx, session_start_runtime_tx,
@@ -3926,6 +3926,18 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
 
     // Live sibling: the ungated candidate wakes exactly once (its settlement prefix replays the
     // deferred row's event again and still yields nothing).
+    let prefix = persist(
+        Event::from_kind_and_payload(
+            "forge.pr.checks",
+            serde_json::json!({
+                "track_id": track.id, "pr_number": 42, "conclusion":"success",
+                "snapshot":{"head_sha":"prefix-head","mergeable":"mergeable"}, "failed_checks":[]
+            }),
+        )
+        .unwrap(),
+    )
+    .await;
+    let prefix_id = prefix.id;
     let ungated_envelope = persist(git_delivery_settled_event_on(
         &track.id,
         &ungated.id,
@@ -3934,7 +3946,41 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
     .await;
     let ungated_event_id = ungated_envelope.id;
     assert!(ungated_event_id > deferred_event_id);
+    // A failed prefix cannot be skipped by acknowledging the later settlement.
+    sqlx::query(concat!(
+        "CREATE TRIGGER durable_observation_prefix_failure ",
+        "BEFORE UPDATE OF handle_state_json ON worker_sessions ",
+        "BEGIN SELECT RAISE(ABORT, 'prefix failure'); END",
+    ))
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    Arc::clone(&inner)
+        .handle_envelope(ungated_envelope.clone())
+        .await;
+    assert_eq!(inner.push_cursor.get(&planner_card.id), 0);
+    assert_eq!(handle.snapshot().await.push_watermark, 0);
+    assert!(handle.snapshot().await.pending_entries().is_empty());
+    sqlx::query("DROP TRIGGER durable_observation_prefix_failure")
+        .execute(repo.pool())
+        .await
+        .unwrap();
     Arc::clone(&inner).handle_envelope(ungated_envelope).await;
+    let committed = repo
+        .session_projection_by_id(&worker_session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let committed = HarnessSnapshot::from_value_strict(committed.handle_state_json.unwrap());
+    assert_eq!(committed.push_watermark, ungated_event_id);
+    assert_eq!(
+        committed
+            .pending_entries()
+            .iter()
+            .filter_map(|entry| entry.envelope_id())
+            .collect::<Vec<_>>(),
+        vec![prefix_id, ungated_event_id]
+    );
     let live = settled_observations(handle.clone()).await;
     assert!(
         matches!(
@@ -4386,3 +4432,5 @@ async fn grant_admin_wake_text_is_explicit() {
     };
     assert_eq!(answers[0].answer, "Admin granted.");
 }
+
+mod durable_observation;

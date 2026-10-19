@@ -142,6 +142,13 @@ const FROZEN_WRITERS: &[(&str, &str)] = &[
         "crates/calm-truth/src/db/sqlite/session_system_error_recovery.rs::session_set_failed_harness_snapshot_tx",
         "carried",
     ),
+    // Explicit activation binding re-reads the complete new session row in its
+    // IMMEDIATE transaction, never the operation's older queue. Preparation uses
+    // the existing any-runtime writer under complete source compare/read-back.
+    (
+        "crates/calm-server/src/operation/handoff_activation_sql.rs::bind_resources_tx",
+        "row",
+    ),
     // The scheduler edits one unrelated key with `json_set` / `json_remove`.
     (
         "crates/calm-server/src/scheduler/mod.rs::mark_running_timeout_cleanup_tx",

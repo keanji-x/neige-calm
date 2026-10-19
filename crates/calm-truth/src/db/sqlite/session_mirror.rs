@@ -335,6 +335,33 @@ async fn session_start_mirror_tx(
     Ok(session)
 }
 
+/// Commit an inert Planner identity without mirroring credentials or creating native resources.
+pub async fn session_prepare_pending_activation_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    init: &WorkerSessionInit,
+) -> WorkerSessionProjectionResult<WorkerSession> {
+    if init.kind != WorkerSessionKind::SharedPlanner
+        || init.status != WorkerSessionState::PendingActivation
+        || init.thread_id.is_some()
+        || init.session_id.is_some()
+        || init.terminal_run_id.is_some()
+        || init.active_turn_id.is_some()
+    {
+        return Err(runtime_message(
+            "pending activation requires a fresh inert Planner",
+        ));
+    }
+    let track_id = worker_session_track_id_for_card_tx(tx, &init.card_id).await?;
+    let session = worker_session_from_runtime_init(init, track_id)?;
+    // Insert only: replay belongs to OperationRuntime, never refresh a prior identity.
+    let session = session_insert_tx(tx, session)
+        .await
+        .map_err(runtime_session_error)?;
+    card_session_link_tx(tx, &init.card_id, &session.id).await?;
+    session_mark_track_root_tx(tx, &session.track_id, &session.id).await?;
+    Ok(session)
+}
+
 pub async fn session_prepare_deferred_planner_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     init: &WorkerSessionInit,
