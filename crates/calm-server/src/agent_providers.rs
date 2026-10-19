@@ -18,6 +18,7 @@ use crate::claude_planner::availability::ClaudeReadiness;
 use crate::claude_planner::config::ClaudePlannerHost;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::SharedCodexAppServer;
+use calm_types::runtime::AgentProtocol;
 
 /// How long a check answers for before the next reader runs it again.
 pub const TTL: Duration = Duration::from_secs(30);
@@ -185,11 +186,24 @@ impl<T: Clone> Slot<T> {
 }
 
 /// One slot per provider. Claude's also holds the model list its check fetches (#1822).
-#[derive(Default)]
 pub struct ProviderAvailabilityCache {
     codex: Slot<Verdict>,
     claude: Slot<ClaudeReadiness>,
-    acp: Slot<Verdict>,
+    /// Keyed by wire name: one slot for each provider speaking ACP.
+    acp: std::collections::BTreeMap<&'static str, Slot<Verdict>>,
+}
+
+impl Default for ProviderAvailabilityCache {
+    fn default() -> Self {
+        Self {
+            codex: Slot::default(),
+            claude: Slot::default(),
+            acp: AgentProtocol::Acp
+                .providers()
+                .map(|provider| (provider.wire_name(), Slot::default()))
+                .collect(),
+        }
+    }
 }
 
 impl ProviderAvailabilityCache {
@@ -203,9 +217,9 @@ impl ProviderAvailabilityCache {
         acp: &crate::acp_planner::config::AcpPlannerHost,
         codex: &SharedCodexAppServer,
     ) -> Checked {
-        match provider {
-            AgentProvider::OpenCode => self.acp(freshness, acp).await,
-            AgentProvider::Codex => {
+        match provider.protocol() {
+            AgentProtocol::Acp => self.acp_provider(provider, freshness, acp).await,
+            AgentProtocol::Codex => {
                 let stamped = self
                     .codex
                     .get(freshness, |_previous| check_codex(codex))
@@ -226,30 +240,44 @@ impl ProviderAvailabilityCache {
                     authentication_notice,
                 }
             }
-            AgentProvider::Claude => self.claude(freshness, claude).await.checked(),
+            AgentProtocol::Claude => self.claude(freshness, claude).await.checked(),
         }
     }
 
+    /// The OpenCode check, as the macOS-only `acp_planner::boot_tests` fixture still calls it.
+    #[cfg(all(test, target_os = "macos"))]
     pub async fn acp(
         &self,
         freshness: Freshness,
         host: &crate::acp_planner::config::AcpPlannerHost,
     ) -> Checked {
+        self.acp_provider(&AgentProvider::OpenCode, freshness, host)
+            .await
+    }
+
+    /// The check of `provider`, which must speak ACP: its registration, then its readiness.
+    pub async fn acp_provider(
+        &self,
+        provider: &AgentProvider,
+        freshness: Freshness,
+        host: &crate::acp_planner::config::AcpPlannerHost,
+    ) -> Checked {
         let stamped = self
             .acp
+            .get(provider.wire_name())
+            .expect("every ACP provider has an availability slot")
             .get(freshness, |_| async {
-                let provider = AgentProvider::OpenCode;
-                if let Err(error) = host.configured(&provider) {
+                if let Err(error) = host.configured(provider) {
                     return Verdict::NotConfigured(error.to_string());
                 }
-                match host.check_ready(&provider).await {
+                match host.check_ready(provider).await {
                     Ok(()) => Verdict::Ready,
                     Err(error) => Verdict::Unavailable(error.to_string()),
                 }
             })
             .await;
         Checked {
-            provider: AgentProvider::OpenCode,
+            provider: provider.clone(),
             verdict: stamped.outcome,
             checked_at_ms: stamped.checked_at_ms,
             authentication_notice: None,
@@ -292,7 +320,9 @@ impl ProviderAvailabilityCache {
     pub async fn age_past_ttl_for_test(&self) {
         self.codex.age_past_ttl_for_test().await;
         self.claude.age_past_ttl_for_test().await;
-        self.acp.age_past_ttl_for_test().await;
+        for slot in self.acp.values() {
+            slot.age_past_ttl_for_test().await;
+        }
     }
 }
 

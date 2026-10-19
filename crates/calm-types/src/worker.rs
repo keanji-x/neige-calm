@@ -222,6 +222,13 @@ impl WorkerProviderKind {
             WorkerProviderKind::Terminal => "terminal",
         }
     }
+
+    /// The protocol of the agent provider persisted as this kind; `None` for a terminal.
+    pub fn protocol(self) -> Option<crate::runtime::AgentProtocol> {
+        crate::runtime::AgentProvider::try_from(self)
+            .ok()
+            .map(|provider| provider.protocol())
+    }
 }
 
 impl From<&crate::runtime::AgentProvider> for WorkerProviderKind {

@@ -1,7 +1,7 @@
 use crate::error::{CalmError, Result};
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::planner_process::MarkerInstance;
-use calm_types::runtime::AgentProvider;
+use calm_types::runtime::{AgentProtocol, AgentProvider};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,26 +23,6 @@ pub struct AcpAgentConfig {
     pub expected_agent_name: String,
     pub expected_agent_version: String,
 }
-/// What OpenCode's own `permission` configuration is overridden with under `ask` (#2348): the
-/// tools that act without asking under its defaults ask instead. OpenCode 1.18.35 merges this
-/// variable over every config file's top-level `permission`, and has no flag or ACP method for it.
-/// `edit` covers its write and patch tools too. An agent-level `permission` in the operator profile
-/// (`agent.build.permission.edit = "allow"`) still wins over it, so `external_directory` keeps its
-/// default `ask`: it is what still asks before a write outside the workspace then (#2452). The
-/// cost is a second ask for one outside command or edit.
-const OPENCODE_ASK_PERMISSION: (&str, &str) = (
-    "OPENCODE_PERMISSION",
-    r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#,
-);
-
-/// What OpenCode's `permission` configuration is overridden with under `full` (#2441): every
-/// tool that acts, reads or fetches is allowed without asking, outside the workspace too. No `*`,
-/// so OpenCode keeps denying the tools a Planner has no use for (`question`, `plan_*`).
-const OPENCODE_FULL_PERMISSION: (&str, &str) = (
-    "OPENCODE_PERMISSION",
-    r#"{"bash":"allow","edit":"allow","webfetch":"allow","external_directory":"allow","doom_loop":"allow","read":"allow"}"#,
-);
-
 impl AcpPlannerConfig {
     pub fn read(path: &Path) -> Result<Self> {
         let config: Self = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -52,7 +32,8 @@ impl AcpPlannerConfig {
     fn validate(&self) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
         for agent in &self.agents {
-            if agent.provider != AgentProvider::OpenCode || !seen.insert(agent.provider.wire_name())
+            if agent.provider.protocol() != AgentProtocol::Acp
+                || !seen.insert(agent.provider.wire_name())
             {
                 return Err(CalmError::BadRequest(
                     "ACP registration names an unsupported or duplicate agent".into(),
@@ -81,18 +62,8 @@ impl AcpAgentConfig {
     /// The environment one Planner turn's process adds under `mode`, set explicitly, never
     /// inherited. `never` adds nothing: the agent's own configuration stands, as before.
     pub fn permission_env(&self, mode: PlannerPermissionMode) -> Vec<(&'static str, &'static str)> {
-        match (mode, &self.provider) {
-            (PlannerPermissionMode::Never, _) => Vec::new(),
-            (PlannerPermissionMode::Ask, AgentProvider::OpenCode) => vec![OPENCODE_ASK_PERMISSION],
-            (PlannerPermissionMode::Full, AgentProvider::OpenCode) => {
-                vec![OPENCODE_FULL_PERMISSION]
-            }
-            // Not ACP agents: a registration naming them is refused.
-            (
-                PlannerPermissionMode::Ask | PlannerPermissionMode::Full,
-                AgentProvider::Codex | AgentProvider::Claude,
-            ) => Vec::new(),
-        }
+        super::profile::AcpAgentProfile::of(&self.provider)
+            .map_or_else(Vec::new, |profile| profile.permission_env(mode))
     }
 }
 

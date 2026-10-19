@@ -45,11 +45,12 @@ use crate::ids::{CardId, TrackId};
 use crate::model::CardRole;
 use crate::per_card_lock::{KeyedLocks, lock_key};
 use crate::session_projection_repo::{
-    AgentProvider, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
+    WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
 };
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::thread_seals::ThreadSeals;
 use crate::track_area_cache::TrackAreaCache;
+use calm_types::runtime::AgentProtocol;
 
 pub use backend::PlannerBackend;
 pub use config::HarnessConfig;
@@ -220,7 +221,7 @@ pub async fn spawn_recovered_harness(
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
     // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
     // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
-    if role == Some(CardRole::Planner) && provider != AgentProvider::OpenCode {
+    if role == Some(CardRole::Planner) && provider.protocol() != AgentProtocol::Acp {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
             repo.clone(),

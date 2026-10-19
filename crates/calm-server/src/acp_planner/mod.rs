@@ -4,6 +4,7 @@ mod boot_tests;
 mod catalog;
 pub mod config;
 mod process;
+mod profile;
 pub(crate) mod recovery;
 pub mod session;
 mod start;

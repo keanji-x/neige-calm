@@ -2,7 +2,8 @@ use sqlx::Row;
 
 use super::session_projection::session_mark_queue_harvested_tx;
 use super::session_row::{
-    runtime_message, runtime_status_transition_allowed, session_state_transition_at_tx,
+    agent_provider_db_strings, is_non_codex_agent, runtime_message,
+    runtime_status_transition_allowed, session_state_transition_at_tx,
 };
 use super::{
     derive_session_identity, session_get_tx, session_insert_tx, session_mark_track_root_tx,
@@ -269,10 +270,7 @@ async fn session_mirror_card_mcp_token_tx(
     // A managed Assistant or non-Codex Planner hash is written only by its own first-turn mint (#1791 §5.1 token
     // invariant): the card's hash may be a predecessor's, which must never authenticate it.
     if session.contract == WorkerContract::Assistant
-        || (matches!(
-            session.provider,
-            WorkerProviderKind::Claude | WorkerProviderKind::OpenCode
-        ) && session.contract == WorkerContract::Planner)
+        || (is_non_codex_agent(session.provider) && session.contract == WorkerContract::Planner)
     {
         return Ok(());
     }
@@ -388,13 +386,14 @@ pub async fn session_supersede_active_tx(
               SET state = 'superseded',
                   updated_at_ms = ?1,
                   completed_at_ms = COALESCE(completed_at_ms, ?1),
-                  mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN ('claude','opencode') AND contract = 'planner'))
+                  mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN (SELECT value FROM json_each(?3)) AND contract = 'planner'))
                                         THEN NULL ELSE mcp_token_hash END
             WHERE id = ?2
               AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
     )
     .bind(now)
     .bind(id)
+    .bind(agent_provider_db_strings(is_non_codex_agent))
     .execute(&mut **tx)
     .await?;
     if res.rows_affected() == 0 {
@@ -621,12 +620,13 @@ pub(super) async fn session_mark_superseded_tx(
               SET state = 'superseded',
                   updated_at_ms = ?1,
                   completed_at_ms = COALESCE(completed_at_ms, ?1),
-                  mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN ('claude','opencode') AND contract = 'planner'))
+                  mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN (SELECT value FROM json_each(?3)) AND contract = 'planner'))
                                         THEN NULL ELSE mcp_token_hash END
             WHERE id = ?2"#,
     )
     .bind(now)
     .bind(id)
+    .bind(agent_provider_db_strings(is_non_codex_agent))
     .execute(&mut **tx)
     .await?;
     Ok(())

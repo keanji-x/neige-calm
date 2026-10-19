@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use calm_types::conversation_receipt::{
     ConversationInitialInputReceipt, InitialInputReceiptVersion,
 };
+use calm_types::runtime::AgentProtocol;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -871,7 +872,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // The failed carrier's own copy of its queue, carrying the ids the journal names.
         let mut failed_carrier_keeps: Option<HarnessSnapshot> = None;
         if let Some(mut inherited) = inherited_snapshot {
-            if provider == AgentProvider::OpenCode
+            if provider.protocol() == AgentProtocol::Acp
                 && let Some(existing) = predecessor
             {
                 crate::acp_planner::recovery::retire_before_transfer(
@@ -1186,7 +1187,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             self.harness_registry
                 .shutdown_and_remove(&old_worker_session_id)
                 .await?;
-            if provider == AgentProvider::OpenCode {
+            if provider.protocol() == AgentProtocol::Acp {
                 crate::planner_process::stop(&self.acp_host.instance, &old_worker_session_id)
                     .await?;
             }
@@ -1414,9 +1415,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     } else {
                         // A Claude row keeps a bound `agent_session_id`: nulling it would make the next spawn create a session
                         // that already exists (`--session-id`) instead of resuming it.
-                        let session_id = match provider_for_tx {
-                            AgentProvider::Codex => None,
-                            AgentProvider::Claude | AgentProvider::OpenCode => {
+                        let session_id = match provider_for_tx.protocol() {
+                            AgentProtocol::Codex => None,
+                            AgentProtocol::Claude | AgentProtocol::Acp => {
                                 crate::db::sqlite::session_get_tx(
                                     tx,
                                     &calm_types::worker::WorkerSessionId(worker_session_id.clone()),
@@ -1498,7 +1499,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // any fallible post-commit work so both driver persistence and compensation use exactly
         // the state that committed, including a raced predecessor and its harvest/credential.
         *output = committed_output;
-        if provider == AgentProvider::OpenCode
+        if provider.protocol() == AgentProtocol::Acp
             && let Some(displaced) = old_worker_session_id.as_ref()
         {
             self.harness_registry.shutdown_and_remove(displaced).await?;

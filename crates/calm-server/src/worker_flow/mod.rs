@@ -611,11 +611,10 @@ fn session_from_runtime(runtime: &WorkerSessionProjection, card: &Card) -> Worke
 }
 
 fn worker_provider_from_runtime(runtime: &WorkerSessionProjection) -> WorkerProviderKind {
-    match runtime.agent_provider.as_ref() {
-        Some(AgentProvider::OpenCode) => WorkerProviderKind::OpenCode,
-        Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
-        Some(AgentProvider::Codex) | None => WorkerProviderKind::Codex,
-    }
+    runtime
+        .agent_provider
+        .as_ref()
+        .map_or(WorkerProviderKind::Codex, WorkerProviderKind::from)
 }
 
 fn liveness_from_runtime(status: WorkerSessionState) -> LivenessTag {

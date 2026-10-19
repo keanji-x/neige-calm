@@ -18,6 +18,7 @@ pub use start::StartDiagnostic;
 use start::{codex_start_result, revert_codex_thread};
 use std::sync::Arc;
 
+use calm_types::runtime::AgentProtocol;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::{self, error::RecvError};
 
@@ -126,12 +127,12 @@ impl PlannerBackend {
                 .and_then(HarnessSnapshot::parse_known)
                 .map(|snapshot| snapshot.phase)
         });
-        let unresolved = match provider {
-            AgentProvider::OpenCode => {
+        let unresolved = match provider.protocol() {
+            AgentProtocol::Acp => {
                 crate::acp_planner::recovery::submission_unresolved(repo, &runtime.id, live_phase)
                     .await?
             }
-            AgentProvider::Codex | AgentProvider::Claude => false,
+            AgentProtocol::Codex | AgentProtocol::Claude => false,
         };
         let cause = if unresolved {
             RunRecoveryCause::UnknownOutcome

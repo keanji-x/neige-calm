@@ -11,6 +11,7 @@ use crate::session_projection_repo::{
     AgentProvider, WorkerSessionKind, WorkerSessionProjectionRepoError,
 };
 use crate::session_repo::Tx as SessionTx;
+use calm_types::runtime::AgentProtocol;
 use calm_types::worker::{
     Liveness, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
     WorkerSessionId, WorkerSessionState,
@@ -204,6 +205,27 @@ pub(super) fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
     provider.wire_name()
 }
 
+/// Whether `provider` is an agent whose managed backend does not speak the Codex protocol: its
+/// Planner mints its own MCP token per session (#1791 §5.1) and is recovered by its Planner
+/// contract on a Planner card alone.
+pub(super) fn is_non_codex_agent(provider: WorkerProviderKind) -> bool {
+    provider
+        .protocol()
+        .is_some_and(|protocol| protocol != AgentProtocol::Codex)
+}
+
+/// The persisted `worker_sessions.provider` strings of the agent providers `keep` selects, as the
+/// JSON array a query reads through `json_each`.
+pub(super) fn agent_provider_db_strings(keep: impl Fn(WorkerProviderKind) -> bool) -> String {
+    let strings: Vec<&str> = AgentProvider::ALL
+        .iter()
+        .map(WorkerProviderKind::from)
+        .filter(|provider| keep(*provider))
+        .map(WorkerProviderKind::as_db_str)
+        .collect();
+    serde_json::to_string(&strings).expect("provider strings serialize")
+}
+
 // Provisional NOT NULL worker-session identity from the runtime row's kind;
 // overwritten in place at mint.
 pub(crate) fn derive_session_identity(
@@ -216,9 +238,9 @@ pub(crate) fn derive_session_identity(
         | WorkerSessionKind::ManagedAssistant => WorkerProviderKind::Codex,
         WorkerSessionKind::ClaudeCard => WorkerProviderKind::Claude,
     };
-    let mode = match provider {
-        WorkerProviderKind::Codex | WorkerProviderKind::OpenCode => SessionMode::Resumable,
-        WorkerProviderKind::Claude | WorkerProviderKind::Terminal => SessionMode::Ephemeral,
+    let mode = match provider.protocol() {
+        Some(AgentProtocol::Codex | AgentProtocol::Acp) => SessionMode::Resumable,
+        Some(AgentProtocol::Claude) | None => SessionMode::Ephemeral,
     };
     let contract = match kind {
         WorkerSessionKind::SharedPlanner => WorkerContract::Planner,

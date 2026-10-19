@@ -14,6 +14,7 @@ use crate::model::{NewTrack, RequestTheme, Track};
 use crate::routes::codex_cards::default_cwd;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::RouteState;
+use calm_types::runtime::AgentProtocol;
 
 use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, SendPath, TRACK_ADD_KEY_PREFIX};
 use super::{CreateTrackOptions, preparation};
@@ -126,10 +127,14 @@ impl TrackCreator for RouteTrackCreator {
         } else {
             None
         };
-        let acp_availability = if planner_provider == AgentProvider::OpenCode {
+        let acp_availability = if planner_provider.protocol() == AgentProtocol::Acp {
             Some(
                 s.provider_availability
-                    .acp(crate::agent_providers::Freshness::Cached, &s.acp_planner)
+                    .acp_provider(
+                        &planner_provider,
+                        crate::agent_providers::Freshness::Cached,
+                        &s.acp_planner,
+                    )
                     .await,
             )
         } else {

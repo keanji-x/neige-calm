@@ -219,10 +219,10 @@ impl WakeContext {
         &self,
         runtime: crate::session_projection_repo::WorkerSessionProjection,
     ) -> Result<crate::harness::PlannerHarness> {
-        use crate::session_projection_repo::AgentProvider;
+        use calm_types::runtime::AgentProtocol;
         let s = self;
         match runtime.agent_provider.as_ref() {
-            Some(AgentProvider::Codex) => {
+            Some(provider) if provider.protocol() == AgentProtocol::Codex => {
                 let card =
                     s.repo.card_get(&runtime.card_id).await?.ok_or_else(|| {
                         crate::error::CalmError::NotFound("conversation card".into())
@@ -248,7 +248,7 @@ impl WakeContext {
                 .resume_active_conversation(s.repo.as_ref(), &runtime)
                 .await?;
             }
-            Some(provider @ (AgentProvider::Claude | AgentProvider::OpenCode)) => {
+            Some(provider) => {
                 crate::harness::backend::factory::PlannerFactory::new(
                     s.daemon.clone(),
                     &s.providers.claude,

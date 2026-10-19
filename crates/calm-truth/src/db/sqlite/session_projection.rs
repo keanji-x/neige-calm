@@ -12,7 +12,9 @@ use super::session_mirror::{
     session_set_active_turn_mirror_tx, session_set_handle_state_mirror_tx,
     session_set_harness_observation_tx, session_set_status_mirror_tx,
 };
-use super::session_row::{agent_provider_to_db, runtime_message};
+use super::session_row::{
+    agent_provider_db_strings, agent_provider_to_db, is_non_codex_agent, runtime_message,
+};
 use super::{SqlxRepo, begin_immediate_tx, derive_session_identity};
 use crate::model::*;
 use crate::session_projection_repo::{
@@ -850,8 +852,9 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                            AND json_extract(c.payload, '$.harness_profile') = 'plain_chat')
 
                  ))
-                 -- #1791 — a Claude Planner: only the Planner contract on a Planner card.
-                 OR (ws.provider IN ('claude','opencode') AND ws.contract = 'planner' AND c.role = 'planner')
+                 -- #1791 — a non-Codex Planner: only the Planner contract on a Planner card.
+                 OR (ws.provider IN (SELECT value FROM json_each(?3))
+                     AND ws.contract = 'planner' AND c.role = 'planner')
                  OR (ws.contract = 'assistant' AND c.role = 'assistant' AND c.kind = 'codex'
                      AND ws.mode = 'resumable'
                      AND json_extract(c.payload, '$.harness_profile') = 'assistant'
@@ -868,6 +871,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         let rows = sqlx::query(&sql)
             .bind(provider.as_db_str())
             .bind(contract.as_db_str())
+            .bind(agent_provider_db_strings(is_non_codex_agent))
             .fetch_all(self.db.read_pool())
             .await?;
         rows.iter()

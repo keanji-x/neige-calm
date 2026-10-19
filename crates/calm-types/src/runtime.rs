@@ -35,7 +35,38 @@ pub enum AgentProvider {
     Claude,
 }
 
+/// The protocol a provider's managed backend speaks. An intentional closed set owned here: each
+/// variant has exactly one protocol implementation, and consumers branch on it rather than on a
+/// provider's identity, so a provider speaking an existing protocol needs no new branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AgentProtocol {
+    Codex,
+    Claude,
+    Acp,
+}
+
+impl AgentProtocol {
+    /// The providers speaking this protocol, in [`AgentProvider::ALL`] order.
+    pub fn providers(self) -> impl Iterator<Item = AgentProvider> {
+        AgentProvider::ALL
+            .into_iter()
+            .filter(move |provider| provider.protocol() == self)
+    }
+}
+
 impl AgentProvider {
+    /// Every provider. A new variant is added here as well as to [`Self::protocol`].
+    pub const ALL: [Self; 3] = [Self::Codex, Self::Claude, Self::OpenCode];
+
+    /// The protocol this provider's managed backend speaks.
+    pub fn protocol(&self) -> AgentProtocol {
+        match self {
+            Self::Codex => AgentProtocol::Codex,
+            Self::Claude => AgentProtocol::Claude,
+            Self::OpenCode => AgentProtocol::Acp,
+        }
+    }
+
     /// The provider's name on the wire, as its serde form spells it.
     pub fn wire_name(&self) -> &'static str {
         match self {
@@ -80,7 +111,27 @@ pub struct WorkerSessionProjection {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentProvider;
+    use super::{AgentProtocol, AgentProvider};
+
+    #[test]
+    fn agent_provider_protocol_partitions_every_provider() {
+        let partitioned: Vec<_> = [
+            AgentProtocol::Codex,
+            AgentProtocol::Claude,
+            AgentProtocol::Acp,
+        ]
+        .into_iter()
+        .flat_map(AgentProtocol::providers)
+        .collect();
+        assert_eq!(partitioned.len(), AgentProvider::ALL.len());
+        for provider in AgentProvider::ALL {
+            assert!(partitioned.contains(&provider), "{provider:?}");
+        }
+        assert_eq!(
+            AgentProtocol::Acp.providers().collect::<Vec<_>>(),
+            [AgentProvider::OpenCode]
+        );
+    }
 
     #[test]
     fn agent_provider_wire_name_is_its_serde_spelling() {

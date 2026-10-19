@@ -152,10 +152,9 @@ fn runtime_kind_from_session_identity(
         }
         (WorkerProviderKind::Terminal, WorkerContract::Executor) => Ok(WorkerSessionKind::Terminal),
         (WorkerProviderKind::Codex, WorkerContract::Executor) => Ok(WorkerSessionKind::CodexCard),
-        (
-            WorkerProviderKind::Codex | WorkerProviderKind::Claude | WorkerProviderKind::OpenCode,
-            WorkerContract::Planner,
-        ) => Ok(WorkerSessionKind::SharedPlanner),
+        (provider, WorkerContract::Planner) if provider.protocol().is_some() => {
+            Ok(WorkerSessionKind::SharedPlanner)
+        }
         (WorkerProviderKind::Claude, WorkerContract::Executor) => Ok(WorkerSessionKind::ClaudeCard),
         _ => Err(WorkerSessionProjectionRepoError::Message {
             message: format!(

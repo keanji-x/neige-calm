@@ -58,14 +58,14 @@ impl ActorId {
         session: WorkerSessionId,
     ) -> Self {
         use crate::model::CardRole;
-        use crate::runtime::AgentProvider;
+        use crate::runtime::AgentProtocol;
         match role {
             CardRole::Planner => Self::AiPlannerSession(session),
             CardRole::Assistant => Self::AiManagedSession(session),
-            CardRole::Worker | CardRole::ReportCard => match provider {
-                AgentProvider::Codex => Self::AiCodexSession(session),
-                AgentProvider::Claude => Self::AiClaudeSession(session),
-                AgentProvider::OpenCode => Self::AiManagedSession(session),
+            CardRole::Worker | CardRole::ReportCard => match provider.protocol() {
+                AgentProtocol::Codex => Self::AiCodexSession(session),
+                AgentProtocol::Claude => Self::AiClaudeSession(session),
+                AgentProtocol::Acp => Self::AiManagedSession(session),
             },
         }
     }

@@ -19,7 +19,6 @@ use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::extract::{Json, JsonBody, Path};
-use crate::harness::backend_metadata::CatalogProtocol;
 use crate::ids::CardId;
 use crate::model::CardPatch;
 use crate::operation::codex_adapter::card_payload_get_tx;
@@ -29,6 +28,7 @@ use crate::routes::models::CODEX_READ_TIMEOUT;
 use crate::routes::planner_cards::card_runs_headless_harness;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::state::{CodexShellState, RouteState, WorkerState};
+use calm_types::runtime::AgentProtocol;
 use provider::claude::discovery::ClaudeModel;
 
 const ACTOR_SUBJECT: &str = "planner model selection";
@@ -130,7 +130,7 @@ pub(crate) async fn set_planner_model(
         reasoning_effort,
     } = body;
     let advice = match crate::harness::PlannerBackend::metadata(&provider).catalog {
-        CatalogProtocol::Acp => {
+        AgentProtocol::Acp => {
             s.acp_planner.configured(&provider)?;
             catalog_advice(
                 CatalogSource::Acp,
@@ -139,7 +139,7 @@ pub(crate) async fn set_planner_model(
             )
             .await
         }
-        CatalogProtocol::Claude => {
+        AgentProtocol::Claude => {
             // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so the list is
             // in hand: an effort is judged against the chosen entry, and dropped for a model the list
             // does not carry (the CLI would ignore it). Codex is not asked.
@@ -158,7 +158,7 @@ pub(crate) async fn set_planner_model(
             )
             .await
         }
-        CatalogProtocol::Codex => {
+        AgentProtocol::Codex => {
             catalog_advice(
                 CatalogSource::Codex(&codex),
                 model.as_deref(),

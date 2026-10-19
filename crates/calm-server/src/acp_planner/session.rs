@@ -13,8 +13,9 @@ use crate::harness::backend::TurnStartFailure;
 use crate::harness::held_requests::HeldRequestSender;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
+use calm_types::runtime::AgentProtocol;
 use calm_types::runtime::AgentProvider;
-use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSessionId};
+use calm_types::worker::{WorkerContract, WorkerSessionId};
 use provider::InputItem;
 use provider::acp::{
     Incoming,
@@ -150,7 +151,7 @@ impl AcpPlannerSession {
             .await
             .map_err(CalmError::from)?
             .ok_or_else(|| refused("ACP owner is missing"))?;
-        if row.provider != WorkerProviderKind::OpenCode
+        if row.provider.protocol() != Some(AgentProtocol::Acp)
             || !matches!(
                 row.contract,
                 WorkerContract::Planner | WorkerContract::Assistant

@@ -19,6 +19,7 @@ use crate::codex_appserver::{CodexConfig, CodexModel};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState};
+use calm_types::runtime::AgentProtocol;
 
 /// Budget for the whole request, not each codex read. Passed down into
 /// `request_until` rather than wrapped in `tokio::time::timeout`: cancelling from
@@ -105,7 +106,7 @@ pub(crate) async fn list_models(
         .unwrap_or(AgentProvider::Codex);
     let catalog = crate::harness::backend::PlannerBackend::metadata(&provider).catalog;
     match catalog {
-        crate::harness::backend_metadata::CatalogProtocol::Acp => {
+        AgentProtocol::Acp => {
             let cached = q
                 .card_id
                 .as_deref()
@@ -126,7 +127,7 @@ pub(crate) async fn list_models(
         }
         // #1822: a Claude Planner's catalog is the CLI's own list, cached by its availability
         // check, and Codex is not asked. A Claude that is not ready has no list to offer.
-        crate::harness::backend_metadata::CatalogProtocol::Claude => {
+        AgentProtocol::Claude => {
             return Ok(Json(
                 crate::claude_planner::catalog::cached_catalog(
                     &s.provider_availability,
@@ -135,7 +136,7 @@ pub(crate) async fn list_models(
                 .await,
             ));
         }
-        crate::harness::backend_metadata::CatalogProtocol::Codex => {}
+        AgentProtocol::Codex => {}
     }
     let cwd = card.map(|card| card.workspace);
     let daemon = &codex.shared_codex_appserver;

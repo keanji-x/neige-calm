@@ -1,5 +1,6 @@
 //! Static protocol capabilities owned by the managed backend, before a session opens.
 use crate::session_projection_repo::AgentProvider;
+use calm_types::runtime::AgentProtocol;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -22,17 +23,10 @@ pub(crate) enum ToolDiscovery {
     SessionToolList,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CatalogProtocol {
-    Codex,
-    Claude,
-    Acp,
-}
-
 pub(crate) struct BackendMetadata {
     /// Whether queued input can join a running turn.
     pub steer: bool,
-    pub catalog: CatalogProtocol,
+    pub catalog: AgentProtocol,
     pub capabilities: ManagedCapabilities,
     pub discovery: ToolDiscovery,
     pub requires_codex_daemon: bool,
@@ -42,12 +36,7 @@ impl super::backend::PlannerBackend {
     /// The registrations whose protocol implementation this backend owns. This is shared
     /// with availability; consumers must not maintain a profile-specific provider list.
     pub(crate) fn registered_providers() -> impl Iterator<Item = AgentProvider> {
-        [
-            AgentProvider::Codex,
-            AgentProvider::Claude,
-            AgentProvider::OpenCode,
-        ]
-        .into_iter()
+        AgentProvider::ALL.into_iter()
     }
 
     pub(crate) fn metadata(provider: &AgentProvider) -> BackendMetadata {
@@ -56,14 +45,10 @@ impl super::backend::PlannerBackend {
             AgentProvider::Claude => (false, true, true, true, ToolDiscovery::DirectMcp),
             AgentProvider::OpenCode => (false, false, false, false, ToolDiscovery::SessionToolList),
         };
-        let catalog = match provider {
-            AgentProvider::Codex => CatalogProtocol::Codex,
-            AgentProvider::Claude => CatalogProtocol::Claude,
-            AgentProvider::OpenCode => CatalogProtocol::Acp,
-        };
-        let (requires_ready_availability, requires_codex_daemon) = match provider {
-            AgentProvider::Codex => (false, true),
-            AgentProvider::Claude | AgentProvider::OpenCode => (true, false),
+        let catalog = provider.protocol();
+        let (requires_ready_availability, requires_codex_daemon) = match catalog {
+            AgentProtocol::Codex => (false, true),
+            AgentProtocol::Claude | AgentProtocol::Acp => (true, false),
         };
         BackendMetadata {
             steer,
@@ -110,6 +95,32 @@ mod tests {
             let serialized = serde_json::to_value(metadata.capabilities).unwrap();
             assert_eq!(serialized["steer"], metadata.steer, "{provider:?}");
             assert_eq!(metadata.steer, matches!(provider, AgentProvider::Codex));
+        }
+    }
+
+    #[test]
+    fn protocol_agrees_with_backend_metadata_for_each_provider() {
+        for provider in super::super::backend::PlannerBackend::registered_providers() {
+            let metadata = super::super::backend::PlannerBackend::metadata(&provider);
+            let protocol = provider.protocol();
+            assert!(metadata.catalog == protocol, "{provider:?}");
+            assert_eq!(
+                metadata.requires_codex_daemon,
+                protocol == AgentProtocol::Codex,
+                "{provider:?}"
+            );
+            assert_eq!(
+                metadata.capabilities.requires_ready_availability,
+                protocol != AgentProtocol::Codex,
+                "{provider:?}"
+            );
+            if protocol == AgentProtocol::Acp {
+                assert!(
+                    matches!(metadata.discovery, ToolDiscovery::SessionToolList),
+                    "{provider:?}"
+                );
+                assert!(!metadata.steer, "{provider:?}");
+            }
         }
     }
 }

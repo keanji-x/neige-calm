@@ -151,11 +151,7 @@ fn fence_unserved_neige_client(params: &Value) -> Result<(), RpcError> {
 }
 
 fn agent_provider_from_worker_provider(provider: WorkerProviderKind) -> AgentProvider {
-    match provider {
-        WorkerProviderKind::OpenCode => AgentProvider::OpenCode,
-        WorkerProviderKind::Claude => AgentProvider::Claude,
-        WorkerProviderKind::Codex | WorkerProviderKind::Terminal => AgentProvider::Codex,
-    }
+    AgentProvider::try_from(provider).unwrap_or(AgentProvider::Codex)
 }
 
 fn token_not_recognized() -> RpcError {

@@ -13,6 +13,7 @@ use crate::session_projection_lookup::resolve_session_for_thread;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution, WorkerSessionKind};
 use crate::state::{AppState, RouteState};
 use axum::{Router, extract::State, http::StatusCode, routing::post};
+use calm_types::runtime::AgentProtocol;
 use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
 use serde::Deserialize;
 use serde_json::Value;
@@ -43,10 +44,10 @@ pub(crate) enum HookProvider {
 impl HookProvider {
     /// The hook source of a worker provider; `None` for one that posts no hooks.
     fn for_worker(provider: WorkerProviderKind) -> Option<Self> {
-        match provider {
-            WorkerProviderKind::Codex => Some(Self::Codex),
-            WorkerProviderKind::Claude => Some(Self::Claude),
-            WorkerProviderKind::OpenCode | WorkerProviderKind::Terminal => None,
+        match provider.protocol() {
+            Some(AgentProtocol::Codex) => Some(Self::Codex),
+            Some(AgentProtocol::Claude) => Some(Self::Claude),
+            Some(AgentProtocol::Acp) | None => None,
         }
     }
 

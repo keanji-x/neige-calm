@@ -11,6 +11,7 @@ use crate::harness::wiring::{PlannerRow, PlannerWiring};
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::thread_seals::ThreadSeals;
+use calm_types::runtime::AgentProtocol;
 
 mod codex;
 mod recovery;
@@ -43,8 +44,8 @@ impl<'a> PlannerFactory<'a> {
 
     /// Probe at the caller's existing decision point. Create admission is a separate contract.
     pub(crate) async fn ready(&self, provider: &AgentProvider, entry: ReadinessFor) -> Result<()> {
-        match provider {
-            AgentProvider::Codex => {
+        match provider.protocol() {
+            AgentProtocol::Codex => {
                 let daemon = self.daemon()?;
                 if daemon.is_running() {
                     return Ok(());
@@ -56,8 +57,8 @@ impl<'a> PlannerFactory<'a> {
                     }
                 })
             }
-            AgentProvider::Claude => self.claude.check_ready().await,
-            AgentProvider::OpenCode => self.acp.check_ready(provider).await,
+            AgentProtocol::Claude => self.claude.check_ready().await,
+            AgentProtocol::Acp => self.acp.check_ready(provider).await,
         }
     }
 
@@ -76,13 +77,13 @@ impl<'a> PlannerFactory<'a> {
         repo: Arc<dyn Repo>,
         row: PlannerRow<'_>,
     ) -> Result<PlannerBackend> {
-        Ok(match row.binding.provider.clone() {
-            AgentProvider::Codex => self.daemon()?.into(),
-            AgentProvider::OpenCode => PlannerBackend(Arm::Acp(
+        Ok(match row.binding.provider.protocol() {
+            AgentProtocol::Codex => self.daemon()?.into(),
+            AgentProtocol::Acp => PlannerBackend(Arm::Acp(
                 crate::acp_planner::wiring::open_session(self.acp, wiring, repo, seals, row)
                     .await?,
             )),
-            AgentProvider::Claude => PlannerBackend(Arm::Claude(
+            AgentProtocol::Claude => PlannerBackend(Arm::Claude(
                 crate::claude_planner::wiring::open_session(self.claude, wiring, repo, seals, row)
                     .await?,
             )),
@@ -99,14 +100,14 @@ impl<'a> PlannerFactory<'a> {
         track_id: &str,
         snapshot: &crate::harness::HarnessSnapshot,
     ) -> Result<()> {
-        match provider {
-            AgentProvider::Claude => {
+        match provider.protocol() {
+            AgentProtocol::Claude => {
                 crate::claude_planner::recovery::record_interrupted_turn(
                     repo, runtime, track_id, snapshot,
                 )
                 .await
             }
-            AgentProvider::Codex | AgentProvider::OpenCode => Ok(()),
+            AgentProtocol::Codex | AgentProtocol::Acp => Ok(()),
         }
     }
 
@@ -120,8 +121,8 @@ impl<'a> PlannerFactory<'a> {
         card_id: &str,
         track_id: &str,
     ) -> Result<Option<crate::harness::HarnessSnapshot>> {
-        match provider {
-            AgentProvider::OpenCode => crate::acp_planner::recovery::load_quiesced(
+        match provider.protocol() {
+            AgentProtocol::Acp => crate::acp_planner::recovery::load_quiesced(
                 repo,
                 worker_session_id,
                 card_id,
@@ -129,7 +130,7 @@ impl<'a> PlannerFactory<'a> {
             )
             .await
             .map(Some),
-            AgentProvider::Codex | AgentProvider::Claude => Ok(None),
+            AgentProtocol::Codex | AgentProtocol::Claude => Ok(None),
         }
     }
 
@@ -143,13 +144,16 @@ impl<'a> PlannerFactory<'a> {
             runtime.kind,
             WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
         );
-        if managed && runtime.agent_provider == Some(AgentProvider::Claude) {
-            crate::claude_planner::lifecycle::shutdown_replay(self.claude, &runtime.id).await;
-            return Ok(());
+        let protocol = runtime.agent_provider.as_ref().map(AgentProvider::protocol);
+        match protocol {
+            Some(AgentProtocol::Claude) if managed => {
+                crate::claude_planner::lifecycle::shutdown_replay(self.claude, &runtime.id).await;
+                Ok(())
+            }
+            Some(AgentProtocol::Acp) if managed => {
+                crate::planner_process::stop(&self.acp.instance, &runtime.id).await
+            }
+            _ => self.shutdown_codex_replay(runtime).await,
         }
-        if managed && runtime.agent_provider == Some(AgentProvider::OpenCode) {
-            return crate::planner_process::stop(&self.acp.instance, &runtime.id).await;
-        }
-        self.shutdown_codex_replay(runtime).await
     }
 }

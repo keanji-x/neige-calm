@@ -11,6 +11,7 @@ use crate::session_projection_repo::{
     WorkerSessionProjection, WorkerSessionProjectionRepo, WorkerSessionState,
 };
 use crate::worker::WorkerSessionId;
+use calm_types::runtime::AgentProtocol;
 use serde_json::Value;
 
 pub async fn resolve_active_thread_for_card(
@@ -41,17 +42,13 @@ pub async fn resolve_session_for_thread(
     provider: AgentProvider,
     thread_id: &str,
 ) -> Result<Option<(WorkerSessionId, String)>> {
-    let active = match &provider {
-        AgentProvider::Codex => {
-            repo.session_projection_active_by_thread(AgentProvider::Codex, thread_id)
+    let active = match provider.protocol() {
+        AgentProtocol::Codex => {
+            repo.session_projection_active_by_thread(provider, thread_id)
                 .await?
         }
-        AgentProvider::Claude => {
-            repo.session_projection_active_by_session(AgentProvider::Claude, thread_id)
-                .await?
-        }
-        AgentProvider::OpenCode => {
-            repo.session_projection_active_by_session(AgentProvider::OpenCode, thread_id)
+        AgentProtocol::Claude | AgentProtocol::Acp => {
+            repo.session_projection_active_by_session(provider, thread_id)
                 .await?
         }
     };
