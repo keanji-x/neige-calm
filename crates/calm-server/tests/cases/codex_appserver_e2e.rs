@@ -114,16 +114,24 @@ async fn appserver_client_drives_live_turn_and_second_client_resumes() {
     );
 
     let turn = client
-        .turn_start(
+        .turn_start_delivery(
             &thread_id,
             vec![InputItem::text(
                 "Reply with exactly the word OK and nothing else.",
             )],
             &TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
+            None,
         )
-        .await
-        .expect("turn/start");
-    eprintln!("[codex-appserver-e2e] turn started: {:?}", turn.turn_id());
+        .await;
+    let turn = match turn {
+        calm_server::codex_appserver::delivery::StartDelivery::NativeAck { turn, .. } => turn,
+        calm_server::codex_appserver::delivery::StartDelivery::NotWritten { error }
+        | calm_server::codex_appserver::delivery::StartDelivery::Unknown { error, .. } => {
+            panic!("turn/start: {error:?}")
+        }
+    };
+    eprintln!("[codex-appserver-e2e] turn started: {turn:?}");
 
     // The load-bearing assertion: a real model turn ran and the push notification arrived.
     let completed = drain_until_completed(&mut notifs, &thread_id, Duration::from_secs(180)).await;

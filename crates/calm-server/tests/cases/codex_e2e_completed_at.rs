@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use calm_server::codex_appserver::{ClientInfo, CodexAppServer, Notification, ThreadStatus};
+use calm_server::codex_appserver::delivery::StartDelivery;
+use calm_server::codex_appserver::{
+    ClientInfo, CodexAppServer, Notification, ThreadStatus, TurnApprovals,
+};
 
 use futures_util::{SinkExt, StreamExt};
 use provider::InputItem;
@@ -214,14 +217,20 @@ async fn thread_read_completed_at_null_only_when_died_mid_turn() {
          and after the list write a one-sentence summary. Take your time.";
     let turn = server
         .client
-        .turn_start(
+        .turn_start_delivery(
             &thread_id,
             vec![InputItem::text(in_progress_prompt)],
             &TurnModelSelection::inherit(),
+            TurnApprovals::Unchanged,
+            None,
         )
-        .await
-        .expect("turn/start");
-    let turn_id = turn.turn_id().map(str::to_string);
+        .await;
+    let turn_id = match turn {
+        StartDelivery::NativeAck { turn, .. } => Some(turn),
+        StartDelivery::NotWritten { error } | StartDelivery::Unknown { error, .. } => {
+            panic!("turn/start: {error:?}")
+        }
+    };
     eprintln!("[codex-e2e-completed-at] turn started: {turn_id:?}");
 
     // Wait for the `turn/started` push so the rollout has a persisted TurnStarted before reading.
@@ -401,19 +410,22 @@ async fn drain_until_completed(
 async fn run_abort_probe(server: &mut BootedServer, thread_id: &str) -> String {
     let long_prompt = "Write a detailed 500-word essay about the history of timekeeping. \
          Take your time and be thorough.";
-    let turn = match server
+    let result_turn_id = match server
         .client
-        .turn_start(
+        .turn_start_delivery(
             thread_id,
             vec![InputItem::text(long_prompt)],
             &TurnModelSelection::inherit(),
+            TurnApprovals::Unchanged,
+            None,
         )
         .await
     {
-        Ok(t) => t,
-        Err(e) => return format!("turn/start for abort probe failed: {e} (skipped)"),
+        StartDelivery::NativeAck { turn, .. } => Some(turn),
+        StartDelivery::NotWritten { error } | StartDelivery::Unknown { error, .. } => {
+            return format!("turn/start for abort probe failed: {error:?} (skipped)");
+        }
     };
-    let result_turn_id = turn.turn_id().map(str::to_string);
 
     // Prefer the turn id from the `turn/started` push (the authoritative running id).
     let started_id = started_turn_id(&mut server.notifs, thread_id, Duration::from_secs(30)).await;

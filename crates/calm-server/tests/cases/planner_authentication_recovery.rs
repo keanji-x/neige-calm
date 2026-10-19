@@ -5,6 +5,7 @@ use crate::support::planner_queue_fixture::{
 };
 use axum::http::StatusCode;
 use calm_server::codex_appserver::Notification;
+use calm_server::codex_appserver::delivery::CompactDelivery;
 use serde_json::json;
 use std::time::Duration;
 
@@ -168,11 +169,9 @@ async fn authentication_hold_refuses_steer_without_taking_or_revising_the_entry(
             .await
             .is_err()
     );
-    assert!(
-        boot.daemon
-            .thread_compact_start(SEED_THREAD_ID)
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        boot.daemon.thread_compact_delivery(SEED_THREAD_ID).await,
+        CompactDelivery::NotWritten { .. }
+    ));
     boot.harness.shutdown().await.unwrap();
 }

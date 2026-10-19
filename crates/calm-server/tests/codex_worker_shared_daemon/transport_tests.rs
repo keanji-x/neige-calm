@@ -1,5 +1,6 @@
 // Ported from L460eb6a9; exercise the current shared-client model/read APIs.
-use calm_server::codex_appserver::{CodexAppServer, NotificationStream};
+use calm_server::codex_appserver::delivery::StartDelivery;
+use calm_server::codex_appserver::{CodexAppServer, NotificationStream, TurnApprovals};
 use futures_util::{SinkExt, StreamExt};
 use provider::InputItem;
 use provider::TurnModelSelection;
@@ -50,10 +51,12 @@ async fn partial_send(cancel: bool, followup: &str) {
     let task = tokio::spawn(async move {
         tokio::time::timeout(
             deadline,
-            sending.turn_start(
+            sending.turn_start_delivery(
                 "owned",
                 vec![InputItem::text(payload)],
                 &TurnModelSelection::inherit(),
+                TurnApprovals::Unchanged,
+                None,
             ),
         )
         .await
@@ -144,16 +147,18 @@ async fn shared_codex_fully_sent_reply_timeout_preserves_healthy_transport() {
         .await
         .unwrap();
     });
-    assert!(
+    assert!(matches!(
         client
-            .turn_start(
+            .turn_start_delivery(
                 "owned",
                 vec![InputItem::text("small")],
-                &TurnModelSelection::inherit()
+                &TurnModelSelection::inherit(),
+                TurnApprovals::Unchanged,
+                None,
             )
-            .await
-            .is_err()
-    );
+            .await,
+        StartDelivery::NotWritten { .. } | StartDelivery::Unknown { .. }
+    ));
     assert!(
         client
             .model_list(

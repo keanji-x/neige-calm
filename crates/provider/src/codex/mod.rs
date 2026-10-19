@@ -467,37 +467,6 @@ impl CodexAppServer {
         .await
     }
 
-    /// `turn/start` — returns the turn id quickly; the work streams as notifications. `selection` is required so every caller answers the model question out loud (`TurnModelSelection::inherit` for nothing to say).
-    pub async fn turn_start(
-        &self,
-        thread_id: &str,
-        input: Vec<InputItem>,
-        selection: &TurnModelSelection,
-    ) -> Result<TurnStartResult> {
-        self.turn_start_with_client_id(thread_id, input, selection, TurnApprovals::Unchanged, None)
-            .await
-    }
-
-    /// `turn/start` carrying the approval settings and `clientUserMessageId`; the planner drain is the one caller with an id to send.
-    pub async fn turn_start_with_client_id(
-        &self,
-        thread_id: &str,
-        input: Vec<InputItem>,
-        selection: &TurnModelSelection,
-        approvals: TurnApprovals,
-        client_user_message_id: Option<&str>,
-    ) -> Result<TurnStartResult> {
-        self.turn_start_attempt(
-            thread_id,
-            input,
-            selection,
-            approvals,
-            client_user_message_id,
-        )
-        .await
-        .map_err(RpcAttemptFailure::into_legacy_error)
-    }
-
     /// `turn/start` keeping whether the request entered the transport. A successful
     /// RPC still requires the owning adapter to validate its turn ID.
     async fn turn_start_attempt(
@@ -553,20 +522,6 @@ impl CodexAppServer {
             .await
     }
 
-    /// `turn/steer` — push more input into the running turn. Codex refuses with `-32600` when no turn or a different turn is active (reaches the caller as [`Error::Refused`]).
-    /// `client_user_message_id` is echoed back as `item.clientId` on the steered `userMessage` item.
-    pub async fn turn_steer(
-        &self,
-        thread_id: &str,
-        expected_turn_id: &str,
-        input: Vec<InputItem>,
-        client_user_message_id: Option<&str>,
-    ) -> Result<TurnSteerResult> {
-        self.turn_steer_attempt(thread_id, expected_turn_id, input, client_user_message_id)
-            .await
-            .map_err(RpcAttemptFailure::into_legacy_error)
-    }
-
     /// `turn/steer` keeping crossing and correlation: a remote error, timeout or failed
     /// send is not proof that the supplemental input was not taken.
     async fn turn_steer_attempt(
@@ -605,14 +560,6 @@ impl CodexAppServer {
         )
         .await?
         .confirm_thread(thread_id)
-    }
-
-    /// `turn/interrupt` — cancel a running turn.
-    /// Submit context compaction; completion arrives through turn notifications.
-    pub async fn thread_compact_start(&self, thread_id: &str) -> Result<()> {
-        self.request::<Value>("thread/compact/start", json!({ "threadId": thread_id }))
-            .await?;
-        Ok(())
     }
 
     /// `config/mcpServer/reload` — no params, answers `{}`. Codex 0.159.2 re-reads `config.toml` and

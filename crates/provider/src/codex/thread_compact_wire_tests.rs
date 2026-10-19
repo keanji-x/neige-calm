@@ -1,4 +1,5 @@
 use super::*;
+use crate::codex::delivery::CompactDelivery;
 
 #[tokio::test]
 async fn thread_compact_sends_start_without_a_user_message() {
@@ -13,7 +14,10 @@ async fn thread_compact_sends_start_without_a_user_message() {
         .unwrap();
         request
     });
-    client.thread_compact_start("thread-1").await.unwrap();
+    assert!(matches!(
+        client.compact_delivery("thread-1").await,
+        CompactDelivery::NativeAck
+    ));
     let request = answer.await.unwrap();
     assert_eq!(request["method"], "thread/compact/start");
     assert_eq!(request["params"], json!({"threadId":"thread-1"}));

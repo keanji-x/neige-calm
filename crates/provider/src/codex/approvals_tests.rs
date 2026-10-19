@@ -3,6 +3,7 @@
 use super::*;
 use crate::InputItem;
 use crate::TurnModelSelection;
+use crate::codex::delivery::StartDelivery;
 use crate::codex::{CodexAppServer, NotificationStream};
 use crate::held_requests::{self, HeldRequestReceiver};
 use calm_types::event::ASK_MAX_TEXT_CHARS;
@@ -168,7 +169,7 @@ async fn a_turn_after_a_full_turn_says_workspace_write_again() {
     .into_iter()
     .enumerate()
     {
-        let start = rig.client.turn_start_with_client_id(
+        let start = rig.client.turn_start_delivery(
             THREAD,
             vec![InputItem::text("hi")],
             &selection,
@@ -186,7 +187,7 @@ async fn a_turn_after_a_full_turn_says_workspace_write_again() {
             request
         };
         let (started, request) = tokio::join!(start, peer);
-        started.unwrap();
+        assert!(matches!(started, StartDelivery::NativeAck { .. }));
         assert_eq!(request["method"], "turn/start");
         sandboxes.push(request["params"]["sandboxPolicy"].clone());
     }
@@ -203,7 +204,7 @@ async fn a_turn_after_a_full_turn_says_workspace_write_again() {
 async fn the_turn_start_frame_carries_the_ask_settings() {
     let (mut rig, _route, _rx) = routed().await;
     let selection = TurnModelSelection::inherit();
-    let start = rig.client.turn_start_with_client_id(
+    let start = rig.client.turn_start_delivery(
         THREAD,
         vec![InputItem::text("hi")],
         &selection,
@@ -221,7 +222,7 @@ async fn the_turn_start_frame_carries_the_ask_settings() {
         request
     };
     let (started, request) = tokio::join!(start, peer);
-    started.unwrap();
+    assert!(matches!(started, StartDelivery::NativeAck { .. }));
     let params = &request["params"];
     assert_eq!(request["method"], "turn/start");
     assert_eq!(params["approvalsReviewer"], "user");

@@ -1610,25 +1610,6 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// Historical result API for non-harness callers.
-    pub async fn thread_compact_start(
-        &self,
-        thread_id: &str,
-    ) -> std::result::Result<(), ControlError> {
-        match self.thread_compact_delivery(thread_id).await {
-            CompactDelivery::NativeAck
-            | CompactDelivery::Unknown {
-                result_received: true,
-                ..
-            } => Ok(()),
-            CompactDelivery::NotWritten { error }
-            | CompactDelivery::Unknown {
-                error,
-                result_received: false,
-            } => Err(error),
-        }
-    }
-
     /// `config/mcpServer/reload` on the connected daemon; never spawns or heals one. Without a
     /// connection it is [`McpServerReload::NotConnected`]: a daemon started later reads the
     /// current `config.toml` itself, and threads it resumes build their MCP servers from it.
