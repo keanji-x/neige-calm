@@ -16,6 +16,7 @@ import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.t
 import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { steerAnswer } from './conversation-steer-fixture.tsx';
 
 /* A send's automatic retries wait no real time here; how long they back off is not under test. */
 vi.mock('../../../../core/domain/recovery/access.ts', async (importOriginal) => ({
@@ -77,6 +78,7 @@ function setup(reply?: Reply) {
         const response = await reply(request);
         if (response) return response;
       }
+      if (request.path.startsWith('/api/agent-providers/managed')) return ok(steerAnswer('codex', true));
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, TRACK_B]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
