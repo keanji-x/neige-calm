@@ -6,6 +6,7 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { codexAuthenticationRetryOperation, authenticationRetryFailureText, type AuthenticationRetryResponse } from '../../../../core/domain/agent-providers.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useRecoveryMutation } from './recovery-mutation.ts';
+import { managedProvidersQueryKey } from './managed-providers.ts';
 import { queryKeys, runOperation } from './queries.ts';
 
 export function useCodexAuthenticationRetry(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
@@ -18,7 +19,10 @@ export function useCodexAuthenticationRetry(transport: ApiTransportPort, unautho
     onMutate: () => { setState({ error: null, notices: [] }); },
     onSuccess: (answer) => { setState({ error: null, notices: answer.recovery_notices }); },
     onError: (error) => { setState({ error: authenticationRetryFailureText(error), notices: [] }); },
-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.agentProviders() }); },
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.agentProviders() });
+      void client.invalidateQueries({ queryKey: managedProvidersQueryKey });
+    },
   });
   return {
     pending: mutation.isPending,

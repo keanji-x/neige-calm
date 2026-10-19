@@ -3,16 +3,16 @@ import userEvent from '@testing-library/user-event';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProviderAvailability } from '../../../../core/domain/agent-providers.ts';
+import type { ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { PlannersPane, type PlannersPaneProps } from './planners.tsx';
 
 afterEach(cleanup);
 
-const PROVIDERS: readonly ProviderAvailability[] = [
-  { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
-  { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config',
-    authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
+const PROVIDERS: readonly ManagedProviderAvailability[] = [
+  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
+  { availability: { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config',
+    authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
 ];
 
 function pane(overrides: Partial<PlannersPaneProps> = {}) {
@@ -49,13 +49,38 @@ describe('PlannersPane', () => {
 
   it('says a Codex outage still lets tracks be created, and says nothing like it for Claude (#1817)', () => {
     pane({ providers: [
-      { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', authentication_notice: null, checked_at_ms: 1 },
-      { provider: 'claude', status: 'unavailable', reason: 'not logged in', authentication_notice: null, checked_at_ms: 1 },
+      { availability: { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', authentication_notice: null, checked_at_ms: 1 }, capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
+      { availability: { provider: 'claude', status: 'unavailable', reason: 'not logged in', authentication_notice: null, checked_at_ms: 1 }, capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
     ] });
     expect(within(row('Codex')).getByText(
       'shared codex app-server is not running A track can still be created, but a first message is only sent once Codex is back.',
     )).toBeTruthy();
     expect(within(row('Claude')).getByText('not logged in')).toBeTruthy();
+  });
+
+  it.each([false, true])('uses injected readiness %s independently of provider identity', (requiresReady) => {
+    pane({ providers: PROVIDERS.map(({ availability, capabilities }) => ({
+      availability: { ...availability, status: 'unavailable', reason: 'server outage' },
+      capabilities: { ...capabilities, requires_ready_availability: requiresReady },
+    })) });
+    for (const title of ['Codex', 'Claude']) {
+      expect(within(row(title)).getByText(requiresReady ? 'server outage'
+        : 'server outage A track can still be created, but a first message is only sent once Codex is back.')).toBeTruthy();
+    }
+  });
+
+  it('retains server order, the oldest check and notice precedence over outage copy', () => {
+    pane({ providers: [
+      { ...PROVIDERS[1], availability: { provider: 'opencode', status: 'not_configured', reason: 'not configured', checked_at_ms: 3000, authentication_notice: null } },
+      { ...PROVIDERS[0], availability: { provider: 'codex', status: 'unavailable', reason: 'daemon down', checked_at_ms: 1000,
+        authentication_notice: { kind: 'refresh_error_reported', text: 'reported notice', revision: '9' } } },
+    ] });
+    expect(screen.getAllByRole('listitem').map((item) => within(item).queryByText(/^(OpenCode|Codex)$/)?.textContent)
+      .filter(Boolean)).toEqual(['OpenCode', 'Codex']);
+    expect(screen.getByText(`Last checked at ${new Date(1000).toLocaleTimeString()}. The server keeps an answer for 30 seconds.`)).toBeTruthy();
+    expect(within(row('Codex')).getByText('reported notice')).toBeTruthy();
+    expect(screen.queryByText(/daemon down/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry queued messages after server sign-in' })).toBeNull();
   });
 
   it('rechecks on request and says when a recheck failed', () => {
@@ -75,8 +100,9 @@ describe('PlannersPane', () => {
 it('offers an injected owner retry only for a confirmed failure and passes its exact revision', async () => {
   const onRetry = vi.fn();
   pane({
-    providers: [{ provider: 'codex', status: 'unavailable', reason: 'Sign in for the server.', checked_at_ms: 1,
-      authentication_notice: { kind: 'sign_in_required', text: 'Sign in for the server.', revision: '7' } }],
+    providers: [{ availability: { provider: 'codex', status: 'unavailable', reason: 'Sign in for the server.', checked_at_ms: 1,
+      authentication_notice: { kind: 'sign_in_required', text: 'Sign in for the server.', revision: '7' } },
+      capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } }],
     authenticationRecovery: { provider: 'codex', pending: false, error: null, notices: [], onRetry, onOpenConversation: vi.fn() },
   });
   await userEvent.click(screen.getByRole('button', { name: 'Retry queued messages after server sign-in' }));

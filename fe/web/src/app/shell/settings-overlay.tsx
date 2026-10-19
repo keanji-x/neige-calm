@@ -8,6 +8,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import type { ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { PLANNER_TURN_DURATION_KEY, plannerTurnDurationPatch } from '../../../../core/domain/settings.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
@@ -28,6 +29,7 @@ import {
   pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, queryKeys, usePluginConfigMutations,
   usePluginInstall, usePluginMutations, useSettingsMutation,
 } from '../providers/queries.ts';
+import { managedProvidersQueryOptions, managedProvidersQueryKey } from '../providers/managed-providers.ts';
 import { agentProvidersQueryOptions, useAgentProvidersRecheck } from '../providers/agent-providers.ts';
 import { useCodexAuthenticationRetry } from '../providers/codex-authentication-retry.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
@@ -154,14 +156,25 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
   }
 }
 
-/** Settings › Planners: the shared availability answer the new-track picker also reads, and its Recheck. */
+/** App owns managed query lifetime/recovery; the feature consumes required server facts.
+ * Mount/unmount follows the Settings visit. settings-planners.test.tsx pins this injection. */
 function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const client = useQueryClient();
   // A same-value successful read can withdraw an obsolete save acknowledgement.
   // Observe query state too, so structural sharing cannot hide its read counter.
   const settings = useQuery({ ...settingsQueryOptions(transport, unauthorized), notifyOnChangeProps: 'all' });
   const save = useSettingsMutation(transport, unauthorized);
-  const providers = useQuery(agentProvidersQueryOptions(transport, unauthorized));
+  const providers = useQuery(managedProvidersQueryOptions(transport, unauthorized));
+  const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
+  // The shell still polls availability. Re-read managed facts when that answer changes;
+  // Recheck writes both caches together, so an equal answer must not trigger another read.
+  useEffect(() => {
+    if (availability.data === undefined
+      || client.getQueryState(managedProvidersQueryKey)?.fetchStatus === 'fetching') return;
+    const managed = client.getQueryData<readonly ManagedProviderAvailability[]>(managedProvidersQueryKey);
+    if (managed !== undefined && JSON.stringify(managed.map((entry) => entry.availability)) === JSON.stringify(availability.data)) return;
+    void client.invalidateQueries({ queryKey: managedProvidersQueryKey });
+  }, [availability.data, availability.dataUpdatedAt, client]);
   const recheck = useAgentProvidersRecheck(transport, unauthorized);
   const recovery = useCodexAuthenticationRetry(transport, unauthorized);
   const go = useGo();

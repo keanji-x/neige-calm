@@ -115,10 +115,18 @@ One row per Planner provider: its status as a chip (`Ready`, `Unavailable` in
 warn tones, `Not configured` neutral) and, when it is not ready, the server's own
 sentence naming the failed check and its fix. The pane never words a reason
 itself; the one thing it adds is, for a provider create still accepts while
-unavailable (Codex, `CREATE_REFUSED_WHEN_UNAVAILABLE`), core's note on what a
+unavailable (`capabilities.requires_ready_availability` is false), core's note on what a
 create does then. A last **Recheck** row asks the server to run every check again
-(`refresh=true`) and writes the answer into the same query the new-track model
-picker reads, so both show one answer.
+(`refresh=true`). The app injects required managed entries from its existing
+managed-provider query; an undefined list means Checking, never guessed facts.
+Authentication notices precede readiness copy. The app owns query lifetime,
+retry and Recheck state for the visit; a failed Recheck retains previous answers,
+and a successful one updates the managed and availability-only picker caches
+and refreshes model catalogs. The shell's availability subscription is unchanged.
+The Settings host re-reads managed facts when it observes a different shared
+availability answer; matching answers, including successful Recheck, need no
+extra read. Codex recovery invalidates both caches. Contract tests live in
+`planners.test.tsx` and `app/shell/settings-planners.test.tsx`.
 
 ## Plugin configuration is the one two-level section (#1284 S4)
 

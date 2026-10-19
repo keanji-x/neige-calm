@@ -9,7 +9,7 @@ import { useRef } from 'react';
 
 import type { AgentProvider } from '../../../../core/api/schemas.ts';
 import {
-  CREATE_REFUSED_WHEN_UNAVAILABLE, STILL_CREATES_NOTE, type ProviderAvailability, type AuthenticationRetryResponse,
+  STILL_CREATES_NOTE, type ProviderAvailability, type ManagedProviderAvailability, type AuthenticationRetryResponse,
 } from '../../../../core/domain/agent-providers.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -21,7 +21,7 @@ import styles from './settings.module.css';
 export type PlannersPaneProps = Readonly<{
   turnDuration: PlannerTurnDurationProps;
   /** `undefined` means "still checking" — never render a guessed status. */
-  providers: readonly ProviderAvailability[] | undefined;
+  providers: readonly ManagedProviderAvailability[] | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
   /** Run every check again now (`refresh=true`). */
@@ -165,10 +165,10 @@ const STATUS_BADGES: Readonly<Record<ProviderAvailability['status'], Readonly<{
 const READY_DESCRIPTION = 'Passed every check; new tracks can use it.';
 
 /** The server's reason, and for a provider create still accepts (Codex), that it still does (#1817). */
-function describe(entry: ProviderAvailability): string {
+function describe({ availability: entry, capabilities }: ManagedProviderAvailability): string {
   if (entry.authentication_notice !== null) return entry.authentication_notice.text;
   if (entry.reason === null) return READY_DESCRIPTION;
-  return entry.status === 'unavailable' && !CREATE_REFUSED_WHEN_UNAVAILABLE[entry.provider]
+  return entry.status === 'unavailable' && !capabilities.requires_ready_availability
     ? `${entry.reason} ${STILL_CREATES_NOTE}`
     : entry.reason;
 }
@@ -182,7 +182,7 @@ function oldestCheck(providers: readonly ProviderAvailability[]): number | null 
 export function PlannersPane({
   providers, loadError, onRetryLoad, onRecheck, rechecking, recheckError, authenticationRecovery, turnDuration,
 }: PlannersPaneProps) {
-  const checkedAt = providers === undefined ? null : oldestCheck(providers);
+  const checkedAt = providers === undefined ? null : oldestCheck(providers.map(({ availability }) => availability));
   return (
     <SettingsPane
       category="planners"
@@ -195,12 +195,12 @@ export function PlannersPane({
         ? loadError === null && <AstryxText as="p" color="secondary">Checking providers…</AstryxText>
         : (
           <SettingsList>
-            {providers.map((entry) => (
+            {providers.map(({ availability: entry, capabilities }) => (
               <SettingRow
                 key={entry.provider}
                 title={PROVIDER_LABELS[entry.provider]}
                 /* A node, not a string: a string description is cut to one line, and a reason is a fix to read whole. */
-                description={<span className={styles.plannerReason}>{describe(entry)}</span>}
+                description={<span className={styles.plannerReason}>{describe({ availability: entry, capabilities })}</span>}
                 control={<>
                   <AstryxBadge className={styles.pluginStateChip}
                     variant={STATUS_BADGES[entry.status].variant} label={STATUS_BADGES[entry.status].label} />

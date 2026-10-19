@@ -5,8 +5,10 @@ import { managedProviderProblem, managedProvidersOperation } from '../../../../c
 import { WEB_COMPAT_VERSION } from './public.tsx';
 import { serverVersionOperation, modelCatalogQueryOptions, runOperation } from './queries.ts';
 
+export const managedProvidersQueryKey = Object.freeze(['managed-providers'] as const);
+
 export function managedProvidersQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
-  return { queryKey: ['managed-providers'],
+  return { queryKey: managedProvidersQueryKey,
     queryFn: ({ signal }: { signal: AbortSignal }) => runOperation(transport, { ...managedProvidersOperation(false), signal }, unauthorized) };
 }
 
@@ -24,7 +26,7 @@ export function useManagedProviders(transport: ApiTransportPort, unauthorized: U
   })) });
   const recheck = async () => {
     const next = await runOperation(transport, managedProvidersOperation(true), unauthorized);
-    client.setQueryData(['managed-providers'], next);
+    client.setQueryData(managedProvidersQueryKey, next);
     return next;
   };
   return { recheck, answers, version, supportsAssistantProviders, loading: query.isPending && !query.isError, groups: (answers ?? []).map(({ availability }, index) => ({

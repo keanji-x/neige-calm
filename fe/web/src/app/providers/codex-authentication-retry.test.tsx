@@ -4,6 +4,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { managedProvidersQueryOptions } from './managed-providers.ts';
 import { agentProvidersQueryOptions } from './agent-providers.ts';
 import { useCodexAuthenticationRetry } from './codex-authentication-retry.ts';
 afterEach(() => { cleanup(); onlineManager.setOnline(true); });
@@ -19,6 +20,7 @@ it('double clicks send one CAS intent and re-read status after its receipt witho
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const hook = renderHook(() => {
     useQuery(agentProvidersQueryOptions(transport, unauthorized));
+    useQuery(managedProvidersQueryOptions(transport, unauthorized));
     return useCodexAuthenticationRetry(transport, unauthorized);
   }, { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
   await waitFor(() => expect(sent.some((request) => request.method === 'GET')).toBe(true));
@@ -27,7 +29,9 @@ it('double clicks send one CAS intent and re-read status after its receipt witho
   expect(sent.find((request) => request.method === 'POST')?.body).toEqual({ expected_revision: '7' });
   release({ status: 200, statusText: 'OK', body: { status: 'retry_requested', requested_revision: '8', recovery_notices: [] } });
   await waitFor(() => expect(hook.result.current.pending).toBe(false));
-  await waitFor(() => expect(sent.filter((request) => request.method === 'GET').length).toBeGreaterThan(1));
+  for (const path of ['/api/agent-providers', '/api/agent-providers/managed']) {
+    await waitFor(() => expect(sent.filter((request) => request.path === path)).toHaveLength(2));
+  }
   expect(hook.result.current.error).toBeNull();
 });
 

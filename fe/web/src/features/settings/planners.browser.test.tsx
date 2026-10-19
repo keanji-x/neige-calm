@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
 
-import type { ProviderAvailability } from '../../../../core/domain/agent-providers.ts';
+import type { ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
 import { PlannersPane } from './planners.tsx';
 import { SettingsSurface } from './public.tsx';
 
@@ -15,9 +15,9 @@ afterEach(() => { cleanup(); document.body.replaceChildren(); });
 const LOGGED_OUT = 'not logged in — run `claude /login` with '
   + 'CLAUDE_CONFIG_DIR=/home/owner/.local/share/neige-next/claude-planner/config-dir-for-the-dedicated-login';
 
-const PROVIDERS: readonly ProviderAvailability[] = [
-  { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
-  { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
+const PROVIDERS: readonly ManagedProviderAvailability[] = [
+  { availability: { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false } },
+  { availability: { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, authentication_notice: null, checked_at_ms: 1_760_000_000_000 }, capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: true } },
 ];
 
 describe('Settings Planners', () => {
