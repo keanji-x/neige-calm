@@ -172,7 +172,12 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
 async fn remove_projection(inner: &Inner, key: &str) {
     if let Err(error) = inner
         .repo
-        .transcript_projection_delete(inner.card_id.as_str(), key)
+        .transcript_projection_delete(
+            &inner.worker_session_id,
+            inner.card_id.as_str(),
+            inner.track_id.as_str(),
+            key,
+        )
         .await
     {
         tracing::warn!(%error, "could not remove unrecorded budget reminder projection");

@@ -614,25 +614,36 @@ pub trait RepoOutOfDomain: RepoRead {
 
     // A projection row is a transcript row the KERNEL wrote at queue drain: `method = 'item/completed'`,
     // `item_type = 'userMessage'`, `turn_id IS NULL`, `item_uuid` = the CLIENT id. Nothing codex sends can produce that shape.
-    // Keyed by `card_id`, never `worker_session_id`, because a successor runtime may upgrade the row after a repoint.
+    // Mutations require the current calling session/card/track binding. Rows stay card-scoped
+    // because a successor may upgrade or remove a predecessor's projection after a repoint.
 
     /// The `id` of the projection row for `client_id` on `card_id`, if one stands.
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
 
     /// Upgrade the projection row in place with codex's echo (turn, item id, verbatim `params`); `input_segments` is
-    /// untouched. `None` when no projection stands (the echo is then an ordinary insert).
+    /// untouched. `None` when the caller is not current or no projection stands on that card/track.
+    #[allow(clippy::too_many_arguments)]
     async fn transcript_projection_upgrade(
         &self,
+        worker_session_id: &str,
         card_id: &str,
+        track_id: &str,
         client_id: &str,
         turn_id: Option<&str>,
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>>;
 
-    /// Remove the projection row for `client_id` — its `turn/start` did not go out. Returns 0 or 1.
-    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+    /// Remove the projection for `client_id` on the current caller's card/track when its `turn/start` did not go out.
+    /// Returns 0 when the binding is no longer current or no owned projection stands.
+    async fn transcript_projection_delete(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        client_id: &str,
+    ) -> Result<u64>;
 
     /// Compare and atomically commit one complete source record and its checkpoint.
     async fn worker_flow_capture_commit(

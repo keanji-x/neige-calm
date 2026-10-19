@@ -843,7 +843,9 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
 
     let upgraded = repo
         .transcript_projection_upgrade(
+            &format!("session-{card_a}"),
             &card_a,
+            track.id.as_str(),
             client_id,
             Some("turn-a"),
             "codex-item-a",
@@ -875,16 +877,26 @@ async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     assert_eq!(b_rows[0].item_uuid.as_deref(), Some(client_id));
 
     assert_eq!(
-        repo.transcript_projection_delete(&card_a, client_id)
-            .await
-            .unwrap(),
+        repo.transcript_projection_delete(
+            &format!("session-{card_a}"),
+            &card_a,
+            track.id.as_str(),
+            client_id
+        )
+        .await
+        .unwrap(),
         0,
         "nothing left to delete on A"
     );
     assert_eq!(
-        repo.transcript_projection_delete(&card_b, client_id)
-            .await
-            .unwrap(),
+        repo.transcript_projection_delete(
+            &format!("session-{card_b}"),
+            &card_b,
+            track.id.as_str(),
+            client_id
+        )
+        .await
+        .unwrap(),
         1
     );
 }

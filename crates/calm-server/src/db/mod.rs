@@ -832,15 +832,24 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     ) -> Result<i64>;
     async fn transcript_projection_id(&self, card_id: &str, client_id: &str)
     -> Result<Option<i64>>;
+    #[allow(clippy::too_many_arguments)]
     async fn transcript_projection_upgrade(
         &self,
+        worker_session_id: &str,
         card_id: &str,
+        track_id: &str,
         client_id: &str,
         turn_id: Option<&str>,
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>>;
-    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+    async fn transcript_projection_delete(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        client_id: &str,
+    ) -> Result<u64>;
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;
     async fn plugin_update_user_config(
@@ -1011,24 +1020,46 @@ where
             .await
             .map_err(Into::into)
     }
+    #[allow(clippy::too_many_arguments)]
     async fn transcript_projection_upgrade(
         &self,
+        worker_session_id: &str,
         card_id: &str,
+        track_id: &str,
         client_id: &str,
         turn_id: Option<&str>,
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>> {
         calm_truth::db::RepoOutOfDomain::transcript_projection_upgrade(
-            self, card_id, client_id, turn_id, item_uuid, params,
+            self,
+            worker_session_id,
+            card_id,
+            track_id,
+            client_id,
+            turn_id,
+            item_uuid,
+            params,
         )
         .await
         .map_err(Into::into)
     }
-    async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
-        calm_truth::db::RepoOutOfDomain::transcript_projection_delete(self, card_id, client_id)
-            .await
-            .map_err(Into::into)
+    async fn transcript_projection_delete(
+        &self,
+        worker_session_id: &str,
+        card_id: &str,
+        track_id: &str,
+        client_id: &str,
+    ) -> Result<u64> {
+        calm_truth::db::RepoOutOfDomain::transcript_projection_delete(
+            self,
+            worker_session_id,
+            card_id,
+            track_id,
+            client_id,
+        )
+        .await
+        .map_err(Into::into)
     }
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin> {
         calm_truth::db::RepoOutOfDomain::plugin_install(self, p)

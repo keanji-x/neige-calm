@@ -346,3 +346,358 @@ async fn handoff_activation_registered_providers_keep_backend_owned_readiness() 
         drop(ingress);
     }
 }
+
+async fn echo_projection(f: &Fixture, client: &str) -> crate::error::Result<()> {
+    on_notification(
+        &f.harness.inner,
+        &f.harness.inner.live_claim.writer(),
+        PlannerEvent {
+            thread_id: Some("thread-commit-wake".into()),
+            kind: PlannerEventKind::Item {
+                phase: ItemPhase::Completed,
+                params: serde_json::json!({"turnId":"echo-turn", "item":{
+                    "id":"echo-item", "clientId":client, "type":"userMessage",
+                    "content":[{"type":"inputText","text":"echo"}]
+                }}),
+                questions: vec![],
+            },
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn handoff_retired_echo_cannot_upgrade_target_transcript() {
+    let a = Fixture::new().await;
+    let b = a.sibling(CardRole::Assistant).await;
+    let id = insert_projection_row(
+        &b.harness.inner,
+        "thread-commit-wake",
+        "late-client",
+        &[super::completed_commit_tests::initial_budget_segment()],
+    )
+    .await
+    .unwrap();
+    commit(&a, plan(&a, &b).await).await.unwrap();
+    let before = data_transcript(&b).await;
+    let _ = echo_projection(&b, "late-client").await;
+    assert_eq!(
+        data_transcript(&b).await,
+        before,
+        "retired echo changed row {id}"
+    );
+}
+
+const TRANSCRIPT_TABLE: &str = "harness_items";
+
+async fn data_transcript(f: &Fixture) -> Vec<(String, Vec<String>)> {
+    super::handoff_cutover_tests::data_image(f.repo.pool())
+        .await
+        .into_iter()
+        .filter(|(table, _)| table == TRANSCRIPT_TABLE)
+        .collect()
+}
+
+#[tokio::test]
+async fn handoff_current_echo_upgrades_projection_in_place() {
+    let f = Fixture::new().await;
+    let id = insert_projection_row(
+        &f.harness.inner,
+        "thread-commit-wake",
+        "current-client",
+        &[super::completed_commit_tests::initial_budget_segment()],
+    )
+    .await
+    .unwrap();
+    echo_projection(&f, "current-client").await.unwrap();
+    let rows = f
+        .repo
+        .transcript_rows_of_thread(f.harness.inner.card_id.as_str(), "thread-commit-wake")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, id);
+    assert_eq!(rows[0].turn_id.as_deref(), Some("echo-turn"));
+    assert_eq!(rows[0].item_uuid.as_deref(), Some("echo-item"));
+    assert_eq!(
+        rows[0].input_segments.as_deref(),
+        Some(
+            serde_json::to_string(&[super::completed_commit_tests::initial_budget_segment()])
+                .unwrap()
+                .as_str()
+        )
+    );
+}
+
+#[tokio::test]
+async fn handoff_transcript_session_binding_fences_all_mutations() {
+    for defect in [
+        "superseded",
+        "pending_activation",
+        "pointer",
+        "card",
+        "track",
+        "row_track",
+    ] {
+        let f = Fixture::new().await;
+        let id = insert_projection_row(
+            &f.harness.inner,
+            "thread-commit-wake",
+            "client",
+            &[super::completed_commit_tests::initial_budget_segment()],
+        )
+        .await
+        .unwrap();
+        let session = &f.harness.inner.worker_session_id;
+        let card = f.harness.inner.card_id.as_str();
+        let track = f.harness.inner.track_id.as_str();
+        match defect {
+            "superseded" | "pending_activation" => {
+                sqlx::query(
+                    "UPDATE worker_sessions SET state=?1, \
+                    thread_id=CASE WHEN ?1='pending_activation' THEN NULL ELSE thread_id END \
+                    WHERE id=?2",
+                )
+                .bind(defect)
+                .bind(session)
+                .execute(f.repo.db().writer_pool())
+                .await
+                .unwrap();
+            }
+            "pointer" => {
+                sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
+                    .bind(card)
+                    .execute(f.repo.db().writer_pool())
+                    .await
+                    .unwrap();
+            }
+            "row_track" => {
+                sqlx::query(&format!(
+                    "UPDATE {TRANSCRIPT_TABLE} SET track_id='another-track' WHERE id=?1"
+                ))
+                .bind(id)
+                .execute(f.repo.db().writer_pool())
+                .await
+                .unwrap();
+            }
+            _ => {}
+        }
+        let caller_card = if defect == "card" {
+            "another-card"
+        } else {
+            card
+        };
+        let caller_track = if defect == "track" {
+            "another-track"
+        } else {
+            track
+        };
+        let before = data_transcript(&f).await;
+        assert_eq!(
+            f.repo
+                .transcript_projection_upgrade(
+                    session,
+                    caller_card,
+                    caller_track,
+                    "client",
+                    Some("turn"),
+                    "item",
+                    "{}"
+                )
+                .await
+                .unwrap(),
+            None,
+            "{defect}"
+        );
+        assert_eq!(
+            f.repo
+                .transcript_projection_delete(session, caller_card, caller_track, "client")
+                .await
+                .unwrap(),
+            0,
+            "{defect}"
+        );
+        if defect != "row_track" {
+            assert!(
+                f.repo
+                    .harness_turn_outcome_put(
+                        session,
+                        caller_card,
+                        caller_track,
+                        "thread-commit-wake",
+                        "turn",
+                        "{}"
+                    )
+                    .await
+                    .is_err(),
+                "{defect}"
+            );
+            let receipt = calm_truth::db::TranscriptReceiptItem {
+                item_uuid: "receipt-item".into(),
+                item_type: "agentMessage".into(),
+                method: "item/completed".into(),
+                params: "{}".into(),
+            };
+            assert!(
+                calm_truth::db::RepoOutOfDomain::transcript_receipt_restore(
+                    f.repo.as_ref(),
+                    session,
+                    caller_card,
+                    caller_track,
+                    "thread-commit-wake",
+                    "turn",
+                    &[receipt]
+                )
+                .await
+                .is_err(),
+                "{defect}"
+            );
+            let mut tx = crate::db::sqlite::begin_immediate_tx(f.repo.db())
+                .await
+                .unwrap();
+            assert_eq!(
+                crate::db::sqlite::transcript_delete_thread_suffix_tx(
+                    &mut tx,
+                    session,
+                    caller_card,
+                    caller_track,
+                    "thread-commit-wake",
+                    0,
+                    id
+                )
+                .await
+                .unwrap(),
+                0,
+                "{defect}"
+            );
+            tx.commit().await.unwrap();
+        }
+        assert_eq!(data_transcript(&f).await, before, "{defect}");
+    }
+}
+
+#[tokio::test]
+async fn handoff_current_failed_owner_can_settle_and_delete_projection() {
+    let f = Fixture::new().await;
+    insert_projection_row(
+        &f.harness.inner,
+        "thread-commit-wake",
+        "client",
+        &[super::completed_commit_tests::initial_budget_segment()],
+    )
+    .await
+    .unwrap();
+    let session = &f.harness.inner.worker_session_id;
+    let card = f.harness.inner.card_id.as_str();
+    let track = f.harness.inner.track_id.as_str();
+    sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
+        .bind(session)
+        .execute(f.repo.db().writer_pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.repo
+            .transcript_projection_delete(session, card, track, "client")
+            .await
+            .unwrap(),
+        1
+    );
+    let id = f
+        .repo
+        .harness_turn_outcome_put(session, card, track, "thread-commit-wake", "turn", "{}")
+        .await
+        .unwrap();
+    assert_eq!(
+        f.repo
+            .harness_turn_outcome_put(session, card, track, "thread-commit-wake", "turn", "{}")
+            .await
+            .unwrap(),
+        id
+    );
+}
+
+#[tokio::test]
+async fn handoff_current_successor_can_upgrade_and_remove_predecessor_projections() {
+    use crate::db::sqlite::session_supersede_and_start_tx;
+    use crate::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    let f = Fixture::new().await;
+    let inner = &f.harness.inner;
+    let id = insert_projection_row(
+        inner,
+        "thread-commit-wake",
+        "echo-client",
+        &[super::completed_commit_tests::initial_budget_segment()],
+    )
+    .await
+    .unwrap();
+    insert_projection_row(
+        inner,
+        "thread-commit-wake",
+        "delete-client",
+        &[super::completed_commit_tests::initial_budget_segment()],
+    )
+    .await
+    .unwrap();
+    let successor = crate::model::new_id();
+    let mut tx = crate::db::sqlite::begin_immediate_tx(f.repo.db())
+        .await
+        .unwrap();
+    session_supersede_and_start_tx(
+        &mut tx,
+        &inner.worker_session_id,
+        WorkerSessionInit {
+            id: successor.clone(),
+            card_id: inner.card_id.to_string(),
+            kind: WorkerSessionKind::SharedPlanner,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some("thread-commit-wake".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: crate::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        f.repo
+            .transcript_projection_upgrade(
+                &successor,
+                inner.card_id.as_str(),
+                inner.track_id.as_str(),
+                "echo-client",
+                Some("turn"),
+                "echo",
+                "{}"
+            )
+            .await
+            .unwrap(),
+        Some(id)
+    );
+    assert_eq!(
+        f.repo
+            .transcript_projection_delete(
+                &successor,
+                inner.card_id.as_str(),
+                inner.track_id.as_str(),
+                "delete-client"
+            )
+            .await
+            .unwrap(),
+        1
+    );
+    let rows = f
+        .repo
+        .transcript_rows_of_thread(inner.card_id.as_str(), "thread-commit-wake")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, id);
+    assert_eq!(rows[0].item_uuid.as_deref(), Some("echo"));
+}

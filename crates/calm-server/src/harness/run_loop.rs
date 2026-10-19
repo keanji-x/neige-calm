@@ -1924,7 +1924,12 @@ async fn restore_steered_entries_codex_dropped(
         }
         if let Err(error) = inner
             .repo
-            .transcript_projection_delete(inner.card_id.as_str(), entry_id.as_str())
+            .transcript_projection_delete(
+                &inner.worker_session_id,
+                inner.card_id.as_str(),
+                inner.track_id.as_str(),
+                entry_id.as_str(),
+            )
             .await
         {
             tracing::warn!(
@@ -2578,7 +2583,9 @@ async fn on_notification(
                             inner
                                 .repo
                                 .transcript_projection_upgrade(
+                                    &inner.worker_session_id,
                                     inner.card_id.as_str(),
+                                    inner.track_id.as_str(),
                                     client_id,
                                     turn_id.as_deref(),
                                     codex_item_id,
@@ -2912,7 +2919,12 @@ async fn insert_projection_row(
 ) -> Result<i64> {
     let stale = inner
         .repo
-        .transcript_projection_delete(inner.card_id.as_str(), client_id)
+        .transcript_projection_delete(
+            &inner.worker_session_id,
+            inner.card_id.as_str(),
+            inner.track_id.as_str(),
+            client_id,
+        )
         .await?;
     if stale > 0 {
         tracing::debug!(
@@ -3787,7 +3799,12 @@ async fn maybe_issue_turn_owned(
             // the re-buffer is what tells a reader the row is gone.
             if let Err(delete_error) = inner
                 .repo
-                .transcript_projection_delete(inner.card_id.as_str(), client_id.as_str())
+                .transcript_projection_delete(
+                    &inner.worker_session_id,
+                    inner.card_id.as_str(),
+                    inner.track_id.as_str(),
+                    client_id.as_str(),
+                )
                 .await
             {
                 tracing::warn!(
