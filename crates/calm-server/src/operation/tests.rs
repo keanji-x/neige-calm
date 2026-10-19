@@ -1681,7 +1681,10 @@ async fn parked_return_without_artifacts_fails_and_drops_observer() {
         .await
         .unwrap();
 
-    let result = runtime.wait(&op_id).await.unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), runtime.wait(&op_id))
+        .await
+        .expect("missing artifacts must fail without waiting for lease expiry")
+        .unwrap();
     assert!(matches!(
         result.outcome,
         OperationOutcome::Failed {

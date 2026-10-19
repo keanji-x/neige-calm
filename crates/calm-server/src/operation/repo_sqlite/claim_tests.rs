@@ -557,11 +557,31 @@ async fn expired_claim_cannot_consume_prepared_evidence() {
 async fn owned_key_retains_terminal_writes() {
     for record in [json!({"version": 1}), json!(null), json!("malformed")] {
         let (db, repo, stale_snapshot) = claimed_operation().await;
+        repo.set_phase(&stale_snapshot, Phase::SpawnStarted, None)
+            .await
+            .unwrap()
+            .applied()
+            .unwrap();
+        let stale_snapshot = repo.claim_drive_batch(1).await.unwrap().pop().unwrap();
         // The claim snapshot predates the owner's checkpoint: read the transactional row.
-        sqlx::query("UPDATE operations SET phase='spawn_started',phase_detail_json=NULL,tx_output_json=json_set(tx_output_json,'$.data.terminal_launch',json(?1)) WHERE id=?2")
+        sqlx::query("UPDATE operations SET \
+            tx_output_json=json_set(tx_output_json,'$.data',json_object('terminal_launch',json(?1))) \
+            WHERE id=?2")
             .bind(record.to_string()).bind(&stale_snapshot.id).execute(db.pool()).await.unwrap();
-        let before: String = sqlx::query_scalar("SELECT json_object('phase',phase,'detail',phase_detail_json,'output',tx_output_json,'owner',lease_owner,'until',lease_until_ms,'updated',updated_at_ms,'completed',completed_at_ms,'compensation',compensation_state) FROM operations WHERE id=?1")
+        let before: String = sqlx::query_scalar("SELECT \
+            json_object('phase',phase,'detail',phase_detail_json,'output',tx_output_json,'owner',lease_owner,'until',lease_until_ms,'updated',updated_at_ms,'completed',completed_at_ms,'compensation',compensation_state) \
+            FROM operations WHERE id=?1")
             .bind(&stale_snapshot.id).fetch_one(db.pool()).await.unwrap();
+        assert_eq!(
+            repo.get_operation(&stale_snapshot.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .tx_output
+                .unwrap()
+                .data["terminal_launch"],
+            record
+        );
         let key = Some("terminal_launch");
         let outcomes = [
             repo.set_phase(&stale_snapshot, Phase::Succeeded, key)
@@ -594,7 +614,9 @@ async fn owned_key_retains_terminal_writes() {
                 .unwrap(),
             super::super::LeaveWrite::Retained
         ));
-        let after: String = sqlx::query_scalar("SELECT json_object('phase',phase,'detail',phase_detail_json,'output',tx_output_json,'owner',lease_owner,'until',lease_until_ms,'updated',updated_at_ms,'completed',completed_at_ms,'compensation',compensation_state) FROM operations WHERE id=?1")
+        let after: String = sqlx::query_scalar("SELECT \
+            json_object('phase',phase,'detail',phase_detail_json,'output',tx_output_json,'owner',lease_owner,'until',lease_until_ms,'updated',updated_at_ms,'completed',completed_at_ms,'compensation',compensation_state) \
+            FROM operations WHERE id=?1")
             .bind(&stale_snapshot.id).fetch_one(db.pool()).await.unwrap();
         assert_eq!(after, before);
         let stored = repo

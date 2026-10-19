@@ -64,5 +64,4 @@ pub(crate) async fn reconcile(
 }
 
 #[cfg(test)]
-#[path = "owned_parked_tests.rs"]
 mod tests;
