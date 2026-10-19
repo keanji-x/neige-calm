@@ -256,61 +256,47 @@ async fn the_catalog_is_the_cli_list_with_the_flag() {
         format!("/api/models?card_id={card_id}"),
         "/api/models?provider=claude".to_string(),
     ];
-    let levels: Vec<Value> = ["low", "medium", "high", "xhigh", "max"]
-        .iter()
-        .map(|level| json!({"reasoning_effort": level, "description": null}))
-        .collect();
+    // Literal HTTP expectations: do not derive these from the native catalog or projection.
+    let levels = json!([
+        {"reasoning_effort": "low", "description": null},
+        {"reasoning_effort": "medium", "description": null},
+        {"reasoning_effort": "high", "description": null},
+        {"reasoning_effort": "xhigh", "description": null},
+        {"reasoning_effort": "max", "description": null}
+    ]);
     for uri in &uris {
         let (status, body) = stack.send("GET", uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}: {body}");
-        assert_eq!(body["source"], "live", "{uri}: {body}");
-        assert_eq!(body["default_source"], "claude_cli", "{uri}: {body}");
+        let fetched = body["fetched_at_ms"].as_i64().expect("fetch timestamp");
+        assert!(fetched > 0, "{body}");
         assert_eq!(
-            body["default"],
-            json!({"model": "claude-opus-5-5[1m]", "reasoning_effort": null,
-                   "supported_reasoning_efforts": levels}),
+            body,
+            json!({
+                "models": [
+                    {"id": "opus[1m]", "model": "opus[1m]", "resolved_model": "claude-opus-5-5[1m]",
+                     "display_name": "Opus (1M context)",
+                     "description": "Opus 5.5 with 1M context · Best for everyday, complex tasks",
+                     "is_default": false, "supported_reasoning_efforts": levels,
+                     "default_reasoning_effort": null},
+                    {"id": "claude-fable-5-1[1m]", "model": "claude-fable-5-1[1m]", "resolved_model": "claude-fable-5-1",
+                     "display_name": "Fable",
+                     "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks",
+                     "is_default": false, "supported_reasoning_efforts": levels,
+                     "default_reasoning_effort": null},
+                    {"id": "sonnet", "model": "sonnet", "resolved_model": "claude-sonnet-5",
+                     "display_name": "Sonnet", "description": "Sonnet 5 · Efficient for routine tasks",
+                     "is_default": false, "supported_reasoning_efforts": levels,
+                     "default_reasoning_effort": null},
+                    {"id": "haiku", "model": "haiku", "resolved_model": "claude-haiku-4-5-20251001",
+                     "display_name": "Haiku", "description": "Haiku 4.5 · Fastest for quick answers",
+                     "is_default": false, "supported_reasoning_efforts": [],
+                     "default_reasoning_effort": null}
+                ],
+                "default": {"model": "claude-opus-5-5[1m]", "reasoning_effort": null,
+                            "supported_reasoning_efforts": levels},
+                "default_source": "claude_cli", "source": "live", "fetched_at_ms": fetched
+            }),
             "{uri}"
-        );
-        assert!(
-            body["fetched_at_ms"].as_i64().is_some_and(|ms| ms > 0),
-            "{body}"
-        );
-        let entries: Vec<(&str, &str, &str)> = body["models"]
-            .as_array()
-            .expect("models")
-            .iter()
-            .map(|m| {
-                (
-                    m["model"].as_str().expect("model"),
-                    m["resolved_model"].as_str().expect("resolved model"),
-                    m["display_name"].as_str().expect("display name"),
-                )
-            })
-            .collect();
-        assert_eq!(
-            entries,
-            [
-                ("opus[1m]", "claude-opus-5-5[1m]", "Opus (1M context)"),
-                ("claude-fable-5-1[1m]", "claude-fable-5-1", "Fable"),
-                ("sonnet", "claude-sonnet-5", "Sonnet"),
-                ("haiku", "claude-haiku-4-5-20251001", "Haiku"),
-            ],
-            "{uri}"
-        );
-        for entry in body["models"].as_array().unwrap() {
-            assert_eq!(entry["id"], entry["model"], "{entry}");
-            assert_eq!(entry["is_default"], false, "{entry}");
-            assert_eq!(entry["default_reasoning_effort"], Value::Null, "{entry}");
-            let expected = if entry["model"] == "haiku" {
-                json!([])
-            } else {
-                json!(levels)
-            };
-            assert_eq!(entry["supported_reasoning_efforts"], expected, "{entry}");
-        }
-        assert!(
-            !body.to_string().contains("owner@example.invalid"),
-            "{body}"
         );
     }
     stack.shutdown().await;
@@ -319,7 +305,14 @@ async fn the_catalog_is_the_cli_list_with_the_flag() {
     for uri in &uris {
         let (status, body) = stack.send("GET", uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}: {body}");
-        assert_eq!(body["source"], "unavailable", "{uri}: {body}");
-        assert_eq!(body["models"], json!([]), "{uri}: {body}");
+        assert_eq!(
+            body,
+            json!({
+                "models": [], "default": {"model": null, "reasoning_effort": null,
+                                          "supported_reasoning_efforts": null},
+                "default_source": "unknown", "source": "unavailable", "fetched_at_ms": null
+            }),
+            "{uri}"
+        );
     }
 }

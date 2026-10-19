@@ -93,7 +93,11 @@ async fn the_first_read_and_a_recheck_fetch_the_list_and_the_ttl_recheck_does_no
         "the TTL re-check asked for the login again"
     );
     assert_eq!(count(&root, "init-calls"), 1, "and kept the list");
-    assert_eq!(values(&claude_models(&stack).await), values(&first));
+    assert_eq!(
+        claude_models(&stack).await,
+        first,
+        "TTL retains the full response and fetch time"
+    );
 
     assert_eq!(
         claude_entry(&stack, "?refresh=true").await["status"],
@@ -101,6 +105,35 @@ async fn the_first_read_and_a_recheck_fetch_the_list_and_the_ttl_recheck_does_no
     );
     assert_eq!(count(&root, "init-calls"), 2, "a recheck fetched");
     assert_eq!(values(&claude_models(&stack).await), ["haiku"]);
+}
+
+/// Reject a conflicting query before even an expired availability slot can run a probe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_mismatch_is_rejected_before_catalog_access() {
+    let root = root_with_catalog("ok");
+    let stack = Stack::boot(&root).await;
+    let (_track, card) = stack.create_claude_track().await;
+    stack
+        .state
+        .age_provider_availability_past_ttl_for_test()
+        .await;
+    let before = (count(&root, "init-calls"), count(&root, "auth-calls"));
+    let (status, body) = stack
+        .send(
+            "GET",
+            &format!("/api/models?card_id={card}&provider=codex"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body,
+        json!({"error":"The catalog provider does not match this conversation", "code":"bad_request"})
+    );
+    assert_eq!(
+        (count(&root, "init-calls"), count(&root, "auth-calls")),
+        before
+    );
 }
 
 /// The `initialize` exchange runs with exactly the readiness allowlist `auth status` runs with:
@@ -191,8 +224,15 @@ async fn a_malformed_or_empty_list_is_unavailable_with_a_reason_and_no_list() {
             "{answer}: {reason}"
         );
         let models = claude_models(&stack).await;
-        assert_eq!(models["source"], "unavailable", "{answer}: {models}");
-        assert_eq!(models["models"], json!([]), "{answer}: {models}");
+        assert_eq!(
+            models,
+            json!({
+                "models": [], "default": {"model": null, "reasoning_effort": null,
+                                          "supported_reasoning_efforts": null},
+                "default_source": "unknown", "source": "unavailable", "fetched_at_ms": null
+            }),
+            "{answer}"
+        );
 
         let (status, refusal) = stack
             .send(

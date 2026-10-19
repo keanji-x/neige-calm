@@ -14,12 +14,10 @@ use axum::{Router, routing::get};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use crate::claude_planner::models::ClaudeCatalog;
 use crate::codex_appserver::{CodexConfig, CodexModel};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState};
-use provider::claude::discovery::ClaudeModel;
 
 /// Budget for the whole request, not each codex read. Passed down into
 /// `request_until` rather than wrapped in `tokio::time::timeout`: cancelling from
@@ -46,31 +44,6 @@ impl From<CodexModel> for CatalogModel {
             default_reasoning_effort: Some(m.default_reasoning_effort),
         }
     }
-}
-
-impl From<&ClaudeModel> for CatalogModel {
-    fn from(m: &ClaudeModel) -> Self {
-        Self {
-            id: m.value.clone(),
-            model: m.value.clone(),
-            resolved_model: Some(m.resolved_model.clone()),
-            display_name: m.display_name.clone(),
-            description: m.description.clone(),
-            is_default: false,
-            supported_reasoning_efforts: claude_efforts(m),
-            default_reasoning_effort: None,
-        }
-    }
-}
-
-fn claude_efforts(m: &ClaudeModel) -> Vec<ReasoningEffortOption> {
-    m.effort_levels
-        .iter()
-        .map(|level| ReasoningEffortOption {
-            reasoning_effort: level.clone(),
-            description: None,
-        })
-        .collect()
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -153,20 +126,13 @@ pub(crate) async fn list_models(
         // #1822: a Claude Planner's catalog is the CLI's own list, cached by its availability
         // check, and Codex is not asked. A Claude that is not ready has no list to offer.
         crate::harness::backend_metadata::CatalogProtocol::Claude => {
-            let checked = s
-                .provider_availability
-                .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
-                .await;
-            return Ok(Json(match checked.catalog() {
-                Ok(catalog) => claude_catalog(&catalog),
-                Err(_) => ModelsResponse {
-                    models: Vec::new(),
-                    default: ModelDefaults::default(),
-                    default_source: DefaultSource::Unknown,
-                    source: ModelSource::Unavailable,
-                    fetched_at_ms: None,
-                },
-            }));
+            return Ok(Json(
+                crate::claude_planner::catalog::cached_catalog(
+                    &s.provider_availability,
+                    &s.claude_planner,
+                )
+                .await,
+            ));
         }
         crate::harness::backend_metadata::CatalogProtocol::Codex => {}
     }
@@ -229,22 +195,6 @@ pub(crate) async fn list_models(
         source,
         fetched_at_ms,
     }))
-}
-
-/// The answer for a Claude Planner: every listed entry, and the CLI's `default` entry as the
-/// default (what it resolves to, and its effort levels).
-fn claude_catalog(catalog: &ClaudeCatalog) -> ModelsResponse {
-    ModelsResponse {
-        models: catalog.models.iter().map(CatalogModel::from).collect(),
-        default: ModelDefaults {
-            model: Some(catalog.default.resolved_model.clone()),
-            reasoning_effort: None,
-            supported_reasoning_efforts: Some(claude_efforts(&catalog.default)),
-        },
-        default_source: DefaultSource::ClaudeCli,
-        source: ModelSource::Live,
-        fetched_at_ms: Some(catalog.fetched_at_ms),
-    }
 }
 
 /// A complete `config/read` whose `model` is unset is `config_read` + `null`, not `unknown`.

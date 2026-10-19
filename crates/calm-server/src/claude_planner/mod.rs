@@ -12,6 +12,7 @@
 mod approvals;
 pub mod auth_status;
 pub mod availability;
+pub(crate) mod catalog;
 pub mod catalog_fetch;
 pub(crate) mod compact;
 pub mod config;
