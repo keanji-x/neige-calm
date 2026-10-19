@@ -5,10 +5,6 @@ use utoipa::ToSchema;
 
 #[derive(Clone, Copy, Debug, Serialize, ToSchema)]
 pub struct ManagedCapabilities {
-    /// Whether queued input can join a running turn; internal, not an HTTP capability.
-    #[serde(skip)]
-    #[schema(ignore)]
-    pub(crate) steer: bool,
     pub managed_conversation: bool,
     pub images: bool,
     pub manual_compact: bool,
@@ -32,6 +28,8 @@ pub(crate) enum CatalogProtocol {
 }
 
 pub(crate) struct BackendMetadata {
+    /// Whether queued input can join a running turn.
+    pub steer: bool,
     pub catalog: CatalogProtocol,
     pub capabilities: ManagedCapabilities,
     pub discovery: ToolDiscovery,
@@ -66,10 +64,10 @@ impl super::backend::PlannerBackend {
             AgentProvider::Claude | AgentProvider::OpenCode => (true, false),
         };
         BackendMetadata {
+            steer,
             catalog,
             requires_codex_daemon,
             capabilities: ManagedCapabilities {
-                steer,
                 managed_conversation: true,
                 images,
                 manual_compact,

@@ -92,22 +92,13 @@ impl CreatorAdmission {
 /// `neige_track_add`'s [`TrackCreator`]: the keyed create over this process's routes.
 pub(crate) struct RouteTrackCreator {
     route: RouteState,
-    codex: Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
     /// `--track-add-max-open`.
     max_open: u32,
 }
 
 impl RouteTrackCreator {
-    pub(crate) fn new(
-        route: RouteState,
-        codex: Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
-        max_open: u32,
-    ) -> Self {
-        Self {
-            route,
-            codex,
-            max_open,
-        }
+    pub(crate) fn new(route: RouteState, max_open: u32) -> Self {
+        Self { route, max_open }
     }
 }
 
@@ -144,13 +135,7 @@ impl TrackCreator for RouteTrackCreator {
                 Some(checked) => checked.checked(),
                 None => {
                     s.provider_availability
-                        .get(
-                            &planner_provider,
-                            crate::agent_providers::Freshness::Cached,
-                            &s.claude_planner,
-                            &s.acp_planner,
-                            &self.codex,
-                        )
+                        .acp(crate::agent_providers::Freshness::Cached, &s.acp_planner)
                         .await
                 }
             })

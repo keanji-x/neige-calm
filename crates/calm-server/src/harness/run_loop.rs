@@ -1647,7 +1647,7 @@ async fn handle_steer(
     }
     // #1791 §5.9: decided before the entry is taken, so its id and rev stay as they are and it
     // runs as the next turn.
-    if !inner.backend.capabilities().steer {
+    if !PlannerBackend::metadata(&inner.backend.provider()).steer {
         return Ok(Err(SteerRefused::NotTaken {
             message: "this Planner's provider (Claude) cannot take messages into a running \
                       turn; it stays queued"

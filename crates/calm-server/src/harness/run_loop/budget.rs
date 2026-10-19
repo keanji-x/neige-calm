@@ -1,5 +1,6 @@
 //! Per-start sampling and a bounded, identity-fenced warning. The watchdog never awaits steer.
 use super::{Inner, runtime_is_still_the_live_carrier, write_projection_row};
+use crate::harness::backend::PlannerBackend;
 use crate::harness::profile::HarnessProfile;
 use crate::harness::profile::HarnessProfileExt;
 use crate::harness::state::HarnessState;
@@ -83,7 +84,8 @@ async fn current(inner: &Arc<Inner>, turn: &str) -> bool {
 }
 
 pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
-    if !inner.backend.capabilities().steer || !inner.held_requests.is_empty() {
+    if !PlannerBackend::metadata(&inner.backend.provider()).steer || !inner.held_requests.is_empty()
+    {
         return Ok(());
     }
     let state = inner.state.lock().await.clone();

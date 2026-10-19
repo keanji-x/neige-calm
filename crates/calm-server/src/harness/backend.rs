@@ -203,10 +203,6 @@ impl PlannerBackend {
         }
     }
 
-    pub(crate) fn capabilities(&self) -> super::backend_metadata::ManagedCapabilities {
-        Self::metadata(&self.provider()).capabilities
-    }
-
     /// Host selection preflight stays at the existing admission point, after snapshot persistence.
     pub(crate) async fn compact_request(
         &self,

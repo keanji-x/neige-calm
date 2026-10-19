@@ -246,7 +246,6 @@ async fn assistant_provider_capabilities_follow_backend_registration_and_availab
     for (row, availability) in rows.iter().zip(registered.as_array().unwrap()) {
         assert_eq!(&row["availability"], availability);
         assert_eq!(row["capabilities"]["managed_conversation"], true);
-        assert!(row["capabilities"].get("steer").is_none(), "{row}");
         for capability in ["images", "manual_compact", "history_replacement"] {
             assert!(row["capabilities"][capability].is_boolean(), "{row}");
         }

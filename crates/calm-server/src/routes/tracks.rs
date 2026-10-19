@@ -769,13 +769,7 @@ pub(crate) async fn create_track(
             Some(checked) => checked.checked(),
             None => {
                 s.provider_availability
-                    .get(
-                        &request.planner_provider,
-                        crate::agent_providers::Freshness::Cached,
-                        &s.claude_planner,
-                        &s.acp_planner,
-                        &codex.shared_codex_appserver,
-                    )
+                    .acp(crate::agent_providers::Freshness::Cached, &s.acp_planner)
                     .await
             }
         })
