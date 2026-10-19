@@ -26,14 +26,8 @@ async fn a_planner_mint_persists_the_provider_it_names() {
         ("planner-codex", AgentProvider::Codex, "codex"),
     ] {
         let mut tx = repo.pool().begin().await.expect("begin");
-        let card_id = create_card_in_tx(
-            &repo,
-            &mut tx,
-            label,
-            "codex",
-            json!({"schemaVersion":1}),
-        )
-        .await;
+        let card_id =
+            create_card_in_tx(&repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
         let id = format!("rt-{label}");
         session_start_runtime_tx(
             &mut tx,
