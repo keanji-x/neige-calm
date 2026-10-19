@@ -13,7 +13,7 @@ import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeDesktopPainter } from './desktop-painter.tsx';
 import pageSource from './public.tsx?raw';
-import { captureContextProjection, card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { captureContextProjection, manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 

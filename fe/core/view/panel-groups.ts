@@ -17,7 +17,7 @@ const GROUPS = Object.freeze([
 ] as const);
 
 export function panelRowGroup(row: PanelRow, kind: RowModuleView['key']): InventoryGroupKey {
-  if (kind === 'cards') {
+  if (kind === 'cards' || kind === 'temporary') {
     if (row.kind === 'terminal') return 'terminals';
     return agentProviderSchema.safeParse(row.kind).success ? 'agents' : 'other-tools';
   }
@@ -36,7 +36,7 @@ export function panelRowGroup(row: PanelRow, kind: RowModuleView['key']): Invent
 
 /** Explicit kernel activity and runtime evidence make a tool group important; no inferred policy. */
 export function inventoryNeedsAttention(row: PanelRow, kind: RowModuleView['key']): boolean {
-  if (kind !== 'cards') return false;
+  if (kind !== 'cards' && kind !== 'temporary') return false;
   if (row.badges.some(badge => badge.struck)) return false;
   return row.activity === 'failed' || row.activity === 'attention'
     || (row.status !== null && ['failed', 'errored', 'needs_input', 'awaiting_input', 'blocked'].includes(row.status.token));

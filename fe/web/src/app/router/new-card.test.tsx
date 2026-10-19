@@ -68,7 +68,7 @@ function setup({ createFails = false, deferCreate = false, answers = [] as reado
         }
         const created: CardWire = stored?.card ?? {
           id: `card-${cards.length + 1}`, track_id: 'w1', kind: 'terminal', title: null, sort: 1,
-          payload: {}, deletable: true, created_at: 1, updated_at: 2,
+          payload: { terminal_presentation: { source: 'manual', in_workbench: true }, }, deletable: true, created_at: 1, updated_at: 2,
         };
         if (stored === undefined) {
           cards.push(created);

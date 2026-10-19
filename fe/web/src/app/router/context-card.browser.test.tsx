@@ -7,7 +7,7 @@ import { ChatList } from '../../features/chat/list/public.tsx';
 import { RecentFiles } from '../../features/report/recent-files/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { AddCardMenu } from '../../features/track/new-card/public.tsx';
-import { card, renderPage, track } from '../../features/track/page/test-fixtures.tsx';
+import { manualCard as card, renderPage, track } from '../../features/track/page/test-fixtures.tsx';
 
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 const task = (blockId: string, status: string, workerCardId: string | null): ReportTaskRow => ({

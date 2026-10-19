@@ -414,6 +414,7 @@ async fn call(
                 payload_hash: open_payload_hash(&identity, &request)?,
             };
             let payload = serde_json::to_value(TerminalCreateOperationPayload {
+                source: calm_types::card_presentation::CardCreationSource::Agent,
                 actor: identity.to_actor_id(),
                 worker_session_id: Some(new_id()),
                 planner_hooks: true,

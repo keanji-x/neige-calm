@@ -145,6 +145,10 @@ async fn prepare_terminal_worker_with_cwd(
 async fn terminal_worker_prepare_titles_card_with_task_key() {
     let harness = terminal_worker_harness().await;
     let output = prepare_terminal_worker(&harness, "slice-d").await;
+    assert_eq!(
+        output.result["payload"]["terminal_presentation"],
+        json!({"source":"task","in_workbench":false})
+    );
     let card_id = output.output_string("card_id", "test").unwrap();
 
     let stored: Option<String> = sqlx::query_scalar("SELECT title FROM cards WHERE id = ?1")
@@ -281,6 +285,7 @@ async fn terminal_open_without_cwd_lands_in_the_track_worktree() {
     let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
     let adapter = TerminalAdapter::new(route_repo, CardRoleCache::new(), TrackAreaCache::new());
     let payload = serde_json::to_value(TerminalCreateOperationPayload {
+        source: calm_types::card_presentation::CardCreationSource::Manual,
         actor: ActorId::KernelDispatcher,
         worker_session_id: None,
         planner_hooks: false,
@@ -391,3 +396,112 @@ mod disposal_tests;
 
 #[cfg(test)]
 mod pty_cwd_tests;
+
+#[tokio::test]
+async fn terminal_presentation_legacy_recovery_preserves_real_claim_cas_and_hash() {
+    use calm_types::card_presentation::CardCreationSource;
+    for (label, hooks, expected) in [
+        ("agent", Some(true), CardCreationSource::Agent),
+        ("manual", Some(false), CardCreationSource::Manual),
+        ("unknown", None, CardCreationSource::Unrecorded),
+    ] {
+        let harness = terminal_worker_harness().await;
+        let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
+        let adapter = TerminalAdapter::new(route_repo, CardRoleCache::new(), TrackAreaCache::new())
+            .with_hook_settings(Some(TerminalHookSettings {
+                bridge_bin: "/bin/neige-codex-bridge".into(),
+                base_url: "http://127.0.0.1:4040".into(),
+                settings_dir: "/tmp/terminal-recovery-hooks".into(),
+            }));
+        let mut input = serde_json::to_value(TerminalCreateOperationPayload {
+            source: CardCreationSource::Manual,
+            actor: ActorId::User,
+            worker_session_id: Some(new_id()),
+            planner_hooks: false,
+            request: normalize_terminal_create_request(TerminalCreateRequestPayload {
+                track_id: harness.track_id.clone(),
+                title: None,
+                sort: None,
+                program: "/bin/sh".into(),
+                cwd: "/tmp".into(),
+                env: json!({}),
+                theme: RequestTheme::default_dark(),
+            }),
+        })
+        .unwrap();
+        let map = input.as_object_mut().unwrap();
+        map.remove("source");
+        match hooks {
+            Some(value) => {
+                map.insert("planner_hooks".into(), json!(value));
+            }
+            None => {
+                map.remove("planner_hooks");
+            }
+        }
+        assert!(
+            adapter.validate(&input).await.is_err(),
+            "new admission must reject old missing-source input"
+        );
+        let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
+        let op_id = op_repo
+            .insert_operation(
+                "terminal-create",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(format!("legacy-{label}")),
+                    payload_hash: format!("hash-{label}"),
+                },
+                input.clone(),
+            )
+            .await
+            .unwrap();
+        let before: (String, String) =
+            sqlx::query_as("SELECT payload_json,payload_hash FROM operations WHERE id=?1")
+                .bind(op_id.as_str())
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        let op = op_repo
+            .claim_drive_batch(1)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|op| op.id == op_id)
+            .unwrap();
+        let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
+        let output = adapter.prepare_tx(&mut tx, &op.payload, &op).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            output.result["payload"]["terminal_presentation"]["source"],
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(
+            output.result["payload"]["terminal_presentation"]["in_workbench"],
+            hooks == Some(false)
+        );
+        assert!(
+            op_repo
+                .set_phase_and_tx_output(&op, crate::operation::Phase::TxCommitted, &output)
+                .await
+                .unwrap()
+                .is_some(),
+            "real claim CAS must survive legacy decoding"
+        );
+        let after: (String, String) =
+            sqlx::query_as("SELECT payload_json,payload_hash FROM operations WHERE id=?1")
+                .bind(op_id.as_str())
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(after, before);
+        let mut invalid = input.clone();
+        invalid["source"] = Value::Null;
+        let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
+        assert!(
+            adapter.prepare_tx(&mut tx, &invalid, &op).await.is_err(),
+            "present invalid source is not a legacy record"
+        );
+        tx.rollback().await.unwrap();
+    }
+}

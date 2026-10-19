@@ -411,6 +411,7 @@ async fn manual_terminal(h: &Harness) -> (String, String) {
         &CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         true,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();

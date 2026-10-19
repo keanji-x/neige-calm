@@ -47,7 +47,7 @@ import {
   type TodayLaunchpadEnsureWire, type TodayLaunchpadWire, type TodayReportResetWire,
 } from '../../../../core/domain/today.ts';
 import {
-  createCardOperation, createClaudeCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
+  createCardOperation, createClaudeCardOperation, createCodexCardOperation, createTerminalCardOperation, setTerminalWorkbenchOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
   overlaysByKindOperation, recipeSaveAttempts, recipeSaveLanded, toTrack, updateTrackOperation, updateTrackRecipeOperation,
   NEUTRAL_ACTIVITY, sortAreaTracksByRecent, trackActivitiesFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation, trackTemplatesOperation,
@@ -908,6 +908,7 @@ export type TrackMutations = Readonly<{
   patch: (trackId: string, areaId: string, body: TrackPatchBody) => Promise<Track>;
   setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
   createTerminal: (trackId: string, body: NewTerminalCardBody, idempotencyKey: string) => Promise<CardWire>;
+  setTerminalWorkbench: (trackId: string, cardId: string, inWorkbench: boolean) => Promise<CardWire>;
   createCodex: (trackId: string, body: NewCodexCardBody, idempotencyKey: string) => Promise<CardWire>;
   createClaude: (trackId: string, body: NewClaudeCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCard: (trackId: string, body: NewCardBody, idempotencyKey: string) => Promise<CardWire>;
@@ -977,6 +978,17 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       runOperation(transport, createTerminalCardOperation(trackId, body, key), unauthorized),
     onSuccess: addCardToDetail,
   });
+  const setTerminalWorkbench = useRecoveryMutation(transport, {
+    mutationFn: ({ cardId, inWorkbench }: { trackId: string; cardId: string; inWorkbench: boolean }, port: ApiTransportPort) =>
+      runOperation(port, setTerminalWorkbenchOperation(cardId, inWorkbench), unauthorized),
+    onSuccess: (card) => {
+      client.setQueryData(queryKeys.trackDetail(card.track_id), (previous: TrackDetailWire | undefined) => previous === undefined ? previous
+        : { ...previous, cards: previous.cards.map(existing => existing.id === card.id ? card : existing) });
+    },
+    onSettled: (_card, _error, { trackId }) => {
+      void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
+    },
+  });
   const createCodex = useRecoveryMutation(transport, {
     mutationFn: ({ trackId, body, key }: { trackId: string; body: NewCodexCardBody; key: string }, transport: ApiTransportPort) =>
       runOperation(transport, createCodexCardOperation(trackId, body, key), unauthorized),
@@ -1034,6 +1046,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     create: async (body, idempotencyKey) => toTrack(await create.mutateAsync({ body, idempotencyKey })),
     patch: patchTrack,
     createTerminal: async (trackId, body, key) => createTerminal.mutateAsync({ trackId, body, key }),
+    setTerminalWorkbench: async (trackId, cardId, inWorkbench) => setTerminalWorkbench.mutateAsync({ trackId, cardId, inWorkbench }),
     createCodex: async (trackId, body, key) => createCodex.mutateAsync({ trackId, body, key }),
     createClaude: async (trackId, body, key) => createClaude.mutateAsync({ trackId, body, key }),
     createCard: async (trackId, body, key) => createCard.mutateAsync({ trackId, body, key }),

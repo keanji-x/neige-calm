@@ -40,6 +40,7 @@ export type DesktopPainterDeps = Readonly<{
   onOpenCard?: (cardId: string) => void;
   onOpenTask?: (blockId: string) => void;
   onDeleteCard?: (cardId: string) => void;
+  onSetWorkbench?: (cardId: string, inWorkbench: boolean) => void;
   /** The Cards module head's `+`, composed by `app/router`; travels as an opaque node. */
   cardsAction?: ReactNode;
   /** Compact, already-derived progress for the Tasks module head. */
@@ -165,7 +166,9 @@ function contextRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
         const text = action.label ?? (action.kind === 'open-card' ? 'View execution' : 'Remove tool');
         return <DropdownMenuItem key={action.kind} label={<span {...mark(MARKER.action, action.kind)} {...wording(target)}>{text}</span>}
           variant={action.kind === 'delete-card' ? 'destructive' : 'default'}
-          onClick={() => action.kind === 'delete-card' ? deps.onDeleteCard?.(target.id) : deps.onOpenCard?.(target.id)} />;
+          onClick={() => action.kind === 'delete-card' ? deps.onDeleteCard?.(target.id)
+            : action.kind === 'set-workbench' ? deps.onSetWorkbench?.(target.id, action.inWorkbench)
+            : deps.onOpenCard?.(target.id)} />;
       })} />
   </li>;
 }
@@ -181,6 +184,8 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
       'reveal-block': { supported: true },
       'open-card': { supported: true },
       'delete-card': deleteSupport,
+      'set-workbench': deps.onSetWorkbench === undefined
+        ? { supported: false, why: 'the host did not provide terminal placement mutation' } : { supported: true },
     },
 
     row: (row) => ({
@@ -209,11 +214,11 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
               <ContextList aria-label="Execution progress">{children}</ContextList>
             </ContextGroup>}
         </div>
-      </PanelModule> : parts.key === 'cards' ? <PanelModule key={parts.key} title={parts.title} bare
+      </PanelModule> : (parts.key === 'cards' || parts.key === 'temporary') ? <PanelModule key={parts.key} title={parts.title} bare
         moduleMarker={parts.key} titleFieldMarker={FIELD.moduleTitle}>
-        <ContextGroup title={parts.title} collapsible="controls" open secondaryAction={deps.cardsAction} actionVisibility="always">
-          <div data-nc-card-inventory="">{rows ? <ContextList aria-label="Workbench tools">{children}</ContextList> : children}</div>
-          {deps.cardEntries}
+        <ContextGroup title={parts.title} collapsible="controls" open={parts.key === 'cards'} secondaryAction={parts.key === 'cards' ? deps.cardsAction : undefined} actionVisibility="always">
+          <div {...(parts.key === 'cards' ? { 'data-nc-card-inventory': '' } : {})}>{rows ? <ContextList aria-label={parts.key === 'cards' ? 'Workbench tools' : 'Temporary terminals'}>{children}</ContextList> : children}</div>
+          {parts.key === 'cards' ? deps.cardEntries : undefined}
         </ContextGroup>
       </PanelModule> : (
         <PanelModule

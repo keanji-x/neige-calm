@@ -196,6 +196,7 @@ pub(super) async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
         f.repo.card_role_cache(),
         RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();
@@ -353,6 +354,7 @@ async fn typed_keyed_replay_drives_without_second_admit() {
     });
     let hash = stable_payload_hash(&json!({"actor": "user", "request": &request})).unwrap();
     let payload = serde_json::to_value(TerminalCreateOperationPayload {
+        source: calm_types::card_presentation::CardCreationSource::Manual,
         actor: calm_server::ids::ActorId::User,
         worker_session_id: Some(new_id()),
         planner_hooks: false,

@@ -113,6 +113,7 @@ async fn terminal_card(h: &Harness, track: &str) -> String {
         &CardRoleCache::new(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();

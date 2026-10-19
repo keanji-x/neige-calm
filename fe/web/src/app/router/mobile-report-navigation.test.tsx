@@ -24,7 +24,7 @@ const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as con
 };
 const CARD = {
   id: 'card-term', track_id: 'w1', kind: 'terminal', title: 'Build log', sort: 1,
-  payload: {}, deletable: true, created_at: 1, updated_at: 2,
+  payload: { terminal_presentation: { source: 'manual', in_workbench: true }, }, deletable: true, created_at: 1, updated_at: 2,
 };
 /* One section and one task, which is what makes the Outline and TASKS panels non-empty. */
 const REPORT_CARD = {

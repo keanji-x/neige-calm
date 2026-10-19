@@ -334,6 +334,12 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
     // Kernel-owned card kinds must match shape; plugin-prefixed and ui:// kinds remain opaque.
     validate_card_kind_global(&p.kind, &payload)
         .map_err(|e| RpcError::invalid_params(e.to_string()))?;
+    let payload = calm_truth::card_kind::prepare_card_create_payload_global(
+        &p.kind,
+        payload,
+        calm_types::card_presentation::CardCreationSource::Plugin,
+    )
+    .map_err(|error| RpcError::invalid_params(error.to_string()))?;
     let track_id_for_scope = p.track_id.clone();
     let new = NewCard {
         track_id: p.track_id.into(),
@@ -1181,6 +1187,7 @@ mod tests {
             SERVER_OWNED_CARD_PAYLOAD_KEYS,
             [
                 "terminal_signals",
+                "terminal_presentation",
                 "template_context",
                 "planner_provider",
                 "assistant_provider",

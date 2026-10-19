@@ -32,6 +32,7 @@ export type RowAction = Readonly<{
   | Readonly<{ kind: 'reveal-block'; blockId: string }>
   | Readonly<{ kind: 'open-card'; cardId: string }>
   | Readonly<{ kind: 'delete-card'; cardId: string }>
+  | Readonly<{ kind: 'set-workbench'; cardId: string; inWorkbench: boolean }>
 );
 
 export type PanelRow = Readonly<{
@@ -47,7 +48,7 @@ export type PanelRow = Readonly<{
 }>;
 
 export type RowModuleView = Readonly<{
-  key: 'cards' | 'tasks' | 'work';
+  key: 'cards' | 'tasks' | 'work' | 'temporary';
   title: string;
   rows: readonly PanelRow[];
   /** What the module says when it has no rows. */

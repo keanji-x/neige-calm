@@ -281,3 +281,138 @@ async fn a_create_stuck_after_its_commit_replays_as_stuck_and_makes_no_card() {
         .len();
     assert_eq!(after, before, "a replay of a stuck create makes no card");
 }
+
+async fn placement(boot: &super::Boot, card_id: &str, body: Value) -> (StatusCode, Value) {
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let reply = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{card_id}/terminal-workbench"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = reply.status();
+    let bytes = reply.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn terminal_presentation_retry_refreshes_live_membership_for_atomic_and_generic_receipts() {
+    for generic in [false, true] {
+        let boot = boot_happy().await;
+        let uri = format!(
+            "/api/tracks/{}/{}",
+            boot.track_id,
+            if generic { "cards" } else { "terminal-cards" }
+        );
+        let request = if generic {
+            json!({"kind":"terminal","payload":null})
+        } else {
+            body("/bin/sh")
+        };
+        let key = if generic {
+            "placement-generic"
+        } else {
+            "placement-atomic"
+        };
+        let (status, first) =
+            post_with_idempotency(boot.app.clone(), uri.clone(), request.clone(), Some(key)).await;
+        assert_eq!(status, StatusCode::CREATED, "{first}");
+        assert_eq!(
+            first["payload"]["terminal_presentation"],
+            json!({"source":"manual","in_workbench":true})
+        );
+        let id = first["id"].as_str().unwrap();
+        let pool = boot.repo.sqlite_db().unwrap();
+        let original: String =
+            sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE idempotency_key=?1")
+                .bind(key)
+                .fetch_one(pool.read_pool())
+                .await
+                .unwrap();
+        let mut old: Value = serde_json::from_str(&original).unwrap();
+        old["result"]["payload"] = Value::Null;
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE idempotency_key=?2")
+            .bind(old.to_string())
+            .bind(key)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let before:(String,String,String)=sqlx::query_as("SELECT payload_json,payload_hash,tx_output_json FROM operations WHERE idempotency_key=?1").bind(key).fetch_one(pool.read_pool()).await.unwrap();
+        let (status, moved) = placement(&boot, id, json!({"in_workbench":false})).await;
+        assert_eq!(status, StatusCode::OK, "{moved}");
+        let (status, replayed) =
+            post_with_idempotency(boot.app.clone(), uri, request, Some(key)).await;
+        assert_eq!(status, StatusCode::CREATED, "{replayed}");
+        assert_eq!(replayed["id"], first["id"]);
+        assert_eq!(
+            replayed["payload"]["terminal_presentation"],
+            json!({"source":"manual","in_workbench":false})
+        );
+        assert_eq!(operations_under(&boot, key).await, 1);
+        let after:(String,String,String)=sqlx::query_as("SELECT payload_json,payload_hash,tx_output_json FROM operations WHERE idempotency_key=?1").bind(key).fetch_one(pool.read_pool()).await.unwrap();
+        assert_eq!(
+            after, before,
+            "live response refresh must not rewrite the immutable receipt or request"
+        );
+        let (status, _) = placement(&boot, id, json!({"in_workbench":true,"source":"agent"})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let current = boot.repo.card_get(id).await.unwrap().unwrap();
+        assert_eq!(
+            current.payload["terminal_presentation"],
+            json!({"source":"manual","in_workbench":false})
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_presentation_replay_refuses_a_deleted_terminal_without_recreating_it() {
+    let boot = boot_happy().await;
+    let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
+    let request = body("/bin/sh");
+    let (status, card) = post_with_idempotency(
+        boot.app.clone(),
+        uri.clone(),
+        request.clone(),
+        Some("deleted-placement"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{card}");
+    boot.repo
+        .card_delete(card["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    let (status, replay) =
+        post_with_idempotency(boot.app.clone(), uri, request, Some("deleted-placement")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{replay}");
+    assert_eq!(operations_under(&boot, "deleted-placement").await, 1);
+    assert!(
+        boot.repo
+            .cards_by_track(&boot.track_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn terminal_presentation_generic_create_rejects_client_provenance() {
+    let boot = boot_happy().await;
+    let uri = format!("/api/tracks/{}/cards", boot.track_id);
+    let (status, answer) = post_with_idempotency(boot.app.clone(), uri,
+        json!({"kind":"terminal","payload":{"terminal_presentation":{"source":"manual","in_workbench":true}}}), Some("spoofed-placement")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(operations_under(&boot, "spoofed-placement").await, 0);
+}

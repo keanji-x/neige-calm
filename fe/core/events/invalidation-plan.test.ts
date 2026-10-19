@@ -266,3 +266,16 @@ describe('invalidation plan behavior', () => {
     });
   });
 });
+
+
+it('keeps historical Terminal events opaque and refetches current placement', () => {
+  for (const ev of ['card.added', 'card.updated'] as const) {
+    const legacy = wireEventSchema.parse({ ev, data: {
+      id: 'legacy-terminal', track_id: 'track', kind: 'terminal', sort: 0,
+      payload: null, deletable: true, created_at: 1, updated_at: 1,
+    } });
+    const plan = invalidationPlanFor(legacy);
+    expect(plan.invalidate).toContainEqual(['track', 'track']);
+    expect(plan.writeThrough).toEqual([]);
+  }
+});

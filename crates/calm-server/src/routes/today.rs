@@ -398,6 +398,7 @@ async fn today_launchpad_ensure_tx(
             s.write.role_cache(),
             RequestTheme::default_dark(),
             false,
+            calm_types::card_presentation::CardCreationSource::System,
         )
         .await?
     };

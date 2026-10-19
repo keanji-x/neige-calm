@@ -7,7 +7,7 @@ import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
-import { captureContextProjection, card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { captureContextProjection, manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /* The fixture has to give the assertion teeth: a titled and an untitled card, a deletable card with `onDeleteCard` passed, a kernel-owned untitled card, a task with a `statusDetail`, a withdrawn task, a task with a kind and a worker card. Titles, kinds and badge texts are not substrings of one another. */
 const CARDS: readonly CardWire[] = [

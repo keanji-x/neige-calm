@@ -76,6 +76,7 @@ async fn rejects_prepared_cwd(source: Source) {
             TrackAreaCache::new(),
         );
         let payload = serde_json::to_value(TerminalCreateOperationPayload {
+            source: calm_types::card_presentation::CardCreationSource::Manual,
             actor: ActorId::KernelDispatcher,
             worker_session_id: None,
             planner_hooks: false,
@@ -211,6 +212,7 @@ async fn isolation_none_non_git_terminal_launch_skips_observation() {
         TrackAreaCache::new(),
     );
     let payload = serde_json::to_value(TerminalCreateOperationPayload {
+        source: calm_types::card_presentation::CardCreationSource::Manual,
         actor: ActorId::KernelDispatcher,
         worker_session_id: None,
         planner_hooks: false,

@@ -13,7 +13,7 @@ import { MARKER } from '../../../../../core/view/panel.ts';
 import type { RowModuleView, RowPainter } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { MobileLeaf } from './mobile-painter.tsx';
-import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 /** Every call the page made, in order. */
 const calls: { painter: RowPainter<MobileLeaf>; module: RowModuleView }[] = [];

@@ -1188,6 +1188,7 @@ pub mod sqlite {
         card_role_cache: &CardRoleCache,
         theme: RequestTheme,
         planner_hooks: bool,
+        source: calm_types::card_presentation::CardCreationSource,
     ) -> Result<(Card, Terminal)> {
         calm_truth::db::sqlite::card_with_terminal_create_tx(
             tx,
@@ -1205,6 +1206,7 @@ pub mod sqlite {
             card_role_cache,
             theme,
             planner_hooks,
+            source,
         )
         .await
         .map_err(Into::into)

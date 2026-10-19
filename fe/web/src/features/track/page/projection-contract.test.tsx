@@ -24,6 +24,7 @@ const allSupported: RowPainter<ReactNode>['action'] = Object.freeze({
   'reveal-block': Object.freeze<ActionSupport>({ supported: true }),
   'open-card': Object.freeze<ActionSupport>({ supported: true }),
   'delete-card': Object.freeze<ActionSupport>({ supported: true }),
+  'set-workbench': Object.freeze<ActionSupport>({ supported: true }),
 });
 
 const deleteUnsupported: RowPainter<ReactNode>['action'] = Object.freeze({
@@ -46,6 +47,7 @@ const cardRow: PanelRow = Object.freeze({
   actions: Object.freeze<readonly RowAction[]>([
     Object.freeze({ kind: 'open-card', cardId: 'c1', label: null, hint: null, description: null }),
     deleteAction,
+    Object.freeze({ kind: 'set-workbench', cardId: 'c1', inWorkbench: false, label: 'Remove from Workbench', hint: null, description: null }),
   ]),
 });
 
@@ -114,6 +116,8 @@ const withEmptyCards: readonly RowModuleView[] = Object.freeze([emptyCards, task
 /** The canonical fixture lists whose aggregate shape is guarded; `cohostView` and `tapView` are deliberately not registered here. */
 const work: RowModuleView = Object.freeze({ key: 'work', title: 'Workspace', empty: 'Nothing to show yet.', rows: Object.freeze([...cards.rows, ...tasks.rows]) });
 const FIXTURES: readonly (readonly RowModuleView[])[] = Object.freeze([view, withEmpty, withEmptyCards,
+  Object.freeze([{ ...cards, key: 'temporary' as const, title: 'Temporary terminals' }]),
+  Object.freeze([{ ...emptyCards, key: 'temporary' as const, title: 'Temporary terminals' }]),
   Object.freeze([work]), Object.freeze([{ ...work, rows: Object.freeze([]) }]),
 ]);
 
@@ -121,11 +125,11 @@ const ALL_MODULES: readonly RowModuleView[] = FIXTURES.flatMap((fixture) => [...
 const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module.rows]);
 
 const ACTION_KINDS: readonly RowAction['kind'][] =
-  Object.freeze<readonly RowAction['kind'][]>(['reveal-block', 'open-card', 'delete-card']);
+  Object.freeze<readonly RowAction['kind'][]>(['reveal-block', 'open-card', 'delete-card', 'set-workbench']);
 
 /** The module-key domain in full, typed as an exhaustive `Record`: deriving it from the fixtures would only ever check the keys that already appear. */
 const MODULE_KEY_TABLE: Readonly<Record<RowModuleView['key'], true>> =
-  Object.freeze({ cards: true, tasks: true, work: true });
+  Object.freeze({ cards: true, tasks: true, work: true, temporary: true });
 const MODULE_KEYS = Object.keys(MODULE_KEY_TABLE) as readonly RowModuleView['key'][];
 
 /** The capability table the action-shape clauses are stated against. Support is
@@ -476,7 +480,7 @@ describe('A / action layer, and D — the action wording', () => {
   it('action-nesting: one action host is painted inside another', () => {
     const painter = rowVariant('c1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}{parts.badges}{parts.status}
-        {actionEl(row.actions[0], { body: actionEl(row.actions[1]) })}</>
+        {actionEl(row.actions[0], { body: actionEl(row.actions[1]) })}{parts.actions.slice(2)}</>
     )));
     expect(codesOf(painter, view)).toEqual(['action-nesting']);
   });
@@ -493,7 +497,7 @@ describe('A / action layer, and D — the action wording', () => {
     // visible text (WCAG 2.5.3). A one-sided check would not see it.
     const painter = rowVariant('c1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}{parts.badges}{parts.status}
-        {actionEl(row.actions[0], { label: 'Open' })}{parts.actions[1]}</>
+        {actionEl(row.actions[0], { label: 'Open' })}{parts.actions.slice(1)}</>
     )));
     expect(codesOf(painter, view)).toEqual(['action-label']);
   });
@@ -501,7 +505,7 @@ describe('A / action layer, and D — the action wording', () => {
   it('action-label: a non-null label is worded differently', () => {
     const painter = rowVariant('c1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}{parts.badges}{parts.status}
-        {parts.actions[0]}{actionEl(row.actions[1], { label: 'Delete' })}</>
+        {parts.actions[0]}{actionEl(row.actions[1], { label: 'Delete' })}{parts.actions.slice(2)}</>
     )));
     expect(codesOf(painter, view)).toEqual(['action-label']);
   });
@@ -509,7 +513,7 @@ describe('A / action layer, and D — the action wording', () => {
   it('action-hint: a null hint is given a title anyway', () => {
     const painter = rowVariant('c1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}{parts.badges}{parts.status}
-        {actionEl(row.actions[0], { hint: 'Open the card' })}{parts.actions[1]}</>
+        {actionEl(row.actions[0], { hint: 'Open the card' })}{parts.actions.slice(1)}</>
     )));
     expect(codesOf(painter, view)).toEqual(['action-hint']);
   });

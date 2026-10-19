@@ -10,7 +10,7 @@ import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { Dialog } from '../../../ui/dialog/public.tsx';
 import { TrackPage, type TrackInputNotification, type TrackPageProps } from './public.tsx';
-import { card, renderPage, track } from './test-fixtures.tsx';
+import { manualCard as card, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 

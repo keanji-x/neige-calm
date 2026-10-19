@@ -35,7 +35,7 @@ it('hides phone entries and rejects manual commands locally while keeping the dr
 it('preserves the ordinary phone terminal card input and confirmed deletion path', async () => {
   await page.viewport(414, 896);
   const { sockets, Socket } = workbenchSockets(); vi.stubGlobal('WebSocket', Socket);
-  const fixture = setupWorkbench({ cards: [{ ...terminalCard('phone'), payload: { terminal_id: 'pty-1' } }] });
+  const fixture = setupWorkbench({ cards: [{ ...terminalCard('phone', { source: 'manual', in_workbench: true }), payload: { terminal_presentation: { source: 'manual', in_workbench: true },  terminal_id: 'pty-1' } }] });
   await screen.findByRole<HTMLTextAreaElement>('textbox', { name: 'Chat message' });
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'workbench' }, search: { card: 'phone' } }); });
   await waitFor(() => expect(sockets).toHaveLength(1));
@@ -55,7 +55,7 @@ it('preserves the ordinary phone terminal card input and confirmed deletion path
 it('uses viewport width on a coarse desktop and hides the retained host without focus on compact transition', async () => {
   await page.viewport(1280, 900);
   const { sockets, Socket } = workbenchSockets(); vi.stubGlobal('WebSocket', Socket);
-  const fixture = setupWorkbench({ cards: [{ ...terminalCard('shell'), payload: { terminal_id: 'pty-1' } }] });
+  const fixture = setupWorkbench({ cards: [{ ...terminalCard('shell', { source: 'manual', in_workbench: true }), payload: { terminal_presentation: { source: 'manual', in_workbench: true },  terminal_id: 'pty-1' } }] });
   const mount = vi.spyOn(fixture.runtime.host, 'mount');
   await page.getByRole('button', { name: /^shell/ }).click();
   await waitFor(() => expect(sockets).toHaveLength(1));

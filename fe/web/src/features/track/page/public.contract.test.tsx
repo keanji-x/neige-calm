@@ -6,7 +6,7 @@ import { cleanup, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { card, renderPage, track } from './test-fixtures.tsx';
+import { manualCard as card, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 

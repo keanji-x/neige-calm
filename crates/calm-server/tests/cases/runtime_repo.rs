@@ -163,6 +163,7 @@ async fn mint_terminal_session(
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();
@@ -1245,6 +1246,7 @@ async fn session_start_runtime_tx_terminal_persists_active_row() {
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();
@@ -1288,6 +1290,7 @@ async fn runtime_complete_for_terminal_exited_path() {
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();
@@ -1340,6 +1343,7 @@ async fn runtime_complete_for_terminal_failed_path() {
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();
@@ -1398,6 +1402,7 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();
@@ -1450,6 +1455,7 @@ async fn runtime_complete_for_card_noop_when_no_active() {
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();
@@ -1502,6 +1508,7 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
         repo.card_role_cache(),
         calm_server::routes::theme::RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();

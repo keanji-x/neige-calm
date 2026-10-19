@@ -43,7 +43,7 @@ import {
   type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import { cardActivityOf, type CardActivity } from '../../../../core/domain/activity.ts';
-import { parkedWorkerNotices } from '../../../../core/view/track-page.ts';
+import { parkedWorkerNotices, workbenchTerminalCardIds } from '../../../../core/view/track-page.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
 } from '../../systems/cards/public.js';
@@ -1144,10 +1144,59 @@ function TrackRouteBody({
     [placedRows, plannerRow],
   );
   const openAsks = useMemo(() => openAsksOf(track.attentionItems), [track.attentionItems]);
+  /* The runtime half of the TASKS panel, keyed `['track-report', trackId]`: the key
+   * `invalidation-plan` refreshes on every `task.*` event and `track.report_edited`. */
+  /* Read before the query: the poll's interval depends on the rows this report can produce. */
+  const { report, outline } = reportPresentation;
+  const reportBlocks = report?.blocks ?? null;
+  const verdictsQuery = useQuery(
+    trackTaskVerdictsQueryOptions(transport, track.id, unauthorized, reportBlocks),
+  );
+  const verdicts = verdictsQuery.data;
+  const { tasks: joinedTasks } = useMemo(() => ({
+    /* The verdicts land a round-trip after the declarations; `undefined` renders
+           the statusless list rather than a hole. */
+    tasks: deriveReportTasks(reportBlocks, verdicts),
+  }), [reportBlocks, verdicts]);
+  /* The CARDS module lists cards that have a surface; unclaimed kinds stay listed,
+   * and `originalIndex` is bound before the filter so the merge keeps wire order. */
+  const panelCards = useMemo(() => {
+    const { visible, unknown } = partitionTrackCards(cardRegistry, cards);
+    return [...visible, ...unknown]
+      .sort((left, right) => left.originalIndex - right.originalIndex)
+      .map((slot) => slot.wire);
+  }, [cardRegistry, cards]);
+  const tasks = useCurrentTaskRows(track.id, joinedTasks);
+  /* From the task rows the TASKS module draws, so a worker card and its row read one attempt status.
+   * `tasks` is a new array every render: keyed by content, so the board's items keep their identity. */
+  const noticeKey = JSON.stringify([...parkedWorkerNotices(tasks)]);
+  const notices = useMemo(() => new Map(JSON.parse(noticeKey) as [string, string][]), [noticeKey]);
+  const gridItems: readonly BoardHostItem[] = useMemo(() => {
+    const { visible } = partitionTrackCards(cardRegistry, cards);
+    return [...visible]
+      .sort((left, right) => {
+        const sort = left.wire.sort - right.wire.sort;
+        return sort !== 0 ? sort : left.originalIndex - right.originalIndex;
+      })
+      .map((slot) => Object.freeze({
+        card: slot.card,
+        title: slot.wire.title ?? slot.wire.kind,
+        originalIndex: slot.originalIndex,
+        /* The kernel's bit, carried straight through, so the board and the CARDS panel
+                   cannot disagree about which cards are the kernel's. */
+        deletable: slot.wire.deletable,
+        /* The kernel's verdict for the card, from the same overlay the CARDS row reads. */
+        activity: cardActivityOf(track, slot.card.id),
+        notice: notices.get(slot.card.id) ?? null,
+      }));
+  }, [cardRegistry, cards, track, notices]);
+  const openableCards = useMemo(() => new Set(gridItems.map((item) => item.card.id)), [gridItems]);
+  const defaultTerminalIds = useMemo(() => workbenchTerminalCardIds({ cards: panelCards, tasks,
+    activity: track, openableCards }), [panelCards, tasks, track, openableCards]);
   /* `'rows'` unconditionally: an empty list with a `+` over it is the whole feature. */
   const trackViews = useTrackViews();
   if (trackViews === null) throw new Error('Terminal workbench requires TrackViewProvider');
-  const workbench = useTerminalWorkbench({ session: trackViews.terminals.forTrack(track.id), trackId: track.id, cards, ordinaryCardOpen: requestedCardId !== null,
+  const workbench = useTerminalWorkbench({ session: trackViews.terminals.forTrack(track.id), trackId: track.id, cards, defaultCardIds: defaultTerminalIds, ordinaryCardOpen: requestedCardId !== null,
     onHide: () => { if (requestedCardId !== null && cards.some(card => card.id === requestedCardId && card.kind === 'terminal')) goSameTrack(track.id, { card: undefined }, { replace: true }); },
     create: (body, key) => trackMutations.createTerminal(track.id, body, key),
     request: () => ({ key: mintIdempotencyKey(), body: { theme: readHostThemeRgb() } }),
@@ -1200,52 +1249,6 @@ function TrackRouteBody({
     if (rows.some((row) => row.id === requestedOpenId)) return;
     registry.clearOpenRequest();
   }, [conversationsQuery.isError, registry, rows, openRequest]);
-  /* The runtime half of the TASKS panel, keyed `['track-report', trackId]`: the key
-   * `invalidation-plan` refreshes on every `task.*` event and `track.report_edited`. */
-  /* Read before the query: the poll's interval depends on the rows this report can produce. */
-  const { report, outline } = reportPresentation;
-  const reportBlocks = report?.blocks ?? null;
-  const verdictsQuery = useQuery(
-    trackTaskVerdictsQueryOptions(transport, track.id, unauthorized, reportBlocks),
-  );
-  const verdicts = verdictsQuery.data;
-  const { tasks: joinedTasks } = useMemo(() => ({
-    /* The verdicts land a round-trip after the declarations; `undefined` renders
-           the statusless list rather than a hole. */
-    tasks: deriveReportTasks(reportBlocks, verdicts),
-  }), [reportBlocks, verdicts]);
-  /* The CARDS module lists cards that have a surface; unclaimed kinds stay listed,
-   * and `originalIndex` is bound before the filter so the merge keeps wire order. */
-  const panelCards = useMemo(() => {
-    const { visible, unknown } = partitionTrackCards(cardRegistry, cards);
-    return [...visible, ...unknown]
-      .sort((left, right) => left.originalIndex - right.originalIndex)
-      .map((slot) => slot.wire);
-  }, [cardRegistry, cards]);
-  const tasks = useCurrentTaskRows(track.id, joinedTasks);
-  /* From the task rows the TASKS module draws, so a worker card and its row read one attempt status.
-   * `tasks` is a new array every render: keyed by content, so the board's items keep their identity. */
-  const noticeKey = JSON.stringify([...parkedWorkerNotices(tasks)]);
-  const notices = useMemo(() => new Map(JSON.parse(noticeKey) as [string, string][]), [noticeKey]);
-  const gridItems: readonly BoardHostItem[] = useMemo(() => {
-    const { visible } = partitionTrackCards(cardRegistry, cards);
-    return [...visible]
-      .sort((left, right) => {
-        const sort = left.wire.sort - right.wire.sort;
-        return sort !== 0 ? sort : left.originalIndex - right.originalIndex;
-      })
-      .map((slot) => Object.freeze({
-        card: slot.card,
-        title: slot.wire.title ?? slot.wire.kind,
-        originalIndex: slot.originalIndex,
-        /* The kernel's bit, carried straight through, so the board and the CARDS panel
-                   cannot disagree about which cards are the kernel's. */
-        deletable: slot.wire.deletable,
-        /* The kernel's verdict for the card, from the same overlay the CARDS row reads. */
-        activity: cardActivityOf(track, slot.card.id),
-        notice: notices.get(slot.card.id) ?? null,
-      }));
-  }, [cardRegistry, cards, track, notices]);
   const inputNotifications = useMemo(
     () => trackNotifications(track.attentionItems),
     [track.attentionItems],
@@ -1266,7 +1269,6 @@ function TrackRouteBody({
    * draws. A worker card whose kind no entry claims is `unknown` and its `?card=`
    * is bounced; its task keeps its `workerCardId` regardless, because the TASKS
    * row looks its activity verdict up by that id. */
-  const openableCards = useMemo(() => new Set(gridItems.map((item) => item.card.id)), [gridItems]);
   const knownCard = requestedCardId !== null
     && gridItems.some((item) => item.card.id === requestedCardId);
   useEffect(() => {
@@ -1317,6 +1319,7 @@ function TrackRouteBody({
   /* A failed create has to be sayable with no dialog on screen: a fieldless kind
    * never opens one, so the message gets a route-level surface. */
   const cardCreateFeedback = useOperationFeedback();
+  const terminalPlacementFeedback = useOperationFeedback();
   const newCardFieldRef = useRef<HTMLInputElement | null>(null);
   /* A create that lands after the reader has left must not steer them: one
    * `AbortController` per attempt, aborted on unmount, read before the navigation
@@ -1484,6 +1487,10 @@ function TrackRouteBody({
       />}
       onOpenCard={(cardId) => { if (!compactViewport && workbench.cardIds.has(cardId)) { workbench.reveal(cardId); return; } go({ name: 'track', trackId: track.id, cardId, from: routeFrom }); }}
       onDeleteCard={cardDeletion.request}
+      onSetWorkbench={(cardId, inWorkbench) => {
+        void terminalPlacementFeedback.run(trackMutations.setTerminalWorkbench(track.id, cardId, inWorkbench),
+          () => 'Could not move this terminal. Try again.');
+      }}
       board={<>
         <CardGridOverlay
           open={knownCard && (compactViewport || !workbench.cardIds.has(requestedCardId))}
@@ -1622,6 +1629,7 @@ function TrackRouteBody({
       onCancel={cardDeletion.cancel}
     />
     <OperationFeedback feedback={cardDeletion.feedback} />
+    <OperationFeedback feedback={terminalPlacementFeedback} />
     {/* Only while the dialog is closed: `NewCardForm` renders the same `error` inline. */}
     {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback}
       action={retryCardCreate === null ? undefined : <Button label="Try again" variant="ghost" onClick={retryCardCreate} />} />}

@@ -312,6 +312,14 @@ pub(crate) async fn create_card(
     s.card_kind_registry()
         .validate_payload(&kind, &payload)
         .map_err(|e| CalmError::from(e).into_response())?;
+    let payload = s
+        .card_kind_registry()
+        .prepare_create_payload(
+            &kind,
+            payload,
+            calm_types::card_presentation::CardCreationSource::Manual,
+        )
+        .map_err(|error| CalmError::from(error).into_response())?;
     let card = CardCreateOperationPayload {
         actor: actor.to_actor_id(),
         correlation: None,
@@ -446,6 +454,14 @@ async fn create_via_tool_call(
         .validate_payload(&creation.resource_uri, &payload)
         .map_err(|e| CalmError::from(e).into_response())?;
     // Actor stays `Plugin(<id>)`; `correlation` records the user-driven invocation so audit queries can reconstruct the causal chain.
+    let payload = s
+        .card_kind_registry()
+        .prepare_create_payload(
+            &creation.resource_uri,
+            payload,
+            calm_types::card_presentation::CardCreationSource::Plugin,
+        )
+        .map_err(|error| CalmError::from(error).into_response())?;
     let card = CardCreateOperationPayload {
         actor: ActorId::Plugin(via.plugin_id.clone()),
         correlation: Some(format!("user_tool_call:{}", via.tool_name)),

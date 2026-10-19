@@ -7,7 +7,7 @@ import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/trac
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { PanelCard } from '../../../ui/panel-card/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
-import { card, openableCardsOf, renderPage } from './test-fixtures.tsx';
+import { manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
 
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['kind']>): ReportTaskRow => ({

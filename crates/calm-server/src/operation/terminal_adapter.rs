@@ -1,3 +1,4 @@
+mod create_payload;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -157,6 +158,7 @@ impl TerminalWorkerAdapter {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TerminalCreateOperationPayload {
+    pub source: calm_types::card_presentation::CardCreationSource,
     pub actor: ActorId,
     #[serde(default)]
     /// Wire key frozen as `runtime_id`: stored payloads keep it, and without the rename a parked operation would resume with a fresh session id.
@@ -255,9 +257,9 @@ impl ProviderAdapter for TerminalAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<TxOutput> {
-        let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
+        let payload = create_payload::decode_stored(input, &op.kind)?;
         let program = payload.request.program.clone();
         let card_id = new_id();
         // The hook env depends on the card id allocated here; it is persisted identically in the terminal row and the spawn output.
@@ -303,6 +305,7 @@ impl ProviderAdapter for TerminalAdapter {
             &self.card_role_cache,
             payload.request.theme,
             payload.planner_hooks,
+            payload.source,
         )
         .await?;
         let event = Event::CardAdded(card.clone());
@@ -671,6 +674,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             &self.card_role_cache,
             RequestTheme::default_dark(),
             false,
+            calm_types::card_presentation::CardCreationSource::Task,
         )
         .await?;
 

@@ -157,6 +157,7 @@ pub(crate) async fn keyed_card_answer<
     outcome: OperationOutcome,
 ) -> Result<(StatusCode, Json<Card>)> {
     let mut card: Card = serde_json::from_value(keyed_create_result(outcome)?)?;
+    crate::routes::terminal_cards::project_live_terminal_presentation(repo, &mut card).await?;
     project_runtime_into_card_payload(repo, &mut card).await?;
     Ok((StatusCode::CREATED, Json(card)))
 }

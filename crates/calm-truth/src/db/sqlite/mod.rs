@@ -2,6 +2,7 @@
 //! function so it can compose inside `write_with_event`'s transaction.
 
 mod subtrack_route_migration;
+pub mod terminal_presentation;
 
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -450,3 +451,6 @@ pub use task_planner_messages::{
 
 #[cfg(test)]
 mod track_admin_tests;
+
+#[cfg(test)]
+mod terminal_presentation_tests;

@@ -39,12 +39,13 @@ export function createTerminalWorkbenchSessions() {
 }
 
 /** Track owns selection and the held create intent; app injects transport and key/theme policy. */
-export function useTerminalWorkbench({ trackId, cards, create, request, session, ordinaryCardOpen, onHide }: {
+export function useTerminalWorkbench({ trackId, cards, create, request, session, defaultCardIds, ordinaryCardOpen, onHide }: {
   trackId: string;
   ordinaryCardOpen: boolean;
   onHide: () => void;
   session: TerminalWorkbenchSession;
   cards: readonly CardWire[];
+  defaultCardIds: ReadonlySet<string>;
   create: (body: NewTerminalCardBody, key: string) => Promise<CardWire>;
   request: () => TerminalRequest;
 }) {
@@ -63,6 +64,7 @@ export function useTerminalWorkbench({ trackId, cards, create, request, session,
   const alive = useRef(true);
   const opener = useRef<HTMLElement | null>(null);
   const terminals = cards.filter(card => card.kind === 'terminal');
+  const defaults = terminals.filter(card => defaultCardIds.has(card.id));
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, [trackId]);
   useEffect(() => {
     if (!open) return;
@@ -113,13 +115,13 @@ export function useTerminalWorkbench({ trackId, cards, create, request, session,
     if (id !== undefined && terminals.some(card => card.id === id)) { select(id); return; }
     // Unknown outcomes retain the first body/key even if a refresh has found cards meanwhile.
     if (session.held !== null) { createOne(); return; }
-    const candidate = id ?? terminals.find(card => card.id === session.selected)?.id ?? terminals[0]?.id;
+    const candidate = id ?? defaults.find(card => card.id === session.selected)?.id ?? defaults[0]?.id;
     if (candidate !== undefined) select(candidate);
     else createOne();
   };
   const hide = () => { session.epoch += 1; setOpen(false); setFocus(false); onHide(); opener.current?.focus({ preventScroll: true }); };
   // Deletion chooses another existing option but never implicitly creates a replacement.
-  const selectedId = terminals.some(card => card.id === session.selected) ? session.selected : terminals[0]?.id ?? null;
+  const selectedId = terminals.some(card => card.id === session.selected) ? session.selected : defaults[0]?.id ?? null;
   // Every displayed selection, including list/deletion fallback, enters the retained set
   // before its host mounts. Unvisited terminals remain unattached.
   if (open && selectedId !== null && !visited.includes(selectedId)) setVisited([...visited, selectedId]);

@@ -1,6 +1,7 @@
 // The track page's panel view model, derived once for every viewport; the desktop and mobile
 // painters render from it and this file is the authority on the rules and the action wording.
 
+import { terminalPresentation } from '../domain/terminal-presentation.js';
 import { agentProviderSchema } from '../api/schemas.js';
 import { groupPanelRows, progressRowFinished } from './panel-groups.js';
 import { activityLabelOf, cardActivityOf, cardActivityState, type CardActivity } from '../domain/activity.js';
@@ -260,8 +261,23 @@ export function deriveTrackPageView(input: Readonly<{
     const workerTime = !ended && selected?.id === row.id && worker !== undefined ? resourceRecency(worker) : null;
     return { row: { ...row, id: `task:${row.id}` }, recency: latestEvidence(attemptTime, workerTime) };
   });
-  const resourceEntries = cards.rows.filter(row => !absorbed.has(row.id)).map(row => ({
+  const temporaryIds = new Set<string>();
+  const placementRow = (row: PanelRow): PanelRow => {
+    const card = resourcesById.get(row.id)!;
+    if (card.kind !== 'terminal') return row;
+    const presentation = terminalPresentation(card);
+    if (!presentation.in_workbench) temporaryIds.add(row.id);
+    return { ...row, actions: [...row.actions, {
+      kind: 'set-workbench', cardId: card.id, inWorkbench: !presentation.in_workbench,
+      label: presentation.in_workbench ? 'Remove from Workbench' : 'Add to Workbench',
+      hint: null, description: null,
+    }] };
+  };
+  const independentRows = cards.rows.filter(row => !absorbed.has(row.id)).map(placementRow);
+  const independentById = new Map(independentRows.map(row => [row.id, row]));
+  const resourceEntries = independentRows.map(row => ({
     row: { ...row, id: `tool:${row.id}` }, recency: resourceRecency(resourcesById.get(row.id)!),
+    temporary: temporaryIds.has(row.id),
   }));
   const orderEntries = (entries: typeof taskEntries) => entries.toSorted((left, right) => {
     const phase = Number(progressRowFinished(left.row)) - Number(progressRowFinished(right.row));
@@ -271,11 +287,22 @@ export function deriveTrackPageView(input: Readonly<{
     return right.recency - left.recency;
   });
   return {
-    rowModules: [tasks, cards],
+    rowModules: [tasks, { ...cards, rows: cards.rows.map(row => independentById.get(row.id) ?? row) }],
     desktop: { rowModules: [{
       key: 'work', title: 'Progress', empty: 'No tasks declared yet.', rows: orderEntries(taskEntries).map(entry => entry.row),
     }, {
-      key: 'cards', title: 'Workbench', empty: 'No tools yet.', rows: orderEntries(resourceEntries).map(entry => entry.row),
-    }] },
+      key: 'cards', title: 'Workbench', empty: 'No tools yet.', rows: orderEntries(resourceEntries.filter(entry => !entry.temporary)).map(entry => entry.row),
+    }, ...(temporaryIds.size === 0 ? [] : [{
+      key: 'temporary' as const, title: 'Temporary terminals', empty: 'No temporary terminals.',
+      rows: orderEntries(resourceEntries.filter(entry => entry.temporary)).map(entry => entry.row),
+    }])] },
   };
+}
+
+
+/** Use the same ownership/placement projection for default selection; hosting still owns every Terminal. */
+export function workbenchTerminalCardIds(input: Parameters<typeof deriveTrackPageView>[0]): ReadonlySet<string> {
+  const workbench = deriveTrackPageView(input).desktop.rowModules.find(module => module.key === 'cards')!;
+  return new Set(workbench.rows.filter(row => row.kind === 'terminal').flatMap(row =>
+    row.actions.flatMap(action => action.kind === 'open-card' ? [action.cardId] : [])));
 }

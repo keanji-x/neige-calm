@@ -3,7 +3,7 @@ import { cleanup } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ChatList } from '../../features/chat/list/public.tsx';
-import { card, renderPage } from '../../features/track/page/test-fixtures.tsx';
+import { manualCard as card, renderPage } from '../../features/track/page/test-fixtures.tsx';
 
 afterEach(cleanup);
 

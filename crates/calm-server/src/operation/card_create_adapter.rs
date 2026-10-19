@@ -61,6 +61,10 @@ impl TxOnlyAdapter for CardCreateAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: CardCreateOperationPayload = serde_json::from_value(input.clone())?;
+        calm_truth::card_kind::validate_stored_card_payload_global(
+            &payload.kind,
+            &payload.payload,
+        )?;
         if self.repo.track_get(&payload.track_id).await?.is_none() {
             return Err(CalmError::NotFound(format!("track {}", payload.track_id)));
         }
@@ -74,6 +78,11 @@ impl TxOnlyAdapter for CardCreateAdapter {
         _op: &Operation,
     ) -> Result<TxOutput> {
         let payload: CardCreateOperationPayload = serde_json::from_value(input.clone())?;
+        let stored_payload = calm_truth::card_kind::prepare_card_create_payload_global(
+            &payload.kind,
+            payload.payload,
+            calm_types::card_presentation::CardCreationSource::Unrecorded,
+        )?;
         let card_id = new_id();
         let track_id = TrackId::from(payload.track_id);
         let scope = card_scope_tx(tx, CardId::from(card_id.clone()), track_id.clone()).await?;
@@ -85,7 +94,7 @@ impl TxOnlyAdapter for CardCreateAdapter {
                 track_id,
                 kind: payload.kind,
                 sort: payload.sort,
-                payload: payload.payload,
+                payload: stored_payload,
                 title: payload.title,
             },
             CardRole::Worker,

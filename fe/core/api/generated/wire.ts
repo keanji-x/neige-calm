@@ -101,6 +101,8 @@ payload: unknown, title?: string, runtime?: CardRuntimeView,
  */
 deletable: boolean, created_at: number, updated_at: number, };
 
+export type CardCreationSource = "manual" | "agent" | "task" | "system" | "plugin" | "unrecorded";
+
 /**
  * Card identifier.
  */
@@ -683,6 +685,8 @@ export type TaskPlannerMessage = { message_id: string, seq: number, text: string
  * received an allocation.
  */
 export type TaskRecoveryView = { key: string, current: TaskAttemptView | null, attempts: Array<TaskAttemptView>, };
+
+export type TerminalPresentation = { source: CardCreationSource, in_workbench: boolean, };
 
 export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number, pinned_at: number | null, 
 /**

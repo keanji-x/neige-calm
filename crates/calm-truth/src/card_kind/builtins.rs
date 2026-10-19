@@ -1,3 +1,6 @@
+use calm_types::card_presentation::{
+    CardCreationSource, TERMINAL_PRESENTATION_PAYLOAD_KEY, TerminalPresentation,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -13,6 +16,39 @@ use crate::validation::{
 pub struct TerminalCardHandler;
 
 impl CardKindHandler for TerminalCardHandler {
+    fn prepare_create_payload(
+        &self,
+        mut payload: Value,
+        source: CardCreationSource,
+    ) -> CardKindResult<Value> {
+        if payload.is_null() {
+            payload = serde_json::json!({"schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION});
+        }
+        let Some(map) = payload.as_object_mut() else {
+            return Err(bad("terminal", "payload must be a JSON object"));
+        };
+        if map.contains_key(TERMINAL_PRESENTATION_PAYLOAD_KEY) {
+            TerminalPresentation::from_payload(&payload).map_err(|error| bad("terminal", error))?;
+        } else {
+            map.insert(
+                TERMINAL_PRESENTATION_PAYLOAD_KEY.into(),
+                serde_json::to_value(TerminalPresentation::created(source))
+                    .map_err(|error| bad("terminal", error))?,
+            );
+        }
+        Ok(payload)
+    }
+
+    fn prepare_kind_transition_payload(&self, payload: Value) -> CardKindResult<Value> {
+        self.prepare_create_payload(payload, CardCreationSource::Unrecorded)
+    }
+
+    fn validate_stored_payload(&self, payload: &Value) -> CardKindResult<()> {
+        TerminalPresentation::from_payload(payload)
+            .map(|_| ())
+            .map_err(|error| bad("terminal", error))
+    }
+
     fn kind_id(&self) -> &'static str {
         "terminal"
     }

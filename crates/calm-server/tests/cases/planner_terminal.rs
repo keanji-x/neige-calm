@@ -28,6 +28,10 @@ async fn planner_opens_visible_terminal_and_receives_confirmed_input() {
         .unwrap();
     assert_eq!(card.track_id.as_str(), h.track);
     assert_eq!(card.kind, "terminal");
+    assert_eq!(
+        card.payload["terminal_presentation"],
+        json!({"source":"agent","in_workbench":false})
+    );
     let repeated = h
         .ok(
             "neige_terminal_open",

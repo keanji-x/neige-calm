@@ -97,6 +97,7 @@ async fn queued_task_change(replace_session: bool) {
         &roles,
         theme,
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .unwrap();

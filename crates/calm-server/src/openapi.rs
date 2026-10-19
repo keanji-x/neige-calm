@@ -37,7 +37,7 @@ use crate::routes::plugins::{
     ViewSizeWire,
 };
 use crate::routes::settings::{SettingsBag, SettingsPutBody};
-use crate::routes::terminal_cards::NewTerminalCardBody;
+use crate::routes::terminal_cards::{NewTerminalCardBody, TerminalWorkbenchBody};
 use crate::routes::threads::ThreadCardResolution;
 use crate::routes::today::{TodayLaunchpad, TodayLaunchpadResolved};
 use crate::routes::today_summary::TodaySummaryStarted;
@@ -168,6 +168,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::overlays::upsert_overlay,
         crate::routes::overlays::delete_overlay,
         crate::routes::terminal_cards::create_terminal_card,
+        crate::routes::terminal_cards::set_terminal_workbench,
         crate::routes::terminal::get_terminal_for_card,
         crate::routes::codex_cards::create_codex_card,
         crate::routes::threads::resolve_card_for_thread,
@@ -355,6 +356,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         CreateCardBody,
         ViaToolCall,
         NewTerminalCardBody,
+        TerminalWorkbenchBody,
         NewCodexCardBody,
         ThreadCardResolution,
         NewClaudeCardBody,

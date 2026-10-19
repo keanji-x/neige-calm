@@ -119,6 +119,7 @@ pub(crate) async fn worker_running(
             &roles,
             theme,
             false,
+            calm_types::card_presentation::CardCreationSource::Manual,
         )
         .await
         .unwrap(),

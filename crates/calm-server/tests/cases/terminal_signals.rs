@@ -2977,6 +2977,7 @@ async fn minted_terminal_card(
                     &cache,
                     RequestTheme::default_dark(),
                     false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
                 )
                 .await
             })

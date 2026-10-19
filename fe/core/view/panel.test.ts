@@ -25,6 +25,7 @@ const ALL_SUPPORTED: Readonly<Record<RowAction['kind'], ActionSupport>> = {
   'reveal-block': { supported: true },
   'open-card': { supported: true },
   'delete-card': { supported: true },
+      'set-workbench': { supported: true },
 };
 
 /** Records which leaf constructors ran, and with what. */
@@ -114,6 +115,7 @@ describe('paintModule action filtering', () => {
       'reveal-block': { supported: false, why: 'no report on this surface' },
       'open-card': { supported: true },
       'delete-card': { supported: true },
+      'set-workbench': { supported: true },
     });
     paintModule(painter, module([
       row('a', 'Alpha', [REVEAL, OPEN]),
@@ -128,6 +130,7 @@ describe('paintModule action filtering', () => {
       'reveal-block': { supported: false, why: 'no report' },
       'open-card': { supported: false, why: 'no card router' },
       'delete-card': { supported: false, why: 'no delete handler' },
+      'set-workbench': { supported: false, why: 'no terminal organization' },
     });
     paintModule(painter, module([row('a', 'Alpha', [REVEAL, OPEN, DELETE])]));
 

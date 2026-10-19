@@ -70,7 +70,7 @@ const REPORT_CARD = {
 };
 const TERMINAL_CARD = {
   id: 'card-terminal', track_id: 'w1', kind: 'terminal', title: 'Implementation terminal', sort: 1,
-  payload: {}, deletable: true, created_at: 1, updated_at: 2,
+  payload: { terminal_presentation: { source: 'manual', in_workbench: true }, }, deletable: true, created_at: 1, updated_at: 2,
 };
 const REVIEW_CARD = {
   id: 'card-review', track_id: 'w1', kind: 'codex', title: 'Design review', sort: 2,

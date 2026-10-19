@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import type { TerminalPresentation } from '../../../../core/domain/terminal-presentation.ts';
 import type { CardWire } from '../../../../core/domain/track.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
@@ -11,8 +12,8 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter, APP_BASEPATH } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
-export function terminalCard(id: string, trackId = 'workbench'): CardWire {
-  return { id, track_id: trackId, kind: 'terminal', title: id, sort: 1, payload: {}, deletable: true, created_at: 1, updated_at: 2 };
+export function terminalCard(id: string, presentation: TerminalPresentation, trackId = 'workbench'): CardWire {
+  return { id, track_id: trackId, kind: 'terminal', title: id, sort: 1, payload: { terminal_presentation: presentation }, deletable: true, created_at: 1, updated_at: 2 };
 }
 
 /** HTTP boundary fixture; production router, mutations, card registry and lifecycle remain real. */
@@ -49,7 +50,7 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
     if (path === '/api/tracks/workbench/report') return ok({ taskDiagnostics: [] });
     if (path === '/api/tracks/workbench/conversations') return ok(rows);
     if (path === '/api/tracks/other/terminal-cards' && method === 'POST') {
-      const card = terminalCard('other-terminal', 'other'); otherCards.push(card); return ok(card);
+      const card = terminalCard('other-terminal', { source: 'manual', in_workbench: true }, 'other'); otherCards.push(card); return ok(card);
     }
     if (path === '/api/tracks/workbench/terminal-cards' && method === 'POST') {
       if (defer) await new Promise<void>(resolve => releases.push(resolve));
@@ -57,9 +58,20 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
       if (outcome === 'definite') return { status: 400, statusText: 'Bad Request', body: { code: 'bad_request', error: 'Terminal refused' } };
       const key = request.headers?.['Idempotency-Key'] ?? '';
       let card = keys.get(key);
-      if (card === undefined) { card = terminalCard(`terminal-${keys.size + 1}`); if (createdTerminalId !== null) card = { ...card, payload: { terminal_id: createdTerminalId } }; cards.push(card); keys.set(key, card); }
+      if (card === undefined) { card = terminalCard(`terminal-${keys.size + 1}`, { source: 'manual', in_workbench: true }); if (createdTerminalId !== null) card = { ...card, payload: { ...(card.payload as Record<string, unknown>), terminal_id: createdTerminalId } }; cards.push(card); keys.set(key, card); }
       if (lose || outcome === 'unknown') { lose = false; throw new Error('lost response'); }
       return ok(card);
+    }
+    if (method === 'PATCH' && path.endsWith('/terminal-workbench')) {
+      const id = decodeURIComponent(path.split('/')[3]);
+      const index = cards.findIndex(card => card.id === id);
+      if (index < 0) return { status: 404, statusText: 'Not Found', body: {} };
+      const current = cards[index];
+      const payload = current.payload as { terminal_presentation: { source: string; in_workbench: boolean } };
+      cards[index] = { ...current, payload: { ...payload, terminal_presentation: {
+        ...payload.terminal_presentation, in_workbench: (request.body as { in_workbench: boolean }).in_workbench,
+      } } };
+      return ok(cards[index]);
     }
     if (method === 'DELETE' && path.startsWith('/api/cards/')) { cards.splice(cards.findIndex(card => card.id === path.split('/')[3]), 1); return ok(undefined); }
     if (path.endsWith('/planner/run')) return ok({ card_id: 'parent', worker_session_id: 'session-parent', phase: live.text === '' ? 'idle' : 'issuing_turn', model: null,

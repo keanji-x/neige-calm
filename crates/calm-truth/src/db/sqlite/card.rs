@@ -99,6 +99,7 @@ pub async fn card_create_with_id_tx(
     if exists.is_none() {
         return Err(CalmError::NotFound(format!("track {}", p.track_id)));
     }
+    crate::card_kind::validate_stored_card_payload_global(&p.kind, &p.payload)?;
     let sort = match p.sort {
         Some(s) => s,
         None => {
@@ -176,6 +177,7 @@ async fn card_update_inner_tx(
     mut c: Card,
     p: CardPatch,
 ) -> Result<Card> {
+    let kind_changed = p.kind.as_ref().is_some_and(|kind| kind != &c.kind);
     if let Some(v) = p.kind {
         c.kind = v;
     }
@@ -207,6 +209,9 @@ async fn card_update_inner_tx(
             }
         }
         c.payload = v;
+    }
+    if kind_changed {
+        c.payload = crate::card_kind::prepare_card_transition_payload_global(&c.kind, c.payload)?;
     }
     if let Some(v) = p.title {
         c.title = Some(v).filter(|t| !t.trim().is_empty());

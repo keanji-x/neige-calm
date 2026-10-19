@@ -14,7 +14,7 @@ import { deriveTrackPageView, executionActivityLabelOf } from '../../../../../co
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
 import { makeMobilePainter } from './mobile-painter.tsx';
 import pageSource from './public.tsx?raw';
-import { card, openableCardsOf, renderPage, track } from './test-fixtures.tsx';
+import { manualCard as card, openableCardsOf, renderPage, track } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 

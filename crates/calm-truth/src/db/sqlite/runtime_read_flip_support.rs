@@ -236,6 +236,7 @@ pub(super) async fn seed_terminal_runtime(
         repo.card_role_cache(),
         RequestTheme::default_dark(),
         false,
+        calm_types::card_presentation::CardCreationSource::Manual,
     )
     .await
     .expect("create terminal card");

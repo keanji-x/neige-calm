@@ -44,7 +44,7 @@ import { MobileTitleReadView } from './mobile-title-read-view.tsx';
 import styles from './page.module.css';
 
 /** The mobile drill-down pages: two that are not row modules, plus one per row module the view model names. The renderer special-cases exactly those two and sends every other member through `paintMobileModule`. */
-type MobilePanelKind = 'outline' | Exclude<RowModuleView['key'], 'work'> | 'conversations';
+type MobilePanelKind = 'outline' | Exclude<RowModuleView['key'], 'work' | 'temporary'> | 'conversations';
 
 /** One row of the Notifications aside — the route's projection of one item of `TrackActivity.attentionItems`. */
 export type TrackInputNotification = Readonly<{
@@ -137,6 +137,7 @@ export type TrackPageProps = Readonly<{
   onOpenCard?: (cardId: string) => void;
   /** Supplying this reveals a delete on every row the kernel says is deletable. The caller owns the confirm: the board offers the identical gesture on the card's own head. */
   onDeleteCard?: (cardId: string) => void;
+  onSetWorkbench?: (cardId: string, inWorkbench: boolean) => void;
   /** Reveal a task's block in the document — the same landing the outline, a
    *  `neige://` link and a backlink all use. */
   onOpenTask?: (blockId: string) => void;
@@ -177,7 +178,7 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
 export function TrackPage({ mobileReportIntro, mobileChatComposer,
   panelContent, progressDisclosure, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
-  cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
+  cardsAction, recentFiles, onOpenCard, onDeleteCard, onSetWorkbench, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
   canReopenTrack, canCloseTrack, adminGrantedAt, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack, onTrackDeleted,
@@ -294,7 +295,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   const panelView = deriveTrackPageView({ cards, tasks, activity: track, openableCards });
   const desktopConversations = conversationContextList ?? conversationList;
   const hasDesktopConversations = desktopConversations !== undefined || onStartConversation !== undefined;
-  const desktopPainter = makeDesktopPainter({ cardsAction, onOpenCard, onOpenTask, onDeleteCard, progressDisclosure,
+  const desktopPainter = makeDesktopPainter({ cardsAction, onOpenCard, onOpenTask, onDeleteCard, onSetWorkbench, progressDisclosure,
     suppressEmpty: desktopConversations !== undefined || onStartConversation !== undefined || recentFiles !== undefined || backlinks !== undefined,
   });
   const [desktopActionsOpen, setDesktopActionsOpen] = useState(false);

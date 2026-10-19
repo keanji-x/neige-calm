@@ -161,6 +161,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
         supported: false,
         why: 'cards render poorly at this viewport, so opening a card is not offered on mobile (owner, #1234)',
       },
+      'set-workbench': { supported: false, why: 'terminal organization is exposed by the desktop context panel' },
       'delete-card': {
         supported: false,
         why: 'the same call, kept simple: card operations are not offered on mobile (owner, #1234)',
@@ -175,7 +176,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
       paint: (moduleKey) => {
         if (moduleKey === 'cards') return cardRow(row);
         if (moduleKey === 'tasks') return taskRow(row, deps);
-        if (moduleKey === 'work') throw new Error('The desktop work list has no mobile inventory page');
+        if (moduleKey === 'work' || moduleKey === 'temporary') throw new Error('The desktop work list has no mobile inventory page');
         const unknown: never = moduleKey;
         throw new Error(`the mobile painter has no ${String(unknown)} row`);
       },

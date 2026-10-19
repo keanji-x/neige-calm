@@ -19,10 +19,10 @@ export function track(overrides: Partial<Track> = {}): Track {
   };
 }
 
-export function card(overrides: Partial<CardWire> = {}): CardWire {
+export function manualCard(overrides: Partial<CardWire> = {}): CardWire {
   return {
     id: 'card-1', track_id: 'w1', kind: 'terminal', title: 'Main terminal', sort: 1,
-    payload: null, deletable: true, created_at: 0, updated_at: 0,
+    payload: { terminal_presentation: { source: 'manual', in_workbench: true } }, deletable: true, created_at: 0, updated_at: 0,
     ...overrides,
   };
 }

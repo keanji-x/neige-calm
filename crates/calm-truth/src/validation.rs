@@ -44,10 +44,13 @@ pub const CLAUDE_SETTINGS_PATH_PAYLOAD_KEY: &str = "settings_path";
 /// runtime row carries none (pre-backfill rows).
 pub const CLAUDE_SESSION_ID_PAYLOAD_KEY: &str = "claude_session_id";
 
+pub use calm_types::card_presentation::TERMINAL_PRESENTATION_PAYLOAD_KEY;
+
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 9] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 10] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
+    TERMINAL_PRESENTATION_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
     ASSISTANT_PROVIDER_PAYLOAD_KEY,
@@ -70,7 +73,7 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         | ASSISTANT_PROVIDER_PAYLOAD_KEY
         | SIDE_SOURCE_CARD_PAYLOAD_KEY => true,
         // Only its own writer changes it; a replacement can neither drop nor "repair" a stored value.
-        PLANNER_PERMISSION_MODE_PAYLOAD_KEY => true,
+        PLANNER_PERMISSION_MODE_PAYLOAD_KEY | TERMINAL_PRESENTATION_PAYLOAD_KEY => true,
         TERMINAL_SIGNALS_PAYLOAD_KEY | OWNER_CREATED_PAYLOAD_KEY => value.as_bool() == Some(true),
         // What a Claude restart writes into and resumes (#2516): a client can neither set nor
         // drop it.

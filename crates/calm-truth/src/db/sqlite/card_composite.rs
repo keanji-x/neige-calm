@@ -41,9 +41,17 @@ pub async fn card_with_terminal_create_tx(
     // `true` only for a terminal the Planner opened with hook signals: stamps `TERMINAL_SIGNALS_PAYLOAD_KEY` into the
     // card payload, the durable provenance the hook ingest route keys on.
     planner_hooks: bool,
+    source: calm_types::card_presentation::CardCreationSource,
 ) -> Result<(Card, Terminal)> {
-    // Card row with placeholder payload; schemaVersion is stamped once the terminal row exists. The card id is
-    // pre-minted by the caller so `write_with_event` can stamp `EventScope::Card` without racing the txn.
+    let mut payload = serde_json::json!({
+        "schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION,
+        (calm_types::card_presentation::TERMINAL_PRESENTATION_PAYLOAD_KEY):
+            calm_types::card_presentation::TerminalPresentation::created(source),
+    });
+    if planner_hooks {
+        payload[TERMINAL_SIGNALS_PAYLOAD_KEY] = serde_json::Value::Bool(true);
+    }
+    // Mint required owner metadata with the card; no intermediate persisted card lacks it.
     let card = card_create_with_id_tx(
         tx,
         card_id,
@@ -51,7 +59,7 @@ pub async fn card_with_terminal_create_tx(
             track_id,
             kind: "terminal".into(),
             sort,
-            payload: serde_json::Value::Null,
+            payload: payload.clone(),
             title,
         },
         role,
@@ -71,13 +79,6 @@ pub async fn card_with_terminal_create_tx(
         },
     )
     .await?;
-
-    let mut payload = serde_json::json!({
-        "schemaVersion": TERMINAL_PAYLOAD_SCHEMA_VERSION,
-    });
-    if planner_hooks {
-        payload[TERMINAL_SIGNALS_PAYLOAD_KEY] = serde_json::Value::Bool(true);
-    }
 
     // Defense-in-depth: re-run payload validation on the payload we built ourselves.
     validate_card_kind_global("terminal", &payload)?;
@@ -676,6 +677,7 @@ mod tests {
             repo.card_role_cache(),
             RequestTheme::default_dark(),
             false,
+            calm_types::card_presentation::CardCreationSource::Manual,
         )
         .await
         .unwrap();
@@ -742,6 +744,7 @@ mod tests {
                     repo.card_role_cache(),
                     RequestTheme::default_dark(),
                     planner_hooks,
+                    calm_types::card_presentation::CardCreationSource::Manual,
                 )
                 .await
                 .unwrap();

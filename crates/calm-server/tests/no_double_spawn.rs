@@ -1222,6 +1222,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
                 &cache,
                 calm_server::routes::theme::RequestTheme::default_dark(),
                 false,
+                calm_types::card_presentation::CardCreationSource::Manual,
             )
             .await
         })
@@ -2206,6 +2207,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
                 &cache,
                 calm_server::routes::theme::RequestTheme::default_dark(),
                 false,
+                calm_types::card_presentation::CardCreationSource::Manual,
             )
             .await
         })
@@ -2703,6 +2705,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                 &cache,
                 calm_server::routes::theme::RequestTheme::default_dark(),
                 false,
+                calm_types::card_presentation::CardCreationSource::Manual,
             )
             .await
         })
@@ -2936,6 +2939,7 @@ fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
 
 fn terminal_payload(track_id: &str) -> Value {
     serde_json::to_value(TerminalCreateOperationPayload {
+        source: calm_types::card_presentation::CardCreationSource::Manual,
         actor: ActorId::User,
         worker_session_id: Some(new_id()),
         planner_hooks: false,
