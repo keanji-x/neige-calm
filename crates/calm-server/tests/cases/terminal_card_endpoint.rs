@@ -56,13 +56,6 @@ type TestSpawnHook = Arc<
         + Sync,
 >;
 
-fn strip_runtime(mut card: Value) -> Value {
-    if let Some(obj) = card.as_object_mut() {
-        obj.remove("runtime");
-    }
-    card
-}
-
 async fn boot() -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
