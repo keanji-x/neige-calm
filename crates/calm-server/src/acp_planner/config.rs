@@ -168,7 +168,7 @@ impl AcpPlannerHost {
             .expect("ACP catalogs")
             .insert(card.to_owned(), (configuration, crate::model::now_ms()));
     }
-    pub fn configuration(
+    pub(super) fn configuration(
         &self,
         card: &str,
     ) -> Option<(provider::acp::configuration::Configuration, i64)> {

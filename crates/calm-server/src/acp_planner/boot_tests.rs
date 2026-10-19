@@ -416,10 +416,13 @@ async fn acp_boot_catalog_refuses_before_spawn() {
     };
     let state = AppState::boot(&config(&root, true)).await.unwrap();
     let catalog = host(&state)
-        .discover_configuration(&AgentProvider::OpenCode, Some(&root))
+        .discover_catalog(&AgentProvider::OpenCode, Some(&root))
         .await;
     close(state).await;
-    assert!(catalog.is_none());
+    assert_eq!(
+        catalog.source,
+        crate::planner_model::catalog::ModelSource::Unavailable
+    );
     assert!(
         !root.join("spawned").exists(),
         "catalog must not execute the agent"

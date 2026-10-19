@@ -9,6 +9,9 @@ use crate::model::{
     NewArea, NewAreaFolder, NewCard, NewOverlay, NewTrack, Overlay, Plugin, Terminal, Track,
     TrackConversationSummary, TrackDetail, TrackPatch, TrackWorkspacePatch,
 };
+use crate::planner_model::catalog::{
+    CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
+};
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
@@ -17,9 +20,6 @@ use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::fs::{
     DirEntry, GitChangedFile, GitDiffResponse, GitStatusResponse, ListdirResponse, ReadFileResponse,
-};
-use crate::routes::models::{
-    CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
 };
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
 use crate::routes::planner_cards::{

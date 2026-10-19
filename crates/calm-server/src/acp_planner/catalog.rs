@@ -4,6 +4,9 @@ use super::{
     process::{LaunchContext, Process, setup_request},
 };
 use crate::error::{CalmError, Result};
+use crate::planner_model::catalog::{
+    CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
+};
 use calm_types::runtime::AgentProvider;
 use provider::acp::{configuration::Configuration, protocol};
 use std::path::{Path, PathBuf};
@@ -22,8 +25,23 @@ pub(super) struct Entry {
 }
 
 impl AcpPlannerHost {
+    /// Project the card's current native settings without maintaining another cache.
+    pub(crate) fn cached_catalog(&self, card: &str) -> Option<ModelsResponse> {
+        self.configuration(card)
+            .map(|configuration| project_configuration(Some(configuration)))
+    }
+
+    /// Discover independently of a card and project the ACP-owned native cache.
+    pub(crate) async fn discover_catalog(
+        &self,
+        provider: &AgentProvider,
+        cwd: Option<&Path>,
+    ) -> ModelsResponse {
+        project_configuration(self.discover_configuration(provider, cwd).await)
+    }
+
     /// One bounded cache slot, including failures. A workspace change always re-discovers.
-    pub async fn discover_configuration(
+    async fn discover_configuration(
         &self,
         provider: &AgentProvider,
         cwd: Option<&Path>,
@@ -91,5 +109,154 @@ impl AcpPlannerHost {
             catalog: catalog.clone(),
         });
         catalog
+    }
+}
+
+fn project_configuration(
+    cached: Option<(provider::acp::configuration::Configuration, i64)>,
+) -> ModelsResponse {
+    let Some((configuration, at)) = cached else {
+        return ModelsResponse {
+            models: Vec::new(),
+            default: ModelDefaults::default(),
+            default_source: DefaultSource::Unknown,
+            source: ModelSource::Unavailable,
+            fetched_at_ms: None,
+        };
+    };
+    let Some(model) = configuration.category("model") else {
+        return ModelsResponse {
+            models: Vec::new(),
+            default: ModelDefaults::default(),
+            default_source: DefaultSource::Unknown,
+            source: ModelSource::Unavailable,
+            fetched_at_ms: Some(at),
+        };
+    };
+    let thought = configuration.category("thought_level");
+    let efforts = thought
+        .map(|option| {
+            option
+                .choices()
+                .into_iter()
+                .map(|choice| ReasoningEffortOption {
+                    reasoning_effort: choice.value.clone(),
+                    description: Some(choice.name.clone()),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ModelsResponse {
+        models: model
+            .choices()
+            .into_iter()
+            .map(|choice| CatalogModel {
+                id: choice.value.clone(),
+                model: choice.value.clone(),
+                resolved_model: None,
+                display_name: choice.name.clone(),
+                description: String::new(),
+                is_default: choice.value == model.current_value,
+                supported_reasoning_efforts: if choice.value == model.current_value {
+                    efforts.clone()
+                } else {
+                    Vec::new()
+                },
+                default_reasoning_effort: if choice.value == model.current_value {
+                    thought.map(|option| option.current_value.clone())
+                } else {
+                    None
+                },
+            })
+            .collect(),
+        default: ModelDefaults {
+            model: Some(model.current_value.clone()),
+            reasoning_effort: thought.map(|option| option.current_value.clone()),
+            supported_reasoning_efforts: Some(efforts),
+        },
+        default_source: DefaultSource::AcpSession,
+        source: ModelSource::Live,
+        fetched_at_ms: Some(at),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn response(native: Value) -> Value {
+        serde_json::to_value(project_configuration(Some((
+            Configuration::from_response(&native).unwrap(),
+            1234,
+        ))))
+        .unwrap()
+    }
+
+    #[test]
+    fn unavailable_and_missing_model_keep_distinct_timestamps() {
+        assert_eq!(
+            serde_json::to_value(project_configuration(None)).unwrap(),
+            json!({"models":[],"default":{"model":null,"reasoning_effort":null,
+                "supported_reasoning_efforts":null},"default_source":"unknown",
+                "source":"unavailable","fetched_at_ms":null})
+        );
+        assert_eq!(
+            response(json!({})),
+            json!({"models":[],"default":{"model":null,"reasoning_effort":null,
+                "supported_reasoning_efforts":null},"default_source":"unknown",
+                "source":"unavailable","fetched_at_ms":1234})
+        );
+    }
+
+    #[test]
+    fn absent_effort_is_live_with_empty_default_efforts() {
+        assert_eq!(
+            response(
+                json!({"configOptions":[{"id":"model-key","category":"model",
+                "type":"select","currentValue":"a","options":[{"value":"a","name":"A"}]}]})
+            ),
+            json!({"models":[{"id":"a","model":"a","resolved_model":null,
+                "display_name":"A","description":"","is_default":true,
+                "supported_reasoning_efforts":[],"default_reasoning_effort":null}],
+                "default":{"model":"a","reasoning_effort":null,"supported_reasoning_efforts":[]},
+                "default_source":"acp_session","source":"live","fetched_at_ms":1234})
+        );
+    }
+
+    #[test]
+    fn grouped_choices_follow_changed_selection_and_only_selected_model_has_efforts() {
+        let mut native = json!({"configOptions":[
+            {"id":"model-key","category":"model","type":"select","currentValue":"a",
+                "options":[{"group":"models","options":[{"value":"a","name":"A"},
+                    {"value":"b","name":"B"}]}]},
+            {"id":"effort-key","category":"thought_level","type":"select","currentValue":"high",
+                "options":[{"group":"efforts","options":[{"value":"high","name":"Think hard"}]}]}
+        ]});
+        assert_eq!(
+            response(native.clone()),
+            json!({
+                "models":[
+                    {"id":"a","model":"a","resolved_model":null,"display_name":"A","description":"",
+                        "is_default":true,"supported_reasoning_efforts":[{"reasoning_effort":"high","description":"Think hard"}],"default_reasoning_effort":"high"},
+                    {"id":"b","model":"b","resolved_model":null,"display_name":"B","description":"",
+                        "is_default":false,"supported_reasoning_efforts":[],"default_reasoning_effort":null}],
+                "default":{"model":"a","reasoning_effort":"high","supported_reasoning_efforts":[{"reasoning_effort":"high","description":"Think hard"}]},
+                "default_source":"acp_session","source":"live","fetched_at_ms":1234
+            })
+        );
+        native["configOptions"][0]["currentValue"] = json!("b");
+        assert_eq!(
+            response(native),
+            json!({
+                "models":[
+                    {"id":"a","model":"a","resolved_model":null,"display_name":"A","description":"",
+                        "is_default":false,"supported_reasoning_efforts":[],"default_reasoning_effort":null},
+                    {"id":"b","model":"b","resolved_model":null,"display_name":"B","description":"",
+                        "is_default":true,"supported_reasoning_efforts":[{"reasoning_effort":"high","description":"Think hard"}],"default_reasoning_effort":"high"}],
+                "default":{"model":"b","reasoning_effort":"high","supported_reasoning_efforts":[{"reasoning_effort":"high","description":"Think hard"}]},
+                "default_source":"acp_session","source":"live","fetched_at_ms":1234
+            })
+        );
     }
 }
