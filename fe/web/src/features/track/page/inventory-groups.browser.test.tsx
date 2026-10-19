@@ -27,7 +27,7 @@ it('lists tool names and their real statuses without type subgroups', async () =
     card({ id: 'exited-agent', kind: 'codex', title: 'Review', runtime: { worker_session_id: 'three', kind: 'codex', status: 'exited' } }),
   ], tasks: [] });
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
-  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(0);
+  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(1);
   const statuses = [...document.querySelectorAll<HTMLElement>('[data-nc-module="cards"] [data-nc-status]')];
   expect(statuses.map(status => status.textContent)).toEqual(['running', 'exited', 'exited']);
   for (const status of statuses) expect(status.getBoundingClientRect().width).toBeGreaterThan(1);
@@ -35,12 +35,12 @@ it('lists tool names and their real statuses without type subgroups', async () =
   expect(onOpenCard).toHaveBeenCalledWith('exited-terminal');
 });
 
-it('keeps failed tool status visible without a disclosure', async () => {
+it('keeps failed tool status visible in the expanded Workbench', async () => {
   await page.viewport(1200, 900);
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), derive({
     cards: [card({ id: 'failed-terminal', title: 'Build', runtime: { worker_session_id: 'one', kind: 'terminal', status: 'failed' } })], tasks: [],
   }))}</PanelCard></div>);
-  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(0);
+  expect(document.querySelectorAll('[data-nc-module="cards"] details')).toHaveLength(1);
   expect(document.querySelector<HTMLElement>('[data-nc-row="failed-terminal"] [data-nc-status]')?.textContent).toBe('failed');
 });
 
@@ -78,7 +78,7 @@ it('aligns text-only headings with row icons and preserves secondary columns', a
       const labelRange = document.createRange(); labelRange.selectNodeContents(label.lastChild!);
       expect(labelRange.getBoundingClientRect().left).toBeCloseTo(left, 0);
     }
-    for (const title of module.querySelectorAll<HTMLElement>('details[open] [data-nc-field="title"]')) {
+    for (const title of module.querySelectorAll<HTMLElement>('details[data-nc-inventory-group][open] [data-nc-field="title"]')) {
       const icon = title.closest('li')!.querySelector('[data-nc-field="kind"] svg')!;
       expect(icon.getBoundingClientRect().left).toBeCloseTo(left, 0);
       expect(title.getBoundingClientRect().left - icon.getBoundingClientRect().right).toBeCloseTo(8, 0);
@@ -88,7 +88,7 @@ it('aligns text-only headings with row icons and preserves secondary columns', a
   const total = tasks.querySelector<HTMLElement>('h2 + span')!;
   expect(total.getBoundingClientRect().right).toBeCloseTo(tasks.getBoundingClientRect().right - 12, 0);
   // Group counts reserve the 20px disclosure lane; the header total uses the outer edge.
-  for (const count of document.querySelectorAll<HTMLElement>('summary > span:nth-child(2)')) {
+  for (const count of document.querySelectorAll<HTMLElement>('[data-nc-inventory-group] > summary > span:nth-child(2)')) {
     expect(total.getBoundingClientRect().right - count.getBoundingClientRect().right).toBeCloseTo(20, 0);
   }
   const kinds = [...tasks.querySelectorAll<HTMLElement>('details[open] [data-nc-field="kind"]')];
@@ -264,7 +264,7 @@ it('lists tools directly while keeping kernel attention visible', async () => {
   const onOpenCard = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
   const inventory = document.querySelector<HTMLElement>('[data-nc-module="cards"]')!;
-  expect(inventory.querySelectorAll('details')).toHaveLength(0);
+  expect(inventory.querySelectorAll('details')).toHaveLength(1);
   expect(inventory.textContent).toContain('Needs input');
   await page.getByRole('button', { name: 'Needs a reply' }).click();
   expect(onOpenCard).toHaveBeenCalledWith(worker.id);
@@ -338,4 +338,36 @@ it.each(['input', 'failed'] as const)('keeps kernel %s visible alongside a runni
   expect(label, 'attention must be in the visible name area, outside clipped metadata').toBeDefined();
   expect(label!.getBoundingClientRect().width).toBeGreaterThan(1);
   expect(name.querySelector('[data-nc-status]')?.textContent).toBe('running');
+});
+
+
+it('collapses Workbench while retaining tools and usable header actions', async () => {
+  await page.viewport(1200, 900);
+  const onAdd = vi.fn();
+  const onOpenCard = vi.fn();
+  const content = {
+    cardsAction: <button type="button" onClick={onAdd}>Add tool</button>,
+    onOpenCard,
+    cards: [card({ id: 'server', title: 'Development server' })],
+    tasks: [task('Check layout', 'running', 'codex')],
+  };
+  renderPage(content);
+  const group = document.querySelector<HTMLElement>('[data-nc-desktop-panel] [data-nc-module="cards"]')!;
+  const disclosure = group.querySelector<HTMLDetailsElement>('details')!;
+  expect(disclosure).not.toBeNull();
+  expect(disclosure.open).toBe(true);
+  const tool = group.querySelector<HTMLButtonElement>('[data-nc-row="tool:server"] button')!;
+  await page.elementLocator(disclosure.querySelector('h2')!).click();
+  expect(disclosure.open).toBe(false);
+  expect(tool.isConnected).toBe(true);
+  expect(tool.checkVisibility()).toBe(false);
+  await page.getByRole('button', { name: 'Add tool', exact: true }).click();
+  expect(onAdd).toHaveBeenCalledOnce();
+  expect(disclosure.open).toBe(false);
+  disclosure.querySelector('summary')!.focus();
+  await userEvent.keyboard('{Enter}');
+  expect(disclosure.open).toBe(true);
+  expect(group.querySelector('[data-nc-row="tool:server"] button')).toBe(tool);
+  await page.getByRole('button', { name: 'Development server', exact: true }).click();
+  expect(onOpenCard).toHaveBeenCalledWith('server');
 });

@@ -46,7 +46,7 @@
   summary.head { cursor: pointer; list-style: none; border-radius: var(--radius-highlight); }
   summary.head::-webkit-details-marker { display: none; }
   summary.head:hover { background: var(--overlay-hover); }
-  .group[open] > .head > .endSlot > svg { rotate: 90deg; }
+  .group[open] > .head > .actionRail > .endSlot > svg { rotate: 90deg; }
   .action { display: flex; align-items: center; opacity: 0; }
   .alwaysAction { opacity: 1; }
   .group:hover .action, .group:focus-within .action { opacity: 1; }

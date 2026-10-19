@@ -1,4 +1,3 @@
-import { Icon } from '../../ui/icon/public.tsx';
 import { PendingQueue, QueueWriteNotice } from '../../features/chat/thread/pending-queue.tsx';
 import { useConversationLinks } from './conversation-links.tsx';
 import { useTerminalWorkbench, TerminalWorkbenchView, type TerminalWorkbench } from '../../features/track/workbench/public.tsx';
@@ -1478,7 +1477,6 @@ function TrackRouteBody({
          it too, so the reader can hand the destination to somebody else. */
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
-      terminalAction={<Button label="Terminal workbench" tooltip="Open terminal" icon={<Icon name="terminal" size="sm" />} isIconOnly variant="ghost" size="sm" onClick={() => workbench.reveal()} />}
       cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} label="Tools" icon="more" />}
       recentFiles={recentFilePaths.length === 0 ? undefined : <RecentFiles inline
         paths={recentFilePaths}

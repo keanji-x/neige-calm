@@ -57,7 +57,7 @@ it('uses viewport width on a coarse desktop and hides the retained host without 
   const { sockets, Socket } = workbenchSockets(); vi.stubGlobal('WebSocket', Socket);
   const fixture = setupWorkbench({ cards: [{ ...terminalCard('shell'), payload: { terminal_id: 'pty-1' } }] });
   const mount = vi.spyOn(fixture.runtime.host, 'mount');
-  await page.getByRole('button', { name: 'Terminal workbench' }).click();
+  await page.getByRole('button', { name: /^shell/ }).click();
   await waitFor(() => expect(sockets).toHaveLength(1));
   act(() => sockets[0].open());
   const input = document.querySelector('[data-nc-terminal-input]');

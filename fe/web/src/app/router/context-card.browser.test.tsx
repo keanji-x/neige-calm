@@ -129,7 +129,7 @@ it('keeps empty groups hidden while retaining the single card-level creation act
   expect(root.querySelector('section[aria-label="Needs attention"]')).toBeNull();
   const creation = page.getByRole('button', { name: 'New', exact: true });
   await creation.click();
-  expect(root.querySelectorAll('details')).toHaveLength(2);
+  expect(root.querySelectorAll('details')).toHaveLength(3);
 });
 
 it('uses the existing unknown-kind fallback and preserves selection while focusing a conversation', async () => {
@@ -193,7 +193,7 @@ it('aligns header controls, disclosure arrows and row menus on one system action
   const tools = page.getByRole('button', { name: 'Tools', exact: true }).element();
   expect(tools.querySelector('svg')!.getBoundingClientRect().width).toBe(14);
   expect(center(tools.querySelector('svg')!).y).toBe(center(tools.closest('section[aria-label="Workbench"]')!.querySelector('h2')!.parentElement!).y);
-  for (const summary of root.querySelectorAll('summary')) expect(center(summary.querySelector('svg')!).x).toBe(axis);
+  for (const summary of root.querySelectorAll('summary')) expect(center([...summary.querySelectorAll('svg')].at(-1)!).x).toBe(axis);
   await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] summary')!);
   const menu = page.getByRole('button', { name: 'Actions for Server', exact: true }).element();
   expect(center(menu.querySelector('svg')!).x).toBe(axis);

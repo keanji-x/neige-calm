@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { commands, page, userEvent } from 'vitest/browser';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { setupWorkbench, terminalCard } from './terminal-workbench-fixture.tsx';
+import { openTerminalCommand, setupWorkbench, terminalCard } from './terminal-workbench-fixture.tsx';
 import { workbenchSockets } from './terminal-workbench-socket-fixture.ts';
 import '../../styles/entry.css';
 
@@ -71,13 +71,13 @@ it('keeps exited output attached and reopens the same existing card without crea
   await page.viewport(1280, 800);
   const { sockets, Socket } = workbenchSockets(); vi.stubGlobal('WebSocket', Socket);
   const fixture = setupWorkbench({ cards: [{ ...terminalCard('finished'), payload: { terminal_id: 'pty-1' } }] });
-  await page.getByRole('button', { name: 'Terminal workbench' }).click();
+  await page.getByRole('button', { name: /^finished/ }).click();
   await waitFor(() => expect(sockets).toHaveLength(1));
   act(() => { sockets[0].open(); sockets[0].message({ TerminalExited: { code: 0, pty_seq: 2, render_rev: 2 } }); });
   await expect.element(page.getByText('Session exited.')).toBeVisible();
   const input = document.querySelector('[data-nc-terminal-input]');
   await page.getByRole('button', { name: 'Hide terminal' }).click();
-  await page.getByRole('button', { name: 'Terminal workbench' }).click();
+  await page.getByRole('button', { name: /^finished/ }).click();
   expect(document.querySelector('[data-nc-terminal-input]')).toBe(input);
   expect(fixture.posts()).toHaveLength(0);
   fireEvent.keyDown(input!, { key: 'Escape' });
@@ -156,9 +156,12 @@ it.each([['light', false], ['dark', true]] as const)('keeps the empty Workbench 
   const region = page.getByRole('region', { name: 'Workbench', exact: true });
   await expect.element(region).toBeVisible();
   await expect.element(region.getByText('No tools yet.')).toBeVisible();
-  const entry = region.getByRole('button', { name: 'Terminal workbench' });
+  const entry = region.getByRole('button', { name: 'Tools' });
   expect(page.getByRole('region', { name: 'Conversations', exact: true }).element().contains(entry.element())).toBe(false);
   act(() => (entry.element() as HTMLButtonElement).focus());
+  await userEvent.keyboard('{Enter}');
+  const item = page.getByRole('menuitem', { name: 'terminal', exact: true });
+  act(() => (item.element() as HTMLElement).focus());
   await userEvent.keyboard('{Enter}');
   const hide = page.getByRole('button', { name: 'Hide terminal' });
   await expect.element(hide).toBeVisible();
@@ -182,7 +185,7 @@ it.each([false, true])('resizes the independent terminal entry and preserves Cha
   await page.viewport(1512, 950);
   const { sockets, Socket } = workbenchSockets(); vi.stubGlobal('WebSocket', Socket);
   setupWorkbench({ cards: [{ ...terminalCard('resize'), payload: { terminal_id: 'pty-1' } }] });
-  await page.getByRole('button', { name: 'Terminal workbench' }).click();
+  await page.getByRole('button', { name: /^resize/ }).click();
   await waitFor(() => expect(sockets).toHaveLength(1));
   act(() => sockets[0].open());
   const terminal = document.querySelector<HTMLElement>('[data-nc-terminal-workbench]')!;
@@ -326,4 +329,26 @@ it('hands keyboard focus from Tools to the created terminal and returns it on hi
   expect(sockets[0].readyState).toBe(1);
   expect(fixture.posts()).toHaveLength(1);
   expect(fixture.requests.some(request => request.method === 'DELETE')).toBe(false);
+});
+
+
+it('folds the current Track Workbench without losing its terminal entry or command access', async () => {
+  await page.viewport(1512, 950);
+  const { sockets, Socket } = workbenchSockets(); vi.stubGlobal('WebSocket', Socket);
+  setupWorkbench({ cards: [{ ...terminalCard('shell'), payload: { terminal_id: 'pty-1' } }] });
+  await expect.element(page.getByRole('region', { name: 'Workbench', exact: true })).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Terminal workbench' })).toBeNull();
+  const group = document.querySelector<HTMLElement>('[data-nc-desktop-panel] [data-nc-module="cards"]')!;
+  const disclosure = group.querySelector<HTMLDetailsElement>('details')!;
+  expect(disclosure.open).toBe(true);
+  const entry = group.querySelector('[data-nc-row="tool:shell"]')!;
+  await page.elementLocator(disclosure.querySelector('h2')!).click();
+  expect(disclosure.open).toBe(false);
+  expect(entry.isConnected).toBe(true);
+  expect(entry.checkVisibility()).toBe(false);
+  await openTerminalCommand();
+  await waitFor(() => expect(sockets).toHaveLength(1));
+  expect(disclosure.open).toBe(false);
+  expect(document.querySelector('[data-nc-terminal-workbench]')?.hasAttribute('hidden')).toBe(false);
+  expect(sockets).toHaveLength(1);
 });

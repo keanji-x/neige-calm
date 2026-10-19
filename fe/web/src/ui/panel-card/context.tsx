@@ -32,10 +32,11 @@ export function ContextItem({ icon, label, metadata, trailing, buttonProps, menu
 }
 
 /** Shared group title, disclosure, spacing and optional host action. */
-export function ContextGroup({ title, children, collapsible = false, open, onOpenChange, count, action, secondaryAction, actionVisibility = 'intent' }: Readonly<{
+export function ContextGroup({ title, children, collapsible = false, headingAs, open, onOpenChange, count, action, secondaryAction, actionVisibility = 'intent' }: Readonly<{
   title: string;
   children: ReactNode;
   collapsible?: boolean;
+  headingAs?: 'h2' | 'span';
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   count?: number;
@@ -43,17 +44,19 @@ export function ContextGroup({ title, children, collapsible = false, open, onOpe
   secondaryAction?: ReactNode;
   actionVisibility?: 'intent' | 'always';
 }>) {
-  const heading = <ListText as={collapsible ? 'span' : 'h2'} tone="secondary" emphasis="medium" className={styles.title}>
+  const heading = <ListText as={headingAs ?? (collapsible ? 'span' : 'h2')} tone="secondary" emphasis="medium" className={styles.title}>
     {title}{count === undefined ? null : ` · ${count}`}
   </ListText>;
+  const actions = <span className={styles.actionRail}>
+    {secondaryAction === undefined ? null : <span className={styles.action}>{secondaryAction}</span>}
+    {action === undefined ? null : <span className={`${styles.action} ${actionVisibility === 'always' ? styles.alwaysAction : ''}`}>{action}</span>}
+    {collapsible && <span className={styles.endSlot}><Icon name="chevron-right" size="sm" /></span>}
+  </span>;
   return collapsible ? <details className={styles.group} aria-label={title} open={open} onToggle={event => onOpenChange?.(event.currentTarget.open)}>
-    <summary className={styles.head}>{heading}<span className={styles.endSlot}><Icon name="chevron-right" size="sm" /></span></summary>
+    <summary className={styles.head}>{heading}{actions}</summary>
     {children}
   </details> : <section className={styles.group} aria-label={title}>
-    <div className={styles.head}>{heading}<span className={styles.actionRail}>
-      {secondaryAction === undefined ? null : <span className={styles.action}>{secondaryAction}</span>}
-      {action === undefined ? null : <span className={`${styles.action} ${actionVisibility === 'always' ? styles.alwaysAction : ''}`}>{action}</span>}
-    </span></div>
+    <div className={styles.head}>{heading}{actions}</div>
     {children}
   </section>;
 }

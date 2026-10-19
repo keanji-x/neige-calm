@@ -42,7 +42,6 @@ export type DesktopPainterDeps = Readonly<{
   onDeleteCard?: (cardId: string) => void;
   /** The Cards module head's `+`, composed by `app/router`; travels as an opaque node. */
   cardsAction?: ReactNode;
-  terminalAction?: ReactNode;
   /** Compact, already-derived progress for the Tasks module head. */
   taskSummary?: string | null;
   /** Related entry content composed by the host; belongs inside the tools section. */
@@ -212,10 +211,10 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
         </div>
       </PanelModule> : parts.key === 'cards' ? <PanelModule key={parts.key} title={parts.title} bare
         moduleMarker={parts.key} titleFieldMarker={FIELD.moduleTitle}>
-        <ContextGroup title={parts.title} action={deps.terminalAction} secondaryAction={deps.cardsAction} actionVisibility="always">
+        <section aria-label={parts.title}><ContextGroup title={parts.title} collapsible open headingAs="h2" secondaryAction={deps.cardsAction} actionVisibility="always">
           <div data-nc-card-inventory="">{rows ? <ContextList aria-label="Workbench tools">{children}</ContextList> : children}</div>
           {deps.cardEntries}
-        </ContextGroup>
+        </ContextGroup></section>
       </PanelModule> : (
         <PanelModule
           key={parts.key}

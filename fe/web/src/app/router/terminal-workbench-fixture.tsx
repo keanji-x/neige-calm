@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import type { CardWire } from '../../../../core/domain/track.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -77,4 +77,24 @@ export function setupWorkbench({ cards: initial = [] as CardWire[], defer = fals
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);
   const view = render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
   return { ...view, requests, releases, router, client, runtime, cards, live, posts: () => requests.filter(request => request.method === 'POST' && request.path.endsWith('/terminal-cards')) };
+}
+
+
+/** Use the public composer command after removal of the redundant header shortcut. */
+export async function terminalCommandInput(): Promise<HTMLElement> {
+  if (screen.queryAllByRole('combobox', { name: 'Message' }).length === 0) {
+    const conversation = screen.queryByRole('button', { name: 'Conversation Main discussion' });
+    fireEvent.click(conversation ?? await screen.findByRole('button', { name: /^New conversation$/u }));
+  }
+  const input = (await screen.findAllByRole('combobox', { name: 'Message' }))[0];
+  await waitFor(() => { if (input.getAttribute('contenteditable') !== 'true') throw new Error('Composer is not ready'); });
+  return input;
+}
+
+export async function openTerminalCommand(): Promise<void> {
+  const input = await terminalCommandInput();
+  input.focus();
+  input.textContent = '/terminal';
+  fireEvent.input(input);
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
 }

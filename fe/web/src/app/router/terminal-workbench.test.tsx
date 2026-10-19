@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { queryKeys } from '../providers/queries.ts';
-import { setupWorkbench, terminalCard } from './terminal-workbench-fixture.tsx';
+import { openTerminalCommand, terminalCommandInput, setupWorkbench, terminalCard } from './terminal-workbench-fixture.tsx';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.restoreAllMocks(); });
 
@@ -55,14 +55,13 @@ it.each(['main', 'draft', 'side'] as const)('dispatches /terminal from the %s pa
   await screen.findByText('No terminal session available.');
 });
 
-it('opens the fixed entry without a conversation, deduplicates pending presses and retains the host when hidden', async () => {
+it('deduplicates pending commands and retains the host when hidden', async () => {
   const fixture = setupWorkbench({ defer: true });
   const mount = vi.spyOn(fixture.runtime.host, 'mount');
-  const entry = await screen.findByRole('button', { name: 'Terminal workbench' });
-  expect(entry.closest('section')?.getAttribute('aria-label')).toBe('Workbench');
+  const entry = await terminalCommandInput();
   expect(screen.getByRole('region', { name: 'Workbench' }).textContent).toContain('No tools yet.');
   expect(screen.getByRole('region', { name: 'Conversations' }).contains(entry)).toBe(false);
-  await userEvent.click(entry); await userEvent.click(entry);
+  await openTerminalCommand(); await openTerminalCommand();
   await waitFor(() => expect(fixture.posts()).toHaveLength(1));
   await act(async () => { fixture.releases[0]?.(); await Promise.resolve(); });
   await screen.findByText('No terminal session available.');
@@ -76,7 +75,7 @@ it('opens the fixed entry without a conversation, deduplicates pending presses a
   expect(document.querySelector('[data-nc-card-dock]')).toBe(dock);
   expect(document.querySelector('[data-nc-terminal-card]')).toBe(resource);
   expect(mount).toHaveBeenCalledTimes(1);
-  await userEvent.click(entry);
+  await openTerminalCommand();
   expect(document.querySelector('[data-nc-card-dock]')).toBe(dock);
   expect(document.querySelector('[data-nc-terminal-card]')).toBe(resource);
   expect(mount).toHaveBeenCalledTimes(1);
@@ -86,7 +85,7 @@ it('opens the fixed entry without a conversation, deduplicates pending presses a
 
 it('retries an unknown response with the original key and first body despite a theme change', async () => {
   const fixture = setupWorkbench({ lost: true });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await screen.findByRole('alert');
   document.documentElement.dataset.theme = 'light';
   await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
@@ -99,7 +98,7 @@ it('retries an unknown response with the original key and first body despite a t
   expect(posts[0]?.body).not.toHaveProperty('cwd');
 });
 
-it('shares /terminal with the fixed entry in an empty draft and refuses arguments without sending', async () => {
+it('accepts /terminal in an empty draft and refuses arguments without sending', async () => {
   const fixture = setupWorkbench({ cards: [terminalCard('existing')] });
   await userEvent.click(await screen.findByRole('button', { name: /^New conversation$/u }));
   const input = await screen.findByRole('combobox', { name: 'Message' });
@@ -117,7 +116,7 @@ it('shares /terminal with the fixed entry in an empty draft and refuses argument
 it('switches existing ordinary terminals without a board double mount or implicit replacement', async () => {
   const fixture = setupWorkbench({ cards: [terminalCard('first'), terminalCard('second')] });
   const mount = vi.spyOn(fixture.runtime.host, 'mount');
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await userEvent.click(within(screen.getByRole('region', { name: 'Workbench' })).getByRole('button', { name: /^second/ }));
   expect(mount).toHaveBeenCalledTimes(2);
   expect(document.querySelectorAll('[data-nc-card-dock]')).toHaveLength(2);
@@ -130,8 +129,8 @@ it('switches existing ordinary terminals without a board double mount or implici
 
 it('does not reopen a hidden view or steal changed focus on late completion', async () => {
   const fixture = setupWorkbench({ defer: true });
-  const entry = await screen.findByRole('button', { name: 'Terminal workbench' });
-  await userEvent.click(entry);
+  const entry = await terminalCommandInput();
+  await openTerminalCommand();
   await waitFor(() => expect(fixture.posts()).toHaveLength(1));
   await userEvent.click(screen.getByRole('button', { name: 'Hide terminal' }));
   entry.focus();
@@ -143,7 +142,7 @@ it('does not reopen a hidden view or steal changed focus on late completion', as
 
 it('creates within the resolved daily Track rather than a global or guessed scope', async () => {
   const fixture = setupWorkbench({ daily: true });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await screen.findByText('No terminal session available.');
   expect(fixture.posts()[0]?.path).toBe('/api/tracks/workbench/terminal-cards');
 });
@@ -156,7 +155,7 @@ it('leaves a different Track view and its focus untouched when creation complete
   await waitFor(() => expect(fixture.posts()).toHaveLength(1));
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'other' } }); });
   await screen.findAllByText('Other track');
-  const destination = await screen.findByRole('button', { name: 'Terminal workbench' });
+  const destination = await terminalCommandInput();
   destination.focus();
   const location = fixture.router.state.location.href;
   const active = document.activeElement;
@@ -173,7 +172,7 @@ it('leaves a different Track view and its focus untouched when creation complete
 
 it('routes an ordinary card URL into the same dock and keeps it out of the board', async () => {
   const fixture = setupWorkbench({ cards: [terminalCard('first'), terminalCard('second')] });
-  await screen.findByRole('button', { name: 'Terminal workbench' });
+  await terminalCommandInput();
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'workbench' }, search: { card: 'second' } }); });
   await screen.findByRole('button', { name: 'Hide terminal' });
   expect(document.querySelector('[data-nc-card-dock]:not([hidden])')?.getAttribute('data-nc-card-id')).toBe('second');
@@ -184,7 +183,7 @@ it('routes an ordinary card URL into the same dock and keeps it out of the board
 
 it('creates an extra terminal only on explicit New, and never overrides a newer selection', async () => {
   const fixture = setupWorkbench({ cards: [terminalCard('first')], defer: true });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await userEvent.click(screen.getByRole('button', { name: 'Tools' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'terminal' }));
   await waitFor(() => expect(fixture.posts()).toHaveLength(1));
@@ -197,7 +196,7 @@ it('creates an extra terminal only on explicit New, and never overrides a newer 
 
 it('deletes only after confirmation, removes the inventory row and selects an existing survivor', async () => {
   const fixture = setupWorkbench({ cards: [terminalCard('first'), terminalCard('second')] });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await userEvent.click(within(screen.getByRole('region', { name: 'Workbench' })).getByRole('button', { name: /^second/ }));
   await userEvent.click(within(document.querySelector('[data-nc-card-dock]:not([hidden])') as HTMLElement).getByRole('button', { name: /^Delete card / }));
   const dialog = screen.getByRole('dialog', { name: 'Delete this card?' });
@@ -210,12 +209,12 @@ it('deletes only after confirmation, removes the inventory row and selects an ex
 
 it('rejoins a pending intent after leaving and returning to the Track', async () => {
   const fixture = setupWorkbench({ defer: true });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await waitFor(() => expect(fixture.posts()).toHaveLength(1));
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'other' } }); });
   await screen.findAllByText('Other track');
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'workbench' } }); });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   expect(fixture.posts()).toHaveLength(1);
   await act(async () => { fixture.releases[0]?.(); await Promise.resolve(); });
   await screen.findByText('No terminal session available.');
@@ -224,12 +223,12 @@ it('rejoins a pending intent after leaving and returning to the Track', async ()
 
 it('keeps the first unknown request across route reentry even when the list now contains its card', async () => {
   const fixture = setupWorkbench({ lost: true });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await screen.findByRole('alert');
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'other' } }); });
   await screen.findAllByText('Other track');
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'workbench' } }); });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await screen.findByText('No terminal session available.');
   expect(fixture.posts()).toHaveLength(2);
   expect(fixture.posts()[1]?.headers).toEqual(fixture.posts()[0]?.headers);
@@ -239,12 +238,12 @@ it('keeps the first unknown request across route reentry even when the list now 
 
 it.each(['success', 'definite', 'unknown'] as const)('settles %s in a returned owner before reveal without another subscription', async outcome => {
   const fixture = setupWorkbench({ defer: true, failure: outcome === 'success' ? null : outcome });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await waitFor(() => expect(fixture.posts()).toHaveLength(1));
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'other' } }); });
   await screen.findAllByText('Other track');
   await act(async () => { await fixture.router.navigate({ to: '/track/$trackId', params: { trackId: 'workbench' } }); });
-  const entry = await screen.findByRole('button', { name: 'Terminal workbench' });
+  const entry = await terminalCommandInput();
   entry.focus();
   await act(async () => { fixture.releases[0]?.(); await Promise.resolve(); });
   await waitFor(() => expect(screen.queryByText('Creating terminal…')).toBeNull());
@@ -253,7 +252,7 @@ it.each(['success', 'definite', 'unknown'] as const)('settles %s in a returned o
   expect(screen.queryByRole('button', { name: 'Hide terminal' })).toBeNull();
   expect(fixture.posts()).toHaveLength(1);
   document.documentElement.dataset.theme = 'light';
-  await userEvent.click(entry);
+  await openTerminalCommand();
   if (outcome === 'success') {
     expect(fixture.posts()).toHaveLength(1);
   } else {
@@ -269,9 +268,9 @@ it.each(['success', 'definite', 'unknown'] as const)('settles %s in a returned o
 it('retains each unvisited deletion fallback lazily through hide and repeated list changes', async () => {
   const fixture = setupWorkbench({ cards: [terminalCard('first'), terminalCard('second'), terminalCard('third')] });
   const mount = vi.spyOn(fixture.runtime.host, 'mount');
-  const entry = await screen.findByRole('button', { name: 'Terminal workbench' });
+  await terminalCommandInput();
   expect(mount).toHaveBeenCalledTimes(0);
-  await userEvent.click(entry);
+  await openTerminalCommand();
   expect(mount).toHaveBeenCalledTimes(1);
   for (const [deleted, survivor, count] of [['first', 'second', 2], ['second', 'third', 3]] as const) {
     await userEvent.click(within(document.querySelector('[data-nc-card-dock]:not([hidden])') as HTMLElement).getByRole('button', { name: /^Delete card / }));
@@ -284,7 +283,7 @@ it('retains each unvisited deletion fallback lazily through hide and repeated li
     await userEvent.click(screen.getByRole('button', { name: 'Hide terminal' }));
     expect(findDock()).toBe(dock);
     expect(fixture.runtime.host.resolve(survivor)).toBe(host);
-    await userEvent.click(entry);
+    await openTerminalCommand();
     expect(mount).toHaveBeenCalledTimes(count);
   }
   expect(fixture.posts()).toHaveLength(0);
@@ -294,8 +293,8 @@ it('retains each unvisited deletion fallback lazily through hide and repeated li
 it('retains visible list-refresh fallbacks without attaching hidden unvisited terminals', async () => {
   const fixture = setupWorkbench({ cards: [terminalCard('first'), terminalCard('second'), terminalCard('third')] });
   const mount = vi.spyOn(fixture.runtime.host, 'mount');
-  const entry = await screen.findByRole('button', { name: 'Terminal workbench' });
-  await userEvent.click(entry);
+  await terminalCommandInput();
+  await openTerminalCommand();
   fixture.cards.splice(0, 1);
   await act(async () => { await fixture.client.invalidateQueries({ queryKey: queryKeys.trackDetail('workbench') }); });
   await waitFor(() => expect(document.querySelector('[data-nc-card-dock]:not([hidden])')?.getAttribute('data-nc-card-id')).toBe('second'));
@@ -309,7 +308,7 @@ it('retains visible list-refresh fallbacks without attaching hidden unvisited te
   await waitFor(() => expect(document.querySelector('[data-nc-card-dock][data-nc-card-id="second"]')).toBeNull());
   expect(document.querySelector('[data-nc-card-dock][data-nc-card-id="third"]')).toBeNull();
   expect(mount).toHaveBeenCalledTimes(2);
-  await userEvent.click(entry);
+  await openTerminalCommand();
   const third = document.querySelector('[data-nc-card-dock][data-nc-card-id="third"]');
   expect(third).not.toBeNull();
   await userEvent.click(screen.getByRole('button', { name: 'Hide terminal' }));
@@ -353,7 +352,7 @@ it.each(['starting', 'exited'] as const)('cold-opens a %s terminal from its URL 
 it('paints one Chat-owned header without a toolbar or letter badge', async () => {
   setupWorkbench({ cards: [terminalCard('shell')] });
   await userEvent.click(await screen.findByRole('button', { name: 'Conversation Main discussion' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   const workbench = document.querySelector('[data-nc-terminal-workbench]')!;
   const chatHeader = screen.getByRole('complementary', { name: 'Main discussion' }).querySelector('header')!;
   const headers = workbench.querySelectorAll('header');
@@ -370,7 +369,7 @@ it('paints one Chat-owned header without a toolbar or letter badge', async () =>
 
 it('omits dock deletion for kernel-owned cards while keeping hide available', async () => {
   const fixture = setupWorkbench({ cards: [{ ...terminalCard('protected'), deletable: false }] });
-  await userEvent.click(await screen.findByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   const dock = document.querySelector('[data-nc-card-dock]') as HTMLElement;
   expect(within(dock).queryByRole('button', { name: /^Delete card / })).toBeNull();
   await userEvent.click(within(dock).getByRole('button', { name: 'Hide terminal' }));
@@ -396,7 +395,7 @@ it('does not acknowledge a side reply while Discussion is hidden by Terminal', a
   const sideInput = within(retained!).getByRole('combobox', { name: 'Message' });
   await waitFor(() => expect(sideInput.getAttribute('contenteditable')).toBe('true'));
   sideInput.textContent = 'keep this side draft'; fireEvent.input(sideInput);
-  fireEvent.click(screen.getByRole('button', { name: 'Terminal workbench' }));
+  await openTerminalCommand();
   await screen.findByRole('button', { name: 'Hide terminal' });
   await waitFor(() => expect(document.querySelector('[data-nc-terminal-card]')).not.toBeNull());
   const host = document.querySelector('[data-nc-terminal-card]');
