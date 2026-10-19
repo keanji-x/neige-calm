@@ -187,8 +187,8 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         &self,
         op: &Operation,
         phase: Phase,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<Operation>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<Operation>> {
         self.inner.set_phase(op, phase, owner_key).await
     }
 
@@ -205,8 +205,8 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<Operation>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<Operation>> {
         self.inner.set_compensating(op, state, owner_key).await
     }
 
@@ -224,8 +224,8 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         last_error: String,
         from_phase: calm_server::operation::PhaseTag,
         last_error_class: Option<String>,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<OperationResult>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
             .mark_failed(op, last_error, from_phase, last_error_class, owner_key)
             .await
@@ -236,8 +236,8 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         op: &Operation,
         reason: String,
         from_phase: calm_server::operation::PhaseTag,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<OperationResult>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
             .mark_stuck(op, reason, from_phase, owner_key)
             .await
@@ -325,8 +325,8 @@ impl OperationRepo for DriveErrorOnceRepo {
         &self,
         op: &Operation,
         phase: Phase,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<Operation>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<Operation>> {
         self.inner.set_phase(op, phase, owner_key).await
     }
 
@@ -343,8 +343,8 @@ impl OperationRepo for DriveErrorOnceRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<Operation>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<Operation>> {
         self.inner.set_compensating(op, state, owner_key).await
     }
 
@@ -362,8 +362,8 @@ impl OperationRepo for DriveErrorOnceRepo {
         last_error: String,
         from_phase: calm_server::operation::PhaseTag,
         last_error_class: Option<String>,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<OperationResult>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
             .mark_failed(op, last_error, from_phase, last_error_class, owner_key)
             .await
@@ -374,8 +374,8 @@ impl OperationRepo for DriveErrorOnceRepo {
         op: &Operation,
         reason: String,
         from_phase: calm_server::operation::PhaseTag,
-        owner_key: calm_server::operation::LeaveWrite<&'static str>,
-    ) -> CalmResult<Option<OperationResult>> {
+        owner_key: Option<&'static str>,
+    ) -> CalmResult<calm_server::operation::LeaveWrite<OperationResult>> {
         self.inner
             .mark_stuck(op, reason, from_phase, owner_key)
             .await

@@ -1044,8 +1044,8 @@ pub trait OperationRepo: Send + Sync {
         &self,
         op: &Operation,
         phase: Phase,
-        owner_key: LeaveWrite<&'static str>,
-    ) -> Result<Option<Operation>>;
+        owner_key: Option<&'static str>,
+    ) -> Result<LeaveWrite<Operation>>;
     async fn set_phase_and_tx_output(
         &self,
         op: &Operation,
@@ -1056,8 +1056,8 @@ pub trait OperationRepo: Send + Sync {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        owner_key: LeaveWrite<&'static str>,
-    ) -> Result<Option<Operation>>;
+        owner_key: Option<&'static str>,
+    ) -> Result<LeaveWrite<Operation>>;
     async fn update_compensation_state(
         &self,
         op: &Operation,
@@ -1069,15 +1069,15 @@ pub trait OperationRepo: Send + Sync {
         last_error: String,
         from_phase: PhaseTag,
         last_error_class: Option<String>,
-        owner_key: LeaveWrite<&'static str>,
-    ) -> Result<Option<OperationResult>>;
+        owner_key: Option<&'static str>,
+    ) -> Result<LeaveWrite<OperationResult>>;
     async fn mark_stuck(
         &self,
         op: &Operation,
         reason: String,
         from_phase: PhaseTag,
-        owner_key: LeaveWrite<&'static str>,
-    ) -> Result<Option<OperationResult>>;
+        owner_key: Option<&'static str>,
+    ) -> Result<LeaveWrite<OperationResult>>;
 }
 
 fn required_lease_owner(op: &Operation) -> Result<&str> {

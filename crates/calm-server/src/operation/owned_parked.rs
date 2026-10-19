@@ -62,3 +62,7 @@ pub(crate) async fn reconcile(
     query.execute(pool.writer_pool()).await?;
     result
 }
+
+#[cfg(test)]
+#[path = "owned_parked_tests.rs"]
+mod tests;

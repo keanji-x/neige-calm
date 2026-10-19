@@ -345,8 +345,8 @@ impl OperationRepo for SqlxOperationRepo {
         &self,
         op: &Operation,
         phase: Phase,
-        owner_key: super::LeaveWrite<&'static str>,
-    ) -> Result<Option<Operation>> {
+        owner_key: Option<&'static str>,
+    ) -> Result<super::LeaveWrite<Operation>> {
         if matches!(phase, Phase::AwaitingRetry { .. })
             && !matches!(op.phase, Phase::AppServerInteract { .. })
         {
@@ -419,8 +419,8 @@ impl OperationRepo for SqlxOperationRepo {
         &self,
         op: &Operation,
         state: &CompensationStateVersioned,
-        owner_key: super::LeaveWrite<&'static str>,
-    ) -> Result<Option<Operation>> {
+        owner_key: Option<&'static str>,
+    ) -> Result<super::LeaveWrite<Operation>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
             return Ok(super::LeaveWrite::ClaimLost);
@@ -507,8 +507,8 @@ impl OperationRepo for SqlxOperationRepo {
         last_error: String,
         from_phase: PhaseTag,
         last_error_class: Option<String>,
-        owner_key: super::LeaveWrite<&'static str>,
-    ) -> Result<Option<OperationResult>> {
+        owner_key: Option<&'static str>,
+    ) -> Result<super::LeaveWrite<OperationResult>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
             return Ok(super::LeaveWrite::ClaimLost);
@@ -559,8 +559,8 @@ impl OperationRepo for SqlxOperationRepo {
         op: &Operation,
         reason: String,
         from_phase: PhaseTag,
-        owner_key: super::LeaveWrite<&'static str>,
-    ) -> Result<Option<OperationResult>> {
+        owner_key: Option<&'static str>,
+    ) -> Result<super::LeaveWrite<OperationResult>> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
         if !has_live_claim_tx(&mut tx, op).await? {
             return Ok(super::LeaveWrite::ClaimLost);

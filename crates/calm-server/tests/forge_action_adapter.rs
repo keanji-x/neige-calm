@@ -626,6 +626,7 @@ async fn claimed_spawn_started_forge_op(
         .operation_repo
         .set_phase(&tx_committed, Phase::SpawnStarted, None)
         .await?
+        .applied()
         .expect("set spawn_started");
     assert_eq!(spawn_started.phase, Phase::SpawnStarted);
     let spawn_claimed = claim_one(boot, &op_id).await?;

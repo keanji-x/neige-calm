@@ -454,3 +454,6 @@ mod track_admin_tests;
 
 #[cfg(test)]
 mod terminal_presentation_tests;
+
+#[cfg(test)]
+mod typed_gate_park_migration_tests;

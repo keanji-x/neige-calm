@@ -275,7 +275,7 @@ workspace-runtime、calm-truth 的 `src/`（迁移为 `truth/migrations/`）。�
   的缺 artifact 检查（`driver.rs:796-815`）拒绝，C2b.0 起这是原生行唯一的围栏，由 replay 的 `operation::tests::{set_parked_requires_lease_and_artifacts_record_rejects_stale_lease,
   parked_return_without_artifacts_fails_and_drops_observer}`（`tests.rs:280`、`:1645`，后者经生产 driver 与 `set_parked`）pin 住，
   生产中只有专用 `set_parked` 可进入 Parked；通用 phase 写者与直接 SQL 不在这个围栏内。
-  实现 PR 删去 `writes.rs:117` 的条件做 mutation，两者应变红。C2b.1 起 `set_parked` 以 owner-state 键参数分支：未声明键照旧要求
+  实现 PR 分别做 mutation：只删去 `writes.rs:117` 的条件时两条用例应变红；只删去 driver 的缺 artifact 检查时，`parked_return_without_artifacts_fails_and_drops_observer` 应变红（driver 检查在 `set_parked` 返回未写入之后）。C2b.1 起 `set_parked` 以 owner-state 键参数分支：未声明键照旧要求
   artifacts，声明键则要求同一事务内该键存在（与留存守卫同一个通用事实），不看 artifacts。记录的完整有效性只由 owner 解码器负责：
   gate 适配器在 `spawn_side_effect` 返回 Parked 前以 `gate_execution.rs` 解码本 claim 下的行（记录只在本 claim 下写入），失败即
   返回 Err，经补偿入口被守卫留存并写 `last_error`；键缺失则不 park、守卫不留存，照旧补偿（无进程步）后 Failed，因为准入与记录
