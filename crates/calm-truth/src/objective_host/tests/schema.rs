@@ -7,7 +7,7 @@ async fn schema() -> SqliteConnection {
     sqlx::raw_sql(
         "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=OFF;
          CREATE TABLE tracks(id TEXT PRIMARY KEY);
-         INSERT INTO tracks VALUES('t');",
+         INSERT INTO tracks VALUES('t'),('other');",
     )
     .execute(&mut db)
     .await
@@ -26,7 +26,8 @@ async fn schema() -> SqliteConnection {
     sqlx::raw_sql(
         "INSERT INTO objective_events VALUES
          ('t',1,1,'host_idle',NULL,'{\"event\":\"host_idle\",\"queue_len\":0}','harness_turn','one',0),
-         ('t',2,1,'host_idle',NULL,'{\"event\":\"host_idle\",\"queue_len\":1}','harness_turn','two',1);
+         ('t',2,1,'host_idle',NULL,'{\"event\":\"host_idle\",\"queue_len\":1}','harness_turn','two',1),
+         ('other',1,1,'host_idle',NULL,'{\"event\":\"host_idle\",\"queue_len\":0}','harness_turn','one',0);
          INSERT INTO objective_states VALUES('t',2,1,'{\"snapshot\":2}');
          INSERT INTO objective_intents(track_id,event_seq,ordinal,kind,intent_json,effect_key,created_at_ms)
          VALUES('t',1,0,'notify','{\"intent\":\"notify\"}','[\"effect\"]',0);",
@@ -112,6 +113,41 @@ async fn objective_intents_effect_replacement_is_refused() {
         "INTO objective_intents(track_id,event_seq,ordinal,kind,intent_json,effect_key,created_at_ms)
          VALUES('t',2,1,'notify','{\"intent\":\"notify\",\"changed\":true}','[\"effect\"]',99)",
         "objective intent cannot be replaced",
+    )
+    .await;
+}
+
+// Use fresh declared keys so only the hidden rowid could collide. The event
+// collision would cascade away its intent; the intent collision would erase its
+// settlement; the snapshot collision would move it to another track.
+#[tokio::test]
+async fn objective_events_explicit_rowid_is_refused() {
+    refuse_conflicts(
+        "INTO objective_events(rowid,track_id,seq,schema_version,kind,objective_key,
+         payload_json,source_kind,source_key,appended_at_ms)
+         VALUES(1,'t',3,1,'host_idle',NULL,'{\"event\":\"host_idle\",\"queue_len\":99}',
+         'harness_turn','new',99)",
+        "has no column named rowid",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn objective_states_explicit_rowid_is_refused() {
+    refuse_conflicts(
+        "INTO objective_states(rowid,track_id,seq,state_version,state_json)
+         VALUES(1,'other',1,0,'{}')",
+        "has no column named rowid",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn objective_intents_explicit_rowid_is_refused() {
+    refuse_conflicts(
+        "INTO objective_intents(rowid,track_id,event_seq,ordinal,kind,intent_json,effect_key,created_at_ms)
+         VALUES(1,'t',2,1,'notify','{\"intent\":\"notify\"}','[\"new\"]',99)",
+        "has no column named rowid",
     )
     .await;
 }

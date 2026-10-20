@@ -1,4 +1,5 @@
 -- The objective log is authoritative; snapshots are disposable caches.
+-- Natural keys are the only identities: no hidden rowid may bypass insert guards.
 CREATE TABLE objective_events (
     track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL CHECK(typeof(seq)='integer' AND seq>=1),
@@ -16,7 +17,7 @@ CREATE TABLE objective_events (
         WHEN 'definition_changed' THEN json_extract(payload_json,'$.objective.key')
         WHEN 'revision_delivered' THEN NULL WHEN 'host_idle' THEN NULL WHEN 'usage' THEN NULL
         ELSE json_extract(payload_json,'$.objective') END))
-);
+) WITHOUT ROWID;
 -- BEFORE INSERT runs before REPLACE's implicit deletion, even with recursive
 -- triggers disabled. Protect every unique identity before FK cascades can run.
 CREATE TRIGGER objective_events_no_replace BEFORE INSERT ON objective_events
@@ -37,7 +38,7 @@ CREATE TABLE objective_states (
     state_version INTEGER NOT NULL,
     state_json TEXT NOT NULL CHECK(json_valid(state_json)),
     FOREIGN KEY(track_id,seq) REFERENCES objective_events(track_id,seq) ON DELETE CASCADE
-);
+) WITHOUT ROWID;
 -- Existing snapshots advance through CAS UPDATE, never replacement insertion.
 CREATE TRIGGER objective_states_no_replace BEFORE INSERT ON objective_states
 WHEN EXISTS(SELECT 1 FROM objective_states WHERE track_id=NEW.track_id)
@@ -66,7 +67,7 @@ CREATE TABLE objective_intents (
     -- Settlement may happen directly from pending or after dispatch.
     CHECK(status<>'pending' OR dispatched_at_ms IS NULL),
     CHECK(status<>'dispatched' OR dispatched_at_ms IS NOT NULL)
-);
+) WITHOUT ROWID;
 CREATE INDEX objective_intents_unsettled ON objective_intents(track_id,event_seq,ordinal) WHERE status<>'settled';
 CREATE TRIGGER objective_intents_no_replace BEFORE INSERT ON objective_intents
 WHEN EXISTS(SELECT 1 FROM objective_intents WHERE track_id=NEW.track_id AND (
