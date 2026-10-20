@@ -51,6 +51,7 @@ impl PlannerTurnBudget {
 }
 
 /// Ownership of the immutable context fact for an issued Planner turn.
+/// Present values use only the tagged enum wire form.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -61,30 +62,14 @@ impl PlannerTurnBudget {
 pub enum FrozenContextUsage {
     Text(String),
     RenderPlan,
-    /// Old Planner budgets did not record a context fact. Never resample or repair them.
+    /// Planner budgets persisted before this feature omitted `context_usage`.
+    /// Never resample or repair their missing context fact.
     LegacyNotRecorded,
 }
 
+/// Map only an absent Planner `context_usage` field from pre-feature persisted budgets.
 fn legacy_context_not_recorded() -> FrozenContextUsage {
     FrozenContextUsage::LegacyNotRecorded
-}
-
-/// Decode the released string/null format explicitly, without confusing absence with ownership.
-fn deserialize_frozen_context<'de, D>(deserializer: D) -> Result<FrozenContextUsage, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Wire {
-        HistoricalText(String),
-        Current(FrozenContextUsage),
-    }
-    Ok(match Option::<Wire>::deserialize(deserializer)? {
-        Some(Wire::HistoricalText(text)) => FrozenContextUsage::Text(text),
-        Some(Wire::Current(value)) => value,
-        None => legacy_context_not_recorded(),
-    })
 }
 
 /// An explicit legacy state preserves the existing recovery policy without guessing a budget.
@@ -98,10 +83,7 @@ pub enum FrozenBudget {
         budget: PlannerTurnBudget,
         start_attempt: super::snapshot::QueueEntryId,
         warning_attempted: bool,
-        #[serde(
-            default = "legacy_context_not_recorded",
-            deserialize_with = "deserialize_frozen_context"
-        )]
+        #[serde(default = "legacy_context_not_recorded")]
         context_usage: FrozenContextUsage,
     },
 }
@@ -150,11 +132,6 @@ mod tests {
             "start_attempt":"attempt", "warning_attempted":false});
         for (field, expected) in [
             (None, FrozenContextUsage::LegacyNotRecorded),
-            (Some(json!(null)), FrozenContextUsage::LegacyNotRecorded),
-            (
-                Some(json!("frozen reading")),
-                FrozenContextUsage::Text("frozen reading".into()),
-            ),
             (
                 Some(json!({"kind":"render_plan"})),
                 FrozenContextUsage::RenderPlan,
@@ -183,10 +160,19 @@ mod tests {
                 value
             );
         }
-        for invalid in [json!(17), json!({"kind":"text"}), json!({"kind":"unknown"})] {
+        for invalid in [
+            json!(null),
+            json!("frozen reading"),
+            json!(17),
+            json!({"kind":"text"}),
+            json!({"kind":"unknown"}),
+        ] {
             let mut wire = base.clone();
             wire["context_usage"] = invalid;
-            assert!(serde_json::from_value::<FrozenBudget>(wire).is_err());
+            assert!(
+                serde_json::from_value::<FrozenBudget>(wire.clone()).is_err(),
+                "{wire}"
+            );
         }
     }
 
