@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 use super::*;
-use crate::shared_codex_appserver::{CodexPromptDelivery, NativePromptAdmission, NativeSteer};
+use crate::harness::native_admission::NativePromptAdmission;
+use crate::shared_codex_appserver::{CodexPromptDelivery, NativeSteer};
 
 #[tokio::test]
 async fn h2_steer_invalid_identities_are_unknown_on_the_wire() {

@@ -78,7 +78,7 @@ impl Fixture {
                     vec![],
                     &TurnModelSelection::inherit(),
                     PlannerPermissionMode::Never,
-                    &crate::shared_codex_appserver::NativePromptAdmission::new(
+                    &crate::harness::native_admission::NativePromptAdmission::new(
                         || Ok(()),
                         || Box::pin(async { Ok(()) }),
                     ),
@@ -244,7 +244,7 @@ async fn codex_budget_notice_inflight_blocks_observation_but_never_replaces_init
             .send_budget_notice(
                 &notice,
                 BudgetControlScope::Canonical(Box::new(scope)),
-                &crate::shared_codex_appserver::NativePromptAdmission::new(
+                &crate::harness::native_admission::NativePromptAdmission::new(
                     || Ok(()),
                     || Box::pin(async { Ok(()) }),
                 ),

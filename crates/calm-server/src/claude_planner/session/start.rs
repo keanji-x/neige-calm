@@ -4,17 +4,29 @@ use crate::harness::backend::{StartDiagnostic, TurnStartFailure};
 use provider::control::*;
 
 pub(crate) enum SpawnFailure {
+    BeforeWrite(BeforeWriteFailure),
+    CrossedWrite {
+        error: CalmError,
+        local_turn: uuid::Uuid,
+    },
+}
+pub(crate) enum BeforeWriteFailure {
     Host(TurnStartFailure),
-    Failed { error: CalmError, line_sent: bool },
+    Failed(CalmError),
 }
 impl From<TurnStartFailure> for SpawnFailure {
     fn from(failure: TurnStartFailure) -> Self {
-        Self::Host(failure)
+        Self::BeforeWrite(BeforeWriteFailure::Host(failure))
     }
 }
 impl From<CalmError> for SpawnFailure {
     fn from(error: CalmError) -> Self {
-        Self::Host(error.into())
+        TurnStartFailure::from(error).into()
+    }
+}
+impl SpawnFailure {
+    pub(super) fn failed(error: CalmError) -> Self {
+        Self::BeforeWrite(BeforeWriteFailure::Failed(error))
     }
 }
 pub(super) fn start_result(
@@ -24,100 +36,55 @@ pub(super) fn start_result(
         Ok(turn) => Ok(TurnStartOutcome::Started {
             turn: TurnIdentity::Local(CorrelationKey(turn)),
         }),
-        Err(SpawnFailure::Host(failure)) => Err(failure),
-        Err(SpawnFailure::Failed { error, .. }) => Ok(TurnStartOutcome::Failed { error }),
+        Err(SpawnFailure::BeforeWrite(BeforeWriteFailure::Host(failure))) => Err(failure),
+        Err(SpawnFailure::BeforeWrite(BeforeWriteFailure::Failed(error))) => {
+            Ok(TurnStartOutcome::Failed { error })
+        }
+        Err(SpawnFailure::CrossedWrite { error, local_turn }) => {
+            tracing::warn!(%local_turn, %error, "Claude invocation crossed stdin before failing");
+            Ok(TurnStartOutcome::Failed { error })
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn error() -> CalmError {
+        CalmError::Conflict("original diagnostic".into())
+    }
+
     #[test]
     fn m1_mapping_claude_spawn_facts_preserve_ordinary_retry_and_compact_evidence() {
-        for case in [
-            "host-transient",
-            "host-refused",
-            "host-recovery",
-            "preparation",
-            "spawn",
-            "line",
-            "success",
+        for failure in [
+            SpawnFailure::failed(error()),
+            SpawnFailure::CrossedWrite {
+                error: error(),
+                local_turn: uuid::Uuid::new_v4(),
+            },
         ] {
-            let failure = || match case {
-                "host-transient" => SpawnFailure::Host(TurnStartFailure::Transient(
-                    CalmError::Conflict("original".into()),
-                )),
-                "host-refused" => SpawnFailure::Host(TurnStartFailure::Refused {
-                    error: CalmError::Conflict("original".into()),
-                    reader: "operator wording".into(),
-                }),
-                "host-recovery" => SpawnFailure::Host(TurnStartFailure::AwaitingRecovery {
-                    error: CalmError::Conflict("original".into()),
-                    reader: "hold wording".into(),
-                }),
-                "preparation" => SpawnFailure::Failed {
-                    error: CalmError::Conflict("original".into()),
-                    line_sent: false,
-                },
-                "spawn" | "line" => SpawnFailure::Failed {
-                    error: CalmError::Conflict("original".into()),
-                    line_sent: case == "line",
-                },
-                _ => unreachable!(),
-            };
-            let result = if case == "success" {
-                start_result(Ok("local-turn".into()))
-            } else {
-                start_result(Err(failure()))
-            };
-            match (&result, case) {
-                (
-                    Ok(TurnStartOutcome::Started {
-                        turn: TurnIdentity::Local(key),
-                    }),
-                    "success",
-                ) => assert_eq!(key.0, "local-turn"),
-                (Ok(TurnStartOutcome::Failed { .. }), "preparation") => {}
-                (Ok(TurnStartOutcome::Failed { .. }), "spawn" | "line") => {}
-                (Err(_), "host-transient" | "host-refused" | "host-recovery") => {}
-                other => panic!("wrong fact {other:?}"),
-            }
-            match (case, result) {
-                ("success", Ok(TurnStartOutcome::Started { turn })) => {
-                    assert_eq!(turn.into_string(), "local-turn")
-                }
-                (
-                    "host-refused",
-                    Err(TurnStartFailure::Refused {
-                        reader,
-                        error: CalmError::Conflict(message),
-                    }),
-                ) => {
-                    assert_eq!(reader, "operator wording");
-                    assert_eq!(message, "original");
-                }
-                (
-                    "host-recovery",
-                    Err(TurnStartFailure::AwaitingRecovery {
-                        reader,
-                        error: CalmError::Conflict(message),
-                    }),
-                ) => {
-                    assert_eq!(reader, "hold wording");
-                    assert_eq!(message, "original");
-                }
-                (
-                    "host-transient",
-                    Err(TurnStartFailure::Transient(CalmError::Conflict(message))),
-                )
-                | (
-                    "preparation" | "spawn" | "line",
-                    Ok(TurnStartOutcome::Failed {
-                        error: CalmError::Conflict(message),
-                    }),
-                ) => assert_eq!(message, "original"),
-                other => panic!("wrong operation fact {other:?}"),
-            }
+            let result = start_result(Err(failure)).unwrap();
+            assert!(
+                matches!(result, TurnStartOutcome::Failed { error: CalmError::Conflict(message) } if message == "original diagnostic")
+            );
         }
+        let result = start_result(Ok("local-turn".into())).unwrap();
+        assert!(
+            matches!(result, TurnStartOutcome::Started { turn: TurnIdentity::Local(key) } if key.0 == "local-turn")
+        );
+        assert!(
+            matches!(start_result(Err(TurnStartFailure::Transient(error()).into())), Err(TurnStartFailure::Transient(CalmError::Conflict(message))) if message == "original diagnostic")
+        );
+        assert!(
+            matches!(start_result(Err(TurnStartFailure::Refused { error: error(), reader: "operator wording".into() }.into())), Err(TurnStartFailure::Refused { error: CalmError::Conflict(message), reader }) if message == "original diagnostic" && reader == "operator wording")
+        );
+        let recovery = TurnStartFailure::AwaitingRecovery {
+            error: error(),
+            reader: "hold wording".into(),
+        };
+        assert!(
+            matches!(start_result(Err(recovery.into())), Err(TurnStartFailure::AwaitingRecovery { error: CalmError::Conflict(message), reader }) if message == "original diagnostic" && reader == "hold wording")
+        );
     }
 }

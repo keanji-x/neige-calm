@@ -15,6 +15,7 @@ pub mod live_replies;
 #[cfg(test)]
 mod live_replies_tests;
 pub mod lock;
+pub(crate) mod native_admission;
 pub mod observation;
 pub mod profile;
 pub mod queue;

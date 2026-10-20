@@ -63,7 +63,7 @@ pub(super) async fn resolve(
         .config_read_admitted(
             Some(cwd.as_str()),
             deadline,
-            &crate::shared_codex_appserver::NativePromptAdmission::new(
+            &crate::harness::native_admission::NativePromptAdmission::new(
                 || source.check_current(),
                 || source.admit_native_read(),
             ),
@@ -133,7 +133,7 @@ async fn catalog_default_effort(
     match daemon
         .model_list_admitted(
             deadline,
-            &crate::shared_codex_appserver::NativePromptAdmission::new(
+            &crate::harness::native_admission::NativePromptAdmission::new(
                 || source.check_current(),
                 || source.admit_native_read(),
             ),

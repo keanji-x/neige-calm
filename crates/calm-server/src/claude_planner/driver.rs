@@ -16,11 +16,12 @@ use super::outcome_record::record_outcome;
 use super::session::{FinishedTurn, Shared};
 use super::spawn::{InstructionsFile, SpawnPurpose};
 use super::stop::{STOP_BOUND, stop_by};
-use super::turn_slot::{TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached};
+use super::turn_slot::{TerminalCause, TurnSlot, deadline_reached};
 use crate::error::CalmError;
 use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
+use provider::claude::line_writer::WRITE_TIMEOUT;
 use provider::claude::permission::{CanUseTool, PermissionDecision, permission_response};
 use provider::claude::protocol::{
     ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode,

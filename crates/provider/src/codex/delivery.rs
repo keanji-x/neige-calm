@@ -82,7 +82,7 @@ impl CodexAppServer {
             selection,
             approvals,
             client_user_message_id,
-            &super::PreSendGate::new(super::gated_requests::allow_send),
+            &crate::send_boundary::PreSendGate::new(super::gated_requests::allow_send),
         )
         .await
     }
@@ -94,7 +94,7 @@ impl CodexAppServer {
         selection: &TurnModelSelection,
         approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
-        gate: &super::PreSendGate<'_>,
+        gate: &crate::send_boundary::PreSendGate<'_>,
     ) -> StartDelivery<RpcAttemptFailure> {
         match self
             .turn_start_attempt_gated(
@@ -137,7 +137,7 @@ impl CodexAppServer {
             expected_turn_id,
             input,
             client_user_message_id,
-            &super::PreSendGate::new(super::gated_requests::allow_send),
+            &crate::send_boundary::PreSendGate::new(super::gated_requests::allow_send),
         )
         .await
     }
@@ -148,7 +148,7 @@ impl CodexAppServer {
         expected_turn_id: &str,
         input: Vec<InputItem>,
         client_user_message_id: Option<&str>,
-        gate: &super::PreSendGate<'_>,
+        gate: &crate::send_boundary::PreSendGate<'_>,
     ) -> SteerDelivery<RpcAttemptFailure> {
         match self
             .turn_steer_attempt_gated(

@@ -183,9 +183,19 @@ pub(super) enum SpawnInput<'a> {
     Compaction,
 }
 
+/// Historical invocation intentionally has no canonical input policy.
+/// The required gate still travels to the real transport; there is no missing-gate fallback.
+pub(super) fn historical_admission()
+-> crate::harness::native_admission::NativePromptAdmission<'static> {
+    crate::harness::native_admission::NativePromptAdmission::new(
+        || Ok(()),
+        || Box::pin(async { Ok(()) }),
+    )
+}
+
 mod invocation;
 mod start;
-pub(crate) use start::SpawnFailure;
+pub(crate) use start::{BeforeWriteFailure, SpawnFailure};
 impl ClaudePlannerSession {
     /// Open the session for its worker-session row: a row whose `agent_session_id` is bound
     /// resumes that Claude session (`--resume`); otherwise the first spawn creates it.
@@ -279,6 +289,7 @@ impl ClaudePlannerSession {
         input: SpawnInput<'_>,
         selection: &TurnModelSelection,
         mode: PlannerPermissionMode,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> Result<String, SpawnFailure> {
         let purpose = match &input {
             SpawnInput::Turn { .. } => SpawnPurpose::Turn,
@@ -322,7 +333,8 @@ impl ClaudePlannerSession {
         let thread_uuid = Uuid::try_parse(thread).map_err(|_| {
             CalmError::BadRequest(format!("claude planner thread {thread} is not a UUID"))
         })?;
-        let turn_id = Uuid::new_v4().to_string();
+        let local_turn = Uuid::new_v4();
+        let turn_id = local_turn.to_string();
         if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
@@ -355,10 +367,7 @@ impl ClaudePlannerSession {
                 return Err(needs_an_operator(problem).into());
             }
             Some(super::config::VersionProblem::NoAnswer(problem)) => {
-                return Err(SpawnFailure::Failed {
-                    error: CalmError::Conflict(problem),
-                    line_sent: false,
-                });
+                return Err(SpawnFailure::failed(CalmError::Conflict(problem)));
             }
         }
         // A shutdown or a deletion seal may have landed while `--version` ran; nothing is minted
@@ -388,16 +397,11 @@ impl ClaudePlannerSession {
             } => {
                 let line = UserLine::new(
                     thread_uuid,
-                    client_line_uuid(client_id).map_err(|e| SpawnFailure::Failed {
-                        error: CalmError::BadRequest(e.to_string()),
-                        line_sent: false,
-                    })?,
+                    client_line_uuid(client_id)
+                        .map_err(|e| SpawnFailure::failed(CalmError::BadRequest(e.to_string())))?,
                     user_line_content(&items)
                         .await
-                        .map_err(|error| SpawnFailure::Failed {
-                            error,
-                            line_sent: false,
-                        })?,
+                        .map_err(SpawnFailure::failed)?,
                 );
                 (line, client_id.to_string(), items, truncation)
             }
@@ -408,10 +412,7 @@ impl ClaudePlannerSession {
                 (line, uuid.simple().to_string(), Vec::new(), None)
             }
         };
-        let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::Failed {
-            error: e.into(),
-            line_sent: false,
-        })?;
+        let line = serde_json::to_string(&line).map_err(|e| SpawnFailure::failed(e.into()))?;
         let mut translator = TurnTranslator::new(
             TurnContext {
                 thread_id: thread.to_string(),
@@ -423,10 +424,7 @@ impl ClaudePlannerSession {
             },
             params.calm_tools.clone(),
         )
-        .map_err(|e| SpawnFailure::Failed {
-            error: CalmError::BadRequest(e.to_string()),
-            line_sent: false,
-        })?;
+        .map_err(|e| SpawnFailure::failed(CalmError::BadRequest(e.to_string())))?;
         let instructions = InstructionsFile::write(
             &host.instructions_dir,
             &params.worker_session_id,
@@ -448,10 +446,7 @@ impl ClaudePlannerSession {
             Ok(argv) => argv,
             Err(error) => {
                 let failure = self.abort_before_ok(None, instructions, error).await;
-                return Err(SpawnFailure::Failed {
-                    error: failure,
-                    line_sent: false,
-                });
+                return Err(SpawnFailure::failed(failure));
             }
         };
         let spawned = Command::new(&config.claude_binary)
@@ -463,6 +458,7 @@ impl ClaudePlannerSession {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn();
         let mut child = match spawned {
             Ok(child) => child,
@@ -472,10 +468,7 @@ impl ClaudePlannerSession {
                     config.claude_binary.display()
                 ));
                 let failure = self.abort_before_ok(None, instructions, error).await;
-                return Err(SpawnFailure::Failed {
-                    error: failure,
-                    line_sent: false,
-                });
+                return Err(SpawnFailure::failed(failure));
             }
         };
         #[cfg(feature = "fixtures")]
@@ -505,11 +498,24 @@ impl ClaudePlannerSession {
         {
             shared.hooks.lock().expect("hooks").user_line_writes += 1;
         }
-        if let Err(error) = slot.write_line(&line).await {
-            let failure = self.abort_before_ok(Some(child), instructions, error).await;
-            return Err(SpawnFailure::Failed {
-                error: failure,
-                line_sent: true,
+        if let Err(error) = slot.write_line(&line, admission.gate()).await {
+            use provider::claude::line_writer::LineWriteError;
+            return Err(match error {
+                LineWriteError::BeforeWrite(message) => {
+                    let error = admission
+                        .take_refusal()
+                        .unwrap_or(CalmError::Conflict(message));
+                    SpawnFailure::failed(
+                        self.abort_before_ok(Some(child), instructions, error).await,
+                    )
+                }
+                LineWriteError::CrossedWrite(error) => {
+                    let error = super::turn_slot::write_error(LineWriteError::CrossedWrite(error));
+                    SpawnFailure::CrossedWrite {
+                        error: self.abort_before_ok(Some(child), instructions, error).await,
+                        local_turn,
+                    }
+                }
             });
         }
 
@@ -669,9 +675,19 @@ async fn interrupt(slot: &TurnSlot) -> provider::control::InterruptOutcome<CalmE
     use provider::control::SubmissionEvidence;
     let written = match serde_json::to_string(&request) {
         Ok(line) => slot
-            .write_line(&line)
+            .write_internal_line(&line, super::turn_slot::InternalLine::Interrupt)
             .await
-            .map_err(|error| (error, SubmissionEvidence::WriteMayHaveReachedPeer)),
+            .map_err(|error| {
+                let evidence = match &error {
+                    provider::claude::line_writer::LineWriteError::BeforeWrite(_) => {
+                        SubmissionEvidence::NotWritten
+                    }
+                    provider::claude::line_writer::LineWriteError::CrossedWrite(_) => {
+                        SubmissionEvidence::WriteMayHaveReachedPeer
+                    }
+                };
+                (super::turn_slot::write_error(error), evidence)
+            }),
         Err(error) => Err((error.into(), SubmissionEvidence::NotWritten)),
     };
     match written {

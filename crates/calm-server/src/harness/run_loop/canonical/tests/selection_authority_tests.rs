@@ -230,7 +230,8 @@ async fn bound_admission(fx: &Fixture) -> crate::conversation_inputs::SelectionR
 
 #[tokio::test]
 async fn sqlite_admission_under_sink_yields_before_server_reply_timeout() {
-    use provider::codex::{PreSendGate, RequestCrossing, TurnApprovals};
+    use provider::codex::{RequestCrossing, TurnApprovals};
+    use provider::send_boundary::PreSendGate;
     let fx = Fixture::new().await;
     let (client, mut peer) = connect(&fx.daemon).await;
     let admission = bound_admission(&fx).await;
@@ -243,7 +244,7 @@ async fn sqlite_admission_under_sink_yields_before_server_reply_timeout() {
             admission
                 .revalidate()
                 .await
-                .map_err(|error| provider::codex::error::Error::Refused(error.to_string()))
+                .map_err(|error| provider::send_boundary::SendRefusal(error.to_string()))
         })
     });
     let selection = provider::TurnModelSelection::inherit();
@@ -302,7 +303,7 @@ async fn canonical_config_read_rechecks_source_after_the_actual_client_gate() {
     let gate =
         crate::shared_codex_appserver::native_owner_tests::hold_connected_client_gate(&fx.daemon)
             .await;
-    let native_admission = crate::shared_codex_appserver::NativePromptAdmission::new(
+    let native_admission = crate::harness::native_admission::NativePromptAdmission::new(
         || admission.check_current(),
         || admission.admit_native_read(),
     );

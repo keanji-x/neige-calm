@@ -200,7 +200,12 @@ pub(crate) async fn write_response(
     slot: &TurnSlot,
     response: &ControlResponseOut,
 ) -> crate::error::Result<()> {
-    slot.write_line(&serde_json::to_string(response)?).await
+    slot.write_internal_line(
+        &serde_json::to_string(response)?,
+        super::turn_slot::InternalLine::ControlReply,
+    )
+    .await
+    .map_err(super::turn_slot::write_error)
 }
 
 #[cfg(test)]

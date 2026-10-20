@@ -92,7 +92,7 @@ async fn canonical_input_is_unsupported_before_admission_or_native_effects() {
             }],
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            &crate::shared_codex_appserver::NativePromptAdmission::new(
+            &crate::harness::native_admission::NativePromptAdmission::new(
                 || Ok(()),
                 || Box::pin(async { panic!("unsupported backend must not admit native effects") }),
             ),

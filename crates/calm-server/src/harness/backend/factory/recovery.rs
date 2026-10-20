@@ -174,7 +174,7 @@ impl PlannerFactory<'_> {
         loaded: LoadedTurnPolicy,
     ) -> Result<()> {
         let thread_id = native.thread_id();
-        let admit = crate::shared_codex_appserver::NativePromptAdmission::new(
+        let admit = crate::harness::native_admission::NativePromptAdmission::new(
             || admission.check_current(),
             || -> futures_util::future::BoxFuture<'_, Result<()>> {
                 Box::pin(validate_active_recovery(
@@ -285,7 +285,7 @@ impl PlannerFactory<'_> {
             })
             .ok_or_else(|| CalmError::Conflict("card is not a Codex harness conversation".into()))?
             .profile;
-        let admit = crate::shared_codex_appserver::NativePromptAdmission::new(
+        let admit = crate::harness::native_admission::NativePromptAdmission::new(
             || match &source {
                 Some(source) => source.check_current(),
                 None => Ok(()), // Historical kernel recovery.

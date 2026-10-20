@@ -20,7 +20,7 @@ mod interrupt;
 pub mod request_attempt;
 #[cfg(test)]
 mod start_mapping_tests;
-pub use gated_requests::PreSendGate;
+use crate::send_boundary::PreSendGate;
 use request_attempt::RpcResponseError;
 pub use request_attempt::{RequestCrossing, RpcAttemptFailure, RpcRemoteError};
 #[cfg(test)]

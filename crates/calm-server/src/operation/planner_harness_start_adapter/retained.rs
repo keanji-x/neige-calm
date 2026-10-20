@@ -359,7 +359,7 @@ impl PlannerHarnessStartAdapter {
             PathBuf::from(socket_path),
             raw,
             true,
-            &crate::shared_codex_appserver::NativePromptAdmission::new(
+            &crate::harness::native_admission::NativePromptAdmission::new(
                 || self.retained_source()?.0.check_current(),
                 move || {
                     let admitted = admitted.clone();

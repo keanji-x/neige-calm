@@ -1295,7 +1295,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 PathBuf::from(socket_path),
                 raw,
                 runtime_deferred,
-                &crate::shared_codex_appserver::NativePromptAdmission::new(
+                &crate::harness::native_admission::NativePromptAdmission::new(
                     || self.check_historical_issuer(),
                     || Box::pin(self.admit_historical(&card_id)),
                 ),

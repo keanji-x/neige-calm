@@ -286,7 +286,7 @@ async fn start_interrupt(
             .backend
             .interrupt_execution(
                 &admission.target,
-                &crate::shared_codex_appserver::NativePromptAdmission::new(
+                &crate::harness::native_admission::NativePromptAdmission::new(
                     || Ok(()),
                     || Box::pin(admission.admit()),
                 ),
@@ -397,7 +397,7 @@ pub(in crate::harness::run_loop) async fn warn(
         },
     };
     tokio::spawn(async move {
-        let admit = crate::shared_codex_appserver::NativePromptAdmission::new(
+        let admit = crate::harness::native_admission::NativePromptAdmission::new(
             || Ok(()),
             || Box::pin(admission.admit()),
         );

@@ -4,14 +4,12 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tokio::io::AsyncWriteExt as _;
 use tokio::process::ChildStdin;
 use tokio::sync::watch;
 
-use crate::error::{CalmError, Result};
-
-/// A stdin line that the CLI does not take within this bound fails the write.
-pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::error::CalmError;
+use provider::claude::line_writer::{LineIoError, LineWriteError};
+use provider::send_boundary::PreSendGate;
 
 /// Why a turn is ending, recorded before the path that ends it acts; the first one recorded wins.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +54,7 @@ impl TurnSlot {
     pub(crate) fn arm_stop(&self, at: tokio::time::Instant) {
         self.stop_at.send_if_modified(|current| match current {
             Some(armed) if *armed <= at => false,
-            _ => {
+            Some(_) | None => {
                 *current = Some(at);
                 true
             }
@@ -93,36 +91,41 @@ impl TurnSlot {
         self.cause.lock().expect("turn slot poisoned").clone()
     }
 
-    /// Write one line to the CLI's stdin within [`WRITE_TIMEOUT`].
-    pub(crate) async fn write_line(&self, line: &str) -> Result<()> {
-        write_line(&self.stdin, line).await
+    /// All user and protocol lines share the provider's actual writer mutex.
+    pub(crate) async fn write_line(
+        &self,
+        line: &str,
+        gate: &PreSendGate<'_>,
+    ) -> Result<(), LineWriteError> {
+        provider::claude::line_writer::write_line(&self.stdin, line, gate).await
+    }
+
+    pub(crate) async fn write_internal_line(
+        &self,
+        line: &str,
+        kind: InternalLine,
+    ) -> Result<(), LineWriteError> {
+        let gate = match kind {
+            InternalLine::Interrupt | InternalLine::ControlReply => {
+                PreSendGate::new(|| Box::pin(async { Ok(()) }))
+            }
+        };
+        self.write_line(line, &gate).await
     }
 }
 
-async fn write_line(stdin: &tokio::sync::Mutex<Option<ChildStdin>>, line: &str) -> Result<()> {
-    let write = async {
-        let mut guard = stdin.lock().await;
-        let stdin = guard
-            .as_mut()
-            .ok_or_else(|| CalmError::Conflict("claude stdin is already closed".into()))?;
-        // One buffer, so a timed-out write can never leave a line without its newline.
-        let mut framed = String::with_capacity(line.len() + 1);
-        framed.push_str(line);
-        framed.push('\n');
-        stdin.write_all(framed.as_bytes()).await?;
-        stdin.flush().await?;
-        Ok::<_, CalmError>(())
-    };
-    match tokio::time::timeout(WRITE_TIMEOUT, write).await {
-        Ok(written) => written,
-        Err(_) => {
-            // A partly written line may sit in the pipe: close stdin so nothing is appended to it.
-            if let Ok(mut guard) = stdin.try_lock() {
-                guard.take();
-            }
-            Err(CalmError::Conflict(
-                "claude did not take its stdin line in time".into(),
-            ))
+/// Internal protocol work cannot supply admission for a user invocation.
+pub(crate) enum InternalLine {
+    Interrupt,
+    ControlReply,
+}
+
+pub(crate) fn write_error(error: LineWriteError) -> CalmError {
+    match error {
+        LineWriteError::BeforeWrite(message) => CalmError::Conflict(message),
+        LineWriteError::CrossedWrite(LineIoError::Io(error)) => error.into(),
+        LineWriteError::CrossedWrite(LineIoError::Timeout) => {
+            CalmError::Conflict("claude did not take its stdin line in time".into())
         }
     }
 }

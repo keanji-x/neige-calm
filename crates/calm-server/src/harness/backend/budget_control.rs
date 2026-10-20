@@ -39,7 +39,7 @@ impl PlannerBackend {
         &self,
         notice: &BudgetControlNotice,
         scope: BudgetControlScope,
-        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> ControlAttemptReport {
         let Arm::Codex(daemon, owner) = &self.0 else {
             return ControlAttemptReport {
@@ -97,7 +97,7 @@ impl PlannerBackend {
     pub(crate) async fn interrupt_execution(
         &self,
         target: &ExecutionEndTarget,
-        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> Result<()> {
         match &self.0 {
             Arm::Codex(daemon, owner) if owner.binding.matches(target) => {

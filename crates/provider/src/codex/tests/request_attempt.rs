@@ -155,7 +155,7 @@ async fn opaque_pre_send_gate_runs_under_sink_and_refusal_never_poison_transport
     use std::sync::atomic::{AtomicBool, Ordering};
     let mut h = harness().await;
     let allowed = AtomicBool::new(true);
-    let gate = PreSendGate::new(|| -> futures_util::future::BoxFuture<'_, Result<()>> {
+    let gate = PreSendGate::new(|| {
         Box::pin(async {
             assert!(
                 h.client.sink.try_lock().is_err(),
@@ -164,7 +164,7 @@ async fn opaque_pre_send_gate_runs_under_sink_and_refusal_never_poison_transport
             if allowed.load(Ordering::SeqCst) {
                 Ok(())
             } else {
-                Err(Error::Refused("caller refused".into()))
+                Err(crate::send_boundary::SendRefusal("caller refused".into()))
             }
         })
     });
@@ -194,9 +194,7 @@ async fn opaque_pre_send_gate_runs_under_sink_and_refusal_never_poison_transport
 #[tokio::test]
 async fn cancel_pending_pre_send_gate_releases_sink_without_poisoning() {
     let h = harness().await;
-    let gate = PreSendGate::new(|| -> futures_util::future::BoxFuture<'_, Result<()>> {
-        Box::pin(std::future::pending())
-    });
+    let gate = PreSendGate::new(|| Box::pin(std::future::pending()));
     let mut attempt = Box::pin(h.client.request_attempt_gated::<Value>(
         "turn/start",
         json!({}),
@@ -213,9 +211,7 @@ async fn cancel_pending_pre_send_gate_releases_sink_without_poisoning() {
 #[tokio::test]
 async fn pre_send_gate_respects_shorter_request_deadline() {
     let h = harness().await;
-    let gate = PreSendGate::new(|| -> futures_util::future::BoxFuture<'_, Result<()>> {
-        Box::pin(std::future::pending())
-    });
+    let gate = PreSendGate::new(|| Box::pin(std::future::pending()));
     let client = h.client.with_request_timeout(Duration::from_millis(10));
     let attempt = client.request_attempt_gated::<Value>("turn/start", json!({}), &gate);
     let failure = tokio::time::timeout(Duration::from_secs(1), attempt)

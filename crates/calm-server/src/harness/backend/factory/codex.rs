@@ -51,7 +51,7 @@ impl PlannerFactory<'_> {
         socket_path: PathBuf,
         raw_token: String,
         deferred: bool,
-        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> std::result::Result<String, crate::shared_codex_appserver::ThreadMintFailure> {
         let daemon = self.daemon()?;
         let params = SharedThreadStartParams {

@@ -15,7 +15,7 @@
 //! changed.
 
 use super::driver::TerminalEvent;
-use super::session::{ClaudePlannerSession, SpawnFailure, SpawnInput};
+use super::session::{BeforeWriteFailure, ClaudePlannerSession, SpawnFailure, SpawnInput};
 use crate::error::CalmError;
 use crate::harness::backend::TurnStartFailure;
 use crate::planner_permission_mode::PlannerPermissionMode;
@@ -44,6 +44,7 @@ impl ClaudePlannerSession {
                 SpawnInput::Compaction,
                 selection,
                 PlannerPermissionMode::Never,
+                &super::session::historical_admission(),
             )
             .await,
         )
@@ -95,7 +96,7 @@ fn submission_result(result: Result<String, SpawnFailure>) -> CompactSubmission<
         Ok(_) => CompactSubmission::Submitted {
             basis: SubmissionBasis::LocalWrite,
         },
-        Err(SpawnFailure::Host(failure)) => {
+        Err(SpawnFailure::BeforeWrite(BeforeWriteFailure::Host(failure))) => {
             let error = match failure {
                 TurnStartFailure::Refused { error, .. } => refused(error),
                 TurnStartFailure::Transient(error)
@@ -106,17 +107,17 @@ fn submission_result(result: Result<String, SpawnFailure>) -> CompactSubmission<
                 reason: CompactNotSubmitted::PreparationFailed,
             }
         }
-        Err(SpawnFailure::Failed { error, line_sent }) => {
-            if line_sent {
-                CompactSubmission::Unconfirmed {
-                    error,
-                    evidence: SubmissionEvidence::WriteMayHaveReachedPeer,
-                }
-            } else {
-                CompactSubmission::NotSubmitted {
-                    error,
-                    reason: CompactNotSubmitted::PreparationFailed,
-                }
+        Err(SpawnFailure::BeforeWrite(BeforeWriteFailure::Failed(error))) => {
+            CompactSubmission::NotSubmitted {
+                error,
+                reason: CompactNotSubmitted::PreparationFailed,
+            }
+        }
+        Err(SpawnFailure::CrossedWrite { error, local_turn }) => {
+            tracing::warn!(%local_turn, %error, "Claude compaction crossed stdin before failing");
+            CompactSubmission::Unconfirmed {
+                error,
+                evidence: SubmissionEvidence::WriteMayHaveReachedPeer,
             }
         }
     }
@@ -126,6 +127,10 @@ fn submission_result(result: Result<String, SpawnFailure>) -> CompactSubmission<
 mod tests {
     use super::*;
 
+    fn error() -> CalmError {
+        CalmError::ServiceUnavailable("original diagnostic".into())
+    }
+
     #[test]
     fn m1_mapping_compact_spawn_failure_keeps_write_evidence_and_error() {
         assert!(matches!(
@@ -134,56 +139,29 @@ mod tests {
                 basis: SubmissionBasis::LocalWrite
             }
         ));
-        for line_sent in [false, true] {
-            for kind in ["refused", "transient", "recovery", "failed"] {
-                let error = CalmError::ServiceUnavailable("original diagnostic".into());
-                let original = error.to_string();
-                let failure = match kind {
-                    "refused" => TurnStartFailure::Refused {
-                        error,
-                        reader: "intentionally discarded compact reader".into(),
-                    },
-                    "transient" | "failed" => TurnStartFailure::Transient(error),
-                    "recovery" => TurnStartFailure::AwaitingRecovery {
-                        error,
-                        reader: "intentionally discarded compact reader".into(),
-                    },
-                    other => panic!("unexpected failure kind {other}"),
-                };
-                let spawn = if kind == "failed" {
-                    SpawnFailure::Failed {
-                        error: CalmError::ServiceUnavailable("original diagnostic".into()),
-                        line_sent,
-                    }
-                } else if line_sent {
-                    continue;
-                } else {
-                    SpawnFailure::Host(failure)
-                };
-                let outcome = submission_result(Err(spawn));
-                let error = match outcome {
-                    CompactSubmission::Unconfirmed { error, evidence } => {
-                        assert!(line_sent, "{kind}");
-                        assert_eq!(evidence, SubmissionEvidence::WriteMayHaveReachedPeer);
-                        error
-                    }
-                    CompactSubmission::NotSubmitted { error, reason } => {
-                        assert!(!line_sent, "{kind}");
-                        assert_eq!(reason, CompactNotSubmitted::PreparationFailed);
-                        error
-                    }
-                    other => panic!("unexpected {other:?}"),
-                };
-                if kind == "refused" {
-                    assert!(
-                        matches!(&error, CalmError::BadRequest(message) if message == &format!("Claude will not compact this conversation: {original}"))
-                    );
-                } else {
-                    assert!(
-                        matches!(&error, CalmError::ServiceUnavailable(message) if message == "original diagnostic")
-                    );
-                }
+        for failure in [
+            SpawnFailure::BeforeWrite(BeforeWriteFailure::Failed(error())),
+            TurnStartFailure::Transient(error()).into(),
+            TurnStartFailure::AwaitingRecovery {
+                error: error(),
+                reader: "hold wording".into(),
             }
+            .into(),
+        ] {
+            assert!(
+                matches!(submission_result(Err(failure)), CompactSubmission::NotSubmitted { error: CalmError::ServiceUnavailable(message), reason: CompactNotSubmitted::PreparationFailed } if message == "original diagnostic")
+            );
         }
+        let original = error().to_string();
+        let refusal = TurnStartFailure::Refused {
+            error: error(),
+            reader: "operator wording".into(),
+        };
+        assert!(
+            matches!(submission_result(Err(refusal.into())), CompactSubmission::NotSubmitted { error: CalmError::BadRequest(message), reason: CompactNotSubmitted::PreparationFailed } if message == format!("Claude will not compact this conversation: {original}"))
+        );
+        assert!(
+            matches!(submission_result(Err(SpawnFailure::CrossedWrite { error: error(), local_turn: uuid::Uuid::new_v4() })), CompactSubmission::Unconfirmed { error: CalmError::ServiceUnavailable(message), evidence: SubmissionEvidence::WriteMayHaveReachedPeer } if message == "original diagnostic")
+        );
     }
 }

@@ -14,7 +14,7 @@ impl PlannerBackend {
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         permission: PlannerPermissionMode,
-        admission: &crate::shared_codex_appserver::NativePromptAdmission<'a>,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'a>,
     ) -> InputAttemptReport {
         let correlation = AttemptCorrelation::new(attempt, self.provider(), thread_id);
         if proof.attempt() != attempt {

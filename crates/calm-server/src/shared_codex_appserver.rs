@@ -1,5 +1,6 @@
 //! Shared `codex app-server` supervisor: starts, supervises, and takes over a single
 //! daemon for the whole server.
+use crate::harness::native_admission::NativePromptAdmission;
 use provider::codex::delivery::{CompactDelivery, StartDelivery, SteerDelivery};
 use provider::control::NativeInterruptOutcome;
 
@@ -20,7 +21,7 @@ use native_turns::{NativeTurns, SourceRetirement};
 pub(crate) use thread_mint::ThreadMintFailure;
 #[cfg(all(test, feature = "fixtures"))]
 pub(crate) mod native_owner_tests;
-pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport, NativePromptAdmission};
+pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod termination_identity_tests;
 mod thread_release;
@@ -1082,7 +1083,7 @@ impl SharedCodexAppServer {
         self: &Arc<Self>,
         card_id: &str,
         params: SharedThreadStartParams,
-        admission: &prompt_attempt::NativePromptAdmission<'_>,
+        admission: &NativePromptAdmission<'_>,
     ) -> std::result::Result<MintedThread, ThreadMintFailure> {
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;

@@ -177,7 +177,7 @@ impl<'a> IssueTurnHandle<'a> {
     pub(in crate::harness) async fn send_budget_notice(
         self,
         notice: &crate::planner_turn_budget::BudgetControlNotice,
-        admission: &crate::shared_codex_appserver::NativePromptAdmission<'_>,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
     ) -> Result<super::budget_control::ControlAttemptReport> {
         if self.thread()? != notice.thread_id() {
             return Err(CalmError::Conflict(

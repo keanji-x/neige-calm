@@ -189,7 +189,7 @@ fn start(daemon: &Arc<SharedCodexAppServer>) -> JoinHandle<CodexPromptReport> {
                 ),
                 Some("client"),
                 NativeInput::Legacy,
-                &crate::shared_codex_appserver::NativePromptAdmission::new(
+                &crate::harness::native_admission::NativePromptAdmission::new(
                     || Ok(()),
                     || Box::pin(async { Ok(()) }),
                 ),

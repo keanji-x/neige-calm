@@ -20,8 +20,14 @@ impl ClaudePlannerSession {
             truncation: truncation.as_ref(),
         };
         start::start_result(
-            self.start_spawn(thread, input, &request.selection, request.permission)
-                .await,
+            self.start_spawn(
+                thread,
+                input,
+                &request.selection,
+                request.permission,
+                &historical_admission(),
+            )
+            .await,
         )
     }
 

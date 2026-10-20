@@ -5,6 +5,7 @@ mod compact_tests;
 pub mod discovery;
 #[cfg(test)]
 mod discovery_tests;
+pub mod line_writer;
 pub mod permission;
 pub mod protocol;
 #[cfg(test)]

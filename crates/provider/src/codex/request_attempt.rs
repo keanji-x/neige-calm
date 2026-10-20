@@ -190,7 +190,7 @@ impl CodexAppServer {
             method,
             params,
             deadline,
-            &super::PreSendGate::new(super::gated_requests::allow_send),
+            &crate::send_boundary::PreSendGate::new(super::gated_requests::allow_send),
         )
         .await
     }
@@ -199,7 +199,7 @@ impl CodexAppServer {
         &self,
         method: &str,
         params: Value,
-        gate: &super::PreSendGate<'_>,
+        gate: &crate::send_boundary::PreSendGate<'_>,
     ) -> std::result::Result<T, RpcAttemptFailure> {
         self.request_attempt_until_gated(
             method,
@@ -214,7 +214,7 @@ impl CodexAppServer {
         &self,
         method: &str,
         params: Value,
-        gate: &super::PreSendGate<'_>,
+        gate: &crate::send_boundary::PreSendGate<'_>,
     ) -> super::error::Result<T> {
         self.request_attempt_gated(method, params, gate)
             .await
@@ -226,7 +226,7 @@ impl CodexAppServer {
         method: &str,
         params: Value,
         deadline: tokio::time::Instant,
-        gate: &super::PreSendGate<'_>,
+        gate: &crate::send_boundary::PreSendGate<'_>,
     ) -> super::error::Result<T> {
         self.request_attempt_until_gated(method, params, deadline, gate)
             .await
@@ -238,7 +238,7 @@ impl CodexAppServer {
         method: &str,
         params: Value,
         deadline: tokio::time::Instant,
-        gate: &super::PreSendGate<'_>,
+        gate: &crate::send_boundary::PreSendGate<'_>,
     ) -> std::result::Result<T, RpcAttemptFailure> {
         let before =
             |id, error| RpcAttemptFailure::local(method, id, RequestCrossing::BeforeSend, error);
@@ -288,7 +288,7 @@ impl CodexAppServer {
                         )),
                     )
                 })?
-                .map_err(|error| before(Some(id), error))?;
+                .map_err(|error| before(Some(id), Error::Refused(error.0)))?;
             // Guard creation is still pre-send. Cancellation after this point
             // aborts the owned socket without flushing before releasing the lock.
             let mut sending = self

@@ -34,7 +34,7 @@ async fn input_gate_case(change: u8, outbound: bool) {
                 .config_read_gated(
                     None,
                     tokio::time::Instant::now() + Duration::from_secs(10),
-                    &provider::codex::PreSendGate::new(|| {
+                    &provider::send_boundary::PreSendGate::new(|| {
                         Box::pin(async {
                             blocker_entered.notify_one();
                             release.notified().await;

@@ -47,7 +47,7 @@ async fn initial(backend: &PlannerBackend, proof: &SubmissionDispatchProof) -> I
             items(),
             &TurnModelSelection::inherit(),
             PlannerPermissionMode::Never,
-            &crate::shared_codex_appserver::NativePromptAdmission::new(
+            &crate::harness::native_admission::NativePromptAdmission::new(
                 || Ok(()),
                 || Box::pin(async { Ok(()) }),
             ),
@@ -119,7 +119,7 @@ async fn budget_control_sends_only_fixed_notice_to_original_native_turn() {
         .send_budget_notice(
             &notice,
             BudgetControlScope::Historical,
-            &crate::shared_codex_appserver::NativePromptAdmission::new(
+            &crate::harness::native_admission::NativePromptAdmission::new(
                 || Ok(()),
                 || Box::pin(async { Ok(()) }),
             ),

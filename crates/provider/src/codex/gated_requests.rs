@@ -1,29 +1,9 @@
 //! Typed RPC entry points with a caller-owned asynchronous pre-send check.
 use super::*;
-use futures_util::future::BoxFuture;
-
-/// Opaque caller policy, invoked with the outbound sink held and before sending.
-/// A refusal proves this request did not enter send; the provider interprets no policy.
-/// The gate must not issue requests on this connection while holding its sink.
-pub struct PreSendGate<'a> {
-    check: Box<dyn Fn() -> BoxFuture<'a, Result<()>> + Send + Sync + 'a>,
-}
-
-impl<'a> PreSendGate<'a> {
-    pub fn new(check: impl Fn() -> BoxFuture<'a, Result<()>> + Send + Sync + 'a) -> Self {
-        Self {
-            check: Box::new(check),
-        }
-    }
-
-    // Only the transport request core may consume the policy. Callers can
-    // carry this value across preparation awaits, never extract a prior grant.
-    pub(super) async fn run(&self) -> Result<()> {
-        (self.check)().await
-    }
-}
-
-pub(super) fn allow_send() -> BoxFuture<'static, Result<()>> {
+pub(super) fn allow_send() -> futures_util::future::BoxFuture<
+    'static,
+    std::result::Result<(), crate::send_boundary::SendRefusal>,
+> {
     Box::pin(async { Ok(()) })
 }
 

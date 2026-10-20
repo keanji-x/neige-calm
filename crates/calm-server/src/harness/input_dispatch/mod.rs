@@ -135,7 +135,7 @@ pub(crate) async fn initial(
             items,
             selection,
             permission,
-            &crate::shared_codex_appserver::NativePromptAdmission::new(
+            &crate::harness::native_admission::NativePromptAdmission::new(
                 || prepared.source.check_current(),
                 || Box::pin(prepared.admit(repo)),
             ),

@@ -6,6 +6,7 @@ pub mod control;
 pub mod events;
 pub mod held_requests;
 mod input;
+pub mod send_boundary;
 pub mod worker;
 pub use calm_exec::{SpawnCtx, SpawnHandle, WorkerProvider};
 pub use calm_types::runtime::AgentProvider;

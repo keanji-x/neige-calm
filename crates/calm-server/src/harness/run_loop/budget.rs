@@ -145,7 +145,7 @@ pub(super) async fn warn(inner: &Arc<Inner>) -> crate::error::Result<()> {
             if !current(&inner, &turn_id).await {
                 return false;
             }
-            let admit = crate::shared_codex_appserver::NativePromptAdmission::new(
+            let admit = crate::harness::native_admission::NativePromptAdmission::new(
                 || Ok(()),
                 || {
                     Box::pin(async {
