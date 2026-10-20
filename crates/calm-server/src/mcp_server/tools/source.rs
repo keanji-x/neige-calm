@@ -1,6 +1,8 @@
 //! `neige_source_capture` and `neige_source_ls`: turn a plugin result the Planner just read into a stable, verifiable source.
 //! Both are Planner-only: their descriptors declare it and the registry gates it.
 
+use super::track_report_blocks::{optional_string, require_object, required_string};
+
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
@@ -565,32 +567,6 @@ pub fn list_entry(row: &SourceRow) -> Value {
 
 fn map_err(tool: &str, e: CalmError) -> RpcError {
     crate::mcp_server::framing::calm_error(e).for_tool(tool)
-}
-
-fn require_object<'a>(args: &'a Value, tool: &str) -> Result<&'a Map<String, Value>, RpcError> {
-    args.as_object()
-        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))
-}
-
-fn required_string(obj: &Map<String, Value>, key: &str, tool: &str) -> Result<String, RpcError> {
-    obj.get(key)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `{key}` (string)")))
-}
-
-fn optional_string(
-    obj: &Map<String, Value>,
-    key: &str,
-    tool: &str,
-) -> Result<Option<String>, RpcError> {
-    match obj.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "{tool}: `{key}` must be a string if provided"
-        ))),
-    }
 }
 
 fn optional_quotes(obj: &Map<String, Value>, tool: &str) -> Result<Option<Vec<String>>, RpcError> {

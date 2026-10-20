@@ -43,7 +43,7 @@ function stateVariant(state: PluginState): 'success' | 'warning' | 'error' | 'in
     case 'crashed': return 'error';
     case 'unavailable': return 'warning';
     case 'spawning': case 'installing': case 'installed': return 'info';
-    default: return 'neutral';
+    case 'disabled': case 'unknown': return 'neutral';
   }
 }
 

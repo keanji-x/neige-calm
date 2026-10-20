@@ -169,7 +169,9 @@ impl SupervisorState {
         match self {
             SupervisorState::Restarting { reason, .. } => Some(reason.as_str()),
             SupervisorState::Failed { last_error, .. } => Some(last_error.as_str()),
-            _ => None,
+            SupervisorState::Idle
+            | SupervisorState::Starting { .. }
+            | SupervisorState::Running { .. } => None,
         }
     }
 

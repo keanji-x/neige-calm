@@ -11,6 +11,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, role_gated_write_annotations,
 };
+use crate::mcp_server::tools::track_file::resolve_track_for_identity;
 use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::{Card, CardRole, Track, TrackPatch};
 use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
@@ -565,35 +566,4 @@ async fn close_tx(
         Some(message),
     ));
     Ok((closed_at, vec![(scope, event)]))
-}
-
-/// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.
-async fn resolve_track_for_identity(
-    ctx: &Arc<AppContext>,
-    identity: &ToolCallIdentity,
-) -> Result<(crate::model::Card, Track), RpcError> {
-    let card_id_str = identity.card_id.as_str().to_string();
-    let card = ctx
-        .repo
-        .card_get(&card_id_str)
-        .await
-        .map_err(|e| RpcError::internal(format!("card lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!(
-                "bound card {card_id_str} not found (deleted mid-connection?)"
-            ))
-        })?;
-    let track = ctx
-        .repo
-        .track_get(card.track_id.as_str())
-        .await
-        .map_err(|e| RpcError::internal(format!("track lookup: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!(
-                "track {} for card {} not found",
-                card.track_id.as_str(),
-                card_id_str
-            ))
-        })?;
-    Ok((card, track))
 }

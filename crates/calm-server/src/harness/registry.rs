@@ -314,7 +314,9 @@ impl HarnessRegistry {
         }
         match std::mem::replace(&mut entry.slot, Slot::Dormant) {
             Slot::Live(handle) => Some(handle),
-            _ => unreachable!("checked live under the entry guard"),
+            Slot::Dormant | Slot::Reserved(_) => {
+                unreachable!("checked live under the entry guard")
+            }
         }
     }
 
@@ -326,7 +328,7 @@ impl HarnessRegistry {
                 Slot::Live(handle) if handle.track_id() == track_id => {
                     Some((entry.key().clone(), handle.clone()))
                 }
-                _ => None,
+                Slot::Live(_) | Slot::Dormant | Slot::Reserved(_) => None,
             })
             .collect()
     }

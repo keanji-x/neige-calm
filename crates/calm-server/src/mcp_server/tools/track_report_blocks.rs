@@ -382,7 +382,7 @@ fn map_commit_err(tool: &str, e: CalmError) -> RpcError {
     }
 }
 
-fn require_object<'a>(
+pub(super) fn require_object<'a>(
     args: &'a Value,
     tool: &str,
 ) -> Result<&'a serde_json::Map<String, Value>, RpcError> {
@@ -390,7 +390,7 @@ fn require_object<'a>(
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))
 }
 
-fn required_string(
+pub(super) fn required_string(
     obj: &serde_json::Map<String, Value>,
     key: &str,
     tool: &str,
@@ -401,7 +401,7 @@ fn required_string(
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `{key}` (string)")))
 }
 
-fn optional_string(
+pub(super) fn optional_string(
     obj: &serde_json::Map<String, Value>,
     key: &str,
     tool: &str,

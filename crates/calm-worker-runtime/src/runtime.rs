@@ -183,7 +183,9 @@ impl Runtime {
                 storage::write(&directory, &record)
             }
             Phase::Running { .. } => Ok(()),
-            _ => Err(Error::Conflict("run is closed to start".into())),
+            Phase::Reserved | Phase::Closing { .. } | Phase::Closed(_) => {
+                Err(Error::Conflict("run is closed to start".into()))
+            }
         }
     }
 
@@ -225,7 +227,9 @@ impl Runtime {
                 Observation::Live(_) => Ok(match record.phase {
                     Phase::Prepared { .. } => BoundaryState::Prepared,
                     Phase::Running { .. } => BoundaryState::Running,
-                    _ => BoundaryState::Unknown("stopping; init exit not yet proven".into()),
+                    Phase::Reserved | Phase::Closing { .. } | Phase::Closed(_) => {
+                        BoundaryState::Unknown("stopping; init exit not yet proven".into())
+                    }
                 }),
             }
         };
@@ -252,7 +256,7 @@ impl Runtime {
                     storage::write(&directory, &record)?;
                 }
                 Phase::Closed(proof) => return Ok(BoundaryState::Quiesced(proof)),
-                _ => {}
+                Phase::Reserved | Phase::Closing { .. } => {}
             }
         }
         match linux::observe(&handle.init) {

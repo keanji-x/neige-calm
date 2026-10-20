@@ -703,7 +703,7 @@ fn cwd_from_arguments(arguments: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn parse_command_actions(command: &str) -> Vec<CommandAction> {
+pub(super) fn parse_command_actions(command: &str) -> Vec<CommandAction> {
     let trimmed = command.trim();
     let mut parts = trimmed.split_whitespace();
     let head = parts.next().unwrap_or_default();
@@ -808,7 +808,7 @@ fn output_text(output: &FunctionCallOutputPayload) -> String {
         .join("\n")
 }
 
-fn summary(text: &str) -> String {
+pub(super) fn summary(text: &str) -> String {
     const LIMIT: usize = 240;
     let mut out = text.chars().take(LIMIT).collect::<String>();
     if text.chars().count() > LIMIT {

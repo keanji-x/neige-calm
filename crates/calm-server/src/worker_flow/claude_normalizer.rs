@@ -1,3 +1,5 @@
+use super::codex_normalizer::{parse_command_actions, summary};
+
 use std::collections::HashMap;
 
 use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
@@ -852,32 +854,6 @@ fn output_text(output: &[ToolResultBlock]) -> String {
         .join("\n")
 }
 
-fn parse_command_actions(command: &str) -> Vec<CommandAction> {
-    let trimmed = command.trim();
-    let mut parts = trimmed.split_whitespace();
-    let head = parts.next().unwrap_or_default();
-    match head {
-        "ls" | "find" => vec![CommandAction::ListFiles {
-            command: trimmed.to_string(),
-            path: parts.next().map(str::to_string),
-        }],
-        "rg" | "grep" => vec![CommandAction::Search {
-            command: trimmed.to_string(),
-            query: parts.next().map(str::to_string),
-            path: parts.next().map(str::to_string),
-        }],
-        "cat" | "sed" | "nl" | "head" | "tail" => vec![CommandAction::Read {
-            command: trimmed.to_string(),
-            name: head.to_string(),
-            path: parts.last().unwrap_or_default().to_string(),
-        }],
-        _ if trimmed.is_empty() => vec![],
-        _ => vec![CommandAction::Unknown {
-            command: trimmed.to_string(),
-        }],
-    }
-}
-
 fn parse_mcp_tool_name(name: &str) -> (Option<String>, String) {
     let rest = name.strip_prefix("mcp__").unwrap_or(name);
     let mut parts = rest.split("__");
@@ -888,13 +864,4 @@ fn parse_mcp_tool_name(name: &str) -> (Option<String>, String) {
     } else {
         (Some(first.to_string()), remaining.join("__"))
     }
-}
-
-fn summary(text: &str) -> String {
-    const LIMIT: usize = 240;
-    let mut out = text.chars().take(LIMIT).collect::<String>();
-    if text.chars().count() > LIMIT {
-        out.push_str("...");
-    }
-    out
 }
